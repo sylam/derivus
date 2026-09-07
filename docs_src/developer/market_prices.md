@@ -41,7 +41,7 @@ declarations, and `construct_bootstrapper` resolves the class by name from the
 | --- | --- | --- |
 | `GBMAssetPriceTSModelPrices` | a vol surface, ATM column only — or, where `FXVolPrices` built that surface, [its ATM rows](#fxvolprices) | `GBMAssetPriceTSModelParameters` — an integrated vol curve |
 | `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
-| `LogVar2FJModelPrices` | European options on any spot, plus forward-start smiles | `LogVar2FJModelParameters` — five scalars, **an L curve, a jump-intensity strip and four bucketed levers** |
+| `LogVar2FJModelPrices` | European options on any spot, plus forward-start smiles | `LogVar2FJModelParameters` — four scalars, **a forward-variance curve `ξ` and four bucketed levers** |
 | `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
@@ -129,147 +129,109 @@ stands in the roadmap; nothing in the engine reads them, and a book that names o
 ## `LogVar2FJModelPrices` — a Monte Carlo fit with a forward-skew term {#logvar2fj}
 
 **The block** is `OptionQuoteFamily`'s shared quote preparation plus `Fit_Mode`, the walk, the
-structural constants, the two declared guards, the weights, the calendar-time `Param_Buckets`,
-`Event_Days`, spec 5.3's forward block with its `Stickiness_Prior` DIFFERENCE pair, spec 5.2 stage
-4's `Slow_Factor_Prior`, `Diffusive_Share` and `Quote_Sensitivity` — each documented where it is
-declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
+structural constants, `Residual_Law`, the two declared guards, the weights, the calendar-time
+`Param_Buckets`, `Event_Days`, the forward block with its `Stickiness_Prior` DIFFERENCE pair,
+stage 4's `Slow_Factor_Prior` and `Quote_Sensitivity` — each documented where it is declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
 `fx_surface_block` authors the FX one, asked here for **two delta pillars** at four wing expiries,
 because a `Bootstrap` bucket frees one parameter per wing quote. What follows is what it MEASURED.
 
-**`L` is piecewise CONSTANT on the segments between ATM expiries** — flat forward variance, the shape
-var-swap strips are quoted in. A segment's integral depends on its own level alone, so the strip has
-no recurrence to zig-zag along, every ATM still reprices exactly (one level per segment, one ATM
-increment per segment, triangular and unique) and anything priced between pillars reads a quoted
-forward variance; the OU recursion is a deviation from `L`, so the step at a pillar costs nothing.
-`Event_Days` is then a one-day segment at `Event_Variance_Prior` times the level enclosing it —
-unless the day already HAS a segment of its own, expiries on the business days either side, in which
-case the ordinary pillar bootstrap sets it, the prior is ignored and the report says so.
+**The stored curve is `ξ(t) = E₀[h_t]`, the expected forward variance, and the OU level is
+DERIVED from it.** `ℓ + s` is Gaussian, so `E[e^{ℓ+s}] = e^{L* + Var(ℓ+s)/2}`: storing the LEVEL
+makes the stored curve not the expected variance, and every change of vol-of-vol drags the ATM
+level with it. Storing `ξ` and setting `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)` makes `E₀[h_t] = ξ(t)`
+exactly whatever the vol-of-vol is, so the ATM level is invariant to `σ_s, σ_ℓ` by construction and
+the inner solve is near-identity. The variance is measured from wherever the walk STARTS, so a row
+the kit re-seeds at `(L*(t_row), 0)` reads `ξ` exactly where a base-date Jensen term would
+under-shoot it. `ξ` is piecewise CONSTANT on the segments between ATM expiries — flat forward
+variance, the shape var-swap strips are quoted in — so the strip has no recurrence to zig-zag along
+and every ATM still reprices exactly. `Event_Days` is then a one-day segment of `ξ` at
+`Event_Variance_Prior` times the level enclosing it — unless the day already HAS a segment of its
+own, in which case the ordinary pillar bootstrap sets it, the prior is ignored and the report says
+so. The curve is comparable to a market object: it should sit on a replicated variance-swap strip up
+to the smile's own ATM convexity, and the report prints it beside the market's ATM² forward variance
+rather than beside a log level. **No `e^{L*}` appears in any report.**
 
-**`λ(t)` follows the market's own strip, per segment.** A constant intensity makes the jump
-variance `λ(μ_J² + σ_J²)` the same number on every segment while the market's forward variance
-moves along the strip, so the diffusive share is forced to move *inversely* to the total — measured
-at 0.71–0.90 on CJOW and 0.78–0.92 on USDZAR, the market's own shape backwards, a low-vol segment
-carrying more crash risk than a high-vol one. So the rule is applied per segment:
-`λ(t) = w_J · ξ_mkt(t)/(μ_J² + σ_J²)`, written onto the factor as its own piecewise-constant curve on
-the L segments and read by `bucket_at` at absolute times exactly as `L` and the four levers are.
-Still STRUCTURAL — never a fitted coordinate, its knots and values both compile-time facts, one knot
-being the constant-intensity model — and re-derived from the strip daily; what carries across days is
-`w_J`, which a previous factor's own first segment hands back. The jump share is then the SAME number
-on every segment by construction, and the one free number left in the split is that level.
+**The residual is an NIG increment on the variance clock, and its drift is forced.** The part of a
+return leverage does not explain spends the clock `A = Σ c_k V_k` with `c = 1 − ρ_s² − ρ_ℓ²`, as
+`X_A ~ NIG(α, β, δ_A, μ_A)` with `γ = √(α² − β²)`, `δ_A = A γ³/α²` (which makes `Var(X_A) = A`
+exactly) and `μ_A = δ_A(√(α² − (β+1)²) − γ)` (which forces `E[e^{X_A}] = 1`). Both are LINEAR in
+the clock, so the residual composes exactly: a month cut into days is one law once the clock is one
+number, and a fixing interval straddling a bucket knot splits its clock there — two mixers, one
+Gaussian whose `M` and `Σ²` sum. `α` is tail thickness and smile convexity, `β` is skew, and there is
+no intensity, no jump size, no compensator to derive per segment and **no parameter the Greeks
+cannot reach**: the drift is no-arbitrage's, not the fit's. What replaces the Poisson intensity rule
+is nothing at all — that strip existed because vanillas do not identify an intensity apart from the
+jump sizes, and `(α, β)` are identified by the 1–3 month wings. The pair is fitted in the
+UNCONSTRAINED coordinates `α = ½ + ε + softplus(a)`, `β = −½ + (α − ½ − ε)tanh(b)`, which land
+inside `|β| < α` and `|β+1| < α` for every iterate; the transform lives in the calibrator, the model
+applies none, and the factor asserts admissibility — `|β| < α`, `|β+1| < α` and the conditioning
+share `γ²/α² = 1 − (β/α)² ≥ 0.4` — by name at load.
 
-**The L strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
+**`Residual_Law: Gaussian` is a limit/test mode.** It drops the mixer, reads the clock as the
+variance and the drift as its own compensator, and leaves `Alpha` and `Beta` unread (they may be
+absent). The factor logs it at INFO by name; the calibrator refuses to warm start an NIG block off a
+Gaussian factor, or the other way round, because the two are different models and neither seeds the
+other.
+
+**The ξ strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
 structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
 1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each segment returns is one
-Newton step at its own root, so `dL/dθ` rides the tape and the outer solver keeps its exact Jacobian.
+Newton step at its own root, so `dξ/dθ` rides the tape and the outer solver keeps its exact Jacobian.
 What that costs is one graph pass per segment per iterate: the search itself runs off the tape on the
 previous sweep's slope, and on the walk at 8192 paths over 504 daily steps a forward pass is 0.280 s
 against 0.756 s with its backward. The grid is the QUOTES' own, one trading day
 between block ends with a stub landing each block on its `T`: reading the same rung on the
 trading-day grid instead costs **0.124 vol points** at the 1m ATM (`jac_check.py`).
 
-**On the CJOW harness surface** (spec 8 steps 0–4: 34 premium quotes over five maturities to 2y,
-`Paths` 8192, daily δ, CPU). The two right-hand columns are `artifacts/logvar2fj/harness_cjow.py`
-before the flat `L`; the left one is `artifacts/lv_split_20260906/split.py cjow | tables`, which
-re-fits the same surface off that harness's BANKED premiums — its own step 0 prices them with the
-retired Heston-Nandi half of `utils` and no longer runs:
+The CJOW harness tables that stood here were readings of the Poisson residual against a reference
+surface priced by the retired Heston-Nandi half of `utils`; the harness could not be re-run after
+that retirement and has been deleted with its banked premiums, so the record they carried is the
+Poisson residual's and is not re-measured. The flat-segment ruling that preceded them stands on its
+own measurement: the piecewise-linear curve's strip alternated across the market's by the `−1`
+multiplier of a segment integral that reads both ends, and flat segments took the strip's second
+difference from 20.4 vol points RMS to 5.1 on the CJOW surface and from 1.57 to 0.42 on a reduced
+USDZAR block at unchanged wing RMSEs.
 
-| | vanilla only, `λ(t)` and flat `L` | on the LINEAR `L` at a constant `λ` | with the 5.3 forward target, linear `L` |
-|---|---|---|---|
-| RMSE, true inversion — unweighted / vega-weighted | **0.930 / 0.319** vol points | 1.020 / 0.331 | 0.995 / 0.337 |
-| the 5 ATM rungs / the 29 WINGS, by the same statistic the FX table uses | 0.157 / **1.005** | 0.161 / 1.063 | 0.320 / 1.331 |
-| per maturity, 1m … 2y | 2.17 / 0.80 / 0.36 / 0.36 / 0.07 | 2.30 / 0.79 / 0.25 / 0.52 / 0.08 | 2.98 / 0.80 / 0.27 / 0.50 / 0.37 |
-| wall clock, evaluations + Jacobians | 1210 s (a contended box), 49 + 40 | **1142 s**, 79 + 61 | 1206 s, 81 + 53 |
-| the inner bootstrap, per sweep over 5 pillars | 18.7 pillar passes, **5.4** of them a backward | 18.7, 5.3 | 19.2, 5.5 |
-| ψ_skew(1y into 1y), CJOW's being 1.008 | **0.984** | 0.985 | 0.964 |
-| ψ_bfly(1y into 1y), CJOW's being 0.374 | 1.365 | — | — |
-| `Sigma_L` | fitted, **ON its 0.3 floor** with 2y wings present | **1.5e-06** — the slow factor collapsed | — |
-| the campaign's 2y autocall at 2^15, CJOW's −32.068 (SE 0.226) | **−30.855** (SE 0.143) | −32.433 (SE 0.135) | −33.080 (SE 0.061) |
+**Two modes on one banked surface** (`artifacts/lv_nig_20260907/fit.py fx`, the campaign's USDZAR
+`FXVol` at `Paths` 8192, daily δ, CPU), against the SAME 22 contracts the Poisson residual was
+read on. Six of those rungs are the ATM one of each expiry, which any family carrying a curve
+solves to zero, so folding them into one RMSE reports the split rather than the fit: the table
+separates them and the headline is the WING RMSE over the other 16.
 
-against spec 9's < 90 s on a GPU and spec 8's ≤ 0.2 vol points from one month out. The composition
-residual is under spec 5.3's 0.3 failure mode; the forward target's gap, −0.647, is the deal's
-forward-skew sensitivity, reported as such rather than as an error. What the per-iterate bootstrap
-did NOT buy is the short end: 2.2 vol points at 1m, all of it the 70–80% wing (+6.02 / +3.91) and
-the 110–120% convexity, which is what a two-shock structure costs against a one-shock reference and
-remains the open number. `SE² × wall time` on the deal value is **2.83e-2** on the `λ(t)` re-fit,
-against 1.28e-2 and 2.51e-3 on the linear-`L` fits and CJOW's own 5.29e-2 — the re-fit halves the
-SE the FX gate's row 4 read (0.251 → 0.143) and moves the value the other side of the component
-family's banked −31.89.
+| fit | ATM rungs | 16 WING rungs, RMSE | worst wing | **one-month wing** | wall clock |
+|---|---|---|---|---|---|
+| LogVar2FJ v2 `Global` | 6 at **0.0e+00** vol points | 0.177 | +0.403 | **0.296** over 5 | 1,661 s |
+| LogVar2FJ v2 `Bootstrap` | 6 at 0.0e+00 | **0.222** | −0.439 | **0.032** over 5 | 435 s |
+| *the Poisson residual's record, `Global`* | 6 at 0.0e+00 | *0.132* | *−0.252* | *0.174* | *213 s* |
+| *the Poisson residual's record, `Bootstrap`* | 6 at 0.0e+00 | *0.574* | *+1.291* | *0.043* | *222 s* |
 
-!!! warning "Read the two columns against the sampling floor, not against each other"
-    Re-drawing the whole fit at three `Random_Seed`s moves the fitted ATM term structure by 0.10 to
-    0.63 vol points and an L pillar by up to 2.6. The 0.930 against 1.020 against 0.995, and the
-    ψ_skew 0.984 against 0.985 against 0.964, are all INSIDE that floor: what the forward target
-    demonstrably moves is the composition residual and the deal, and what `λ(t)` demonstrably
-    moves is the SPLIT, not the spot fit. ψ_bfly WAS the fragile one — the model's own spot
-    butterfly at 6m is −0.02 vol points, so its ratio is a division by nothing — which is why the
-    target is now the DIFFERENCE and the report prints a ratio only above 0.5 vol points of spot.
+and on the banked SPX chain block (`artifacts/hnret/chain_block.py`, six rungs, `Max_Iterations`
+4): **0.158** vol points RMSE against the Poisson residual's **0.272**, in 26 s. The two retired
+Heston-Nandi families read 0.663 and 0.760 on the same 22 contracts, a record nothing reproduces.
 
-**Two modes on one banked surface** (`artifacts/logvar2fj/fx_ladder.py`, the campaign's USDZAR
-`FXVol` at `Paths` 8192, daily δ, CPU, four processes contending), against BOTH Heston-Nandi
-families fitted to the SAME 22 contracts. The two Heston-Nandi rows are the RECORD of a
-measurement taken before the families were [retired](#hestonnandi-retired); nothing reproduces
-them today. Six of those rungs are the ATM one of each expiry, which
-any family carrying an L curve solves to zero, so folding them into one RMSE reports the split
-rather than the fit: the table separates them and the headline is the WING RMSE over the other 16.
+**THE ONE-MONTH WING IS THE NUMBER THE RESIDUAL WAS SWAPPED FOR, and it reads two ways.** On the
+equity chain the swap is worth 42% of the fit and on the USDZAR ladder in `Bootstrap` mode 61%; in
+`Global` mode on the same ladder it is 34% WORSE. The reason is in the fitted shape: a USDZAR smile
+is nearly symmetric, so `Global` has no use for residual SKEW and takes `β → −0.08` while driving
+`α` down to **5.45** for convexity instead — where the residual's own shape `α·δ_A` is 7.7e-03 at
+one month against the "≈ 1 strongly non-Gaussian" the sizing note gives, and the mixer's
+coefficient of variation is 11.4. Every declared guard is satisfied there (`c` 0.311 ≥ 0.12,
+`γ²/α²` **1.000** ≥ 0.4). `Bootstrap`, which frees `α` per expiry against that expiry's own wings,
+does not reach the corner (`α` 41.6, `γ²/α²` 0.930) and reads an eighth of `Global`'s one-month
+wing. **Nothing in the brief bounds `α` from below**; the seed and pin from history are what close
+it, which is the calibrator lane's. `Bootstrap` is structurally the mode for a deal read at many
+fixings rather than the mode that fits a surface best — bucket `k` acts only on `[E_{k−1}, E_k)`
+while the option to `E_k` averages over every bucket before it — and the report says per bucket
+which parameters were free and which tied.
 
-| fit | ATM rungs | 16 WING rungs, RMSE | worst wing | wall clock |
-|---|---|---|---|---|
-| LogVar2FJ `Global`, `λ(t)` and the slow pair PINNED at the FX CLASS DEFAULT (−0.2, 0.5) | 6 at **0.0e+00** vol points | **0.135** | −0.282 | 213 s |
-| the same, PINNED at the index seed (−0.4, 1.0) | 6 at **0.0e+00** vol points | 0.202 | −0.415 | 819 s (a contended box) |
-| the same at the index seed, `Lambda` pinned flat | 6 at 0.0e+00 | 0.189 | −0.417 | 203 s |
-| LogVar2FJ `Global`, the slow pair fitted to nothing | 6 at **0.0e+00** vol points | **0.131** | −0.251 | 254 s |
-| LogVar2FJ `Bootstrap` | 6 at 0.0e+00 | 0.575 | +1.291 | 222 s |
-| plain Heston-Nandi | 6 at 1.45e-01 | 0.663 | −1.744 | 420 s |
-| component Heston-Nandi | residual 4.4e-15 | prints no per-quote record; worst wing **0.760** | +0.760 | 137 s, CAPPED at 300 evaluations |
-
-`Global` fits the wings **five times** better than the plain family and **six times** better than
-the component one, which carries an L curve of its own and the same four wing expiries. Rows one and
-two are what spec 5.2 stage 4's identification rule COSTS and what the PRIOR under it is worth: this
-ladder's longest wing is 1y against the 18 months the rule asks for, so `(ρ_l, σ_l)` are pinned with
-the report line *pinned: not identified by this ladder* instead of being fitted to nothing — row
-four's 0.131 was bought by a slow factor the box ran to zero, which is the reading that made the
-floor a rule. Pinned at the index SEED that rule charged 0.070 of wing RMSE; pinned at the FX CLASS
-DEFAULT it charges **0.003** (0.135 against 0.132), so almost all of what the rule appeared to cost
-was the seed being wrong-sized for FX. `λ(t)` itself costs 0.013 (row two against row three), inside
-the seed spread. `Bootstrap` is worse than any `Global` row, and structurally so: bucket `k` acts
-only on `[E_{k−1}, E_k)` while the option
-to `E_k` averages over every bucket before it, so a later bucket has progressively less leverage on
-the quote that frees it — on a sub-year ladder that is most of the ladder. It is the mode for a deal
-read at many fixings, not the mode that fits a surface best, and the report says per bucket which
-parameters were free and which tied.
-
-!!! note "The zig-zag was the parametrisation; the level that is left is the decomposition"
-    Both tables above were read on the **piecewise-linear** `L` this family carried until
-    2026-09-06, whose strip alternated across the market's — `Global` 9.08 / 7.98 / 9.44 / 8.35 /
-    10.79 / 9.21% against 9.85 / 10.08 / 10.58 / 11.04 / 12.04 / 12.75%, `Bootstrap` 9.04 / 7.60 /
-    9.10 / 7.49 / 9.48 / 8.28%, the CJOW fit 14.56 / 5.51 / 19.95 / 10.76 / 13.37% against 15.97 /
-    12.73 / 15.71 / 19.77 / 17.52%. That was the `−1` multiplier of a segment integral that reads
-    both ends. Flat segments removed it: the same CJOW surface at `Paths` 2048 reads **14.43 / 9.34
-    / 11.91 / 14.37 / 12.44%**, a diffusive share of the market's own strip of 0.90 / 0.73 / 0.76 /
-    0.73 / 0.71 where the linear one read 0.91 / 0.43 / **1.27** / 0.54 / 0.76 — it no longer
-    crosses one — and the strip's second difference, which IS the alternation, falls from 20.4 vol
-    points RMS to 5.1 at a vanilla RMSE of 0.931 against 1.020 (at a quarter of the paths). A
-    reduced USDZAR block (3 expiries, 15 quotes, `Paths` 2048) reads 9.11 / 8.75 / 8.82% where the
-    linear `L` read 9.11 / 8.38 / 9.23%, 0.42 vol points of second difference against 1.57, at an
-    unchanged wing RMSE (0.099 against 0.098). What was left was a LEVEL, and the report now
-    prints it as the SPLIT it is (5.4.8) — per segment the market's own forward variance, the
-    model's total as MEAN diffusive plus jump, the jump share and the Jensen share:
-
-    | | market | model total | diffusive level | jump share | Jensen share |
-    |---|---|---|---|---|---|
-    | reduced USDZAR, 3 segments | 9.85 / 10.33 / 11.04% | 10.44 / 11.10 / 11.84% | 9.14 / 8.66 / 8.64% | **11.9%** flat | 14.3 / 33.2 / 41.8% |
-    | CJOW, 5 segments | 15.97 / 12.73 / 15.71 / 19.77 / 17.52% | 17.60 / 14.05 / 17.98 / 21.78 / 18.18% | 14.50 / 9.80 / 11.95 / 14.25 / 11.72% | **15.2%** flat | 23.8 / 47.4 / 58.0 / 54.2 / 47.8% |
-
-    So the two reasons the curve level fell away from the market are named apart. `λ(t)` removed
-    the jump's — pinning `Lambda` flat on the same ladder puts the jump share back at 18.2 / 17.4 /
-    15.8 / 14.5 / 12.2 / 10.9%, the market's shape backwards, for 0.189 wing RMSE against 0.202,
-    inside the sampling floor. What is left is the vol-of-vol's own Jensen term growing as the OU
-    variance accumulates, plus the gap between matching an ATM PRICE and matching a variance —
-    the model's mean total must sit ABOVE the market's ATM² because `E[Black(sd)] < Black(E[sd])`.
-    Neither is a miss. The component
-    family's `L` is still piecewise-linear — `ω_t = L_{t+1} − ρL_t` differences it, so a step would
-    spike `ω` — and still carries its own phase (9.93 / 9.81 / 11.01 / 10.54 / 12.12 / 12.70 /
-    13.26% on the same ladder). The tables are not re-measured at their own path counts.
+Both modes REFUSE on the default `Stationary_Spread: Refuse`, and that refusal is the reading: with
+the residual carrying the skew the fit no longer needs the vol-of-vol to carry it, so the
+stationary log-vol sd lands under the 0.4–0.9 the VIX market implies and the guard names the
+bucket, the sd and the pair that produced it. The rows above are read under
+`Stationary_Spread: Floor`, which takes the same θ\* — the guard is a READING of θ\*, never a
+re-solve — and says so. This is the identification statement made concrete: vanillas cannot tell
+residual skew from leverage skew, so a vanilla-only fit gives the skew to whichever is cheaper, and
+the forward-smile block is what separates them.
 
 **The slow factor's prior is per ASSET CLASS, and the floor is the guard beneath it.** Where the
 ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are fitted to nothing and are pinned
@@ -323,8 +285,8 @@ numbers quoted. The outer fit is a least-squares minimum, so its half is the Gau
 at the stationarity point — **`LeastSquaresSolve`, the one node the swaption family also solves
 through** — taken over the coordinates `least_squares` did not stop against a bound, and on the
 COLUMN-SCALED Jacobian at `Jacobian_Rcond`, which is the same matrix and the same cutoff the
-identification table reads. The L strip's half is the Newton splice the inner solve already carries,
-so `dL/dq` needs no rule of its own; the residual and its Jacobian are taken once at θ\* and kept, so
+identification table reads. The ξ strip's half is the Newton splice the inner solve already carries,
+so `dξ/dq` needs no rule of its own; the residual and its Jacobian are taken once at θ\* and kept, so
 a whole `dθ/dq` matrix is one contraction per written parameter rather than one fit's worth of
 evaluations each. `Stationarity_Tol` refuses the lot where θ\* is not a stationary point — a stage
 that stopped at `Max_Iterations` has no quote derivative to report. Measured on the campaign's 2y SPX
@@ -365,15 +327,15 @@ quietly fitting the vanillas alone.
 
 **The target is a DIFFERENCE, and there is one term whatever the source.** `Δ_skew` is the forward
 90–110 slope less the spot slope at maturity Δ and `Δ_bfly` the same for the 90/110 butterfly, both
-in vol points, both targeted — jump skew is sticky while its convexity dilutes at the forward date,
-leverage skew dilutes while vol-of-vol convexity amplifies, so the slope alone cannot separate the
-jump share from the vol-of-vol. **Prior** DECLARES the pair (`Stickiness_Prior`, `0.0,0.0` being
+in vol points, both targeted — residual skew is sticky while its convexity dilutes at the forward
+date, leverage skew dilutes while vol-of-vol convexity amplifies, so the slope alone cannot separate
+the residual's share from the vol-of-vol. **Prior** DECLARES the pair (`Stickiness_Prior`, `0.0,0.0` being
 sticky-delta and the default); **Quotes** and **Reference** MEASURE it — the source's own forward
 smile less the MARKET's own spot smile at the rung nearest Δ, read off the quoted vols in
 log-moneyness, a quote itself wherever the rung carries one at 90/100/110 and the nearest quote
 with a log line where it does not. The residual is then the model's difference less the target's,
 applied to the model's OWN spot smile per evaluation, and the forward ATM LEVEL is targeted by
-neither: the ATM ladder pins it and the L strip reprices it exactly.
+neither: the ATM ladder pins it and the ξ strip reprices it exactly.
 
 A RATIO divides by a spot quantity that is within a few tenths of zero wherever the smile is
 symmetric — on CJOW `ψ_bfly` read 0.075, 1.37 and −4.1 across three tenors — so it asks the fit to
@@ -394,30 +356,16 @@ The ratios are still REPORTED beside the differences, but only where the spot si
 vol points**; where it does not the row prints `no ratio, spot +0.39 inside 0.5 vol points` and no
 number, which is `ψ_bfly(1y into 1y)` on that very ladder and two of the three tenors on CJOW.
 
-**What the difference target does NOT fix is the lever.** On the CJOW surface at `Paths` 2048 and
-ONE bucket, both sources trip spec 5.3's failure mode by name — `Prior` at `0.0,0.0` degrades the
-guarded vanilla RMSE **+0.215**, `Reference` against CJOW's own differences **+0.212** — and neither
-lands its ψ near the source: 1.034 / 1.034 / 0.982 and 1.055 / 1.038 / 0.969 against CJOW's own
-0.975 / 1.008 / **0.552**. With one bucket stages 5a and 5b have nothing to fit, so the forward
-block's only lever is `w_J`, and a block with a target and no lever moves the vanillas instead. The
-measurement that matters is therefore the bucketed one, and the target's own MECHANISM is visible in
-the `Reference` rows: it aims at CJOW's measured `Δ_skew` of −1.01 / +0.19 / −9.98 rather than at
-zero, which is what "the source's own difference" means. A rung that does not reach 90 or 110 is
-named: CJOW's 3-month row is quoted 70–105% of its forward, so `Δ` at the 1y-into-3m tenor is
-measured against an understated spot slope and the log says so.
-
-**Give it the lever and it works.** The SAME `Reference` fit with `Param_Buckets` at 1y — so stages
-5a and 5b have a year-two bucket of `μ_J(t)` and `ρ_s(t)` to move — reads `ψ_skew` **1.021 / 1.034 /
-0.935** against CJOW's own 0.975 / 1.008 / **0.552** on the independent 2¹⁸-path walk, where one
-bucket read 1.055 / 1.038 / 0.969: closer on all three. Its 29 wings go 2.067 → **1.763**, the whole
-surface 1.916 → **1.632** and the 5 ATM rungs 0.406 → 0.312, so the second bucket pays for itself on
-the spot fit as well. In the fit's own report the 1y-into-3m target `Δ_skew` is −9.98 and the model
-reaches −8.10 where the unbucketed fit reached −6.46. Both of spec 5.3's own diagnostics print by
-name: the **composition residual is 0.104 vol points** at the 2y rung, the first beyond the bucket
-boundary, comfortably inside the 0.3 the spec calls a failure, while the stage-5 vanilla degradation
-is **+0.184**, still outside the 0.1 it calls one. The buckets end at (`ρ_s`, `μ_J`) of (−0.718,
-−0.216) in year one and (−0.716, −0.207) in year two, which is the smoothness penalty holding a term
-structure the 2y vanillas have to tolerate.
+**The lever is the calendar bucket, and it was measured on the Poisson residual against CJOW.** With
+ONE bucket a forward target has nothing to move but the vanillas and trips the failure mode by name
+(+0.215 and +0.212 vol points on the guarded RMSE for the two sources); with a year-two bucket of
+the skew pair to move, the fit reached `ψ_skew` 1.021 / 1.034 / 0.935 against the reference's 0.975
+/ 1.008 / 0.552 with a composition residual of 0.104 at 2y and a stage-5 degradation of +0.184. The
+reference and its harness are retired, so those are records; the mechanism they measured is
+unchanged, the lever now being `β(t)` beside `ρ_s(t)` on the same buckets. A rung that does not
+reach 90 or 110 is named in the log, since `Δ` at that tenor is then measured against an understated
+spot slope. `Forward_Smile_Source: Reference` stays as the production path and its report line reads
+*unexercised: no reference model wired* until one is.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

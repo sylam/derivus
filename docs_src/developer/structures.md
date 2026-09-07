@@ -166,18 +166,21 @@ axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift in
 orientations of one accumulator then solve strikes **3.7e-3** apart and the gap does not close with
 the path count.
 
-**LogVar2FJ transports as a measure change rather than a parameter.** Under the `S`-numeraire
-the step's density factorises over its own draws, so each shifts by its own loading —
-`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)`, the counts at
-`lambda delta exp(mu_J + sigma_J^2/2)` and the return's own shock by one standard deviation — and
-the block law becomes `-(M + Sigma^2)` at the deal's own carry (`utils.lv_walk`). One law, two
-currencies, no second fit. In the GBM limit the reciprocal-axis TARF is **bit-identical** to GBM's
-(15.0858444086898 under both); on the fitted market the two orientations of one accumulator solve
-**2.0e-4** apart at 16,384 paths against GBM's own 4.1e-5 — the
-shocks' estimator error, not the numeraire, and the one number this carry still owes a path count.
-Uncarried they solve 3.7e-3 apart and the gap does not close with the path count, as the plain
-family's 3.4e-3 does not. So under the pin a USD-base book quotes its TARF (15.31369426 against
-15.32196559 GBM on the banked USDZAR world) and both orientations of its accumulator.
+**LogVar2FJ transports as a measure change rather than a parameter.** Under the `S`-numeraire the
+step's density factorises over its own draws, so each shifts by its own loading —
+`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)` — and the residual's MIXER is drawn
+from its Esscher-tilted law: tilting the joint law by `exp(X)` leaves the inverse Gaussian's shape
+`delta_A^2` alone and moves its mean from `delta_A/gamma` to `delta_A/gamma_1` with
+`gamma_1 = sqrt(alpha^2 - (beta+1)^2)`, which is the same `gamma_1` the forced drift already
+carries. Given the mixer the Gaussian's mean then gains `+G`, which IS the block law's existing
+`-(M + Sigma^2)` spelling at the deal's own carry (`utils.lv_walk`, `pricing.LogVar2FJKit`). One
+law, two currencies, no second fit, and one line under `invert`. In the Gaussian-residual limit the
+reciprocal-axis accumulator is GBM's to **7.8e-16** relative (the direct axis 1.9e-15); a strip of
+forwards on `1/S` at 2^18 paths reads **7.9e-05** relative against `Σ_j D_j N S_0 exp(carry t_j)`
+(the direct axis 2.0e-05); and the tilted mixer satisfies the Esscher identity directly,
+`E~[1/S] = 1` within 0.17 SE at 400,000 draws, which is what pins the `δ_A/γ₁` mixer rather than
+`δ_A/γ`. Uncarried, the two orientations of one accumulator solved 3.7e-3 apart on the Poisson
+residual and the gap did not close with the path count; carried, they solve inside the seed spread.
 
 The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
 intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the

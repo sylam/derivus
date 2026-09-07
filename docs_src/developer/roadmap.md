@@ -213,7 +213,8 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
    declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
 4. **Which state an OSS row inherits.** The fix is shallow — the kit seeds its walk at the row's
    own offset and the state comes off the outer path — but it is a decision. LogVar2FJ re-seeds
-   `l = L(t_row)`, `s = 0` per MTM row and inherits the question the retired families raised.
+   `(L*(t_row), 0)` per MTM row with the Jensen term measured from the row, so the row reads the
+   market's `ξ` exactly; what it still lacks is the carried state, which is phase 3's.
 5. **Two rates-emitter design questions**, recorded rather than decided: an OIS block is ~14 MB
     live (~26,000 authored floats on a 30Y strip, bounded by `CurveScreen.maximum_fixings`) —
     accept it through `/book/market` or build a term-authored OIS variant; and neither side rolls a
@@ -367,6 +368,57 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane 1: the NIG residual replaces the Poisson co-jump and `ξ` replaces `L`**
+  (2026-09-07) — the part of a return leverage does not explain is now a normal-inverse-Gaussian
+  increment on the variance clock, sampled as a Gaussian given one inverse-Gaussian mixer per
+  residual draw, and the stored curve is the EXPECTED FORWARD VARIANCE `ξ = E[h]` with the OU level
+  `L* = log ξ − ½Var(ℓ+s)` derived inside the model from the ROW's own start. WHY: the Poisson
+  intensity `λ` was not identified by vanillas, so it had to be fixed by a rule, re-derived per
+  segment and excluded from the Greeks; NIG is the same conditional-Gaussian idea with a
+  *continuous* mixer, infinitely divisible in its clock (so it composes exactly), with two
+  identified shape parameters, a martingale drift that is FORCED rather than fitted, a closed-form
+  European oracle and no parameter the Greeks cannot reach. The price is one monotone scalar root
+  per residual draw, `utils.ig_quantile`, whose value is `ig_root`'s off the tape and whose
+  derivative is two Newton steps taken at that root with `ig_cdf`/`ig_pdf` on it — the IFT exactly
+  at first order and the Newton map's own at second. MEASURED: the v2 notebook's `walk` reproduced
+  to **1.1e-16** on `M_lev` and **1.7e-18** on the clock with the end state BIT-IDENTICAL, and its
+  block law to 2.1e-13 / 9.5e-15 when both mixers are run to one tolerance; the quantile round trip
+  **< 6.6e-15** at every clock from 1e-6 to 0.2 against the 1e-10 gated, in at most 38 Newton steps
+  of a fixed 60; the martingale within **0.06–0.47 SE** at 1m/1y/2y/3y and the IG-MGF identity
+  1e-16 to 4e-15 in closed form; composability bit-identical on the state and 2.2e-16 / 1.4e-17 on
+  the two sums; the Esscher oracle **0.16 SE** from the tilted-mixer MC and the reciprocal axis's
+  own `E~[1/S] = 1` **0.17 SE**; OSS against a brute force drawing every step **−0.87 SE** (one
+  fixing per coupon) and **−0.34** (five), the averaging arm −0.13 to −0.75 over both window
+  lengths and both `Barrier_Observation` values; the smooth CRN ladders **0.01–0.05%** on spot, the
+  curve, `σ_s`, `σ_ℓ` and rates, 0.13–0.61% on `α`, `β` and `ρ_ℓ`, 1.64% on `ρ_s`, gamma **0.01%**
+  and the `(α, β)` and `(α, ξ)` Hessian cells 0.28% and 0.25%; the Gaussian limit **8.2e-16**
+  relative to GBM with the CVA one float32 ulp away; the NIG limit reproducing a flat 20% to
+  **1.1e-05 vol points**; **4,180 floats over 16 GBM and Hull-White documents hex-identical before
+  and after**; the credit MC at 2,048 × 2,048 uncollateralised in **9,990 MiB / 110 s** against the
+  Poisson walk's 8,392 / 70.5, with `Recompute_Inner_MC` on and off hex-identical on the CVA and on
+  its spot gradient; and the fit itself in `market_prices.md`'s own table, where the one-month wing
+  reads both ways and `Global` on FX lands at an `α` nothing bounds from below — the calibrator
+  lane's first item. RETIRED with their prose: the Poisson residual, `lv_counts`, `LV_MAX_JUMPS`,
+  the λ strip and the 5.1 rule, `Nu`, `Mu_J`, `Sigma_J`, `Lambda`, `L_Curve`, `Jump_Share`,
+  `Diffusive_Share`, `Wing_Strike`, the jump-share box and its bounded scalar search, the split
+  report's jump and Jensen columns, the estimator's jump outputs and the particle gate's
+  Poisson-mixed measurement. Every retired name REFUSES BY NAME at load, on the factor and on the
+  block, naming its replacement. CLOSES the reciprocal axis's `dV/dMu_J` row by construction; the
+  forward-skew lever is now `Beta(t)` on the calendar buckets `Mu_J(t)` carried. Engine and tests
+  net +95 lines. PROOF DOCUMENTS: `artifacts/lv_nig_20260907/` (`oracle.py mixer | walk |
+  identity`, `trials.py limit | nig | base | greeks | buckets | refuse | cva`, `hexcheck.py` /
+  `hexdiff.py`, `fit.py fx | quotes | seam | refuse`, `averaging.py`, `reciprocal.py`,
+  `recompute_parity.py`).
+- **The CJOW harness is retired** (2026-09-07) — its step 0 priced its reference premiums with the
+  Heston-Nandi half of `utils`, retired 2026-09-06, so nothing reproduced it, and a reference that
+  was never market-validated is another model, not evidence. Deleted from `artifacts/`:
+  `logvar2fj/harness_cjow.py`, `bootstrap_cjow.py`, `c_min_dial.py`, `jac_check.py`, `roundtrip.py`,
+  `cjow_documents/`, the nine banked `fit_*.json` CJOW premium documents and their outputs;
+  `lv_forward_20260907/` and `fx_gate/row45_autocall.py` whole; the `cjow` verbs of
+  `logvar2fj/flat_l.py` and `lv_split_20260906/split.py` with every helper they alone reached.
+  `Forward_Smile_Source: Reference` stays as code and its report line says *unexercised: no
+  reference model wired*; the model document's second reserve line is re-based to the deal's own
+  sensitivity over the prior's declared band, which the calibrator lane writes.
 - **Spec 5.5's historical estimator: `stochasticprocess.LogVar2FJCalibration`** (2026-09-07) - the
   P-measure half of LogVar2FJ, whose purpose is the correlation matrix and the priors and NOT the
   pricing parameters. `log RV_t = l_t + s_t + u_t` is a linear measurement of the model's OWN
@@ -685,6 +737,7 @@ set; and five model items in the punchlist below.
   fitted leaves hex-identical on a 2,048-path fit (it walks the `FxRate`'s own axis), the TARF's
   second side still refuses by name, and one inverted document prices under the credit MC at
   256 x 2,048 with the gradient on (CVA 0.2167, seven finite rows). OPEN: on the reciprocal axis
+  (CLOSED 2026-09-07 by the NIG residual, which has no count law: the tilted mixer is on the tape)
   `dV/dMu_J` and `dV/dSigma_J` lose the term through the tilted count law (integer counts carry
   no graph) - a gap the direct axis does not have, unmeasured (a CRN ladder on `Mu_J` of an
   inverted document sizes it); the banked FX fits carry no slow factor (`Sigma_L = Rho_L = 0`),

@@ -948,14 +948,14 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
         assert key in written and math.isfinite(float(written[key])), key
     for curve in utils.LV_CURVE_NAMES:
         assert len(written[curve].array), curve
-    # the four levers carry the SAME buckets and the L curve a knot at tenor zero, which is what the
+    # the four levers carry the SAME buckets and the xi curve a knot at tenor zero, which is what
     # price factor asserts at load - so the loader is the gate on what was written
-    assert written['L_Curve'].array[0][0] == 0.0
+    assert written['Xi_Curve'].array[0][0] == 0.0
     LogVar2FJModelParameters(dict(written))
-    print('\nfitted off the chain block: {}\nL (annualised diffusive vol): {}'.format(
+    print('\nfitted off the chain block: {}\nxi (annualised vol): {}'.format(
         {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
-        [(float(knot), round(float(math.exp(0.5 * level)), 4))
-         for knot, level in written['L_Curve'].array]))
+        [(float(knot), round(float(math.sqrt(level)), 4))
+         for knot, level in written['Xi_Curve'].array]))
 
 
 def test_the_two_way_is_carried_and_the_crossed_print_never_reaches_it():
@@ -1206,15 +1206,15 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     from derivus import utils
     for key in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES:
         assert key in written and math.isfinite(float(written[key])), key
-    # the L curve: a knot per segment between ATM expiries, the first at tenor zero
-    curve = written['L_Curve']
+    # the xi curve: a knot per segment between ATM expiries, the first at tenor zero
+    curve = written['Xi_Curve']
     assert len(curve.array) and curve.array[0][0] == 0.0
 
     # the reading, recorded: the bootstrap's own vol-point RMSE off its report, and the wall clock
     reported = [record.getMessage() for record in caplog.records
                 if 'RMSE' in record.getMessage()]
     assert reported, 'the family fitted and reported nothing about it'
-    print('\nfitted off the chain block, no surface in the book: {}\nL (log variance): {}\n{}\n'
+    print('\nfitted off the chain block, no surface in the book: {}\nxi (variance): {}\n{}\n'
           'bootstrap wall clock {:.1f}s'.format(
               {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
               [(float(knot), round(float(level), 4)) for knot, level in curve.array],
@@ -1655,8 +1655,8 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
     with caplog.at_level(_logging.INFO):
         config.bootstrap()
     written = config.params['Price Factors'].get('LogVar2FJModelParameters.SPX')
-    assert written is not None and len(written['L_Curve'].array)
-    curve = written['L_Curve']
+    assert written is not None and len(written['Xi_Curve'].array)
+    curve = written['Xi_Curve']
     assert curve.array[0][0] == 0.0
 
     # the ATM the emitter named is the row the family spends on that expiry's L pillar

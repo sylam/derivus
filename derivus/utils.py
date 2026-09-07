@@ -2352,13 +2352,14 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
 
 
 # ======================================================================================
-# LOGVAR2FJ - two-factor log-variance with co-jumps, walked on an INTERNAL step and priced through
-# the sample-then-Phi stride. Theory: logvar2fj_spec.md.
+# LOGVAR2FJ - two-factor log-variance with a normal-inverse-Gaussian residual on the variance
+# clock, walked on an INTERNAL step and priced through the sample-then-Phi stride. Theory:
+# logvar2fj_v2_brief.md.
 #
 # One Markov chain on an internal step delta; a stride from any date to any date is a BLOCK of that
 # chain, so two dates give the same law however the interval between them is cut. Given every
-# step's two variance shocks and its jump count the block return is EXACTLY Gaussian - which is
-# what makes survival one Phi, the truncated draw one Phi^-1 and a partial moment Black, so the
+# step's two variance shocks and the block's own mixer the block return is EXACTLY Gaussian - which
+# is what makes survival one Phi, the truncated draw one Phi^-1 and a partial moment Black, so the
 # lognormal primitives in `pricing` serve this model verbatim and nothing is integrated inside a
 # stride.
 #
@@ -2368,43 +2369,48 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
 
 #: The `LogVar2FJModelParameters` price factor's SCALAR leaves, in canonical order - the single
 #: source of that name set, shared with the riskfactors class and every consumption site.
-LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Nu')
+LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S')
 
 #: The structural SCALARS the kit reads off the factor: the cap, a guard on log-variance rather
 #: than a modelling device. A leaf at either would report a derivative nothing carries.
 LV_STRUCTURAL_NAMES = ('Cap_A', 'Cap_Beta')
 
-#: The structural CURVES: `lambda(t) = w_J xi_mkt(t)/(mu_J^2 + sigma_J^2)` follows the market's own
-#: forward-variance strip on the L segments (spec 5.1), so the jump share is constant along it and
-#: the diffusive strip tracks the market's shape. Piecewise constant, read by `bucket_at` at
-#: absolute times as `L` is; its whole content is the law of integer counts, which is not on the
-#: tape, so its KNOTS AND VALUES are both structural and one knot is the constant-lambda model.
-LV_STRUCTURAL_CURVES = ('Lambda',)
-
-#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2` (spec 2.2.2): the factor
-#: asserts it at load, the surface's stages 3-4 box the fit by it, and 5.5.1's leverage
+#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2` (brief 1): the factor
+#: asserts it at load, the surface's stages 3-4 box the fit by it, and the historical leverage
 #: regression is ridged onto it where the slow shock is too weak to carry a coefficient.
 LV_C_MIN = 0.12
 
-#: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
-#: knots (spec 2.3.1) - one knot at 0 is the constant-parameter model. `Rho_S` and `Mu_J` are the
-#: forward-skew pair; `Sigma_S` and `Sigma_J` carry buckets because Bootstrap mode frees them per
-#: expiry (5.4.1). All four carry the same buckets, which the factor asserts.
-LV_BUCKET_NAMES = ('Rho_S', 'Mu_J', 'Sigma_S', 'Sigma_J')
+#: The floor on the residual's CONDITIONING SHARE `gamma^2/alpha^2 = 1 - (Beta/Alpha)^2` - the
+#: share of its variance that stays in the Gaussian once the mixer is sampled (brief 2's
+#: `|Beta|/Alpha <= 0.77`). Past it the mixer carries the return and the OSS advantage goes too.
+LV_COND_MIN = 0.4
 
-#: The CURVE parameters, in the order the kit unpacks them. `L_Curve` is log annualised DIFFUSIVE
-#: variance, piecewise CONSTANT on the segments its knots START (spec 5.4.3) as the four levers are
-#: on their buckets; all five carry structural knots and VALUES that are leaves.
-LV_CURVE_NAMES = ('L_Curve',) + LV_BUCKET_NAMES
+#: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
+#: knots (brief 2) - one knot at 0 is the constant-parameter model. `Rho_S` and `Beta` are the
+#: forward-skew pair; `Sigma_S` and `Alpha` carry buckets because Bootstrap mode frees them per
+#: expiry. All four carry the same buckets, which the factor asserts.
+LV_BUCKET_NAMES = ('Rho_S', 'Beta', 'Sigma_S', 'Alpha')
+
+#: The CURVE parameters, in the order the kit unpacks them. `Xi_Curve` is the EXPECTED FORWARD
+#: VARIANCE `E_0[h_t]` - what a variance swap pays - piecewise CONSTANT on the segments its knots
+#: START, off which the OU mean level is DERIVED with the Jensen term (brief 1); all five carry
+#: structural knots and VALUES that are leaves.
+LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 
 #: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the surface's
-#: stage-4 pin to read (spec 5.5.3), declared here because both lanes read it: the model name the
-#: block is keyed under with the underlying's own name, and the slow pair with its standard errors.
+#: stage-4 pin to read, declared here because both lanes read it: the model name the block is keyed
+#: under with the underlying's own name, and the slow pair with its standard errors.
 LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Rho_L_SE', 'Sigma_L_SE'))
 
-#: Jumps per internal step past which the inverse-CDF count truncates. At lam*delta ~ 0.006 the
-#: truncated mass is 5e-11; at a 21-day step it is 9e-6 and drifts a 5y forward by 4e-5.
-LV_MAX_JUMPS = 3
+#: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)` (brief 5). Here
+#: because the factor's refusals quote the map the fit lands inside.
+LV_AB_EPS = 1.0e-6
+
+#: The inverse-Gaussian quantile's FIXED budget: bracket doublings, then Newton steps, each masked
+#: to the elements still outside `LV_IG_TOL`. Fixed rather than data-dependent, so a checkpoint's
+#: recompute walks exactly the iterations its forward walked. Measured over 1e5 uniforms at clocks
+#: 1e-6 to 0.2, the worst element converges in 38 steps and the bracket never doubles at all.
+LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 20, 60, 1.0e-11
 
 #: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
 #: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
@@ -2431,21 +2437,83 @@ def sqrt_or_zero(v):
                        torch.zeros_like(v))
 
 
-def lv_counts(u, lam, deltas):
-    """Poisson(lam*delta) counts per step by inverse CDF, truncated at `LV_MAX_JUMPS` (spec 2.5).
+def bucket_index(knots, t):
+    """Which bucket of ``knots`` each time in ``t`` falls in - `bucket_at`'s own choice, on the
+    HOST. What cuts a fixing interval into the residual draws its clock owes."""
+    return np.clip(np.searchsorted(np.asarray(knots, dtype=float) - BUCKET_TOL,
+                                   np.asarray(t, dtype=float), side='right') - 1,
+                   0, len(knots) - 1)
 
-    Integer and off the tape: `lam` is structural - a scalar, or the strip's own value per step -
-    so nothing here carries a gradient.
+
+def lv_nig_budget(A, alpha, beta):
+    """``(delta_A, mu_A, gamma)`` of the NIG increment that spends variance ``A`` (brief 1).
+
+    ``gamma = sqrt(alpha^2 - beta^2)``; ``delta_A = A gamma^3/alpha^2`` makes the variance the clock
+    exactly and ``mu_A = delta_A (sqrt(alpha^2 - (beta+1)^2) - gamma)`` forces ``E[exp(X_A)] = 1``.
+    Both are LINEAR in the clock, which is what composes the residual: a month cut into days is one
+    law once the clock is one number.
     """
-    a = lam * deltas
-    pmf = torch.exp(-a)
-    cdf = pmf.clone()
-    N = torch.zeros(u.shape, dtype=torch.int8, device=u.device)
-    for n in range(1, LV_MAX_JUMPS + 1):
-        N = N + (u > cdf).to(torch.int8)
-        pmf = pmf * a / n
-        cdf = cdf + pmf
-    return N
+    gamma = torch.sqrt(alpha * alpha - beta * beta)
+    delta = A * gamma * gamma * gamma / (alpha * alpha)
+    return delta, delta * (torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0)) - gamma), gamma
+
+
+def ig_cdf(x, m, lam):
+    """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr`` (brief 3).
+
+    ``exp(2 lam/m)`` overflows at the clocks a daily grid produces - ``lam/m`` is ``delta*gamma``
+    and reaches the hundreds - while its product with the tail probability does not, so the two are
+    added in logs and exponentiated once.
+    """
+    r = torch.sqrt(lam / x)
+    return (norm_cdf(r * (x / m - 1.0))
+            + torch.exp(2.0 * lam / m + torch.special.log_ndtr(-r * (x / m + 1.0))))
+
+
+def ig_pdf(x, m, lam):
+    """Inverse-Gaussian density in mean/shape form."""
+    return torch.sqrt(lam / (2.0 * np.pi * x * x * x)) * torch.exp(
+        -lam * (x - m) * (x - m) / (2.0 * m * m * x))
+
+
+def ig_root(u, m, lam):
+    """The IG quantile as a VALUE, OFF THE TAPE: safeguarded Newton with a bisection fallback from
+    the lognormal moment-matched start, bracketed by expansion. The model's one root.
+
+    A FIXED budget - `LV_IG_EXPAND` doublings then `LV_IG_STEPS` steps, each masked to the elements
+    still outside `LV_IG_TOL` - because an exit taken on the data would let a checkpoint's recompute
+    walk a different number of iterations from its forward. The IG at the shape a daily clock
+    produces is extremely skewed, which is what the expansion is for.
+    """
+    with torch.no_grad():
+        lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
+        for _ in range(LV_IG_EXPAND):
+            hi = torch.where(ig_cdf(hi, m, lam) < u, hi * 4.0, hi)
+        sx = torch.sqrt(torch.log1p(m / lam))
+        x = m * torch.exp(sx * norm_icdf(u) - 0.5 * sx * sx)
+        x = torch.minimum(torch.maximum(x, lo * 2.0), hi * 0.5)
+        for _ in range(LV_IG_STEPS):
+            F = ig_cdf(x, m, lam)
+            done = (F - u).abs() < LV_IG_TOL
+            lo, hi = torch.where(F < u, x, lo), torch.where(F > u, x, hi)
+            step = x - (F - u) / ig_pdf(x, m, lam)
+            bad = ~torch.isfinite(step) | (step <= lo) | (step >= hi)
+            x = torch.where(done, x, torch.where(bad, 0.5 * (lo + hi), step))
+    return x
+
+
+def ig_quantile(u, m, lam):
+    """``F_IG^-1(u; m, lam)`` carrying the implicit-function derivative in ``(m, lam)``.
+
+    The root is `ig_root`'s and DETACHED; what comes back is TWO Newton steps taken at it with
+    `ig_cdf` and `ig_pdf` on the tape. The first step's numerator is a residual at the tolerance, so
+    the VALUE is the root's while ``dG/dtheta = -(dF/dtheta)/f`` is the IFT exactly; the second
+    step's input carries the first's graph, which is what makes the SECOND derivative the Newton
+    map's own. Spot never enters, so delta and gamma bypass this node.
+    """
+    x = ig_root(u, m, lam)
+    x = x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
+    return x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
 
 
 def lv_cap(x, a, beta):
@@ -2466,38 +2534,56 @@ def lv_ou_step_weights(kappa, sigma, deltas):
     return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
 
 
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, invert):
+def lv_state_variance(params, deltas):
+    """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
+    derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2`` (brief 1).
+
+    ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor: the closed form on a business-day grid, and it
+    carries a bucket of ``Sigma_S`` and a holiday gap with no second spelling. Measured from
+    WHEREVER the walk starts, so a re-seeded row reads ``xi`` exactly rather than under-shooting it.
+    """
+    # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
+    # walk's state is flattened here rather than spreading a spurious axis along the whole grid
+    flat = lambda pair: [x.reshape(-1) for x in pair]
+    phi_s, w_s = flat(lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas))
+    phi_l, w_l = flat(lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas))
+    v_l = v_s = deltas.new_zeros(())
+    rows = [v_l + v_s]
+    for k in range(deltas.shape[0]):
+        v_s = phi_s[k] * phi_s[k] * v_s + w_s[k] * w_s[k]
+        v_l = phi_l[k] * phi_l[k] * v_l + w_l[k] * w_l[k]
+        rows.append(v_l + v_s)
+    return torch.stack(rows)
+
+
+def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert):
     """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
-    eta_l, eta_s, counts are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is L at its
-    n+1 grid times, params[name] for each of `LV_BUCKET_NAMES` and for `Lambda` is that curve's
-    value in force at each step start and state0 = (l, s) is [batch, sims]. Returns
-    (M, var, l, s): the block's return mean and variance, no carry term - the caller adds that -
-    and the end state, which seeds the next block. The scan ACCUMULATES, so nothing of shape
-    [batch, sims, n] but the draws exists.
+    eta_l, eta_s are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is ``L*`` at its
+    n+1 grid times, params[name] for `Rho_S` and `Sigma_S` is that curve's value in force at each
+    step start and state0 = (l, s) is [batch, sims]. Returns (M_lev, A, l, s): the block's LEVERAGE
+    mean - no carry and no residual, the caller adds both - the residual's own CLOCK, and the end
+    state, which seeds the next block. The scan ACCUMULATES, so nothing of shape [batch, sims, n]
+    but the draws exists.
 
     `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`Invert_Spot`): the step's density
     exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
-    eta_l ~ N(rho_l sq, 1), eta_s ~ N(rho_s sq, 1), N ~ Poisson(lambda delta exp(mu_J + sigma_J^2/2))
-    (the caller's) and eps ~ N(sqrt(var), 1) - a block law of (M + var, var), negated by the caller.
+    eta_l ~ N(rho_l sq, 1) and eta_s ~ N(rho_s sq, 1) here, the residual's mixer taking the tilt at
+    the caller (`pricing.LogVar2FJKit`).
     """
-    rl, nu = params['Rho_L'], params['Nu']
+    rl = params['Rho_L']
     a, beta = params['Cap_A'], params['Cap_Beta']
     # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
-    # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED: torch
-    # demotes a 0-dim float64 against a float32 count, adding the jump mean in single precision.
+    # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED, so a
+    # 0-dim leaf is not demoted against the draws' own dtype.
     ones = torch.ones_like(deltas).unsqueeze(0)
-    rs, mu = params['Rho_S'] * ones, params['Mu_J'] * ones
-    ss, sj = params['Sigma_S'] * ones, params['Sigma_J'] * ones
-    sj2 = sj * sj
-    comp = params['Lambda'] * deltas * (torch.exp(mu + 0.5 * sj2) - 1.0)
+    rs, ss = params['Rho_S'] * ones, params['Sigma_S'] * ones
     l, s = state0
     phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], ss, deltas)
     phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
-    M, var = 0.0, 0.0
+    M, A = 0.0, 0.0
     for k in range(deltas.shape[0]):
-        Nk = counts[..., k].to(eta_l.dtype)
-        rs_k, mu_k = rs[..., k], mu[..., k]
+        rs_k = rs[..., k]
         V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
         sq = sqrt_or_zero(V)
         e_l, e_s = eta_l[..., k], eta_s[..., k]
@@ -2505,11 +2591,11 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, counts, state0, invert)
             # each shock's own loading, so the shift feeds the variance path as it feeds the
             # return; conditional rather than a multiply by zero, so `invert` off is bit-identical
             e_l, e_s = e_l + rl * sq, e_s + rs_k * sq
-        var = var + ((1.0 - rs_k * rs_k - rl * rl) * V + Nk * sj2[..., k])
-        M = M + (-0.5 * V + rl * sq * e_l + rs_k * sq * e_s + Nk * mu_k - comp[..., k])
-        s = phi_s[..., k] * s + w_s[..., k] * e_s + nu * Nk
+        A = A + (1.0 - rs_k * rs_k - rl * rl) * V
+        M = M + (-0.5 * (rs_k * rs_k + rl * rl) * V + rl * sq * e_l + rs_k * sq * e_s)
+        s = phi_s[..., k] * s + w_s[..., k] * e_s
         l = curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k]) + w_l[..., k] * e_l
-    return M, var, l, s
+    return M, A, l, s
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

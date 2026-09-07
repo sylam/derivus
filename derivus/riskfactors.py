@@ -1123,37 +1123,45 @@ class CurveModelParameters(Factor0D):
                     **{c: self.param[c].array[:, 1] for c in self.curve_names})
 
 
+#: What a retired LogVar2FJ name is replaced by, so a document authored against the Poisson
+#: residual refuses by NAME rather than being read with the key silently dropped.
+LV_RETIRED = {
+    'Nu': 'the co-jump is gone with the Poisson residual',
+    'Lambda': 'the co-jump is gone with the Poisson residual',
+    'Mu_J': 'Beta, the NIG residual\'s skew, carries what the jump mean carried',
+    'Sigma_J': 'Alpha, the NIG residual\'s tail thickness, carries what the jump dispersion did',
+    'L_Curve': 'Xi_Curve, the EXPECTED FORWARD VARIANCE E[h] - not a log level; the Jensen term '
+               'is derived inside the model'}
+
+
 class LogVar2FJModelParameters(CurveModelParameters):
-    """The LogVar2FJ parameters - two mean-reverting log-variance factors and a co-jump.
+    """The LogVar2FJ parameters - two mean-reverting log-variance factors and an NIG residual.
 
-    $h_t=\\exp(\\text{cap}(\\ell_t+s_t))$ is the annualised DIFFUSIVE variance; the slow factor
-    $\\ell$ reverts to **L_Curve** at $\\kappa_\\ell$ and the fast $s$ to zero at $\\kappa_s$, and a
-    compound-Poisson event moves the return by a Gaussian $N(\\mu_J,\\sigma_J^2)$ and lifts $s$ by
-    $\\nu$. Given the shocks and the counts a block return is exactly Gaussian, which is the whole
-    of the pricing (logvar2fj_spec.md).
+    $h_t=\\exp(\\text{cap}(\\ell_t+s_t))$ is the annualised variance; the slow factor $\\ell$
+    reverts to a derived level $L^*(t)$ at $\\kappa_\\ell$ and the fast $s$ to zero at $\\kappa_s$,
+    and the part of a return that leverage does not explain is a normal-inverse-Gaussian increment
+    on the clock $c\\,V$. Given the shocks and the block's mixer a block return is exactly
+    Gaussian, which is the whole of the pricing (logvar2fj_v2_brief.md).
 
-    **L_Curve** is piecewise CONSTANT on the segments its knots start - flat forward variance, the
-    shape var-swap strips are quoted in - so each segment's ATM increment pins its own level and no
-    recurrence runs along the strip; the OU recursion is a deviation from $L$, so the step at a
-    pillar costs nothing (spec 5.4.3).
+    **Xi_Curve** is $\\xi(t)=E_0[h_t]$, the expected forward variance a variance swap pays,
+    piecewise CONSTANT and strictly positive on the segments its knots start. The OU mean level is
+    DERIVED from it, $L^*(t)=\\log\\xi(t)-\\frac12\\mathrm{Var}(\\ell_t+s_t)$, so $E[h_t]=\\xi(t)$
+    exactly whatever the vol-of-vol and the ATM level is invariant to it by construction.
 
-    **Rho_S**, **Mu_J**, **Sigma_S** and **Sigma_J** are piecewise CONSTANT on calendar-time
-    buckets: their knots ARE the buckets' start times in years, the four curves carry the same
-    ones, and one knot at 0 is the constant-parameter model. A spot smile never sees a later bucket
-    and a forward smile prices on nothing else (spec 2.3.1), which is why the lever is calendar
-    time and not the vol state; `Bootstrap` mode frees the vol-of-vol pair per expiry on the same
-    buckets (5.4.1). The constructor asserts the idiosyncratic share
-    $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2\\ge$ **C_Min** in every bucket, refusing with the bucket's
-    time and the three numbers.
+    **Rho_S**, **Beta**, **Sigma_S** and **Alpha** are piecewise CONSTANT on calendar-time buckets:
+    their knots ARE the buckets' start times in years, the four curves carry the same ones, and one
+    knot at 0 is the constant-parameter model. A spot smile never sees a later bucket and a forward
+    smile prices on nothing else, which is why the lever is calendar time and not the vol state;
+    `Bootstrap` mode frees $\\alpha$ and $\\sigma_s$ per expiry on the same buckets. The constructor
+    asserts, per bucket and by name: $c(t)=1-\\rho_s^2-\\rho_\\ell^2\\ge$ **C_Min**;
+    $|\\beta|<\\alpha$ and $|\\beta+1|<\\alpha$, without which the residual has no forced drift; and
+    the conditioning share $1-(\\beta/\\alpha)^2\\ge0.4$, past which the mixer carries the return.
 
-    **Lambda** is a structural CURVE on the L segments: $\\lambda(t)=w_J\\xi_{mkt}(t)/(\\mu_J^2+
-    \\sigma_J^2)$ follows the market's own forward-variance strip (spec 5.1), so the jump share is
-    constant along it, the diffusive strip tracks the market's shape instead of its inverse, and
-    one knot is the constant-intensity model. It, **Cap_A**, **Cap_Beta** and **C_Min** are
-    STRUCTURAL, not leaves: the counts' law is not on the tape, and the cap and the floor are
-    guards a calibrated model never reaches, so a derivative reported at any of them would be
-    wrong. The five FITTED curves' knots are structural and their VALUES are `bind='value'`
-    leaves.
+    **Residual_Law** `Gaussian` is the limit/test mode - no mixer, the clock IS the variance and
+    **Alpha** and **Beta** are unread. **Cap_A**, **Cap_Beta**, **C_Min** and **Residual_Law** are
+    STRUCTURAL, not leaves: the cap and the floor are guards a calibrated model never reaches and
+    the law is a code path, so a derivative reported at any of them would be wrong. The five FITTED
+    curves' knots are structural and their VALUES are `bind='value'` leaves.
     """
     fields = [
         F('Kappa_L', 'Float', default=0, bind='value',
@@ -1163,43 +1171,53 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Rho_L', 'Float', default=0, bind='value', description='Slow leverage $\\rho_\\ell$'),
         F('Kappa_S', 'Float', default=0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
-        F('Nu', 'Float', default=0, bind='value',
-          description='Fast log-variance co-jump $\\nu$ per event'),
-        F('Lambda', 'Curve',
-          description='Jump intensity $\\lambda(t)$ per year, piecewise constant on the L segment '
-                      'each knot (years) starts - STRUCTURAL, bumped by re-authoring'),
         F('Cap_A', 'Float', default=4.605170185988092,
           description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
         F('Cap_Beta', 'Float', default=0.25,
-          description='Log-variance cap width $\\beta$ - STRUCTURAL'),
+          description='Log-variance cap width $\\beta_c$ - STRUCTURAL'),
         F('C_Min', 'Float', default=utils.LV_C_MIN,
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
-        F('L_Curve', 'Curve', bind='value',
-          description='Log annualised DIFFUSIVE variance $L$, piecewise constant on the segment '
-                      'each knot (years) starts and flat beyond the last'),
+        F('Residual_Law', 'Text', default='NIG', values=['NIG', 'Gaussian'],
+          description='NIG is the model; Gaussian drops the mixer and reads the clock as the '
+                      'variance - a limit/test mode, logged as one - STRUCTURAL'),
+        F('Xi_Curve', 'Curve', bind='value',
+          description='Expected forward variance $\\xi(t)=E[h_t]$, piecewise constant and '
+                      'strictly positive on the segment each knot (years) starts, flat beyond '
+                      'the last'),
         F('Rho_S', 'Curve', bind='value',
           description='Fast leverage $\\rho_s(t)$, piecewise constant on buckets starting at its '
                       'knots (years)'),
-        F('Mu_J', 'Curve', bind='value',
-          description='Mean log-return jump $\\mu_J(t)$, piecewise constant on the same buckets'),
+        F('Beta', 'Curve', bind='value',
+          description='NIG residual skew $\\beta(t)$, piecewise constant on the same buckets'),
         F('Sigma_S', 'Curve', bind='value',
           description='Fast vol-of-log-variance $\\sigma_s(t)$, on the same buckets'),
-        F('Sigma_J', 'Curve', bind='value',
-          description='Jump dispersion $\\sigma_J(t)$, on the same buckets')
+        F('Alpha', 'Curve', bind='value',
+          description='NIG residual tail thickness $\\alpha(t)$, on the same buckets')
     ]
     #: one source of truth for each name set - utils owns the canonical tuples, which the free
     #: functions and the kit consume by the same names
     parameters = utils.LV_PARAM_NAMES
     structural = utils.LV_STRUCTURAL_NAMES
-    structural_curves = utils.LV_STRUCTURAL_CURVES
     curve_names = utils.LV_CURVE_NAMES
 
     def __init__(self, param):
         super(LogVar2FJModelParameters, self).__init__(param)
         self.declared = declared_defaults(type(self), param)
-        flat = [c for c in self.curve_names + self.structural_curves
-                if not isinstance(self.param[c], utils.Curve)]
+        retired = [c for c in LV_RETIRED if c in param]
+        if retired:
+            raise ValueError(
+                'LogVar2FJModelParameters carries %s, retired with the Poisson residual: %s'
+                % (', '.join(retired), '; '.join('%s -> %s' % (c, LV_RETIRED[c])
+                                                 for c in retired)))
+        self.gaussian = str(self.declared['Residual_Law']) == 'Gaussian'
+        if self.gaussian:
+            logging.info('%s: Gaussian residual: limit/test mode - no mixer, Alpha and Beta unread',
+                         type(self).__name__)
+            for name, value in (('Alpha', 1.0), ('Beta', 0.0)):
+                self.param.setdefault(name, utils.Curve([], [
+                    [float(t), value] for t in self.param['Rho_S'].array[:, 0]]))
+        flat = [c for c in self.curve_names if not isinstance(self.param[c], utils.Curve)]
         if flat:
             raise ValueError(
                 'LogVar2FJModelParameters: %s must be authored as CURVES - knots in years, which '
@@ -1215,6 +1233,13 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 % (', '.join(utils.LV_BUCKET_NAMES),
                    ', '.join('%s %s' % (c, knots[c].tolist()) for c in odd),
                    knots['Rho_S'].tolist()))
+        xi = self.param['Xi_Curve'].array
+        for i in np.flatnonzero(xi[:, 1] <= 0.0):
+            raise ValueError(
+                'LogVar2FJModelParameters: the Xi_Curve segment at %gy declares %g. Xi_Curve is '
+                'the EXPECTED FORWARD VARIANCE E[h], which the model takes a log of to derive the '
+                "OU level - a variance a market can quote is strictly positive"
+                % (xi[i, 0], xi[i, 1]))
         rho_s, rho_l = self.param['Rho_S'].array[:, 1], float(self.param['Rho_L'])
         c_min = float(self.declared['C_Min'])
         c = 1.0 - rho_s * rho_s - rho_l * rho_l
@@ -1223,18 +1248,49 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 'LogVar2FJModelParameters: the bucket at %gy declares Rho_S %g against Rho_L %g, '
                 'so c = 1 - Rho_S^2 - Rho_L^2 = %g, below C_Min %g. The truncation conditions '
                 "on c of the interval's variance, and a surface wanting less wants a one-shock "
-                'model (spec 2.2.2) - fit against the bound, do not declare past it'
+                'model (brief 1) - fit against the bound, do not declare past it'
                 % (knots['Rho_S'][i], rho_s[i], rho_l, c[i], c_min))
+        if not self.gaussian:
+            self.assert_residual(knots['Alpha'], self.param['Alpha'].array[:, 1],
+                                 self.param['Beta'].array[:, 1])
+
+    @staticmethod
+    def assert_residual(buckets, alpha, beta):
+        """The NIG residual's admissibility, per bucket and by name (brief 2).
+
+        $|\\beta|<\\alpha$ is the law, $|\\beta+1|<\\alpha$ the forced drift $\\mu_A$, and the
+        conditioning share $\\gamma^2/\\alpha^2\\ge$ `LV_COND_MIN` the share of the residual's
+        variance the mixer leaves in the Gaussian - the quantity OSS efficiency depends on.
+        """
+        for i, (t, a, b) in enumerate(zip(buckets, alpha, beta)):
+            if not abs(b) < a:
+                raise ValueError(
+                    'LogVar2FJModelParameters: the bucket at %gy declares Alpha %g against Beta '
+                    '%g, and the NIG law needs |Beta| < Alpha' % (t, a, b))
+            if not abs(b + 1.0) < a:
+                raise ValueError(
+                    'LogVar2FJModelParameters: the bucket at %gy declares Alpha %g against Beta '
+                    "%g, and the residual's forced drift mu_A = delta(sqrt(Alpha^2 - (Beta+1)^2) "
+                    '- gamma) needs |Beta + 1| < Alpha - without it E[exp(X)] = 1 has no answer'
+                    % (t, a, b))
+            share = 1.0 - (b / a) ** 2
+            if share < utils.LV_COND_MIN:
+                raise ValueError(
+                    'LogVar2FJModelParameters: the bucket at %gy declares Alpha %g against Beta '
+                    '%g, so the conditioning share gamma^2/Alpha^2 = 1 - (Beta/Alpha)^2 = %g, '
+                    'below the %g brief 2 floors it at (|Beta|/Alpha <= %.4f). Past it the mixer '
+                    'carries the return and the OSS advantage goes with it'
+                    % (t, a, b, share, utils.LV_COND_MIN,
+                       np.sqrt(1.0 - utils.LV_COND_MIN)))
 
     def curve_tenors(self):
-        """Every structural fact the kit reads off this factor: each fitted curve's knots - the
-        L segments, and for the four levers the buckets - the structural scalars at their declared
-        defaults where unauthored, and lambda(t) whole, its knots and values both structural.
-        Resolved once at dependency time, so nothing rides the tensor side that carries no
-        derivative."""
+        """Every structural fact the kit reads off this factor: each fitted curve's knots - the xi
+        segments, and for the four levers the buckets - and the structural scalars and the residual
+        law at their declared defaults where unauthored. Resolved once at dependency time, so
+        nothing rides the tensor side that carries no derivative."""
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
-                    **{x: self.declared[x] for x in self.structural},
-                    **{c: self.param[c].array for c in self.structural_curves})
+                    Residual_Law=self.declared['Residual_Law'],
+                    **{x: self.declared[x] for x in self.structural})
 
 
 class GBMAssetPriceTSModelParameters(Factor1D):

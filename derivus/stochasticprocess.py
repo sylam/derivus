@@ -4735,37 +4735,32 @@ def lv_leverage(shocks, z, c_min):
 
 
 def lv_jump_split(excess, variance, threshold):
-    """The jump sample and the diffusive remainder: returns standardised by the filtered variance
-    and thresholded (spec 5.5.1), then apportioned by the Gaussian posterior so a flagged day's
-    remainder is the diffusion the jump sat on rather than an identical zero. Three passes."""
+    """The OUTLIER mask and what it takes out of the return: returns standardised by the filtered
+    variance and thresholded (spec 5.5.1), then apportioned by the Gaussian posterior so a flagged
+    day's remainder is the diffusion the outlier sat on rather than an identical zero. Three
+    passes. The filter's own outlier treatment - the residual's shape is fitted from the surface."""
     flag = np.abs(excess) > threshold * np.sqrt(variance)
-    jump, mu, sigma = np.where(flag, excess, 0.0), 0.0, 0.0
+    jump = np.where(flag, excess, 0.0)
     for _ in range(3):
         sample = jump[flag]
         mu = float(sample.mean()) if sample.size else 0.0
         sigma = float(sample.std(ddof=1)) if sample.size > 1 else 0.0
         share = sigma * sigma / (sigma * sigma + variance)
         jump = np.where(flag, mu + share * (excess - mu), 0.0)
-    return flag, jump, mu, sigma
+    return flag, jump
 
 
-def lv_particle_gate(y, seen, theta, jumps, delta, particles, replicates, seed):
+def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
     """A batched bootstrap particle filter on the same state and the same measurement, WITHOUT the
     linear filter's two approximations (spec 5.5.1).
 
-    The per-particle likelihood is the Poisson-mixed Gaussian in closed form: a day carrying n
-    jumps has a range measuring `h + n(mu_J^2 + sigma_J^2)/delta`, which is exactly what a linear
-    measurement cannot say and what the Kalman masks the flagged days instead of saying; and the
-    state's posterior is never forced Gaussian. `replicates` independent clouds run as ONE batch,
-    so the gate carries its own noise. Returns the log-likelihood per replicate and the
-    posterior-mean `h` path.
+    The measurement is the same one the Kalman reads, on the same mask - what this drops is the
+    LOG-LINEARISATION of it and the forced Gaussian posterior, which are the two approximations the
+    gate exists to size. `replicates` independent clouds run as ONE batch, so the gate carries its
+    own noise. Returns the log-likelihood per replicate and the posterior-mean `h` path.
     """
     generator = torch.Generator().manual_seed(seed)
-    shape, lam, su2 = (replicates, particles), jumps['Lambda'], theta['Sigma_U'] ** 2
-    count = torch.arange(utils.LV_MAX_JUMPS + 1, dtype=torch.float64)
-    share = torch.exp(-lam * delta + count * np.log(max(lam * delta, 1.0e-300))
-                      - torch.lgamma(count + 1.0))
-    size = (jumps['Mu_J'] ** 2 + jumps['Sigma_J'] ** 2) / delta
+    shape, su2 = (replicates, particles), theta['Sigma_U'] ** 2
     phi, w = lv_ou_pair(theta, delta)
     stationary = w / np.sqrt(1.0 - phi * phi)
 
@@ -4782,9 +4777,8 @@ def lv_particle_gate(y, seen, theta, jumps, delta, particles, replicates, seed):
             l = theta['L'] + phi[1] * (l - theta['L']) + w[1] * draw()
         h = torch.exp(l + s)
         if seen[t]:
-            mean = torch.log(h.unsqueeze(-1) + count * size) + theta['Offset']
-            like = (share * torch.exp(-0.5 * (y[t] - mean) ** 2 / su2)).sum(-1) / np.sqrt(
-                2.0 * np.pi * su2)
+            mean = torch.log(h) + theta['Offset']
+            like = torch.exp(-0.5 * (y[t] - mean) ** 2 / su2) / np.sqrt(2.0 * np.pi * su2)
             loglik = loglik + torch.log((weight * like).sum(-1))
             weight = weight * like
             weight = weight / weight.sum(-1, keepdim=True)
@@ -4805,17 +4799,17 @@ class LogVar2FJCalibration(object):
     `log RV_t = l_t + s_t + u_t` measures the two-factor OU state through a range estimator. The
     variance has its own shocks, so unlike GARCH the state is never a function of the observed
     returns and this is a filter, not a recursion: the Kalman likelihood is exact and maximised by
-    AAD; the returns standardised by the filtered variance and thresholded give the P-measure jump
-    sample; the leverages are the regression of the diffusive remainder on the SMOOTHED state
-    shocks; and `delta` is `(z - rho_s eta_s - rho_l eta_l)/sqrt(c)`, the process's own
-    idiosyncratic Gaussian, so the framework's correlation is estimated on the object 6.1 applies
-    it to and no input needs rescaling.
+    AAD; the returns standardised by the filtered variance and thresholded give the OUTLIER mask
+    the state and the leverage are estimated without; the leverages are the regression of the
+    remainder on the SMOOTHED state shocks; and `delta` is `(z - rho_s eta_s - rho_l eta_l)/sqrt(c)`,
+    the process's own idiosyncratic Gaussian, so the framework's correlation is estimated on the
+    object 6.1 applies it to and no input needs rescaling.
 
     What crosses into a pricing model (5.5.3) is that correlation, the two reversion speeds as
     priors, and the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the ladder
     carries no wing. The vol-of-vols and leverages are a sanity table against the fitted factor and
     nothing more - invariant in theory, and in practice neither risk-premium-free nor unattenuated
-    - and lambda, the jump sizes and the level never cross at all. `Scale_To_Sector` is 5.5.3's
+    - and the level never crosses at all. `Scale_To_Sector` is 5.5.3's
     last row, for an underlying with no liquid surface: the history's parameters are taken to the
     sector's own implied values, per name, with the report stating each ratio.
     """
@@ -4880,7 +4874,7 @@ class LogVar2FJCalibration(object):
             theta, se, loglik, m, cov = lv_history_fit(y, seen & ~flag, delta, fixed)
             h = np.exp(m.sum(1) + 0.5 * (cov[:, 0] + 2.0 * cov[:, 1] + cov[:, 2]))
             drift = float(np.mean(r[~event & ~flag]))
-            found, jump, mu_j, sigma_j = lv_jump_split(
+            found, jump = lv_jump_split(
                 np.where(event, 0.0, r - drift), h * delta, threshold)
             if np.array_equal(found, flag):
                 break
@@ -4893,24 +4887,19 @@ class LogVar2FJCalibration(object):
         c = 1.0 - float(rho @ rho)
         eps = (z[:-1] - shocks @ rho) / np.sqrt(c)
 
-        jumps = {'Lambda': float(flag.sum()) / (len(r) * delta), 'Mu_J': mu_j, 'Sigma_J': sigma_j,
-                 'Drift': drift}
         pf_loglik, pf_h = lv_particle_gate(
-            y, seen, theta, jumps, delta, int(self.param['Particle_Count']), 4,
+            y, seen, theta, delta, int(self.param['Particle_Count']), 4,
             int(self.param['Random_Seed']))
         miss = float(np.sqrt(np.mean((pf_h / h - 1.0) ** 2)))
-        count = max(float(flag.sum()), 1.0)
         errors = dict(se, Rho_S=float(np.sqrt(rho_cov[0, 0])), Rho_L=float(np.sqrt(rho_cov[1, 1])),
-                      Lambda=jumps['Lambda'] / np.sqrt(count), Mu_J=sigma_j / np.sqrt(count),
-                      Sigma_J=sigma_j / np.sqrt(2.0 * count),
                       Drift=float(np.std(r)) / np.sqrt(len(r)))
-        values = dict(theta, Rho_S=float(rho[0]), Rho_L=float(rho[1]), **jumps)
+        values = dict(theta, Rho_S=float(rho[0]), Rho_L=float(rho[1]), Drift=drift)
         logging.info(
-            'LogVar2FJ history %s: %s on %d days, %d measured (%d jumps at %g sigma, %d events); '
-            'loglik %.2f', name, mode, len(r), int(seen.sum()), int(flag.sum()),
+            'LogVar2FJ history %s: %s on %d days, %d measured (%d outliers at %g sigma, %d '
+            'events); loglik %.2f', name, mode, len(r), int(seen.sum()), int(flag.sum()),
             threshold, int(event.sum()), loglik)
         for row in (('Kappa_S', 'Sigma_S', 'Rho_S'), ('Kappa_L', 'Sigma_L', 'Rho_L'),
-                    ('L', 'Sigma_U', 'Drift'), ('Lambda', 'Mu_J', 'Sigma_J')):
+                    ('L', 'Sigma_U', 'Drift')):
             logging.info('  ' + '   '.join('%s %+.4f +- %.4f' % (n, values[n], errors[n])
                                            for n in row))
         pinned = [n for n in se if not LV_HIST_BOX[n][0] < theta[n] < LV_HIST_BOX[n][1]]
@@ -4943,7 +4932,7 @@ class LogVar2FJCalibration(object):
 
         param = dict({n: float(v) for n, v in dict(values, **sector).items()},
                      **{n + '_SE': float(errors[n]) for n in errors})
-        param.update({'Measurement': mode, 'Jump_Count': int(flag.sum()), 'C': c,
+        param.update({'Measurement': mode, 'Outlier_Count': int(flag.sum()), 'C': c,
                       'Jump_Threshold': threshold, 'Log_Likelihood': loglik,
                       'Calibration_DT_Years': delta})
         return utils.CalibrationInfo(

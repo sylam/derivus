@@ -78,20 +78,20 @@ class LogVar2FJKit(object):
     """LogVar2FJ as an OSS kit: ONE internal-step walk per MTM row, off which each remaining fixing
     interval reads its own Gaussian block law ``(M, Sigma)``.
 
-There is no per-step state for a pricer to carry: given the walk's shocks and counts the whole
-    interval's return is exactly Gaussian (spec 1.2). So the pricer's GBM arithmetic serves this
-    model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and the put leg's fired branch
-    `lognormal_fired_gain` at this ``(M, Sigma)``.
+    There is no per-step state for a pricer to carry: given the walk's shocks and the block's own
+    mixer the whole interval's return is exactly Gaussian (brief 1). So the pricer's GBM arithmetic
+    serves this model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and the put leg's
+    fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
 
-    ``Invert_Spot`` carries the law to the reciprocal axis as a MEASURE CHANGE inside the walk
-    (`utils.lv_walk`).
+    ``Invert_Spot`` carries the law to the reciprocal axis as a MEASURE CHANGE: the walk's two
+    shocks shift (`utils.lv_walk`) and the mixer is drawn from its Esscher-tilted law here.
     """
 
     param_names = utils.LV_PARAM_NAMES
     curve_names = utils.LV_CURVE_NAMES
-    #: what `utils.lv_walk` is handed PER STEP: the four fitted levers on their buckets and the
-    #: structural intensity on the L segments
-    step_names = utils.LV_BUCKET_NAMES + utils.LV_STRUCTURAL_CURVES
+    #: what `utils.lv_walk` is handed PER STEP - the two levers the state and the clock read; the
+    #: residual's own pair is read once per DRAW, at its piece's start
+    step_names = ('Rho_S', 'Sigma_S')
 
     def __init__(self, scalars, knots, factor_dep):
         n = len(self.param_names)
@@ -99,95 +99,140 @@ There is no per-step state for a pricer to carry: given the walk's shocks and co
         self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
-        self.strips = {x: np.asarray(structural[x], dtype=float)
-                       for x in utils.LV_STRUCTURAL_CURVES}
+        self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.steps_per_year = float(factor_dep['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
 
-    def draws(self, key, shape, lam, deltas, antithetic):
-        """One SEGMENT's two normals and its jump counts at intensity ``lam``, over
-        ``[batch, sims, n]`` and IN FLOAT32, from a generator seeded by that segment's own key.
+    def draws(self, key, shape, deltas, antithetic):
+        """One SEGMENT's two normals over ``[batch, sims, n]`` and IN FLOAT32, from a generator
+        seeded by that segment's own key.
 
         REGENERATED, NEVER STORED: the checkpoint's backward re-draws them where a stored tape
         would have held them, so no tensor of the whole grid's shape exists at any point. The key
         is the row's ``base`` - one int64 off the plain generator, which `utils.rng_position`
         replays under `InnerMCRecompute` - plus the segment's index. ``antithetic`` mirrors along
-        the SIMS axis, ``-eta`` and ``1 - u_N`` (spec 3).
+        the SIMS axis, ``-eta`` (brief 3); the mixer's uniforms are the PRICER's, mirrored there.
         """
         gen = torch.Generator(device=deltas.device).manual_seed(key)
-        kw = {'dtype': torch.float32, 'device': deltas.device, 'generator': gen}
-        z = torch.randn([2] + shape, **kw)
-        u = torch.rand(shape, **kw)
-        if antithetic:
-            z, u = torch.cat([z, -z], dim=-2), torch.cat([u, 1.0 - u], dim=-2)
-        return z[0], z[1], utils.lv_counts(u, lam, deltas)
+        z = torch.randn([2] + shape, dtype=torch.float32, device=deltas.device, generator=gen)
+        return torch.cat([z, -z], dim=-2) if antithetic else z
 
     def segment(self, key, shape, antithetic, params, curve, deltas, l, s):
-        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them.
+        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them."""
+        z = self.draws(key, shape + [int(deltas.shape[0])], deltas, antithetic)
+        return utils.lv_walk(params, curve, deltas, z[0], z[1], (l, s), self.invert)
 
-        Under ``invert`` the counts are the ESSCHER-TILTED ones - the measure change's third
-        factor, the two shocks' being shifts inside the step."""
-        lam = params['Lambda']
+    def residual(self, A, alpha, beta, u):
+        """One residual draw's ``(mean shift, mixer)`` on the clock ``A`` (brief 1).
+
+        ``G ~ IG(delta_A/gamma, delta_A^2)`` from one uniform, and the Gaussian is then
+        ``N(mu_A + Beta G, G)``. Under ``invert`` the mixer is the ESSCHER-TILTED one,
+        ``IG(delta_A/gamma_1, delta_A^2)`` with ``gamma_1 = sqrt(alpha^2 - (Beta+1)^2)``: tilting the
+        joint law by ``exp(X)`` leaves the shape and moves the mean by exactly that factor, and the
+        Gaussian's extra ``+G`` is the caller's ``-(M + var)``. Under ``Residual_Law: Gaussian``
+        there is no mixer at all - the clock IS the variance and the drift its own compensator.
+        """
+        if self.gaussian:
+            return -0.5 * A, A
+        delta, mu, gamma = utils.lv_nig_budget(A, alpha, beta)
         if self.invert:
-            lam = lam * torch.exp(params['Mu_J'] + 0.5 * params['Sigma_J'] * params['Sigma_J'])
-        eta_l, eta_s, counts = self.draws(
-            key, shape + [int(deltas.shape[0])], lam, deltas, antithetic)
-        return utils.lv_walk(params, curve, deltas, eta_l, eta_s, counts, (l, s), self.invert)
+            gamma = torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0))
+        G = utils.ig_quantile(u, delta / gamma, delta * delta)
+        return mu + beta * G, G
 
-    def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic):
-        """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
+    def grid(self, row_t, deltas):
+        """This row's internal grid: ``(steps per fixing, step lengths, absolute times)``.
 
-        ONE TRADING DAY PER INTERNAL STEP on the `Steps_Per_Year` clock - the day is the model
-        (spec 2.1) - every fixing landing ON a grid point, so there are no stubs and the block sums
-        are exact. The state seeds at ``l = L(t_row)``, ``s = 0`` per row, of the same class as the
-        daily kits' per-row re-seed.
-
-        EVERY SEGMENT OF `LV_CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
-        boundary states and the backward recomputes its intermediates - draws included - one
-        segment at a time, which is what puts a daily 2y walk at 2,048 x 2,048 on a 24 GiB card.
-        `utils.lv_walk` accumulates as it passes, so a fixing block's law is the sum over its own
-        segments and no ``[batch, sims, n]`` tensor exists at all.
-
-        All six curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``L`` and the jump
-        intensity on the segments between ATM expiries, the four levers on their calendar buckets -
-        because both are calendar time from the base date, not time from this row.
-        ``antithetic`` is REQUIRED because the wrong value is a shape error at every consumer,
-        never a quiet bias.
-
-        ``carry`` is the DEAL's own either way - on the reciprocal axis the walk is the only thing
-        that changes measure, and the law it hands back is already the one for ``1/S``.
+        ONE TRADING DAY PER INTERNAL STEP on the `Steps_Per_Year` clock - the day is the model -
+        every fixing landing ON a grid point, so there are no stubs and the block sums are exact.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year)), 1) for dt in deltas]
         delta = torch.cat([(dt / n).expand(n) for dt, n in zip(deltas, steps)])
-        t = float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
-        curve = utils.bucket_at(self.knots['L_Curve'], self.values['L_Curve'], t)
+        return steps, delta, float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
+
+    def pieces(self, row_t, deltas):
+        """Each fixing interval as the list of ``(first step, last step, bucket)`` its residual
+        draws take: one per interval, and one MORE wherever a bucket knot falls inside one.
+
+        A knot inside a fixing interval splits that interval's CLOCK - two residual draws, one
+        Gaussian whose ``M`` and ``Sigma^2`` sum (brief 1's no-knot-inside-a-clock rule) - so it is
+        never a refusal and never a law read at the wrong bucket.
+        """
+        steps, _, t = self.grid(row_t, deltas)
+        index = utils.bucket_index(self.knots['Alpha'], t[:-1].detach().cpu().numpy())
+        cuts, k = [], 0
+        for n in steps:
+            rows, a = [], k
+            for b in range(k + 1, k + n + 1):
+                if b == k + n or index[b] != index[a]:
+                    rows.append((a, b, int(index[a])))
+                    a = b
+            cuts.append(rows)
+            k += n
+        return cuts
+
+    def mixers(self, row_t, deltas):
+        """How many mixer uniforms this row's fixing strip takes - one per residual draw."""
+        return 0 if self.gaussian else sum(len(rows) for rows in self.pieces(row_t, deltas))
+
+    def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic, mixers=None):
+        """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
+
+        THE CURVE IS THE MARKET'S OBJECT. ``Xi_Curve`` is the expected forward variance and the OU
+        mean level is DERIVED, ``L*(t) = log xi(t) - Var(l+s)(t)/2``, with the variance measured
+        from THIS ROW - the state re-seeds at ``(L*(t_row), 0)``, so the row reads ``xi`` exactly
+        where a base-date Jensen term would under-shoot it by ``exp(-(Var_0 - Var_row)/2)``.
+
+        EVERY SEGMENT OF `LV_CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
+        boundary states and the backward recomputes its intermediates - draws included - one
+        segment at a time, which is what puts a daily 2y walk at 2,048 x 2,048 on a 24 GiB card. The
+        residual draw is checkpointed beside it, the mixer's root being the tape's other heavy node.
+        `utils.lv_walk` accumulates as it passes, so a fixing block's law is the sum over its own
+        segments and no ``[batch, sims, n]`` tensor exists at all.
+
+        All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``xi`` on the segments
+        between ATM expiries, the four levers on their calendar buckets - because both are calendar
+        time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
+        wrong value is a shape error at every consumer, never a quiet bias; ``mixers`` is the row's
+        own uniform per residual draw, drawn by the pricer beside its OSS ones.
+
+        ``carry`` is the DEAL's own either way - on the reciprocal axis the walk and the mixer are
+        the only things that change measure, and the law they hand back is already ``1/S``'s.
+        """
+        steps, delta, t = self.grid(row_t, deltas)
         levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
-                  for x in utils.LV_BUCKET_NAMES}
-        # lambda(t) is STRUCTURAL, so it is read in the GRID's own dtype and not a leaf's: a
-        # one-knot strip then scales the counts exactly as the scalar it replaced did
-        levers.update({x: utils.bucket_at(strip[:, 0], delta.new_tensor(strip[:, 1]), t[:-1])
-                       for x, strip in self.strips.items()})
+                  for x in self.step_names}
+        curve = torch.log(utils.bucket_at(
+            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)) - 0.5 * utils.lv_state_variance(
+            dict(self.params, Sigma_S=levers['Sigma_S']), delta)
         shape = [shared.simulation_batch, num_sims]
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
         base = int(torch.randint(1 << 42, (1,)).item()) << 20
         s = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
-        l, M, var, k, j = s + curve[0], [], [], 0, 0
-        for n in steps:
+        l, M, var, j, drawn = s + curve[0], [], [], 0, 0
+        for rows in self.pieces(row_t, deltas):
             m, v = 0.0, 0.0
-            for a in range(k, k + n, LV_CHECKPOINT_STEPS):
-                b = min(a + LV_CHECKPOINT_STEPS, k + n)
-                dm, dv, l, s = torch.utils.checkpoint.checkpoint(
-                    self.segment, base + j, shape, antithetic,
-                    dict(self.params, **{x: levers[x][a:b] for x in self.step_names}),
-                    curve[a:b + 1], delta[a:b], l, s,
+            for start, end, bucket in rows:
+                clock = 0.0
+                for a in range(start, end, LV_CHECKPOINT_STEPS):
+                    b = min(a + LV_CHECKPOINT_STEPS, end)
+                    dm, dA, l, s = torch.utils.checkpoint.checkpoint(
+                        self.segment, base + j, shape, antithetic,
+                        dict(self.params, **{x: levers[x][a:b] for x in self.step_names}),
+                        curve[a:b + 1], delta[a:b], l, s,
+                        use_reentrant=False, preserve_rng_state=False)
+                    m, clock, j = m + dm, clock + dA, j + 1
+                u = None if self.gaussian else mixers[drawn]
+                drift, G = torch.utils.checkpoint.checkpoint(
+                    self.residual, clock, self.values['Alpha'][bucket],
+                    self.values['Beta'][bucket], u,
                     use_reentrant=False, preserve_rng_state=False)
-                m, v, j = m + dm, v + dv, j + 1
+                m, v, drawn = m + drift, v + G, drawn + 1
             # the reciprocal's log-return is -R, and R is (M + Sigma^2, Sigma) under the walked
             # measure; its carry is the deal's own, added below with the direct axis'
             M.append(-(m + v) if self.invert else m)
             var.append(v)
-            k += n
         return (torch.stack(M, -1) + (carry * deltas.reshape(-1, 1)).T.unsqueeze(1),
                 utils.sqrt_or_zero(torch.stack(var, -1)))
 
@@ -369,19 +414,21 @@ def forward_vol_rate(vols, cum_t, dt):
     return torch.cat([vols[..., :1, :], fwd], dim=-2)
 
 
-def oss_uniforms(shared, n_fix, num_sims, sobol):
-    """Antithetic uniforms for a one-step-survival loop: ``[n_fix, batch, 2 * num_sims]``.
+def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
+    """Antithetic uniforms for a one-step-survival loop: ``[n_fix + extra, batch, 2 * num_sims]``.
 
     One Sobol/pseudo draw plus its ``1 - u`` mirror, pairing an OSS step's truncated final draws
-    with the antithetic halves of the kit's own walk. NOT used by ``pv_MC_AutoCallSwap``'s
-    no-averaging loop, which draws the same Sobol block but consumes it raw - adopting this there
-    would change that estimator.
+    with the antithetic halves of the kit's own walk. ``extra`` widens the request AFTER the OSS
+    columns - a walking kit's mixer uniform per residual draw - so a GBM deal asks for nothing new
+    and its stream is untouched. NOT used by ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws
+    the same Sobol block but consumes it raw - adopting this there would change that estimator.
     """
+    rows = n_fix + extra
     if sobol:
-        u = shared.quasi_rng(shared.simulation_batch, n_fix * num_sims)[1].T.reshape(
-            n_fix, shared.simulation_batch, -1)
+        u = shared.quasi_rng(shared.simulation_batch, rows * num_sims)[1].T.reshape(
+            rows, shared.simulation_batch, -1)
     else:
-        u = torch.rand([n_fix, shared.simulation_batch, num_sims],
+        u = torch.rand([rows, shared.simulation_batch, num_sims],
                        dtype=shared.one.dtype, device=shared.one.device)
     return torch.concat([u, 1.0 - u], dim=-1)
 
@@ -1524,13 +1571,15 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each
 
             # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
-            u = oss_uniforms(shared, N_fix, num_sims, sobol)
+            n_mix = 0 if kit is None else kit.mixers(row_times[blk], times[blk])
+            u = oss_uniforms(shared, N_fix, num_sims, sobol, n_mix)
 
             D_T = D[-1].reshape(-1, 1)  # terminal discount: [batch, 1]
 
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
-                law = kit.blocks(row_times[blk], times[blk], carry[blk], shared, num_sims, True)
+                law = kit.blocks(row_times[blk], times[blk], carry[blk], shared, num_sims, True,
+                                 u[N_fix:])
 
             if direction == BARRIER_IN:
                 if kit is None:
@@ -2504,10 +2553,12 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 continue
             if kit is None:
                 vols = vols_all[i]
-            u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
+            n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
+            u = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
-                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
+                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
+                                 u[reduced_samples:])
             Sj = torch.unsqueeze(s, 1)
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
             L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
@@ -3371,10 +3422,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             if kit is None:
                 vols = vols_all[i]
             if reduced_samples:
-                u = oss_uniforms(shared, reduced_samples, num_sims, sobol)
+                n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
+                u = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
                 if kit is not None:
                     # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
-                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True)
+                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
+                                     u[reduced_samples:])
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1]
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
@@ -3965,17 +4018,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # zero when only the floating leg is left
                 reduced_samples = len(delta_t)
                 if reduced_samples:
+                    # the mixer columns come AFTER the OSS ones, so a GBM row asks for nothing new
+                    n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
+                    rows = reduced_samples + n_mix
                     if sobol:
-                        u = shared.quasi_rng(shared.simulation_batch, reduced_samples * num_sims)[1].T.reshape(
-                            reduced_samples, shared.simulation_batch, -1)
+                        u = shared.quasi_rng(shared.simulation_batch, rows * num_sims)[1].T.reshape(
+                            rows, shared.simulation_batch, -1)
                     else:
-                        u = torch.rand([reduced_samples, shared.simulation_batch, num_sims],
+                        u = torch.rand([rows, shared.simulation_batch, num_sims],
                                        dtype=shared.one.dtype, device=shared.one.device)
                 Sj = torch.unsqueeze(
                     s if last_fixing is None else past_fixings[last_fixing], 1)
                 if kit is not None and reduced_samples:
                     # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
-                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False)
+                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False,
+                                     u[reduced_samples:])
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
