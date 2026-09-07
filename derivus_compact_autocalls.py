@@ -1,22 +1,21 @@
 """Compact a book's decomposed autocalls into single `QEDI_CustomAutoCallSwap_V2` deals.
 
 An upstream export books a knock-in-put autocall as one `StructuredDeal` of up to six legs: the V2
-swap with its put leg switched off (no `Barrier_Dates`, the put level written as an ABSOLUTE
-number in `Barrier`, which the engine reads as a ratio of strike), a sold vanilla put at the
-barrier level, optionally a sold cash-or-nothing put (the loss between strike and barrier), an
-up-and-in "contra" of each that knocks in at the autocall trigger on the observation dates so the
-put dies where the note calls, and an IRS shell with zero notionals. The V2's own put leg prices
-all of that in one estimator with the survival weight the coupon strip already carries, so the
-folded deal is the same trade priced once instead of five Monte-Carlo legs.
+swap with its put leg switched off (no `Barrier_Dates`), a sold vanilla put at the barrier level,
+optionally a sold cash-or-nothing put (the loss between strike and barrier), an up-and-in
+"contra" of each that knocks in at the autocall trigger on the observation dates so the put dies
+where the note calls, and an IRS shell with zero notionals. The V2's own put leg prices all of that
+in one estimator with the survival weight the coupon strip already carries, so the folded deal is
+the same trade priced once instead of five Monte-Carlo legs.
 
 Per structure the legs are checked against the swap's own tables - underlying, payoff currency and
 quanto flag, strikes, expiries, sides, the contras' barrier and dates, `units x strike` against the
 notional, the digital's payout - and only a structure passing every check is folded:
 
-    Barrier       = put strike / swap strike                       (a ratio)
+    Barrier       = the put strike, an ABSOLUTE level (the V2 reads it so; its parent reads a ratio)
     Barrier_Dates = [the final coupon date]
-    Rebate        = 1 - Barrier - digital payout / notional        (0 = full loss from strike;
-                                                                    1 - Barrier = loss below the barrier)
+    Rebate        = 1 - put strike / swap strike - digital payout / notional
+                    (0 = full loss from strike; 1 - the ratio = loss below the barrier)
 
 Anything failing a check is left untouched and named in the report; an unfunded digital contra
 (`Cash_Payoff` 0.0) is a booking defect the fold repairs, and is named as one.
@@ -127,8 +126,8 @@ def check(roles):
     expect(bool(roles['put_contra']) == bool(roles['put']) and bool(roles['digital_contra']) == bool(roles['digital']),
            'every sold leg has its contra')
     expect(not swap.get('Barrier_Dates'), 'the swap\'s own put leg is off (no Barrier_Dates)')
-    if swap.get('Barrier', 0.0) > 1.0:
-        findings.append('note the swap\'s Barrier field holds the ABSOLUTE level %g; the engine reads a ratio of strike' % swap['Barrier'])
+    if swap.get('Barrier') and not close(swap['Barrier'], level, LEVEL):
+        findings.append('note the swap\'s Barrier %g is not the put level %g; the fold writes the level' % (swap['Barrier'], level))
     for shell in roles['shell']:
         expect(notionals_zero(shell), 'IRS shell %s has zero notionals on every row' % deal(shell).get('Reference'))
     expect(not roles['other'], 'no leg outside the pattern (%s)' % ', '.join(deal(x).get('Object', '?') for x in roles['other']))
@@ -138,7 +137,7 @@ def check(roles):
 def fold(node, roles, ratio, payout):
     swap = deal(roles['swap'][0])
     legs = roles['put'] + roles['put_contra'] + roles['digital'] + roles['digital_contra'] + roles['shell']
-    swap['Barrier'] = round(ratio, 10)
+    swap['Barrier'] = ratio * swap['Strike_Price']
     swap['Barrier_Dates'] = [{'.Timestamp': ts(swap['Autocall_Coupons'][-1][0])}]
     rebate = 1.0 - ratio - payout / swap['Units']
     swap['Rebate'] = 0.0 if abs(rebate) < LEVEL else round(rebate, 10)
@@ -203,13 +202,13 @@ def compact(doc, references=None, dry_run=False):
             lines.append('LEFT UNTOUCHED: %d checks failed' % len(fatal))
             continue
         if dry_run:
-            lines.append('WOULD FOLD: Barrier %.10g, Barrier_Dates [%s], Rebate %.10g' % (
-                ratio, ts(swap['Autocall_Coupons'][-1][0]), 1.0 - ratio - payout / swap['Units']))
+            lines.append('WOULD FOLD: Barrier %.10g (%.4f of strike), Barrier_Dates [%s], Rebate %.10g' % (
+                ratio * swap['Strike_Price'], ratio, ts(swap['Autocall_Coupons'][-1][0]), 1.0 - ratio - payout / swap['Units']))
             continue
         dropped = fold(node, roles, ratio, payout)
         folded, removed = folded + 1, removed + len(dropped)
-        lines.append('FOLDED into one V2: Barrier %.10g, Barrier_Dates [%s], Rebate %.10g; MtM carried %g' % (
-            swap['Barrier'], swap['Barrier_Dates'][0]['.Timestamp'], swap['Rebate'], swap['MtM']))
+        lines.append('FOLDED into one V2: Barrier %.10g (%.4f of strike), Barrier_Dates [%s], Rebate %.10g; MtM carried %g' % (
+            swap['Barrier'], ratio, swap['Barrier_Dates'][0]['.Timestamp'], swap['Rebate'], swap['MtM']))
         lines += ['  - dropped %s %s (MtM %s)' % x for x in dropped]
     pruned = [] if dry_run else prune_empty_legs(doc, [])
     lines += ['', '%d structures folded, %d legs removed; %d zero-notional legs pruned elsewhere%s' % (
