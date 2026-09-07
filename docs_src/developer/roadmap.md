@@ -348,6 +348,35 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The forward block on the autocall, re-read** (2026-09-07, spec 8 steps 2-4 / 5.3 as patched)
+  - the flat-L / λ(t) fit's 3.8% is not the forward block's to close, and the block makes it
+  worse. `Forward_Smile_Source: Reference` on CJOW's own forward smiles as DIFFERENCE targets,
+  `Paths` 8192, at ONE bucket and at a YEAR-TWO bucket, moves the 2y SPX autocall from **-30.855
+  (+3.78% of CJOW's -32.068)** to **-29.817 (+7.02%)** and **-29.891 (+6.79%)** - the second
+  bucket worth 0.23% of the deal - and spec 5.3's failure mode fires BY NAME on the vanilla guard
+  in both (+0.258 and +0.287 vol points over stage 5, the 29 wings 1.005 -> 2.034 / 2.040) while
+  the composition check does NOT (0.031 at 2y against 0.3). The block reaches its target where it
+  is identified - the year-two bucket takes `Δ_skew` at 1y-into-1y from -0.38 to +0.32 against
+  CJOW's +0.19 and `Δ_bfly` to +0.04 against +0.04, `Rho_S[1y]`'s column norm 1.31e-02 with the
+  forward rows against 3.11e-03 without - and OVERSHOOTS at 6m-into-6m (-1.92 -> +0.89 against
+  -0.96), one `w_J` and one year-one pair serving both sub-year tenors. It pays for it with a less
+  leveraged, more jump-driven law (`ρ_s` -0.63, `σ_s` on its 5.0 box, realised `w_J` 35.1%) whose
+  70-80% wing - the one the knock-in put reads - degrades +3.15 vol points RMS: a cheaper put is a
+  less negative swap. So step 8.4's stated expectation (within ~1% with the target) is FALSIFIED
+  on this surface. TWO RESERVE LINES for the model document: the SPLIT reserve **±4%** (-33.651 /
+  -32.875 / -32.800 / -30.855 against -32.068, a band of 8.72%), unchanged and written down
+  whatever step 4 shows, becoming ±6% for a book that uses the block; and the
+  SURVIVAL-CONDITIONING residual **+6.79%** - a percent or more, therefore by the owner's rule the
+  difference between the forward-start law (matched at 1y-into-1y to 0.13 vol points of `Δ_skew`
+  and 0.00 of `Δ_bfly`) and the survival-conditional law the coupon strip and the knock-in put
+  read, a property of the two models' conditional structures and NOT a bucket refinement -
+  carried with the qualification that the vanilla guard fired, so part of it is a worse marginal
+  fit rather than conditional structure. Found, not blocking: `Reference` measures the 1y-into-3m
+  target difference against a 3m rung quoted only to 105%, so its target `Δ_skew` reads -9.98
+  where an independent walk of CJOW reads -33.79; the engine warns by name at load. No engine
+  change. PROOF DOCUMENTS: `artifacts/lv_forward_20260907/forward.py step2 | one | two |
+  autocall one | autocall two | step4`.
+
 - **`Slow_Factor_Prior` by asset class, the floor as the guard, stickiness targets that are
   DIFFERENCES** (2026-09-07, spec 5.2 stage 4 / 5.3 / 5.4.4 / 5.5.3) - the two questions the split
   lane left open, closed by measurement. THE PIN'S LEVEL IS A FIELD WITH A CLASS DEFAULT: where the
