@@ -1375,6 +1375,26 @@ def lv_tenor(text):
     return float(text[:-1]) * LV_TENOR_UNITS[text[-1]]
 
 
+def lv_parse_floats(text, name, count=None):
+    """A comma-separated numeric field as a tuple, refusing BY NAME on a wrong count - the one
+    parse `LVFit.floats` and the family's own construction-time check both call, so a malformed
+    Bootstrapper Configuration block refuses before a single quote is read rather than deep inside
+    the fit of whichever quote happens to touch it first."""
+    values = tuple(float(x) for x in str(text).split(','))
+    if count is not None and len(values) != count:
+        raise ValueError('{}: expected {} comma-separated numbers, read {!r}'.format(
+            name, count, text))
+    return values
+
+
+def lv_parse_bounds(text, name):
+    """A `lower,upper` field, refusing BY NAME where it is not ordered."""
+    lo, hi = lv_parse_floats(text, name, 2)
+    if not lo < hi:
+        raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
+    return lo, hi
+
+
 class LVFit(object):
     """ONE LogVar2FJ calibration: the prepared quotes, the walk they are priced on, the fitted
     state, and every verb that moves it.
@@ -1386,14 +1406,6 @@ class LVFit(object):
 
     #: What the walk is handed per STEP: the two levers the state and the clock read.
     step_names = pricing.LogVar2FJKit.step_names
-    #: The fitted box, per coordinate (spec 5.2). `Rho_S`'s own lower edge is derived from `Rho_L`
-    #: and `C_Min` at every stage and so cannot live here; `Alpha` and `Beta` are boxed in the
-    #: UNCONSTRAINED coordinates `LV_RAW` names, which is where the fit moves them.
-    #: `Sigma_L`'s floor is for EXPOSURES (spec 5.2 stage 4): a two-year surface cannot claim
-    #: five-year vol is certain, and a zero slow factor collapses a CVA profile's vol distribution
-    #: onto the fast factor's spread, which reverts within months.
-    box = {'Sigma_L': (0.3, 2.0), 'Rho_L': (-0.6, 0.0), 'Sigma_S': (0.5, 5.0),
-           'Alpha': (-2.0, 500.0), 'Beta': (-3.0, 3.0)}
     #: Stage 4's prior per ASSET CLASS, keyed by the factor type `Underlying` resolves to. The
     #: pair is a MAGNITUDE - its sign is the fitted fast leverage's, so the slow skew is never
     #: pinned against the fast one, which on an FX pair quoted the other way up is the whole of
@@ -1401,41 +1413,6 @@ class LVFit(object):
     #: floor-by-default understates every pinned name's 2-5 year vol in one direction.
     slow_priors = {'FxRate': (0.2, 0.5), 'EquityPrice': (0.4, 1.0),
                    'CommodityPrice': (0.4, 1.0), 'FuturesPrice': (0.4, 1.0)}
-    #: The horizon the three-way prior report reads its log-vol sd at, in years - the exposure
-    #: tail the slow factor's prior is for, and the number a phase-3 exposure row will read.
-    exposure_horizon = 5.0
-    #: The spot slope or butterfly under which a stickiness RATIO divides by nothing, in vol
-    #: points: the report prints the DIFFERENCES the fit targets and no ratio (spec 5.3).
-    psi_floor = 0.5
-    #: How far inside `C_Min` and inside the conditioning-share floor the soft penalties start, and
-    #: what a full margin's violation costs: 1.25 vol points of residual, which the data rows at a
-    #: one-point RMSE just outweigh - so a soft edge bites in the last percent and the BOX stops it.
-    c_margin, soft_penalty = 0.05, 0.25
-    #: What a degraded vanilla RMSE costs stage 5, per spec 5.3's failure mode: 0.1 vol points of
-    #: degradation at the target maturities buys 10 vol points of residual, so forward skew is
-    #: bought only where the spot smile can pay for it. Read in the FIRST-ORDER metric.
-    vanilla_guard, vanilla_band = 100.0, 0.001
-    #: Chord steps one xi pillar gets per round, how many rounds (each ending in one refreshed
-    #: slope) it gets, and the largest move in log-variance one may take: the price is monotone in
-    #: the level, so the damping only tames a first step off a bad seed.
-    l_iterations, l_rounds, l_damping = 12, 3, 0.5
-    #: The mass of path-days within 5 Cap_Beta of the cap that REFUSES the fit (spec 2.7), and the
-    #: stationary log-vol sd VIX options imply, outside which the guard of 5.4.6 fires.
-    cap_headroom_max, log_vol_sd_band = 1e-5, (0.4, 0.9)
-    #: The relative ATM miss a pillar may still carry when the fit is done. The bootstrap solves to
-    #: `Pillar_Tolerance` at every iterate; anything left here is a pillar the OTHER parameters
-    #: have put out of reach.
-    atm_miss_max = 1e-4
-    #: Where the spec's stages cut the ladder, in years: stage 2 the wing's own horizon, stage 3
-    #: the sub-year smile, stage 4 what is left beyond it.
-    stage_horizons = (0.25, 1.0)
-    #: Spec 5.3's forward-start strikes, as fractions of S_T1 - what `Forward_Smile_Source` Prior
-    #: quotes its own rows at - and the three both stickiness ratios are read at: the 90-110 slope
-    #: over its log-strike gap, and the 90/110 average less the ATM.
-    prior_strikes = (0.90, 0.95, 1.00, 1.05, 1.10)
-    psi_strikes = (0.90, 1.00, 1.10)
-    #: The shortest WING expiry that identifies the slow pair (spec 5.2 stage 4), in years.
-    slow_horizon = 1.5
     #: The leverage prior per ASSET CLASS on the ENGINE's own axis (brief 5): an index at the
     #: VIX-implied spot-vol correlation, an FX pair symmetric until a desk says otherwise through
     #: `Leverage_Prior` or a history. An `FxRate` is priced in the domestic currency, so a prior
@@ -1490,6 +1467,33 @@ class LVFit(object):
         self.priors = read['Model_Priors'] == 'On'
         self.skew_band = float(read['Stickiness_Band'])
         self.shape_floor = float(read['Residual_Shape_Floor'])
+        #: the fitted box per coordinate (spec 5.2); Rho_S's own lower edge is derived from Rho_L
+        #: and C_Min at every stage and so is not here, and Alpha/Beta are boxed in the
+        #: UNCONSTRAINED coordinates LV_RAW names, which is where the fit moves them
+        self.box = {'Sigma_L': lv_parse_bounds(read['Sigma_L_Bounds'], 'Sigma_L_Bounds'),
+                   'Rho_L': lv_parse_bounds(read['Rho_L_Bounds'], 'Rho_L_Bounds'),
+                   'Sigma_S': lv_parse_bounds(read['Sigma_S_Bounds'], 'Sigma_S_Bounds'),
+                   'Alpha': lv_parse_bounds(read['Alpha_Bounds'], 'Alpha_Bounds'),
+                   'Beta': lv_parse_bounds(read['Beta_Bounds'], 'Beta_Bounds')}
+        self.stage_horizons = lv_parse_bounds(read['Stage_Horizons'], 'Stage_Horizons')
+        self.slow_horizon = float(read['Slow_Horizon'])
+        self.l_iterations, self.l_rounds = int(read['Xi_Solve_Iterations']), int(
+            read['Xi_Solve_Rounds'])
+        self.l_damping = float(read['Xi_Solve_Damping'])
+        self.cap_headroom_max = float(read['Cap_Headroom_Max'])
+        self.log_vol_sd_band = lv_parse_bounds(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
+        self.atm_miss_max = float(read['Atm_Miss_Max'])
+        self.vanilla_guard = float(read['Vanilla_Guard'])
+        self.vanilla_band = float(read['Vanilla_Band'])
+        self.psi_floor = float(read['Psi_Floor'])
+        self.exposure_horizon = float(read['Exposure_Horizon'])
+        self.prior_strikes = self.floats('Prior_Strikes')
+        self.psi_strikes = lv_parse_floats(read['Psi_Strikes'], 'Psi_Strikes', 3)
+        if not self.psi_strikes[0] < self.psi_strikes[2]:
+            raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
+                             .format(read['Psi_Strikes']))
+        self.c_margin = float(read['C_Margin'])
+        self.soft_penalty = float(read['Soft_Penalty'])
         self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0, 'b': 0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
         #: the target DIFFERENCE pair per forward tenor, the spot rung each forward tenor's own
@@ -1509,6 +1513,11 @@ class LVFit(object):
         a document carries a list, which is `schema.quote_rows`' own reading."""
         rows = self.instrument[name]
         return rows if isinstance(rows, list) else []
+
+    def floats(self, name):
+        """A comma-separated numeric field as a tuple - the pair/list convention `Stickiness_Prior`
+        and `Forward_Tenors` already write, reused for every bound and strike grid."""
+        return lv_parse_floats(self.instrument[name], name)
 
     def draw(self, paths, steps, blocks, seed):
         """The walk's two normals per STEP and the mixer's uniform per BLOCK - fixed for the whole
@@ -1625,12 +1634,11 @@ class LVFit(object):
             cum[0][..., j], cum[1][..., j], carry, self.tensor(k * forward)).mean(),
             forward, k * forward, T) for k in strikes]
 
-    @classmethod
-    def shape(cls, vols):
+    def shape(self, vols):
         """`(atm, slope, butterfly)` of a `psi_strikes` smile in DECIMAL vol: the 90-110 difference
         over its log-strike gap, and the 90/110 average less the ATM."""
         low, atm, high = vols
-        return atm, (low - high) / np.log(cls.psi_strikes[2] / cls.psi_strikes[0]), \
+        return atm, (low - high) / np.log(self.psi_strikes[2] / self.psi_strikes[0]), \
             0.5 * (low + high) - atm
 
     def spot_shape(self, cum, tenor):
@@ -3169,6 +3177,69 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'outer iterate. It is what makes the objective a function of x alone rather '
                       'than of the sweep it warm-started from, so it wants to sit well under '
                       'Tolerance; every step below that costs one prefix walk'),
+        F('Sigma_L_Bounds', 'Text', default='0.3,2.0',
+          description='Fitted box on Sigma_L, lower,upper. The floor is for EXPOSURES (spec 5.2 '
+                      'stage 4): a zero slow factor collapses a CVA profile\'s vol distribution '
+                      'onto the fast factor\'s spread, which reverts within months'),
+        F('Rho_L_Bounds', 'Text', default='-0.6,0.0', description='Fitted box on Rho_L, lower,upper'),
+        F('Sigma_S_Bounds', 'Text', default='0.5,5.0',
+          description='Fitted box on Sigma_S, lower,upper'),
+        F('Alpha_Bounds', 'Text', default='-2.0,500.0',
+          description='Fitted box on Alpha in the UNCONSTRAINED coordinate LV_RAW names, '
+                      'lower,upper'),
+        F('Beta_Bounds', 'Text', default='-3.0,3.0',
+          description='Fitted box on Beta in the UNCONSTRAINED coordinate LV_RAW names, '
+                      'lower,upper'),
+        F('Stage_Horizons', 'Text', default='0.25,1.0',
+          description='Where the stages cut the ladder, in years: the wing\'s own horizon, then '
+                      'the sub-year smile; what is left beyond it is stage 4\'s'),
+        F('Slow_Horizon', 'Float', default=1.5,
+          description='The shortest WING expiry, in years, that identifies the slow pair (spec '
+                      '5.2 stage 4); with no wing at or beyond it Rho_L/Sigma_L are pinned'),
+        F('Xi_Solve_Iterations', 'Integer', default=12,
+          description='Chord steps one xi pillar\'s Newton solve gets per round'),
+        F('Xi_Solve_Rounds', 'Integer', default=3,
+          description='How many rounds (each ending in one refreshed slope) a xi pillar\'s solve '
+                      'gets'),
+        F('Xi_Solve_Damping', 'Float', default=0.5,
+          description='The largest move in log-variance one xi pillar chord step may take; tames '
+                      'only a first step off a bad seed, the price being monotone in the level'),
+        F('Cap_Headroom_Max', 'Float', default=1e-5,
+          description='The mass of path-days within 5 Cap_Beta of the cap that REFUSES the fit '
+                      '(spec 2.7)'),
+        F('Log_Vol_Sd_Band', 'Text', default='0.4,0.9',
+          description='The stationary log-vol sd band VIX options imply, lower,upper; outside it '
+                      'Stationary_Spread\'s guard fires (spec 5.4.6)'),
+        F('Atm_Miss_Max', 'Float', default=1e-4,
+          description='The relative ATM miss a pillar may still carry once the fit is done, after '
+                      'Pillar_Tolerance; anything left is a miss the OTHER parameters put out of '
+                      'reach'),
+        F('Vanilla_Guard', 'Float', default=100.0,
+          description='What a degraded vanilla RMSE costs the forward block\'s objective past '
+                      'Vanilla_Band (spec 5.3\'s failure mode), so forward skew is bought only '
+                      'where the spot smile can pay for it'),
+        F('Vanilla_Band', 'Float', default=0.001,
+          description='The vanilla RMSE degradation, in the first-order metric, Vanilla_Guard '
+                      'starts penalising past'),
+        F('Psi_Floor', 'Float', default=0.5,
+          description='The spot 90-110 slope or butterfly, in vol points, under which a '
+                      'stickiness RATIO divides by nothing and the report prints the difference '
+                      'instead (spec 5.3)'),
+        F('Exposure_Horizon', 'Float', default=5.0,
+          description='The horizon, in years, the three-way slow-prior report reads its log-vol '
+                      'sd at - the exposure tail Slow_Factor_Prior is for'),
+        F('Prior_Strikes', 'Text', default='0.90,0.95,1.00,1.05,1.10',
+          description='Forward_Smile_Source Prior\'s own strikes, as fractions of S_T1, '
+                      'comma-separated'),
+        F('Psi_Strikes', 'Text', default='0.90,1.00,1.10',
+          description='The three strikes both stickiness ratios are read at: the 90-110 slope '
+                      'over its log-strike gap, and the 90/110 average less the ATM'),
+        F('C_Margin', 'Float', default=0.05,
+          description='How far inside C_Min and the conditioning-share floor the soft penalty '
+                      'starts biting, as a margin on c'),
+        F('Soft_Penalty', 'Float', default=0.25,
+          description='What a full C_Margin violation costs in residual, against wing misses of a '
+                      'few tenths, so the edge bites in the last percent and the box stops it'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep the written parameters connected to the numbers quoted, so a '
                       'calculation\'s backward pass reports dV/dq beside dV/dtheta. The fitted '
@@ -3177,7 +3248,19 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
 
     def __init__(self, param, device, dtype):
         # the constructed device and dtype are ignored - see the `device` note and `prec`
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict,
+        #: so a quote need carry only its data and never repeat a family's optimizer settings
+        self.param = declared_defaults(type(self), param)
+        # refuse a malformed hyperparameter BEFORE a single quote is read, not deep inside the
+        # first fit that happens to touch it - a quote overriding one is checked again there
+        for name in ('Sigma_L_Bounds', 'Rho_L_Bounds', 'Sigma_S_Bounds', 'Alpha_Bounds',
+                    'Beta_Bounds', 'Log_Vol_Sd_Band', 'Stage_Horizons'):
+            lv_parse_bounds(self.param[name], name)
+        strikes = lv_parse_floats(self.param['Psi_Strikes'], 'Psi_Strikes', 3)
+        if not strikes[0] < strikes[2]:
+            raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
+                             .format(self.param['Psi_Strikes']))
         #: What `Quote_Sensitivity` leaves behind: every fitted parameter still connected to its
         #: quotes, keyed as `_build_factor_state` mints its leaf, plus the quote leaf per block.
         #: `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -3202,7 +3285,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             market_factor = utils.Factor(rate[0], rate[1:])
             if market_factor.type != self.market_factor_type:
                 continue
-            instrument = implied_params['instrument']
+            # the quote's own instrument wins on conflict; the Bootstrapper Configuration block
+            # supplies whatever hyperparameter it does not carry
+            instrument = dict(self.param, **implied_params['instrument'])
             factors, spot = self.resolve_block(
                 market_price, instrument, price_factors, factor_interp, sys_params)
             param_name = utils.check_tuple_name(
@@ -3677,7 +3762,9 @@ class GBMAssetPriceTSModelParameters(object):
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
         #: What `Quote_Sensitivity` leaves behind: the integrated vol curve still connected to its
         #: ATM quotes, keyed as `_build_factor_state` mints its `Vol` leaf, plus the quote leaf per
         #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -3811,6 +3898,9 @@ class GBMAssetPriceTSModelParameters(object):
             market_factor = utils.Factor(rate[0], rate[1:])
 
             if market_factor.type == self.market_factor_type:
+                # the quote's own instrument wins on conflict
+                implied_params = dict(implied_params, instrument=dict(
+                    self.param, **implied_params['instrument']))
                 # get the vol surface
                 vol_factor = resolve_factor(implied_params['instrument']['Asset_Price_Volatility'],
                                             price_factors, self.factor_types['Asset_Price_Volatility'])
@@ -4159,7 +4249,9 @@ class LeastSquaresSolve(torch.autograd.Function):
 
 class RiskNeutralInterestRateModel(object):
     def __init__(self, param, device, dtype):
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
         self.device = device
         self.prec = dtype
         #: The Monte Carlo sample shape of the last block built - a REPORT. Nothing prices off
@@ -4349,6 +4441,10 @@ class RiskNeutralInterestRateModel(object):
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
             if market_factor.type == self.market_factor_type:
+                # the quote's own instrument wins on conflict; every downstream read of
+                # implied_params['instrument'] (including calc_loss) sees the union
+                implied_params = dict(implied_params, instrument=dict(
+                    self.param, **implied_params['instrument']))
                 # fetch the factors
                 ir_factor = utils.Factor('InterestRate', rate[1:])
                 vol_factor = utils.Factor('InterestYieldVol', utils.check_rate_name(
