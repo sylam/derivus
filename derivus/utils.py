@@ -2521,7 +2521,11 @@ def ig_quantile(u, m, lam):
     """
     x = ig_root(u, m, lam)
     x = x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
-    return x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
+    # the second step's backward carries 1/x^4 terms that leave float32's range at a residual
+    # clock under a 4% vol - a clock the carried state reaches - so it is taken in double
+    wide = lambda t: torch.as_tensor(t, device=x.device).to(torch.float64)
+    x2, m2, lam2, u2 = wide(x), wide(m), wide(lam), wide(u)
+    return (x2 - (ig_cdf(x2, m2, lam2) - u2) / ig_pdf(x2, m2, lam2)).to(x.dtype)
 
 
 def lv_cap(x, a, beta):

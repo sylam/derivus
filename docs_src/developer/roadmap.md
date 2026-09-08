@@ -11,18 +11,6 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
-- **CVA vega through the LogVar2FJ outer walk is `nan` at float32** (2026-09-08, lane 4) - The carried state
-  hands the pricer clocks the per-row re-seed never produced: the re-seed always started at
-  `sqrt(xi)`, a 21% vol, where the outer path's fifth percentile is 5.5% at three years and lower on
-  a fitted `Sigma_S` of 5. Below a 4% annualised vol on a 21-day block the SECOND of `ig_quantile`'s
-  two Newton steps loses float32 in its BACKWARD — `ig_root`'s residual is pinned at 1.79e-07 by the
-  resolution of `norm_cdf` near one while the smallest root falls two decades faster than the clock,
-  so the correction is ten times the root and the backward's `1/f^2` chain leaves range. Values are
-  untouched (`G` finite everywhere, the CVA identical with the checkpoint on and off); what comes
-  back `nan` is every LogVar2FJ leaf of `grad_cva`, which is exactly the CVA vega the implied leaf
-  exists to carry. Float64 is clean at every clock measured. The fix is a guard on that one division,
-  in the `sqrt_or_zero` style that file already uses; until it lands, a CVA gradient on a book under
-  this outer process is a float64 run.
 - **`utils.ig_quantile` at a ZERO clock is `nan`, and the kit reaches it whenever an MTM row lands
   exactly on a remaining fixing** (2026-09-08, lane 4) - `ig_root`'s bracket `hi = 200m + 200m^2/lam`
   is 0/0 there; `LogVar2FJKit.grid` makes one step of length zero, `pieces` keeps it and `mixers`
@@ -220,6 +208,26 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **CVA vega through the LogVar2FJ outer walk was `nan` at float32** (2026-09-08, lane 4; CLOSED
+  the same evening) - the carried state hands the pricer clocks the per-row re-seed never
+  produced: below a 4% annualised vol on a 21-day block the SECOND of `ig_quantile`'s two Newton
+  steps lost float32 in its BACKWARD - `ig_root`'s residual is pinned at 1.79e-07 by `norm_cdf`'s
+  resolution near one while the smallest root falls two decades faster than the clock, so the
+  correction was ten times the root and the `1/f^2` chain left range. Values were never touched;
+  every LogVar2FJ leaf of `grad_cva` came back `nan`. THE FIX: that second step is taken in DOUBLE -
+  the root and the first step stay in the job's precision and the result is cast back - so no
+  threshold had to be chosen. Lane 4's reproduction (`artifacts/lv_outer_20260908/nan.py`) reads
+  **0 NaN of 30** `grad_cva` entries at float32 under the LogVar2FJ outer, checkpoint on and off,
+  where it read 9, with the CVA unchanged to the digit; the desk deal's twelve LogVar2FJ leaves
+  come back finite at float32 (`vega64.py`, 32 x 256) with the float32 CVA moved by its own last
+  bits, 1944018.5 -> 1944018.9, and the float64 CVA and all twelve float64 leaves BIT-IDENTICAL -
+  in double the casts are the identity, so every float64 calculation and the calibrator, which
+  fits in double, are untouched by construction. The float32 and float64 CVAs on that document
+  read 16% apart at 32 x 256, as lane 4 banked them, so the float64 run stays the reading of
+  record; what changed is that the float32 one reports a number. Hex: 4,126 floats over the 16
+  GBM and Hull-White documents against the head's own reading, 0 mismatches; the crisp GBM TARF
+  `-0x1.2c48f36318e38p+5`. Cost: one double pass over the `[paths, blocks]` mixer tensor per draw
+  beside `ig_root`'s thirty-four.
 - **Stage 5's vanilla guard refuses with a bare tensor error where no quote sits within ONE STEP
   of a forward maturity** (2026-09-08) - CLOSED by lane S2 the same day: `LVFit.guard_rungs` reads the rung nearest
   each target's `T1` and `T1 + Delta` within `spot_rung_tol * Delta`, and refuses by name where
