@@ -11,6 +11,20 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **The autocall's one-step-survival arm under GBM reads ONE moneyness for the whole path, so a
+  compact V2's terminal put is priced at the ATM vol** (2026-09-08) - measured on the desk's NKY
+  structures: the six-leg booking with its contra repaired (discrete up-and-in barriers on the five
+  observation dates, which IS the autocall condition, each put leg reading the 70% strike's vol)
+  against the folded V2 reads -64.2m vs -42.8m ZAR on 229524957 and +64.9m vs +86.6m on 220276683
+  (33% apart, 32,768 paths, one seed), while on a FLAT NKY surface the two agree within 1%
+  (-39.3m vs -39.6m) and on SD3E's near-flat long end to 0.02% (`artifacts/remark_20260908/
+  fold_check.py`). `pricing.pv_discrete_barrier_option`'s docstring names the per-fixing smile
+  convention as open; this is what it costs. The LogVar2FJ arm carries the smile in the model and
+  is untouched, but no quote pins a 5y 70% vol on any index here (the vendor stops at 90 days,
+  the chain at 2.7y), so the model's long-dated skew is extrapolated and the same trade reads
+  -42m (GBM V2), -64m (GBM six legs on the file's parametric skew) and -42m (LogVar2FJ). A GBM
+  mark of a compact V2 on a skewed surface should not be stood behind until the arm reads the put
+  at its own strike.
 - **Stage 5's vanilla guard refuses with a bare tensor error where no quote sits within ONE STEP
   of a forward maturity** (2026-09-08) - `LVFit.global_stages` builds `guarded` as the quotes within
   `self.delta` = `1/Steps_Per_Year` of a target's `T1` or `T1 + Delta`, and stage 5a/5b's guard then
