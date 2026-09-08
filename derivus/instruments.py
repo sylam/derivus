@@ -3982,10 +3982,13 @@ class QEDI_CustomAutoCallSwap(Deal):
                       'fallback. It also prices an AVERAGING coupon - a window of fixings whose arithmetic',
                       'mean is compared to the threshold - by sampling the window and truncating the prefix',
                       'return, which keeps the termination a crisp per-scenario decision.',
-                      'Every barrier date must sit ON a coupon date, and the payoff must',
-                      'be single-currency: a',
-                      'Quanto/Compo carry is a lognormal quantity, so declaring one alongside a non-`None`',
-                      'SpotModel is the same loud skip.',
+                      'Every barrier date must sit ON a coupon date. A `Quanto` payoff prices: the',
+                      'payoff-currency measure change enters the walk as a per-step drift',
+                      '$-\\rho\\,\\sigma_{FX,k}\\sqrt{V_k}$ read off the state\'s own variance budget, with',
+                      '$\\rho$ the marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` and $\\sigma_{FX}$ the',
+                      'fx surface\'s ATM forward strip on the walk\'s own grid; declaring one without that',
+                      'correlation is a loud skip rather than an uncorrelated pair. `Compo` stays refused:',
+                      'it is the product S*X and this arm walks the equity alone.',
                       '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
                       '(default 252; only read when SpotModel is not `None`).'])
 
@@ -4004,15 +4007,17 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         The non-GBM spot model resolves by NAMING CONVENTION off the equity underlying, with no
         deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
-        one-step-survival arm carries the non-GBM branch, hence the raise; a Quanto/Compo
-        payoff raises for the same reason, since `calc_vol_adjustment` derives its carry from a
-        LOGNORMAL implied ATM vol no leg of the non-GBM branch reads. Both refusals land in the
-        deal-skip path, so a refusal is an attributable value loss rather than a wrong number.
+        one-step-survival arm carries the non-GBM branch, hence the raise. A QUANTO payoff prices
+        there - the measure change is a drift the walk carries per step off its own variance
+        budget - but a COMPO raises, being the product S*X the arm has no second asset for, and so
+        does a quanto naming no `Correlation` factor, an unauthored pair reading as uncorrelated
+        and pricing with no quanto drift at all. Those refusals land in the deal-skip path, so a
+        refusal is an attributable value loss rather than a wrong number.
 
-        THE ZERO-COUPON ROW IS THE THIRD REFUSAL AND IT IS FATAL (`UnpriceableSchedule`, per
+        THE ZERO-COUPON ROW IS THE FATAL REFUSAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
-        reach it. An `'Average'` barrier date whose coupon window holds no fixing is the FOURTH
-        and the same kind - the mean it would read is a mean of nothing. The
+        reach it. An `'Average'` barrier date whose coupon window holds no fixing is the same kind
+        - the mean it would read is a mean of nothing. The
         max(all_dates) <= Expiry_Date warning is currently DISABLED."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
@@ -4168,11 +4173,26 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'has only its last daily sub-step and takes one fixing per coupon. The '
                 'averaging (full-path) sim has no non-GBM path at all.' % spot_model)
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
-            raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s; the quanto/compo '
-                             'carry is a lognormal implied-ATM-vol adjustment with no %s equivalent - '
-                             'settle the autocall in %s or drop the SpotModel'
-                             % (spot_model, self.field['Payoff_Type'], self.field['Payoff_Currency'],
-                                spot_model, self.field['Currency']))
+            pair = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])[1]
+            if self.field['Payoff_Type'] != 'Quanto':
+                raise ValueError(
+                    'SpotModel=%s cannot price Payoff_Type=%s settled in %s: a compo payoff is the '
+                    'PRODUCT S*X, so the fx rate has to be simulated JOINTLY with the equity and '
+                    'this arm walks the equity alone. The quanto measure change is a drift, which '
+                    'the walk carries per step off its own variance; a compo is a second asset, '
+                    'which it does not have. Settle the autocall in %s, book it Quanto if the fx '
+                    'is fixed, or drop the SpotModel'
+                    % (spot_model, self.field['Payoff_Type'], self.field['Payoff_Currency'],
+                       self.field['Currency']))
+            if field_index['QuantoImpliedCorrelation'] is None:
+                raise ValueError(
+                    'SpotModel=%s prices Payoff_Type=Quanto off the marked equity/fx correlation '
+                    'and Correlation.EquityPrice.%s/FxRate.%s is not in the market data. An '
+                    'unauthored pair reads as UNCORRELATED, which is a quanto drift of exactly '
+                    'zero rather than a missing one. Author the correlation, settle the autocall '
+                    'in %s, or drop the SpotModel'
+                    % (spot_model, '.'.join(field['Equity_Volatility']), '.'.join(pair),
+                       self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
         set_spot_model_index(field_index, hn, self.options)
@@ -4540,9 +4560,10 @@ class EquityBarrierOption(Deal):
         The non-GBM spot model resolves by NAMING CONVENTION off the equity underlying, with no
         deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
         DISCRETE (Barrier_Dates) OSS pricer carries the non-GBM branch, hence the raise; a
-        Quanto/Compo payoff raises for the same reason, since `calc_vol_adjustment` derives its
-        carry from a LOGNORMAL implied ATM vol with no non-GBM equivalent. Both refusals land in the
-        deal-skip path, so a refusal is an attributable value loss rather than a wrong number."""
+        Quanto/Compo payoff raises too - a compo is the product S*X the arm has no second asset
+        for, and the walk's quanto drift is passed a loading by the autocall alone. Both refusals
+        land in the deal-skip path, so a refusal is an attributable value loss rather than a wrong
+        number."""
 
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
@@ -4595,11 +4616,13 @@ class EquityBarrierOption(Deal):
             raise ValueError('SpotModel=%s requires the discrete (Barrier_Dates) barrier; the '
                              'continuous Barrier_Monitoring variant has no non-GBM path' % spot_model)
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
-            raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s; the quanto/compo '
-                             'carry is a lognormal implied-ATM-vol adjustment with no %s equivalent - '
-                             'settle the barrier in %s or drop the SpotModel'
+            raise ValueError('SpotModel=%s cannot price Payoff_Type=%s settled in %s. A COMPO is '
+                             'the product S*X and this arm walks the equity alone; a QUANTO is a '
+                             'per-step drift the walk does carry, but only the autocall passes it '
+                             'the loading today (`pricing.quanto_step_loading`) - settle the '
+                             'barrier in %s or drop the SpotModel'
                              % (spot_model, self.field['Payoff_Type'], self.payoff_ccy,
-                                spot_model, self.field['Currency']))
+                                self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
         set_spot_model_index(field_index, hn, self.options)

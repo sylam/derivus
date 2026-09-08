@@ -117,10 +117,10 @@ class LogVar2FJKit(object):
         z = torch.randn([2] + shape, dtype=torch.float32, device=deltas.device, generator=gen)
         return torch.cat([z, -z], dim=-2) if antithetic else z
 
-    def segment(self, key, shape, antithetic, params, curve, deltas, l, s):
+    def segment(self, key, shape, antithetic, params, curve, deltas, l, s, quanto):
         """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them."""
         z = self.draws(key, shape + [int(deltas.shape[0])], deltas, antithetic)
-        return utils.lv_walk(params, curve, deltas, z[0], z[1], (l, s), self.invert)
+        return utils.lv_walk(params, curve, deltas, z[0], z[1], (l, s), self.invert, quanto)
 
     def residual(self, A, alpha, beta, u):
         """One residual draw's ``(mean shift, mixer)`` on the clock ``A`` (brief 1).
@@ -175,7 +175,7 @@ class LogVar2FJKit(object):
         """How many mixer uniforms this row's fixing strip takes - one per residual draw."""
         return 0 if self.gaussian else sum(len(rows) for rows in self.pieces(row_t, deltas))
 
-    def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic, mixers=None):
+    def blocks(self, row_t, deltas, carry, shared, num_sims, antithetic, mixers=None, quanto=None):
         """Every remaining fixing interval's block law, ``(M, Sigma)`` of shape [batch, sims] each.
 
         THE CURVE IS THE MARKET'S OBJECT. ``Xi_Curve`` is the expected forward variance and the OU
@@ -194,7 +194,9 @@ class LogVar2FJKit(object):
         between ATM expiries, the four levers on their calendar buckets - because both are calendar
         time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
         wrong value is a shape error at every consumer, never a quiet bias; ``mixers`` is the row's
-        own uniform per residual draw, drawn by the pricer beside its OSS ones.
+        own uniform per residual draw, drawn by the pricer beside its OSS ones. ``quanto`` is this
+        row's per-step loading (`quanto_step_loading`), which the walk turns into the
+        payoff-currency drift; None is a single-currency payoff and bit-identical.
 
         ``carry`` is the DEAL's own either way - on the reciprocal axis the walk and the mixer are
         the only things that change measure, and the law they hand back is already ``1/S``'s.
@@ -221,6 +223,7 @@ class LogVar2FJKit(object):
                         self.segment, base + j, shape, antithetic,
                         dict(self.params, **{x: levers[x][a:b] for x in self.step_names}),
                         curve[a:b + 1], delta[a:b], l, s,
+                        None if quanto is None else quanto[a:b],
                         use_reentrant=False, preserve_rng_state=False)
                     m, clock, j = m + dm, clock + dA, j + 1
                 u = None if self.gaussian else mixers[drawn]
@@ -412,6 +415,21 @@ def forward_vol_rate(vols, cum_t, dt):
     fwd = torch.sqrt(cum_var.diff(dim=-2).clamp(min=torch.finfo(vols.dtype).eps) /
                      torch.where(step > 0, step, torch.ones_like(step)))
     return torch.cat([vols[..., :1, :], fwd], dim=-2)
+
+
+def quanto_step_loading(kit, factor_dep, rho, row_t, deltas, shared):
+    """One MTM row's per-step quanto loading ``q_k = rho * sigma_FX,k * sqrt(delta_k)``.
+
+    ``sigma_FX`` is the FX surface's ATM FORWARD strip on the WALK's OWN grid - read at every
+    internal step's tenor from this row and differenced into forward variance by
+    `forward_vol_rate`, where the GBM arm reads ONE expiry ATM and calls it the whole deal's.
+    Built OUTSIDE the pure inner function: the surface is a leaf, and a closure read is
+    differentiated as a constant.
+    """
+    _, delta, _ = kit.grid(row_t, deltas)
+    cum = np.cumsum(delta.detach().cpu().numpy())
+    vols = utils.calc_time_grid_vol_rate(factor_dep['FXVol'], None, cum, shared)
+    return rho * forward_vol_rate(vols, delta.new(cum), delta)[:, 0] * torch.sqrt(delta)
 
 
 def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
@@ -1411,7 +1429,7 @@ def compo_vol(vols, fx_vols, rho):
     return torch.sqrt(vols * vols + 2.0 * rho * vols * fx_vols + fx_vols * fx_vols)
 
 
-def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=None):
+def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=None, walking=False):
     """The quanto/compo adjustment, factored for BOTH consumer shapes.
 
     A forward-based pricer rebuilds its terminal law as `s_adj * forward * exp(b_adj * T)` - quanto
@@ -1419,6 +1437,10 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
     SIMULATING pricer takes the same information factored the way a path steps: `spot_scale` (1 for
     quanto), `carry_adj` (per-fixing, built only when `fixings` is passed), and `fx_vol`/`rho` to
     compose its interval vol strip (None for quanto, whose measure change touches no vol).
+
+    `walking` is a non-GBM spot model: the quanto carry here is `-rho sigma_S sigma_FX` off an
+    implied ATM vol the walk never reads, so it is handed back as ZERO and the caller takes `rho`
+    to the walk instead (`quanto_step_loading`), where the day's sd is the state's own.
     """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.calc_time_grid_vol_rate(factor_dep['FXVol'], None, expiry, shared)
@@ -1427,8 +1449,8 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
         # quanto fx deal
         rho = utils.implied_correlation(
             factor_dep['QuantoImpliedCorrelation'], factor_dep['Correlation_Sign'])
-        atm_vol = utils.calc_time_grid_vol_rate(factor_dep['Volatility'], None, expiry, shared)
-        b_adj = -atm_vol * fx_vols * rho
+        b_adj = torch.zeros_like(fx_vols) if walking else -utils.calc_time_grid_vol_rate(
+            factor_dep['Volatility'], None, expiry, shared) * fx_vols * rho
         return {'vol': vols, 'b_adj': b_adj, 's_adj': 1.0, 'spot_scale': 1.0,
                 'carry_adj': b_adj.unsqueeze(1) if fixings is not None else None,
                 'fx_vol': None, 'rho': rho}
@@ -3965,11 +3987,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     def sim_spot(offset, times, row_days, row_times, last_fixing, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
-                 past_fixings, *scalars):
+                 past_fixings, quanto, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``. ``times`` is bound because it is built from
-        numpy and stays numpy on a block whose fixings have all been observed.
+        numpy and stays numpy on a block whose fixings have all been observed; ``quanto`` is theta,
+        being the fx surface's own strip, and is zero-length on a single-currency payoff.
 
         Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive) + gaps + fired +
         survived + cash_on`` - the marks, the by-products the caller performs once, then per
@@ -4032,7 +4055,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 if kit is not None and reduced_samples:
                     # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False,
-                                     u[reduced_samples:])
+                                     u[reduced_samples:],
+                                     quanto[i] if quanto.numel() else None)
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
@@ -4405,7 +4429,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         if factor_dep.get('Check_Payoff_Type', False):
             # strike and thresholds are payoff-currency quantities, so they compare against the
             # scaled spot as authored
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
+            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings,
+                                      bool(scalars))
             expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
@@ -4481,13 +4506,22 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
                 # expiry-read else-branch above is already compo via adj['vol']
                 interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
-            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings,
-                               daycount_fn(t_block[:, utils.TIME_GRID_MTM]), last_fixing, windows,
-                               sobol, shared.MCMC_sims)
+            row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
+            quanto = spot_block.new_empty(0)
+            if adj is not None and adj['fx_vol'] is None and scalars and fixing_block.any():
+                # the walking kit's quanto arm - the loading is theta, and rows are padded to the
+                # longest because the walk of an earlier row holds more internal steps
+                rows = [quanto_step_loading(oss_model_kit(factor_dep, scalars), factor_dep,
+                                            adj['rho'], t, dt, shared)
+                        for t, dt in zip(row_times, sample_ts)]
+                quanto = torch.stack([F.pad(x, (0, max(y.shape[0] for y in rows) - x.shape[0]))
+                                      for x in rows])
+            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings, row_times,
+                               last_fixing, windows, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
-                     all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0)
-                     ) + scalars
+                     all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0),
+                     quanto) + scalars
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to

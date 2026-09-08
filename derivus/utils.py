@@ -2556,7 +2556,7 @@ def lv_state_variance(params, deltas):
     return torch.stack(rows)
 
 
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert):
+def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):
     """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
     eta_l, eta_s are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is ``L*`` at its
@@ -2570,6 +2570,14 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert):
     exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
     eta_l ~ N(rho_l sq, 1) and eta_s ~ N(rho_s sq, 1) here, the residual's mixer taking the tilt at
     the caller (`pricing.LogVar2FJKit`).
+
+    `quanto` is the PAYOFF-CURRENCY measure's drift as a per-step loading
+    ``q_k = rho_q sigma_FX,k sqrt(delta_k)``, and the day's leverage mean gains ``-q_k sqrt(V_k)``:
+    the drift is read off the state's OWN budget rather than an implied ATM vol, so it follows the
+    variance path. `rho_q` is the book's marked equity/fx correlation on the return's TOTAL
+    diffusive sd - the residual's mixer is not tilted, its share of the return being `c` and the
+    desk's number a return-level correlation. A drift on either axis, so `invert` adds it the same
+    way. None where the payoff is single-currency, which is bit-identical.
     """
     rl = params['Rho_L']
     a, beta = params['Cap_A'], params['Cap_Beta']
@@ -2593,6 +2601,8 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert):
             e_l, e_s = e_l + rl * sq, e_s + rs_k * sq
         A = A + (1.0 - rs_k * rs_k - rl * rl) * V
         M = M + (-0.5 * (rs_k * rs_k + rl * rl) * V + rl * sq * e_l + rs_k * sq * e_s)
+        if quanto is not None:
+            M = M - quanto[k] * sq
         s = phi_s[..., k] * s + w_s[..., k] * e_s
         l = curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k]) + w_l[..., k] * e_l
     return M, A, l, s

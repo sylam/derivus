@@ -173,6 +173,37 @@ absent). The factor logs it at INFO by name; the calibrator refuses to warm star
 Gaussian factor, or the other way round, because the two are different models and neither seeds the
 other.
 
+**The quanto drift lives INSIDE the walk, read off the state's own budget.** A quanto payoff — an
+index in one currency paid in another at a fixed rate, which is what the desk's autocall book is —
+changes measure to the payoff currency, and the GBM arm applies that as one deal-level carry
+`−ρ σ_ATM σ_FX` off a LOGNORMAL implied ATM vol read at the row's expiry (`pricing.calc_vol_adjustment`).
+Under a walking kit the equity has no implied vol to read: its instantaneous variance is the
+state's own and it moves along the path. So each business day's leverage mean gains
+`−ρ_q σ_FX,k √(V_k δ_k)` — the day's own budget `V_k`, so the quanto drift follows the variance
+path — and `calc_vol_adjustment` hands the walking arm `(ρ_q, σ_FX)` in place of the carry, which
+it returns as zero. `utils.lv_walk` takes the loading `q_k = ρ_q σ_FX,k √δ_k` as one more per-step
+tensor and adds `−q_k √V_k`; absent, the arithmetic is bit-identical, and under `Invert_Spot` it is
+added the same way, a drift being a drift on either axis.
+
+`ρ_q` is the book's marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` read through the same
+`Correlation_Sign` the GBM arm resolves, and it is applied to the return's TOTAL diffusive sd
+`√V_k`: the residual's mixer is NOT tilted by the FX, its share of the return being `c`, and the
+desk's ρ being a return-level correlation — under the NIG residual a brute-force joint simulation
+then realises 91.6–92.0% of the applied drift against the analytic Gaussian-shocked share 0.9306,
+which is the design's own choice measured and an open question for the desk (does its ρ mean the
+return-level correlation, or the Gaussian-shocked one?). `σ_FX` is the FX surface's ATM FORWARD
+strip on the WALK's own grid — read at every internal step's tenor and differenced by
+`pricing.forward_vol_rate` — where the GBM arm reads one expiry ATM and calls it the whole deal's.
+On a FLAT FX surface the two are the same number and the walk reproduces the closed form to 8e-16
+relative; on a surface sloping 2 vol points of ATM per year they differ by 0.99% of a 2y autocall's
+value, 2.72% at 5 points per year. The fx surface's ATM rows are on the tape, so the quanto vega
+comes out with the rest (0.000% against its CRN ladder); the CORRELATION delta does not, because
+`Correlation` is a `DimensionLessFactor` with no leaf — its ladder reads −10.95 per unit of ρ on a 2y
+autocall, flat to 0.001%, a number the engine has and does not report. Only
+`QEDI_CustomAutoCallSwap`/`_V2` passes the loading today; `Compo` stays refused by name on every
+walking deal, being the product `S·X` and so a second asset the arm does not simulate, and a quanto
+naming no `Correlation` factor refuses rather than pricing with a drift of exactly zero.
+
 **The ξ strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
 structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
 1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each segment returns is one

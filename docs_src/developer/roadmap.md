@@ -242,6 +242,16 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     The family question is closed — the one surviving spot model hands each fixing interval its own
     Gaussian block law, so it is admitted on the same terms as GBM. Values re-mark within their own
     MC noise at 12–23× less variance; the greeks are the prize.
+12. **What the desk's quanto correlation means under a non-Gaussian residual.** The quanto arm
+    applies the marked ρ to the return's total diffusive sd and leaves the NIG mixer untilted, so a
+    brute-force joint simulation realises 91.6–92.0% of the applied drift at the Q-sized defaults
+    (the analytic Gaussian-shocked share is 0.9306). Return-level ρ as marked, or the loading
+    divided by that share so the marked ρ is realised exactly — one line either way, and the
+    desk's reading of its own mark.
+13. **The correlation as a leaf.** `Correlation` is a `DimensionLessFactor` and mints no leaf, so
+    the quanto correlation delta reports as zero against a ladder of −10.95 per unit of ρ on a 2y
+    autocall, flat to 0.001%. Three edits with a tree-wide blast radius (every document carrying a
+    correlation gains a Greeks row) and its own hex gate.
 
 ## Designed, not built
 
@@ -368,6 +378,38 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane Q: a quanto payoff prices under the walking kit** (2026-09-08) — the
+  payoff-currency measure change enters `utils.lv_walk` as a per-step drift `−ρ_q σ_FX,k √(V_k δ_k)`
+  read off the state's own variance budget, and the deal-level lognormal carry
+  `pricing.calc_vol_adjustment` derived from an implied ATM vol is handed back as zero on that arm.
+  WHY: `QEDI_CustomAutoCallSwap.calc_dependencies` refused every Quanto payoff under a non-GBM
+  `SpotModel` because the carry was a lognormal quantity no leg of the walk reads — and a quanto
+  autocall is the deal the desk actually books (the Barclays ISDA book: NKY, SX5E, SD3E paid in
+  ZAR). MEASURED: the quanto GBM limit reads **7.6e-16 / 9.8e-16** relative at ρ = ∓0.4 and the
+  ρ = 0 document is **hex-identical** to its single-currency twin; a brute-force joint simulation
+  of the walk and a correlated lognormal fx at 2^17 paths puts the kit's own quanto-adjusted
+  forward within **0.03–0.26 SE** at a flat state and **0.68–1.70 SE** at the Q-sized state over
+  1m/1y/2y/3y under a Gaussian residual, where an expiry ATM vol sits 5.2–30.2 SE out and the
+  leverage sd alone 17–133 SE — the oracle pins `√V_k` per step; under the NIG residual the
+  untilted mixer realises **91.6–92.0%** of the applied drift against the analytic
+  Gaussian-shocked share `ρ_ℓ² + ρ_s² + E[G]/V = 0.9306`, which is the design's stated choice
+  measured and an open decision (below); the smooth CRN ladders on a quanto document read
+  **0.15%** on spot, 0.01% on `ξ`, 0.26–1.15% on `β`/`ρ_s` and **0.00%** on the fx surface's ATM
+  rows — the quanto vega comes out with the rest — while the CORRELATION delta is reported as zero
+  because `utils.DimensionLessFactors` excludes `Correlation` from the leaf set, its ladder reading
+  −10.95 per unit of ρ flat to 0.00%; **7,812 floats over 22 documents hex-identical**, the one
+  intended change being a quanto LogVar2FJ document that refused before. THE DESK'S DEAL: the
+  rebooked NKY V2 229524957 (quanto ZAR) off a NIG fit of the banked chain block reads
+  **−44,084,518 ZAR under LogVar2FJ against −42,084,088 under GBM** (4.75% more negative), the
+  quanto drift's own contribution +9.26m against +11.72m — the walk applies 21% less drift than
+  the lognormal expiry-ATM read — and with the drift off the two models sit within 0.85%, so on
+  this deal the model difference is almost entirely the quanto arm; quanto vega 70.4m against
+  87.2m per unit of fx vol. NOT built: the barrier/binary siblings still refuse a quanto under a
+  walking kit (only the autocall passes the loading), and the reciprocal axis has no quanto
+  document to gate on — `FXAccumulatorOptionDeal` and `FXTARFOptionDeal` carry no `Payoff_Type`
+  field, so `invert` and quanto cannot meet on any deal in the tree. Engine net +67 lines. PROOF
+  DOCUMENTS: `artifacts/lv_quanto_20260908/` (`quanto.py limit | slope | greeks | gamma | refuse |
+  cva`, `oracle.py`, `hex.py`, `deal.py refit | price | cva`).
 - **LogVar2FJ v2, lane 1: the NIG residual replaces the Poisson co-jump and `ξ` replaces `L`**
   (2026-09-07) — the part of a return leverage does not explain is now a normal-inverse-Gaussian
   increment on the variance clock, sampled as a Gaussian given one inverse-Gaussian mixer per
