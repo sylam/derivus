@@ -24,7 +24,7 @@ from scipy.linalg import expm as matrix_expm, logm as matrix_logm
 import torch
 import torch.nn.functional as nnf
 
-from . import utils
+from . import utils, pricing
 from .schema import F, REQUIRED
 from .instruments import get_fx_zero_rate_factor, get_equity_zero_rate_factor, get_dividend_rate_factor
 
@@ -5099,6 +5099,292 @@ class LogVar2FJCalibration(object):
         return utils.CalibrationInfo(
             param, [[1.0]], pd.DataFrame({name: eps}, index=bar.index[1:-1]).loc[keep])
 
+class LogVar2FJImpliedSpotModel(StochasticProcess):
+    """The xVA outer process of the LogVar2FJ model - the pricer's OWN walk on the trading day.
+
+    An IMPLIED process reading the calibrated `LogVar2FJModelParameters` factor the OSS pricers
+    consume, off `implied_tensor` so CVA vega reaches the SINGLE shared leaf; the carry comes from
+    the underlying's own curves as `GBMAssetPriceTSModelImplied` takes it, per path where they are
+    simulated. Whole trading days span each scenario interval and the remainder is ONE shorter
+    step: the OU transitions are exact at any delta and the residual's clock is linear in it, so
+    the fractional step is exact rather than blended.
+
+    THE CORRELATED DRAW IS EXACT. Given the day's two shocks and the block's mixer the interval
+    return is `N(M, G)`, so the framework's one Cholesky-correlated Gaussian per scenario step
+    multiplies `sqrt(G)` with no weighted-combination approximation. CROSS-FACTOR CORRELATION
+    THEREFORE SITS ON THE GAUSSIAN GIVEN THE MIXER: the realised block return also carries the
+    leverage and the mixer's own spread, so a declared correlation is diluted in the return by
+    `sqrt(G)/sd(R)`, in expectation the effective share `c_eff = c*gamma^2/alpha^2`.
+    `LogVar2FJCalibration` estimates the matrix on that same object, so a book's matrix crosses AS
+    IS and nothing is rescaled.
+
+    The daily shocks come from a `torch.Generator` per CALENDAR-ANCHORED segment of
+    `pricing.LV_CHECKPOINT_STEPS` days: never stored, redrawn inside the checkpoint's recompute,
+    and grid-invariant - a day's shock is a function of the DAY, not of where the scenario nodes
+    fall. `-eta` on the antithetic half, as the framework mirrors its own normals; the mixer
+    uniform per scenario step is `quasi_rng`'s, `1 - u` on that half. `Checkpoint_Outer_Walk`
+    (default Yes) puts the walk and the mixer under the non-reentrant checkpoint so the CVA's
+    double backward passes through them. There is no drift correction and none is owed: the
+    leverage factors have conditional mean one and `mu_A` forces the residual's.
+
+    Replay is REFUSED - the variance is autonomous, so the state is not a function of realised
+    returns (`reseed_from_path`).
+    """
+
+    documentation = ('Asset Pricing', [
+        'The xVA scenario generator of the LogVar2FJ model. The state is two mean-reverting',
+        'log-variance factors and the return over a scenario interval is, GIVEN the daily shocks',
+        'and that interval\'s own inverse-Gaussian mixer $G_j$, exactly Gaussian:',
+        '',
+        '$$ \\log\\frac{S_{t_{j+1}}}{S_{t_j}} = b_j + M^{lev}_j + \\mu_{A_j} + \\beta_j G_j'
+        ' + \\sqrt{G_j}\\,Z_j $$',
+        '',
+        'where $b_j$ is the carry read off the underlying\'s own zero and dividend curves,',
+        '$M^{lev}_j$ the compensated leverage sum over the interval\'s trading days and $Z_j$ the',
+        'framework\'s correlated Gaussian for this factor. The parameters are the calibrated',
+        '`LogVar2FJModelParameters` factor the pricing kit reads, so the scenario generator and',
+        'the pricer are ONE model on one set of AAD leaves.',
+        '',
+        'Cross-factor correlation is applied to $Z_j$ - the return\'s idiosyncratic Gaussian GIVEN',
+        'the mixer - and is diluted in the realised return by the leverage and residual shares.'])
+
+    factor_types = ('EquityPrice', 'FxRate')
+    fields = []
+
+    #: The step IS the trading day (brief 0) rather than a setting, and the OSS pricers declare the
+    #: same number on the deal as `Steps_Per_Year`.
+    steps_per_year = 252.0
+
+    #: The pricer's own mixer draw and shock stream, bound here as methods: outer == inner ==
+    #: pricer is STRUCTURAL, so neither the root nor the draws have a second spelling.
+    residual = pricing.LogVar2FJKit.residual
+    draws = pricing.LogVar2FJKit.draws
+
+    def __init__(self, factor, param, implied_factor=None):
+        super(LogVar2FJImpliedSpotModel, self).__init__(factor, param)
+        self.implied = implied_factor
+        self.factor_type = None if factor is None else factor.__class__.__name__
+        # the direct axis: a deal paying on 1/S carries that measure change inside its own pricer
+        self.invert = False
+
+    @staticmethod
+    def num_factors():
+        return 1
+
+    @property
+    def correlation_name(self):
+        return 'LogVar2FJSpotProcess', [()]
+
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        """The carry curves - the underlying's own, `GBMAssetPriceTSModelImplied`'s pair."""
+        if self.factor_type == 'EquityPrice':
+            self.r_t = get_equity_zero_rate_factor(
+                factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)
+            self.q_t = get_dividend_rate_factor(factor.name, static_ofs, stoch_ofs, all_tenors)
+        elif self.factor_type == 'FxRate':
+            self.r_t = get_fx_zero_rate_factor(
+                self.factor.get_domestic_currency(None), static_ofs, stoch_ofs, all_tenors,
+                all_factors)
+            self.q_t = get_fx_zero_rate_factor(
+                factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)
+        else:
+            raise Exception('LogVar2FJImpliedSpotModel prices {}, not {}'.format(
+                ' or '.join(self.factor_types), self.factor_type))
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """The trading-day clock between scenario nodes, the five curves read on it and the
+        residual draws each interval owes.
+
+        The curves are read at ABSOLUTE times - `xi` on its segments, the four levers on their
+        calendar buckets - and a bucket knot inside a scenario interval CUTS that interval's clock
+        into two residual draws under one Gaussian, never a law read at the wrong bucket. A
+        zero-length interval (the t=0 anchor) takes no draw at all.
+        """
+        self.z_offset = process_ofs
+        self.scenario_horizon = time_grid.scen_time_grid.size
+        structural = self.implied.curve_tenors()
+        self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
+        self.knots = {c: structural[c] for c in utils.LV_CURVE_NAMES}
+        self.values = {c: implied_tensor[c] for c in utils.LV_CURVE_NAMES}
+        self.params = dict({x: implied_tensor[x] for x in utils.LV_PARAM_NAMES},
+                           **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
+        self.spot0 = tensor
+        # the carry read: step starts on the scenario grid and each step's own length, verbatim
+        # from `GBMAssetPriceTSModelImplied`
+        self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
+        today = time_grid.scenario_grid[:1].copy()
+        today[:, utils.TIME_GRID_MTM] = 0.0
+        self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
+        # the scenario grid a PRICER row matches itself against, in DOUBLE whatever the calculation
+        # runs in: the match is a day count applied to both sides, and float32 rounding at a year
+        # fraction is already wider than the tolerance it is matched within
+        self.days = shared.one.new_tensor(
+            time_grid.scen_time_grid.astype(np.float64), dtype=torch.float64)
+
+        sub = utils.substep_schedule(
+            np.diff(np.insert(time_grid.time_grid_years, 0, 0.0)) * self.steps_per_year)
+        step = np.concatenate([np.array(x) for x in sub]) / self.steps_per_year
+        self.deltas = shared.one.new_tensor(step)
+        at = np.concatenate([[0.0], np.cumsum(step)])
+        t = shared.one.new_tensor(at)
+        self.levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
+                       for x in pricing.LogVar2FJKit.step_names}
+        self.curve = torch.log(utils.bucket_at(
+            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)) - 0.5 * utils.lv_state_variance(
+            dict(self.params, Sigma_S=self.levers['Sigma_S']), self.deltas)
+        bucket, k, self.pieces = utils.bucket_index(self.knots['Alpha'], at[:-1]), 0, []
+        for n in [len(x) for x in sub]:
+            rows, a = [], k
+            for b in range(k + 1, k + n + 1):
+                if b == k + n or bucket[b] != bucket[a]:
+                    if step[a:b].sum() > 0.0:
+                        rows.append((a, b, int(bucket[a])))
+                    a = b
+            self.pieces.append(rows)
+            k += n
+        self.n_mixers = 0 if self.gaussian else sum(len(x) for x in self.pieces)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the clock this grid actually built - the one thing a surprising scenario grid hides
+            logging.debug('LV_OUTER %s: %d nodes, %d daily steps, %d residual draws, day '
+                          'fractions %s', utils.check_tuple_name(self.factor_key),
+                          self.scenario_horizon, len(step), self.n_mixers,
+                          sorted({round(float(x) * self.steps_per_year, 6) for x in step}))
+
+    def segment(self, key, offset, shape, mirror, params, curve, deltas, l, s):
+        """One CALENDAR-ANCHORED segment of the walk, drawn WHOLE and read at this block's own
+        columns - which is what makes a day's shock a function of the day rather than of where the
+        scenario nodes fell."""
+        z = self.draws(key, shape + [pricing.LV_CHECKPOINT_STEPS], deltas, mirror)
+        n = int(deltas.shape[0])
+        return utils.lv_walk(params, curve, deltas, z[0][..., offset:offset + n],
+                             z[1][..., offset:offset + n], (l, s), False)
+
+    def mixers(self, shared_mem, shape, mirror):
+        """One mixer uniform per residual draw per path on `quasi_rng`, in the calc's own
+        orientation; `1 - u` on the antithetic half."""
+        if not self.n_mixers:
+            return None
+        u = shared_mem.quasi_rng(self.n_mixers, int(np.prod(shape)))[1].transpose(0, 1).reshape(
+            [self.n_mixers] + shape)
+        return torch.cat([u, 1.0 - u], dim=-1) if mirror else u
+
+    def carry(self, shared_mem, ndim):
+        """`(r - q)` integrated over each scenario step, off the underlying's own curves and per
+        path where they are simulated; the inner fork's `n_batch_dims=2` gather comes back flat."""
+        rates = [utils.calc_time_grid_curve_rate(
+            x, self.scen_grid, shared_mem, n_batch_dims=ndim - 1).gather_weighted_curve(
+            shared_mem, self.delta_scen_t) for x in (self.r_t, self.q_t)]
+        return torch.squeeze(rates[0] - rates[1], dim=1)
+
+    def generate(self, shared_mem):
+        """Walk the daily clock between scenario nodes and return the spot path.
+
+        Dual-mode on `Z.ndim` - outer (T, B) or inner MC (T, B, B2) - with the antithetic half
+        detected on the LAST axis, the one the framework mirrors on in both modes.
+        """
+        Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
+        batch, check = list(Z.shape[1:]), getattr(shared_mem, 'checkpoint_outer_walk', True)
+        h = batch[-1] // 2
+        mirror = not batch[-1] % 2 and torch.equal(Z[..., :h], -Z[..., h:])
+        shape = batch[:-1] + [h] if mirror else list(batch)
+        u = self.mixers(shared_mem, shape, mirror)
+        # the segment stream's own key, off the plain generator, so a deterministic batch derives
+        # it from that batch's seed and a checkpoint's recompute redraws exactly what it drew
+        seed = int(torch.randint(1 << 42, (1,)).item()) << 20
+        step = pricing.LV_CHECKPOINT_STEPS
+
+        def run(fn, *args):
+            return torch.utils.checkpoint.checkpoint(
+                fn, *args, use_reentrant=False, preserve_rng_state=False) if check else fn(*args)
+
+        start = [shared_mem.t_Scenario_Buffer.get((self.factor_key, x))
+                 for x in ('ell0_outer', 's0_outer')]
+        l = torch.zeros(batch, dtype=Z.dtype, device=Z.device) + (
+            self.curve[0] if start[0] is None else start[0])
+        s = torch.zeros_like(l) + (0.0 if start[1] is None else start[1])
+        M, var, ell, fast, drawn = [], [], [], [], 0
+        for rows in self.pieces:
+            m, v = torch.zeros_like(l), torch.zeros_like(l)
+            for first, last, bucket in rows:
+                clock, a = torch.zeros_like(l), first
+                while a < last:
+                    b = min((a // step + 1) * step, last)
+                    dm, dA, l, s = run(
+                        self.segment, seed + a // step, a % step, shape, mirror,
+                        dict(self.params, **{x: self.levers[x][a:b]
+                                             for x in pricing.LogVar2FJKit.step_names}),
+                        self.curve[a:b + 1], self.deltas[a:b], l, s)
+                    m, clock, a = m + dm, clock + dA, b
+                drift, G = run(self.residual, clock, self.values['Alpha'][bucket],
+                               self.values['Beta'][bucket], None if self.gaussian else u[drawn])
+                m, v, drawn = m + drift, v + G, drawn + 1
+            M.append(m)
+            var.append(v)
+            ell.append(l)
+            fast.append(s)
+
+        carry = self.carry(shared_mem, Z.ndim)
+        if Z.ndim > 2 and carry.shape[-1] > 1:
+            carry = carry.reshape([-1] + batch)
+        spot = self.spot0 if Z.ndim == 2 else self.spot0.reshape(-1, 1)
+        path = spot * torch.exp(torch.cumsum(
+            carry + torch.stack(M) + utils.sqrt_or_zero(torch.stack(var)) * Z, dim=0))
+        # the revealed state, DETACHED (a state coordinate, not differentiated through) and B-last
+        self.last_state = [torch.stack(ell).detach(), torch.stack(fast).detach()]
+        for name, value in zip(('lv_ell', 'lv_s'), self.last_state):
+            shared_mem.t_Scenario_Buffer[(self.factor_key, name)] = value.unsqueeze(1)
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_days')] = self.days
+        return path
+
+    @classmethod
+    def privileged_layout(cls, param):
+        return {'ell': 1, 's': 1}
+
+    def privileged_factors(self, simulated):
+        return {name: value.to(torch.float32).unsqueeze(-1)
+                for name, value in zip(('ell', 's'), self.last_state)}
+
+    def reveal_state_at(self, t, buffer):
+        """State-first / price-last: `(ell_t, s_t)` is this model's SUFFICIENT statistic - the
+        variance is autonomous, so no function of the price replaces it - and the spot the last
+        continuous coordinate. The defensive fallback is the calibrated start."""
+        key = self.factor_key
+        price = buffer[key][t].unsqueeze(0)
+        ell, s = buffer.get((key, 'lv_ell')), buffer.get((key, 'lv_s'))
+        block = (torch.cat([ell[t], s[t]]) if ell is not None and ell.dim() == price.dim() + 1
+                 else torch.cat([torch.zeros_like(price) + self.curve[0],
+                                 torch.zeros_like(price)]))
+        return [(block, REVEAL_SUFFICIENT), (price, REVEAL_CONTINUOUS)]
+
+    def inner_fork_seed(self, factor_key, outer_buf, t):
+        """The outer path's `(ell_t, s_t)`, which the OSS kit's walk starts its row from instead of
+        re-seeding it at `(L*(t_row), 0)` - the carried state phase 3 adds."""
+        return {(factor_key, name): outer_buf[(factor_key, series)][t].reshape(-1)
+                for name, series in (('ell0_inner', 'lv_ell'), ('s0_inner', 'lv_s'))}
+
+    def outer_reseed(self):
+        """t=0 state for the next outer run's burn-in: this run's terminal pair."""
+        return {(self.factor_key, name): value[-1] for name, value in
+                zip(('ell0_outer', 's0_outer'), self.last_state)}
+
+    def reseed_from_path(self, simulated, shared_mem):
+        """REFUSED, by the model: the log-variance carries its OWN two shocks, so the state is not
+        a function of the realised returns."""
+        raise Exception(
+            'LogVar2FJImpliedSpotModel {}: an observed price path does not determine (ell, s). The '
+            'log-variance carries its own two shocks, so the state is not a function of realised '
+            'returns and recovering it is a FILTERING problem, not a replay - a particle filter in '
+            'the `_forward_belief` pattern is the later item. Drive the scenario with a process '
+            'whose state its path determines, or run this factor forward'.format(
+                utils.check_tuple_name(self.factor_key)))
+
+    def calibrated_annual_vol(self):
+        """The first `xi` segment's vol - `xi` being the expected TOTAL forward variance."""
+        return float(np.sqrt(self.implied.param['Xi_Curve'].array[0, 1]))
+
+    def revealed_annual_vol(self, log_h):
+        """`sqrt(exp(log h))` at `log_h = ell + s`: `h` is the ANNUALISED variance already."""
+        return torch.sqrt(torch.exp(log_h))
 
 def process_class(sp_type):
     """The process `Model Configuration` names; an unknown name refuses by name."""

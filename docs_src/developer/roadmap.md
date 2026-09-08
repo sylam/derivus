@@ -11,6 +11,25 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **CVA vega through the LogVar2FJ outer walk is `nan` at float32** (2026-09-08, lane 4) - The carried state
+  hands the pricer clocks the per-row re-seed never produced: the re-seed always started at
+  `sqrt(xi)`, a 21% vol, where the outer path's fifth percentile is 5.5% at three years and lower on
+  a fitted `Sigma_S` of 5. Below a 4% annualised vol on a 21-day block the SECOND of `ig_quantile`'s
+  two Newton steps loses float32 in its BACKWARD — `ig_root`'s residual is pinned at 1.79e-07 by the
+  resolution of `norm_cdf` near one while the smallest root falls two decades faster than the clock,
+  so the correction is ten times the root and the backward's `1/f^2` chain leaves range. Values are
+  untouched (`G` finite everywhere, the CVA identical with the checkpoint on and off); what comes
+  back `nan` is every LogVar2FJ leaf of `grad_cva`, which is exactly the CVA vega the implied leaf
+  exists to carry. Float64 is clean at every clock measured. The fix is a guard on that one division,
+  in the `sqrt_or_zero` style that file already uses; until it lands, a CVA gradient on a book under
+  this outer process is a float64 run.
+- **`utils.ig_quantile` at a ZERO clock is `nan`, and the kit reaches it whenever an MTM row lands
+  exactly on a remaining fixing** (2026-09-08, lane 4) - `ig_root`'s bracket `hi = 200m + 200m^2/lam`
+  is 0/0 there; `LogVar2FJKit.grid` makes one step of length zero, `pieces` keeps it and `mixers`
+  counts it, so the row draws a residual on an empty clock and the netting set reports *contains
+  NANS*. Reproduced by any European whose expiry is a reporting row. The outer process guards its
+  own version (`if step[a:b].sum() > 0.0` when building its pieces); the same guard in
+  `LogVar2FJKit.pieces` is the shape of the fix.
 - **The NKY chain block's vanilla-only objective is BIMODAL, and a `nan` strip walks past `verify`**
   (2026-09-08, lane S) - thirteen fits of `logvar2fj_block_JPY_NKY_BBG` at `Forward_Smile_Source:
   None` over three seeds and four path counts all land between RMSE 0.976 and 1.016 but split into
@@ -297,7 +316,8 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 2. **The compo smile coordinate**, undeclared because every fixture is flat. Same class as (1).
 3. **The 36 disagreeing `.field.get` sites** (three fatal): hold a surviving fallback to its
    declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
-4. **Which state an OSS row inherits.** The fix is shallow — the kit seeds its walk at the row's
+4. **Which state an OSS row inherits.** RETIRED 2026-09-08 by lane 4's outer process (Built): the kit
+   seeds its walk at the row's own offset and the state comes off the outer path. As it stood: the fix is shallow — the kit seeds its walk at the row's
    own offset and the state comes off the outer path — but it is a decision. LogVar2FJ re-seeds
    `(L*(t_row), 0)` per MTM row with the Jensen term measured from the row, so the row reads the
    market's `ξ` exactly; what it still lacks is the carried state, which is phase 3's.
@@ -464,6 +484,32 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane 4: the xVA outer process** (2026-09-08) — `stochasticprocess.LogVar2FJImpliedSpotModel`, the xVA outer process (spec 6.1, brief
+  7). An implied process on the calibrated factor the OSS kit prices off, walking `utils.lv_walk` on
+  the trading day between scenario nodes with the fractional remainder as one exact shorter step;
+  `(ell, s)` revealed per node, handed to the pricer's row as the carried state, and handed to an
+  inner fork by `inner_fork_seed`. The framework's correlated Gaussian multiplies `sqrt(G)` exactly.
+  `Checkpoint_Outer_Walk` (default `Yes`) checkpoints the walk on calendar-anchored 21-day segments
+  with `use_reentrant=False`.
+  
+  *Measured, on the CPU.* **G3-1** outer marginal against the kit's own European at 1m/1y/3y, calls
+  and puts: within `0.22`, `0.43`, `0.80`, `0.78`, `0.21` and `1.21` standard errors at 2,048 outer
+  paths against 4,096 pricing paths, with `E[S_T]/S_0` reading `0.99962` / `0.99849` / `1.00372`.
+  **G3-2** the shock stream and the mixer are the pricer's own function objects, and a fork seeded at
+  an outer node reproduces the whole walk's `M_lev`, `A` and end state within `0.9` ulp at float32
+  (`1.49e-08`) and `1.3` ulp at float64 (`4.16e-17`). **G3-3** the same three numbers survive a
+  re-cut AT the fractional step (`0.728953` of a trading day) within `1.3` ulp. **G3-4** the
+  checkpointed backward is the full-tape one: every one of 892 finite CVA numbers on the autocall book
+  bit-identical, and on a book with no decision product 1,293 at first order and 1,468 at second order
+  (`Hessian: Yes`, through `exposure_kink_term`) bit-identical; the autocall book refuses second order
+  for its own boundary registration, which this switch does not reach. **G3-5** the correlation
+  dilution above. **G3-6** the replay refusal is the sentence. *The tape*, on the desk deal's 5-year
+  grid (1,322 daily steps, 112 nodes) at 2,048 paths: **8.3 MiB** checkpointed against **236.1 MiB**
+  un-checkpointed, a factor of **28.4**, for `1.84x` the forward and `5.0x` the backward.
+  **Retires open decision 4 ("Which state an OSS row inherits").** The kit seeds its walk at the row's
+  own offset and the state comes off the outer path: `LogVar2FJKit.carried` reads the outer process's
+  revealed `(ell, s)` at the node this row lands on, and keeps the `(L*(t_row), 0)` re-seed only where
+  no such process ran. What the decision asked for is now what the engine does.
 - **LogVar2FJ v2, lane S — the calibration in seconds.** `utils.lv_walk` is the block's closed form:
   `lv_ou_path` solves both OU factors over the whole block at once (the transition factorises, so
   the path is one cumulative sum), `lv_state_variance` is the same closed form at twice the

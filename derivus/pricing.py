@@ -102,6 +102,31 @@ class LogVar2FJKit(object):
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.steps_per_year = float(factor_dep['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
+        # where an OUTER LogVar2FJ process publishes its carried state: keyed by the underlying's
+        # own factor, whose type this deal does not name, and read on the DEAL's own day count
+        name = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Offset][0].name[:-1]
+        self.state_keys = [utils.Factor(x, name) for x in ('EquityPrice', 'FxRate')]
+        self.daycount = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+
+    def carried(self, row_t, shared):
+        """This row's carried ``(ell, s)`` per outer path as ``[batch, 1]``, or None where no outer
+        process published one - and then the row re-seeds at ``(L*(t_row), 0)`` as it always has.
+
+        The inner fork's own seed first, then the outer path's revealed series read at the
+        scenario node this row lands on: the state is PREDICTABLE, so a row between nodes reads the
+        one it walked from.
+        """
+        buffer = getattr(shared, 't_Scenario_Buffer', None) or {}
+        for key in self.state_keys:
+            seed = [buffer.get((key, x)) for x in ('ell0_inner', 's0_inner')]
+            if seed[0] is not None:
+                return [x.reshape(-1, 1) for x in seed]
+            series = [buffer.get((key, x)) for x in ('lv_ell', 'lv_s')]
+            if series[0] is not None:
+                at = self.daycount(buffer[(key, 'lv_days')].detach().cpu().numpy())
+                row = int(np.searchsorted(at - utils.BUCKET_TOL, float(row_t), 'right') - 1)
+                return [x[max(row, 0)].reshape(-1, 1) for x in series]
+        return None
 
     def draws(self, key, shape, deltas, antithetic):
         """One SEGMENT's two normals over ``[batch, sims, n]`` and IN FLOAT32, from a generator
@@ -180,8 +205,10 @@ class LogVar2FJKit(object):
 
         THE CURVE IS THE MARKET'S OBJECT. ``Xi_Curve`` is the expected forward variance and the OU
         mean level is DERIVED, ``L*(t) = log xi(t) - Var(l+s)(t)/2``, with the variance measured
-        from THIS ROW - the state re-seeds at ``(L*(t_row), 0)``, so the row reads ``xi`` exactly
-        where a base-date Jensen term would under-shoot it by ``exp(-(Var_0 - Var_row)/2)``.
+        from THIS ROW - a row with no state to inherit re-seeds at ``(L*(t_row), 0)`` and reads
+        ``xi`` exactly where a base-date Jensen term would under-shoot it by
+        ``exp(-(Var_0 - Var_row)/2)``. Where an OUTER LogVar2FJ process walked the scenario, the
+        row starts from the state that path actually carries (`carried`) instead.
 
         EVERY SEGMENT OF `LV_CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
         boundary states and the backward recomputes its intermediates - draws included - one
@@ -211,8 +238,10 @@ class LogVar2FJKit(object):
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
         base = int(torch.randint(1 << 42, (1,)).item()) << 20
-        s = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
-        l, M, var, j, drawn = s + curve[0], [], [], 0, 0
+        zero = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
+        state = self.carried(row_t, shared)
+        l, s = (zero + curve[0], zero) if state is None else (zero + state[0], zero + state[1])
+        M, var, j, drawn = [], [], 0, 0
         for rows in self.pieces(row_t, deltas):
             m, v = 0.0, 0.0
             for start, end, bucket in rows:

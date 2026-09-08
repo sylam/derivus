@@ -923,6 +923,12 @@ class Credit_Monte_Carlo(Calculation):
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
+        F('Checkpoint_Outer_Walk', 'Text', default='Yes', values=['Yes', 'No'],
+          description='Checkpoint the SCENARIO generator\'s own internal walk, recomputing each '
+                      'segment\'s intermediates and redrawing its shocks in backward() instead of '
+                      'taping them. Two tapes, two named switches: this one is the outer walk, '
+                      '`Recompute_Inner_MC` the pricer\'s. Read only by a process that walks an '
+                      'internal clock (`LogVar2FJImpliedSpotModel`) and ignored by every other'),
         F('Credit_Valuation_Adjustment', 'Container',
           default={"Calculate": "No", "Counterparty": "", "Bank": "",
                    "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
@@ -1265,6 +1271,7 @@ class Credit_Monte_Carlo(Calculation):
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
+        shared_mem.checkpoint_outer_walk = self.params.get('Checkpoint_Outer_Walk', 'Yes') == 'Yes'
         # the one registration that is opt-in rather than implied by wanting sensitivities - its
         # magnitude is unestablished, so a document asks for it by name
         shared_mem.boundary_window_touch = self.params.get(

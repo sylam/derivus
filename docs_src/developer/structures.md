@@ -205,6 +205,40 @@ LogVar2FJ adds over that is the FORWARD skew, a lever in calendar time rather th
 ([Market Prices](market_prices.md#logvar2fj)), plus the second-order greeks and the quote-space risk
 neither retired family carried.
 
+**The scenario generator is the pricer's own walk.** `LogVar2FJImpliedSpotModel` is the xVA outer
+process: an implied process reading the same calibrated `LogVar2FJModelParameters` factor the OSS
+kit prices off — through `implied_tensor`, so CVA vega reaches ONE leaf and not two — and stepping
+`utils.lv_walk` on the trading day between scenario nodes, whole days plus the remainder as one
+shorter step. Outer, inner and pricer are one walk and one mixer STRUCTURALLY:
+`LogVar2FJImpliedSpotModel.draws is LogVar2FJKit.draws` and `.residual is LogVar2FJKit.residual`
+are the same function objects, so a fork seeded at an outer node cannot disagree with the stride it
+continues.
+
+Given the day's two shocks and the block's mixer the interval return is `N(M, G)` exactly, so the
+framework's one Cholesky-correlated Gaussian per scenario step multiplies `sqrt(G)` and there is no
+weighted-combination approximation and no drift correction: the leverage factors have conditional
+mean one and `mu_A` forces the residual's. **A declared cross-factor correlation therefore sits on
+the Gaussian GIVEN THE MIXER**, and the correlation the realised block returns carry is that number
+times `E[Sigma]/sd(R)` — at most `sqrt(c_eff)` with `c_eff = c*gamma^2/alpha^2`. Measured on a
+declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation is `0.352` / `0.353`
+/ `0.354` of the declared one — flat in the declared value, against a bound of `0.456` — and the
+Gaussian-residual limit, which has no mixer, reads `0.452` / `0.454` / `0.454`. The historical
+estimator (`LogVar2FJCalibration`) measures its own `eps` on that same object, so a book's matrix
+crosses AS IS and nothing is rescaled.
+
+**The day's shocks are a function of the day.** They come from a `torch.Generator` per
+CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside
+the checkpoint's recompute, so where the scenario nodes fall moves no draw; `-eta` on the antithetic
+half, as the framework mirrors its own normals, and the mixer uniform per scenario step is
+`quasi_rng`'s with `1 - u` on that half. `Checkpoint_Outer_Walk` (default `Yes`) is the outer tape's
+own switch beside `Recompute_Inner_MC`, the pricer's: two tapes, two named switches.
+
+**Replay is refused.** The log-variance carries its own two shocks, so `(ell, s)` is not a function
+of the realised returns and `reseed_from_path` answers a sentence saying so — recovering the state
+from an observed price path is a filtering problem, not a replay.
+
+---
+
 ## The spread is quoted, the mid is booked {#two-sided}
 
 A desk does not sell at the mid and its book does not mark at the offer; both are true at once because
