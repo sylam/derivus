@@ -55,19 +55,6 @@ caller** (several items below are deliberately not started), and **look before y
   -42m (GBM V2), -64m (GBM six legs on the file's parametric skew) and -42m (LogVar2FJ). A GBM
   mark of a compact V2 on a skewed surface should not be stood behind until the arm reads the put
   at its own strike.
-- **Stage 5's vanilla guard refuses with a bare tensor error where no quote sits within ONE STEP
-  of a forward maturity** (2026-09-08) - `LVFit.global_stages` builds `guarded` as the quotes within
-  `self.delta` = `1/Steps_Per_Year` of a target's `T1` or `T1 + Delta`, and stage 5a/5b's guard then
-  `torch.stack`s their misses: on the NKY chain block with `Param_Buckets` at 0.5y the 6m:6m row
-  survives the reachability rule (its 0.5096y rung is 1.9% of Delta away) but is 2.4 steps from
-  0.5y, so `guarded` is EMPTY and the fit dies at `bootstrappers.py:1919` with *RuntimeError: stack
-  expects a non-empty TensorList* under both `Stationary_Spread` arms, 940 s in
-  (`artifacts/remark_20260908/repro_bucket.py`). Two tolerances for one question - the reachability
-  rule reads the rung nearest Delta within a quarter of it, the guard reads one day - and the guard
-  is the one that should follow the rule: judge the failure mode on the rungs nearest each target
-  maturity, and refuse BY NAME where there is none rather than stacking nothing. Until then the
-  calendar bucket, which is the brief's own lever for the forward block, cannot be measured on any
-  ladder whose rungs miss the forward horizons by more than a day - which is every listed chain.
 - **The autocall's fixing-to-coupon alignment is a guess the booking never states** (2026-09-08) -
   `QEDI_CustomAutoCallSwap.calc_dependencies` drops fixings more than a month before the first
   unpaid coupon and pairs the rest with the coupons POSITIONALLY (`one_each`: equal counts, each
@@ -233,6 +220,31 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **Stage 5's vanilla guard refuses with a bare tensor error where no quote sits within ONE STEP
+  of a forward maturity** (2026-09-08) - CLOSED by lane S2 the same day: `LVFit.guard_rungs` reads the rung nearest
+  each target's `T1` and `T1 + Delta` within `spot_rung_tol * Delta`, and refuses by name where
+  there is none; the guarded set is built only where stage 5 runs, so a one-bucket ladder pays
+  neither the extra evaluation nor a degradation line for a stage that did not happen. Every fit
+  whose guarded set was non-empty before is bit-identical, and there is none in the book: all four
+  ladders re-fit to the LAST BIT under the production defaults, same evaluations and same RMSE.
+  **First measurement of the calendar bucket on a listed chain**: the second-bucket NKY document
+  runs to the end in 346.9 s where it died at 940 s, and says what the lever costs — the 0.5y bucket
+  moves `Rho_S` from −0.7962 to −0.7857 and `Beta` not at all, while the vanilla RMSE at the forward
+  rows' own maturities DEGRADES by +0.119 vol points, past spec 5.3's 0.1 failure mode. The joint
+  polish stops CAPPED at `Max_Iterations` 150, so theta\* there is where the budget ran out; and the
+  guard binds stages 5a/5b, while the +0.119 is read after the unguarded polish.
+  As it stood: `LVFit.global_stages` builds `guarded` as the quotes within
+  `self.delta` = `1/Steps_Per_Year` of a target's `T1` or `T1 + Delta`, and stage 5a/5b's guard then
+  `torch.stack`s their misses: on the NKY chain block with `Param_Buckets` at 0.5y the 6m:6m row
+  survives the reachability rule (its 0.5096y rung is 1.9% of Delta away) but is 2.4 steps from
+  0.5y, so `guarded` is EMPTY and the fit dies at `bootstrappers.py:1919` with *RuntimeError: stack
+  expects a non-empty TensorList* under both `Stationary_Spread` arms, 940 s in
+  (`artifacts/remark_20260908/repro_bucket.py`). Two tolerances for one question - the reachability
+  rule reads the rung nearest Delta within a quarter of it, the guard reads one day - and the guard
+  is the one that should follow the rule: judge the failure mode on the rungs nearest each target
+  maturity, and refuse BY NAME where there is none rather than stacking nothing. Until then the
+  calendar bucket, which is the brief's own lever for the forward block, cannot be measured on any
+  ladder whose rungs miss the forward horizons by more than a day - which is every listed chain.
 - **`utils.LatchedBoundarySet` × a lagged settlement** — a block opening after a fixing and before
   its settlement (`last_fixing` set, `fixing_aligned` False) prices the coupon crisply off the one
   observed fixing on EVERY row, but the decision's own-row fork carried the `tau == 0` row alone
@@ -510,6 +522,37 @@ set; and five model items in the punchlist below.
   own offset and the state comes off the outer path: `LogVar2FJKit.carried` reads the outer process's
   revealed `(ell, s)` at the node this row lands on, and keeps the `(L*(t_row), 0)` re-seed only where
   no such process ran. What the decision asked for is now what the engine does.
+- **LogVar2FJ v2, lane S2 — the calibration on the card, and the inner bootstrap as a Newton**
+  (2026-09-08). The `LogVar2FJModelParameters.device = cpu` pin is GONE: the family takes the
+  device it is constructed with, which on a CUDA box is the card, and the two things the pin stood
+  for are answered rather than avoided — `draw` generates BOTH streams on the host under
+  `Random_Seed`'s own generator and moves them, so a seed names a draw and not a
+  draw-and-a-device, and `Calculation.factor_leaf`'s existing `theta.to(device, dtype)` is a
+  differentiable copy, so a CPU-sharded calculation reads a card-fitted leaf and its backward
+  still reaches the fit's quote leaf (proved as a document: a `Quote_Sensitivity: Yes` ladder
+  fitted on `cuda:0` whose leaf a CPU `CreditMonteCarlo` consumes, theta\* bit-identical to the
+  CUDA-calculation run and `dCVA/dq` back on the CUDA leaf). `LVFit.solve_l` is a damped NEWTON at
+  the pillar's own slope — the pass that prices a pillar carries a backward anyway, so the exact
+  slope is free and a chord off a stale one only spends more passes: 1.64–1.70x fewer passes,
+  1.33x on the clock, and a strip solved an order TIGHTER on two ladders. `verify`'s ATM gate
+  compares with `not <=` and names a NaN pillar, which a `>` let through — reproduced on the
+  `Sobol` 8192 run lane S found, which now refuses by name and writes no factor. **The four book
+  blocks re-fit to the banked theta\* within 1e-11 absolute on three ladders and 2.6e-9 RELATIVE
+  on `EUR_SD3E`'s unidentified `Alpha` valley, evaluation for evaluation and RMSE for RMSE**;
+  every GBM and Hull-White document stays hex-identical (4,180 floats over 16 documents) and so
+  does the crisp GBM TARF. **`JPY_NKY_BBG`: 3385.2 s at the pre-lane-S base, 742.2 s after lane S,
+  and 70.5 s here** alone on the box — the designed back-to-back pair reads **588.4 s → 127.2 s**
+  under an eight-process load at the same 44 evaluations and the same RMSE 0.978. The four ladders
+  fit in **70–98 s** at that objective and **107–192 s** at the production defaults, alone. What
+  is left is priced: `utils.ig_root`'s FIXED 34-step budget is 30% of the card's profile and is
+  pure dispatch (~1,200 launches a call, the same whether the strip is one block or four), so the
+  next lever is `LV_IG_STEPS`' determinism ruling — which lane S set for the PRICER's checkpoint
+  recompute and not for the calibrator, which never checkpoints.
+- Measured and NOT taken: **forward-mode AD for the Jacobian**. Lane S priced it at ~1.6x when the
+  batched reverse backward was 61% of the CPU clock. On the card that backward is **0.104 s a call
+  against the CPU's 6.78 s**, so `LVFit.jacobian` is 87% its own FORWARD residual and 13% its
+  backward — `jacfwd` would ride `nx` tangents on the expensive half and cost MORE than the 25
+  cotangents it replaces. Reverse stays, and `solve_l` keeps the one Python scalar its stop reads.
 - **LogVar2FJ v2, lane S — the calibration in seconds.** `utils.lv_walk` is the block's closed form:
   `lv_ou_path` solves both OU factors over the whole block at once (the transition factorises, so
   the path is one cumulative sum), `lv_state_variance` is the same closed form at twice the

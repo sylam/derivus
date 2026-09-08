@@ -1477,8 +1477,7 @@ class LVFit(object):
                    'Beta': lv_parse_bounds(read['Beta_Bounds'], 'Beta_Bounds')}
         self.stage_horizons = lv_parse_bounds(read['Stage_Horizons'], 'Stage_Horizons')
         self.slow_horizon = float(read['Slow_Horizon'])
-        self.l_iterations, self.l_rounds = int(read['Xi_Solve_Iterations']), int(
-            read['Xi_Solve_Rounds'])
+        self.l_iterations = int(read['Xi_Solve_Iterations'])
         self.l_damping = float(read['Xi_Solve_Damping'])
         self.cap_headroom_max = float(read['Cap_Headroom_Max'])
         self.log_vol_sd_band = lv_parse_bounds(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
@@ -1494,7 +1493,7 @@ class LVFit(object):
                              .format(read['Psi_Strikes']))
         self.c_margin = float(read['C_Margin'])
         self.soft_penalty = float(read['Soft_Penalty'])
-        self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0, 'b': 0}
+        self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
         #: the target DIFFERENCE pair per forward tenor, the spot rung each forward tenor's own
         #: smile is read at, the history's slow pair where the job carries one, and the report
@@ -1531,6 +1530,10 @@ class LVFit(object):
         wider than `SOBOL_MAX_DIMENSION` refuses by name rather than chunking: the calculation
         chunks because a scenario grid can be that wide, and a calibration grid that is says the
         grid is wrong.
+
+        BOTH STREAMS ARE GENERATED ON THE HOST and moved, whatever device the fit runs on: a CUDA
+        generator is a different stream from the CPU one, so a seed would otherwise name a draw
+        only together with the silicon that drew it, and a fit on the card would be a different fit.
         """
         half = max(int(paths) // 2, 1)
         if self.sampling == 'Sobol':
@@ -1543,16 +1546,16 @@ class LVFit(object):
                         self.market_price, width, calculation.SOBOL_MAX_DIMENSION))
             engine = torch.quasirandom.SobolEngine(width, scramble=True, seed=int(seed))
             engine.fast_forward(calculation.QUASI_ANCHOR)
-            draws = engine.draw(half, dtype=self.prec).to(self.device).clamp(1e-6, 1.0 - 1e-6)
+            draws = engine.draw(half, dtype=self.prec).clamp(1e-6, 1.0 - 1e-6)
             z_l, z_s = (utils.norm_icdf(draws[:, :steps]),
                         utils.norm_icdf(draws[:, steps:2 * steps]))
             u = draws[:, 2 * steps:]
         else:
-            gen = torch.Generator(device=self.device).manual_seed(int(seed))
-            kw = {'generator': gen, 'dtype': self.prec, 'device': self.device}
+            kw = {'generator': torch.Generator().manual_seed(int(seed)), 'dtype': self.prec}
             z_l, z_s = torch.randn(half, steps, **kw), torch.randn(half, steps, **kw)
             u = torch.rand(half, blocks, **kw)
-        return torch.cat([z_l, -z_l]), torch.cat([z_s, -z_s]), torch.cat([u, 1.0 - u])
+        return tuple(torch.cat([x, y]).to(self.device)
+                     for x, y in ((z_l, -z_l), (z_s, -z_s), (u, 1.0 - u)))
 
     def lstar(self, scalars, levers, levels):
         """The OU mean level at the walk's grid times: `log xi(t) - Var(l+s)(t)/2` (brief 1).
@@ -1815,23 +1818,23 @@ class LVFit(object):
 
         Triangular because the model is - an option to `T_k` reads `xi` only on `[0, T_k]`, and
         segment k's level nowhere before `T_{k-1}` - and the premium is monotone in that level, so
-        the root is unique and the search is a CHORD off the previous sweep's slope, warm started
-        at the previous sweep's answer and run to `Pillar_Tolerance` OFF THE TAPE. A stale chord
-        that misses gets one refreshed slope, which is the whole of the fallback. `L*` is DERIVED
-        per candidate, `log xi - Var(l+s)/2`, so the solve moves the market's own object.
+        the root is unique and the search is a damped NEWTON warm started at the previous sweep's
+        answer and run to `Pillar_Tolerance`. `L*` is DERIVED per candidate,
+        `log xi - Var(l+s)/2`, so the solve moves the market's own object.
 
-        The level RETURNED is one NEWTON STEP at that root, `x_k* - F_k/detach(dF_k/dx_k)`, off the
-        one graph pass a pillar costs - so `dxi_k/dtheta`, `dxi_k/dxi_j` down the triangle and
+        EVERY STEP TAKES THE PILLAR'S OWN SLOPE, because the pass that prices it has to carry a
+        backward anyway: the level RETURNED is one Newton step at the root,
+        `x_k* - F_k/detach(dF_k/dx_k)`, so `dxi_k/dtheta`, `dxi_k/dxi_j` down the triangle and
         `dxi_k/dq` at the ATM quote are all the implicit function theorem written as an EXPRESSION,
-        which is the component family's own spelling of it. Spending the backward on the root alone
-        is what makes the per-iterate bootstrap affordable: measured on the walk at 8192 paths over
-        504 daily steps, a forward pass is 0.280 s and a pass with its backward 0.756 s.
+        which is the component family's own spelling of it. A chord off the PREVIOUS sweep's slope
+        buys a cheaper step and spends more of them - and a step and a pass cost the same thing
+        here, one walk of the prefix with its mixers, so the exact slope is the cheaper sweep.
 
         A sweep is deterministic in `x` to `Pillar_Tolerance` - a relative premium miss two orders
         under the outer `Tolerance` - which is the same argument the component family's brentq
-        makes for its own bracket; the warm start moves the answer no further than that. A stale
-        slope of exactly ZERO skips the chord and takes the round's refreshed one, which is what an
-        absent slope does: it is the one division here that a Python float can raise on.
+        makes for its own bracket; the warm start moves the answer no further than that. A slope of
+        exactly zero divides in TENSORS to an infinite step the damping takes as its own bound, and
+        one that leaves a pillar at nan refuses in `verify` by name.
         """
         targets = self.market(self.atm)
         levels, misses = [], []
@@ -1844,27 +1847,18 @@ class LVFit(object):
                                             int(self.upto[quote.j])), quote) - targets[k]
 
             at = self.warm[k]
-            for _ in range(self.l_rounds):
-                # a slope of exactly zero is as useless as an absent one, and dividing by it is the
-                # one bare float division here: the round takes its refreshed slope instead
-                if self.slopes[k]:
-                    with torch.no_grad():
-                        for _ in range(self.l_iterations):
-                            miss = float(priced(at)) / quote.premium
-                            if abs(miss) < self.pillar_tol:
-                                break
-                            at = at + max(-self.l_damping, min(
-                                self.l_damping, -miss * quote.premium / self.slopes[k]))
+            for _ in range(self.l_iterations):
                 pillar = at.detach().requires_grad_(True)
                 shift = priced(pillar)
                 slope = torch.autograd.grad(shift, pillar, retain_graph=True)[0].detach()
-                self.calls['b'] += 1
-                self.slopes[k] = float(slope)
-                if abs(float(shift.detach()) / quote.premium) < self.pillar_tol:
+                miss = float(shift.detach()) / quote.premium
+                if abs(miss) < self.pillar_tol:
                     break
+                at = pillar.detach() - (shift.detach() / slope).clamp(
+                    -self.l_damping, self.l_damping)
             levels.append(pillar.detach() - shift / slope)
             self.warm[k] = pillar.detach()
-            misses.append(float(shift.detach()) / quote.premium)
+            misses.append(miss)
         self.atm_misses = misses
         return levels
 
@@ -1973,7 +1967,7 @@ class LVFit(object):
         terms = self.residual(leaf, coords, judged, forwards, **kw)
         return torch.autograd.grad(
             terms, leaf, torch.eye(terms.numel(), dtype=self.prec, device=self.device),
-            is_grads_batched=True)[0].numpy()
+            is_grads_batched=True)[0].cpu().numpy()
 
     def label(self, coord):
         return coord[0] if coord[1] is None else '{}[{:g}y]'.format(
@@ -2016,7 +2010,8 @@ class LVFit(object):
 
         def residual(x):
             self.calls['n'] += 1
-            return self.residual(self.vector(x), coords, judged, forwards, **kw).detach().numpy()
+            return self.residual(
+                self.vector(x), coords, judged, forwards, **kw).detach().cpu().numpy()
 
         started = time.time()
         result = scipy.optimize.least_squares(
@@ -2121,12 +2116,11 @@ class LVFit(object):
             self.pin_slow()
         self.state['Cap_A'] = self.cap_level()
 
-        self.guarded = [q for q in self.quotes if any(
-            min(abs(q.T - t.T1 - t.tenor), abs(q.T - t.T1)) < self.delta for t in self.targets)]
-        self.base_rmse = self.rmse(self.evaluate()[2], self.guarded) if self.guarded else 0.0
         last = self.buckets.size - 1
         if self.targets and last:
-            later = [b for b in range(1, self.buckets.size)]
+            self.guarded = self.guard_rungs()
+            self.base_rmse = self.rmse(self.evaluate()[2], self.guarded)
+            later = list(range(1, self.buckets.size))
             guard = (self.guarded, self.base_rmse)
             self.stage('5a beta(t)', [('Beta', b) for b in later], self.guarded, self.targets,
                        guard=guard, smooth=last)
@@ -2141,6 +2135,36 @@ class LVFit(object):
                    for b in range(self.buckets.size)
                    if not (name == 'Alpha' and self.pinned_alpha)]
         self.stage('6 joint polish', polish, self.quotes, self.targets, smooth=last)
+
+    def guard_rungs(self):
+        """The quotes stage 5's vanilla guard is held to: the rung NEAREST each forward target's
+        own `T1` and `T1 + Delta`, within the quarter of Delta `reachable` measures a spot rung by.
+
+        The guard asks what the forward block did to the vanillas AT the rows' own maturities, and
+        a chain quotes where it quotes: a window whose end sits a fortnight off the nearest listed
+        expiry is still that expiry's window. Matching within one internal STEP instead left the
+        set EMPTY on a ladder whose 6m rung is 1.9% of Delta away and stacked nothing, so a ladder
+        with no rung inside the tolerance REFUSES here rather than judging a stage on no rows.
+        """
+        rungs = sorted({quote.T for quote in self.quotes})
+        wanted, maturities = set(), set()
+        for target in self.targets:
+            for T in (target.T1, target.T1 + target.tenor):
+                maturities.add(T)
+                near = min(rungs, key=lambda x: abs(x - T))
+                if abs(near - T) <= self.spot_rung_tol * target.tenor:
+                    wanted.add(near)
+        if not wanted:
+            raise ValueError(
+                '{}: stage 5 fits the later buckets to the forward rows and is HELD to the vanilla '
+                'RMSE at those rows\' own maturities, and this ladder quotes {} - no expiry within '
+                '{:.0%} of Delta of any of {} - so the guard would be read over no quotes at all. '
+                'Quote a rung at those maturities, drop the later Param_Buckets, or set '
+                'Forward_Smile_Source to None, where one bucket is the model'.format(
+                    self.market_price, '/'.join('{:g}y'.format(T) for T in rungs),
+                    self.spot_rung_tol,
+                    '/'.join('{:g}y'.format(T) for T in sorted(maturities))))
+        return [quote for quote in self.quotes if quote.T in wanted]
 
     def identified_slow(self):
         """Does this ladder identify `(rho_l, sigma_l)` - WING quotes at `slow_horizon` or longer
@@ -2350,17 +2374,25 @@ class LVFit(object):
     def verify(self):
         """The failures a calibrated surface may not carry, raised BEFORE the report so a refusal
         is a message rather than half a log, and the two the block declares `Refuse | Floor` on -
-        never a silent third option (spec 5.4.6). Leaves the cap headroom the report prints."""
-        stuck = [i for i, x in enumerate(self.atm_misses) if abs(x) > self.atm_miss_max]
+        never a silent third option (spec 5.4.6). Leaves the cap headroom the report prints.
+
+        A pillar that priced to NaN refuses HERE, by name: it is the one failure a threshold
+        cannot see, every comparison against a nan being False."""
+        stuck = [i for i, x in enumerate(self.atm_misses) if not abs(x) <= self.atm_miss_max]
         if stuck:
+            gone = [i for i in stuck if not np.isfinite(self.atm_misses[i])]
             raise ValueError(
                 '{}: no xi level reprices the {} ATM pillar{} - {}. The triangular bootstrap is '
                 'monotone in a pillar\'s own level, so a pillar that walks its Newton steps out '
                 'and still misses is one the OTHER parameters have put out of reach. Quote a '
-                'surface this model can reach'.format(
+                'surface this model can reach{}'.format(
                     self.market_price, len(stuck), '' if len(stuck) == 1 else 's',
                     ', '.join('{:g}y {:+.2%}'.format(self.knots[i + 1], self.atm_misses[i])
-                              for i in stuck)))
+                              for i in stuck),
+                    '' if not gone else
+                    '. {} of them priced to NaN, which is an arithmetic failure and not a '
+                    'miss: the walk overflowed before any level could be wrong'.format(
+                        len(gone))))
 
         # the BOX is the event, not the soft margin above it: the fit is bounded at exactly C_Min,
         # so a bucket landing there is one the box stopped rather than an interior optimum
@@ -2773,11 +2805,10 @@ class LVFit(object):
             self.identification(tag, labels, jacobian)
         sweeps = max(self.calls['n'] + self.calls['j'], 1)
         logging.info('  {} evaluations and {} Jacobians in {:.1f}s; the inner bootstrap cost {} '
-                     'pillar passes of which {} carried a backward - {:.1f} and {:.1f} a sweep '
-                     'over {} pillars'.format(
+                     'pillar passes, each carrying the backward its Newton slope is - {:.1f} a '
+                     'sweep over {} pillars'.format(
                          self.calls['n'], self.calls['j'], self.elapsed, self.calls['l'],
-                         self.calls['b'], self.calls['l'] / sweeps, self.calls['b'] / sweeps,
-                         len(self.atm)))
+                         self.calls['l'] / sweeps, len(self.atm)))
         self.family.quote_trailer(self.instrument)
 
 
@@ -2957,12 +2988,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     )
 
     market_factor_type = 'LogVar2FJModelPrices'
-    #: The fit runs on the CPU whatever device the job was constructed with. NOT because the card
-    #: loses - since the walk became `utils.lv_ou_path`'s closed form it is bandwidth-bound and 690
-    #: daily steps at 8192 paths measure 0.156 s here against 0.0062 s on an RTX 3090 - but because
-    #: `Quote_Sensitivity` hands LIVE TENSORS to the calculation, whose device is the job's. Moving
-    #: the pin is a decision about where a calibrated leaf lives; the draws would move with it.
-    device = torch.device('cpu')
 
     identification_note = ('the forward-smile targets: the later buckets of Rho_S and Beta are '
                            'identified by them and by nothing else')
@@ -3198,9 +3223,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       '5.2 stage 4); with no wing at or beyond it Rho_L/Sigma_L are pinned'),
         F('Xi_Solve_Iterations', 'Integer', default=12,
           description='Chord steps one xi pillar\'s Newton solve gets per round'),
-        F('Xi_Solve_Rounds', 'Integer', default=3,
-          description='How many rounds (each ending in one refreshed slope) a xi pillar\'s solve '
-                      'gets'),
         F('Xi_Solve_Damping', 'Float', default=0.5,
           description='The largest move in log-variance one xi pillar chord step may take; tames '
                       'only a first step off a bad seed, the price being monotone in the level'),
@@ -3247,7 +3269,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     ] + OptionQuoteFamily.fields[-1:]
 
     def __init__(self, param, device, dtype):
-        # the constructed device and dtype are ignored - see the `device` note and `prec`
+        # the constructed dtype is ignored (see `prec`); the DEVICE is the job's, the walk being
+        # bandwidth-bound since `utils.lv_ou_path` and 25x cheaper on a card
+        super(LogVar2FJModelParameters, self).__init__(param, device, dtype)
         #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
         #: own defaults - each quote's own instrument is unioned onto this and wins on conflict,
         #: so a quote need carry only its data and never repeat a family's optimizer settings
@@ -3718,7 +3742,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         if levels is None:
             levels = [self.tensor(np.log(x)) for x in fit.xi]
         fit.levels, fit.warm = list(levels), list(levels)
-        fit.slopes = [None] * len(levels)
 
 
 class GBMAssetPriceTSModelParameters(object):

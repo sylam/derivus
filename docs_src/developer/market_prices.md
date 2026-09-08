@@ -214,13 +214,44 @@ linear in their own shocks, and the OU transition `exp(C_k − C_{j+1})` on the 
 factorises, so the whole block's state path is one cumulative sum of the discounted shocks scaled
 back by the cumulated decay (`utils.lv_ou_path`) and the clock, the leverage mean and the quanto
 drift are elementwise over the step axis with one reduction each — tens of dispatches a block
-where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is
-**0.156 s against the scan's 0.349 s**, and with its backward **0.251 s against 0.704 s**; the
-same walk on an RTX 3090 is **0.0062 s and 0.0099 s**, twenty-five times the CPU, where the scan
-measured SLOWER on the card than on the host. **The pin stays CPU anyway**, and its own note now
-says why: `Quote_Sensitivity` hands LIVE TENSORS to the calculation, whose device is the job's, so
-moving the pin is a decision about where a calibrated leaf lives — and the pseudo-random draws
-would move with it.
+where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is **0.156 s against the scan's 0.349 s**, and
+with its backward **0.251 s against 0.704 s**; the same walk on an RTX 3090 is **0.0062 s and
+0.0099 s**, twenty-five times the CPU, where the scan measured SLOWER on the card than on the
+host. **THE FIT RUNS ON THE JOB'S DEVICE**, which on a CUDA box is the card: the constructed
+device is no longer ignored, and the two things the old note held the pin for are answered rather
+than avoided. THE STREAM IS THE SEED'S AND NOT THE SILICON'S — `draw` generates both streams on
+the HOST under `Random_Seed`'s own generator and moves the tensors, so `Pseudo` 8192 on the card
+is the draw it was on the CPU and a banked fit re-fits to it; a CUDA generator is a different
+stream, and a seed that named a draw only together with the device it was drawn on would make "the
+same answer" undefined. THE LEAF LIVES ON THE CALCULATION'S DEVICE — `Calculation.factor_leaf`
+already moves the calibrated `theta` with `.to(device=self.device, dtype=self.dtype)` before it
+splices `leaf + (theta - theta.detach())`, and that copy is differentiable, so the calculation's
+backward reaches the fit's graph across a device boundary and `dV/dq` arrives on the fit's own
+quote leaf. A CPU-sharded calculation on a CUDA box is therefore a CPU calculation reading a leaf
+fitted on the card, which is what that seam was always shaped for.
+
+**The clock moved with it, and the profile changed shape.** The capped NKY profile
+(`artifacts/lv_fast2_20260908/profile_fit.py 3 8192`) is **126.8 s on the CPU against 17.3 s on
+the card**, and the item that was 61% of the CPU clock — the batched reverse Jacobian — is 4% of
+the card's: the 25-row backward over a 504-step block at 8192 paths costs **6.78 s on the CPU and
+0.104 s on an RTX 3090**. What is left is the inverse-Gaussian root at 30% and the pillars' own
+backwards at 28%. `ig_root`'s fixed budget of 34 masked Newton steps is roughly 1,200 kernel
+launches on a `[paths, blocks]` tensor of a few tens of thousands of doubles, so its cost is
+DISPATCH: **34 ms whether the strip is one block or four**, which is two and a half times a whole
+690-step walk. One consequence for a reader tuning a block: **the path count is no longer a speed
+lever on the card.** An eight-fold cut in `Paths` buys about 1.4x an evaluation where the CPU's
+vectorised walk gave most of eight.
+
+**The inner bootstrap is a damped NEWTON, not a chord.** A pillar's pass has to carry a backward
+anyway — the level returned is one Newton step at the root, which is what puts `dxi/dtheta` on the
+tape — so the slope that step is taken with is already paid for, and a chord off the PREVIOUS
+sweep's slope only buys a cheaper step at the price of spending more of them. Measured on the four
+book ladders, a sweep costs **2.1–2.5 pillar passes a pillar against the chord's 3.5–4.3**, which
+is 1.64–1.70x fewer passes and **1.33x on the wall clock**, at the same evaluation count and the
+same RMSE — and it solves the strip TIGHTER, the worst ATM miss falling from 8.8e-11 to 6.5e-12 on
+`USD_NDX_INDEX` and from 6.7e-11 to 9.1e-12 on `JPY_NKY_BBG`. A slope of exactly zero now divides
+in TENSORS to an infinite step the damping bounds, so the `ZeroDivisionError` a Sobol stream once
+reached has no bare float left to raise on.
 `Invert_Spot` keeps the recursion: the S-numeraire shift is the state's own `√V`, which makes the
 transition state-dependent, and the block sums below it are the one spelling either way. The grid is the QUOTES' own, one trading day
 between block ends with a stub landing each block on its `T`: reading the same rung on the
@@ -235,8 +266,28 @@ is a scrambled sequence over the `2 × steps + blocks` dimensions in the calcula
 convention (`calculation.CMC_State.quasi_rng` — one engine at `QUASI_ANCHOR`, that clamp margin,
 that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than `SOBOL_MAX_DIMENSION` refuses
 by name rather than chunking, the calculation chunking because a scenario grid can be that wide
-and a calibration grid that is saying the grid is wrong. **`Pseudo` STAYS THE DEFAULT until the
-Sobol floor is measured on all four book ladders** — see the measurement note in §5.
+and a calibration grid that is saying the grid is wrong. **`Pseudo` STAYS THE DEFAULT** and `Paths` stays 8192, and the PRODUCTION objective — priors on
+and the forward rows in, which is what a book fits under — is not the cure. Across `Random_Seed`
+1–5 at `Pseudo` 8192, `Beta` changes SIGN on `EUR_SX5E`, `USD_NDX_INDEX` and `JPY_NKY_BBG`, and
+`Alpha` runs from 110 to its box top of 500 on `JPY_NKY_BBG`, inside RMSE bands 0.03 to 0.25 vol
+points wide. **That is an identification failure and not a noise floor**: the ATM strip is pinned
+by the inner bootstrap, and what wanders is exactly what the WING quotes are supposed to identify.
+No stream is uniformly tighter either — Sobol holds `Alpha` inside 2.1 where `Pseudo` spreads it
+over 107.7 on `USD_NDX_INDEX`, is seven times WIDER on `EUR_SD3E`, and is indifferent on
+`JPY_NKY_BBG`, where every stream spreads `Alpha` over its whole box. A default cannot be set
+against a quantity the objective cannot tell apart, and a same-answer gate on such a ladder proves
+determinism rather than agreement.
+
+**The defaults, with the numbers that set them** (lanes S and S2):
+
+| field | default | the number that sets it |
+| --- | --- | --- |
+| `Sampling` | `Pseudo` | under the PRODUCTION objective `Beta` changes SIGN across `Random_Seed` on three of the four book ladders, and no stream is uniformly tighter (§2) |
+| `Paths` | 8192 | the same reading; and on the card the path count is no longer a speed lever, an eight-fold cut buying about 1.4x an evaluation |
+| `Tolerance` | 1e-8 | lane S: 1e-6 buys ONE evaluation of forty-four and moves theta\* by 4e-5 relative |
+| `LV_IG_EXPAND`, `LV_IG_STEPS` | 3, 34 | lane S: the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a ruling rather than a measurement |
+| `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
+| the fit's device | the job's | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s |
 
 **`Tolerance` is `ftol` on a MONTE CARLO objective, and it is not what a stage stops on.** Asking
 a fixed-draw sample mean to converge to 1e-8 looks like asking it to converge to its own rounding
@@ -507,6 +558,13 @@ QUARTER of Δ away is a difference taken at the wrong maturity: on a three-week 
 `1y:1y` would put a one-year forward smile beside a three-week spot one, and would walk the grid to
 two years to do it. The rule drops it with the ladder's own expiries in the message; where nothing
 survives the block is not fitted and the report says so.
+
+**Stage 5's guard is read on the rung NEAREST each forward row's own `T1` and `T1 + Delta`**,
+within the same quarter of `Delta` the reachability rule measures a spot rung by. The two rules
+asked one question with two tolerances: a row survived reachability because its rung was 1.9% of
+`Delta` away and then had no quote within one internal STEP of its maturity, so the guard was read
+over an empty set and `torch.stack` raised. A ladder with no rung inside the tolerance now REFUSES
+by name rather than judging a stage on no rows at all.
 
 **The lever is the calendar bucket, and it was measured on the Poisson residual against CJOW.** With
 ONE bucket a forward target has nothing to move but the vanillas and trips the failure mode by name
