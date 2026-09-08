@@ -11,6 +11,17 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **The NKY chain block's vanilla-only objective is BIMODAL, and a `nan` strip walks past `verify`**
+  (2026-09-08, lane S) - thirteen fits of `logvar2fj_block_JPY_NKY_BBG` at `Forward_Smile_Source:
+  None` over three seeds and four path counts all land between RMSE 0.976 and 1.016 but split into
+  two modes, `Alpha` 0.6-2.1 or 7.6-8.0, and `Pseudo` 8192 itself lands in one mode at seed 1 and
+  the other at seeds 2 and 3 (`artifacts/lv_fast_20260908/`). So a same-answer gate on that ladder
+  proves determinism, not agreement, and its seed spread is a mode switch rather than a noise
+  floor - which is the identification the forward block was built to supply and, on a one-bucket
+  ladder, costs a vol point of spot fit to supply (the open ruling above). Beside it: `verify`'s
+  `atm_miss_max` compares with `<`, and `nan < x` is False, so a fit whose xi bootstrap has gone
+  to `nan` still writes a factor (a Sobol 8192 run reported `+nan, +nan` among its ATM misses, a
+  CAPPED polish and RMSE 17.8, and was `ok`); a `nan` miss should refuse by name.
 - **The autocall's one-step-survival arm under GBM reads ONE moneyness for the whole path, so a
   compact V2's terminal put is priced at the ATM vol** (2026-09-08) - measured on the desk's NKY
   structures: the six-leg booking with its contra repaired (discrete up-and-in barriers on the five
@@ -453,6 +464,30 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane S — the calibration in seconds.** `utils.lv_walk` is the block's closed form:
+  `lv_ou_path` solves both OU factors over the whole block at once (the transition factorises, so
+  the path is one cumulative sum), `lv_state_variance` is the same closed form at twice the
+  reversion, and the clock, the leverage mean and the quanto drift are elementwise with one
+  reduction each — the per-step scan leaves the engine and lives in
+  `artifacts/lv_fast_20260908/oracle.py` as `lv_walk_scan`, agreeing with the engine to **1.5e-14**
+  over 360 cases (every block length 1…562, `invert` both ways, with and without a quanto loading
+  and with bucketed levers) and to 4e-13 at a 20-year horizon. `Invert_Spot` keeps the recursion,
+  the measure change being state-dependent, and shares the block sums. `LVFit.walk` draws the whole
+  strip's mixers in ONE `ig_quantile` over `[paths, blocks]` — the variance path owes the residual
+  nothing, so every clock is known before any mixer is — and `ig_root`'s fallback bisects
+  geometrically, which halves its fixed budget. `cap_headroom` reads the same closed form instead of
+  spelling the scan a second time. **The four book blocks re-fit to the banked θ\* within 1e-11,
+  evaluation for evaluation and RMSE for RMSE**; every GBM and Hull-White document is hex-identical,
+  the NIG base valuation is hex-identical, the two LogVar2FJ limit documents move one ulp, and the
+  collateralised CVA — the one number that passes through a threshold in the float32 scenario walk —
+  moves 9.0e-7. Walk 2.2x forward and 2.8x with its backward, the batched Jacobian 3.2x, and a full
+  `JPY_NKY_BBG` ladder **3385.2 s → 742.2 s** back to back on one box at the same 44 evaluations and
+  the same RMSE 0.978. The closed form is also what makes `Paths` a lever at all — the scan's cost
+  was 10,350 dispatches whatever they carried, where the vectorised walk is very nearly linear in
+  the path count. `Sampling` is a declared field defaulting to `Pseudo`, and every default this lane
+  touched or left is in the table below with the number that set it. One incidental fix: `solve_l`'s
+  chord step divided by a stale slope guarded only against `None`, and a slope of exactly zero
+  raised — a Sobol stream reached it.
 - **LogVar2FJ v2, lane 3: the residual's P-law, and no outlier mask** (2026-09-08, brief 8) — the
   diffusive remainder's law is now `NIG(α^P, β^P, δ_A, μA)` fitted by maximum likelihood on the
   day's own variance budget, and **the 4σ outlier mask is gone**. WHY: an NIG law has tails, so a

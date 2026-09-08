@@ -26,7 +26,7 @@ import pandas as pd
 import torch
 
 # Internal modules
-from . import utils, pricing, instruments, riskfactors, stochasticprocess
+from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
 from .schema import (F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, declared_defaults,
                      partition_market_price)
 from ._version import __version__
@@ -1483,6 +1483,7 @@ class LVFit(object):
         self.pillar_tol, self.smoothness = float(read['Pillar_Tolerance']), float(
             read['Bucket_Smoothness'])
         self.is_vol = read['Quote_Type'] == 'Implied_Volatility'
+        self.sampling = read['Sampling']
         self.source = read['Forward_Smile_Source']
         #: the switch proof 1 of the calibrator lane runs its bit-identity gate under: Off is the
         #: objective and the box the vanilla-only fit had, priors and all soft shape terms absent
@@ -1513,14 +1514,35 @@ class LVFit(object):
         """The walk's two normals per STEP and the mixer's uniform per BLOCK - fixed for the whole
         fit, and antithetic (`-eta`, `1 - u`).
 
-        Pseudo-random off `Random_Seed`: a Sobol block this many dimensions wide buys nothing where
-        every evaluation reads the same draws.
+        `Sampling` picks the STREAM. Pseudo is `Random_Seed`'s own generator, bit for bit what the
+        family drew before this field existed. Sobol is the calculation's convention
+        (`calculation.CMC_State.quasi_rng`) - one scrambled engine over the `2 steps + blocks`
+        dimensions at `QUASI_ANCHOR`, clamped by that margin and inverted by the same `norm_icdf` -
+        scrambled off `Random_Seed`, so a re-seeded fit reads the noise floor either way. A ladder
+        wider than `SOBOL_MAX_DIMENSION` refuses by name rather than chunking: the calculation
+        chunks because a scenario grid can be that wide, and a calibration grid that is says the
+        grid is wrong.
         """
-        gen = torch.Generator(device=self.device).manual_seed(int(seed))
         half = max(int(paths) // 2, 1)
-        kw = {'generator': gen, 'dtype': self.prec, 'device': self.device}
-        z_l, z_s = torch.randn(half, steps, **kw), torch.randn(half, steps, **kw)
-        u = torch.rand(half, blocks, **kw)
+        if self.sampling == 'Sobol':
+            width = 2 * int(steps) + int(blocks)
+            if width > calculation.SOBOL_MAX_DIMENSION:
+                raise ValueError(
+                    '{}: Sampling Sobol wants {} dimensions - two per internal step plus one per '
+                    'block - against the {} one scrambled engine carries. Declare Sampling Pseudo, '
+                    'or coarsen Steps_Per_Year.'.format(
+                        self.market_price, width, calculation.SOBOL_MAX_DIMENSION))
+            engine = torch.quasirandom.SobolEngine(width, scramble=True, seed=int(seed))
+            engine.fast_forward(calculation.QUASI_ANCHOR)
+            draws = engine.draw(half, dtype=self.prec).to(self.device).clamp(1e-6, 1.0 - 1e-6)
+            z_l, z_s = (utils.norm_icdf(draws[:, :steps]),
+                        utils.norm_icdf(draws[:, steps:2 * steps]))
+            u = draws[:, 2 * steps:]
+        else:
+            gen = torch.Generator(device=self.device).manual_seed(int(seed))
+            kw = {'generator': gen, 'dtype': self.prec, 'device': self.device}
+            z_l, z_s = torch.randn(half, steps, **kw), torch.randn(half, steps, **kw)
+            u = torch.rand(half, blocks, **kw)
         return torch.cat([z_l, -z_l]), torch.cat([z_s, -z_s]), torch.cat([u, 1.0 - u])
 
     def lstar(self, scalars, levers, levels):
@@ -1542,24 +1564,31 @@ class LVFit(object):
         base date, which is how `pricing.LogVar2FJKit` reads them. Every bucket knot is a BLOCK end
         (`prepare`), so a block's residual sits in one bucket and takes exactly one mixer. The fit
         is on the FxRate's own axis, never the reciprocal - one law per pair, carried at the deal.
+
+        THE MIXERS ARE ONE DRAW FOR THE WHOLE STRIP: the variance path owes the residual nothing,
+        so every block's clock is known before any mixer is, and the strip's roots are one
+        `ig_quantile` over `[paths, blocks]` rather than one per block. Elementwise either way, so
+        the numbers are the per-block call's own.
         """
         params = dict(scalars, **{name: utils.bucket_at(self.buckets, levers[name],
                                                         self.times[:n])
                                   for name in utils.LV_BUCKET_NAMES})
         eta_l, eta_s, uG = self.draws
         s = eta_l.new_zeros(eta_l.shape[0])
-        l, M, var, a = s + curve[0], [], [], 0
-        for j, b in enumerate([int(x) for x in self.upto if x <= n]):
+        l, M, clocks, starts, a = s + curve[0], [], [], [], 0
+        for b in [int(x) for x in self.upto if x <= n]:
             m, clock, l, s = utils.lv_walk(
                 dict(params, **{x: params[x][a:b] for x in self.step_names}),
                 curve[a:b + 1], self.deltas[a:b], eta_l[:, a:b], eta_s[:, a:b], (l, s), False)
-            alpha, beta = params['Alpha'][a], params['Beta'][a]
-            delta, mu, gamma = utils.lv_nig_budget(clock, alpha, beta)
-            G = utils.ig_quantile(uG[:, j], delta / gamma, delta * delta)
-            M.append(m + mu + beta * G)
-            var.append(G)
+            M.append(m)
+            clocks.append(clock)
+            starts.append(a)
             a = b
-        return torch.stack(M, -1).cumsum(-1), torch.stack(var, -1).cumsum(-1)
+        alpha = torch.stack([params['Alpha'][i] for i in starts])
+        beta = torch.stack([params['Beta'][i] for i in starts])
+        delta, mu, gamma = utils.lv_nig_budget(torch.stack(clocks, -1), alpha, beta)
+        G = utils.ig_quantile(uG[:, :len(starts)], delta / gamma, delta * delta)
+        return (torch.stack(M, -1) + mu + beta * G).cumsum(-1), G.cumsum(-1)
 
     @staticmethod
     def conditional_black(M, var, carry, strike):
@@ -1734,22 +1763,20 @@ class LVFit(object):
     def cap_headroom(self, scalars, levers, curve):
         """The mass of path-days with headroom `(a - (l+s))/beta` under 5 (spec 2.7).
 
-        The state's own recursion, which `lv_walk` consumes and does not publish, run ONCE at the
-        parameters actually written: the cap is a guard, and a calibration that reaches it is a
-        failure this report has to be able to state.
+        The state's own path, which `lv_walk` consumes and does not publish, read ONCE at the
+        parameters actually written off the same closed form the walk uses: the cap is a guard, and
+        a calibration that reaches it is a failure this report has to be able to state.
         """
         eta_l, eta_s, _ = self.draws
         a, beta = (float(scalars[x]) for x in ('Cap_A', 'Cap_Beta'))
         sigma_s = utils.bucket_at(self.buckets, levers['Sigma_S'], self.times[:-1])
-        phi_s, w_s = utils.lv_ou_step_weights(scalars['Kappa_S'], sigma_s, self.deltas)
-        phi_l, w_l = utils.lv_ou_step_weights(scalars['Kappa_L'], scalars['Sigma_L'], self.deltas)
-        s = torch.zeros_like(eta_l[:, 0])
-        l, near = s + curve[0], 0.0
-        for k in range(self.deltas.shape[0]):
-            near += float(((a - (l + s)) / beta < 5.0).sum())
-            s = phi_s[..., k] * s + w_s[..., k] * eta_s[:, k]
-            l = curve[k + 1] + phi_l[k] * (l - curve[k]) + w_l[k] * eta_l[:, k]
-        return near / (eta_l.shape[0] * self.deltas.shape[0])
+        w_s = utils.lv_ou_step_weights(scalars['Kappa_S'], sigma_s, self.deltas)[1]
+        w_l = utils.lv_ou_step_weights(scalars['Kappa_L'], scalars['Sigma_L'], self.deltas)[1]
+        zero = eta_l.new_zeros(eta_l.shape[0])
+        state = (utils.lv_ou_path(scalars['Kappa_S'], w_s, eta_s, zero, self.deltas)
+                 + utils.lv_ou_path(scalars['Kappa_L'], w_l, eta_l, zero, self.deltas))
+        near = ((a - (curve + state)[:, :-1]) / beta < 5.0).sum()
+        return float(near) / (eta_l.shape[0] * self.deltas.shape[0])
 
     def l_knots(self, levels):
         """The xi curve as it is WRITTEN, in LOG, off the segment levels solved so far: one level
@@ -1794,7 +1821,9 @@ class LVFit(object):
 
         A sweep is deterministic in `x` to `Pillar_Tolerance` - a relative premium miss two orders
         under the outer `Tolerance` - which is the same argument the component family's brentq
-        makes for its own bracket; the warm start moves the answer no further than that.
+        makes for its own bracket; the warm start moves the answer no further than that. A stale
+        slope of exactly ZERO skips the chord and takes the round's refreshed one, which is what an
+        absent slope does: it is the one division here that a Python float can raise on.
         """
         targets = self.market(self.atm)
         levels, misses = [], []
@@ -1808,7 +1837,9 @@ class LVFit(object):
 
             at = self.warm[k]
             for _ in range(self.l_rounds):
-                if self.slopes[k] is not None:
+                # a slope of exactly zero is as useless as an absent one, and dividing by it is the
+                # one bare float division here: the round takes its refreshed slope instead
+                if self.slopes[k]:
                     with torch.no_grad():
                         for _ in range(self.l_iterations):
                             miss = float(priced(at)) / quote.premium
@@ -2918,10 +2949,11 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     )
 
     market_factor_type = 'LogVar2FJModelPrices'
-    #: The fit runs on the CPU whatever device the job was constructed with. One evaluation is a
-    #: Python loop over internal steps on `[paths]` tensors and so is dispatch-bound rather than
-    #: bandwidth-bound: 504 daily steps at 8192 paths measure 0.36 s here against 0.57 s on an
-    #: RTX 3090, and the vmapped backward 1.9 s either way.
+    #: The fit runs on the CPU whatever device the job was constructed with. NOT because the card
+    #: loses - since the walk became `utils.lv_ou_path`'s closed form it is bandwidth-bound and 690
+    #: daily steps at 8192 paths measure 0.156 s here against 0.0062 s on an RTX 3090 - but because
+    #: `Quote_Sensitivity` hands LIVE TENSORS to the calculation, whose device is the job's. Moving
+    #: the pin is a decision about where a calibrated leaf lives; the draws would move with it.
     device = torch.device('cpu')
 
     identification_note = ('the forward-smile targets: the later buckets of Rho_S and Beta are '
@@ -2947,8 +2979,18 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'three seeds moves the ATM term structure by 0.1 to 0.6 vol points and an L '
                       'level by up to 2.6'),
         F('Random_Seed', 'Integer', default=1,
-          description='Seeds the fixed draws. Re-running at another seed is the honest way to '
-                      'read how much of a parameter is the surface and how much is the sample'),
+          description='Seeds the fixed draws - the pseudo-random generator, or the Sobol scramble. '
+                      'Re-running at another seed is the honest way to read how much of a '
+                      'parameter is the surface and how much is the sample'),
+        F('Sampling', 'Text', default='Pseudo', values=['Sobol', 'Pseudo'],
+          description='The stream the fixed draws come off. Sobol is a scrambled sequence over the '
+                      'two dimensions per internal step and one per block, in the calculation\'s '
+                      'own convention; Pseudo is the generator this family drew from before the '
+                      'field existed, is what a bit-identity gate against a banked fit declares, '
+                      'and is the DEFAULT until the Sobol noise floor is measured on all four book '
+                      'ladders. The objective is deterministic in the draws either way, so the '
+                      'stream and Paths together set the NOISE FLOOR under every fitted number '
+                      'rather than a confidence interval around it'),
         F('Kappa_L', 'Float', default=0.5,
           description='STRUCTURAL slow reversion speed, per year - a prior, never fitted: a '
                       'sub-year ladder does not identify a reversion speed apart from the '

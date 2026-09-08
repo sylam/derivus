@@ -2410,9 +2410,11 @@ LV_AB_EPS = 1.0e-6
 
 #: The inverse-Gaussian quantile's FIXED budget: bracket doublings, then Newton steps, each masked
 #: to the elements still outside `LV_IG_TOL`. Fixed rather than data-dependent, so a checkpoint's
-#: recompute walks exactly the iterations its forward walked. Measured over 1e5 uniforms at clocks
-#: 1e-6 to 0.2, the worst element converges in 38 steps and the bracket never doubles at all.
-LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 20, 60, 1.0e-11
+#: recompute walks exactly the iterations its forward walked. Measured over 2e5 uniforms with the
+#: tails to 1e-300 at clocks 1e-6 to 3 across the whole admissible (Alpha, Beta) box: the bracket
+#: NEVER doubles, and the GEOMETRIC fallback below converges the worst element in 26 steps where
+#: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
+LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 3, 34, 1.0e-11
 
 #: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
 #: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
@@ -2486,6 +2488,10 @@ def ig_root(u, m, lam):
     still outside `LV_IG_TOL` - because an exit taken on the data would let a checkpoint's recompute
     walk a different number of iterations from its forward. The IG at the shape a daily clock
     produces is extremely skewed, which is what the expansion is for.
+
+    THE FALLBACK BISECTS GEOMETRICALLY. The bracket spans ten decades, so its midpoint is a ratio
+    and not a width: an arithmetic halving spends thirty steps walking down to the small end where
+    the root of a skewed clock lives, and the budget it needs is twice the geometric one's.
     """
     with torch.no_grad():
         lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
@@ -2500,7 +2506,7 @@ def ig_root(u, m, lam):
             lo, hi = torch.where(F < u, x, lo), torch.where(F > u, x, hi)
             step = x - (F - u) / ig_pdf(x, m, lam)
             bad = ~torch.isfinite(step) | (step <= lo) | (step >= hi)
-            x = torch.where(done, x, torch.where(bad, 0.5 * (lo + hi), step))
+            x = torch.where(done, x, torch.where(bad, torch.sqrt(lo * hi), step))
     return x
 
 
@@ -2536,26 +2542,37 @@ def lv_ou_step_weights(kappa, sigma, deltas):
     return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
 
 
+def lv_ou_path(kappa, w, e, y0, deltas):
+    """``y_{k+1} = phi_k y_k + w_k e_k`` at ALL n+1 grid times at once, in closed form.
+
+    The transition ``exp(C_k - C_{j+1})`` on the cumulated ``-kappa delta`` FACTORISES out of the
+    sum, so the whole path is ONE cumulative sum of the shocks discounted by ``exp(-C_{j+1})``,
+    scaled back by ``exp(C_k)`` - a handful of dispatches on ``[..., n]`` tensors where the scan
+    spends n of them on ``[...]`` ones. Every partial sum is scaled by the decay at ITS OWN k, so
+    the rounding stays local to the step rather than riding the block's whole decay range.
+    """
+    cum = -kappa.reshape(-1) * torch.cat([deltas.new_zeros(1), deltas.cumsum(0)])
+    shocks = w * e * torch.exp(-cum[1:])
+    return torch.exp(cum) * (y0.unsqueeze(-1) + torch.cat(
+        [torch.zeros_like(shocks[..., :1]), shocks.cumsum(-1)], -1))
+
+
 def lv_state_variance(params, deltas):
     """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
     derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2`` (brief 1).
 
-    ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor: the closed form on a business-day grid, and it
-    carries a bucket of ``Sigma_S`` and a holiday gap with no second spelling. Measured from
-    WHEREVER the walk starts, so a re-seeded row reads ``xi`` exactly rather than under-shooting it.
+    ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor, which is `lv_ou_path` at twice the reversion with
+    each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no
+    second spelling. Measured from WHEREVER the walk starts, so a re-seeded row reads ``xi``
+    exactly rather than under-shooting it.
     """
     # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
     # walk's state is flattened here rather than spreading a spurious axis along the whole grid
-    flat = lambda pair: [x.reshape(-1) for x in pair]
-    phi_s, w_s = flat(lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas))
-    phi_l, w_l = flat(lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas))
-    v_l = v_s = deltas.new_zeros(())
-    rows = [v_l + v_s]
-    for k in range(deltas.shape[0]):
-        v_s = phi_s[k] * phi_s[k] * v_s + w_s[k] * w_s[k]
-        v_l = phi_l[k] * phi_l[k] * v_l + w_l[k] * w_l[k]
-        rows.append(v_l + v_s)
-    return torch.stack(rows)
+    w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas)[1].reshape(-1)
+    w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)[1].reshape(-1)
+    zero = deltas.new_zeros(())
+    return (lv_ou_path(2.0 * params['Kappa_S'], w_s, w_s, zero, deltas)
+            + lv_ou_path(2.0 * params['Kappa_L'], w_l, w_l, zero, deltas))
 
 
 def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):
@@ -2565,13 +2582,19 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     n+1 grid times, params[name] for `Rho_S` and `Sigma_S` is that curve's value in force at each
     step start and state0 = (l, s) is [batch, sims]. Returns (M_lev, A, l, s): the block's LEVERAGE
     mean - no carry and no residual, the caller adds both - the residual's own CLOCK, and the end
-    state, which seeds the next block. The scan ACCUMULATES, so nothing of shape [batch, sims, n]
-    but the draws exists.
+    state, which seeds the next block.
+
+    The two factors are LINEAR in their own shocks, so the whole block's state path is
+    `lv_ou_path`'s closed form - ``l`` detrended by the curve it reverts to - and the clock, the
+    leverage mean and the quanto drift are then elementwise over the step axis and one reduction
+    each. The block costs tens of dispatches rather than fifteen per step.
 
     `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`Invert_Spot`): the step's density
     exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
     eta_l ~ N(rho_l sq, 1) and eta_s ~ N(rho_s sq, 1) here, the residual's mixer taking the tilt at
-    the caller (`pricing.LogVar2FJKit`).
+    the caller (`pricing.LogVar2FJKit`). That shift is the state's OWN sqrt(V), which makes the
+    transition state-dependent, so the path there is the recursion itself; the sums below are the
+    one spelling either way.
 
     `quanto` is the PAYOFF-CURRENCY measure's drift as a per-step loading
     ``q_k = rho_q sigma_FX,k sqrt(delta_k)``, and the day's leverage mean gains ``-q_k sqrt(V_k)``:
@@ -2591,23 +2614,28 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     l, s = state0
     phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], ss, deltas)
     phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
-    M, A = 0.0, 0.0
-    for k in range(deltas.shape[0]):
-        rs_k = rs[..., k]
-        V = deltas[k] * torch.exp(lv_cap(l + s, a, beta))
-        sq = sqrt_or_zero(V)
-        e_l, e_s = eta_l[..., k], eta_s[..., k]
-        if invert:
-            # each shock's own loading, so the shift feeds the variance path as it feeds the
-            # return; conditional rather than a multiply by zero, so `invert` off is bit-identical
-            e_l, e_s = e_l + rl * sq, e_s + rs_k * sq
-        A = A + (1.0 - rs_k * rs_k - rl * rl) * V
-        M = M + (-0.5 * (rs_k * rs_k + rl * rl) * V + rl * sq * e_l + rs_k * sq * e_s)
-        if quanto is not None:
-            M = M - quanto[k] * sq
-        s = phi_s[..., k] * s + w_s[..., k] * e_s
-        l = curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k]) + w_l[..., k] * e_l
-    return M, A, l, s
+    if invert:
+        rows = []
+        for k in range(deltas.shape[0]):
+            rows.append(l + s)
+            # each shock's own loading, so the shift feeds the variance path as it feeds the return
+            sq = sqrt_or_zero(deltas[k] * torch.exp(lv_cap(l + s, a, beta)))
+            s = phi_s[..., k] * s + w_s[..., k] * (eta_s[..., k] + rs[..., k] * sq)
+            l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
+                 + w_l[..., k] * (eta_l[..., k] + rl * sq))
+        x = torch.stack(rows, -1)
+    else:
+        path_s = lv_ou_path(params['Kappa_S'], w_s, eta_s, s, deltas)
+        path_l = lv_ou_path(params['Kappa_L'], w_l, eta_l, l - curve_at_grid[0], deltas)
+        x = path_s[..., :-1] + path_l[..., :-1] + curve_at_grid[:-1]
+        l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1]
+    V = deltas * torch.exp(lv_cap(x, a, beta))
+    sq = sqrt_or_zero(V)
+    e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)
+    M = -0.5 * (rs * rs + rl * rl) * V + rl * sq * e_l + rs * sq * e_s
+    if quanto is not None:
+        M = M - quanto * sq
+    return M.sum(-1), ((1.0 - rs * rs - rl * rl) * V).sum(-1), l, s
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

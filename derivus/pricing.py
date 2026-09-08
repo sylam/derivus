@@ -187,8 +187,8 @@ class LogVar2FJKit(object):
         boundary states and the backward recomputes its intermediates - draws included - one
         segment at a time, which is what puts a daily 2y walk at 2,048 x 2,048 on a 24 GiB card. The
         residual draw is checkpointed beside it, the mixer's root being the tape's other heavy node.
-        `utils.lv_walk` accumulates as it passes, so a fixing block's law is the sum over its own
-        segments and no ``[batch, sims, n]`` tensor exists at all.
+        `utils.lv_walk` returns each segment's SUMS, so a fixing block's law is the sum over its own
+        segments and the widest tensor on the tape is one segment's ``[batch, sims, 21]``.
 
         All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``xi`` on the segments
         between ATM expiries, the four levers on their calendar buckets - because both are calendar

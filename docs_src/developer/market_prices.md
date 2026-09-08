@@ -208,11 +208,51 @@ naming no `Correlation` factor refuses rather than pricing with a drift of exact
 structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
 1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each segment returns is one
 Newton step at its own root, so `dξ/dθ` rides the tape and the outer solver keeps its exact Jacobian.
-What that costs is one graph pass per segment per iterate: the search itself runs off the tape on the
-previous sweep's slope, and on the walk at 8192 paths over 504 daily steps a forward pass is 0.280 s
-against 0.756 s with its backward. The grid is the QUOTES' own, one trading day
+What that costs is one graph pass per segment per iterate: the search itself runs off the tape on
+the previous sweep's slope. **The walk is the block's CLOSED FORM, not a scan.** Both factors are
+linear in their own shocks, and the OU transition `exp(C_k − C_{j+1})` on the cumulated `−κδ`
+factorises, so the whole block's state path is one cumulative sum of the discounted shocks scaled
+back by the cumulated decay (`utils.lv_ou_path`) and the clock, the leverage mean and the quanto
+drift are elementwise over the step axis with one reduction each — tens of dispatches a block
+where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is
+**0.156 s against the scan's 0.349 s**, and with its backward **0.251 s against 0.704 s**; the
+same walk on an RTX 3090 is **0.0062 s and 0.0099 s**, twenty-five times the CPU, where the scan
+measured SLOWER on the card than on the host. **The pin stays CPU anyway**, and its own note now
+says why: `Quote_Sensitivity` hands LIVE TENSORS to the calculation, whose device is the job's, so
+moving the pin is a decision about where a calibrated leaf lives — and the pseudo-random draws
+would move with it.
+`Invert_Spot` keeps the recursion: the S-numeraire shift is the state's own `√V`, which makes the
+transition state-dependent, and the block sums below it are the one spelling either way. The grid is the QUOTES' own, one trading day
 between block ends with a stub landing each block on its `T`: reading the same rung on the
 trading-day grid instead costs **0.124 vol points** at the 1m ATM (`jac_check.py`).
+
+**`Sampling` picks the stream, and it is what sets `Paths`.** The draws are fixed for the whole
+fit, so `Paths` is not a confidence interval around θ\*, it is the NOISE FLOOR under it: the same
+ladder at another `Random_Seed` lands somewhere else, and how far is the only honest reading of
+how much of a fitted number is the surface. `Pseudo` is the generator this family drew from
+before the field existed and is what a bit-identity gate against a banked fit declares. `Sobol`
+is a scrambled sequence over the `2 × steps + blocks` dimensions in the calculation's own
+convention (`calculation.CMC_State.quasi_rng` — one engine at `QUASI_ANCHOR`, that clamp margin,
+that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than `SOBOL_MAX_DIMENSION` refuses
+by name rather than chunking, the calculation chunking because a scenario grid can be that wide
+and a calibration grid that is saying the grid is wrong. **`Pseudo` STAYS THE DEFAULT until the
+Sobol floor is measured on all four book ladders** — see the measurement note in §5.
+
+**`Tolerance` is `ftol` on a MONTE CARLO objective, and it is not what a stage stops on.** Asking
+a fixed-draw sample mean to converge to 1e-8 looks like asking it to converge to its own rounding
+— but measured on the NKY chain block at `Pseudo` 8192, two orders of magnitude of `ftol` (1e-8
+against 1e-6) buy **one evaluation out of forty-four** and move θ\* by **4e-5 relative**. The
+stage is stopping on `xtol` (1e-12, hard-coded beside it), on `gtol`, or on the step. **The
+default stays 1e-8** because loosening it is free of cost and free of benefit; a stage that runs
+long is a stage with a column the data does not move (see the identification table), not a stage
+converging to rounding.
+
+The inverse-Gaussian root's safeguard BISECTS GEOMETRICALLY. Its bracket spans ten decades —
+`[m·1e-8, 200m + 200m²/λ]` — so its midpoint is a ratio, not a width: measured over 2e5 uniforms
+with the tails out to 1e-300, at clocks 1e-6 to 3 across the whole admissible `(α, β)` box, the
+arithmetic halving needs 53 Newton steps against the geometric one's 26, and the bracket never
+doubles at all. The fixed budget is therefore `LV_IG_EXPAND, LV_IG_STEPS = 3, 34` where it was
+`20, 60` — the same root to `LV_IG_TOL`, reached in 37 CDF evaluations instead of 80.
 
 The CJOW harness tables that stood here were readings of the Poisson residual against a reference
 surface priced by the retired Heston-Nandi half of `utils`; the harness could not be re-run after
