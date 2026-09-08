@@ -11,6 +11,54 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **The autocall's fixing-to-coupon alignment is a guess the booking never states** (2026-09-08) -
+  `QEDI_CustomAutoCallSwap.calc_dependencies` drops fixings more than a month before the first
+  unpaid coupon and pairs the rest with the coupons POSITIONALLY (`one_each`: equal counts, each
+  fixing on or before its coupon); that pairing is what admits the OSS arm, and where it fails the
+  full-path arm reads windows reaching back to the predecessor coupon. The Barclays V2s fix a few
+  business days before each payment, so the pairing holds and the trigger reads the payment's own
+  window - but a deal fixing five weeks before a long settlement silently falls out of `one_each`
+  and prices on the other arm. The fix is a schedule that declares it: an observation-date column
+  on `Autocall_Coupons` (or the fixing table naming its coupon), the month heuristic retired. A
+  row because every autocall document in the book reads the heuristic today.
+- **`EquityPriceVol` under `Sticky_Strike` cannot reach a fixing strip** (2026-09-08) -
+  `pricing.calc_moneyness` returns the bare strike for a parametric (`Skew`/`SVI`) surface, which
+  carries no fixing axis, and every fixing-strip pricer then raises `IndexError: index 1 is out of
+  bounds for dimension 1 with size 1` at `pricing.py:343`. The book works around it with `Explicit`
+  surfaces and NKY's `Moneyness_Rule` moved to `Sticky_Moneyness` (its `ATM_Ref` re-anchored and
+  inert there). The fix is to broadcast the strike onto the fixing axis as the `Sticky_Moneyness`
+  branch already does through the forward.
+- **A simulated equity and a static rate curve cannot share a floating-leg deal** (2026-09-08) -
+  `utils.get_simulated_resets` (utils.py:1650) through `pricing.pv_float_cashflow_list` returns the
+  KNOWN resets shaped by the scenario count and the forecast curve's own unknown resets shaped by
+  the static factor, and the concatenation refuses with *Sizes of tensors must match except in
+  dimension 0. Expected size 128 but got size 1* - 13 deals skipped in the book's credit Monte
+  Carlo under a traceback that reads like a deal fault, so the profile reported was the option legs
+  and the NDFs, not the netting set's. Either a static unknown reset broadcasts onto the scenario
+  axis, or every forecast curve on a book needs a process and the refusal says so by name.
+- **A digital contra booked with `Cash_Payoff` 0.0 prices to zero without a word** (2026-09-08) -
+  two of the Barclays structures (229079480 and 229524957) carry one, worth 2.9e8 and 2.85e8 of
+  payoff in the legs it was meant to cancel; the engine accepts the leg and the six-leg documents
+  price. `derivus_compact_autocalls.py` names it (`DEFECT digital contra Cash_Payoff is 0.0`) and the
+  fold removes it, but the SOURCE booking is still wrong and a zero-payoff digital is never a deal:
+  the load should refuse it by name.
+- **The vendor's implied-vol grid answers only at 30, 60 and 90 days** (2026-09-08) -
+  `<n>DAY_IMPVOL_<mny>%MNY_DF` at n = 30/60/90 and five moneyness points is the whole grid; the
+  `<tenor>MTH_IMPVOL_` family is a 90-day alias whatever the tenor (six override values leave it at
+  24.1058 / 24.3242) and SD3E answers nothing. So the long end of every equity fit is the file's own
+  surface or the listed chain, and the LogVar2FJ mark on 229524957 moves 4.6% between a chain-only
+  fit and one carrying the file's 2.74y ATM. Recorded so no pilot probes it again; whether the
+  workstation is entitled to a longer grid or it lives under another field family is one question
+  to Bloomberg support, which is the owner's.
+- **`Residual_Law: Gaussian` reports a greek at a leaf the model never reads** (2026-09-08) -
+  `Alpha` and `Beta` are filled with their declared defaults (1.0, 0.0) where a Gaussian document
+  omits them, so a sensitivity run prints an identically-zero row at each. Dropping them from
+  `curve_names` under Gaussian would make the factor's leaf set mode-dependent, which is why it is
+  not done; the calibrator already refuses to FIT the Gaussian law unless it is declared.
+- **`LV_CHECKPOINT_STEPS = 21` was measured for the walk alone** (2026-09-08) - the mixer now
+  checkpoints per residual draw beside the walk's 21-step segments, and peak memory went 8,392 to
+  9,990 MiB at 2,048 x 2,048 (`artifacts/lv_nig_20260907`). If the collateral lane wants that headroom
+  back, the residual's checkpoint granularity is the dial, not the walk's.
 - **Every correlation between a `calc_statistics` factor and a newer one is a business day out**
   (2026-09-07) - `utils.calc_statistics` builds its `delta` as `transformed.diff(1).shift(-1)`, so
   each innovation is indexed at the return's START date, while `GARCHSpotCalibration`,
@@ -1508,6 +1556,12 @@ full runs each failed one mutation gate purely because source was edited mid-run
 
 ## Tidy-ups
 
+- **`artifacts/logvar2fj/`'s second spelling no longer imports** (2026-09-08) - `logvar2fj.py`,
+  `checks.py`, `oracles.py` and `quote_risk.py` re-export `lv_counts` and walk the Poisson residual,
+  so `fx_ladder.py`, `kkt_ladder.py` and `flat_l.py` are dead on this tree; lane 1 wrote
+  `lv_nig_20260907/oracles_v2.py` and the estimator lane rebuilds `lv_hist_20260907/hist.py`.
+  Delete the pack or re-spell the G-gate scripts against the NIG residual; the roadmap rows that
+  cite it are records.
 - **Inline comment density.** The boundary-correction work left ~12 inline blocks of 4–11 comment
   lines, several outweighing the code beneath them. House style is 2–3 lines maximum inline and
   never more comments than code; the material belongs in the docstring or the commit. Worst
