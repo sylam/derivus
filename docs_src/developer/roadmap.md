@@ -11,6 +11,19 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **Stage 5's vanilla guard refuses with a bare tensor error where no quote sits within ONE STEP
+  of a forward maturity** (2026-09-08) - `LVFit.global_stages` builds `guarded` as the quotes within
+  `self.delta` = `1/Steps_Per_Year` of a target's `T1` or `T1 + Delta`, and stage 5a/5b's guard then
+  `torch.stack`s their misses: on the NKY chain block with `Param_Buckets` at 0.5y the 6m:6m row
+  survives the reachability rule (its 0.5096y rung is 1.9% of Delta away) but is 2.4 steps from
+  0.5y, so `guarded` is EMPTY and the fit dies at `bootstrappers.py:1919` with *RuntimeError: stack
+  expects a non-empty TensorList* under both `Stationary_Spread` arms, 940 s in
+  (`artifacts/remark_20260908/repro_bucket.py`). Two tolerances for one question - the reachability
+  rule reads the rung nearest Delta within a quarter of it, the guard reads one day - and the guard
+  is the one that should follow the rule: judge the failure mode on the rungs nearest each target
+  maturity, and refuse BY NAME where there is none rather than stacking nothing. Until then the
+  calendar bucket, which is the brief's own lever for the forward block, cannot be measured on any
+  ladder whose rungs miss the forward horizons by more than a day - which is every listed chain.
 - **The autocall's fixing-to-coupon alignment is a guess the booking never states** (2026-09-08) -
   `QEDI_CustomAutoCallSwap.calc_dependencies` drops fixings more than a month before the first
   unpaid coupon and pairs the rest with the coupons POSITIONALLY (`one_each`: equal counts, each
