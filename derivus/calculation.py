@@ -1898,12 +1898,20 @@ class Base_Revaluation(Calculation):
                       'name, its conditioning law being the distribution of a mean of spots rather '
                       'than one fixing interval\'s. Off is the crisp path bit for bit, and '
                       'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
-                      'prices a settlement convention, never which convention the deal settles on')
+                      'prices a settlement convention, never which convention the deal settles on'),
+        F('Correlation_Bump', 'Float', default=0.025,
+          description='Half-width of the CRN bump reporting a quanto or compo correlation delta. '
+                      '`Correlation` is a `DimensionLessFactor` and mints no leaf, so that delta '
+                      'is not on the tape and a reported zero would be a false statement: each '
+                      'correlation a priced deal reads is re-valued once each side on the job\'s '
+                      'own seed and the central difference lands beside the tape\'s greeks, named '
+                      'as the bump it is in `Correlation_Bump`. 0 turns it off')
     ]
 
     def __init__(self, config, **kwargs):
         super(Base_Revaluation, self).__init__(config, **kwargs)
         self.base_date = None
+        self.correlation_deltas = {}
 
         self.shared_memClass = namedtuple('shared_mem',
                                           't_Buffer t_Static_Buffer t_Feed_dict t_Cashflows calc_greeks \
@@ -1947,6 +1955,50 @@ class Base_Revaluation(Calculation):
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
         return shared_mem
+
+    def correlation_bump(self, params, width):
+        """Every quanto or compo correlation a priced deal read, as a CENTRAL CRN bump of the
+        marked value: the book is re-compiled and re-valued once each side on the job's own seed,
+        so the difference is the bump and nothing else.
+
+        `Correlation` is a `DimensionLessFactor` - it mints no leaf, so this delta has no tape to
+        come off and the alternative to a bump is reporting zero for a number the engine has. The
+        marked market is put back and re-read before the report, which is what leaves the row's
+        displayed value the desk's own.
+        """
+        named = {id(value): key for key, value in self.all_factors.items()}
+        wanted, rows, market = set(), {}, self.config.params['Price Factors']
+        stack = [self.netting_sets]
+        while stack:
+            node = stack.pop()
+            stack.extend(node.sub_structures)
+            for deal in node.dependencies:
+                wanted.update(named[id(deal.Factor_dep[key])] for key in
+                              ('QuantoImpliedCorrelation', 'CompoImpliedCorrelation')
+                              if id(deal.Factor_dep.get(key)) in named)
+        for factor in sorted(wanted, key=utils.check_tuple_name):
+            marked = market[utils.check_tuple_name(factor)]
+            base, sides, keep = marked['Value'], [], self.netting_sets
+            # BOTH sides have to fit inside [-1, 1] or the central difference is a half-width lie
+            h = min(width, 1.0 - abs(base))
+            if h <= 0.0:
+                continue
+            try:
+                for side in (h, -h):
+                    marked['Value'] = base + side
+                    shared = self.update_factors(dict(params, Greeks='No'), self.base_date)
+                    self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
+                    self.set_deal_structures(self.config.deals['Deals']['Children'],
+                                             self.netting_sets, shared.one, deal_level_mtm=True)
+                    self.netting_sets.resolve_structure(shared, self.time_grid)
+                    sides.append(sum(x.obj.Calc_res['Value'].item()
+                                     for x in self.netting_sets.sub_structures))
+            finally:
+                marked['Value'], self.netting_sets = base, keep
+            rows[utils.check_scope_name(factor)] = (h, (sides[0] - sides[1]) / (2.0 * h))
+        if rows:
+            self.update_factors(params, self.base_date)
+        return rows
 
     def update_time_grid(self, base_date):
         self.time_grid = utils.TimeGrid({base_date}, {base_date}, {base_date})
@@ -2050,6 +2102,12 @@ class Base_Revaluation(Calculation):
                 raise Exception('Unknown Greek requested', greek_name)
             self.output.setdefault(greek_name, summary)
 
+        if self.correlation_deltas:
+            self.output['Correlation_Bump'] = pd.DataFrame(
+                [{'Rate': name, 'Bump': width, 'Gradient': value,
+                  'Source': 'CRN bump of the marked correlation - NOT ON THE TAPE'}
+                 for name, (width, value) in self.correlation_deltas.items()]).set_index('Rate')
+
         return self.output
 
     def execute(self, params):
@@ -2100,6 +2158,15 @@ class Base_Revaluation(Calculation):
                     mtm = mtm + correction
             pricing.greeks(shared_mem, ns_obj, mtm)
             self.calc_stats['Greek_Execution_Time'] = time.monotonic() - self.calc_stats['Greek_Execution_Time']
+
+        # the quanto correlation delta, which no leaf carries. `Greeks: 'All'` is excluded because
+        # the second-order report labels its axes off the first-order index
+        if params['Greeks'] == 'First' and float(params['Correlation_Bump']) > 0.0:
+            self.correlation_deltas = self.correlation_bump(
+                params, float(params['Correlation_Bump']))
+            for name, (width, delta) in self.correlation_deltas.items():
+                ns_obj.Calc_res['Greeks_First'][name] = np.array([delta])
+                self.gradient_index[name] = (np.zeros((1, 3), dtype=np.int64), 1)
 
         return {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Results': self.report()}
 

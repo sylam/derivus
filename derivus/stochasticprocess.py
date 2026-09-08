@@ -5114,9 +5114,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     multiplies `sqrt(G)` with no weighted-combination approximation. CROSS-FACTOR CORRELATION
     THEREFORE SITS ON THE GAUSSIAN GIVEN THE MIXER: the realised block return also carries the
     leverage and the mixer's own spread, so a declared correlation is diluted in the return by
-    `sqrt(G)/sd(R)`, in expectation the effective share `c_eff = c*gamma^2/alpha^2`.
+    `E[sqrt(G)]/sd(R)`, bounded above by `sqrt(c_eff) = sqrt(c gamma^2/alpha^2)`.
     `LogVar2FJCalibration` estimates the matrix on that same object, so a book's matrix crosses AS
-    IS and nothing is rescaled.
+    IS and nothing is rescaled. A DESK-MARKED correlation is a total-return number and would want
+    the framework's divided by that dilution, which no scaling of the draw can do - the correlated
+    normal is already a unit normal, so the dilution is also the LARGEST total-return correlation
+    this process can realise. Un-diluting one belongs in the matrix, per factor.
 
     The daily shocks come from a `torch.Generator` per CALENDAR-ANCHORED segment of
     `pricing.LV_CHECKPOINT_STEPS` days: never stored, redrawn inside the checkpoint's recompute,

@@ -271,20 +271,35 @@ tensor and adds `−q_k √V_k`; absent, the arithmetic is bit-identical, and un
 added the same way, a drift being a drift on either axis.
 
 `ρ_q` is the book's marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` read through the same
-`Correlation_Sign` the GBM arm resolves, and it is applied to the return's TOTAL diffusive sd
-`√V_k`: the residual's mixer is NOT tilted by the FX, its share of the return being `c`, and the
-desk's ρ being a return-level correlation — under the NIG residual a brute-force joint simulation
-then realises 91.6–92.0% of the applied drift against the analytic Gaussian-shocked share 0.9306,
-which is the design's own choice measured and an open question for the desk (does its ρ mean the
-return-level correlation, or the Gaussian-shocked one?). `σ_FX` is the FX surface's ATM FORWARD
+`Correlation_Sign` the GBM arm resolves, and it is the desk's number read as a **total-return
+correlation** — the ruling of 2026-09-08, and what a desk measures. It is applied to the day's own
+return sd `√V_k`, and that IS the un-diluted framework correlation: the framework applies a
+correlation to the Gaussian GIVEN THE MIXER, whose sd is `E[Σ_k] = D √V_k` with
+`Σ_k² = (ρ_ℓ² + ρ_s²) V_k + G_k`, so a loading on `√V_k` is `ρ_q/D` applied to `Σ_k` and the
+normalisation the ruling asked for is the identity. `D` is **1 exactly** under a Gaussian residual
+(`Σ_k ≡ √V_k`), **0.9256** at the Q-sized NIG defaults and **0.597** on the desk's NKY fit (`c`
+0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
+joint whose realised total-return correlation IS the marked −0.40 puts the exact quanto forward
+`E[SX]/E[X]` within **1.2 SE** of the loading as built, where the loading times `D` sits 8.4 SE
+away and the loading over `D` — the ruling's arithmetic taken literally — 11.6 SE away, so the
+literal division is wrong-signed. The 91.6–92.0% lane Q measured is the OTHER reading: the marked
+ρ applied directly to the Gaussian given the mixer, which is the loading times `D` — worth 1.6% of
+the desk's NKY V2 at the Q-sized `D` and **8.4% of the mark** (3.61m ZAR) at the fit's own 0.597.
+`σ_FX` is the FX surface's ATM FORWARD
 strip on the WALK's own grid — read at every internal step's tenor and differenced by
 `pricing.forward_vol_rate` — where the GBM arm reads one expiry ATM and calls it the whole deal's.
 On a FLAT FX surface the two are the same number and the walk reproduces the closed form to 8e-16
 relative; on a surface sloping 2 vol points of ATM per year they differ by 0.99% of a 2y autocall's
 value, 2.72% at 5 points per year. The fx surface's ATM rows are on the tape, so the quanto vega
 comes out with the rest (0.000% against its CRN ladder); the CORRELATION delta does not, because
-`Correlation` is a `DimensionLessFactor` with no leaf — its ladder reads −10.95 per unit of ρ on a 2y
-autocall, flat to 0.001%, a number the engine has and does not report. Only
+`Correlation` is a `DimensionLessFactor` with no leaf, so `BaseValuation` reports it as a central
+CRN bump of the marked value instead (`Correlation_Bump`, default 0.025, `Greeks: 'First'` only,
+one re-compile and re-value each side on the job's own seed for each correlation a priced quanto
+or compo read, so a book with none pays nothing): the row lands in `Greeks_First` under the
+factor's own name and in a `Correlation_Bump` block that names the width and says NOT ON THE
+TAPE. The desk's NKY V2 reads −22,418,800 ZAR per unit of ρ at 32,768 paths, flat to 0.003%
+between half-widths 0.05 and 0.025 (the value is linear in ρ, as a drift linear in ρ makes it),
+and lane Q's 2y SPX autocall −10.95, flat to 0.001%. Only
 `QEDI_CustomAutoCallSwap`/`_V2` passes the loading today; `Compo` stays refused by name on every
 walking deal, being the product `S·X` and so a second asset the arm does not simulate, and a quanto
 naming no `Correlation` factor refuses rather than pricing with a drift of exactly zero.

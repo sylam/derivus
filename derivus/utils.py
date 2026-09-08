@@ -2603,10 +2603,12 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     `quanto` is the PAYOFF-CURRENCY measure's drift as a per-step loading
     ``q_k = rho_q sigma_FX,k sqrt(delta_k)``, and the day's leverage mean gains ``-q_k sqrt(V_k)``:
     the drift is read off the state's OWN budget rather than an implied ATM vol, so it follows the
-    variance path. `rho_q` is the book's marked equity/fx correlation on the return's TOTAL
-    diffusive sd - the residual's mixer is not tilted, its share of the return being `c` and the
-    desk's number a return-level correlation. A drift on either axis, so `invert` adds it the same
-    way. None where the payoff is single-currency, which is bit-identical.
+    variance path. `rho_q` is the book's marked equity/fx correlation read as a TOTAL-RETURN
+    correlation and applied to the return's OWN sd ``sqrt(V_k)``: the framework's correlation sits
+    on the Gaussian given the mixer, whose sd is ``E[Sigma] = D sqrt(V_k)``, so a loading on the
+    total sd is that correlation already divided by the dilution ``D`` - one exactly under a
+    Gaussian residual. A drift on either axis, so `invert` adds it the same way. None where the
+    payoff is single-currency, which is bit-identical.
     """
     rl = params['Rho_L']
     a, beta = params['Cap_A'], params['Cap_Beta']

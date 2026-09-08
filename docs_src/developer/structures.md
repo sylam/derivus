@@ -224,7 +224,15 @@ declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation i
 / `0.354` of the declared one — flat in the declared value, against a bound of `0.456` — and the
 Gaussian-residual limit, which has no mixer, reads `0.452` / `0.454` / `0.454`. The historical
 estimator (`LogVar2FJCalibration`) measures its own `eps` on that same object, so a book's matrix
-crosses AS IS and nothing is rescaled.
+crosses AS IS and nothing is rescaled. **The dilution is also the CEILING.** The framework hands
+the process a unit normal already correlated with its siblings, and no variance-preserving map of
+a unit normal raises a correlation, so the largest total-return correlation this process can
+realise against a lognormal sibling is `E[√G]/sd(R)` — `√c` exactly under a Gaussian residual,
+0.35 on the monthly blocks above and 0.23 on the daily clock at the Q-sized NIG defaults. A
+DESK-marked correlation is a total-return number and is realised at that fraction of itself
+here, where the pricer's quanto loading realises it exactly ([Market Prices](market_prices.md#logvar2fj));
+un-diluting it is a per-factor scaling of the correlation matrix before the Cholesky, not a
+scaling of the draw — an open ruling on the roadmap.
 
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
 CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside

@@ -388,16 +388,31 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     The family question is closed — the one surviving spot model hands each fixing interval its own
     Gaussian block law, so it is admitted on the same terms as GBM. Values re-mark within their own
     MC noise at 12–23× less variance; the greeks are the prize.
-12. **What the desk's quanto correlation means under a non-Gaussian residual.** The quanto arm
-    applies the marked ρ to the return's total diffusive sd and leaves the NIG mixer untilted, so a
-    brute-force joint simulation realises 91.6–92.0% of the applied drift at the Q-sized defaults
-    (the analytic Gaussian-shocked share is 0.9306). Return-level ρ as marked, or the loading
-    divided by that share so the marked ρ is realised exactly — one line either way, and the
-    desk's reading of its own mark.
-13. **The correlation as a leaf.** `Correlation` is a `DimensionLessFactor` and mints no leaf, so
-    the quanto correlation delta reports as zero against a ladder of −10.95 per unit of ρ on a 2y
-    autocall, flat to 0.001%. Three edits with a tree-wide blast radius (every document carrying a
-    correlation gains a Greeks row) and its own hex gate.
+12. **The correlation as a leaf.** `Correlation` is a `DimensionLessFactor` and mints no leaf, so
+    a quanto's correlation delta has no tape to come off; `BaseValuation` reports it as a CRN bump
+    of the marked value (`Correlation_Bump`, default 0.025), named as a bump beside the tape's
+    greeks — −22.42m ZAR per unit of ρ on the desk's NKY V2, flat to 0.003% between half-widths.
+    The leaf is three edits with a tree-wide blast radius: `Correlation` out of
+    `utils.DimensionLessFactors` (every document carrying a correlation gains a `Greeks_First` row
+    and a Hessian row and column, GBM ones included), `utils.implied_correlation` reading the leaf
+    tensor through a compiled index rather than `current_value()` at compile (both
+    `QuantoImpliedCorrelation` and `CompoImpliedCorrelation`, `calc_vol_adjustment`'s two arms and
+    the HW/FX quanto legs, with `Correlation_Sign` riding the tensor), and its own hex gate built
+    from documents that both run `Greeks` and carry a correlation — the framework matrix in
+    `get_cholesky_decomp`, healed and Cholesky-factorised, is a second, harder question the quanto
+    leaf does not need. The bump is the leaf's oracle. (Decision 12 as it stood — return-level ρ
+    or the loading divided by the Gaussian-shocked share — CLOSED 2026-09-08 by measurement:
+    the loading as built already realises the marked total-return correlation, see Built.)
+13. **The outer process's correlation ceiling.** `LogVar2FJImpliedSpotModel` multiplies the
+    framework's correlated unit normal by `√G`, so a declared correlation against a lognormal
+    sibling is realised at `E[√G]/sd(R)` — `√c` under a Gaussian residual, 0.35 on monthly blocks
+    and 0.23 on the daily clock at the Q-sized NIG defaults — and no scaling of a unit normal can
+    raise it: that fraction is the largest total-return correlation the process can realise, so a
+    book declaring 0.6 against a LogVar2FJ factor is asking for what the generator cannot produce,
+    and the pricer's quanto arm (exact) and the outer arm (diluted) disagree on the same marked ρ.
+    Two remedies, one ruling: a per-factor scaling of the correlation matrix before the Cholesky in
+    `Credit_Monte_Carlo.get_cholesky_decomp` (the do-not-touch block), or the walk's leverage
+    shocks on the framework's Gaussian (a law change with its own hex gate).
 14. **`Prices` in process: warning or refusal.** The field is mandatory on the multiprocessing
     path and a warning naming the fix in process, where the family knows its own type; a refusal
     would cost an edit at about twenty test and gate sites that write
@@ -529,6 +544,30 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane Q2: the quanto correlation convention is measured, and its delta is a
+  number** (2026-09-08) — the desk's ρ is a TOTAL-RETURN correlation (the ruling), and the loading
+  `q_k = ρ_q σ_FX,k √δ_k` the walk multiplies by `√V_k` is that correlation ALREADY divided by the
+  dilution `D = E[Σ]/sd(R)`, `Σ_k² = (ρ_ℓ²+ρ_s²)V_k + G_k`: the framework's correlation sits on the
+  Gaussian given the mixer, whose sd is `D √V_k`, so the two cancel and the normalisation is the
+  identity. MEASURED at 2^17 paths on the daily grid, three joints at the same draws: `D` 1.0000
+  under a Gaussian residual, 0.9256 at the Q-sized NIG defaults, 0.597 on the desk's NKY fit; the
+  joint realising the marked −0.40 on total returns is priced by the loading as built to −1.23 SE
+  (252d) and −0.79 SE (504d), by the loading times `D` to +8.4 SE and by the loading over `D` — the
+  contract's arithmetic taken literally — to −11.6 SE, wrong-signed; read off the pooled
+  correlation instead the same joint implies −0.402 per day against the marked −0.400. Lane Q's
+  91.6–92.0% is the OTHER reading (the marked ρ applied to the Gaussian given the mixer), worth
+  0.67m ZAR on the desk's NKY V2 at the Q-sized `D` and **3.61m, 8.4% of the mark**, at the fit's
+  own — so decision 12 closes on the loading as built, no line moved, and every quanto document is
+  hex-identical (16 + 6 documents, 7,767 floats, the crisp TARF to the bit). BUILT INSTEAD:
+  `Base_Revaluation.Correlation_Bump` (default 0.025) reports the correlation delta a
+  `DimensionLessFactor` cannot put on the tape as a central CRN bump of the marked value — one
+  re-compile and re-value each side on the job's own seed, `Greeks: 'First'` only, for the
+  correlations a priced quanto or compo read — landing in `Greeks_First` with the marked −0.40 as
+  its value and in a `Correlation_Bump` block naming it NOT ON THE TAPE: **−22,418,800 ZAR per unit
+  of ρ** on 229524957 at 32,768 paths, flat to 0.003% between half-widths 0.05 and 0.025 (the
+  0.01 rung 0.2% out, float32 cancellation over 43m). FOUND, NOT FIXED: the outer process's
+  ceiling, open decision 13. Engine net +69 lines. Pack `artifacts/lv_quanto2_20260908/` (`joint.py`,
+  `desk.py mark | ladder | greeks`, `oracle2.py`).
 - **`Bootstrapper Configuration` carries every dial, keyed by what each family writes**
   (2026-09-08) — a family's hyperparameters live ONCE in its section entry, completed from its
   declarations (`schema.declared_defaults`) and overridden per block. Fifteen constants left
@@ -1863,6 +1902,10 @@ full runs each failed one mutation gate purely because source was edited mid-run
 `inspect`-based gates read the file on disk at imported line numbers. Inner loop: `--dirty --run`.
 
 ## Tidy-ups
+
+- **`gates/reach.py --dirty` dies on this box** (2026-09-08, lane Q2) — it decodes `git`'s output
+  as cp1252 and stops on byte 0x81 (`UnicodeDecodeError`, then `compile() arg 1 must be a string`);
+  per-symbol queries work. Decode the diff as UTF-8.
 
 - **`artifacts/logvar2fj/`'s second spelling no longer imports** (2026-09-08) - `logvar2fj.py`,
   `checks.py`, `oracles.py` and `quote_risk.py` re-export `lv_counts` and walk the Poisson residual,
