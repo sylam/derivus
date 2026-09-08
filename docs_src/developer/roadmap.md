@@ -453,6 +453,109 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane 3: the residual's P-law, and no outlier mask** (2026-09-08, brief 8) — the
+  diffusive remainder's law is now `NIG(α^P, β^P, δ_A, μA)` fitted by maximum likelihood on the
+  day's own variance budget, and **the 4σ outlier mask is gone**. WHY: an NIG law has tails, so a
+  day the Gaussian filter would have thrown away is a day the residual's own law explains; only
+  declared `Event_Days` are excluded, and the count a 4σ threshold *would* have flagged is
+  reported beside the likelihood the tails buy. The mask's fixed-point iteration goes with it, so
+  the filter is fitted ONCE. `torch` registers no derivative for its Bessel ops, so `BesselRatio`
+  (`K₀/K₁`, whose own derivative `r² + r/z − 1` is a function of itself, hence differentiable to
+  every order off one evaluation) and `LogBesselK1` carry the density and its Hessian on the same
+  tape the Kalman half uses; the SAME ratio is the posterior mean of the mixer, `E[G|x] =
+  (q/α)K₀(αq)/K₁(αq)`, which is what `eps` is now standardised by — brief 7's *Gaussian given the
+  mixer*, the object the framework's correlation is applied to.
+
+  **Two things the build had to get right.** The budget the return is standardised by is the
+  filter's ONE-STEP PREDICTION and not its filtered value (`lv_predicted`): a range measurement is
+  built from the DAY'S OWN path, so standardising by the filtered `h` shrinks exactly the days
+  whose residual was large, and it turned a left-skewed residual into a right-skewed remainder —
+  the standardised remainder's skew reads **+0.835 against the filtered budget and −0.107 against
+  the predictable one**, and an oracle remainder built from the shocks that were actually drawn
+  **+3.83 against −0.681**, where the law's own is negative. That is the endogeneity brief 1's
+  predictable budget exists to forbid, measured. And the residual's clock
+  is `A = c_eff·V` with the SHARE FITTED, not `c = 1 − ρ_s² − ρ_ℓ²` imposed: the smoothed shocks
+  are attenuated, so the remainder keeps what the leverage regression could not take out, and with
+  `c` imposed `Var(X_A) = A` is an assumption the data contradicts by a factor of three. `c_eff`
+  against `c` is that attenuation reported.
+
+  **RECOVERY** (`artifacts/lv_estimator_20260908/estimate.py recover fine`), five years simulated
+  from `utils.lv_walk` and the engine's own NIG draw at the Q-sized defaults, ONE MIXER PER DAY (a
+  day is a block), 1,300 intraday prints: the particle gate passes at **1.23%** and every parameter
+  is inside two standard errors of its truth except the leverage SPLIT and `α` — `L` **+0.17**,
+  `Drift` +0.28, `κ_ℓ` +1.10, `σ_ℓ` +1.25, `κ_s` +1.26, `σ_s` +1.15, `μ` −0.26, `β^P` **+1.51**,
+  against `ρ_ℓ` −2.81, `ρ_s` **+6.20** and `α^P` **+4.45**. The leverage's MAGNITUDE comes back to
+  0.7%: `|ρ|` **0.856** against the truth 0.850, with `c` 0.267 against 0.278 — what is not
+  identified is which factor carries it, which is 5.5.2 as a number. `α^P` reads 200 against 44,
+  biased TOWARD GAUSSIAN, because the remainder's clock share is **0.997 against the model's
+  `c` 0.267**: at the Q-sized leverage the remainder is nearly all leverage the smoother could not
+  remove, so what the NIG sees is the remainder's law and not the residual's, and the report says
+  so by name.
+
+  **WHY THAT IS NOT A BUG, in one number.** A day's own fast log-variance shock is **0.149**
+  against a measurement noise of **0.932**: one day is **0.16 of a standard error**, so the
+  smoothed shocks correlate **0.196 / 0.141** with the shocks that were actually drawn, and an
+  oracle remainder built from those drawn shocks keeps 0.182 of the budget where the smoothed one
+  keeps 0.874. Part of that noise is IRREDUCIBLE: under this residual a day's quadratic variation
+  is the leverage's share plus the MIXER, whose own dispersion is **0.286 in logs** (CV 5.50) and
+  falls with no number of intraday prints — only the range estimator's share does. That is why the
+  gate REFUSES the same world on a 260-print bar at **10.99%** h-path RMS, naming the measurement
+  (`σ_u` 0.932) rather than a threshold, where the 5.5 lane's Poisson residual passed the same bar
+  at 1.54%.
+
+  **The residual's law where the leverage is small.** On a history simulated from lane 2's own
+  banked USDZAR fit (`ρ_s` −0.394, `ρ_ℓ` −0.200, so `c` 0.805) on a 260-print bar, the gate passes
+  at **1.19%** and everything is inside 1.4 standard errors but `α`: `β^P` **−20.47 ± 7.40 against
+  the truth −15.40 (−0.69 SE)**, `ρ_s` +1.22, `ρ_ℓ` −0.58, `σ_s` +0.97, `σ_ℓ` +0.86, `L` +0.26,
+  `α^P` +4.39 (130.8 against 72.5, a ratio of **1.80**, under the ×2 flag). So the residual's law
+  is identified in proportion to how little of the return the leverage takes, and `α^P` carries a
+  systematic bias toward Gaussian in every arm.
+
+  **THE TAILS ARE REAL ON THE ONE REAL SERIES.** 15 years of platinum LME closes, `log r²` mode,
+  3,855 days: the NIG remainder reads log-likelihood **11,227.45 against the Gaussian's 11,104.79 —
+  a gain of 122.65 nats over two parameters** — with **13** days a 4σ mask would have thrown away
+  and none masked. The gate passes at **0.63%** (5.5's 0.65%) and the fast factor still disappears
+  (`σ_s` on its 0.05 bound), the whole log-variance dynamic being the slow factor's: `κ_ℓ`
+  **0.700 ± 0.384** and `σ_ℓ` **0.5666 ± 0.1208** at a level of **−3.071 ± 0.197** (21.5% vol),
+  against the masked fit's 0.672 / 0.5355 / −3.096. The same gain reads 191.76 nats on the USDZAR
+  arm, 16.37 on the recovery and 18.64 on the closes-only fallback.
+
+  **`log r²` costs the fast factor outright**, not 46% of its standard error: on the SAME series
+  with the bar columns dropped, `σ_s` sits on its 0.05 box bound (−2.67 SE) with `κ_s`'s standard
+  error infinite and `ρ_s`'s 11.09 — at a measurement noise of 2.22 a factor reverting at 6/yr is
+  invisible — while the slow pair and the level are unmoved (`σ_ℓ` −0.25, `L` +0.32) and the gate
+  passes at 0.96%.
+
+  **The correlation object is the Gaussian GIVEN THE MIXER.** `eps = (u − μA − βĜ)/√Ĝ` with `Ĝ`
+  the mixer's posterior mean, against the alternative of standardising by the law's own sd: on the
+  simulated history the two read correlations of **+0.165 and +0.166** against a drawn 0.60, and
+  the choice is made on SHAPE — excess kurtosis **+0.12 against +1.11**, sd 0.946 against 1.005 —
+  because a Pearson correlation on a fat-tailed series is a few days' arithmetic. Through the
+  framework on the fine bar, `eps` against a sibling drawn at 0.60 on that same object reads
+  **0.184** (GARCH, which indexes its delta at the return's END date) and **0.002** (GBM, whose
+  `utils.calc_statistics` indexes at the START — the one-day shift the 5.5 lane opened and this
+  lane still does not fix). The dilution from 0.60 to 0.18 is the leverage the smoothed shocks
+  cannot remove; it is the same 0.16-of-a-standard-error statement.
+
+  **THE SEAM CLOSES ON THREE READERS.** `utils.LV_SLOW_HISTORY` grows from `(Rho_L, Sigma_L,
+  Rho_L_SE, Sigma_L_SE)` to `(Rho_L, Sigma_L, Alpha, Beta, Rho_S)` — each with its own `_SE`, which
+  is now the shape rather than a list — and the USDZAR ladder cut to 6m and beyond, fitted over the
+  block this lane writes, reads all three: *Alpha 200.4857 is held at the history's alpha^P*, *the
+  leverage prior on Rho_S −0.2020 from the history's estimate, Rho_S SE 0.0884*, and *Rho_L −0.8319
+  and Sigma_L 1.3895 held at the history's estimate, Rho_L SE 0.1535 and Sigma_L SE 0.3119*, at a
+  wing RMSE of **0.768** vol points unweighted over 11 quotes. The same job with `Alpha_SE` stripped
+  refuses in **0.0 s** by name, from the WRITE side, naming the whole shape.
+
+  **Not built:** the joint QML spec 5.5.2 defers, which is what would identify the leverage split
+  and with it the residual's own law — the return as a second measurement whose loading `√ĥ_t` is
+  known at `t`; and the deconvolution that would read `α^P` off a remainder the leverage still
+  contaminates (the remainder is `NIG(A) ⊛ N(0, kV)`, whose density is one quadrature over the
+  mixer's own quantile and whose `k` the filter already computes). Until either lands, `α^P` is an
+  UPPER bound on the residual's tail thickness, which is the conservative direction for a seed and
+  a sanity check and is why brief 8 crosses it as neither a value nor a belief. Engine net **+165
+  lines**. Proof documents: `artifacts/lv_estimator_20260908/estimate.py recover | recover fine |
+  choice | closes | banked | pvq | seam | refuse`, `lv_nig_20260907/hexcheck.py` +`hexdiff.py`,
+  `campaign/tarf_hex.py`.
 - **LogVar2FJ v2, lane 2: the calibrator's priors, the symmetric box and the forward block as
   routine** (2026-09-08) — the fit now carries a LEVERAGE PRIOR it can never be without, a FLOOR on
   the residual's own shape, a SYMMETRIC `ρ_s` box, the forward-smile block at stage 3 by default,
@@ -584,9 +687,9 @@ set; and five model items in the punchlist below.
   variance 4.93 otherwise - and the range modes carry the lognormal offset `-sigma_u^2/2`; on the
   simulated bar `log r^2` reads bias **-1.34** and sd **2.18** against the law's -1.27 and 2.22.
   Three things the build had to get right and the documents measured wrong first: the jump mask
-  iterates to a FIXED POINT (a jump day's range IS the jump's, so the first filter reads it as
-  variance, and one pass apart the fit's mask and the reported jump set are different series - the
-  cross-check gate read 51 nats of exactly that); the leverages regress the diffusive remainder on
+  and its fixed point were retired with the Poisson residual (lane 3, 2026-09-08) - what the fixed
+  point measured stands as the reason a masked fit and its reported jump set must be one series,
+  and the NIG law removes the need for either; the leverages regress the diffusive remainder on
   the SMOOTHED state shocks, because the FILTERED increment is `k_j v` in both components, exactly
   proportional, so it cannot separate the two leverages at all; and the pair is ridged onto the
   model's own `utils.LV_C_MIN` box, which is now one constant both `riskfactors` and this class
@@ -618,11 +721,10 @@ set; and five model items in the punchlist below.
   day the filter has not caught up with, which is a statement about a history with the
   vol-of-vol of a fitted FX surface and not about the threshold.
 
-  **What history identifies, measured.** The jump SIZES come back (`Mu_J` -0.0557 against -0.05,
-  `Sigma_J` 0.0169 against 0.02, both inside half a standard error) and the INTENSITY does not.
-  The `log r^2` fallback on the same series passes the gate at 1.14% and costs 46% on `Sigma_S`'s
-  standard error and 39% on `Kappa_S`'s, with the level's unchanged; its filtered `h` sits 2.07 RMS
-  in logs from its own measurement against the bar's 0.78. The P-vs-Q round trip on the banked
+  **What history identifies, measured.** What replaced the jump sample is the residual's own
+  `(alpha^P, beta^P)`, identified in proportion to how little of the return the leverage takes
+  (lane 3, 2026-09-08, which also re-read the `log r^2` fallback: the fast factor is lost outright
+  there, not 46% of a standard error). The P-vs-Q round trip on the banked
   reduced-USDZAR factor reads `Sigma_S` **0.998**, `Rho_S` 1.27, `Kappa_S` 1.35 - and `Sigma_L`
   1.75, `Kappa_L` 2.02, `Rho_L` **-1.64** (the sign flipped, standard error 0.53) - so the fast
   factor round-trips and the slow one does not, which is exactly the split 5.5.2 and 5.5.3 draw.

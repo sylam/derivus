@@ -4589,6 +4589,14 @@ LV_HIST_BOX = {'Kappa_S': (2.0, 120.0), 'Sigma_S': (0.05, 8.0), 'Kappa_L': (0.02
                'Sigma_L': (0.02, 4.0), 'L': (float(np.log(1.0e-4)), float(np.log(4.0))),
                'Sigma_U': (0.05, 3.0)}
 
+#: The residual's P-law as it is written: the tail and skew of `NIG(alpha, beta, delta_A, mu A)`,
+#: the share of the day's variance budget its CLOCK is, and the free location per unit clock.
+#: `alpha` is searched in logs between these two, a decade either side of the Q-sized 44 - a sample
+#: cannot say a residual is more Gaussian than `LV_NIG_MAX` nor a jump law sharper than
+#: `LV_NIG_MIN`.
+LV_NIG_NAMES = ('Alpha', 'Beta', 'C_Eff', 'Residual_Drift')
+LV_NIG_MIN, LV_NIG_MAX = 0.5, 4000.0
+
 
 def lv_bars(data_frame):
     """The factor's own bar and the measurement its columns decide: the unsuffixed archive column
@@ -4696,6 +4704,23 @@ def lv_ou_pair(theta, delta):
         torch.tensor([theta['Sigma_S'], theta['Sigma_L']], dtype=torch.float64), delta))
 
 
+def lv_predicted(m, cov, phi, w, level):
+    """The PREDICTABLE daily variance `E[exp(l + s) | y_{<t}]` - the filter's one-step prediction,
+    started stationary, which is the budget brief 1 reads at the START of the day.
+
+    NOT the filtered variance. A range measurement is built from the DAY'S OWN path, so it carries
+    the day's own residual: standardising the return by the filtered `h` shrinks exactly the days
+    whose residual was large, which turns a left-skewed residual into a right-skewed remainder and
+    is the endogeneity the predictable budget exists to forbid.
+    """
+    mean = np.vstack([[0.0, level], m[:-1] * phi + [0.0, level * (1.0 - phi[1])]])
+    step = np.array([phi[0] * phi[0], phi[0] * phi[1], phi[1] * phi[1]])
+    shock = np.array([w[0] * w[0], 0.0, w[1] * w[1]])
+    var = np.vstack([shock / np.array([1.0 - phi[0] ** 2, 1.0, 1.0 - phi[1] ** 2]),
+                     cov[:-1] * step + shock])
+    return np.exp(mean.sum(1) + 0.5 * (var[:, 0] + 2.0 * var[:, 1] + var[:, 2]))
+
+
 def lv_smooth_shocks(m, cov, phi, w, level):
     """The state's OWN per-step shocks `E[eta_t | y]` by one RTS backward pass over the filtered
     path - the object spec 5.5.1's leverage regression runs on.
@@ -4734,20 +4759,126 @@ def lv_leverage(shocks, z, c_min):
     return rho, np.linalg.inv(a) * float((z - shocks @ rho).var(ddof=2)), ridge
 
 
-def lv_jump_split(excess, variance, threshold):
-    """The OUTLIER mask and what it takes out of the return: returns standardised by the filtered
-    variance and thresholded (spec 5.5.1), then apportioned by the Gaussian posterior so a flagged
-    day's remainder is the diffusion the outlier sat on rather than an identical zero. Three
-    passes. The filter's own outlier treatment - the residual's shape is fitted from the surface."""
-    flag = np.abs(excess) > threshold * np.sqrt(variance)
-    jump = np.where(flag, excess, 0.0)
-    for _ in range(3):
-        sample = jump[flag]
-        mu = float(sample.mean()) if sample.size else 0.0
-        sigma = float(sample.std(ddof=1)) if sample.size > 1 else 0.0
-        share = sigma * sigma / (sigma * sigma + variance)
-        jump = np.where(flag, mu + share * (excess - mu), 0.0)
-    return flag, jump
+class BesselRatio(torch.autograd.Function):
+    """`K_0(z)/K_1(z)` ON THE TAPE. Its own derivative is `r^2 + r/z - 1`, a function of itself, so
+    one Bessel evaluation carries every order - which is what the standard errors need, torch
+    registering no derivative for its Bessel ops at all."""
+
+    @staticmethod
+    def forward(ctx, z):
+        ctx.save_for_backward(z)
+        return (torch.special.scaled_modified_bessel_k0(z)
+                / torch.special.scaled_modified_bessel_k1(z))
+
+    @staticmethod
+    def backward(ctx, grad):
+        z, = ctx.saved_tensors
+        ratio = BesselRatio.apply(z)
+        return grad * (ratio * ratio + ratio / z - 1.0)
+
+
+class LogBesselK1(torch.autograd.Function):
+    """`log K_1(z)` off the SCALED op, so the exponential a daily clock's argument would overflow is
+    never formed; `d/dz = -(K_0/K_1 + 1/z)` rides `BesselRatio` and is differentiable again."""
+
+    @staticmethod
+    def forward(ctx, z):
+        ctx.save_for_backward(z)
+        return torch.log(torch.special.scaled_modified_bessel_k1(z)) - z
+
+    @staticmethod
+    def backward(ctx, grad):
+        z, = ctx.saved_tensors
+        return -grad * (BesselRatio.apply(z) + 1.0 / z)
+
+
+def lv_nig_logpdf(x, clock, alpha, beta, mu):
+    """The log-density of `NIG(alpha, beta, delta_A, mu A)` at `x` on the variance clock `A`:
+    `utils.lv_nig_budget`'s own `delta_A`, so the variance IS the clock, and a location `mu A`
+    LINEAR in it as `delta_A` is, so the law still composes. `mu` is free because P does not force
+    the drift, where Q's `mu_A` is the martingale's."""
+    delta, _, gamma = utils.lv_nig_budget(clock, alpha, beta)
+    d = x - mu * clock
+    q = torch.sqrt(delta * delta + d * d)
+    return (torch.log(alpha * delta / np.pi) + delta * gamma + beta * d - torch.log(q)
+            + LogBesselK1.apply(alpha * q))
+
+
+def lv_nig_mixer(x, clock, alpha, beta, mu):
+    """`E[G | x]`, the posterior mean of the residual's inverse-Gaussian mixer: `G | x` is a
+    `GIG(-1, q^2, alpha^2)` in the density's own `q`, whose mean is `(q/alpha)K_0(z)/K_1(z)` at
+    `z = alpha q`.
+
+    The framework's cross-factor correlation sits on the Gaussian GIVEN THE MIXER (brief 7), so
+    this is what `eps` is standardised by - the law's own sd would leave the mixer's fat tails in
+    the series the correlation is measured on.
+    """
+    delta, _, _ = utils.lv_nig_budget(clock, alpha, beta)
+    q = torch.sqrt(delta * delta + (x - mu * clock) ** 2)
+    return q * BesselRatio.apply(alpha * q) / alpha
+
+
+def lv_nig_fit(x, budget):
+    """The residual's P-law by maximum likelihood (brief 8) on the day's VARIANCE BUDGET `V`,
+    returning `(values, se, loglik, gaussian_loglik)`.
+
+    The clock is `A = c_eff V` with the SHARE FITTED. `c = 1 - rho_s^2 - rho_l^2` is the share the
+    residual would carry if the leverage came out whole; the smoothed shocks are attenuated, so the
+    remainder keeps what the regression could not take out and its variance is not `c V` at all.
+    Fitting the share is what makes `Var(X_A) = A` hold on the object rather than on an assumption,
+    and `c_eff` against `c` is that attenuation reported (brief 7).
+
+    Searched in `alpha = exp(a)`, `beta = alpha tanh(b)`, `c_eff = exp(e)`, which is `|beta| <
+    alpha` at every iterate - `|beta+1| < alpha` is the MARTINGALE's constraint and P does not force
+    the drift - off the AAD gradient, with the standard errors from the inverse Hessian of the same
+    likelihood in the NATURAL coordinates, as the Kalman half takes its own. `gaussian_loglik` is
+    the same remainder read as `N(m V, s V)` at its own closed-form `(m, s)`: the model comparison
+    that says whether the tails are real, TWO free parameters apart.
+    """
+    from scipy.optimize import minimize
+    x, budget = (torch.tensor(v, dtype=torch.float64) for v in (x, budget))
+    negative = lambda v: -lv_nig_logpdf(x, v[2] * budget, v[0], v[1], v[3]).sum()
+
+    def objective(vector):
+        v = torch.tensor(vector, dtype=torch.float64, requires_grad=True)
+        alpha = torch.exp(v[0])
+        value = negative(torch.stack([alpha, alpha * torch.tanh(v[1]), torch.exp(v[2]), v[3]]))
+        return float(value.detach()), torch.autograd.grad(value, v)[0].numpy()
+
+    start = lv_nig_start(x.numpy(), budget.numpy())
+    best = minimize(objective, start, jac=True, method='L-BFGS-B',
+                    bounds=[(np.log(LV_NIG_MIN), np.log(LV_NIG_MAX)), (-6.0, 6.0),
+                            (np.log(1.0e-3), np.log(4.0)), (None, None)])
+    alpha, share = float(np.exp(best.x[0])), float(np.exp(best.x[2]))
+    theta = torch.tensor([alpha, alpha * np.tanh(best.x[1]), share, best.x[3]],
+                         dtype=torch.float64)
+    spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, theta)).diagonal()
+    location = x.sum() / budget.sum()
+    scale = ((x - location * budget) ** 2 / budget).mean()
+    gaussian = -0.5 * (torch.log(2.0 * np.pi * scale * budget)
+                       + (x - location * budget) ** 2 / (scale * budget)).sum()
+    return (dict(zip(LV_NIG_NAMES, (float(v) for v in theta))),
+            dict(zip(LV_NIG_NAMES, (float(v.sqrt()) if v > 0 else float('inf') for v in spread))),
+            -float(best.fun), float(gaussian))
+
+
+def lv_nig_start(x, budget):
+    """`(a, b, log c_eff, mu)` from the remainder's own moments: the share is its variance over the
+    budget, and on what is left an NIG's skewness `3 s/sqrt(delta gamma)` and excess kurtosis
+    `3(1 + 4 s^2)/(delta gamma)` in `s = beta/alpha` invert in closed form. Moments those two do
+    not place inside the admissible map take the index-sized default instead."""
+    v = x / np.sqrt(budget)
+    share = float(v.var())
+    d = (v - v.mean()) / np.sqrt(share)
+    g1, g2 = float((d ** 3).mean()), float((d ** 4).mean()) - 3.0
+    mu = float(x.sum() / budget.sum() / share)
+    ratio = g1 * g1 / (3.0 * g2 - 4.0 * g1 * g1) if 3.0 * g2 > 4.0 * g1 * g1 + 1.0e-9 else 1.0
+    if not 0.0 <= ratio < 0.9:
+        return [float(np.log(44.0)), float(np.arctanh(-0.5)), float(np.log(share)), mu]
+    scale = (3.0 * (1.0 + 4.0 * ratio) / g2 / (share * float(budget.mean()))
+             / (1.0 - ratio) ** 2)
+    return [float(np.log(np.clip(np.sqrt(scale), LV_NIG_MIN, LV_NIG_MAX))),
+            float(np.arctanh(np.copysign(np.sqrt(ratio), g1))), float(np.log(share)), mu]
 
 
 def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
@@ -4756,8 +4887,10 @@ def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
 
     The measurement is the same one the Kalman reads, on the same mask - what this drops is the
     LOG-LINEARISATION of it and the forced Gaussian posterior, which are the two approximations the
-    gate exists to size. `replicates` independent clouds run as ONE batch, so the gate carries its
-    own noise. Returns the log-likelihood per replicate and the posterior-mean `h` path.
+    gate exists to size. Under the NIG residual no threshold hides a tail day from either filter,
+    so the two now disagree about the MEASUREMENT alone and the gate says so when it refuses.
+    `replicates` independent clouds run as ONE batch, so the gate carries its own noise. Returns
+    the log-likelihood per replicate and the posterior-mean `h` path.
     """
     generator = torch.Generator().manual_seed(seed)
     shape, su2 = (replicates, particles), theta['Sigma_U'] ** 2
@@ -4799,28 +4932,34 @@ class LogVar2FJCalibration(object):
     `log RV_t = l_t + s_t + u_t` measures the two-factor OU state through a range estimator. The
     variance has its own shocks, so unlike GARCH the state is never a function of the observed
     returns and this is a filter, not a recursion: the Kalman likelihood is exact and maximised by
-    AAD; the returns standardised by the filtered variance and thresholded give the OUTLIER mask
-    the state and the leverage are estimated without; the leverages are the regression of the
-    remainder on the SMOOTHED state shocks; and `delta` is `(z - rho_s eta_s - rho_l eta_l)/sqrt(c)`,
-    the process's own idiosyncratic Gaussian, so the framework's correlation is estimated on the
-    object 6.1 applies it to and no input needs rescaling.
+    AAD; the leverages are the regression of the diffusive remainder on the SMOOTHED state shocks;
+    what is left of that remainder is the model's OWN NIG residual, fitted by maximum likelihood on
+    the day's variance budget with the clock's SHARE fitted beside the law; and `delta` is that
+    residual's Gaussian GIVEN THE MIXER, so the framework's correlation is estimated on the object
+    6.1 applies it to and no input is rescaled.
 
-    What crosses into a pricing model (5.5.3) is that correlation, the two reversion speeds as
-    priors, and the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the ladder
-    carries no wing. The vol-of-vols and leverages are a sanity table against the fitted factor and
-    nothing more - invariant in theory, and in practice neither risk-premium-free nor unattenuated
-    - and the level never crosses at all. `Scale_To_Sector` is 5.5.3's
-    last row, for an underlying with no liquid surface: the history's parameters are taken to the
-    sector's own implied values, per name, with the report stating each ratio.
+    THERE IS NO OUTLIER MASK. An NIG law has tails, so a day a Gaussian filter would have thrown
+    away is a day the residual's own law explains, and only declared `Event_Days` are excluded; the
+    count a 4-sigma threshold would have flagged is REPORTED beside the likelihood the tails buy.
+
+    What crosses into a pricing model (5.5.3, brief 8) is that correlation, the two reversion
+    speeds as priors, the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the
+    ladder carries no wing, `Rho_S` as the leverage prior's value and `alpha^P` as a seed and a
+    sanity check. The vol-of-vols, `beta` and the leverages as VALUES are a sanity table against
+    the fitted factor and nothing more - invariant in theory, and in practice neither
+    risk-premium-free nor unattenuated - and the level never crosses at all. `Scale_To_Sector` is
+    5.5.3's last row, for an underlying with no liquid surface: the history's parameters are taken
+    to the sector's own implied values, per name, with the report stating each ratio.
     """
     model_type = utils.LV_SLOW_HISTORY[0]
     fields = [
         F('Jump_Threshold', 'Float', default=4.0,
-          description='Standard deviations of the filtered daily variance past which a return is '
-                      'one jump and not diffusion'),
+          description='Standard deviations of the filtered daily variance at which the outlier '
+                      'count is REPORTED - the NIG residual explains those days and none is '
+                      'masked, so this moves no estimate'),
         F('Event_Days', 'Text', default='',
-          description='Declared corporate-event dates, comma separated - flagged and EXCLUDED '
-                      'rather than thresholded, since a scheduled event is not a jump draw'),
+          description='Declared corporate-event dates, comma separated - EXCLUDED, since a '
+                      'scheduled event is not a draw of this law at all'),
         F('Particle_Count', 'Integer', default=1000,
           description='Particles per replicate in the cross-check filter'),
         F('Random_Seed', 'Integer', default=0,
@@ -4866,40 +5005,41 @@ class LogVar2FJCalibration(object):
                                         str(self.param['Event_Days']).split(',') if x.strip()])
         seen = (rv > 0.0) & ~event
 
-        # to a FIXED POINT, at most three passes: a jump day's range is the jump's, so the first
-        # filter reads it as variance, and the mask the fit ends on has to be the mask the jump
-        # sample and the cross-check gate then read - one pass apart they are different series
-        flag = np.zeros(len(r), dtype=bool)
-        for _ in range(3):
-            theta, se, loglik, m, cov = lv_history_fit(y, seen & ~flag, delta, fixed)
-            h = np.exp(m.sum(1) + 0.5 * (cov[:, 0] + 2.0 * cov[:, 1] + cov[:, 2]))
-            drift = float(np.mean(r[~event & ~flag]))
-            found, jump = lv_jump_split(
-                np.where(event, 0.0, r - drift), h * delta, threshold)
-            if np.array_equal(found, flag):
-                break
-            flag = found
-        seen = seen & ~flag
+        theta, se, loglik, m, cov = lv_history_fit(y, seen, delta, fixed)
+        h = np.exp(m.sum(1) + 0.5 * (cov[:, 0] + 2.0 * cov[:, 1] + cov[:, 2]))
+        drift = float(np.mean(r[~event]))
         theta['Offset'] = fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2)
-        shocks = lv_smooth_shocks(m, cov, *lv_ou_pair(theta, delta), theta['L'])
-        z, keep = (r - drift - jump) / np.sqrt(h * delta), ~event[:-1]
+        pair = lv_ou_pair(theta, delta)
+        shocks = lv_smooth_shocks(m, cov, *pair, theta['L'])
+        predicted = lv_predicted(m, cov, *pair, theta['L'])
+        z, keep = (r - drift) / np.sqrt(predicted * delta), ~event[:-1]
         rho, rho_cov, ridge = lv_leverage(shocks[keep], z[:-1][keep], utils.LV_C_MIN)
         c = 1.0 - float(rho @ rho)
-        eps = (z[:-1] - shocks @ rho) / np.sqrt(c)
+
+        # the remainder in RETURN units on the day's PREDICTABLE budget: the leverage compensator
+        # -0.5 rho.rho V is linear in it, so the free location absorbs it with the drift
+        budget = predicted[:-1] * delta
+        remainder = (z[:-1] - shocks @ rho) * np.sqrt(budget)
+        nig, nig_se, nig_loglik, gauss_loglik = lv_nig_fit(remainder[keep], budget[keep])
+        clock = nig['C_Eff'] * budget
+        mixer = lv_nig_mixer(*(torch.tensor(v, dtype=torch.float64) for v in (
+            remainder, clock, nig['Alpha'], nig['Beta'], nig['Residual_Drift']))).numpy()
+        eps = (remainder - nig['Residual_Drift'] * clock - nig['Beta'] * mixer) / np.sqrt(mixer)
+        outliers = int((np.abs(np.where(event, 0.0, r - drift))
+                        > threshold * np.sqrt(predicted * delta)).sum())
 
         pf_loglik, pf_h = lv_particle_gate(
             y, seen, theta, delta, int(self.param['Particle_Count']), 4,
             int(self.param['Random_Seed']))
         miss = float(np.sqrt(np.mean((pf_h / h - 1.0) ** 2)))
         errors = dict(se, Rho_S=float(np.sqrt(rho_cov[0, 0])), Rho_L=float(np.sqrt(rho_cov[1, 1])),
-                      Drift=float(np.std(r)) / np.sqrt(len(r)))
-        values = dict(theta, Rho_S=float(rho[0]), Rho_L=float(rho[1]), Drift=drift)
+                      Drift=float(np.std(r)) / np.sqrt(len(r)), **nig_se)
+        values = dict(theta, Rho_S=float(rho[0]), Rho_L=float(rho[1]), Drift=drift, **nig)
         logging.info(
-            'LogVar2FJ history %s: %s on %d days, %d measured (%d outliers at %g sigma, %d '
-            'events); loglik %.2f', name, mode, len(r), int(seen.sum()), int(flag.sum()),
-            threshold, int(event.sum()), loglik)
+            'LogVar2FJ history %s: %s on %d days, %d measured (%d events); loglik %.2f',
+            name, mode, len(r), int(seen.sum()), int(event.sum()), loglik)
         for row in (('Kappa_S', 'Sigma_S', 'Rho_S'), ('Kappa_L', 'Sigma_L', 'Rho_L'),
-                    ('L', 'Sigma_U', 'Drift')):
+                    ('L', 'Sigma_U', 'Drift')) + (LV_NIG_NAMES,):
             logging.info('  ' + '   '.join('%s %+.4f +- %.4f' % (n, values[n], errors[n])
                                            for n in row))
         pinned = [n for n in se if not LV_HIST_BOX[n][0] < theta[n] < LV_HIST_BOX[n][1]]
@@ -4909,9 +5049,28 @@ class LogVar2FJCalibration(object):
             float(eps.std()),
             float(np.sqrt(np.mean((np.log(h[seen]) - (y[seen] - theta['Offset'])) ** 2))),
             '; ON ITS BOX BOUND: ' + ', '.join(pinned) if pinned else '')
+        logging.info(
+            '  residual: NIG loglik %.2f against the Gaussian %.2f on the same remainder, a gain '
+            'of %.2f nats over 2 parameters; clock share %.4f against the model\'s c %.4f, which '
+            'is what the smoothed shocks left in it; %d days a %g sigma mask would have thrown '
+            'away, and none is masked%s%s', nig_loglik, gauss_loglik, nig_loglik - gauss_loglik,
+            nig['C_Eff'], c, outliers, threshold,
+            '' if nig['C_Eff'] < 2.0 * c else
+            '. THE REMAINDER IS MOSTLY LEVERAGE - its clock is {:.1f}x the model\'s c, so Alpha '
+            'and Beta are the REMAINDER\'s law and not the residual\'s, Alpha reading toward '
+            'Gaussian; brief 8 crosses Alpha as a SEED for that reason'.format(nig['C_Eff'] / c),
+            '' if LV_NIG_MIN * 1.001 < nig['Alpha'] < LV_NIG_MAX * 0.999
+            else '; ALPHA ON ITS BOX BOUND')
         for n, q in sorted(self.implied().items()):
-            logging.info('  P vs Q %s: %+.4f against %+.4f, ratio %+.4f', n, values[n], q,
-                         values[n] / q if q else float('nan'))
+            note = ''
+            if n == 'Alpha' and not 0.5 <= abs(values[n] / q if q else 0.0) <= 2.0:
+                note = (' - FLAGGED past 2x: alpha^P is a SEED and a sanity check, Esscher '
+                        'invariance being an assumption about the risk premium (brief 8)')
+            elif n == 'Beta':
+                note = (' - reported, NEVER crossed: an Esscher tilt moves beta by one unit at '
+                        'most, so the P and Q skews are not the same number')
+            logging.info('  P vs Q %s: %+.4f against %+.4f, ratio %+.4f%s', n, values[n], q,
+                         values[n] / q if q else float('nan'), note)
         logging.info(
             '  particle gate: %s - %d particles x 4 replicates, loglik %.2f (replicate sd %.2f) '
             "against the Kalman's %.2f, h path %.2f%% RMS",
@@ -4921,10 +5080,10 @@ class LogVar2FJCalibration(object):
             raise ValueError(
                 "{}: the particle filter reads the filtered h path {:.1f}% RMS from the Kalman's, "
                 'past the 10% spec 5.5.1 gates it at. The two agree only where the linear '
-                'measurement carries the whole of the variance, so what is wrong is the '
-                'measurement noise (sigma_u {:.4f} on the {} estimator) or the jump threshold '
-                '({:g} sigma, {} days)'.format(name, 100.0 * miss, theta['Sigma_U'], mode,
-                                               threshold, int(flag.sum())))
+                'measurement carries the whole of the variance, and nothing is masked out of it '
+                'now, so what is wrong is the MEASUREMENT: sigma_u {:.4f} on the {} estimator, '
+                'against 2.22 for squared returns and 0.8 for a finely printed bar'.format(
+                    name, 100.0 * miss, theta['Sigma_U'], mode))
 
         for n, q in sorted(sector.items()):
             logging.info('  scaled to the sector: %s %+.4f -> %+.4f, ratio %+.4f', n, values[n], q,
@@ -4932,8 +5091,10 @@ class LogVar2FJCalibration(object):
 
         param = dict({n: float(v) for n, v in dict(values, **sector).items()},
                      **{n + '_SE': float(errors[n]) for n in errors})
-        param.update({'Measurement': mode, 'Outlier_Count': int(flag.sum()), 'C': c,
+        param.update({'Measurement': mode, 'Outlier_Count': outliers, 'C': c,
                       'Jump_Threshold': threshold, 'Log_Likelihood': loglik,
+                      'Residual_Log_Likelihood': nig_loglik,
+                      'Gaussian_Log_Likelihood': gauss_loglik,
                       'Calibration_DT_Years': delta})
         return utils.CalibrationInfo(
             param, [[1.0]], pd.DataFrame({name: eps}, index=bar.index[1:-1]).loc[keep])

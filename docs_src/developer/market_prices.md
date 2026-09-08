@@ -264,6 +264,16 @@ costs, and any quote that speaks outvotes it. It is read in one order — the bl
 where declared, else a LogVar2FJ history's own `Rho_S` in `Price Models`, else the asset-class
 default: an index **−0.7** (the VIX-implied spot–vol correlation), an FX pair **0.0**.
 
+That history now has a producer. `Rho_S` arrives with its own standard error and the report prints
+both; `Alpha` arrives as `α^P` and is reported beside `α^Q` with the ratio, FLAGGED past ×2. Read
+`α^P` as an UPPER bound on the residual's tail thickness rather than as a measurement of it: the
+estimator fits the law of the diffusive REMAINDER, and at an index-sized leverage (`c` 0.28) the
+remainder is nearly all leverage the smoothed shocks could not remove — its clock share reads 0.997
+against `c` — so the fitted `α` is pulled toward Gaussian, by a factor of 4.6 on a simulated index
+history and 1.8 on an FX-sized one. The report names the ratio whenever the clock share exceeds
+twice `c`. `β^P` never crosses at all: an Esscher tilt moves `β` by one unit at most, so the P and Q
+skews are not the same number, and the sanity table says so on the row.
+
 THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book
 is *USD per rand* and a desk's `+0.4` on an EM cross quoted USD-per-currency is **−0.4** here. The
 declaration is DATA the desk owns: `derivus_bloomberg/seed.json`'s `fx_vol.leverage_prior` states it
@@ -306,10 +316,13 @@ the forward-smile block is what separates them.
 ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are fitted to nothing and are pinned
 instead. What they are pinned at is read in one order — `Slow_Factor_Prior` where the block declares
 one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LV_SLOW_HISTORY`
-shape — the one place both lanes declare it — reported with both standard errors and taken to the
-floor by name where it sits under it, as a hand-authored `(−0.35, 0.22)` with SEs 0.09 / 0.14 reads
-back *held at the history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the block is
-written by `stochasticprocess.LogVar2FJCalibration`, spec 5.5's estimator), else
+shape — the one place both lanes declare it — which is `Rho_L`, `Sigma_L`, `Alpha`, `Beta` and
+`Rho_S`, EACH WITH ITS OWN `_SE`; a block missing any one of the ten refuses by name from the write
+side. The slow pair is reported with both standard errors and taken to the floor by name where it
+sits under it, as a hand-authored `(−0.35, 0.22)` with SEs 0.09 / 0.14 reads back *held at the
+history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the block is written by
+`stochasticprocess.LogVar2FJCalibration`, the P-measure estimator, and the same block is where the
+leverage prior's `Rho_S` and the residual seed `Alpha` are read from), else
 the class default off the factor type `Underlying` resolves to: **FX (0.2, 0.5), an index
 (0.4, 1.0)**, whose SIGN is that of the `Rho_S` in force at the pin. The sign is the point: the fit
 runs on the `FxRate`'s own axis, so a USDZAR block whose deal convention has vol rising as the rand

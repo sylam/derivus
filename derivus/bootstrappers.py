@@ -2195,7 +2195,7 @@ class LVFit(object):
             rho_l, sigma_l = (float(self.history[name]) for name in keys[:2])
             return rho_l, max(sigma_l, floor), (
                 "the history's estimate, Rho_L SE {:.4f} and Sigma_L SE {:.4f} (spec 5.5.3){}"
-                .format(*[float(self.history[name]) for name in keys[2:]] +
+                .format(*[float(self.history[name + '_SE']) for name in keys[:2]] +
                         ['' if sigma_l >= floor else
                          ', its Sigma_L {:.4f} TAKEN TO the {:g} floor'.format(sigma_l, floor)]))
         rho_l, sigma_l = self.slow_priors[self.asset_class]
@@ -3499,21 +3499,23 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         return tuple(0.01 * float(x) for x in rows)
 
     def slow_history(self, market_price, instrument, price_models):
-        """The historical slow pair where the job's `Price Models` carries a `LogVar2FJCalibration`
+        """The historical estimate where the job's `Price Models` carries a `LogVar2FJCalibration`
         block for this underlying (spec 5.5.3), read by the shape `utils.LV_SLOW_HISTORY` declares
-        for both lanes. The estimator is the calibration's; this is its reader."""
+        for both lanes - the slow pair, `Alpha`, `Beta` and `Rho_S`, each with its own standard
+        error. The estimator is the calibration's; this is its reader."""
         model, keys = utils.LV_SLOW_HISTORY
         block = price_models.get(utils.check_tuple_name(utils.Factor(
             model, utils.check_rate_name(instrument['Underlying']))))
-        missing = [] if block is None else [name for name in keys if name not in block]
+        shape = [name for key in keys for name in (key, key + '_SE')]
+        missing = [] if block is None else [name for name in shape if name not in block]
         if missing:
             raise ValueError(
-                '{}: Price Models carries {}.{}, which spec 5.2 stage 4 reads the slow pair off '
-                'where the ladder does not identify it, and it is missing {}. A historical prior '
-                'is the pair AND its standard errors ({}) - re-run the calibration, or drop the '
-                'block and the asset class default stands'.format(
+                '{}: Price Models carries {}.{}, which the slow-pair pin, the residual seed and '
+                'the leverage prior are read off, and it is missing {}. A historical prior is '
+                'every estimate AND its standard error ({}) - re-run the calibration, or drop the '
+                'block and the declared and class-default priors stand'.format(
                     market_price, model, instrument['Underlying'], '/'.join(missing),
-                    '/'.join(keys)))
+                    '/'.join(shape)))
         return block
 
     def event_knots(self, fit, sys_params):

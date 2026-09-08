@@ -2397,10 +2397,12 @@ LV_BUCKET_NAMES = ('Rho_S', 'Beta', 'Sigma_S', 'Alpha')
 #: structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 
-#: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the surface's
-#: stage-4 pin to read, declared here because both lanes read it: the model name the block is keyed
-#: under with the underlying's own name, and the slow pair with its standard errors.
-LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Rho_L_SE', 'Sigma_L_SE'))
+#: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the calibrator to
+#: read, declared here because both lanes read it: the model name the block is keyed under with the
+#: underlying's own name, and every estimate a reader takes, EACH WITH ITS OWN `_SE` BESIDE IT -
+#: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S` the leverage prior, and
+#: `Beta` the sanity table's P side, reported and never crossed (brief 8).
+LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S'))
 
 #: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)` (brief 5). Here
 #: because the factor's refusals quote the map the fit lands inside.
