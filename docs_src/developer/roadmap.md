@@ -24,13 +24,6 @@ caller** (several items below are deliberately not started), and **look before y
   beside it: `xtol=1e-12` in `LVFit.solve` (the class of `Tolerance` and `Max_Iterations`) and
   `Sigma_Knots`' ten-knot default grid in `implied_process`, which a Table cannot carry as a
   default.
-- **`utils.ig_quantile` at a ZERO clock is `nan`, and the kit reaches it whenever an MTM row lands
-  exactly on a remaining fixing** (2026-09-08, lane 4) - `ig_root`'s bracket `hi = 200m + 200m^2/lam`
-  is 0/0 there; `LogVar2FJKit.grid` makes one step of length zero, `pieces` keeps it and `mixers`
-  counts it, so the row draws a residual on an empty clock and the netting set reports *contains
-  NANS*. Reproduced by any European whose expiry is a reporting row. The outer process guards its
-  own version (`if step[a:b].sum() > 0.0` when building its pieces); the same guard in
-  `LogVar2FJKit.pieces` is the shape of the fix.
 - **The NKY chain block's vanilla-only objective is BIMODAL, and a `nan` strip walks past `verify`**
   (2026-09-08, lane S) - thirteen fits of `logvar2fj_block_JPY_NKY_BBG` at `Forward_Smile_Source:
   None` over three seeds and four path counts all land between RMSE 0.976 and 1.016 but split into
@@ -42,20 +35,21 @@ caller** (several items below are deliberately not started), and **look before y
   `atm_miss_max` compares with `<`, and `nan < x` is False, so a fit whose xi bootstrap has gone
   to `nan` still writes a factor (a Sobol 8192 run reported `+nan, +nan` among its ATM misses, a
   CAPPED polish and RMSE 17.8, and was `ok`); a `nan` miss should refuse by name.
-- **The autocall's one-step-survival arm under GBM reads ONE moneyness for the whole path, so a
-  compact V2's terminal put is priced at the ATM vol** (2026-09-08) - measured on the desk's NKY
-  structures: the six-leg booking with its contra repaired (discrete up-and-in barriers on the five
-  observation dates, which IS the autocall condition, each put leg reading the 70% strike's vol)
-  against the folded V2 reads -64.2m vs -42.8m ZAR on 229524957 and +64.9m vs +86.6m on 220276683
-  (33% apart, 32,768 paths, one seed), while on a FLAT NKY surface the two agree within 1%
-  (-39.3m vs -39.6m) and on SD3E's near-flat long end to 0.02% (`artifacts/remark_20260908/
-  fold_check.py`). `pricing.pv_discrete_barrier_option`'s docstring names the per-fixing smile
-  convention as open; this is what it costs. The LogVar2FJ arm carries the smile in the model and
-  is untouched, but no quote pins a 5y 70% vol on any index here (the vendor stops at 90 days,
-  the chain at 2.7y), so the model's long-dated skew is extrapolated and the same trade reads
-  -42m (GBM V2), -64m (GBM six legs on the file's parametric skew) and -42m (LogVar2FJ). A GBM
-  mark of a compact V2 on a skewed surface should not be stood behind until the arm reads the put
-  at its own strike.
+- **The autocall trigger digital reads the initial level, not the threshold times it**
+  (2026-09-08, lane G) - `pv_MC_AutoCallSwap`'s interval strip is read at `Strike_Price`, which IS
+  each trigger's own strike wherever `Autocall_Thresholds` is 1.0 - every autocall document in the
+  book and every fixture in the repo. A DECLINING threshold ladder would read every trigger at the
+  initial level's moneyness instead of its own. Reading it properly needs the strip indexed by each
+  coupon's own fixing, which is the pairing the row below calls a guess; a second alignment built
+  on that guess moves no number on any document here and would move the survival probabilities
+  that weight every coupon. Worth doing with that row, not before it.
+- **`Steps_Per_Year` is two clocks** (2026-09-08, lane G) - a deal declares it
+  (`instruments.set_spot_model_index`, read by `pricing.LogVar2FJKit.steps_per_year`) and the
+  fitted block declares it (`bootstrappers`: the step clock is what the fitted parameters mean),
+  but the xVA OUTER process reads neither: `LogVar2FJImpliedSpotModel.steps_per_year` is the class
+  literal `252.0`, with a comment asserting the deals declare the same number. A document declaring
+  `Steps_Per_Year: 126` walks its inner OSS on 126 and its scenario grid on 252, silently. The
+  outer process should read the factor's own.
 - **The autocall's fixing-to-coupon alignment is a guess the booking never states** (2026-09-08) -
   `QEDI_CustomAutoCallSwap.calc_dependencies` drops fixings more than a month before the first
   unpaid coupon and pairs the rest with the coupons POSITIONALLY (`one_each`: equal counts, each
@@ -221,6 +215,17 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **`utils.ig_quantile` at a ZERO clock was `nan`, and the kit reached it whenever an MTM row landed
+  exactly on a remaining fixing** (2026-09-08, lane 4; CLOSED by lane G the same evening) -
+  `ig_root`'s bracket `hi = 200m + 200m²/λ` is 0/0 there, `LogVar2FJKit.grid` made one step of
+  length zero, `pieces` kept it and `mixers` counted it, so the row drew a residual on an empty
+  clock and the netting set reported *contains NANS*. `pieces` now drops a piece whose clock is
+  zero, as the outer process already did, and `blocks` opens its accumulators at the zero TENSOR
+  so an empty piece is the identity rather than a float `torch.stack` refuses: a LogVar2FJ
+  discrete barrier monitored on the six dates a `0d 6m(1m)` grid reports on (every row an
+  observation, the last the expiry) went from NaN and no CVA to CVA 2.4787 over thirteen finite
+  rows (`artifacts/lv_gbm_20260908/zero_clock.py`), and every LogVar2FJ document that priced before
+  is bit-identical. `pricing.LogVar2FJKit.pieces` had no document in the census; this one belongs in it.
 - **9bfb095 fitted every undeclared Hull-White block on ONE knot** (2026-09-08, 13:09 to the same
   evening) — `declared_defaults` completed `Sigma_Knots` with a Table's declared blank, the string
   `'null'`, and `sigma_knots` took anything truthy as a knot list: the four-quote fixture's
@@ -544,6 +549,35 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The GBM autocall arm reads each leg at its own strike** (2026-09-08, lane G) —
+  `pv_MC_AutoCallSwap`'s one-step-survival arm read ONE moneyness for the whole path, so a compact
+  `QEDI_CustomAutoCallSwap_V2` priced its terminal 70% put at the ATM vol: **−64.2m against −42.8m
+  ZAR** on NKY 229524957 and **+64.9m against +86.6m** on 220276683 against the desk's own six-leg
+  bookings, 33% apart, while a FLAT NKY surface agreed within 1% — the fold was fine and the read
+  was not. The put leg now gets a STRIP OF ITS OWN, read at its own strike (the barrier for a
+  `Rebate` 0 full loss, both halves of that payoff being struck there; the level the payoff crosses
+  zero otherwise) at every fixing's own tenor, and walks, survives and pays in that world off the
+  SAME uniforms — one strip per leg, which is what the six-leg booking prices leg by leg, and the
+  stream no other document reads moves. The fold closes: over eight seeds at 32,768 paths the
+  folded V2 lands **−0.095% (0.41 SE)**, −0.138% (1.71 SE) and **−0.247% (0.96 SE)** of the six
+  legs on 220276683, 229079480 and 229524957, the flat-surface control at −0.308% (1.12 SE), the
+  single-currency twin at −0.213% (0.98 SE); the put leg alone matches its four source legs to
+  0.9%, 1.8% and 0.6%, where the ATM read cost 14–19% on the terminal European alone and 30–47%
+  once the knock-out weighted it. The book's GBM column re-marks: 220276683 **86.8m → 64.9m**,
+  229524957 **−42.2m → −64.0m**, 229079480 −0.43%, and 215515523, whose V2 declares no barrier
+  date, bit for bit. Hex: 4,180 floats over 16 documents unmoved, the TARF at
+  `-0x1.2c48f36318e38p+5`, the flat-surface GBM V2 with a 70% barrier at
+  `-0x1.a1f306d03a5a5p+5` and every LogVar2FJ document identical, the arm being untouched. THE LEG
+  IS THE UNIT, not the deal: inside one deal the two legs then disagree about which paths are
+  alive, which is a property of a smile-less model — the narrower build (the put's own strike at
+  its own maturity only, one path) closes the terminal European and leaves the fold at +24.6% and
+  +31.0%, so it was not shipped; the LogVar2FJ arm carries one smile in one walk and stays the mark
+  of record. Not built: the trigger digital's own strike (a bit-for-bit no-op on every document
+  here, and it stands on the fixing-to-coupon alignment — an Open row); the barrier OSS pricers
+  were measured, not changed, already reading their European legs at their own strike (+0.034% on
+  a skewed 70% strike). Engine net +79 lines, 34 executable. Pack `artifacts/lv_gbm_20260908/`
+  (`fold_seeds.py`, `put_leg.py`, `probe_terminal.py`, `barrier_strike.py`, `book_gbm.py`,
+  `zero_clock.py`).
 - **LogVar2FJ v2, lane Q2: the quanto correlation convention is measured, and its delta is a
   number** (2026-09-08) — the desk's ρ is a TOTAL-RETURN correlation (the ruling), and the loading
   `q_k = ρ_q σ_FX,k √δ_k` the walk multiplies by `√V_k` is that correlation ALREADY divided by the

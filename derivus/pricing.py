@@ -182,15 +182,19 @@ class LogVar2FJKit(object):
         A knot inside a fixing interval splits that interval's CLOCK - two residual draws, one
         Gaussian whose ``M`` and ``Sigma^2`` sum (brief 1's no-knot-inside-a-clock rule) - so it is
         never a refusal and never a law read at the wrong bucket.
+
+        A piece whose CLOCK IS ZERO takes no draw: a reporting row landing exactly on a remaining
+        fixing opens an interval of no length, and a residual on an empty clock is ``nan``.
         """
-        steps, _, t = self.grid(row_t, deltas)
+        steps, delta, t = self.grid(row_t, deltas)
         index = utils.bucket_index(self.knots['Alpha'], t[:-1].detach().cpu().numpy())
         cuts, k = [], 0
         for n in steps:
             rows, a = [], k
             for b in range(k + 1, k + n + 1):
                 if b == k + n or index[b] != index[a]:
-                    rows.append((a, b, int(index[a])))
+                    if delta[a:b].sum() > 0.0:
+                        rows.append((a, b, int(index[a])))
                     a = b
             cuts.append(rows)
             k += n
@@ -243,7 +247,8 @@ class LogVar2FJKit(object):
         l, s = (zero + curve[0], zero) if state is None else (zero + state[0], zero + state[1])
         M, var, j, drawn = [], [], 0, 0
         for rows in self.pieces(row_t, deltas):
-            m, v = 0.0, 0.0
+            # tensors, so a piece with NO draw - a zero clock - is the identity rather than a float
+            m, v = zero, zero
             for start, end, bucket in rows:
                 clock = 0.0
                 for a in range(start, end, LV_CHECKPOINT_STEPS):
@@ -3894,9 +3899,24 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     RECOMPUTE: ``sim_spot`` is a pure bound/theta split called through ``InnerMCRecompute`` - the
     floating leg, past fixings and the spot model's scalars enter as theta, and settled cashflows and
-    trigger registrations are RETURNED, not performed. THE VOL IS AN INTERVAL STRIP in both
-    branches, read at the moneyness the deal declares; the per-fixing smile convention is open
-    (roadmap.md). Quanto bends the carry at the expiry read; compo prices the product S*X.
+    trigger registrations are RETURNED, not performed. Quanto bends the carry at the expiry read;
+    compo prices the product S*X.
+
+    ONE STRIP PER LEG UNDER GBM, each read at the strike that leg decides on - which is what a
+    six-leg booking of the same economics prices, every leg a deal of its own on its own smile.
+    The coupon/trigger leg reads the deal's declared moneyness, the initial level, which IS the
+    trigger's own strike wherever the threshold is one; the PUT LEG gets a SECOND strip at its own
+    strike - the barrier for a `Rebate` 0 full loss, both halves of that payoff being struck there,
+    and the level the payoff crosses zero otherwise. That strip's first interval is measured from
+    the PATH's own prefix, so a leg whose barrier opens mid-deal still reads its own total variance
+    from today. The put then walks, survives and pays in its own world off the SAME uniforms, so
+    the stream is untouched and no other document moves. Reading ONE moneyness for the whole path
+    priced a 70% put at the ATM vol: 33% on the desk's NKY structures against their own six legs,
+    and a flat surface agreeing to 1% is what said the fold was fine and the read was not
+    (roadmap.md). A SMILE-LESS model has no better answer than a world per strike; the LogVar2FJ
+    arm carries one smile in one walk and is the mark of record. The FULL-PATH branch is unreached
+    by this and still reads one strip; under a kit the leg reads the walk's own law, bit for bit
+    what it read before.
 
     THE COUPON READS A WINDOW. Each coupon owns a window of one or more price fixings; a window of
     one is the spot at that fixing and a longer one their arithmetic AVERAGE. Which of the two the
@@ -4016,12 +4036,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     def sim_spot(offset, times, row_days, row_times, last_fixing, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
-                 past_fixings, quanto, *scalars):
+                 past_fixings, quanto, put_vols, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``. ``times`` is bound because it is built from
         numpy and stays numpy on a block whose fixings have all been observed; ``quanto`` is theta,
         being the fx surface's own strip, and is zero-length on a single-currency payoff.
+        ``put_vols`` is the PUT LEG's own interval strip, zero-length under a kit or with no put
+        barrier, where the leg reads the same law as the path and is bit-identical.
 
         Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive) + gaps + fired +
         survived + cash_on`` - the marks, the by-products the caller performs once, then per
@@ -4059,6 +4081,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         # every coupon owning its own window of fixings is the one-step-survival arm
         if factor_dep['oss_windows']:
             eps = torch.finfo(shared.one.dtype).eps
+            # a put leg with a strip of its own; without one it reads the path's, bit for bit
+            own_put = bool(put_vols.numel())
             fx = isQuanto * (fixFXRate - 1.0) + 1.0
             # block-entry latch state: a scenario that fires at THIS block's fixing settles its
             # coupon here and dies from the next block on
@@ -4097,6 +4121,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 # the vol is per INTERVAL, so it is picked off the strip at the coupon's own index
                 # rather than hoisted out of the loop
                 D = df.unsqueeze(2)
+                # the put leg's own walk and weight, on the strip ITS strike reads; the same
+                # tensors bit for bit where that strip is the path's
+                put_S, put_L = Sj, L
 
                 coupon_index = coupon_count = 0
 
@@ -4154,18 +4181,34 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             k_ratio = (K - c) / scale
                             p = utils.norm_cdf(
                                 (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
+                            # THE PUT LEG'S OWN INTERVAL - the same forward on this interval's own
+                            # carry, the variance its own strike reads, and the survival that law
+                            # gives the trigger. A kit hands ONE law and carries the smile inside
+                            # it, so every one of these is the path's own bits
+                            put_m, put_s, put_scale, put_k, put_p = m, s, scale, k_ratio, p
+                            if own_put:
+                                put_vol = put_vols[i][coupon_index].reshape(-1, 1)
+                                put_m, put_s = (
+                                    (forward_carry - 0.5 * put_vol * put_vol) * dt,
+                                    put_vol * torch.sqrt(dt))
+                                put_scale = put_S * G
+                                put_k = (K - c) / put_scale
+                                put_p = utils.norm_cdf(
+                                    (torch.log(torch.clamp_min(put_k, eps)) - put_m) / put_s)
                             if barrier > 0 and putBarrier > 0.0:
                                 # held below: the average's lognormal factor before the
                                 # advance, the prefix's own law, the weight from BEFORE `p`
                                 # enters `L`, the breach's half-line INTERSECTED with the
                                 # surviving one - both bound the same return - and the shift
                                 b_ratio = observe(putBarrier, putBarrier - c) / (
-                                    Sj * observe(win_end, G))
-                                interval = (scale, m, s, L, (torch.log(torch.clamp_min(
-                                    torch.minimum(b_ratio, k_ratio), eps)) - m) / s, c)
+                                    put_S * observe(win_end, G))
+                                interval = (put_scale, put_m, put_s, put_L, (torch.log(
+                                    torch.clamp_min(torch.minimum(b_ratio, put_k), eps))
+                                    - put_m) / put_s, c)
                         else:
                             decided = obs / n_win
                             p = torch.where(K > decided, 1.0, 0.0)
+                            put_p = p
                             if row_at[j] == 0.0:
                                 # stamp the latch: the coupon's date IS this row, the decision is
                                 # the scenario's own average, and the marker is the fixing index
@@ -4205,6 +4248,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             L = ledger.alive
                         else:
                             L = p * L
+                        put_L = put_p * put_L if own_put else L
                         if row_at[j] == 0.0:
                             # SETTLE HERE, not at the bottom of the loop: a test down there holds
                             # for every coupon and would book the running `P` - the accumulated
@@ -4226,6 +4270,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # which is where the next coupon's prefix opens
                             decided = c + Sj * G
                             Sj = Sj * win_end
+                            if own_put:
+                                # THE PUT'S OWN STEP off the SAME uniform, so the leg walks its
+                                # strike's world without asking the stream for a number
+                                put_S = put_S * torch.exp(put_m + put_s * utils.norm_icdf(
+                                    torch.clamp(put_p * u[coupon_index], min=eps, max=1.0-eps)))
+                                put_read = (put_S * win_end, c + put_S * G)
+                                put_S = put_S * win_end
+                            else:
+                                put_S, put_read = Sj, (Sj, decided)
                             coupon_index += ahead
 
                     if barrier > 0:
@@ -4236,17 +4289,21 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if interval is not None:
                             # THE PUT LEG, INTEGRATED against `bound`, and `L_prev` - the weight
                             # from before `p` entered `L` - IS `L / p` without the 0/0 where every
-                            # path fired
-                            scale, m, s, L_prev, bound, c = interval
+                            # path fired. The whole leg is its own strike's: the law, the weight
+                            # and both readings
+                            scale, put_m, put_s, L_prev, bound, c = interval
+                            at, decided = observe(*put_read), put_read[1]
                             analytic = L_prev * D[j] * fx * lognormal_fired_gain(
-                                scale, m, s, bound, strike * (1.0 - rebate) - c, False) / strike
+                                scale, put_m, put_s, bound, strike * (1.0 - rebate) - c,
+                                False) / strike
                             if smooth:
                                 P = P + analytic
                             else:
                                 # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit
                                 # for bit, every derivative is the integral's
                                 breach = torch.where(at <= putBarrier, 1.0, 0.0)
-                                crisp = L * D[j] * fx * breach * (rebate - (1.0 - decided / strike))
+                                crisp = put_L * D[j] * fx * breach * (
+                                    rebate - (1.0 - decided / strike))
                                 P = P + crisp + splice_conditional_p(crisp, analytic)
                                 if P_cf is not None:
                                     P_cf = P_cf + L_cf * D[j] * fx * breach * (
@@ -4256,7 +4313,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # names in both the ways that happens: an OBSERVED fixing, and a block
                             # opening on an unaligned one
                             breach = torch.where(at <= putBarrier, 1.0, 0.0)
-                            put_leg = L * D[j] * fx * (rebate - (1.0 - decided / strike))
+                            put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
                             P = P + breach * put_leg
                             if P_cf is not None:
                                 P_cf = P_cf + L_cf * D[j] * fx * breach * (
@@ -4385,6 +4442,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     rebate = deal_data.Instrument.field.get('Rebate', 0.0)
     barrierIsHit = 1.0 * (deal_data.Instrument.field.get('BarrierIsHit') is not None)
     strike = factor_dep['Strike_Price']
+    # THE PUT LEG'S OWN STRIKE: a `Rebate` 0 leg is a full loss below the barrier, which is a
+    # vanilla plus a digital both struck THERE; with a rebate it is the level the payoff crosses
+    put_strike = putBarrier if not rebate else strike * (1.0 - rebate)
     nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
     terminationDate = -shared.one.new_ones(shared.simulation_batch, 1)
 
@@ -4524,13 +4584,26 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = windows = None
             # the interval carry and vol strips, which is also what puts the FULL-PATH branch's
             # `carry * dt` and `vols * vols * dt` on interval integrals. Both take the ZERO carry
-            # `drifts`; the strip takes the spot moneyness this pricer marks its Europeans at
+            # `drifts`; the strip reads the TRIGGER's strike (the deal's declared moneyness, the
+            # initial level) and the put leg gets a second strip read at its own
             cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
-            interval_vols = forward_vol_rate(forward_vol_strip(
-                deal_data, strike * shared.one, spot_block, drifts, fixing_block, shared),
-                cum_t, sample_ts) if fixing_block.any() else expiry_vols.unsqueeze(-2)
+            put_vols = spot_block.new_empty(0)
+            if fixing_block.any():
+                interval_vols = forward_vol_rate(forward_vol_strip(
+                    deal_data, strike * shared.one, spot_block, drifts, fixing_block, shared),
+                    cum_t, sample_ts)
+                if (windows is not None and not scalars and putBarrier > 0.0
+                        and max(BarrierDates) > 0):
+                    # THE PUT LEG'S OWN STRIP, its own strike at every fixing's own tenor - the
+                    # leg is a deal of its own here, as the six-leg booking books it. Only the OSS
+                    # arm (`windows`) reads it; the full-path branch has no leg to hand it to
+                    put_vols = forward_vol_rate(forward_vol_strip(
+                        deal_data, put_strike * shared.one, spot_block, drifts, fixing_block,
+                        shared), cum_t, sample_ts)
+            else:
+                interval_vols = expiry_vols.unsqueeze(-2)
             if adj is not None and adj['fx_vol'] is not None and fixing_block.any():
                 # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
                 # expiry-read else-branch above is already compo via adj['vol']
@@ -4550,7 +4623,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
                      all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0),
-                     quanto) + scalars
+                     quanto, put_vols) + scalars
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to
