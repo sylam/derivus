@@ -968,7 +968,8 @@ class OptionQuoteFamily(object):
         return float(np.exp(-rate * T) * forward * scipy.stats.norm.pdf(d1) * np.sqrt(T))
 
     @classmethod
-    def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp):
+    def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp,
+                         leverage_prior=None):
         """`(Market Prices name, block)` - this family's quote block, authored off a pair's built
         `FXVol` surface.
 
@@ -998,6 +999,11 @@ class OptionQuoteFamily(object):
         No `Funding_Rate` is declared, and an FX pair needs none: `Discount_Rate` and `Yield` are
         exactly the pair `utils.calc_fx_forward` builds the priced forward from, so the calibrated
         forward already grows at the curve the pricer grows it on.
+
+        THE DESK'S LEVERAGE PRIOR, where one is handed in and this family declares the field, is
+        written on THE ENGINE'S AXIS - the `FxRate` fitted, priced in the domestic currency - which
+        is the axis `derivus_bloomberg`'s seed states it on and the opposite of the market's
+        USD-per-currency quoting for half the pairs. `Quote_Source` records that it came from there.
 
         ORIENTATION. An `FXVol.A.B` x-axis is `log(F/K)` for `A` priced in `B`, while the `FxRate`
         fitted is priced in the DOMESTIC currency - so the underlying is whichever token is not
@@ -1172,8 +1178,16 @@ class OptionQuoteFamily(object):
                            cap, ', '.join(substituted)))
 
         declared = {field.name: field.default for field in cls.fields}
+        # written exactly where the family DECLARES it, as the step clock is: `fx_surface_block` is
+        # inherited and a family with no leverage in it has no prior to state
+        desk = {} if leverage_prior is None or 'Leverage_Prior' not in declared else {
+            'Leverage_Prior': float(leverage_prior)}
+        if desk:
+            source += '; Leverage_Prior {:+g} on FxRate.{}\'s own axis, off the desk seed'.format(
+                float(leverage_prior), underlying)
         return utils.check_tuple_name(utils.Factor(cls.market_factor_type, (underlying,))), {
             'instrument': {
+                **desk,
                 'Underlying': underlying, 'Underlying_Type': 'FxRate',
                 'Volatility': '.'.join(name), 'Volatility_Type': 'FXVol',
                 'Discount_Rate': discount_name, 'Discount_Rate_Type': 'InterestRate',
@@ -1317,6 +1331,23 @@ LV_RETIRED_BLOCK = {
 LV_RAW = ('Alpha', 'Beta')
 
 
+def lv_skew_reserve(pv_gradient, skew_gradient, band):
+    """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band` (brief 5), from the two halves
+    that live apart: `pv_gradient` is `(dPV/dBeta, dPV/dRho_S)` off the pricer's own tape and
+    `skew_gradient` the calibrator's `(d(Delta_skew)/dBeta, d(Delta_skew)/dRho_S)` at theta*, both
+    in the LAST bucket, with `band` the `Stickiness_Band` in vol points.
+
+    Two parameters carry one target, so the parameter move behind a vol point of `Delta_skew` is
+    the MINIMUM-NORM one - `J^T/(J J^T)` - which is the same convention the quote contraction
+    takes over the null space, and the reserve is `dPV/dtheta` contracted with it. A model whose
+    forward skew does not move with either lever has no reserve to state and returns `None`.
+    """
+    row = np.asarray(skew_gradient, dtype=float)
+    scale = float(row @ row)
+    return None if not scale > 0.0 else abs(
+        float(np.asarray(pv_gradient, dtype=float) @ row) / scale) * float(band)
+
+
 def lv_ab(raw_alpha, raw_skew):
     """`(alpha, beta)` from the unconstrained pair - tensors, on the tape."""
     alpha = 0.5 + utils.LV_AB_EPS + torch.nn.functional.softplus(raw_alpha)
@@ -1405,6 +1436,30 @@ class LVFit(object):
     psi_strikes = (0.90, 1.00, 1.10)
     #: The shortest WING expiry that identifies the slow pair (spec 5.2 stage 4), in years.
     slow_horizon = 1.5
+    #: The leverage prior per ASSET CLASS on the ENGINE's own axis (brief 5): an index at the
+    #: VIX-implied spot-vol correlation, an FX pair symmetric until a desk says otherwise through
+    #: `Leverage_Prior` or a history. An `FxRate` is priced in the domestic currency, so a prior
+    #: quoted USD-per-currency changes sign on `FxRate.ZAR` in a USD book - which is why the seed
+    #: states the desk's own number and this is only the fallback.
+    leverage_priors = {'FxRate': 0.0, 'EquityPrice': -0.7,
+                       'CommodityPrice': -0.7, 'FuturesPrice': -0.7}
+    #: The weight on the leverage prior's residual row `w (Rho_S - prior)`, NEVER absent (brief 5):
+    #: the residual can carry the whole spot skew and a vanilla-only fit then sets Rho_S wherever it
+    #: likes, leaving the forward smile undetermined. One quote's weight - the normalised vanilla
+    #: weights sit at 0.17-0.22 on a twenty-rung ladder, so a prior miss of a tenth in Rho_S costs
+    #: what ONE quote missing by one vol point costs, which the data outvotes wherever it speaks.
+    leverage_weight = 0.02
+    #: What a FULL violation of `Residual_Shape_Floor` costs: 5 vol points of residual, against
+    #: wing misses of a few tenths, on a row that is relative - `relu(1 - shape/floor)` - so a fit
+    #: inside the floor pays nothing and one at the map's own softplus floor pays all of it.
+    shape_penalty = 0.05
+    #: The shortest expiry that identifies the residual pair (brief 8), in years: with no wing under
+    #: it the ladder does not price the 1-3m tails and `Alpha` is pinned at the history's estimate.
+    residual_horizon = 0.25
+    #: How far the rung a forward tenor's SPOT smile is read at may sit from that tenor, as a
+    #: fraction of it, before the row is dropped: the target is a DIFFERENCE against that smile, so
+    #: a rung a quarter of Delta away is a difference taken at the wrong maturity.
+    spot_rung_tol = 0.25
 
     def __init__(self, family, market_price, instrument, factors, previous):
         self.family, self.market_price, self.instrument = family, market_price, instrument
@@ -1429,6 +1484,11 @@ class LVFit(object):
             read['Bucket_Smoothness'])
         self.is_vol = read['Quote_Type'] == 'Implied_Volatility'
         self.source = read['Forward_Smile_Source']
+        #: the switch proof 1 of the calibrator lane runs its bit-identity gate under: Off is the
+        #: objective and the box the vanilla-only fit had, priors and all soft shape terms absent
+        self.priors = read['Model_Priors'] == 'On'
+        self.skew_band = float(read['Stickiness_Band'])
+        self.shape_floor = float(read['Residual_Shape_Floor'])
         self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0, 'b': 0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
         #: the target DIFFERENCE pair per forward tenor, the spot rung each forward tenor's own
@@ -1436,6 +1496,8 @@ class LVFit(object):
         #: lines the slow pair, its three-way table and an identified event day each earn
         self.tilt, self.spot_rung = {}, {}
         self.pinned_slow, self.identified_days, self.history, self.slow_rows = '', [], None, []
+        #: the leverage prior in force with the source it came from, and the alpha pin's own line
+        self.prior, self.prior_source, self.pinned_alpha = 0.0, '', ''
         self.notes, self.final, self.leaf, self.theta = [], {}, None, None
         #: the last stage's box as `(lower, upper)` and the gradient `J^T r` it stopped on, which
         #: `interior` and `report` read the KKT active set off; and the stage that hit its cap
@@ -1817,16 +1879,35 @@ class LVFit(object):
                                   - self.target_vol(target, shapes[target.tenor]))
                  for target in forwards])
 
+    def residual_shape(self, levers, cum, j=None, bucket=0):
+        """The residual's SHAPE `alpha*delta_A` to block `j`, the shortest calibrated expiry by
+        default: the dimensionless steepness of the NIG increment - 1 strongly non-Gaussian, 15
+        nearly Gaussian - and the one reading that says whether a fitted `alpha` is a tail or a
+        convexity dial (brief 2).
+
+        `E[G] = delta_A/gamma` over the mixers the walk drew, so the shape is that mean times
+        `alpha*gamma` and no second walk is needed for it.
+        """
+        alpha, beta = levers['Alpha'][bucket], levers['Beta'][bucket]
+        j = self.atm[0].j if j is None else j
+        return cum[1][..., j].mean() * alpha * torch.sqrt(alpha * alpha - beta * beta)
+
     def residual(self, x, coords, judged, forwards=(), guard=None, smooth=None):
         """The stage's residual VECTOR: its own rows FIRST, which is what the identification table
-        reads, then the penalties the spec states - the idiosyncratic share and the REALISED jump
-        share approaching their boxes, and where the mode or stage 5 asks, the vanilla degradation
-        at the target maturities and the levers' smoothness across adjacent buckets.
+        reads, then the priors and penalties the brief states - the leverage prior, the residual's
+        shape floor, the idiosyncratic and conditioning shares approaching their boxes, and where
+        the mode or stage 5 asks, the vanilla degradation at the target maturities and the levers'
+        smoothness across adjacent buckets.
 
         `smooth` is the LAST bucket the stage has fitted: a difference row against a bucket still
         at its seed measures the seed, so `Bootstrap` sees only the buckets behind it."""
         scalars, levers, cum = self.evaluate(x, coords)
         terms = self.rows(cum, judged, forwards)
+        if self.priors:
+            terms.append(self.leverage_weight * (levers['Rho_S'][0] - self.prior).reshape(1))
+        if self.priors and self.shape_floor > 0.0:
+            terms.append(self.shape_penalty * torch.relu(
+                1.0 - self.residual_shape(levers, cum) / self.shape_floor).reshape(1))
         terms.append(self.soft_penalty * torch.relu(
             self.c_min + self.c_margin
             - (1.0 - levers['Rho_S'] ** 2 - scalars['Rho_L'] ** 2)))
@@ -1869,11 +1950,18 @@ class LVFit(object):
     def bounds_of(self, coord, coords):
         """`Rho_S`'s box is `C_Min`'s own - the SAME declaration the factor asserts at load -
         re-derived off `Rho_L` unless this stage is moving it too, where the widest box and the
-        soft penalty do the work the spec asks of them."""
+        soft penalty do the work the spec asks of them.
+
+        SYMMETRIC, `[-rho_max, +rho_max]` (brief 2): the SIGN of the fast leverage is what the
+        leverage prior says and not what a box asserts, and half a box is an assertion about which
+        way a smile leans. Where there is no prior at all (`Model_Priors: Off`) the box keeps the
+        one-sided form the seed's own sign carried, which is the objective the prior replaced.
+        """
         if coord[0] != 'Rho_S':
             return self.box[coord[0]]
         rho_l = 0.0 if ('Rho_L', None) in coords else self.state['Rho_L']
-        return -np.sqrt(max(1.0 - rho_l * rho_l - self.c_min, 0.0)), 0.0
+        edge = np.sqrt(max(1.0 - rho_l * rho_l - self.c_min, 0.0))
+        return (-edge, edge) if self.priors else (-edge, 0.0)
 
     def stage(self, tag, coords, judged, forwards=(), **kw):
         """One stage: `least_squares` over `coords` against its own rows, the fitted values written
@@ -1925,6 +2013,7 @@ class LVFit(object):
         """The staged fit. Returns theta* over the last stage's coordinates - the flat vector
         `LeastSquaresSolve` hangs the quote derivative on."""
         started = time.time()
+        self.pin_alpha()
         self.settle()
         # spec 2.7's LEVEL rule, on the seeded curve and again once the spread is fitted
         self.state['Cap_A'] = self.cap_level()
@@ -1979,10 +2068,14 @@ class LVFit(object):
         short = [q for q in self.quotes if q.T <= self.stage_horizons[0]]
         middle = [q for q in self.quotes if q.T <= self.stage_horizons[1]]
         long = [q for q in self.quotes if q.T > self.stage_horizons[1]]
-        self.stage('2 (alpha, beta)', [('Alpha', 0), ('Beta', 0)], short or middle
-                   or self.quotes)
+        residual = [('Beta', 0)] if self.pinned_alpha else [('Alpha', 0), ('Beta', 0)]
+        self.stage('2 ({})'.format(', '.join(name.lower() for name, _ in residual)),
+                   residual, short or middle or self.quotes)
+        # THE FORWARD ROWS ENTER AT STAGE 3 (brief 5): the split between the residual's skew and
+        # `rho_s sigma_s` is what a forward smile sees and a spot smile does not, so a stage that
+        # fits the fast pair without them is fitting a direction the vanillas leave flat
         self.stage('3 (rho_s, sigma_s)', [('Rho_S', 0), ('Sigma_S', 0)],
-                   middle or self.quotes)
+                   middle or self.quotes, self.targets)
         if self.identified_slow():
             self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
         else:
@@ -2003,8 +2096,11 @@ class LVFit(object):
 
         polish = [(name, None) for name in
                   (('Sigma_L', 'Rho_L') if self.identified_slow() else ())]
+        # a PIN is a pin in every stage, the polish included: freeing Alpha here would write a
+        # number over the estimate the report says is held
         polish += [(name, b) for name in utils.LV_BUCKET_NAMES
-                   for b in range(self.buckets.size)]
+                   for b in range(self.buckets.size)
+                   if not (name == 'Alpha' and self.pinned_alpha)]
         self.stage('6 joint polish', polish, self.quotes, self.targets, smooth=last)
 
     def identified_slow(self):
@@ -2017,6 +2113,58 @@ class LVFit(object):
     def asset_class(self):
         """The factor TYPE the block's `Underlying` resolves to - `slow_priors`' own key."""
         return type(self.factors['Underlying']).__name__
+
+    def leverage_prior(self):
+        """`(rho_s^prior, source)` for the soft term brief 5 makes routine, in one order:
+        `Leverage_Prior` where the block declares one, else a LogVar2FJ history's own `Rho_S` in
+        `Price Models`, else the asset class default.
+
+        THE PRIOR IS ON THE ENGINE'S AXIS. An `FxRate` is priced in the domestic currency, so
+        `FxRate.ZAR` in a USD book is USD per rand and a desk's `+0.4` on an EM cross quoted
+        USD-per-currency is `-0.4` here. The emitter writes the desk's own number off its seed;
+        this reads what the block carries, and the report prints the number and where it came from.
+        """
+        declared = str(self.instrument['Leverage_Prior']).strip()
+        if declared:
+            return float(declared), 'the declared Leverage_Prior'
+        if self.history is not None and 'Rho_S' in self.history:
+            error = self.history.get('Rho_S_SE')
+            return float(self.history['Rho_S']), "the history's estimate{}".format(
+                '' if error is None else ', Rho_S SE {:.4f} (spec 5.5.3)'.format(float(error)))
+        return self.leverage_priors[self.asset_class], (
+            'the {} class default'.format(self.asset_class))
+
+    def alpha_prior(self):
+        """The history's `alpha^P` where the job carries one, else `None`. A seed everywhere and a
+        PIN only where the ladder has no wing under `residual_horizon` (brief 8): Esscher
+        invariance is an assumption about the risk premium, not a theorem about the market, so
+        `alpha^P` seeds and is reported beside `alpha^Q` rather than believed."""
+        if self.history is None or 'Alpha' not in self.history:
+            return None
+        return float(self.history['Alpha'])
+
+    def pin_alpha(self):
+        """`Alpha` where the ladder prices no 1-3m tails (brief 8): held at the history's `alpha^P`
+        where the job carries one, with the same *pinned: not identified by this ladder* line the
+        slow pair earns; and where it carries none, fitted off the seed with the report saying the
+        number written is a seed the wings could not move. Never pinned where a short wing exists.
+        """
+        if any(T <= self.residual_horizon for T in self.wings):
+            return
+        shortest = '{:g}y'.format(min(self.wings)) if self.wings else 'none at all'
+        alpha = self.alpha_prior()
+        if alpha is None:
+            self.notes.append(
+                'Alpha is UNIDENTIFIED by this ladder - its shortest wing expiry is {} against the '
+                '{:g}y brief 8 asks for - and no history carries an alpha^P to pin it at, so what '
+                'is written is the seed the wings could not move'.format(
+                    shortest, self.residual_horizon))
+            return
+        self.state['Alpha'] = [alpha] * len(self.state['Alpha'])
+        self.pinned_alpha = (
+            'pinned: not identified by this ladder - Alpha {:.4f} is held at the history\'s '
+            'alpha^P, the shortest wing expiry being {} against the {:g}y brief 8 asks for'.format(
+                alpha, shortest, self.residual_horizon))
 
     def slow_prior(self):
         """`(rho_l, sigma_l, source)` for the stage-4 pin, in the order spec 5.2 and 5.5.3 give:
@@ -2052,9 +2200,15 @@ class LVFit(object):
                          ', its Sigma_L {:.4f} TAKEN TO the {:g} floor'.format(sigma_l, floor)]))
         rho_l, sigma_l = self.slow_priors[self.asset_class]
         fast = self.state['Rho_S'][0]
-        return float(np.copysign(rho_l, fast or -1.0)), sigma_l, (
+        return float(np.copysign(rho_l, self.fast_sign())), sigma_l, (
             'the {} class default, signed by the Rho_S {:+.4f} in force at the pin'.format(
                 self.asset_class, fast))
+
+    def fast_sign(self):
+        """Which way the fast leverage leans, for the slow pair to be signed by (spec 5.2 stage 4):
+        the FITTED `Rho_S`, or the leverage prior's own sign where the box left it at zero and the
+        prior is all there is to read."""
+        return self.state['Rho_S'][0] or self.prior or -1.0
 
     def pin_slow(self):
         """Stage 4 where the ladder does not identify the slow pair: the prior into the state, and
@@ -2082,7 +2236,7 @@ class LVFit(object):
         """
         if not self.pinned_slow:
             return []
-        sign, floor = self.state['Rho_S'][0] or -1.0, self.box['Sigma_L'][0]
+        sign, floor = self.fast_sign(), self.box['Sigma_L'][0]
         mine, seed = self.slow_priors[self.asset_class], self.slow_priors['EquityPrice']
         priors = {}
         for name, rho_l, sigma_l in (('the floor', mine[0], floor),
@@ -2122,9 +2276,10 @@ class LVFit(object):
         self.state['Cap_A'] = self.cap_level()
         for k, expiry in enumerate(self.wings):
             rung = self.wings[expiry]
-            free = LV_FREE_ORDER[:min(len(rung), len(LV_FREE_ORDER))]
+            order = tuple(x for x in LV_FREE_ORDER if not (x == 'Alpha' and self.pinned_alpha))
+            free = order[:min(len(rung), len(order))]
             self.ties.update({(name, k): 'carry'
-                              for name in LV_FREE_ORDER[len(free):] if k})
+                              for name in order[len(free):] if k})
             self.free[k] = free
             self.stage('bootstrap bucket {:g}y ({} wing quote{}, free {})'.format(
                 expiry, len(rung), '' if len(rung) == 1 else 's', '/'.join(free)),
@@ -2300,6 +2455,89 @@ class LVFit(object):
         rows = self.targets if forwards is None else forwards
         return {target.tenor: self.spot_shape(cum, target.tenor) for target in rows}
 
+    def skew_gradient(self):
+        """THE RESERVE LINE'S MODEL HALF (brief 5), per forward tenor: `d(Delta_skew)/dBeta` and
+        `d(Delta_skew)/dRho_S` in the LAST bucket, in vol points per unit of the parameter, taken
+        at theta* off the forward rows' own graph.
+
+        The calibrator has no deal, so it cannot state `|dPV/dDelta_skew| x band`; what it can
+        state is the map from the two levers a pricer's tape already carries to the quantity the
+        band is on, and `lv_skew_reserve` composes the two. The fit MOVES the residual pair in its
+        unconstrained coordinate, so each row is rescaled by `dlever/dx` into the MODEL's own
+        number - which is the leaf the factor writes and the tape differentiates. The L strip is
+        banked and put back: `written` and `connect` publish the ONE solve `finish` took.
+        """
+        bucket = self.buckets.size - 1
+        coords = [('Beta', bucket), ('Rho_S', bucket)]
+        leaf = torch.tensor([self.value_of(coord) for coord in coords], dtype=self.prec,
+                            device=self.device, requires_grad=True)
+        banked, warm, rows = self.levels, self.warm, {}
+        levers, cum = self.evaluate(leaf, coords)[1:]
+        scale = [float(torch.autograd.grad(levers[name][bucket], leaf, retain_graph=True)[0][i])
+                 for i, (name, _) in enumerate(coords)]
+        span = np.log(self.psi_strikes[2] / self.psi_strikes[0])
+        tenors = {}
+        for target in self.targets:
+            tenors.setdefault((target.T1, target.tenor), {})[
+                round(target.strike, 10)] = target
+        for (T1, tenor), strikes in tenors.items():
+            if not {round(k, 10) for k in self.psi_strikes} <= set(strikes):
+                continue
+            low, high = (self.forward_vol(cum, strikes[round(k, 10)])
+                         for k in (self.psi_strikes[0], self.psi_strikes[2]))
+            spot = self.smile(cum, *self.spot_rung[tenor], self.psi_strikes)
+            skew = ((low - high) - (spot[0] - spot[2])) / span
+            rows[(T1, tenor)] = [100.0 * float(g) / s for g, s in zip(
+                torch.autograd.grad(skew, leaf, retain_graph=True)[0], scale)]
+        self.levels, self.warm = banked, warm
+        return rows
+
+    def shape_readings(self, tenors=(1.0 / 12.0, 1.0)):
+        """`[(T, alpha*delta_A)]` at the calibrated expiries nearest `tenors` - the 1m and 1y rows
+        brief 5's report asks for, read at the bucket each expiry falls in."""
+        rows, seen = [], set()
+        for tenor in tenors:
+            quote = min(self.atm, key=lambda q: abs(q.T - tenor))
+            bucket = int(utils.bucket_index(self.buckets, quote.T))
+            if quote.T not in seen:
+                seen.add(quote.T)
+                rows.append((quote.T, float(self.residual_shape(
+                    self.levers, self.cum, quote.j, bucket).detach())))
+        return rows
+
+    def var_swap_strip(self):
+        """The market's own FORWARD variance per xi segment, off the variance-swap strip: the fair
+        total variance at each ATM expiry, replicated off that rung's own quotes, differenced down
+        the ladder. A rung carrying no wing reads its own FLAT vol, whose log contract is exactly
+        the ATM^2 number, so the gap between the two columns is the smile's own contribution."""
+        strip, out, previous = [], [], 0.0
+        for quote in self.atm:
+            strip.append(self.var_swap([q for q in self.quotes if q.T == quote.T]))
+        for total, lo, hi in zip(strip, self.knots[:-1], self.knots[1:]):
+            out.append((total - previous) / (hi - lo))
+            previous = total
+        return out
+
+    def var_swap(self, quotes):
+        """The fair TOTAL variance to one expiry by log-contract replication off that rung's OWN
+        quotes: `2 * integral OTM(K)/K^2 dK` in undiscounted Black prices, the smile read in
+        log-moneyness and FLAT-extrapolated past the last strike - the convention, stated.
+
+        The integral is taken in log-strike, where `dK/K^2 = du/K` and the integrand is bounded, so
+        an eight-sd band around the forward and a trapezoid are the whole quadrature.
+        """
+        rows = sorted((np.log(quote.strike / quote.forward), quote.sigma) for quote in quotes)
+        width = max(1.0, 8.0 * float(np.interp(0.0, *zip(*rows))) * np.sqrt(quotes[0].T))
+        u = np.linspace(-width, width, 601)
+        sigma = np.interp(u, *zip(*rows))
+        sd = sigma * np.sqrt(quotes[0].T)
+        d1 = -u / sd + 0.5 * sd
+        # the OTM leg either side of the forward, in units of the forward: a call above, a put below
+        cdf = scipy.stats.norm.cdf
+        call = cdf(d1) - np.exp(u) * cdf(d1 - sd)
+        return float(2.0 * np.trapezoid(
+            np.where(u >= 0.0, call, call + np.expm1(u)) * np.exp(-u), u))
+
     def stickiness(self, cum):
         """Per forward tenor the forward slope and butterfly, the target's and the model's own
         SPOT counterparts at maturity `Delta`, six numbers in vol points (spec 5.3).
@@ -2354,16 +2592,20 @@ class LVFit(object):
                 '{} {:.6g}'.format(name, self.state[name])
                 for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES)))
         logging.info('  THE CURVE per segment: xi IS the model\'s expected forward variance E[h], '
-                     'so it stands beside the market\'s own ATM^2 forward variance directly - the '
-                     'gap is Black\'s convexity, what matching the ATM PRICE rather than the '
-                     'variance costs, and there is no log level anywhere in it:')
-        for lo, hi, level, x in zip(self.knots[:-1], self.knots[1:], self.levels, self.xi):
+                     'so it stands beside the market\'s own ATM^2 forward variance and beside its '
+                     'VARIANCE-SWAP strip - log-contract replication off each rung\'s own quotes, '
+                     'flat-vol past the last strike - which is the object xi IS. The ATM^2 gap is '
+                     'Black\'s convexity; the strip gap is the smile\'s, and there is no log level '
+                     'anywhere in either:')
+        for lo, hi, level, x, v in zip(self.knots[:-1], self.knots[1:], self.levels, self.xi,
+                                       self.var_swap_strip()):
             fitted = np.exp(float(level.detach()))
             logging.info(
-                '    {:5.3f}-{:5.3f}y  market ATM^2 {:.2%} vol, fitted xi {:.2%} vol '
-                '({:+.2f} vol points)'.format(
-                    lo, hi, np.sqrt(max(x, 0.0)), np.sqrt(fitted),
-                    100.0 * (np.sqrt(fitted) - np.sqrt(max(x, 0.0)))))
+                '    {:5.3f}-{:5.3f}y  market ATM^2 {:.2%} vol, var-swap strip {:.2%} vol, fitted '
+                'xi {:.2%} vol ({:+.2f} / {:+.2f} vol points)'.format(
+                    lo, hi, np.sqrt(max(x, 0.0)), np.sqrt(max(v, 0.0)), np.sqrt(fitted),
+                    100.0 * (np.sqrt(fitted) - np.sqrt(max(x, 0.0))),
+                    100.0 * (np.sqrt(fitted) - np.sqrt(max(v, 0.0)))))
         for name in utils.LV_BUCKET_NAMES:
             logging.info('  {}: {}'.format(name, ', '.join(
                 '{:g}y {:+.4f}{}'.format(t, v, '' if not self.free else ' ({})'.format(
@@ -2402,6 +2644,28 @@ class LVFit(object):
                 '/'.join('{:.3f}'.format(x) for x in c),
                 '/'.join('{:.3f}'.format(x) for x in cond),
                 '/'.join('{:.3f}'.format(x * y) for x, y in zip(c, cond))))
+        # `c_eff` is the share of a return's variance that stays in the Gaussian a stride reads, so
+        # the OSS advantage scales with its 3/2 power against the reference 0.22 the spec sizes on
+        logging.info(
+            '  efficiency factor (sqrt(c_eff)/0.22)^3 {}; residual shape alpha*delta_A {}, against '
+            'the {:g} floor (1 strongly non-Gaussian, 15 nearly Gaussian){}'.format(
+                '/'.join('{:.2f}'.format((np.sqrt(x * y) / 0.22) ** 3)
+                         for x, y in zip(c, cond)),
+                ', '.join('{:.4g}y {:.4g}'.format(T, x) for T, x in self.shape_readings()),
+                self.shape_floor, '' if self.priors and self.shape_floor > 0.0 else
+                ' - NOT IN FORCE'))
+        logging.info(
+            '  leverage prior on Rho_S {:+.4f} from {}, weight {:g} - a miss of a tenth costs one '
+            'quote missing by a vol point{}'.format(
+                self.prior, self.prior_source, self.leverage_weight,
+                '' if self.priors else '; NOT IN FORCE, Model_Priors is Off'))
+        if self.alpha_prior() is not None:
+            ratio = self.alpha_prior() / (self.state['Alpha'][0] or float('nan'))
+            logging.info(
+                '  alpha^P {:.3f} against alpha^Q {:.3f}, ratio {:.2f}{} - Esscher invariance is '
+                'an assumption about the risk premium, not a theorem about the market'.format(
+                    self.alpha_prior(), self.state['Alpha'][0], ratio,
+                    '' if 0.5 <= ratio <= 2.0 else ' - PAST 2x, the sanity check brief 8 asks for'))
         for line in ([] if self.slope is None else active_bounds(
                 self.labels, np.array([self.value_of(x) for x in self.fitted]),
                 self.edges[0], self.edges[1], self.slope)):
@@ -2412,7 +2676,8 @@ class LVFit(object):
                          self.headroom, self.state['Cap_A']))
         for note in self.notes:
             logging.warning('  {}: {}'.format(self.market_price, note))
-        for line in ([self.pinned_slow] if self.pinned_slow else []) + self.identified_days:
+        for line in [x for x in (self.pinned_slow, self.pinned_alpha) if x] + \
+                self.identified_days:
             logging.info('  {}'.format(line))
         for name, rho_l, sigma_l, wing, spread in self.slow_rows:
             logging.info(
@@ -2437,6 +2702,16 @@ class LVFit(object):
                     T1, tenor, *slope + (slope[0] - slope[2], slope[1] - slope[2],
                                          self.ratio(*slope)) + bfly
                     + (bfly[0] - bfly[2], bfly[1] - bfly[2], self.ratio(*bfly))))
+        # THE RESERVE LINE while the target is a PRIOR (brief 5): the calibrator has no deal, so it
+        # states the map from the two levers to Delta_skew and `lv_skew_reserve` composes the rest
+        for (T1, tenor), (d_beta, d_rho) in (
+                self.skew_gradient() if self.targets and self.source == 'Prior' else {}).items():
+            logging.info(
+                '  reserve line ({:g}y into {:g}y), band {:g} vol points: d(Delta_skew)/dBeta '
+                '{:+.4g} and d(Delta_skew)/dRho_S {:+.4g} vol points per unit at the {:g}y bucket '
+                '- a deal\'s |dPV/dDelta_skew| x band is bootstrappers.lv_skew_reserve of these '
+                'and its own (dPV/dBeta, dPV/dRho_S)'.format(
+                    T1, tenor, self.skew_band, d_beta, d_rho, buckets[-1]))
         # spec 5.3's composition check is the smile BEYOND the last bucket boundary: that rung is
         # the composition of the conditional laws either side of it, and the rungs inside the last
         # bucket are ordinary vanillas the earlier buckets already fitted
@@ -2544,8 +2819,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          'THE STAGES (spec 5.2), warm-started, each `least_squares` over its own subset:',
          '',
          '0. $\\kappa_\\ell$, $\\kappa_s$ and the cap are STRUCTURAL and never enter a fitted',
-         'vector; $(\\alpha,\\beta)$ seed at the index-sized $(44,-22)$ and $(\\rho_s,\\sigma_s)$',
-         'at $(-0.75,2.4)$. The residual drift is FORCED by no-arbitrage rather than fitted, so',
+         'vector; $(\\alpha,\\beta)$ seed at the index-sized $(44,-22)$ - $\\alpha$ at a history own',
+         '$\\alpha^P$ where the job carries one - and $(\\rho_s,\\sigma_s)$ at $(-0.75,2.4)$, $\\rho_s$',
+         'signed by the leverage prior. The residual drift is FORCED by no-arbitrage rather than fitted, so',
          'there is no intensity and no share to size.',
          '1. The curve $\\xi$ from the ATM$^2$ forward-variance increments, then the',
          'triangular bootstrap - at every iterate thereafter.',
@@ -2553,8 +2829,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          '$\\alpha=\\tfrac12+\\varepsilon+\\mathrm{softplus}(a)$,',
          '$\\beta=-\\tfrac12+(\\alpha-\\tfrac12-\\varepsilon)\\tanh(b)$, which land inside',
          '$|\\beta|<\\alpha$, $|\\beta+1|<\\alpha$ for every iterate - the transform lives in the',
-         'calibrator and the model applies none. 3. $(\\rho_s,\\sigma_s)$ on the 1-12',
-         'month rows. 4. $(\\rho_\\ell,\\sigma_\\ell)$ beyond one year, and ONLY where',
+         'calibrator and the model applies none; $\\alpha$ is PINNED at a history $\\alpha^P$ where the',
+         'ladder has no wing under three months (brief 8). 3. $(\\rho_s,\\sigma_s)$ on the 1-12',
+         'month rows WITH the forward rows, which are what identifies the split between the',
+         'residual skew and $\\rho_s\\sigma_s$. 4. $(\\rho_\\ell,\\sigma_\\ell)$ beyond one year, and ONLY where',
          'the ladder carries wing quotes at 18 months or longer; otherwise both are PINNED with',
          'the report line *pinned: not identified by this ladder*, as the $\\kappa$ pair is. WHAT',
          'THEY ARE PINNED AT is read in one order: *Slow_Factor_Prior* where the block declares',
@@ -2572,8 +2850,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          'index seed - at ONE extra forward pass each, everything but the slow pair held at',
          '$\\theta^*$, the $\\xi$ strip re-bootstrapped and the wings re-priced with no outer search,',
          'so every row but the one in force APPROXIMATES the re-fit it is not.',
-         '5. THE FORWARD BLOCK, in the order spec 5.3 states and only where *Forward_Smile_Source*',
-         'names one: the later buckets of $\\beta(t)$, then of $\\rho_s(t)$. THE TARGETS ARE',
+         '5. THE FORWARD BLOCK, *Prior* by default for every asset class (brief 5) and *None* naming',
+         'a vanilla-only fit: the later buckets of $\\beta(t)$, then of $\\rho_s(t)$. THE TARGETS ARE',
          'DIFFERENCES, in vol points and BOTH of them: $\\Delta_{skew}$ is the forward 90-110',
          'slope less the spot one at maturity $\\Delta$, $\\Delta_{bfly}$ the same for the 90/110',
          'butterfly. *Prior* DECLARES the pair (*Stickiness_Prior*, `0.0,0.0` being sticky-delta);',
@@ -2590,19 +2868,34 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          '',
          'BOUNDS LIVE HERE AND NOWHERE ELSE. The engine puts no transform on $\\rho_s$ - one cost a',
          'tenth of the spot skew before it was found - so the box is the calibrator own:',
-         '$\\rho_s\\in[-\\sqrt{1-\\rho_\\ell^2-c_{min}},0]$, re-derived as $\\rho_\\ell$ moves, with a',
+         '$\\rho_s\\in[-\\rho_{max},\\rho_{max}]$, $\\rho_{max}=\\sqrt{1-\\rho_\\ell^2-c_{min}}$, SYMMETRIC',
+         'because the sign is the leverage prior to state (one-sided under *Model_Priors* Off),',
+         're-derived as $\\rho_\\ell$ moves, with a',
          'soft penalty sized to bite in the last percent of it. A bucket landing ON that box is the',
          'box stopping $\\rho_s$ rather than the data, which is a surface asking for a ONE-SHOCK',
          'model. Neither guard Floor moves a fitted number: both TAKE what the fit reached and say',
          'so, which is what leaves the quote contraction at the point it was taken.',
          '',
+         'THE PRIORS ARE ROUTINE (brief 5). A leverage prior on $\\rho_s$ the fit is never without -',
+         '*Leverage_Prior*, else a history *Rho_S*, else the class default, on the ENGINE axis, one',
+         'quote weight - and a floor on the residual shape $\\alpha\\delta_A$ at the shortest',
+         'expiry, *Residual_Shape_Floor*: nothing bounds $\\alpha$ from below and a symmetric smile',
+         'buys convexity at the map own floor otherwise. *Model_Priors* Off is the vanilla-only',
+         'objective and box, there so a document declaring none of them refits to the bit.',
+         '',
          'WHAT THE FIT REPORTS. The vol-point miss per maturity and over the surface, unweighted',
          'and vega-weighted; the wing and convexity residuals; per bucket the parameters and',
          'which were free; the leverage products, $c$, the conditioning share',
-         '$\\gamma^2/\\alpha^2$ and their product $c_{eff}$; the stationary log-vol sd; the cap',
-         'headroom; THE CURVE per segment - the market own ATM$^2$ forward variance beside the',
-         'fitted $\\xi$, which IS the model $E[h]$, so the gap is Black convexity and there is no',
-         'log level anywhere in it; per $(T_1,\\Delta)$ the',
+         '$\\gamma^2/\\alpha^2$ and their product $c_{eff}$ with the efficiency factor',
+         '$(\\sqrt{c_{eff}}/0.22)^3$; the residual shape $\\alpha\\delta_A$ at 1m and 1y against the',
+         'floor; the leverage prior in force with its source; $\\alpha^P$ against $\\alpha^Q$, flagged',
+         'past 2x, where a history carries one; the stationary log-vol sd; the cap',
+         'headroom; THE CURVE per segment - the market own ATM$^2$ forward variance and its',
+         'VARIANCE-SWAP strip (log-contract replication off each rung own quotes, flat vol past',
+         'the last strike - the object $\\xi$ IS) beside the fitted $\\xi$, which IS the model',
+         '$E[h]$, so the ATM$^2$ gap is Black convexity, the strip gap the smile own, and there is',
+         'no log level in either; the reserve line per forward tenor while the target is a prior;',
+         'per $(T_1,\\Delta)$ the',
          'forward slope and butterfly, the spot ones they are differenced against, and BOTH',
          'DIFFERENCES model beside target - with $\\psi_{skew}$ and $\\psi_{bfly}$ beside them',
          'only where the spot side exceeds 0.5 vol points, and named as the division by nothing',
@@ -2714,14 +3007,54 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The multiplier an event day\'s own diffusive variance carries over the '
                       'segment enclosing it. 1.0 is OFF; 3.0 says the day carries three ordinary '
                       'days of variance and the segment around it gives that back'),
-        F('Forward_Smile_Source', 'Text', default='None',
+        F('Leverage_Prior', 'Float', default='',
+          description='The Rho_S the soft term of brief 5 pulls towards, on THE ENGINE\'S AXIS: '
+                      'an FxRate is priced in the domestic currency, so a desk\'s +0.4 on an EM '
+                      'cross quoted USD-per-currency is -0.4 on FxRate.ZAR in a USD book. Blank '
+                      'reads a LogVar2FJ history\'s own Rho_S in Price Models, else the ASSET '
+                      'CLASS default - an index -0.7, the VIX-implied spot-vol correlation, an FX '
+                      'pair 0.0. The prior is never absent: the residual can carry the whole spot '
+                      'skew and a vanilla-only fit then puts Rho_S wherever it likes, leaving the '
+                      'forward smile undetermined, so a weak prior - a zero one included - keeps '
+                      'the split near what the vol market says. fx_surface_block writes the '
+                      'desk\'s own number here off its seed'),
+        F('Residual_Shape_Floor', 'Float', default=0.30,
+          description='The floor on the residual\'s own shape alpha*delta_A at the SHORTEST '
+                      'calibrated expiry - the NIG increment\'s dimensionless steepness, 1 '
+                      'strongly non-Gaussian and 15 nearly Gaussian. Brief 2 bounds |Beta|/Alpha '
+                      'and NOTHING bounds Alpha from below, so on a symmetric smile the fit buys '
+                      'CONVEXITY by walking Alpha to the admissible map\'s own softplus floor: the '
+                      '22-rung USDZAR ladder in Global mode landed at Alpha 5.45 reading 7.7e-3 '
+                      'here, an eighth of the one-month wing Bootstrap reads on the same quotes. '
+                      'A soft term, not a box - 0 is OFF and is what says how much of a fit this '
+                      'floor is - and it is a dial between a tail the wings identify and a '
+                      'convexity dial they do not'),
+        F('Stickiness_Band', 'Float', default=0.5,
+          description='The band, in VOL POINTS, a deal\'s forward-skew reserve is taken over while '
+                      'the forward target is a PRIOR rather than a quote: the spread between the '
+                      'sticky-delta and LSV-like views of Delta_skew. The calibrator has no deal, '
+                      'so it reports the model half - d(Delta_skew)/dBeta and d(Delta_skew)/dRho_S '
+                      'at theta* - and a pricing report composes |dPV/dDelta_skew| x band from it '
+                      'through bootstrappers.lv_skew_reserve'),
+        F('Model_Priors', 'Text', default='On', values=['On', 'Off'],
+          description='The soft terms brief 5 makes ROUTINE: the leverage prior and the floor on '
+                      'the residual\'s shape alpha*delta_A at the shortest calibrated expiry, '
+                      'which is what stops a symmetric smile buying convexity by driving alpha to '
+                      'the admissible map\'s own floor. Off is the objective AND the one-sided '
+                      'Rho_S box the vanilla-only fit had - it exists so a document declaring none '
+                      'of them refits to the BIT, and a production fit run under it is not an '
+                      'autocall calibration'),
+        F('Forward_Smile_Source', 'Text', default='Prior',
           values=['None', 'Quotes', 'Reference', 'Prior'],
           description='Where spec 5.3\'s forward-skew target comes from, and therefore which '
                       'instrument is priced. Quotes are TRADED forward-starts, E[S_T1 (R-k)^+] / '
                       'E[S_T1], read off Forward_Smiles; Reference is a reference model\'s own '
                       'forward smiles, the ratio expectation E[(R-k)^+], off the same table; Prior '
-                      'needs no table and tilts the market\'s spot smile at each Delta by '
-                      'Stickiness_Prior over the Forward_Tenors pairs. None skips stage 5, and a '
+                      'needs no table and tilts the model\'s own spot smile at each Delta by '
+                      'Stickiness_Prior over the Forward_Tenors pairs, and is THE DEFAULT for '
+                      'every asset class: the block is routine rather than optional (brief 5), and '
+                      'its rows enter at STAGE 3, where they are what identifies the split between '
+                      'the residual\'s skew and rho_s sigma_s. None skips the block, and a '
                       'vanilla-only calibration is then what it is - not an autocall calibration. '
                       'Global mode only'),
         F('Forward_Smiles', 'Table', default='null', row=Row([
@@ -2736,11 +3069,12 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The (T1:Delta) pairs Forward_Smile_Source Prior builds its rows on'),
         F('Stickiness_Prior', 'Text', default='0.0,0.0',
           description='The PAIR Delta_skew,Delta_bfly in VOL POINTS that Forward_Smile_Source '
-                      'Prior targets on the model\'s OWN spot smiles: 0.0,0.0 is sticky-delta, '
-                      'the FX convention and the default; a few tenths negative on the skew is an '
-                      'LSV-like view. DIFFERENCES rather than ratios, because a ratio divides by a '
-                      'spot quantity within 0.3 vol points of zero - the butterfly at 3-6m on an '
-                      'index, the skew on any symmetric FX smile - and asks the fit to match '
+                      'Prior targets on the model\'s OWN spot smiles: 0.0,0.0 is sticky-delta and '
+                      'is the default for EVERY asset class - index forward skews trade at about '
+                      'spot steepness - while the LSV-like few tenths negative is a desk view a '
+                      'desk declares here. DIFFERENCES rather than ratios, because a ratio divides '
+                      'by a spot quantity within 0.3 vol points of zero - the butterfly at 3-6m '
+                      'on an index, the skew on any symmetric FX smile - and asks the fit to match '
                       'noise. Both, because jump skew is sticky while its convexity dilutes at the '
                       'forward date and leverage skew dilutes while vol-of-vol convexity '
                       'amplifies: the slope alone cannot separate the jump share from the '
@@ -2915,7 +3249,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
 
         quotes = self.emphasis(fit, quotes, set(atm))
         rungs = {T: [quotes[i] for i in rows] for T, rows in by_expiry.items()}
-        targets = self.forward_rows(fit, factors)
+        targets = self.reachable(fit, self.forward_rows(fit, factors), rungs)
         # EVERY BUCKET KNOT IS A BLOCK END, so a block's residual sits in one bucket and takes
         # exactly one mixer - brief 10's no-knot-inside-a-clock rule, written into the grid
         ends = sorted(set(by_expiry) | {float(t) for t in fit.buckets if t > 0.0}
@@ -3018,6 +3352,34 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                                 ', '.join('{:g}y'.format(T) for T in wings)))
         return np.array([0.0] + list(wings)[:-1])
 
+    def reachable(self, fit, targets, rungs):
+        """The forward rows this ladder can be judged on, the rest DROPPED by name.
+
+        `Delta_skew` is the forward slope less the SPOT slope at maturity `Delta`, read at the
+        quoted rung nearest it - so a tenor whose nearest rung is a quarter of `Delta` away is
+        differenced against a smile at the wrong maturity, and the default block reaching a year
+        would put a 1y forward smile beside a three-week one on a three-week ladder. It also
+        stops the grid walking to two years for a ladder that stops in three weeks.
+        """
+        far = {target.tenor for target in targets
+               if abs(min(rungs, key=lambda T: abs(T - target.tenor)) - target.tenor)
+               > fit.spot_rung_tol * target.tenor}
+        if not far:
+            return targets
+        logging.warning(
+            '{}: the forward tenor{} {} {} DROPPED - this ladder quotes {} and spec 5.3 reads the '
+            'spot slope at the rung nearest Delta, which here is more than {:.0%} of Delta away, '
+            'so the difference would be taken against a smile at the wrong maturity. Quote the '
+            'expiry, or name Forward_Tenors this ladder reaches'.format(
+                fit.market_price, '' if len(far) == 1 else 's',
+                '/'.join('{:g}y'.format(d) for d in sorted(far)),
+                'is' if len(far) == 1 else 'are',
+                '/'.join('{:g}y'.format(T) for T in sorted(rungs)), fit.spot_rung_tol))
+        kept = [target for target in targets if target.tenor not in far]
+        if not kept:
+            fit.source = 'None'
+        return kept
+
     def forward_rows(self, fit, factors):
         """Spec 5.3's forward-start rows, in the instrument `Forward_Smile_Source` names.
 
@@ -3027,6 +3389,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         `Bootstrap` mode, refuses by name.
         """
         rows, source = fit.table('Forward_Smiles'), fit.source
+        if source == 'Prior' and fit.mode == 'Bootstrap':
+            # `Prior` is the DEFAULT for every block and Bootstrap reports psi rather than
+            # targeting it, so the default block is not fitted here - and a source that named a
+            # TABLE still refuses, a table being a declaration nobody writes by accident
+            logging.info('  {}: Fit_Mode Bootstrap makes forward smiles a CONSEQUENCE of the '
+                         'bucket term structure, so the default Prior block is reported rather '
+                         'than targeted (spec 5.4.1)'.format(fit.market_price))
+            fit.source = 'None'
+            return []
         if source != 'None' and fit.mode == 'Bootstrap':
             raise ValueError(
                 '{}: Forward_Smile_Source {} is Global mode only (spec 5.4.1). In Bootstrap mode '
@@ -3185,11 +3556,17 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         read = fit.instrument
         n, fit.xi_0 = fit.buckets.size, fit.atm[0].sigma ** 2
         fit.law = read['Residual_Law']
+        fit.prior, fit.prior_source = fit.leverage_prior() if fit.priors else (
+            0.0, 'none - Model_Priors is Off, which is the vanilla-only objective and its box')
+        # the SEED's sign is the prior's - a zero prior seeds the index number and the symmetric
+        # box decides - and `alpha` seeds at the history's own `alpha^P` where the job carries one
+        alpha = fit.alpha_prior()
         fit.state = {'Kappa_L': float(read['Kappa_L']), 'Kappa_S': float(read['Kappa_S']),
                      'Sigma_L': 1.0, 'Rho_L': -0.4,
                      'Cap_A': float(read['Cap_A']), 'Cap_Beta': float(read['Cap_Beta']),
-                     'Rho_S': [-0.75] * n, 'Beta': [-22.0] * n,
-                     'Sigma_S': [2.4] * n, 'Alpha': [44.0] * n}
+                     'Rho_S': [float(np.copysign(0.75, fit.prior or -1.0))] * n,
+                     'Beta': [-22.0] * n,
+                     'Sigma_S': [2.4] * n, 'Alpha': [44.0 if alpha is None else alpha] * n}
 
         previous, levels = fit.previous, None
         if previous:

@@ -1622,6 +1622,18 @@ def spot_model_factor(family, block_name):
     return structures.SPOT_MODEL_FACTOR.format(family, block_name.split('.', 1)[1])
 
 
+def desk_leverage_prior(pair):
+    """The desk's own leverage prior for `pair` off the seed it owns, or `None` where this
+    workstation has no `derivus_bloomberg` and no seed to read - a prior undeclared is the asset
+    class default, which the calibrator supplies. Imported inside, as every other use of that
+    package here is."""
+    try:
+        from derivus_bloomberg import security_map
+        return security_map.leverage_prior(pair)
+    except (ImportError, OSError, ValueError):
+        return None
+
+
 def spot_model_edit(document, pair, family):
     """The calibration as ONE edit closure over a wire document, for `Book.mutate`: the quote block
     authored off the book's own built surface, installed through the `/book/market` seam,
@@ -1644,7 +1656,7 @@ def spot_model_edit(document, pair, family):
     params = load(document).current_cfg.params
     name, block = calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'])
+        params['Price Factor Interpolation'], desk_leverage_prior(pair))
     market.get('Market Prices', {}).pop(name, None)
     borrowed = calibrator.__name__ not in market['Bootstrapper Configuration']
     market['Bootstrapper Configuration'].setdefault(calibrator.__name__, {})

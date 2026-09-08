@@ -3,7 +3,9 @@
   "pairs": ["USDJPY", "USDCHF", "USDCAD", "USDZAR", "EURZAR", "GBPZAR"],
   "expiries": {"1W": 0.0192, "2W": 0.0384, "1M": 0.0822, "2M": 0.1671, "3M": 0.2493,
                "6M": 0.4986, "9M": 0.7479, "1Y": 1.0, "2Y": 2.0},
-  "pillars": [0.10, 0.25]
+  "pillars": [0.10, 0.25],
+  "leverage_prior": {"USDJPY": 0.0, "USDCHF": 0.0, "USDCAD": 0.0,
+                     "USDZAR": -0.4, "EURZAR": -0.4, "GBPZAR": -0.4}
  },
  "fx_spot": {"pairs": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCHF", "USDCAD",
                        "USDZAR", "EURGBP", "EURJPY", "EURCHF", "AUDJPY", "EURAUD", "GBPJPY",

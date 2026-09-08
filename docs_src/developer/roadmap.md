@@ -378,6 +378,41 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2, lane 2: the calibrator's priors, the symmetric box and the forward block as
+  routine** (2026-09-08) — the fit now carries a LEVERAGE PRIOR it can never be without, a FLOOR on
+  the residual's own shape, a SYMMETRIC `ρ_s` box, the forward-smile block at stage 3 by default,
+  `α` seeded and pinned from a history, and the model half of a forward-skew reserve. WHY: vanillas
+  do not close this model. `β` and `ρ_s σ_s` bend the spot smile the same way, so lane 1's
+  vanilla-only fit gave the skew to whichever was cheaper — on a symmetric FX smile that meant
+  `β → −0.08` and `α` walked to 5.45, an `α·δ_A` of 7.7e-03 at one month where nothing in brief 2
+  bounds `α` from below. The prior states the split the vol market believes, the floor states that
+  the residual is a TAIL and not a convexity dial, and the forward rows at stage 3 are the only data
+  that sees the split at all. THE AXIS is declared where the desk owns it: `derivus_bloomberg/seed.json`
+  carries `leverage_prior` per pair on the ENGINE's axis, so a `+0.4` view on an EM cross quoted
+  USD-per-currency is `−0.4` on `FxRate.ZAR` in a USD book, `security_map.leverage_prior` reads the
+  desk's `$DV_HOME/seed.json` first (a seed predating the key declares none), and `fx_surface_block`
+  writes it into the block with `Quote_Source` naming the seed. MEASURED on the banked 22-rung USDZAR
+  ladder at `Paths` 2048: with the floor OFF the fit walks `α` to **0.627**, the admissible map's own
+  floor, reading `α·δ_A` **7.3e-05** at one month — lane 1's 5.45 was a way station and there is no
+  bottom; any floor at or above **0.1** lands the same θ\* (`α` 48.5, shape 1.358), so the floor
+  excludes a BASIN rather than setting a value; and with the desk's own **−0.4** beside it the
+  ladder's 16 wings go **0.196 → 0.098** and its one-month wing **0.305 → 0.134**, under the Poisson
+  residual's 0.174 for the first time in `Global` and still 4× `Bootstrap`'s 0.032. The stationary
+  log-vol sd comes back INSIDE the 0.4–0.9 band with it (0.353 → 0.413 → 0.515), which answers lane
+  1's open question 18.2 on this ladder without moving the band. A block declaring `+0.4` overrides
+  the seed, lands `ρ_s` at **+0.4272** — a sign the one-sided box could not reach — and pays 0.098 →
+  0.595 on the wings, so the prior picks the sign and the data keeps the last word. The forward rows
+  are what IDENTIFY the split: the polish spectrum's two smallest directions read 0.6699 / 0.2870
+  with them against 0.4135 / 0.0847 without on the FX ladder and 0.4329 / 0.1199 against 0.1499 /
+  0.0317 on the SPX chain, the two largest unmoved. `Model_Priors: Off` is the objective AND the box
+  lane 1 fitted on, and a document declaring none of the new fields refits to the bit under it (58
+  floats over two fits, 0 mismatches). The fit reports the efficiency factor, `α·δ_A` at 1m and 1y
+  against the floor, the variance-swap strip beside `ξ`, the prior in force with its source, `α^P`
+  against `α^Q` flagged past 2×, and the reserve line per forward tenor. A forward tenor more than a
+  quarter of Δ from its nearest rung is DROPPED by name, which is what keeps a three-week ladder from
+  walking to two years. NOT BUILT: `Forward_Smile_Source: Reference` is still unexercised, no
+  reference model being wired; `α^P` has no producer until lane 3 writes it; the floor is one number
+  for every asset class where the two ladders here read three orders of magnitude apart at one month.
 - **LogVar2FJ v2, lane Q: a quanto payoff prices under the walking kit** (2026-09-08) — the
   payoff-currency measure change enters `utils.lv_walk` as a per-step drift `−ρ_q σ_FX,k √(V_k δ_k)`
   read off the state's own variance budget, and the deal-level lognormal carry

@@ -1182,7 +1182,9 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     rows = block['instrument']['European_Options']
     assert len({(row['Expiry_Date']['.Timestamp'], row['Strike']) for row in rows}) >= 4
 
-    block['instrument']['Max_Iterations'] = 8
+    # a MONTE CARLO fit whose claims are structural, so `Paths` is cut to what a gate can pay for
+    # alongside `Max_Iterations`, as the sibling LogVar2FJ test cuts them
+    block['instrument'].update(Max_Iterations=8, Paths=512)
     document = job_document({name: block}, surface=False)
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     assert not [factor for factor in market['Price Factors'] if factor.startswith('EquityPriceVol')]
@@ -1232,7 +1234,7 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
 
     def fitted(surface):
         name, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
-        block['instrument']['Max_Iterations'] = 8
+        block['instrument'].update(Max_Iterations=8, Paths=512)
         document = job_document({name: block}, surface=surface)
         document['Calc']['MergeMarketData']['ExplicitMarketData'][
             'Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
@@ -1390,6 +1392,9 @@ def probe_block(funding=REPO, days=FORWARD_DAYS):
                   'Yield': 'SPX', 'Yield_Type': 'DividendRate',
                   'Quote_Type': 'Premium', 'Use_Forward': 'No', 'Invert_Moneyness': 'No',
                   'Steps_Per_Year': 12.0, 'Quadrature_Panels': 16,
+                  # the fit's quality is not what is measured, so the Monte Carlo one is cut to
+                  # what a gate can pay for - this block quotes one ATM an expiry and no wing
+                  'Max_Iterations': 8, 'Paths': 512,
                   'Quote_Timestamp': '', 'Quote_Source': 'the forward-identity probe',
                   'European_Options': quotes}
     if funding:
@@ -1645,7 +1650,9 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
     assert len(rows) == 10 and sum(row['Weight'] for row in rows) == pytest.approx(1.0, rel=1e-12)
     assert 'the best 5 an expiry chosen by liquidity and weighted by vega alone' in \
         block['instrument']['Quote_Source']
-    block['instrument']['Max_Iterations'] = 8
+    # a MONTE CARLO fit whose claims are structural, so `Paths` is cut to what a gate can pay for
+    # alongside `Max_Iterations`, as the sibling LogVar2FJ test cuts them
+    block['instrument'].update(Max_Iterations=8, Paths=512)
     document = job_document({name: block}, surface=False)
     document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
         'LogVar2FJModelParameters': {}}

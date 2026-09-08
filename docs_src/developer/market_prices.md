@@ -249,11 +249,49 @@ one month against the "≈ 1 strongly non-Gaussian" the sizing note gives, and t
 coefficient of variation is 11.4. Every declared guard is satisfied there (`c` 0.311 ≥ 0.12,
 `γ²/α²` **1.000** ≥ 0.4). `Bootstrap`, which frees `α` per expiry against that expiry's own wings,
 does not reach the corner (`α` 41.6, `γ²/α²` 0.930) and reads an eighth of `Global`'s one-month
-wing. **Nothing in the brief bounds `α` from below**; the seed and pin from history are what close
-it, which is the calibrator lane's. `Bootstrap` is structurally the mode for a deal read at many
+wing. **Nothing in the brief bounds `α` from below**; the residual-shape floor below closes it. `Bootstrap` is structurally the mode for a deal read at many
 fixings rather than the mode that fits a surface best — bucket `k` acts only on `[E_{k−1}, E_k)`
 while the option to `E_k` averages over every bucket before it — and the report says per bucket
 which parameters were free and which tied.
+
+**The leverage prior is never absent, and it is stated on the ENGINE'S axis.** Vanillas do not
+separate residual skew from leverage skew: `β` and `ρ_s σ_s` both bend the spot smile the same way,
+so a vanilla-only fit gives the skew to whichever is cheaper and leaves the FORWARD smile — the thing
+an autocall reads — undetermined. `Leverage_Prior` is a weak soft term `w_ρ (ρ_s − ρ_s^prior)²` in
+every stage's objective, `w_ρ = 0.02`: the normalised vanilla weights sit at 0.17–0.22 on a
+twenty-rung ladder, so a prior miss of a TENTH in `ρ_s` costs what one quote missing by one vol point
+costs, and any quote that speaks outvotes it. It is read in one order — the block's `Leverage_Prior`
+where declared, else a LogVar2FJ history's own `Rho_S` in `Price Models`, else the asset-class
+default: an index **−0.7** (the VIX-implied spot–vol correlation), an FX pair **0.0**.
+
+THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book
+is *USD per rand* and a desk's `+0.4` on an EM cross quoted USD-per-currency is **−0.4** here. The
+declaration is DATA the desk owns: `derivus_bloomberg/seed.json`'s `fx_vol.leverage_prior` states it
+per pair on that axis (`USDZAR`/`EURZAR`/`GBPZAR` −0.4, the majors 0.0), `security_map.leverage_prior`
+reads it off `$DV_HOME/seed.json` where that exists — a desk seed that predates the key declares no
+prior and gets the class default — `/book/model` hands it to `fx_surface_block`, and the emitted
+block carries it with `Quote_Source` naming the seed. A block declaring `Leverage_Prior` overrides
+all of that and the report says *from the declared Leverage_Prior*.
+
+**With a prior the box is SYMMETRIC.** `ρ_s ∈ [−ρ_max, +ρ_max]`, `ρ_max = √(1 − ρ_ℓ² − c_min)`,
+re-derived as `ρ_ℓ` moves. Half a box is an assertion about which way a smile leans, and the prior
+is where that assertion belongs; the seed is `sign(prior)·0.75` and a zero prior seeds −0.75 and lets
+the box decide. `Model_Priors: Off` restores the one-sided box with the objective it replaced, and is
+the switch a bit-identity gate runs under.
+
+**`Residual_Shape_Floor` is the lower bound on `α` that brief 2 does not have.** `|β|/α ≤ 0.77`
+bounds the skew share and nothing bounds `α` from below, so on a nearly symmetric smile the fit has
+no use for residual SKEW and buys CONVEXITY instead by walking `α` to the admissible map's own
+softplus floor — the 22-rung USDZAR ladder in `Global` landed at `α` 5.45 with `α·δ_A` **7.7e-03** at
+one month, on a scale where 1 is strongly non-Gaussian and 15 nearly Gaussian, and with the floor
+off it walks on to **0.627**. The guard is one soft term on that shape at the SHORTEST calibrated
+expiry, `0.05 · relu(1 − shape/floor)`: relative, so a fit inside the floor pays nothing and one at
+the map's floor pays five vol points of residual, against wing misses of a few tenths. Any floor at
+or above 0.1 lands the same θ\* (`α` 48.5, shape 1.358), so it excludes a BASIN rather than setting a
+value. It is a FIELD and not a box because the number is a modelling choice and `0` is off. With
+the floor and the desk's −0.4 together the ladder's one-month wing reads **0.134** against lane 1's
+0.305 and the Poisson residual's 0.174, and the stationary log-vol sd comes back inside the 0.4–0.9
+band (0.353 → 0.515) without the band moving.
 
 Both modes REFUSE on the default `Stationary_Spread: Refuse`, and that refusal is the reading: with
 the residual carrying the skew the fit no longer needs the vol-of-vol to carry it, so the
@@ -361,7 +399,7 @@ quietly fitting the vanillas alone.
 in vol points, both targeted — residual skew is sticky while its convexity dilutes at the forward
 date, leverage skew dilutes while vol-of-vol convexity amplifies, so the slope alone cannot separate
 the residual's share from the vol-of-vol. **Prior** DECLARES the pair (`Stickiness_Prior`, `0.0,0.0` being
-sticky-delta and the default); **Quotes** and **Reference** MEASURE it — the source's own forward
+sticky-delta, the default for every asset class); **Quotes** and **Reference** MEASURE it — the source's own forward
 smile less the MARKET's own spot smile at the rung nearest Δ, read off the quoted vols in
 log-moneyness, a quote itself wherever the rung carries one at 90/100/110 and the nearest quote
 with a log line where it does not. The residual is then the model's difference less the target's,
@@ -387,6 +425,36 @@ The ratios are still REPORTED beside the differences, but only where the spot si
 vol points**; where it does not the row prints `no ratio, spot +0.39 inside 0.5 vol points` and no
 number, which is `ψ_bfly(1y into 1y)` on that very ladder and two of the three tenors on CJOW.
 
+**While the forward target is a PRIOR the number is a reserve, and the calibrator supplies its
+model half.** `Stickiness_Band` (default **0.5 vol points**, the spread between the sticky-delta and
+LSV-like views) is the band; a deal's reserve is `|∂PV/∂Δ_skew| × band`. The calibrator has no deal,
+so what it reports at θ\* is the map from the two levers to the quantity the band is on —
+`∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket, in vol points per unit, off the forward
+rows' own graph — and `bootstrappers.lv_skew_reserve(pv_gradient, skew_gradient, band)` composes it
+with a pricer's own `(∂PV/∂β, ∂PV/∂ρ_s)`, which the tape already carries. Two parameters carry one
+target, so the parameter move behind a vol point of `Δ_skew` is the MINIMUM-NORM one, `Jᵀ/(J Jᵀ)` —
+the convention the quote contraction takes over its null space.
+
+**`Forward_Smile_Source` defaults to `Prior` and the block enters at STAGE 3.** *Vanillas do not
+close this model* — brief 0.6 — so a calibration that omits the forward block is a vanilla-only fit
+and is named as one. `Stickiness_Prior` `0.0,0.0`, sticky-delta, is the default target for EVERY
+asset class: index forward skews trade at about spot steepness, and the LSV-like few tenths negative
+is a desk view a desk declares. The rows enter at stage 3, WITH the leverage prior, because that is
+the stage that fits `(ρ_s, σ_s)`: the split between `β` and `ρ_s σ_s` is exactly the direction the
+vanillas leave flat, and the polish spectrum says so — its two smallest directions read 0.6699 /
+0.2870 with the rows against 0.4135 / 0.0847 without on the USDZAR ladder, 0.4329 / 0.1199 against
+0.1499 / 0.0317 on the SPX chain, the two largest unmoved. Stage 5 keeps the LATER buckets, and the
+failure-mode guard and the composition residual are unchanged. In `Fit_Mode: Bootstrap` the default
+`Prior` is REPORTED rather than targeted — the buckets are the ladder's wing expiries and a forward
+smile is their consequence — while a source that names a TABLE still refuses there by name.
+
+**A tenor the ladder cannot reach is DROPPED by name.** `Δ_skew` is the forward slope less the SPOT
+slope at maturity Δ, read at the quoted rung nearest Δ, so a tenor whose nearest rung is more than a
+QUARTER of Δ away is a difference taken at the wrong maturity: on a three-week FX ladder the default
+`1y:1y` would put a one-year forward smile beside a three-week spot one, and would walk the grid to
+two years to do it. The rule drops it with the ladder's own expiries in the message; where nothing
+survives the block is not fitted and the report says so.
+
 **The lever is the calendar bucket, and it was measured on the Poisson residual against CJOW.** With
 ONE bucket a forward target has nothing to move but the vanillas and trips the failure mode by name
 (+0.215 and +0.212 vol points on the guarded RMSE for the two sources); with a year-two bucket of
@@ -395,7 +463,7 @@ the skew pair to move, the fit reached `ψ_skew` 1.021 / 1.034 / 0.935 against t
 reference and its harness are retired, so those are records; the mechanism they measured is
 unchanged, the lever now being `β(t)` beside `ρ_s(t)` on the same buckets. A rung that does not
 reach 90 or 110 is named in the log, since `Δ` at that tenor is then measured against an understated
-spot slope. `Forward_Smile_Source: Reference` stays as the production path and its report line reads
+spot slope. `Forward_Smile_Source: Reference` stays declared and its report line reads
 *unexercised: no reference model wired* until one is.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}

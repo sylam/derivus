@@ -47,6 +47,26 @@ def packaged_seed():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed.json')
 
 
+def leverage_prior(pair, path=None):
+    """The desk's declared LogVar2FJ leverage prior for `pair`, or `None` where the seed states
+    none - `$DV_HOME/seed.json` unless named, falling back to the packaged questionnaire.
+
+    A prior is a VIEW and not a quote, so it lives in the seed the desk owns and never in the
+    verified map: there is no terminal evidence for it. It is stated on the ENGINE'S axis - the
+    `FxRate` priced in the domestic currency - which is the opposite sign to the market's
+    USD-per-currency quoting on a USD-first pair. The desk's seed is AUTHORITATIVE where it
+    exists, packaged numbers included: a desk whose seed predates this field declares no prior and
+    gets the calibrator's asset-class default, which is what a view nobody wrote should be.
+    """
+    for candidate in (path or os.path.join(home(), 'seed.json'), packaged_seed()):
+        if os.path.isfile(candidate):
+            with open(candidate, encoding='utf-8') as handle:
+                priors = (json.load(handle).get('fx_vol') or {}).get('leverage_prior') or {}
+            value = priors.get(pair.replace('.', '').replace('-', '').upper())
+            return None if value is None else float(value)
+    return None
+
+
 def load(path=None):
     """The map - `$DV_HOME/security_map.json` unless named - refused unless every entry still
     carries its evidence."""
