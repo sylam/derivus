@@ -11,6 +11,19 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **A `Market Prices` block with no quote table raises a `TypeError` where it raised a `KeyError`**
+  (2026-09-08) — completion puts the declared blank `'null'` under `Energy_Futures_Options`,
+  `Points` and `Instrument_Definitions`, and iterating it reads *string indices must be integers*.
+  No working document reaches it; the fix is one shared `quote_table(instrument, name,
+  market_price)` refusing by name, about twelve lines over two callers.
+- **`bootstrappers.ALPHA_SEED` is a dial that stayed a module constant** (2026-09-08) — `(0.5,
+  0.05)`, the HW2F reversion-speed seed with a measured justification, not promoted because
+  `tests/test_hw2f_analytic.py` reads the name at six sites. The two edits: an `Alpha_Seed` field
+  read into `self.alpha_seed`, and the test module taking
+  `HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_seed`. The two numbers still in code
+  beside it: `xtol=1e-12` in `LVFit.solve` (the class of `Tolerance` and `Max_Iterations`) and
+  `Sigma_Knots`' ten-knot default grid in `implied_process`, which a Table cannot carry as a
+  default.
 - **`utils.ig_quantile` at a ZERO clock is `nan`, and the kit reaches it whenever an MTM row lands
   exactly on a remaining fixing** (2026-09-08, lane 4) - `ig_root`'s bracket `hi = 200m + 200m^2/lam`
   is 0/0 there; `LogVar2FJKit.grid` makes one step of length zero, `pieces` keeps it and `mixers`
@@ -208,6 +221,13 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **9bfb095 fitted every undeclared Hull-White block on ONE knot** (2026-09-08, 13:09 to the same
+  evening) — `declared_defaults` completed `Sigma_Knots` with a Table's declared blank, the string
+  `'null'`, and `sigma_knots` took anything truthy as a knot list: the four-quote fixture's
+  `Sigma_1`/`Sigma_2` collapsed from ten rows to one, `Correlation` moved from −0.04 to −0.95, 65
+  of the hex set's 4,180 floats moved and the four-quote pin test went red. `sigma_knots` reads a
+  LIST or nothing (the configuration landing in Built); the hex set is back on the banked reading
+  and the pin test green.
 - **CVA vega through the LogVar2FJ outer walk was `nan` at float32** (2026-09-08, lane 4; CLOSED
   the same evening) - the carried state hands the pricer clocks the per-row re-seed never
   produced: below a 4% annualised vol on a 21-day block the SECOND of `ig_quantile`'s two Newton
@@ -378,6 +398,11 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     the quanto correlation delta reports as zero against a ladder of −10.95 per unit of ρ on a 2y
     autocall, flat to 0.001%. Three edits with a tree-wide blast radius (every document carrying a
     correlation gains a Greeks row) and its own hex gate.
+14. **`Prices` in process: warning or refusal.** The field is mandatory on the multiprocessing
+    path and a warning naming the fix in process, where the family knows its own type; a refusal
+    would cost an edit at about twenty test and gate sites that write
+    `{'FXVolSurfaceParameters': {}}`. Beside it, `gates/hw2f_composition.py`'s one-family-per-call
+    workaround exists only because `sorted()` ordered the swaption fit before its curve, and can go.
 
 ## Designed, not built
 
@@ -504,6 +529,28 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **`Bootstrapper Configuration` carries every dial, keyed by what each family writes**
+  (2026-09-08) — a family's hyperparameters live ONCE in its section entry, completed from its
+  declarations (`schema.declared_defaults`) and overridden per block. Fifteen constants left
+  `bootstrappers.py` as fifteen declared fields defaulting to the numbers the code carried
+  (`LVFit`'s six, HW2F's three boxes and three basin-hopping dials, Clewlow–Strickland's two boxes
+  and seed); the four constructors that stored `param` raw complete it; nineteen inline
+  `.get(key, literal)` reads are gone. The section is keyed by `price_factor_type` with a `Prices`
+  stem naming the `Market Prices` type (`FXVol` and `InterestRate` renamed, the class names kept
+  as aliases); `Config.bootstrap` and `derivus_bootstrap.Parent.start` loop the section in
+  `bootstrappers.bootstrap_order`, a topological sort over declared `reads`, and hand each family
+  only its own blocks. MEASURED: the 16-document hex set 4,180 floats / 0 mismatches against the
+  banked lane S reading, which the head had lost (the Closed row below); the crisp GBM TARF to the
+  bit; the NKY block refits bit-identical on one tree and the four book ladders within 1e-11 of
+  the banked θ\*; the section reaches every family (`section_reaches.py`: `Grid_Tolerance` 1e-4 →
+  1e-3 → block 1e-5, Clewlow–Strickland's `Sigma_Bounds` cap binding at 0.2, `N_Iter: 1` refusing,
+  the leverage prior −0.7 → −0.3 → block −0.55, HW2F's `Sigma_Knots` 10 → 4 → block 2); the real
+  parent over five routed files, the no-`Prices` file refusing before a worker spawns; the order
+  `sorted()` got wrong from both file orders (`HullWhite2FactorModelParameters` before either
+  spelling of the curve family) sorted right from both. Engine net +285 lines, 71 of them the
+  declarations' prose. Pack `artifacts/lv_config_20260908/`. Not declarable, by measurement: the
+  FX emitter ladder (a classmethod's own declaration, no section in reach) and
+  `grid_tolerance_bounds` (a domain). See [Market Prices](market_prices.md#bootstrapper-configuration).
 - **LogVar2FJ v2, lane 4: the xVA outer process** (2026-09-08) — `stochasticprocess.LogVar2FJImpliedSpotModel`, the xVA outer process (spec 6.1, brief
   7). An implied process on the calibrated factor the OSS kit prices off, walking `utils.lv_walk` on
   the trading day between scenario nodes with the fractional remainder as one exact shorter step;

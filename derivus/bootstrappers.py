@@ -538,6 +538,12 @@ class CSForwardPriceModelParameters(object):
     )
 
     market_factor_type = 'CSForwardPriceModelPrices'
+    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
+    #: Configuration` entry names it by - here, its own class name.
+    price_factor_type = 'CSForwardPriceModelParameters'
+    #: The `Price Factors` types this family READS, which is what orders a run against
+    #: what other families write: `Energy`, `Forward_Volatility` and `Discount_Rate`.
+    reads = ('ForwardPrice', 'ForwardPriceVol', 'InterestRate')
     fields = [
         F('Energy', 'Text', default=REQUIRED, description='The ForwardPrice factor to calibrate'),
         F('Forward_Volatility', 'Text', default=REQUIRED,
@@ -546,6 +552,14 @@ class CSForwardPriceModelParameters(object):
           description='The InterestRate curve the premiums discount on'),
         F('Quote_Type', 'Text', default='Implied_Volatility', values=['Implied_Volatility'],
           description='How Quoted_Market_Value reads - this family takes vols only'),
+        F('Sigma_Bounds', 'Text', default='0.001,2.5',
+          description='The box the instantaneous vol is fitted in, lower,upper'),
+        F('Alpha_Bounds', 'Text', default='-1.0,2.0',
+          description='The box the Clewlow-Strickland decay is fitted in, lower,upper. It admits '
+                      'a NEGATIVE alpha, where the decay term grows the vol out to settlement'),
+        F('Seed', 'Text', default='0.5,0.1',
+          description='Where the local minimisation starts, sigma,alpha - both strictly inside '
+                      'their own boxes'),
         F('Energy_Futures_Options', 'Table', default='null',
           row=Row(OPTION_QUOTE[:1] + [F('Settlement_Date', 'Date',
                                         description='Futures settlement, which sets the '
@@ -557,7 +571,12 @@ class CSForwardPriceModelParameters(object):
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
+        for name in ('Sigma_Bounds', 'Alpha_Bounds'):
+            lv_parse_bounds(self.param[name], name)
+        lv_parse_floats(self.param['Seed'], 'Seed', 2)
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
@@ -586,6 +605,9 @@ class CSForwardPriceModelParameters(object):
             market_factor = utils.Factor(rate[0], rate[1:])
 
             if market_factor.type == self.market_factor_type:
+                # the quote's own instrument wins on conflict
+                implied_params = dict(implied_params, instrument=dict(
+                    self.param, **implied_params['instrument']))
                 # get the vol surface
                 if 'ForwardPriceVol.' + implied_params['instrument']['Forward_Volatility'] in price_factors:
                     vol_factor = utils.Factor('ForwardPriceVol', utils.check_rate_name(
@@ -637,10 +659,12 @@ class CSForwardPriceModelParameters(object):
                         option['Forward'], option['Strike'], r, sigma, t,
                         option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0)
 
+                block = implied_params['instrument']
                 result = scipy.optimize.minimize(
-                    calc_error, (0.5, 0.1),
-                    args=(implied_params['instrument']['Energy_Futures_Options'],),
-                    bounds=[(0.001, 2.5), (-1, 2.0)])
+                    calc_error, lv_parse_floats(block['Seed'], 'Seed', 2),
+                    args=(block['Energy_Futures_Options'],),
+                    bounds=[lv_parse_bounds(block['Sigma_Bounds'], 'Sigma_Bounds'),
+                            lv_parse_bounds(block['Alpha_Bounds'], 'Alpha_Bounds')])
 
                 # log the results
                 for option in implied_params['instrument']['Energy_Futures_Options']:
@@ -721,6 +745,10 @@ class OptionQuoteFamily(object):
                     'Yield': ['DividendRate', 'InterestRate'],
                     'Funding_Rate': ['InterestRate']}
 
+    #: What this family READS, flattened out of `factor_types` - `reads` is what orders a run and
+    #: `factor_types` is the reference resolution, so neither is overloaded with the other's job.
+    reads = tuple(sorted({kind for kinds in factor_types.values() for kind in kinds}))
+
     #: What each quote type requires. `Implied_Volatility` prices its target premium off the
     #: surface; `Premium` is handed the number, so a `Volatility` name on such a block is inert and
     #: a chain-sourced ladder fits with no surface in the book at all. Declared here rather than as
@@ -777,7 +805,9 @@ class OptionQuoteFamily(object):
 
     def __init__(self, param, device, dtype):
         self.device = device
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
 
     @classmethod
     def resolve(cls, instrument, field, price_factors):
@@ -1395,6 +1425,32 @@ def lv_parse_bounds(text, name):
     return lo, hi
 
 
+def lv_parse_class_priors(text, name, count):
+    """A `class:numbers; class:numbers` field as `{asset class: tuple}`, one entry per underlying
+    type this family fits.
+
+    A TEXT field rather than a Table because the default IS the table - a Table's declared blank is
+    the string `'null'`, which cannot carry one - and because an asset class the family does not
+    fit, a wrong count and a missing class each refuse BY NAME here, before a quote is read.
+    """
+    classes = OptionQuoteFamily.factor_types['Underlying']
+    priors = {}
+    for entry in str(text).split(';'):
+        if not entry.strip():
+            continue
+        asset, _, numbers = entry.partition(':')
+        asset = asset.strip()
+        if asset not in classes:
+            raise ValueError('{}: {!r} is no underlying this family fits - write {}'.format(
+                name, asset, '/'.join(classes)))
+        priors[asset] = lv_parse_floats(numbers, '{} {}'.format(name, asset), count)
+    missing = [asset for asset in classes if asset not in priors]
+    if missing:
+        raise ValueError('{}: no prior for {} - a fit resolving to it would have none to fall '
+                         'back on, so every class carries one'.format(name, '/'.join(missing)))
+    return priors
+
+
 class LVFit(object):
     """ONE LogVar2FJ calibration: the prepared quotes, the walk they are priced on, the fitted
     state, and every verb that moves it.
@@ -1406,37 +1462,6 @@ class LVFit(object):
 
     #: What the walk is handed per STEP: the two levers the state and the clock read.
     step_names = pricing.LogVar2FJKit.step_names
-    #: Stage 4's prior per ASSET CLASS, keyed by the factor type `Underlying` resolves to. The
-    #: pair is a MAGNITUDE - its sign is the fitted fast leverage's, so the slow skew is never
-    #: pinned against the fast one, which on an FX pair quoted the other way up is the whole of
-    #: the rule. `Sigma_L`'s floor is the box beneath all four and never their default: a
-    #: floor-by-default understates every pinned name's 2-5 year vol in one direction.
-    slow_priors = {'FxRate': (0.2, 0.5), 'EquityPrice': (0.4, 1.0),
-                   'CommodityPrice': (0.4, 1.0), 'FuturesPrice': (0.4, 1.0)}
-    #: The leverage prior per ASSET CLASS on the ENGINE's own axis (brief 5): an index at the
-    #: VIX-implied spot-vol correlation, an FX pair symmetric until a desk says otherwise through
-    #: `Leverage_Prior` or a history. An `FxRate` is priced in the domestic currency, so a prior
-    #: quoted USD-per-currency changes sign on `FxRate.ZAR` in a USD book - which is why the seed
-    #: states the desk's own number and this is only the fallback.
-    leverage_priors = {'FxRate': 0.0, 'EquityPrice': -0.7,
-                       'CommodityPrice': -0.7, 'FuturesPrice': -0.7}
-    #: The weight on the leverage prior's residual row `w (Rho_S - prior)`, NEVER absent (brief 5):
-    #: the residual can carry the whole spot skew and a vanilla-only fit then sets Rho_S wherever it
-    #: likes, leaving the forward smile undetermined. One quote's weight - the normalised vanilla
-    #: weights sit at 0.17-0.22 on a twenty-rung ladder, so a prior miss of a tenth in Rho_S costs
-    #: what ONE quote missing by one vol point costs, which the data outvotes wherever it speaks.
-    leverage_weight = 0.02
-    #: What a FULL violation of `Residual_Shape_Floor` costs: 5 vol points of residual, against
-    #: wing misses of a few tenths, on a row that is relative - `relu(1 - shape/floor)` - so a fit
-    #: inside the floor pays nothing and one at the map's own softplus floor pays all of it.
-    shape_penalty = 0.05
-    #: The shortest expiry that identifies the residual pair (brief 8), in years: with no wing under
-    #: it the ladder does not price the 1-3m tails and `Alpha` is pinned at the history's estimate.
-    residual_horizon = 0.25
-    #: How far the rung a forward tenor's SPOT smile is read at may sit from that tenor, as a
-    #: fraction of it, before the row is dropped: the target is a DIFFERENCE against that smile, so
-    #: a rung a quarter of Delta away is a difference taken at the wrong maturity.
-    spot_rung_tol = 0.25
 
     def __init__(self, family, market_price, instrument, factors, previous):
         self.family, self.market_price, self.instrument = family, market_price, instrument
@@ -1493,6 +1518,16 @@ class LVFit(object):
                              .format(read['Psi_Strikes']))
         self.c_margin = float(read['C_Margin'])
         self.soft_penalty = float(read['Soft_Penalty'])
+        self.leverage_weight = float(read['Leverage_Prior_Weight'])
+        self.shape_penalty = float(read['Shape_Penalty'])
+        self.residual_horizon = float(read['Residual_Horizon'])
+        self.spot_rung_tol = float(read['Spot_Rung_Tolerance'])
+        #: the per-asset-class fallbacks the block's own `Slow_Factor_Prior` and `Leverage_Prior`
+        #: override; the slow pair is a MAGNITUDE, signed at the pin by the fitted fast leverage
+        self.slow_priors = lv_parse_class_priors(
+            read['Slow_Factor_Prior_Defaults'], 'Slow_Factor_Prior_Defaults', 2)
+        self.leverage_priors = lv_parse_class_priors(
+            read['Leverage_Prior_Defaults'], 'Leverage_Prior_Defaults', 1)
         self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
         #: the target DIFFERENCE pair per forward tenor, the spot rung each forward tenor's own
@@ -2194,7 +2229,7 @@ class LVFit(object):
             error = self.history.get('Rho_S_SE')
             return float(self.history['Rho_S']), "the history's estimate{}".format(
                 '' if error is None else ', Rho_S SE {:.4f} (spec 5.5.3)'.format(float(error)))
-        return self.leverage_priors[self.asset_class], (
+        return self.leverage_priors[self.asset_class][0], (
             'the {} class default'.format(self.asset_class))
 
     def alpha_prior(self):
@@ -2988,6 +3023,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     )
 
     market_factor_type = 'LogVar2FJModelPrices'
+    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
+    #: Configuration` entry names it by - here, its own class name.
+    price_factor_type = 'LogVar2FJModelParameters'
 
     identification_note = ('the forward-smile targets: the later buckets of Rho_S and Beta are '
                            'identified by them and by nothing else')
@@ -3262,6 +3300,48 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         F('Soft_Penalty', 'Float', default=0.25,
           description='What a full C_Margin violation costs in residual, against wing misses of a '
                       'few tenths, so the edge bites in the last percent and the box stops it'),
+        F('Leverage_Prior_Weight', 'Float', default=0.02,
+          description='The weight on the leverage prior\'s residual row w (Rho_S - prior), never '
+                      'absent under Model_Priors (brief 5): the residual can carry the whole spot '
+                      'skew and a vanilla-only fit then sets Rho_S wherever it likes, leaving the '
+                      'forward smile undetermined. One quote\'s weight - the normalised vanilla '
+                      'weights sit at 0.17-0.22 on a twenty-rung ladder - so a prior miss of a '
+                      'tenth in Rho_S costs what ONE quote missing by a vol point costs, which '
+                      'the data outvotes wherever it speaks'),
+        F('Shape_Penalty', 'Float', default=0.05,
+          description='What a FULL violation of Residual_Shape_Floor costs: 5 vol points of '
+                      'residual against wing misses of a few tenths, on a relative row '
+                      'relu(1 - shape/floor), so a fit inside the floor pays nothing and one at '
+                      'the map\'s own softplus floor pays all of it'),
+        F('Residual_Horizon', 'Float', default=0.25,
+          description='The shortest expiry, in years, that identifies the residual pair (brief 8): '
+                      'with no wing under it the ladder does not price the 1-3m tails and Alpha is '
+                      'pinned at the history\'s alpha^P'),
+        F('Spot_Rung_Tolerance', 'Float', default=0.25,
+          description='How far the rung a forward tenor\'s SPOT smile is read at may sit from that '
+                      'tenor, as a fraction of it, before the row is dropped: the target is a '
+                      'DIFFERENCE against that smile, so a rung a quarter of Delta away is a '
+                      'difference taken at the wrong maturity'),
+        F('Slow_Factor_Prior_Defaults', 'Text',
+          default='FxRate:0.2,0.5; EquityPrice:0.4,1.0; CommodityPrice:0.4,1.0; '
+                  'FuturesPrice:0.4,1.0',
+          description='Stage 4\'s rho_l,sigma_l prior per asset class, as class:pair entries '
+                      'separated by semicolons - what a block declaring no Slow_Factor_Prior and a '
+                      'job carrying no history fall back on. The pair is a MAGNITUDE: its sign is '
+                      'the fitted fast leverage\'s, so the slow skew is never pinned against the '
+                      'fast one, which on an FX pair quoted the other way up is the whole of the '
+                      'rule. Sigma_L_Bounds\' floor sits beneath all four and is never their '
+                      'default - a floor-by-default understates every pinned name\'s 2-5 year vol '
+                      'in one direction'),
+        F('Leverage_Prior_Defaults', 'Text',
+          default='FxRate:0.0; EquityPrice:-0.7; CommodityPrice:-0.7; FuturesPrice:-0.7',
+          description='The Rho_S prior per asset class on the ENGINE\'s own axis (brief 5), as '
+                      'class:value entries separated by semicolons: an index at the VIX-implied '
+                      'spot-vol correlation, an FX pair symmetric until a desk says otherwise '
+                      'through Leverage_Prior or a history. An FxRate is priced in the domestic '
+                      'currency, so a prior quoted USD-per-currency changes sign on FxRate.ZAR in '
+                      'a USD book - which is why the seed states the desk\'s own number and this '
+                      'is only the fallback'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep the written parameters connected to the numbers quoted, so a '
                       'calculation\'s backward pass reports dV/dq beside dV/dtheta. The fitted '
@@ -3272,10 +3352,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         # the constructed dtype is ignored (see `prec`); the DEVICE is the job's, the walk being
         # bandwidth-bound since `utils.lv_ou_path` and 25x cheaper on a card
         super(LogVar2FJModelParameters, self).__init__(param, device, dtype)
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict,
-        #: so a quote need carry only its data and never repeat a family's optimizer settings
-        self.param = declared_defaults(type(self), param)
         # refuse a malformed hyperparameter BEFORE a single quote is read, not deep inside the
         # first fit that happens to touch it - a quote overriding one is checked again there
         for name in ('Sigma_L_Bounds', 'Rho_L_Bounds', 'Sigma_S_Bounds', 'Alpha_Bounds',
@@ -3285,6 +3361,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         if not strikes[0] < strikes[2]:
             raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
                              .format(self.param['Psi_Strikes']))
+        for name, count in (('Slow_Factor_Prior_Defaults', 2), ('Leverage_Prior_Defaults', 1)):
+            lv_parse_class_priors(self.param[name], name, count)
         #: What `Quote_Sensitivity` leaves behind: every fitted parameter still connected to its
         #: quotes, keyed as `_build_factor_state` mints its leaf, plus the quote leaf per block.
         #: `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -3769,7 +3847,13 @@ class GBMAssetPriceTSModelParameters(object):
     )
 
     market_factor_type = 'GBMAssetPriceTSModelPrices'
+    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
+    #: Configuration` entry names it by - here, its own class name.
+    price_factor_type = 'GBMAssetPriceTSModelParameters'
     factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
+    #: What this family READS: the surface `Asset_Price_Volatility` names, whose ATM column is the
+    #: integrated vol curve - and which `FXVolPrices` may have written in the same run.
+    reads = tuple(utils.TwoDimensionalFactors)
     #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. Float64 on
     #: the CPU whatever the job asked for; `construct_bootstrapper`'s dtype does not reach it.
     dtype = torch.float64
@@ -3939,7 +4023,7 @@ class GBMAssetPriceTSModelParameters(object):
                     logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
                     continue
 
-                connect = implied_params['instrument'].get('Quote_Sensitivity', 'No') == 'Yes'
+                connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
                 atm_vol, source = self.atm_column(
                     vol_factor, vol_surface, market_prices, price_factors)
                 curve, floored = self.integrated_vol(atm_vol, vol_surface.expiry)
@@ -4131,7 +4215,8 @@ class SwaptionCalibration(object):
             x0 = result['x'] if result is not None else optim[1]
             if optim[0] == 'basin':
                 result = scipy.optimize.basinhopping(
-                    optim[2], x0=x0, take_step=optim[3], accept_test=optim[4], T=5.0, niter=50,
+                    optim[2], x0=x0, take_step=optim[3], accept_test=optim[4],
+                    T=optim[7], niter=optim[8],
                     minimizer_kwargs={"method": "L-BFGS-B", "jac": True, "bounds": optim[5]},
                     rng=optim[6])
                 batch_loss = float(optim[2](result['x'])[0])
@@ -4329,9 +4414,11 @@ class RiskNeutralInterestRateModel(object):
         severances stay open deliberately, their upstream being the calibrated curve rather than a
         quote of THIS calibration: `get_par_swap_rate` and `set_fixed_amount`.
         """
-        block = implied_params['instrument']
-        objective = block.get('Objective', 'Analytic')
-        quote_sensitivity = block.get('Quote_Sensitivity', 'No')
+        # completed by the family's declarations, because this closure is also built directly by
+        # a gate off a hand-authored block; `bootstrap` hands it the section union already
+        block = declared_defaults(type(self), implied_params['instrument'])
+        objective = block['Objective']
+        quote_sensitivity = block['Quote_Sensitivity']
         if objective not in ('Monte_Carlo', 'Analytic'):
             raise Exception(
                 "Swaption calibration: Objective '{}' is not one this family prices - it is "
@@ -4339,8 +4426,8 @@ class RiskNeutralInterestRateModel(object):
                 "(every benchmark through the engine's own Monte Carlo). Correct the block's "
                 "Objective to one of those two".format(objective))
         # the closures below capture THESE locals, not the attributes they are mirrored onto
-        batch_size = int(block.get('Simulations', 8192))
-        num_batches = int(block.get('Batches', 1))
+        batch_size = int(block['Simulations'])
+        num_batches = int(block['Batches'])
         self.batch_size, self.num_batches = batch_size, num_batches
 
         def loss(implied_var):
@@ -4497,7 +4584,7 @@ class RiskNeutralInterestRateModel(object):
                 # grab the implied process
                 implied_obj, process, vol_tenors = self.implied_process(
                     base_currency, price_factors, price_models, ir_curve, rate,
-                    vol_tenors=self.sigma_knots(implied_params['instrument'].get('Sigma_Knots')))
+                    vol_tenors=self.sigma_knots(implied_params['instrument']['Sigma_Knots']))
 
                 # set up the time grid
                 time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
@@ -4525,10 +4612,8 @@ class RiskNeutralInterestRateModel(object):
                 # edge is recorded and the wrapper is a pass-through
                 theta = LeastSquaresSolve.apply(
                     calibration,
-                    float(declared_defaults(type(self),
-                                            implied_params['instrument'])['Jacobian_Rcond']),
-                    float(declared_defaults(type(self),
-                                            implied_params['instrument'])['Stationarity_Tol']),
+                    float(implied_params['instrument']['Jacobian_Rcond']),
+                    float(implied_params['instrument']['Stationarity_Tol']),
                     *calibration.quotes)
 
                 # reported by name rather than checked against a tolerance - see `honesty_reprice`
@@ -4621,6 +4706,13 @@ scipy.optimize.leastsq.html) are used.',
     )
 
     market_factor_type = 'HullWhite2FactorModelPrices'
+    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
+    #: Configuration` entry names it by - here, its own class name.
+    price_factor_type = 'HullWhite2FactorModelParameters'
+    #: What this family READS: the curve its swaptions price off, the surface
+    #: `Swaption_Volatility` names, and the quanto FX vol `implied_process` takes off the
+    #: GBM family's own written block where the rate currency is not the base.
+    reads = ('InterestRate', 'InterestYieldVol', 'GBMAssetPriceTSModelParameters')
     fields = [
         F('Swaption_Volatility', 'Text', default=REQUIRED,
           description='The InterestYieldVol surface the benchmark swaptions are priced off'),
@@ -4670,6 +4762,27 @@ scipy.optimize.leastsq.html) are used.',
                       'drawn once and walked a block at a time, so batches buy PATHS at the cost '
                       'of wall clock while leaving the memory one batch needs where it was: '
                       '(2048 x 4) is the same estimate as (8192 x 1) to one ulp'),
+        F('Sigma_Bounds', 'Text', default='1e-5,0.09',
+          description='The box on every sigma knot of both term structures, lower,upper. The '
+                      'basin step clips into it and the least-squares stage is bounded by it'),
+        F('Alpha_Bounds', 'Text', default='-0.5,2.4',
+          description='The box on both reversion speeds, lower,upper. Both seeds sit strictly '
+                      'inside it and above every small-alpha series threshold'),
+        F('Correlation_Bounds', 'Text', default='-0.95,0.95',
+          description='The box on the correlation between the two factors, lower,upper - inside '
+                      '+-1, where the two-factor covariance stays positive definite'),
+        F('Basin_Step', 'Float', default=0.125,
+          description='The basin-hopping step: sigma and alpha are moved by exp(U(-s, s)) and the '
+                      'correlation by U(-s, s), each clipped back into its own box, so it is a '
+                      'RATIO for the positive coordinates and an absolute move for the one that '
+                      'changes sign'),
+        F('Basin_Temperature', 'Float', default=5.0,
+          description='The Metropolis temperature the random search accepts an uphill candidate '
+                      'at, in the units of the objective it is minimising'),
+        F('Basin_Hops', 'Integer', default=50,
+          description='How many basin hops the random search takes before the least-squares stage '
+                      'is handed its x0. Each hop is one L-BFGS-B minimisation, so this is most '
+                      'of the wall clock of a fit'),
         F('Random_Seed', 'Integer', default=5120,
           description='Seeds the basin-hopping random search - the step taker and the Metropolis '
                       'accept test both draw from it. Without it the search draws from the process '
@@ -4738,9 +4851,12 @@ scipy.optimize.leastsq.html) are used.',
 
     def __init__(self, param, device, dtype):
         super(HullWhite2FactorModelParameters, self).__init__(param, device, dtype)
-        self.sigma_bounds = (1e-5, 0.09)
-        self.alpha_bounds = (-0.5, 2.4)
-        self.corr_bounds = (-.95, 0.95)
+        #: the fitted box per coordinate, read once off the section: the basin step clips into it,
+        #: the least-squares stage is bounded by it and `SwaptionCalibration.interior` reads its
+        #: KKT active set off it
+        self.sigma_bounds = lv_parse_bounds(self.param['Sigma_Bounds'], 'Sigma_Bounds')
+        self.alpha_bounds = lv_parse_bounds(self.param['Alpha_Bounds'], 'Alpha_Bounds')
+        self.corr_bounds = lv_parse_bounds(self.param['Correlation_Bounds'], 'Correlation_Bounds')
 
     def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor, vol_surface):
 
@@ -4846,16 +4962,19 @@ scipy.optimize.leastsq.html) are used.',
         var_to_bounds = np.vstack(bounds)
         # one generator for the whole random search - the step taker here, the Metropolis test in
         # `solve` - so the search is a function of `Random_Seed` alone
-        rng = np.random.RandomState(int(implied_params['instrument'].get('Random_Seed', 5120)))
+        block = declared_defaults(type(self), implied_params['instrument'])
+        rng = np.random.RandomState(int(block['Random_Seed']))
         bounds_ok, make_step = make_basin_callbacks(
-            0.125, self.sigma_bounds, self.alpha_bounds, self.corr_bounds, rng)
+            float(block['Basin_Step']), self.sigma_bounds, self.alpha_bounds, self.corr_bounds,
+            rng)
 
         # both adapters are the objective's, whichever the block declared - one `.data` boundary
         basin_hopper_fn_grad = make_basin_hopping_loss(objective, implied_var_dict, self.device, True)
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
         lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
 
-        optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds, rng),
+        optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds,
+                       rng, float(block['Basin_Temperature']), int(block['Basin_Hops'])),
                       ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))]
 
         return objective, optimizers, implied_var_dict, market_swaptions, benchmarks
@@ -4863,8 +4982,12 @@ scipy.optimize.leastsq.html) are used.',
     @staticmethod
     def sigma_knots(rows):
         """The declared `Sigma_Knots` as years (months / 12, the default grid's own arithmetic), or
-        None for the default. A knot with a day part is refused: the grid is monthly."""
-        if not rows:
+        None for the default. A knot with a day part is refused: the grid is monthly.
+
+        A LIST or nothing, which is `schema.quote_rows`' own reading: a block completed from its
+        declarations carries the string `'null'` where a document carries rows.
+        """
+        if not isinstance(rows, list) or not rows:
             return None
         months = []
         for row in rows:
@@ -5585,6 +5708,11 @@ class InterestRateCurveParameters(object):
     #: The `Price Factors` type this family writes. The others write a block named for their own
     #: class, so the emitter recovers it; no rule recovers `InterestRate` from this class name.
     price_factor_type = 'InterestRate'
+    #: What this family READS, off the benchmark deals its own discovery pulls: the curves a block
+    #: forecasts and discounts on, and the reporting `FxRate` a cross-currency benchmark crosses at.
+    #: `InterestRate` is what it also WRITES, which orders its blocks among themselves and is what
+    #: `in_dependency_order` does; it carries no edge to another family.
+    reads = ('InterestRate', 'FxRate')
     #: The instrument types a quote may be, each a declared `Instrument` type - so the quote's
     #: schema IS that type's declarations. `StructuredDeal` is how a two-leg benchmark is authored;
     #: `FXForwardDeal` crosses currencies, its quote being a forward OUTRIGHT held at par.
@@ -5680,7 +5808,9 @@ class InterestRateCurveParameters(object):
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
         #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
         #: per curve, plus the quote leaf per block. `Config.bootstrap` harvests both - tensors
         #: cannot live in `Price Factors`.
@@ -5724,7 +5854,10 @@ class InterestRateCurveParameters(object):
             rate = utils.check_rate_name(name)
             market_factor = utils.Factor(rate[0], rate[1:])
             if market_factor.type == self.market_factor_type:
-                blocks[name] = implied_params
+                # the quote's own instrument wins on conflict; everything downstream of here -
+                # the dependency graph, the coupled sets, the solve and `publish` - sees the union
+                blocks[name] = dict(implied_params, instrument=dict(
+                    self.param, **implied_params['instrument']))
         # keyed by the curve name a `Discount_Rate` carries - the block's name without its type
         builds = {'.'.join(utils.check_rate_name(name)[1:]): name for name in blocks}
         graph = {}
@@ -5761,7 +5894,7 @@ class InterestRateCurveParameters(object):
         base_date = sys_params['Base_Date']
         blocks = self.in_dependency_order(market_prices)
         groups = self.coupled_sets(blocks, price_factors, factor_interp, base_date, calendars) \
-            if any(entry['instrument'].get('Quote_Propagation', 'No') == 'Linear'
+            if any(entry['instrument']['Quote_Propagation'] == 'Linear'
                    for _, entry in blocks) else [[block] for block in blocks]
 
         for group in groups:
@@ -5851,8 +5984,8 @@ class InterestRateCurveParameters(object):
         Solver knobs are declared per block and a set takes the STRICTEST of them.
         """
         members = [(market_price, entry['instrument']) for market_price, entry in group]
-        propagate = [block.get('Quote_Propagation', 'No') == 'Linear' for _, block in members]
-        connect = [block.get('Quote_Sensitivity', 'No') == 'Yes' for _, block in members]
+        propagate = [block['Quote_Propagation'] == 'Linear' for _, block in members]
+        connect = [block['Quote_Sensitivity'] == 'Yes' for _, block in members]
         if any(propagate) and not all(propagate):
             raise Exception(
                 'Quote_Propagation is a property of a COUPLED SET, and {} solve as one system - '
@@ -5895,9 +6028,9 @@ class InterestRateCurveParameters(object):
             {curve: torch.tensor(benchmarks.factors[curve].current_value(),
                                  dtype=BenchmarkInstruments.dtype, device=self.device)
              for curve in curves},
-            max(int(block.get('N_Iter', 50)) for _, block in members),
-            min(float(block.get('Tol', 1e-14)) for _, block in members),
-            max(int(block.get('Damping_Halvings', 6)) for _, block in members),
+            max(int(block['N_Iter']) for _, block in members),
+            min(float(block['Tol']) for _, block in members),
+            max(int(block['Damping_Halvings']) for _, block in members),
             benchmarks.quotes)
 
         solved = split_theta(benchmarks, theta)
@@ -5965,6 +6098,12 @@ class InterestRateCurveParameters(object):
         `base_date` and `Price Factor Interpolation` are in it because the SOLVE reads them and the
         block does not carry them. Without them two jobs 45 days apart share a slot, and a Linear
         job rides a Hermite solve 0.53bp away from its own.
+
+        The block is COMPLETED by the family's declarations first, so an omitted knob and one
+        written at its own default share a slot. A knob declared in `Bootstrapper Configuration`
+        instead of on the block does not reach here - `propagate` runs off a document with no
+        bootstrapper in it - so a riding set declares its knobs on its blocks or the ride refuses
+        by name at the next EXECUTE.
         """
         # `config` imports from this module, so the package edge runs one way only
         from . import content_hash
@@ -5972,8 +6111,9 @@ class InterestRateCurveParameters(object):
         return content_hash({
             'engine_version': __version__, 'base_date': base_date, 'interpolation': factor_interp,
             'set': [{'market_price': market_price,
-                     'block': dict(partition_market_price({'instrument': block})[0]['instrument'],
-                                   **{field: None for field in cls.lifecycle_fields})}
+                     'block': dict(partition_market_price(
+                         {'instrument': declared_defaults(cls, block)})[0]['instrument'],
+                         **{field: None for field in cls.lifecycle_fields})}
                     for market_price, block in members]})
 
     @classmethod
@@ -6019,7 +6159,7 @@ class InterestRateCurveParameters(object):
                 'theta and {:.3g}% in quote space (solver Tol {:.3g}), replaced by {}'.format(
                     name, previous.artifact_id[:12], previous.timestamp, artifact.drift['tick'],
                     artifact.drift['theta'], artifact.drift['quote'],
-                    min(float(block.get('Tol', 1e-14)) for _, block in members),
+                    min(float(block['Tol']) for _, block in members),
                     artifact.artifact_id[:12]))
         else:
             logging.info('{} refit: artifact {} published, nothing in the slot to score'.format(
@@ -6047,7 +6187,7 @@ class InterestRateCurveParameters(object):
             return None
         market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
         block = market_prices.get(market_price, {}).get('instrument')
-        if block is None or block.get('Quote_Propagation', 'No') != 'Linear':
+        if block is None or declared_defaults(cls, block)['Quote_Propagation'] != 'Linear':
             return None
 
         covering = ARTIFACTS.covering(factor)
@@ -6066,8 +6206,9 @@ class InterestRateCurveParameters(object):
         # a ride is a USE: a ridden slot must not age out under one merely published beside it
         ARTIFACTS.get(artifact.key)
 
-        tolerance = min(float(market_prices[name]['instrument'].get('Drift_Tolerance', 1e-3))
-                        for name in artifact.members)
+        tolerance = min(
+            float(declared_defaults(cls, market_prices[name]['instrument'])['Drift_Tolerance'])
+            for name in artifact.members)
         quotes = torch.tensor(
             [point['Quoted_Market_Value'] for name in artifact.members
              for point in cls.used_quotes(market_prices[name]['instrument'], name)],
@@ -6130,14 +6271,18 @@ class FXVolSurfaceParameters(object):
     #: The `Price Factors` type this family writes - a `Malz` `FXVol`, minus the delta surface: it
     #: arrives SOLVED, so `Factor2D.solves_delta_surface` is false and the pinned grid survives.
     price_factor_type = 'FXVol'
+    #: What this family READS out of `Price Factors`: nothing. The quotes are the block's own and
+    #: the only factor it looks at is the `FXVol` it wrote last time, for the pinned grid.
+    reads = ()
     #: `Surface_Type` names the moneyness convention the engine reads the block at (log(F/K),
     #: interpolated in total variance); `Moneyness_Rule` is the factor's own declared default and no
     #: Malz code path reads it.
     surface_type, moneyness_rule = 'Malz', 'Sticky_Moneyness'
-    #: The tolerances a grid can be BUILT at, enforced by `bootstrap`. Refinement halves an interval
-    #: until the midpoint's vol error falls under the tolerance, so at 0.0 no midpoint qualifies
-    #: (7.6M nodes on one expiry after 21 passes, still doubling) while 1e-8 is 4599 nodes for a
-    #: four-expiry smile. At 1 the seed grid already passes.
+    #: `Grid_Tolerance`'s own DOMAIN and not a dial, which is why it is declared here and not as a
+    #: field: refinement halves an interval until the midpoint's vol error falls under the
+    #: tolerance, so at 0.0 no midpoint qualifies (7.6M nodes on one expiry after 21 passes, still
+    #: doubling) while 1e-8 is 4599 nodes for a four-expiry smile, and at 1 the seed grid already
+    #: passes. `bootstrap` enforces it and the field declares it as its `bounds`, one spelling.
     grid_tolerance_bounds = (1e-8, 1.0)
     #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. Float64 on
     #: the CPU whatever the job asked for, the twin dividing by the residual's slope at the root.
@@ -6205,7 +6350,9 @@ class FXVolSurfaceParameters(object):
     def __init__(self, param, device, dtype):
         self.device = device
         self.prec = dtype
-        self.param = param
+        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
+        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
+        self.param = declared_defaults(type(self), param)
         #: What `Quote_Sensitivity` leaves behind: the log-moneyness surface still connected to its
         #: quotes, keyed as `_build_factor_state` mints the `FXVol` leaf, plus the quote leaf per
         #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -6441,11 +6588,12 @@ class FXVolSurfaceParameters(object):
             market_factor = utils.Factor(rate[0], rate[1:])
 
             if market_factor.type == self.market_factor_type:
-                block = implied_params['instrument']
+                # the quote's own instrument wins on conflict
+                block = dict(self.param, **implied_params['instrument'])
                 vol_name = utils.check_tuple_name(
                     utils.Factor(self.price_factor_type, market_factor.name))
 
-                tolerance = float(block.get('Grid_Tolerance', riskfactors.Factor2D.malz_tol))
+                tolerance = float(block['Grid_Tolerance'])
                 # the one bounds= the engine reads: outside it there is no grid to refine to
                 if not self.grid_tolerance_bounds[0] <= tolerance <= self.grid_tolerance_bounds[1]:
                     raise ValueError(
@@ -6468,12 +6616,12 @@ class FXVolSurfaceParameters(object):
                 price_factors[vol_name] = {
                     'Property_Aliases': None, 'Surface_Type': self.surface_type,
                     'Moneyness_Rule': self.moneyness_rule,
-                    'Currency': block.get('Currency', ''),
+                    'Currency': block['Currency'],
                     'Grid_Tolerance': tolerance,
                     'Quote_Timestamp': max(stamps) if stamps else '',
                     'Surface': utils.Curve([], surface)}
 
-                if block.get('Quote_Sensitivity', 'No') == 'Yes':
+                if block['Quote_Sensitivity'] == 'Yes':
                     leaves = torch.tensor([point['Quoted_Market_Value'] for point in quotes],
                                           dtype=self.dtype, requires_grad=True)
                     carried = self.carried_surface(skews, self.carried_skews(
@@ -6500,20 +6648,91 @@ class FXVolSurfaceParameters(object):
                                          skews[T], T, nodes).max()), tolerance))
 
 
+#: The one key of a `Bootstrapper Configuration` entry that is not a hyperparameter: the STEM of
+#: the `Market Prices` type it routes on, the type being that value plus `Prices`. DATA rather than
+#: a lookup because `derivus_bootstrap`'s parent routes blocks to workers before any of them
+#: imports torch, and this module does.
+PRICES_KEY = 'Prices'
+
+
 def family_class(btype):
-    """The price family `Bootstrapper Configuration` names; an unknown name refuses by name."""
-    cls = globals().get(btype)
+    """The price family a `Bootstrapper Configuration` entry names: the `Price Factors` TYPE it
+    writes, or its class name, which stays an alias for every book written before that. An unknown
+    name refuses by name, listing both spellings."""
+    cls = globals().get(WRITERS.get(btype, btype))
     if not (isinstance(cls, type) and 'market_factor_type' in cls.__dict__):
-        raise ValueError('Bootstrapper Configuration names {}, which is no price family; the families '
-                         'are {}'.format(btype, ', '.join(sorted(FAMILIES))))
+        raise ValueError(
+            'Bootstrapper Configuration names {}, which is no price family; the families are {} '
+            '(or, as older books spell them, {})'.format(
+                btype, ', '.join(sorted(WRITERS)), ', '.join(sorted(FAMILIES))))
     return cls
 
 
+def bootstrap_order(section):
+    """The `Bootstrapper Configuration` entries in the order they must RUN: a topological sort over
+    what each family writes (`price_factor_type`) against what it reads (`reads`), so a curve is
+    solved before the fit that prices on it whatever order the file gives, and both the in-process
+    and the multiprocessing path take the same order.
+
+    A read no CONFIGURED family writes carries no edge - that factor is already in `Price Factors`,
+    which is the ordinary case - and a family reading what it writes orders only its own blocks,
+    which is its own job. Independent entries keep the file's order, `topological_sort` walking the
+    mapping as it was built. A cycle refuses by name.
+    """
+    writes = {}
+    for name in section:
+        writes.setdefault(family_class(name).price_factor_type, []).append(name)
+    graph = {name: sorted({writer for kind in family_class(name).reads
+                           for writer in writes.get(kind, ()) if writer != name})
+             for name in section}
+    unresolved = dict(graph)
+    try:
+        return utils.topological_sort(unresolved)
+    except RuntimeError:
+        raise ValueError(
+            'Bootstrapper Configuration: {} cannot be put in a run order - each reads a factor '
+            'another writes, so whichever runs first prices off one that does not exist yet ({}). '
+            'Bootstrap them in separate runs'.format(
+                ' + '.join(sorted(unresolved)),
+                '; '.join('{} reads what {} writes'.format(name, ' + '.join(edges))
+                          for name, edges in sorted(unresolved.items()))))
+
+
+def market_prices_for(btype, market_prices, declared=None):
+    """The `Market Prices` blocks the family named by one `Bootstrapper Configuration` entry reads.
+
+    THE CONFIGURATION DRIVES THE LOOP where the engine is importable: `Config.bootstrap` selects
+    here and hands a family its own blocks. `declared` is the entry's own `Prices` STEM where it
+    carries one, VERIFIED against `FAMILIES` so a section routing a family at another family's type
+    refuses by name rather than fitting nothing. Each family still filters by type in its own
+    `bootstrap`, because `derivus_bootstrap` hands one task the whole section where it must.
+    """
+    wanted = FAMILIES[family_class(btype).__name__]
+    if declared and declared + 'Prices' != wanted:
+        raise ValueError(
+            'Bootstrapper Configuration.{0}: {1} {2!r} routes it at {3}, which {0} does not read - '
+            'it reads {4}. Write {1} {5!r}, or configure the family that reads {3}'.format(
+                btype, PRICES_KEY, declared, declared + 'Prices', wanted,
+                wanted[:-len('Prices')]))
+    return {name: block for name, block in market_prices.items()
+            if utils.check_rate_name(name)[0] == wanted}
+
+
 def construct_bootstrapper(btype, param, dtype=torch.float32):
+    """One family built off its `Bootstrapper Configuration` entry: the entry's hyperparameters
+    without the routing key, and `{}` for the legacy CSV string, whose positional tail declares
+    none - every field it does not carry is the declaration's own default."""
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    param = ({key: value for key, value in param.items() if key != PRICES_KEY}
+             if isinstance(param, dict) else {})
     return family_class(btype)(param, device, dtype)
 
 
 #: class name -> the `Market Prices` type it reads, one row per family (the emitter's own rule)
 FAMILIES = {name: cls.__dict__['market_factor_type'] for name, cls in list(globals().items())
             if isinstance(cls, type) and 'market_factor_type' in cls.__dict__}
+
+#: the `Price Factors` type a family writes -> its class name. That type is what a `Bootstrapper
+#: Configuration` entry names, so a section reads as the factors it produces; four of the six write
+#: a block named for their own class and two do not (`InterestRate`, `FXVol`).
+WRITERS = {globals()[name].__dict__['price_factor_type']: name for name in FAMILIES}

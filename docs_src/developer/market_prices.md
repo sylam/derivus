@@ -30,12 +30,15 @@ A bootstrapper class is one price family. It declares:
 - `market_factor_type` — the `Market Prices` type string a block is filed under, and the string the
   class selects its own work by. Declared rather than recovered from the class name, because the
   block is `LogVar2FJModelPrices` while the class is `LogVar2FJModelParameters`.
+- `price_factor_type` — the `Price Factors` type it writes, which is its key in the
+  `Bootstrapper Configuration` section, and `reads` — the factor types its fit reads, which is
+  what orders the section (below).
 - `fields` — the block's schema, including the quote table or container as the class reads it.
 - `quote_instruments`, where the quotes are instruments rather than a fixed option table.
 
 `mapping['MarketPrices']['types']` is `schema.emit_market_prices(bootstrappers)` over those
-declarations, and `construct_bootstrapper` resolves the class by name from the
-`Bootstrapper Configuration` section.
+declarations, and `construct_bootstrapper` resolves the class from its section key — the factor
+type it writes, or the class name as an alias.
 
 | Family | Quotes | Writes |
 | --- | --- | --- |
@@ -46,12 +49,94 @@ declarations, and `construct_bootstrapper` resolves the class by name from the
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
 
+## `Bootstrapper Configuration` is the book's own default for every dial {#bootstrapper-configuration}
+
+A `Market Prices` block carries the quotes and the factors they price against. Everything else a
+family reads — the boxes it fits in, the seeds it starts from, the budgets it stops on, the priors
+it falls back to — is a hyperparameter, and a book states those ONCE, in that family's
+`Bootstrapper Configuration` entry.
+
+**Two levels, one rule.** A family is constructed with its section entry and completes it from its
+own declarations (`schema.declared_defaults`), so every declared key stands whether the book wrote
+it or not; each quote block is then read as `dict(section, **block)`, the block winning on
+conflict. A dial nobody declares is its `F(...)` default; a dial the section declares is the book's
+answer for every block of that family; a dial the block declares is that name's own. A malformed
+value refuses by name at construction, before a quote is read — `Sigma_L_Bounds` reversed,
+`Psi_Strikes` unordered, a `Seed` of the wrong length, a prior table naming an asset class the
+family does not fit — and `Config.bootstrap` logs the refusal and skips the family, so a book with
+a bad entry writes no factor rather than a wrong one.
+
+**The section is keyed by what each family WRITES, and `Prices` names what it reads:**
+
+```json
+"Bootstrapper Configuration": {
+    "InterestRate":             {"Prices": "InterestRate"},
+    "FXVol":                    {"Prices": "FXVol"},
+    "LogVar2FJModelParameters": {"Prices": "LogVar2FJModel", "Paths": 8192}
+}
+```
+
+The key is the family's `price_factor_type`, the `Price Factors` block it produces, so a section
+reads as the factors a run will write. Four families already spelled that in their class name; the
+two that did not are `InterestRate` (was `InterestRateCurveParameters`) and `FXVol` (was
+`FXVolSurfaceParameters`), and every old class name stays as an alias, so an older book keeps
+working; an unknown key refuses by name and lists both spellings. `Prices` is the STEM of the
+`Market Prices` type the entry routes on — the type is that value plus the literal `Prices` — and
+is mandatory on the multiprocessing path (`derivus_bootstrap`, which routes blocks to workers off
+the section alone, and refuses before a worker is spawned); in process a missing `Prices` is a
+warning naming the fix, the family knowing its own type, and one naming another family's type
+refuses on both paths. An entry may still be the legacy CSV string an older file carries, which
+routes on its first field and declares no hyperparameter. The rename also repairs
+`derivus_bootstrap`'s daily carry-over, which matches previously written factors against the
+section's keys and so never carried an `FXVol.*` or `InterestRate.*` forward.
+
+**The section drives the loop, and the order is a topological sort.** `Config.bootstrap` and
+`derivus_bootstrap.Parent.start` both take `bootstrappers.bootstrap_order`, a
+`utils.topological_sort` over what each family writes against what it `reads`, so a curve is
+solved before the swaption fit that prices on it and an FX surface before the GBM curve that
+integrates its ATM column, whatever order the file gives — where `sorted()` put
+`HullWhite2FactorModelParameters` before both spellings of the curve family. A read no configured
+family writes carries no edge, that factor being already in `Price Factors`; a family reading what
+it writes orders only its own blocks; a cycle refuses by name; independent entries keep the file's
+order. Each family is handed only its own blocks, and both empty cases are logged: a configured
+family the book carries no block for, and a block type no configured family claims.
+
+Three entry points are reachable without `bootstrap` — the swaption residual closure (`calc_loss`,
+`calc_loss_on_ir_curve`), which a gate builds off a hand-authored block, and the curve ride
+(`propagate`, `plan_key`), which runs at EXECUTE off a document carrying no bootstrapper. Each
+completes its own block from the declarations, so the declared default is the fallback there
+rather than a literal repeated in the code: the nineteen inline `.get(key, literal)` reads the
+families carried are gone, and eighteen had a literal equal to the declared default. The
+nineteenth is the one that mattered. A Table's declared blank is the string `'null'`, and a
+completed block handed that string to `sigma_knots`, which took anything truthy as a knot list — one
+knot at t = 0 in place of the ten-knot grid, on every Hull-White block that declared none, from
+9bfb095 (13:09, 2026-09-08) until the same evening, 65 of the hex set's 4,180 floats. `sigma_knots`
+reads a LIST or nothing, which is `schema.quote_rows`' own reading, and the same blank is why the
+two prior tables promoted below are Text and not Tables: a Table cannot carry a default table.
+
+Two things are deliberately not declarable. `FXVolSurfaceParameters.grid_tolerance_bounds` is
+`Grid_Tolerance`'s own domain rather than a dial — below `1e-8` the refinement does not terminate —
+so it is the field's declared `bounds` and the engine's own refusal. `OptionQuoteFamily`'s FX
+ladder (`fx_atm_expiries`, `fx_wing_expiries`, `fx_wing_pillars`, `fx_days_per_year`,
+`fx_expiry_tolerance`, `fx_minimum_contracts`) stays class attributes: `fx_surface_block` authors
+quotes rather than fitting them, is a classmethod with no section in reach, and its ladder is a
+family's declaration the partition gate holds the emitted header to. What each family declares is
+on its generated page; the fields promoted out of the code on 2026-09-08 —
+`LogVar2FJModelParameters`' `Leverage_Prior_Weight`, `Shape_Penalty`, `Residual_Horizon`,
+`Spot_Rung_Tolerance`, `Slow_Factor_Prior_Defaults` and `Leverage_Prior_Defaults`;
+`HullWhite2FactorModelParameters`' `Sigma_Bounds`, `Alpha_Bounds`, `Correlation_Bounds`,
+`Basin_Step`, `Basin_Temperature` and `Basin_Hops`; `CSForwardPriceModelParameters`'
+`Sigma_Bounds`, `Alpha_Bounds` and `Seed` — default to the numbers the code carried, so a book
+declaring none of them fits what it fit before (the NKY block bit for bit, the four book ladders
+within 1e-11).
+
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
 **The block.** `InterestRateCurveParameters` declares the `Currency` of the curve to build, the
 `Day_Count` its tenors are expressed in, an optional `Discount_Rate` naming the curve the quotes
-discount on, the solver's three knobs (`N_Iter`, `Tol`, `Damping_Halvings`, each read with its
-declared default as the engine's fallback), the three lifecycle switches (`Quote_Sensitivity`,
+discount on, the solver's three knobs (`N_Iter`, `Tol`, `Damping_Halvings`, each read off the
+block completed by its declarations and by `Bootstrapper Configuration.InterestRate`; a coupled
+set takes the strictest of its members'), the three lifecycle switches (`Quote_Sensitivity`,
 `Quote_Propagation`, `Drift_Tolerance` — see [Quote Propagation](quote_propagation.md)), and the
 quote `Points`. A blank `Discount_Rate` builds a **self-discounting** curve.
 

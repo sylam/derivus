@@ -24,7 +24,10 @@ from .types import (FXQuoteSecurity, FXVolDefinition, FXVolPoint, FXVolSnapshot,
                     RawBloombergObservation)
 
 SUPPORTED_CONVENTION = ('Forward', True, 'Delta_Neutral_Straddle')
-BOOTSTRAPPER = 'FXVolSurfaceParameters'
+#: the section key this family is configured under - what it WRITES - and the class-name
+#: spelling a book written before that still carries
+BOOTSTRAPPER = 'FXVol'
+BOOTSTRAPPER_ALIAS = 'FXVolSurfaceParameters'
 #: The two-way a vol pillar carries beside its last print. Asked for in the same request as the
 #: value and NEVER required - the mid is what the surface and every mark are built from, so a
 #: pillar the terminal quotes no two-way for costs a desk its spread, never its tick.
@@ -265,7 +268,7 @@ def _market_price_name(snapshot: FXVolSnapshot) -> str:
 def _market_prices(config) -> dict:
     try:
         params = config.params
-        if BOOTSTRAPPER not in params['Bootstrapper Configuration']:
+        if not {BOOTSTRAPPER, BOOTSTRAPPER_ALIAS} & set(params['Bootstrapper Configuration']):
             raise BloombergConfigurationError(
                 'Bootstrapper Configuration has no {} entry'.format(BOOTSTRAPPER))
         return params['Market Prices']

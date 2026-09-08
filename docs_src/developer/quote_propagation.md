@@ -82,6 +82,12 @@ findable by a curve it still covers.
     **0.53bp** away from its own answer. Gated in both directions — the same job under the same scheme
     has to *keep* its slot, or the fix is just "never find anything".
 
+The slot is taken over the block **completed by the family's declarations**, so a block omitting
+`N_Iter` and one writing its own default share a slot. A solver knob declared in
+`Bootstrapper Configuration` rather than on the block does not reach the slot — `propagate` runs at
+EXECUTE off a document that carries no bootstrapper — so a riding set declares its knobs on its
+blocks, or the next EXECUTE refuses by name with `CalibrationStale`.
+
 **The `artifact_id`** is the slot plus the quotes it was fitted at. It moves with every refit, so a
 propagated valuation is labelled by the calibration it rode plus the tick it rode — a replay coordinate
 rather than a timestamp anyone has to trust. Two identical refits produce the same id.

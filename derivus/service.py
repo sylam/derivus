@@ -1658,8 +1658,11 @@ def spot_model_edit(document, pair, family):
         pair, params['Price Factors'], params['System Parameters'],
         params['Price Factor Interpolation'], desk_leverage_prior(pair))
     market.get('Market Prices', {}).pop(name, None)
-    borrowed = calibrator.__name__ not in market['Bootstrapper Configuration']
-    market['Bootstrapper Configuration'].setdefault(calibrator.__name__, {})
+    # the section is keyed by what a family writes, and its entry names the stem it routes on
+    entry = calibrator.price_factor_type
+    borrowed = entry not in market['Bootstrapper Configuration']
+    market['Bootstrapper Configuration'].setdefault(
+        entry, {'Prices': calibrator.market_factor_type[:-len('Prices')]})
     try:
         written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
     except (ValueError, KeyError) as error:
@@ -1668,7 +1671,7 @@ def spot_model_edit(document, pair, family):
         written, outcome = False, {'written': False, 'refused': [str(error)]}
     finally:
         if borrowed:
-            market['Bootstrapper Configuration'].pop(calibrator.__name__, None)
+            market['Bootstrapper Configuration'].pop(entry, None)
     factor = spot_model_factor(family, name)
     # the parameters are read back off the WRITE - a refused bootstrap leaves the section as it was,
     # and reporting the standing block would report the previous fit as this one's answer
@@ -2379,8 +2382,9 @@ def blank_book():
     document['Calc']['Calculation']['Base_Date'] = stamp
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['System Parameters']['Base_Date'] = stamp
-    market['Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {},
-                                            'InterestRateCurveParameters': {}}
+    # keyed by the Price Factors type each family writes, with the Market Prices stem it routes on
+    market['Bootstrapper Configuration'] = {'FXVol': {'Prices': 'FXVol'},
+                                            'InterestRate': {'Prices': 'InterestRate'}}
     return document
 
 

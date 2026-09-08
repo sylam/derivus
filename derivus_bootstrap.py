@@ -105,6 +105,7 @@ class Parent(object):
                             format='%(asctime)s %(levelname)-8s %(message)s',
                             datefmt='%m-%d %H:%M')
 
+        from derivus.bootstrappers import bootstrap_order
         from derivus.config import Config
 
         # create the context
@@ -193,6 +194,33 @@ class Parent(object):
         sys_params = self.manager.dict(self.cx.params['System Parameters'])
         holidays = self.manager.dict(self.cx.holidays)
 
+        # THE PARSE, before a worker exists so a bad section refuses rather than leaving one
+        # waiting. A dict entry IS the family's hyperparameters and names the Market Prices STEM
+        # under `Prices`, the type being that plus `Prices`; a legacy CSV string carries the type
+        # first and is read exactly as it always was. The order is the engine's own topological
+        # sort over what each family writes against what it reads, as `Config.bootstrap` takes it.
+        section = self.cx.params['Bootstrapper Configuration']
+        queued = []
+        for bootstrapper_name in bootstrap_order(section):
+            params = section[bootstrapper_name]
+            if isinstance(params, dict):
+                options = params
+                if not params.get('Prices'):
+                    raise ValueError(
+                        'Bootstrapper Configuration.{0} declares no Prices - this path routes '
+                        'blocks on the section alone. Write "Prices" naming the Market Prices '
+                        'stem, so "FXVol" routes FXVolPrices'.format(bootstrapper_name))
+                market_price = params['Prices'] + 'Prices'
+            else:
+                market_price, _, *options = params.split(',', 2)
+            # get the market prices for this bootstrapper
+            market_prices = {k: v for k, v in self.cx.params['Market Prices'].items() if
+                             k.startswith(market_price)}
+            if not market_prices:
+                logging.info('{} - the book carries no {} block - nothing to queue'.format(
+                    bootstrapper_name, market_price))
+            queued.append((bootstrapper_name, options, market_prices))
+
         logging.info("starting {0} workers over {1} CUDA devices in {2}".format(
             self.NUMBER_OF_PROCESSES, self.NUMBER_OF_CUDA_DEVICES, input_path))
         self.workers = [Process(target=work, args=(
@@ -202,13 +230,8 @@ class Parent(object):
         for w in self.workers:
             w.start()
 
-        # load the bootstrapper on to the queue - note - order is important here - hence python 3.6
-        for bootstrapper_name, params in self.cx.params['Bootstrapper Configuration'].items():
-            # get the market price id and any options for bootstrapping
-            market_price, _, *options = params.split(',', 2)
-            # get the market prices for this bootstrapper
-            market_prices = {k: v for k, v in self.cx.params['Market Prices'].items() if
-                             k.startswith(market_price)}
+        # load the bootstrapper on to the queue - note - order is important here
+        for bootstrapper_name, options, market_prices in queued:
             # number of return statuses needed
             status_required = 0
             for market_price in market_prices.keys():

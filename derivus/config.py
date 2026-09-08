@@ -29,7 +29,9 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 
 from . import utils
 from . import schema
-from .bootstrappers import construct_bootstrapper, family_class, InterestRateCurveParameters, FAMILIES
+from .bootstrappers import (bootstrap_order, construct_bootstrapper, family_class,
+                           market_prices_for, InterestRateCurveParameters, FAMILIES,
+                           PRICES_KEY)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -543,10 +545,20 @@ class Config(object):
         """Runs all the bootstrappers in one process with debugging on. For multiprocessing
         bootstrapping, call `construct_bootstrapper` directly.
 
+        THE CONFIGURATION DRIVES THE LOOP: each `Bootstrapper Configuration` entry names a family,
+        `bootstrappers.market_prices_for` selects the blocks that family reads, and the family is
+        handed those alone - so the selection is stated once here rather than as a type test inside
+        each family's own `bootstrap`. Both empty cases are named: a configured family the book
+        carries no block for, and a block type no configured family claims.
+
+        THE ORDER IS A TOPOLOGICAL SORT (`bootstrappers.bootstrap_order`) over what each family
+        writes against what it reads, so a curve is solved before the fit that prices on it
+        whatever order the file gives - and `derivus_bootstrap` takes the same order off the same
+        function.
+
         A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
-        Market Prices block, or class-name mismatch), so every run is checked. The curve and FX vol
-        bootstraps write ordinary `InterestRate`/`FXVol` blocks and declare that as
-        `price_factor_type`; the other six are named for their own class.
+        Market Prices block, or a section key naming another family), so every run is checked
+        against the family's own declared `price_factor_type`.
         """
         # a block no family reads, or a family no class answers to, is a refusal, never a skip
         orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
@@ -554,8 +566,33 @@ class Config(object):
         if orphans:
             raise ValueError('Market Prices carries {}, which no price family reads; the families read '
                              '{}'.format(', '.join(orphans), ', '.join(sorted(FAMILIES.values()))))
-        for bootstrapper_name, params in sorted(self.params['Bootstrapper Configuration'].items()):
-            family_class(bootstrapper_name)
+        entries = self.params['Bootstrapper Configuration']
+        # every entry names a class before any of them runs, and the order is what it reads
+        section = [(name, entries[name]) for name in bootstrap_order(entries)]
+        claimed = {FAMILIES[family_class(name).__name__] for name, _ in section}
+        unclaimed = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
+                           - claimed)
+        if unclaimed:
+            logging.warning('Market Prices carries {} that no configured family claims - the '
+                            'Bootstrapper Configuration section names {}. Those blocks are not '
+                            'read'.format(', '.join(unclaimed),
+                                          ', '.join(name for name, _ in section) or 'nothing'))
+        for bootstrapper_name, params in section:
+            stem = params.get(PRICES_KEY) if isinstance(params, dict) else None
+            if isinstance(params, dict) and stem is None:
+                logging.warning(
+                    'Bootstrapper Configuration.{0} declares no {1} - in process the family is '
+                    'looked up and {2} used, but the multiprocessing path routes without the '
+                    'engine and needs it. Write {1} {3!r}'.format(
+                        bootstrapper_name, PRICES_KEY,
+                        FAMILIES[family_class(bootstrapper_name).__name__],
+                        FAMILIES[family_class(bootstrapper_name).__name__][:-len('Prices')]))
+            blocks = market_prices_for(
+                bootstrapper_name, self.params['Market Prices'], declared=stem)
+            if not blocks:
+                logging.warning('Bootstrapper {} is configured and the book carries no {} block '
+                                'for it - nothing to fit'.format(
+                                    bootstrapper_name, FAMILIES[bootstrapper_name]))
             try:
                 bootstrapper = construct_bootstrapper(bootstrapper_name, params)
             except Exception:
@@ -567,15 +604,14 @@ class Config(object):
                                    self.params['Price Models'],
                                    self.params['Price Factors'],
                                    self.params['Price Factor Interpolation'],
-                                   self.params['Market Prices'],
+                                   blocks,
                                    self.holidays,
                                    debug=self)
 
             # a family that kept its calibration on the tape hands the leaves over here, for
             # `_build_factor_state`. Its OWN keys are dropped first, so a run that stops publishing
             # leaves no stale connected tensor standing.
-            written = getattr(bootstrapper, 'price_factor_type', bootstrapper_name)
-            block = getattr(bootstrapper, 'market_factor_type', bootstrapper_name)
+            written, block = bootstrapper.price_factor_type, bootstrapper.market_factor_type
             self.calibrated_factors = {factor: theta for factor, theta
                                        in self.calibrated_factors.items() if factor.type != written}
             self.quote_leaves = {name: leaf for name, leaf in self.quote_leaves.items()
