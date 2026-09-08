@@ -76,7 +76,8 @@ class ModelParams(object):
         self.implied_models = {
             'CSImpliedForwardPriceModel': 'CSForwardPriceModelParameters',
             'GBMAssetPriceTSModelImplied': 'GBMAssetPriceTSModelParameters',
-            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters'
+            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters',
+            'LogVar2FJImpliedSpotModel': 'LogVar2FJModelParameters'
         }
 
         self.modeldefaults = {}

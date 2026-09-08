@@ -103,6 +103,20 @@ Two deals compile outside a `DealStructure` and bind for themselves: `bootstrapp
 
 *Every series*, not every factor: a process's own `(key, kind)` publication (`BasisLinkedSpotModel`'s `basis_mu`) is read through the same `calc_time_grid_spot_rate` seam as a factor and needs the same logical grid. The seeds a fork publishes (`<kind>_inner`) are excluded by that same rule, because the outer path does not carry them. Publishing the factors alone left such a series at the fork's own two rows while the pricer asked for outer row `t` — not a wrong number but an unrunnable configuration. **OPEN:** its gate (`tests/test_fork_published_state.py`) went in the 2026-08-21 purge and nothing replaces it. The loop is model-agnostic via [the process protocol](dependency_system.md#the-process-protocol).
 
+The LogVar2FJ outer process publishes `(key, 'lv_ell')` and `(key, 'lv_s')`, the LogVar2FJ outer
+process's revealed log-variance state, `(T, 1, B)` and detached, published as `generate` returns;
+`(key, 'lv_days')`, the scenario grid in days from the base date, which is how a PRICER row finds
+the node it inherits its state from; and `(key, 'ell0_inner')` / `(key, 's0_inner')`, the per-path
+pair `inner_fork_seed` hands the fork.
+
+A seed key may be read by a PRICER rather than by a process's
+`generate`. `pricing.LogVar2FJKit.carried` reads the fork's `(ell0_inner, s0_inner)` where the fork
+published one and the outer path's `(lv_ell, lv_s)` at this row's own node otherwise, and where no
+LogVar2FJ process ran at all it finds nothing and the row re-seeds at `(L*(t_row), 0)` exactly as
+before — which is why every document that does not name the process is bit-identical.
+
+---
+
 !!! note "Four objects, one query: rows route by block, tenors route by segment"
     The curve read splits into a query, logical scenario storage and one physical interpolation. Nothing holds two of those jobs.
 
