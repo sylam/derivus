@@ -1181,6 +1181,19 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Residual_Law', 'Text', default='NIG', values=['NIG', 'Gaussian'],
           description='NIG is the model; Gaussian drops the mixer and reads the clock as the '
                       'variance - a limit/test mode, logged as one - STRUCTURAL'),
+        F('Skew_Gradient', 'Text', default='',
+          description='THE RESERVE LINE the calibration wrote: '
+                      '$\\partial\\Delta_{skew}/\\partial\\beta$ and '
+                      '$\\partial\\Delta_{skew}/\\partial\\rho_s$ in the LAST bucket at the '
+                      'nearest forward tenor, in vol points per unit, comma separated. A deal '
+                      'reporting Greeks First composes '
+                      '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
+                      'it and its own two derivatives (`bootstrappers.lv_skew_reserve`). Blank '
+                      'where the fit stated none - STRUCTURAL'),
+        F('Stickiness_Band', 'Float', default=0.0,
+          description='The band, in VOL POINTS, Skew_Gradient\'s reserve is taken over - the '
+                      'calibration\'s own Stickiness_Band, carried so the deal side needs no '
+                      'second declaration of it. 0 reports no reserve - STRUCTURAL'),
         F('Xi_Curve', 'Curve', bind='value',
           description='Expected forward variance $\\xi(t)=E[h_t]$, piecewise constant and '
                       'strictly positive on the segment each knot (years) starts, flat beyond '
@@ -1285,12 +1298,13 @@ class LogVar2FJModelParameters(CurveModelParameters):
 
     def curve_tenors(self):
         """Every structural fact the kit reads off this factor: each fitted curve's knots - the xi
-        segments, and for the four levers the buckets - and the structural scalars and the residual
-        law at their declared defaults where unauthored. Resolved once at dependency time, so
+        segments, and for the four levers the buckets - the structural scalars and the residual
+        law at their declared defaults where unauthored, and the reserve line the calibration
+        wrote, which a deal's own sensitivity report composes. Resolved once at dependency time, so
         nothing rides the tensor side that carries no derivative."""
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
                     Residual_Law=self.declared['Residual_Law'],
-                    **{x: self.declared[x] for x in self.structural})
+                    **{x: self.declared[x] for x in self.structural + utils.LV_RESERVE_LINE})
 
 
 class GBMAssetPriceTSModelParameters(Factor1D):

@@ -2030,6 +2030,12 @@ class Base_Revaluation(Calculation):
         # the SMOOTH estimator, declared on this calculation alone; `execute` has completed the
         # block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
+        # the reserve line a calibration WROTE on its factor, which nothing on the tensor side
+        # carries: `pricing.skew_reserve` composes it with the portfolio's own two derivatives
+        shared_mem.reserve_line = {
+            key: {name: factor.declared[name] for name in utils.LV_RESERVE_LINE}
+            for key, factor in self.static_factors.items()
+            if all(name in getattr(factor, 'declared', {}) for name in utils.LV_RESERVE_LINE)}
         return shared_mem
 
     def report(self):
@@ -2087,6 +2093,10 @@ class Base_Revaluation(Calculation):
         data = dict(
             [(field, self.netting_sets.obj.Instrument.field.get(field, 'Root')) for field in ['Reference', 'Object']])
         data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures])
+        # the forward-skew reserve is the PORTFOLIO's, as the gradient it is composed from is, so it
+        # sits on the row that carries the portfolio's value
+        if 'Skew_Reserve' in self.netting_sets.obj.Calc_res:
+            data['Skew_Reserve'] = self.netting_sets.obj.Calc_res['Skew_Reserve']
         mtm.insert(0, data)
 
         self.output['mtm'] = pd.DataFrame(mtm)

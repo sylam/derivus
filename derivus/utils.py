@@ -2404,6 +2404,11 @@ LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 #: `Beta` the sanity table's P side, reported and never crossed (brief 8).
 LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S'))
 
+#: What the calibration writes on the factor for a DEAL's own sensitivity report to compose its
+#: forward-skew reserve with (brief 5) - structural, carried by the same route the cap and the law
+#: are, and declared here because the bootstrapper writes it and the pricer reads it.
+LV_RESERVE_LINE = ('Skew_Gradient', 'Stickiness_Band')
+
 #: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)` (brief 5). Here
 #: because the factor's refusals quote the map the fit lands inside.
 LV_AB_EPS = 1.0e-6

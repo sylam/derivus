@@ -11,6 +11,19 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **`LVFit.cap_level` is never re-evaluated after the polish** (2026-09-09, lane P2) — it runs at
+  the seed and after stage 4, so a polish that raises `Sigma_S` leaves `Cap_A` where a smaller
+  `Sigma_S` put it: NKY at `Residual_Horizon: 0.0`, seed 1, converged in 23 polish evaluations and
+  then REFUSED (6.6e-05 of path-days within `5·Cap_Beta` of the cap at `Cap_A` 4.605 against the
+  1e-05 `Cap_Headroom_Max` allows), where seed 3 reached `Sigma_S` 5.0 in stage 3, had the cap
+  raised to 7.8 and read a headroom of 0; declaring `Cap_A` 9.0 lets seed 1 land. Re-derive the cap
+  after the polish and re-check, or let the guard raise it once and re-walk.
+- **`Skew_Reserve` is a netting-set number, and its tenor is the ladder's** (2026-09-08, lanes P
+  and P2) — `Base_Revaluation` reports one gradient, so one reserve per calculation; a per-deal
+  reserve needs a per-deal gradient. And the window it is read at is the two block ends nearest the
+  declared `Forward_Tenors` (NKY: 0.51y into 2.23y for a declared 6m-into-6m), which is honest and
+  is not the tenor a 2y autocall is exposed to; reaching the declared tenor needs a post-fit reading
+  on its own grid.
 - **A `Market Prices` block with no quote table raises a `TypeError` where it raised a `KeyError`**
   (2026-09-08) — completion puts the declared blank `'null'` under `Energy_Futures_Options`,
   `Points` and `Instrument_Definitions`, and iterating it reads *string indices must be integers*.
@@ -423,6 +436,20 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     would cost an edit at about twenty test and gate sites that write
     `{'FXVolSurfaceParameters': {}}`. Beside it, `gates/hw2f_composition.py`'s one-family-per-call
     workaround exists only because `sorted()` ordered the swaption fit before its curve, and can go.
+15. **`Residual_Horizon` 0.25 keeps a POSITIVE residual skew on an equity index.** The rule kept
+    the horizon because the sign is stable across seeds; what is stable is `β` +23 / +13 / +15 on
+    NKY at `|β|/α` 0.68–0.74 (spec 5.3's failure mode, reached by 0.08y wings that do not identify
+    the pair), and +175 unanchored on `EUR_SD3E`. `Residual_Horizon: 0.0` gives −14 / −20 / −14 for
+    0.43–0.49 vol points. Is a stable positive skew the answer the anchor was for, or does the
+    horizon want to be 0 with the wings outvoting a soft row where they speak? A one-line default,
+    or a book-wide declaration in `Bootstrapper Configuration` until it is ruled.
+16. **`Leverage_Prior_Weight` 0.02 is three to four quote rows on these ladders, not one**: the
+    prior row's `Rho_S` column norm reads 2.0e-02 against 4.8e-03 to 6.1e-03 for one quote row at
+    θ\*, because the field assumes a 0.2 quote weight and a 0.1 standard error no ladder states.
+    Either `Leverage_Prior` gains a companion `_SE`, or the weight is re-read as `q1/0.1` so it
+    tracks the ladder. Beside it: a history's `Rho_S` −0.20 ± 0.09 moves the desk mark by −10.2%
+    (−37.49m → −41.77m) through that one row, so the estimator's leverage is the single most
+    consequential number it produces and its standard error is what carries a desk mark.
 
 ## Designed, not built
 
@@ -549,6 +576,37 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **LogVar2FJ v2 — one price for every prior, and the forward view withdrawn** (lanes P and P2,
+  2026-09-09, the owner's rulings 2 and 3 of that morning) — every prior on the fit is a SOFT ROW
+  scaled so that one standard error of miss costs what one quote missing by one vol point costs on
+  the ladder at hand (0.0025 on the sixteen-rung NKY ladder), and every history number is clipped
+  into the box the fit moves it in and named where it bites; the slow pair's hard pin from a history
+  is gone, which is what let `Rho_L` −0.83 through `Rho_L_Bounds` (−0.6, 0) and took a stage
+  non-finite. `Alpha` and `Beta` follow a declared HIERARCHY — short-dated wings, else a history
+  whose standard error beats the class spread, else the class default reported as *class prior,
+  history uninformative* — with `Beta_Prior_Defaults` −22 / `Beta_Prior_Sd` 10 and
+  `Alpha_Prior_Defaults` 44 / `Alpha_Prior_Sd` 0.5 as declared fields; `Residual_Horizon` stays 0.25,
+  its own rule kept by measurement. `Forward_Smile_Source: Prior` is WITHDRAWN and refuses by name,
+  `Stickiness_Prior` retires with it and `Tie_Breaker_Band` is deleted; a forward-smile view is
+  carried by the reserve line alone — `Skew_Gradient` and `Stickiness_Band` on the factor,
+  `Skew_Reserve` on the netting set's own row under `Greeks: First`. **Measured:** the hex set 4,180
+  floats over 16 documents, 0 mismatches, the crisp GBM TARF `-0x1.2c48f36318e38p+5`;
+  `Model_Priors: Off` + `Forward_Smile_Source: None` refits the banked USDZAR ladders bit for bit
+  against the clean head, and NKY at the unruled defaults at 0 ULP; on NKY `β` free reads +23.11 /
+  +12.68 / +14.85 over `Random_Seed` 1–3 — the sign STABLE — against −13.76 / −20.11 / −14.35 with
+  the row in force at 0.43–0.49 vol points of RMSE, the fit leaving the class prior by 0.19 to 0.82
+  of a standard error; on `EUR_SD3E`, the one book ladder the rule fires on, the unanchored fit's
+  `α` 236 / `β` +175 becomes 52.2 / −19.95 for 0.347 vol points; a history now moves a fit through
+  one row a quote could outvote (the leverage prior −0.70 → −0.20 ± 0.09) and IMPROVES the RMSE on
+  three of four ladders (1.308 → 1.180, 0.845 → 0.566, 0.943 → 0.612); the desk's NKY autocall
+  229524957 marks **−37,494,705 ZAR** under the landed defaults (lane P's *prior on, block off* row
+  to the rand; −41,771,910 with the index history in) with **`Skew_Reserve` 11,714,449**, 28% of the
+  mark, beside it; every document declaring `Prior`, `Stickiness_Prior`, `Vanilla_Guard` or
+  `Vanilla_Band` refuses by name. Lane P's first cut (a bare z-score row) is the measurement behind
+  the price: it charged 400 quote-vol-points per standard error and landed `β` on six figures of an
+  uninformative history (−0.28 ± 14.4), a pin in all but name. Engine net +262 lines over lanes P
+  and P2 together, P2 itself +41 with three mechanisms folded into one. Packs
+  `artifacts/lv_priors_20260908/`, `artifacts/lv_priors2_20260909/`.
 - **The GBM autocall arm reads each leg at its own strike** (2026-09-08, lane G) —
   `pv_MC_AutoCallSwap`'s one-step-survival arm read ONE moneyness for the whole path, so a compact
   `QEDI_CustomAutoCallSwap_V2` priced its terminal 70% put at the ATM vol: **−64.2m against −42.8m

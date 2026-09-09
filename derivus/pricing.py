@@ -1059,12 +1059,41 @@ class SensitivitiesEstimator(object):
         return hessian
 
 
+def skew_reserve(shared, grad):
+    """THE FORWARD-SKEW RESERVE this report owes, or None: `|dPV/dDelta_skew| x Stickiness_Band`
+    per LogVar2FJ factor, composed from the calibration's own `d(Delta_skew)/d(beta, rho_s)` -
+    written on the factor and carried as `shared.reserve_line` - and the reported gradient's own
+    LAST-BUCKET `dPV/dBeta`, `dPV/dRho_S`.
+
+    The band is a reserve rather than a mark wherever the forward smile was not quoted, which is
+    every ladder today, so the two halves live apart and meet here. Summed over factors: what is
+    reported is one portfolio number, as the gradient it is composed with is.
+    """
+    # the local import is the module cycle: `bootstrappers` prices through this module
+    from derivus.bootstrappers import lv_skew_reserve
+    total = None
+    for key, line in getattr(shared, 'reserve_line', {}).items():
+        row = [float(x) for x in str(line['Skew_Gradient']).split(',') if x.strip()]
+        lever = [grad.get(utils.check_scope_name(utils.Factor(key.type, key.name + (name,))))
+                 for name in ('Beta', 'Rho_S')]
+        if len(row) != 2 or not all(x is not None and np.size(x) for x in lever):
+            continue
+        one = lv_skew_reserve([float(np.ravel(x)[-1]) for x in lever], row,
+                              float(line['Stickiness_Band']))
+        total = one if total is None else total + (one or 0.0)
+    return total
+
+
 def greeks(shared, deal_data, mtm):
     """Report `Greeks_First`, and `Greeks_Second` when `Greeks: 'All'` asked for it - in that
     order, because the second-order report labels its axes off the first-order index
-    (`Calculation.gradients_as_df`)."""
+    (`Calculation.gradients_as_df`); and beside them the forward-skew reserve, which is a number
+    about the fit this portfolio was priced off rather than a derivative of it."""
     greeks_calc = SensitivitiesEstimator(mtm, shared.calc_greeks, create_graph=shared.gamma)
     deal_data.Calc_res['Greeks_First'] = greeks_calc.report_grad()
+    reserve = skew_reserve(shared, deal_data.Calc_res['Greeks_First'])
+    if reserve is not None:
+        deal_data.Calc_res['Skew_Reserve'] = reserve
     # use this only when all the vols and curves are sparsely represented (check greeks_calc.P)
     if shared.gamma:
         deal_data.Calc_res['Greeks_Second'] = greeks_calc.report_hessian(allow_unused=True)
