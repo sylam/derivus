@@ -388,12 +388,14 @@ determinism rather than agreement.
 | `LV_IG_EXPAND`, `LV_IG_STEPS` | 3, 34 | lane S: the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a ruling rather than a measurement |
 | `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
 | `Forward_Smile_Source` | `None` (`Prior` withdrawn) | a sticky-delta TARGET costs 0.4–1.1 vol points of spot fit on all four index ladders and a 0.5y bucket does not repair it; the tie-breaker that capped that cost bound stage 5 alone, and on a one-bucket ladder stage 5 does not run |
-| `Residual_Horizon` | 0.25 | over `Random_Seed` 1–3 on NKY the wings win and `β` reads +23.11 / +12.68 / +14.85 — the sign does NOT flip, which is the test the anchor exists to pass. What is stable is a POSITIVE residual skew at `|β|/α` 0.68–0.74; the row at 0.0 reads −13.76 / −20.11 / −14.35 for 0.43–0.49 vol points of RMSE, and a desk that wants it declares it |
+| `Residual_Horizon` | 0.25 | it governs `α` alone since lane L; `β` keeps a soft row the wings outvote. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation (the product row above), not the horizon's; horizon zero was the wrong fix |
 | `Alpha_Prior_Defaults`, `Beta_Prior_Defaults` | 44, −22 for every class | brief 2 sizes the residual ONCE, at the index `(44, −22)`, and states no separate FX number |
 | `Alpha_Prior_Sd` | 0.5 on `log α` | brief 5's log-normal spread, a factor of 1.65 either way — and the bar a history's own SE must beat to be called informative |
 | `Beta_Prior_Sd` | 10 | brief 5 sizes it on the residual's one-month skewness; as the informative test it fails the index history (`β^P` −0.28 ± 14.4) and passes the FX one (−20.5 ± 7.4), which is the discrimination the hierarchy exists for |
 | `Contamination_Ratio` | 2.0 | brief 8's `C_Eff > 2c`; the estimator's own report already names the ratio at this threshold |
-| `Leverage_Prior_Weight` | 0.02 | one instance of the general rule: `0.01 × 0.2 / 0.1` is one quote-vol-point per tenth of `ρ_s`. It applies where a prior has no standard error of its own; a history's `Rho_S` carries one and is weighted by it |
+| `Leverage_Prior_Weight` | 0.02 | one instance of the general rule: `0.01 × 0.2 / 0.1` is one quote-vol-point per tenth of `ρ_s`. Since lane L the row is on the product and the scale is this over `Sigma_S_Reference`, the same statement at the reference vol-of-vol; a history's product carries a delta-method error and is weighted by it. At a fitted `σ_s` of 5 a unit of `ρ_s` is five of product, so the row reads 6.5 quote rows on `ρ_s` where it read 2.3 — open decision 16 |
+| `Leverage_Product_Defaults` | index −1.9, FX 0.0 | brief §2: `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement; the ruling's number over the spec's −1.8 |
+| `Sigma_S_Reference` | 2.4 | the state's own `Sigma_S` seed, the Q-sized vol-of-vol a declared `Leverage_Prior` is multiplied by to reach the product; refused at or below zero |
 | the fit's device | the job's | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s |
 
 **`Tolerance` is `ftol` on a MONTE CARLO objective, and it is not what a stage stops on.** Asking
@@ -452,15 +454,26 @@ fixings rather than the mode that fits a surface best — bucket `k` acts only o
 while the option to `E_k` averages over every bucket before it — and the report says per bucket
 which parameters were free and which tied.
 
-**The leverage prior is never absent, and it is stated on the ENGINE'S axis.** Vanillas do not
-separate residual skew from leverage skew: `β` and `ρ_s σ_s` both bend the spot smile the same way,
-so a vanilla-only fit gives the skew to whichever is cheaper and leaves the FORWARD smile — the thing
-an autocall reads — undetermined. `Leverage_Prior` is a weak soft term `w_ρ (ρ_s − ρ_s^prior)²` in
-every stage's objective, `w_ρ = 0.02`: the normalised vanilla weights sit at 0.17–0.22 on a
-twenty-rung ladder, so a prior miss of a TENTH in `ρ_s` costs what one quote missing by one vol point
-costs, and any quote that speaks outvotes it. It is read in one order — the block's `Leverage_Prior`
-where declared, else a LogVar2FJ history's own `Rho_S` in `Price Models`, else the asset-class
-default: an index **−0.7** (the VIX-implied spot–vol correlation), an FX pair **0.0**.
+**The leverage prior is never absent, it is on the PRODUCT `ρ_s σ_s`, and it is stated on the
+ENGINE'S axis.** Vanillas do not separate residual skew from leverage skew: `β` and `ρ_s σ_s` both
+bend the spot smile the same way, so a vanilla-only fit gives the skew to whichever is cheaper and
+leaves the FORWARD smile — the thing an autocall reads — undetermined. The row is a weak soft term
+on the product in every stage's objective, one per fitted bucket, because a prior on `ρ_s` alone
+was measured letting the fit buy the product it wanted through the factor nobody priced: on NKY
+`ρ_s` −0.59 sat obediently near its −0.7 prior while `σ_s` ran to its 5.0 box, a product of
+**−2.97** against the VIX-implied **−1.9** brief §2 sizes it to, and the over-sized leverage
+suppressed the call wing until the residual took a POSITIVE skew (`β` +23 / +13 / +15 over three
+seeds) to lift it back — two mechanisms compensating along the direction vanillas cannot see, and a
+right-skewed residual on an index carried into every terminal put on the book (the owner's ruling
+of 2026-09-09). The target is read in one order: the block's `Leverage_Prior` (a `ρ_s` on the
+engine's axis, the desk seed's convention, kept) times `Sigma_S_Reference` (2.4, the state's own
+vol-of-vol seed); else a LogVar2FJ history's `Rho_S × Sigma_S` with its standard error by the delta
+method; else `Leverage_Product_Defaults`, an index **−1.9**, an FX pair **0.0**. The weight is the
+same statement as before at the reference vol-of-vol — `Leverage_Prior_Weight / Sigma_S_Reference`,
+one quote-vol-point per 0.24 of product, which is one quote per tenth of `ρ_s` at `σ_s` 2.4 — and a
+history's row is weighted by its own error. `Leverage_Prior_Defaults` (an index −0.7, FX 0.0) keeps
+one job, the SIGN: it seeds `ρ_s` at `sign·0.75` and, through the fitted fast leverage, signs the
+slow pair's pin; a class whose product and `ρ_s` defaults disagree in sign refuses by name.
 
 That history now has a producer, and where the ladder cannot see the residual pair it is one of the
 three things that can anchor them. `Rho_S`, the slow pair, `Alpha` and `Beta` each arrive with their
@@ -500,7 +513,7 @@ hierarchy of three, the tier in force named in the report on every fit:
 
 | tier | when | the row |
 | --- | --- | --- |
-| **the short-dated wings** | the ladder quotes a wing at or under `Residual_Horizon` | none — the wings win and the pair is free |
+| **the short-dated wings** | the ladder quotes a wing at or under `Residual_Horizon` | none for `α` — the wings free it; `β` KEEPS its soft row beside them (the ruling of 2026-09-09: the wings outvote the prior rather than switch it off) |
 | **the history** | its own standard error is at or under the class prior's spread | `(x − x^P)/SE^P` at that estimate |
 | **the class default** | otherwise | `(x − x_class)/SD_class`, reported as *class prior, history uninformative* with the standard error that failed |
 
@@ -515,19 +528,36 @@ standard error: an Esscher tilt moves `β` by one unit at most, so the P and Q s
 number and the sanity table still says so on its row; what the prior states is not that they are
 equal but that the ladder has nothing to say.
 
-**`Residual_Horizon` stays 0.25, and what it leaves free is measured.** Over `Random_Seed` 1–3 on
-the NKY chain block at 8,192 paths with no history, the wings win and `β` lands **+23.11, +12.68 and
-+14.85** — the SIGN does not flip, which is the test the anchor exists to pass. What is stable,
-though, is a POSITIVE residual skew on an equity index, carried at `|β|/α` **0.74, 0.68 and 0.74**
-against the 0.77 the conditioning share allows — spec 5.3's own failure mode, reached by the wings
-rather than by a forward target. With the row in force (`Residual_Horizon: 0.0`, which is what the
-field already means at zero) the same three seeds land **−13.76, −20.11 and −14.35**, at `|β|/α`
-0.22–0.74 and **0.43–0.49 vol points** of unweighted RMSE. Both readings are stable; they are stable
-at OPPOSITE SIGNS, and the wings are what pick the positive one. A desk that wants the negative one
-declares `Residual_Horizon: 0.0`, and the row it then gets is soft rather than a pin: the fit leaves
-the −22 class prior by 0.19 to 0.82 of a standard error. On `EUR_SD3E`, the one book ladder the
-rule fires on, the unanchored fit reaches `α` 236 and `β` **+175** at `|β|/α` 0.742 for 0.043 vol
-points; the class prior replaces it with (52.2, −19.95) for 0.390.
+**`Residual_Horizon` stays 0.25, and the positive skew it left free was the leverage's doing.**
+Over `Random_Seed` 1–3 on the NKY chain block at 8,192 paths with no history, the wings alone
+landed `β` at **+23.11, +12.68 and +14.85** at `|β|/α` 0.74 / 0.68 / 0.74 against the 0.77 bound —
+spec 5.3's own failure mode, reached by the wings — and horizon zero forced it to −13.76 / −20.11 /
+−14.35 for 0.43–0.49 vol points while leaving `σ_s` on its box, the wrong fix for the right
+symptom. With the product row in force (lane L, 2026-09-10) `β` is negative on every book fit:
+NKY **−21.89 / −21.97 / −21.91** with the product −1.85 in place of −2.97, SX5E −21.97, NDX −20.99,
+SD3E −19.86, at 1.614 / 1.083 / 1.000 / 1.034 vol points of unweighted RMSE against 1.308 / 0.845 /
+0.943 / 0.390, and the three ladders the old row left with `σ_s` on its 0.5 FLOOR (a product a tenth
+of Q size) are pulled off it to 3.96 / 4.89 / 1.78. What the class-default tier still cannot do is
+put NKY's `σ_s` inside its box: at 5.0 the stationary log-vol sd reads 0.878, inside the 0.4–0.9
+band, so the box and the band collude and the ladder wants that vol-of-vol — reported with the
+flag below, the box not widened. And the row `β` obeys is on `β` while the residual's skew is
+`|β|/α`, so on NKY and SX5E the fit obeys it for free by running `α` to its 500 ceiling
+(`|β|/α` 0.044, the residual effectively Gaussian, the whole smile leverage at the Q size) — an open
+row. The history tier is where the ruling's expected shape lives: NKY with the index history lands
+`α` 7.99, `β` **−2.35**, `|β|/α` 0.29 at **1.171** vol points, better than the clean tree's own
+anchored 1.180. On the desk's NKY autocall 229524957 the mark moves −37.49m → **−38.94m ZAR** and
+the forward-skew reserve **falls 11.71m → 7.21m** (38%): with the residual near Gaussian its half of
+`Skew_Gradient` is nothing and the reserve is the `ρ_s` half alone.
+
+**On-guard fits are reported and flagged, never stood behind.** A fit a box or a floor is holding
+is not a fitted one: `LVFit.on_guard` names every guard θ\* sits on — a `Sigma_S`, `Alpha` or
+`Sigma_L` on either edge of its declared box, `|β|/α` within `C_Margin` (0.05) of the conditioning
+bound 0.7746, or `c` within `C_Margin` of its `C_Min` floor — in one sentence, logged as a WARNING
+by the report, written on the factor as the structural Text field `On_Guard` (blank where clean),
+logged at INFO when the factor loads, and collected by `Base_Revaluation` into `Stats['On_Guard']`
+per factor it priced off, so a mark carries the flag. Scored on the clean tree's own fits the guard
+names exactly the corner above: every base fit is on guard somewhere (`Sigma_S[0y] on its 5 box;
+|beta|/alpha 0.742 within 0.05 of 0.7746` on NKY), and two of lane L's seven are clean.
 
 THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book
 is *USD per rand* and a desk's `+0.4` on an EM cross quoted USD-per-currency is **−0.4** here. The
@@ -574,8 +604,8 @@ the forward-smile block is what separates them.
 ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are fitted to nothing and are pinned
 instead. What they are pinned at is read in one order — `Slow_Factor_Prior` where the block declares
 one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LV_SLOW_HISTORY`
-shape — the one place both lanes declare it — which is `Rho_L`, `Sigma_L`, `Alpha`, `Beta` and
-`Rho_S`, EACH WITH ITS OWN `_SE`; a block missing any one of the ten refuses by name from the write
+shape — the one place both lanes declare it — which is `Rho_L`, `Sigma_L`, `Alpha`, `Beta`, `Rho_S`
+and `Sigma_S`, EACH WITH ITS OWN `_SE`; a block missing any one of the twelve refuses by name from the write
 side. The slow pair is reported with both standard errors and taken to the floor by name where it
 sits under it, as a hand-authored `(−0.35, 0.22)` with SEs 0.09 / 0.14 reads back *held at the
 history's estimate … its Sigma_L 0.2200 TAKEN TO the 0.3 floor*; the block is written by

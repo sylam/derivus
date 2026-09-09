@@ -11,6 +11,23 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **The `β` prior is on `β`, but the residual's skew is `|β|/α`, so a fit obeys the row for
+  free by inflating `α`** (2026-09-10, lane L) — with the product row anchoring the leverage and
+  the wings still asking for a positive residual skew, NKY (all three seeds) and SX5E run `α` to
+  its 500 ceiling, `|β|/α` falls to 0.044 and the residual is effectively Gaussian: in stage 2's
+  coordinates the `β` prior row reads 690 quote rows while the quote rows carry 1.8e-04, so nothing
+  there is identified, and the whole smile is leverage at the Q size for 1.308 → 1.614 vol points
+  on NKY. The history tier does not reach it (`α` 7.99, `β` −2.35, 1.171 vol points) because the
+  weaker product leaves the residual live. A prior on the SKEW SHARE `β/α`, or `α`'s ceiling as a
+  row rather than a wall, is a different declaration and its own measurement — the owner's
+  expected `β` of −2 to −10 at the class-default tier waits on it. `Alpha` on its box IS now an
+  on-guard condition (landed with lane L).
+- **NKY's `σ_s` sits on its 5.0 box with the log-vol band's consent** (2026-09-10, lane L) — the
+  stationary sd at `σ_s` 5.0 reads 0.878, inside the 0.4–0.9 `Log_Vol_Sd_Band`, and the gradient
+  into the bound is 1.1e-05, so the ladder wants that vol-of-vol and the product prior is
+  satisfied by `ρ_s` −0.37 instead. Reported with the flag; the box is not widened. A ladder that
+  wants more short-dated skew than Q-sized leverage plus a left-skewed residual gives is a report
+  about the ladder.
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09) — the lookup in `get_cholesky_decomp` reads 0.0 for a missing pair, which is
   right for an undeclared one and wrong for one filed under a stale key; the row that found it
@@ -468,20 +485,22 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     would cost an edit at about twenty test and gate sites that write
     `{'FXVolSurfaceParameters': {}}`. Beside it, `gates/hw2f_composition.py`'s one-family-per-call
     workaround exists only because `sorted()` ordered the swaption fit before its curve, and can go.
-15. **`Residual_Horizon` 0.25 keeps a POSITIVE residual skew on an equity index.** The rule kept
-    the horizon because the sign is stable across seeds; what is stable is `β` +23 / +13 / +15 on
-    NKY at `|β|/α` 0.68–0.74 (spec 5.3's failure mode, reached by 0.08y wings that do not identify
-    the pair), and +175 unanchored on `EUR_SD3E`. `Residual_Horizon: 0.0` gives −14 / −20 / −14 for
-    0.43–0.49 vol points. Is a stable positive skew the answer the anchor was for, or does the
-    horizon want to be 0 with the wings outvoting a soft row where they speak? A one-line default,
-    or a book-wide declaration in `Bootstrapper Configuration` until it is ruled.
+15. **`Residual_Horizon` 0.25 keeps a POSITIVE residual skew on an equity index.** CLOSED
+    2026-09-09 by the owner's ruling and lane L's build: the positive skew was a MIS-ALLOCATION,
+    not a horizon question — the leverage prior sat on `ρ_s` alone, `σ_s` ran to its box for a
+    product of −2.97 against the Q-sized −1.9, and the residual took a positive `β` to lift the
+    call wing back. The row is on the product, `β`'s prior stays soft beside the wings, on-guard
+    fits are flagged; `β` is negative on every book fit. What it opened is the `α` escape (Open).
 16. **`Leverage_Prior_Weight` 0.02 is three to four quote rows on these ladders, not one**: the
     prior row's `Rho_S` column norm reads 2.0e-02 against 4.8e-03 to 6.1e-03 for one quote row at
     θ\*, because the field assumes a 0.2 quote weight and a 0.1 standard error no ladder states.
-    Either `Leverage_Prior` gains a companion `_SE`, or the weight is re-read as `q1/0.1` so it
-    tracks the ladder. Beside it: a history's `Rho_S` −0.20 ± 0.09 moves the desk mark by −10.2%
-    (−37.49m → −41.77m) through that one row, so the estimator's leverage is the single most
-    consequential number it produces and its standard error is what carries a desk mark.
+    Since lane L the row is on the PRODUCT at scale `0.02 / Sigma_S_Reference`, exact per unit of
+    product at the 2.4 reference — but at a fitted `σ_s` of 5 a unit of `ρ_s` is five of product,
+    so the same row reads **6.5 quote rows on `ρ_s`** against the base's 2.3. Sizing the weight
+    off the fitted `σ_s` would make the row's scale a function of θ, a different objective; a
+    `Leverage_Prior_SE` companion or a weight re-read as `q1/0.1` are the two declarations. Beside
+    it: a history's product −1.05 ± 0.67 moves the desk mark −37.49m → −41.87m through that one
+    row, so the estimator's leverage is the single most consequential number it produces.
 
 ## Designed, not built
 
@@ -639,6 +658,34 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The leverage prior is on the product, `β`'s prior stays soft beside the wings, and on-guard
+  fits are flagged** (2026-09-10, lane L, the owner's ruling on the positive residual skew) — the
+  row `w (ρ_s − prior)` on the first bucket let the fit buy the product it wanted through `σ_s`,
+  which nobody priced: NKY's product −2.97 against the Q-sized −1.9, the call wing over-suppressed
+  and the residual lifted back to `β` +23 / +13 / +15. Now one row per fitted bucket on
+  `Rho_S·Sigma_S` (`LV_LEVERAGE`), target from `Leverage_Product_Defaults` (index −1.9, FX 0.0),
+  a declared `Leverage_Prior` times `Sigma_S_Reference` (2.4), or a history's product with its
+  delta-method error (`utils.LV_SLOW_HISTORY` names `Sigma_S`/`Sigma_S_SE`, twelve keys); the
+  scale `Leverage_Prior_Weight / Sigma_S_Reference`; `Leverage_Prior_Defaults` keeps the sign job
+  and a class whose two defaults disagree in sign refuses by name. `residual_hierarchy` frees `α`
+  on a short wing and keeps `β`'s row. `LVFit.on_guard` names a `Sigma_S`, `Alpha` or `Sigma_L` on
+  its box, `|β|/α` within `C_Margin` of 0.7746, or `c` within `C_Margin` of `C_Min`; the factor
+  carries `On_Guard` (structural Text), the report warns, the load logs, `Base_Revaluation` reports
+  `Stats['On_Guard']`; `on_box` is `active_set`'s edge test split out. MEASURED: `β` negative on all
+  seven book fits — NKY −21.89 / −21.97 / −21.91 over seeds 1–3 (products −1.85 / −1.85 / −1.87,
+  RMSE 1.614 / 1.627 / 1.637 against 1.308 / 1.350 / 1.332, 18–21 stage-2 evaluations against
+  28–41, 74–83 s against 122–1,625 s), SX5E −21.97, NDX −20.99, SD3E −19.86 (Floor; Refuse still
+  refuses, the sd 0.231 → 0.298 against the 0.4 floor); the three ladders the old row left at
+  `σ_s` 0.5 pulled off it to 3.96 / 4.89 / 1.78; NKY with the index history `α` 7.99 / `β` −2.35 at
+  1.171 (the clean tree's own anchored 1.180); the desk's 229524957 −37,494,705 → **−38,941,569 ZAR**
+  at 32,768 paths and `Skew_Reserve` 11,714,449 → **7,205,454** (the `β` half of `Skew_Gradient`
+  1.6e-05 against −0.33); `Model_Priors: Off` on the banked USDZAR ladders 56 floats at 0 ULP against
+  clean 7a3c33b with every identification line equal string for string; the hex set 4,180 floats /
+  0 mismatches, the TARF `-0x1.2c48f36318e38p+5`; the partition module 34 passed; the forced
+  on-guard fit (`Sigma_S_Bounds` 0.5,0.6) flagged on the factor, the report, the load line and
+  `Base_Revaluation`'s Stats; two refusals by name. FOUND, NOT FIXED: the `α` escape and the
+  box-band collusion (Open rows); the product row's lever (decision 16). Engine net +145 lines.
+  Pack `artifacts/lv_leverage_20260909/`.
 - **The CVA simulation realises the correlation the desk declares, or refuses by name**
   (2026-09-09, lane C, the owner's ruling 1 of that morning; THE SCALING AND THE REFUSAL WERE
   WITHDRAWN THE SAME EVENING, see Closed — `correlation_dilution` and its measurements stand,

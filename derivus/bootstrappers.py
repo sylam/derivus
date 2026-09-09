@@ -85,19 +85,27 @@ def column_scale(jacobian):
     return jacobian / norms, norms
 
 
+def on_box(x, lower, upper, tol=1e-4):
+    """`(on the lower edge, on the upper edge)` as two masks: within `tol` of a bound relative to
+    the box's width, an infinite half-width taking the finite side's and `max(1, |x|)` where both
+    are infinite. The KKT active set and the on-guard flag read the same edge."""
+    x, lower, upper = (np.asarray(v, dtype=float) for v in (x, lower, upper))
+    span = np.where(np.isfinite(upper), upper, 0.0) - np.where(np.isfinite(lower), lower, 0.0)
+    edge = tol * np.where(np.isfinite(upper) | np.isfinite(lower),
+                          np.abs(span), np.maximum(1.0, np.abs(x)))
+    return x - lower <= edge, upper - x <= edge
+
+
 def active_set(x, lower, upper, g, tol=1e-4):
-    """The KKT active set at `x` as a boolean mask - the coordinates the BOX holds: within `tol` of
-    a bound relative to the box's width AND the objective's gradient `g = J^T r` pointing into it.
-    An infinite half-width takes the finite side's width, or `max(1, |x|)` where both are infinite.
+    """The KKT active set at `x` as a boolean mask - the coordinates the BOX holds: on a bound
+    (`on_box`) AND the objective's gradient `g = J^T r` pointing into it.
 
     Both conditions, because either alone is wrong: a solver stops a hair short of a floor it is
     jammed against, and a coordinate resting against a bound the data pulls away from is free.
     """
-    x, lower, upper, g = (np.asarray(v, dtype=float) for v in (x, lower, upper, g))
-    span = np.where(np.isfinite(upper), upper, 0.0) - np.where(np.isfinite(lower), lower, 0.0)
-    edge = tol * np.where(np.isfinite(upper) | np.isfinite(lower),
-                          np.abs(span), np.maximum(1.0, np.abs(x)))
-    return ((x - lower <= edge) & (g > 0.0)) | ((upper - x <= edge) & (g < 0.0))
+    low, high = on_box(x, lower, upper, tol)
+    g = np.asarray(g, dtype=float)
+    return (low & (g > 0.0)) | (high & (g < 0.0))
 
 
 def active_bounds(labels, x, lower, upper, g):
@@ -1367,6 +1375,10 @@ LV_RETIRED_BLOCK = {
 #: nowhere else: the model applies none and the factor asserts admissibility at load.
 LV_RAW = ('Alpha', 'Beta')
 
+#: The lever the leverage prior's row is ON - the PRODUCT of two bucket curves, which is what a
+#: smile carries and what VIX-vs-SPX sizes; neither factor of it takes a row of its own.
+LV_LEVERAGE = 'Rho_S*Sigma_S'
+
 
 def lv_skew_reserve(pv_gradient, skew_gradient, band):
     """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band` (brief 5), from the two halves
@@ -1544,6 +1556,18 @@ class LVFit(object):
             read['Slow_Factor_Prior_Defaults'], 'Slow_Factor_Prior_Defaults', 2)
         self.leverage_priors = lv_parse_class_priors(
             read['Leverage_Prior_Defaults'], 'Leverage_Prior_Defaults', 1)
+        #: the leverage prior's own axis: the PRODUCT per class, and the vol-of-vol a declared
+        #: `rho_s` is multiplied by to reach it - the state's own `Sigma_S` seed
+        self.product_priors = lv_parse_class_priors(
+            read['Leverage_Product_Defaults'], 'Leverage_Product_Defaults', 1)
+        self.sigma_reference = float(read['Sigma_S_Reference'])
+        if not self.sigma_reference > 0.0:
+            raise ValueError(
+                '{}: Sigma_S_Reference reads {:g}. It is the vol-of-vol a declared Leverage_Prior '
+                'is multiplied by to reach the product rho_s sigma_s the row is on, and it scales '
+                "the row's own weight - a non-positive one flips the prior's sign or divides the "
+                'weight by nothing. Write the Q-sized vol-of-vol, or leave the field at its '
+                'default'.format(market_price, self.sigma_reference))
         #: the residual pair's class prior per asset class with the spread it is quoted at -
         #: `Alpha`'s on `log alpha`, a scale's prior being a prior on its logarithm
         self.class_priors = {
@@ -1562,7 +1586,8 @@ class LVFit(object):
         self.pinned_slow, self.identified_days, self.history, self.slow_rows = '', [], None, []
         #: the leverage prior in force with its standard error and the source it came from, and
         #: every soft prior row as `(lever, target, scale, in logs)` with the line each earns
-        self.prior, self.prior_sd, self.prior_source = 0.0, None, ''
+        self.prior, self.prior_target = 0.0, 0.0
+        self.prior_sd, self.prior_source = None, ''
         self.prior_rows, self.prior_lines = [], []
         self.notes, self.final, self.leaf, self.theta = [], {}, None, None
         #: the last stage's box as `(lower, upper)` and the gradient `J^T r` it stopped on, which
@@ -2001,9 +2026,10 @@ class LVFit(object):
         # missing by one vol point costs, in LOGS where the spread is log-normal - never a pin, so
         # the lever stays in theta*, in the Jacobian and in the quote contraction
         for name, target, scale, logs in (self.prior_rows if self.priors else ()):
-            value = levers[name][0] if name in utils.LV_BUCKET_NAMES else scalars[name]
+            value = (levers['Rho_S'] * levers['Sigma_S'] if name == LV_LEVERAGE else
+                     levers[name][0] if name in utils.LV_BUCKET_NAMES else scalars[name])
             terms.append(scale * ((torch.log(value) - np.log(target)) if logs
-                                  else (value - target)).reshape(1))
+                                  else (value - target)).reshape(-1))
         if self.priors and self.shape_floor > 0.0:
             terms.append(self.shape_penalty * torch.relu(
                 1.0 - self.residual_shape(levers, cum) / self.shape_floor).reshape(1))
@@ -2088,7 +2114,8 @@ class LVFit(object):
             self.state[name] = [float(v) for v in levers[name]]
         # the DATA rows and, right behind them in `residual`'s own order, the prior rows
         rows = len(judged) + len(forwards)
-        priors = len(self.prior_rows) if self.priors else 0
+        priors = sum(self.buckets.size if name == LV_LEVERAGE else 1
+                     for name, *_ in self.prior_rows) if self.priors else 0
         self.tables.append((tag, [self.label(coord) for coord in coords], result.jac[:rows],
                             result.jac[rows:rows + priors]))
         self.edges, self.slope = np.array(edges, dtype=float).T, result.grad
@@ -2235,11 +2262,17 @@ class LVFit(object):
         return type(self.factors['Underlying']).__name__
 
     def leverage_prior(self):
-        """`(rho_s^prior, SE or None, source)` for the soft term brief 5 makes routine, in one
-        order: `Leverage_Prior` where the block declares one, else a LogVar2FJ history's own
-        `Rho_S` in `Price Models`, else the asset class default. A HISTORY carries its own
-        standard error and is weighted by it; a declaration and a class default carry none and
-        take `Leverage_Prior_Weight`, which is the same statement at a nominal tenth.
+        """`(rho_s, product, SE or None, source)` for the soft term brief 5 makes routine, in one
+        order: `Leverage_Prior` where the block declares one, else a LogVar2FJ history's own pair
+        in `Price Models`, else the asset class default.
+
+        THE ROW IS ON THE PRODUCT `rho_s sigma_s` - the leverage a smile actually carries, and the
+        axis brief 2 sizes at -1.9 off VIX-vs-SPX. A prior on `rho_s` alone is obeyed by moving
+        `sigma_s` to its box instead, and the residual then takes a POSITIVE skew to lift the call
+        wing back. The `rho_s` beside the product signs the seed and stage 4's pin and carries no
+        row. A declaration is a `rho_s` on the engine's axis - the desk-seed convention - and
+        reaches the product through `Sigma_S_Reference`; a history's product carries the delta
+        method's own standard error off the two the estimator writes.
 
         THE PRIOR IS ON THE ENGINE'S AXIS. An `FxRate` is priced in the domestic currency, so
         `FxRate.ZAR` in a USD book is USD per rand and a desk's `+0.4` on an EM cross quoted
@@ -2248,14 +2281,20 @@ class LVFit(object):
         """
         declared = str(self.instrument['Leverage_Prior']).strip()
         if declared:
-            return float(declared), None, 'the declared Leverage_Prior'
-        if self.history is not None and 'Rho_S' in self.history:
-            error = self.history.get('Rho_S_SE')
-            return float(self.history['Rho_S']), None if error is None else float(error), (
-                "the history's estimate{}".format(
-                    '' if error is None else ', Rho_S SE {:.4f} (spec 5.5.3)'.format(float(error))))
-        return self.leverage_priors[self.asset_class][0], None, (
-            'the {} class default'.format(self.asset_class))
+            rho = float(declared)
+            return rho, rho * self.sigma_reference, None, (
+                'the declared Leverage_Prior {:+.4f} at Sigma_S_Reference {:g}'.format(
+                    rho, self.sigma_reference))
+        if self.history is not None:
+            rho, sigma = (float(self.history[name]) for name in ('Rho_S', 'Sigma_S'))
+            error = float(np.hypot(sigma * float(self.history['Rho_S_SE']),
+                                   rho * float(self.history['Sigma_S_SE'])))
+            return rho, rho * sigma, error, (
+                "the history's Rho_S {:+.4f} x Sigma_S {:.4f}, SE {:.4f} by the delta method off "
+                'their own (spec 5.5.3)'.format(rho, sigma, error))
+        return (self.leverage_priors[self.asset_class][0],
+                self.product_priors[self.asset_class][0], None,
+                'the {} class default'.format(self.asset_class))
 
     def alpha_prior(self):
         """The history's `alpha^P`, or `None`. Esscher invariance is an assumption about the risk
@@ -2295,8 +2334,12 @@ class LVFit(object):
 
     def prior_box(self, name):
         """The box a prior's target is CLIPPED into, in the MODEL's own numbers: the fitted box
-        for the slow pair and the symmetric edge for `Rho_S`, and for the residual pair the raw
-        box mapped through the admissible transform the fit moves it in."""
+        for the slow pair, the symmetric `Rho_S` edge times the top of `Sigma_S_Bounds` for the
+        leverage PRODUCT, and for the residual pair the raw box mapped through the admissible
+        transform the fit moves it in."""
+        if name == LV_LEVERAGE:
+            edge = self.bounds_of(('Rho_S', 0), ())[1] * self.box['Sigma_S'][1]
+            return -edge, edge
         low, high = self.bounds_of((name, 0), ())
         if name not in LV_RAW:
             return low, high
@@ -2305,23 +2348,29 @@ class LVFit(object):
             -0.5 + (span[1] - 0.5 - utils.LV_AB_EPS) * np.tanh([low, high]))
 
     def residual_hierarchy(self):
-        """`Alpha` and `Beta` where the ladder prices no 1-3m tails, as brief 5's HIERARCHY of
-        three: the short-dated WINGS where the ladder carries one under `Residual_Horizon`, and
-        there is no row at all; else the HISTORY's own estimate where its standard error is at or
-        under the class prior's spread, which is what INFORMATIVE means here; else the class
-        default, reported by name with the standard error that failed the test.
+        """`Alpha` and `Beta`'s prior rows, as brief 5's HIERARCHY of three: the HISTORY's own
+        estimate where its standard error is at or under the class prior's spread, which is what
+        INFORMATIVE means here, else the class default, reported by name with the standard error
+        that failed the test.
+
+        `Residual_Horizon` governs ALPHA alone: a ladder quoting a wing under it prices the 1-3m
+        tails and the wings free the scale. BETA KEEPS ITS ROW BESIDE THEM. What the wings pick on
+        an index is a POSITIVE residual skew - the sticky part of the smile a forward-starting put
+        reads at the coupon date, pointing the wrong way - and they outvote a soft row wherever
+        they mean it rather than switching the statement off.
 
         `alpha` is a scale, so its prior is on `log alpha` and a history's own error is read in
         the same units; and a CONTAMINATED `alpha^P` is uninformative whatever its error, the
         estimator having fitted the diffusive remainder's law rather than the residual's.
         """
-        if any(T <= self.residual_horizon for T in self.wings):
-            return []
+        wings = any(T <= self.residual_horizon for T in self.wings)
         edge = 'its shortest wing expiry is {} against the {:g}y Residual_Horizon'.format(
             '{:g}y'.format(min(self.wings)) if self.wings else 'none at all',
             self.residual_horizon)
         rows, told = [], []
         for name, logs in (('Alpha', True), ('Beta', False)):
+            if wings and logs:
+                continue
             classes, spread = self.class_priors[name]
             value = None if self.history is None else float(self.history[name])
             error = None if value is None else float(
@@ -2336,14 +2385,17 @@ class LVFit(object):
                       'the {:g} class spread'.format(name.lower(), value, error, spread)
             rows.append((name, classes[self.asset_class][0], spread, logs) if why
                         else (name, value, error, logs))
-            told.append('{}: {}'.format(name.lower(), (
-                'CLASS PRIOR {:+.4f} at spread {:g}, history uninformative - {}'.format(
-                    rows[-1][1], spread, why) if why else
-                "the history's {}^P {:+.4f} with its SE {:.4g}".format(
-                    name.lower(), value, error))))
-        self.prior_lines.append(
-            'the residual pair is not identified by this ladder ({}), so both are PRIORS with '
-            'their own spread rather than free - {}'.format(edge, '; '.join(told)))
+            told.append('{}: {}{}'.format(
+                name.lower(), 'soft prior in force beside the wings - ' if wings else '', (
+                    'CLASS PRIOR {:+.4f} at spread {:g}, history uninformative - {}'.format(
+                        rows[-1][1], spread, why) if why else
+                    "the history's {}^P {:+.4f} with its SE {:.4g}".format(
+                        name.lower(), value, error))))
+        self.prior_lines.append('{} ({}) - {}'.format(
+            'the short-dated wings identify ALPHA and free it, and BETA keeps a soft row beside '
+            'them, the wings outvoting it where they mean it' if wings else
+            'the residual pair is not identified by this ladder, so both are PRIORS with their '
+            'own spread rather than free', edge, '; '.join(told)))
         return rows
 
     def soft_priors(self):
@@ -2351,13 +2403,16 @@ class LVFit(object):
         price: a standard error of miss costs what one quote missing by one vol point costs on
         this ladder, so any quote that speaks outvotes any of them. Nothing here is a pin.
 
-        The leverage prior is first and never absent (brief 5); a history's own slow pair joins it,
+        The leverage prior is first and never absent (brief 5), on the PRODUCT `rho_s sigma_s`
+        at `Leverage_Prior_Weight` over `Sigma_S_Reference` where nothing declares an error - one
+        quote per 0.1 of `rho_s` at the reference vol-of-vol, which is what the weight always
+        said; a history's own slow pair joins it,
         and the residual pair follows `residual_hierarchy`. Every target is clipped into the box
         the fit moves that lever in - a prior the fit cannot reach is a refusal by another name -
         and the state is seeded at whatever each row is on. A prior on a lever this ladder PINS is
         reported and carries no row, a row on a pinned coordinate being the pin under another name.
         """
-        rows = [('Rho_S', self.prior, self.prior_sd, False, True)]
+        rows = [(LV_LEVERAGE, self.prior_target, self.prior_sd, False, True)]
         if self.history is not None:
             rows += [(name, float(self.history[name]), float(self.history[name + '_SE']), False,
                       self.identified_slow()) for name in utils.LV_SLOW_HISTORY[1][:2]]
@@ -2374,8 +2429,9 @@ class LVFit(object):
                                              ' - and carries NO ROW, this ladder PINNING the '
                                              'slow pair rather than fitting it')))
             if fitted:
-                self.prior_rows.append((name, inside, self.leverage_weight if error is None
-                                        else self.quote_point / error, logs))
+                self.prior_rows.append((
+                    name, inside, self.quote_point / error if error is not None
+                    else self.leverage_weight / self.sigma_reference, logs))
                 if self.priors and name in LV_RAW:
                     self.state[name] = [inside] * len(self.state[name])
         if not self.priors:
@@ -2603,6 +2659,34 @@ class LVFit(object):
             raise ValueError('{}. Set {} to {}'.format(message, field, remedy))
         self.notes.append('FLOORED - ' + message.split(': ', 1)[1])
 
+    def on_guard(self):
+        """Every guard theta* is sitting ON, as one sentence, or `''` where it is clean: a
+        `Sigma_S`, `Alpha` or `Sigma_L` on either edge of its box, `|beta|/alpha` within
+        `C_Margin` of the conditioning bound, or `c` on its `C_Min` floor.
+
+        A fit a box or a floor is holding is not a fitted one, and every reading it feeds - the
+        forward smile, an exposure, a mark - inherits that. The flag goes on the factor so a
+        calculation can report what it priced off; nothing here refuses.
+        """
+        held, bound = [], np.sqrt(1.0 - utils.LV_COND_MIN)
+        for name in ('Sigma_S', 'Alpha', 'Sigma_L'):
+            values = [self.state[name]] if name == 'Sigma_L' else self.state[name]
+            low, high = self.box[name]
+            for i, edges in enumerate(zip(*on_box(values, low, high))):
+                if any(edges):
+                    held.append('{} on its {:g} box'.format(
+                        self.label((name, None if name == 'Sigma_L' else i)),
+                        low if edges[0] else high))
+        skew = np.abs(np.array(self.state['Beta'])) / np.array(self.state['Alpha'])
+        for i in np.flatnonzero(skew >= bound - self.c_margin):
+            held.append('|beta|/alpha {:.3f} at {:g}y within {:g} of {:.4f}'.format(
+                skew[i], self.buckets[i], self.c_margin, bound))
+        c = 1.0 - np.array(self.state['Rho_S']) ** 2 - self.state['Rho_L'] ** 2
+        for i in np.flatnonzero(c <= self.c_min + self.c_margin):
+            held.append('c {:.3f} at {:g}y within {:g} of its C_Min floor {:g}'.format(
+                c[i], self.buckets[i], self.c_margin, self.c_min))
+        return 'ON GUARD: {}'.format('; '.join(held)) if held else ''
+
     def written(self):
         """The `LogVar2FJModelParameters` price factor: the scalars, the structural ones the kit
         reads, and the five curves - `xi` on the segments, the four levers on their buckets. The xi
@@ -2614,6 +2698,7 @@ class LVFit(object):
                 **{name: float(self.state[name])
                    for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES},
                 'C_Min': self.c_min, 'Residual_Law': self.law,
+                'On_Guard': self.on_guard(),
                 'Skew_Gradient': '' if nearest is None else '{:.12g},{:.12g}'.format(
                     *self.skew_rows[nearest]),
                 'Stickiness_Band': self.skew_band,
@@ -2895,14 +2980,19 @@ class LVFit(object):
                 self.shape_floor, '' if self.priors and self.shape_floor > 0.0 else
                 ' - NOT IN FORCE'))
         logging.info(
-            '  leverage prior on Rho_S {:+.4f} from {}, weight {:g}{} - and one standard error of '
-            'ANY prior row costs {:.3g}, which is what one quote missing by one vol point costs on '
-            'this ladder{}'.format(
-                self.prior, self.prior_source, self.prior_rows[0][2] if self.prior_rows else
-                self.leverage_weight,
+            '  leverage prior on the PRODUCT rho_s*sigma_s {:+.4f} from {}, weight {:g}{} - and '
+            'one standard error of ANY prior row costs {:.3g}, which is what one quote missing by '
+            'one vol point costs on this ladder{}. Its Rho_S {:+.4f} signs the seed and stage 4 '
+            'and carries no row of its own'.format(
+                self.prior_target, self.prior_source,
+                self.prior_rows[0][2] if self.prior_rows else
+                self.leverage_weight / self.sigma_reference,
                 '' if self.prior_sd is None else ' = one quote-vol-point per {:.4f} SE'.format(
                     self.prior_sd), self.quote_point,
-                '' if self.priors else '; NOT IN FORCE, Model_Priors is Off'))
+                '' if self.priors else '; NOT IN FORCE, Model_Priors is Off', self.prior))
+        if self.on_guard():
+            logging.warning('  {}: {} - the box or the floor is holding theta*, not the data; the '
+                            'factor carries the flag'.format(self.market_price, self.on_guard()))
         if self.alpha_prior() is not None:
             ratio = self.alpha_prior() / (self.state['Alpha'][0] or float('nan'))
             logging.info(
@@ -3173,7 +3263,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          'which were free; the leverage products, $c$, the conditioning share',
          '$\\gamma^2/\\alpha^2$ and their product $c_{eff}$ with the efficiency factor',
          '$(\\sqrt{c_{eff}}/0.22)^3$; the residual shape $\\alpha\\delta_A$ at 1m and 1y against the',
-         'floor; the leverage prior in force with its source; $\\alpha^P$ against $\\alpha^Q$, flagged',
+         'floor; the leverage prior in force with its source; every guard $\\theta^*$ is sitting',
+         'ON, written on the factor as **On_Guard** and warned here; $\\alpha^P$ against $\\alpha^Q$, flagged',
          'past 2x, where a history carries one; the stationary log-vol sd; the cap',
          'headroom; THE CURVE per segment - the market own ATM$^2$ forward variance and its',
          'VARIANCE-SWAP strip (log-contract replication off each rung own quotes, flat vol past',
@@ -3464,17 +3555,25 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='What a full C_Margin violation costs in residual, against wing misses of a '
                       'few tenths, so the edge bites in the last percent and the box stops it'),
         F('Leverage_Prior_Weight', 'Float', default=0.02,
-          description='The weight on the leverage prior\'s residual row w (Rho_S - prior) where '
-                      'the prior carries NO standard error - a declaration or a class default - '
-                      'never absent under Model_Priors (brief 5): the residual can carry the whole '
-                      'spot skew and a vanilla-only fit then sets Rho_S wherever it likes, leaving '
-                      'the forward smile undetermined. One quote\'s weight - the normalised '
-                      'vanilla weights sit at 0.17-0.22 on a twenty-rung ladder - so a prior miss '
-                      'of a tenth in Rho_S costs what ONE quote missing by a vol point costs, '
-                      'which the data outvotes wherever it speaks. That is the SAME statement '
-                      'every other prior row makes at its own standard error, with 0.1 for the '
-                      'error nothing here declares; a history\'s Rho_S carries one and is '
-                      'weighted by it instead'),
+          description='The weight on the leverage prior\'s residual row where the prior carries '
+                      'NO standard error - a declaration or a class default - never absent under '
+                      'Model_Priors (brief 5): the residual can carry the whole spot skew and a '
+                      'vanilla-only fit then sets the leverage wherever it likes, leaving the '
+                      'forward smile undetermined. The row is on the PRODUCT Rho_S*Sigma_S, so the '
+                      'scale applied is this over Sigma_S_Reference. One quote\'s weight - the '
+                      'normalised vanilla weights sit at 0.17-0.22 on a twenty-rung ladder - so a '
+                      'prior miss of a tenth in Rho_S at the reference vol-of-vol costs what ONE '
+                      'quote missing by a vol point costs, which the data outvotes wherever it '
+                      'speaks. That is the SAME statement every other prior row makes at its own '
+                      'standard error, with 0.1 for the error nothing here declares; a history\'s '
+                      'product carries one by the delta method and is weighted by it instead'),
+        F('Sigma_S_Reference', 'Float', default=2.4,
+          description='The Q-sized vol-of-vol a declared Leverage_Prior - a Rho_S number, the '
+                      'desk-seed convention - is multiplied by to reach the PRODUCT the prior row '
+                      'is on, and the same number Leverage_Prior_Weight is divided by to price '
+                      'that row. 2.4 is the state\'s own Sigma_S seed, so a desk declaring -0.4 '
+                      'gets a product prior of -0.96 and the report says so. Refused at or below '
+                      'zero, which would flip the prior\'s sign or divide its weight by nothing'),
         F('Shape_Penalty', 'Float', default=0.05,
           description='What a FULL violation of Residual_Shape_Floor costs: 5 vol points of '
                       'residual against wing misses of a few tenths, on a relative row '
@@ -3547,10 +3646,24 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The Rho_S prior per asset class on the ENGINE\'s own axis (brief 5), as '
                       'class:value entries separated by semicolons: an index at the VIX-implied '
                       'spot-vol correlation, an FX pair symmetric until a desk says otherwise '
-                      'through Leverage_Prior or a history. An FxRate is priced in the domestic '
-                      'currency, so a prior quoted USD-per-currency changes sign on FxRate.ZAR in '
-                      'a USD book - which is why the seed states the desk\'s own number and this '
-                      'is only the fallback'),
+                      'through Leverage_Prior or a history. IT CARRIES NO ROW - the prior row is '
+                      'on the product, Leverage_Product_Defaults - and what it still does is SIGN: '
+                      'the Rho_S seed sign(prior)*0.75, and through the fitted fast leverage '
+                      'stage 4\'s slow pin. An FxRate is priced in the domestic currency, so a '
+                      'prior quoted USD-per-currency changes sign on FxRate.ZAR in a USD book - '
+                      'which is why the seed states the desk\'s own number and this is only the '
+                      'fallback'),
+        F('Leverage_Product_Defaults', 'Text',
+          default='FxRate:0.0; EquityPrice:-1.9; CommodityPrice:-1.9; FuturesPrice:-1.9',
+          description='The prior on the leverage PRODUCT Rho_S*Sigma_S per asset class, as '
+                      'class:value entries separated by semicolons - the last tier of the one '
+                      'order a declared Leverage_Prior and a history precede, at brief 2\'s '
+                      'VIX-vs-SPX sizing of -1.9. The PRODUCT is the axis because a prior on '
+                      'Rho_S alone is obeyed by moving Sigma_S to its box instead: Rho_S -0.59 '
+                      'with Sigma_S on a 5.0 bound is a product of -2.95, half again the Q-sized '
+                      'number, and the residual then takes a POSITIVE skew to lift the call wing '
+                      'back - two mechanisms compensating along the one direction vanillas cannot '
+                      'see, and the forward smile an autocall reads is what pays for it'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep the written parameters connected to the numbers quoted, so a '
                       'calculation\'s backward pass reports dV/dq beside dV/dtheta. The fitted '
@@ -3570,9 +3683,20 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         if not strikes[0] < strikes[2]:
             raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
                              .format(self.param['Psi_Strikes']))
-        for name, count in (('Slow_Factor_Prior_Defaults', 2), ('Leverage_Prior_Defaults', 1),
-                            ('Alpha_Prior_Defaults', 1)):
-            lv_parse_class_priors(self.param[name], name, count)
+        if not float(self.param['Sigma_S_Reference']) > 0.0:
+            raise ValueError('Sigma_S_Reference: the vol-of-vol a declared Leverage_Prior reaches '
+                             'the product prior through must be positive, read {!r}'
+                             .format(self.param['Sigma_S_Reference']))
+        tables = {name: lv_parse_class_priors(self.param[name], name, count) for name, count in (
+            ('Slow_Factor_Prior_Defaults', 2), ('Leverage_Prior_Defaults', 1),
+            ('Leverage_Product_Defaults', 1), ('Alpha_Prior_Defaults', 1))}
+        crossed = [c for c, (product,) in tables['Leverage_Product_Defaults'].items()
+                   if product * tables['Leverage_Prior_Defaults'][c][0] < 0.0]
+        if crossed:
+            raise ValueError(
+                'Leverage_Product_Defaults and Leverage_Prior_Defaults disagree in SIGN on {}: '
+                'the product is the row and the rho_s signs the seed, so a fit would seed against '
+                'its own prior'.format('/'.join(crossed)))
         #: What `Quote_Sensitivity` leaves behind: every fitted parameter still connected to its
         #: quotes, keyed as `_build_factor_state` mints its leaf, plus the quote leaf per block.
         #: `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -3991,8 +4115,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         read = fit.instrument
         n, fit.xi_0 = fit.buckets.size, fit.atm[0].sigma ** 2
         fit.law = read['Residual_Law']
-        fit.prior, fit.prior_sd, fit.prior_source = fit.leverage_prior() if fit.priors else (
-            0.0, None, 'none - Model_Priors is Off, the vanilla-only objective and its box')
+        fit.prior, fit.prior_target, fit.prior_sd, fit.prior_source = (
+            fit.leverage_prior() if fit.priors else
+            (0.0, 0.0, None, 'none - Model_Priors is Off, the vanilla-only objective and its box'))
         # the SEED's sign is the prior's - a zero prior seeds the index number and the symmetric
         # box decides - and the residual pair seeds at the class prior, `alpha` at the history's
         # own estimate where `alpha_seed` says the fit believes it

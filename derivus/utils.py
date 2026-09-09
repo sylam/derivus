@@ -2401,9 +2401,11 @@ LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 #: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the calibrator to
 #: read, declared here because both lanes read it: the model name the block is keyed under with the
 #: underlying's own name, and every estimate a reader takes, EACH WITH ITS OWN `_SE` BESIDE IT -
-#: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S` the leverage prior, and
-#: `Beta` the sanity table's P side, reported and never crossed (brief 8).
-LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel', ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S'))
+#: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S`/`Sigma_S` the leverage
+#: prior's own PRODUCT and its delta-method error, and `Beta` the sanity table's P side, reported
+#: and never crossed (brief 8).
+LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel',
+                   ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S', 'Sigma_S'))
 
 #: What the calibration writes on the factor for a DEAL's own sensitivity report to compose its
 #: forward-skew reserve with (brief 5) - structural, carried by the same route the cap and the law

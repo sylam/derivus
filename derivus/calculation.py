@@ -2134,6 +2134,13 @@ class Base_Revaluation(Calculation):
         self.params = params
         shared_mem = self.update_factors(params, base_date)
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
+        # a mark carries the flag its own factors were written with: a parameter the box holds
+        # is not a fitted one, and the reading it feeds inherits that
+        guarded = {utils.check_scope_name(key): factor.declared['On_Guard']
+                   for key, factor in self.static_factors.items()
+                   if getattr(factor, 'declared', {}).get('On_Guard')}
+        if guarded:
+            self.calc_stats['On_Guard'] = guarded
         self.calc_stats['Deal_Setup_Time'] = time.monotonic()
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(

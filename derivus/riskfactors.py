@@ -1190,6 +1190,13 @@ class LogVar2FJModelParameters(CurveModelParameters):
                       '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
                       'it and its own two derivatives (`bootstrappers.lv_skew_reserve`). Blank '
                       'where the fit stated none - STRUCTURAL'),
+        F('On_Guard', 'Text', default='',
+          description='Every guard the calibration that wrote this factor landed ON, as its own '
+                      'sentence - a $\\sigma$ on its box, $|\\beta|/\\alpha$ at the conditioning '
+                      'bound, or $c$ on **C_Min** - and blank where the fit is clean. A held '
+                      'parameter is the BOX speaking and not the data, so anything priced off it '
+                      'inherits that: `Base_Revaluation` reports the flag in `Stats` under the '
+                      'same key. Written by the fit, never authored - STRUCTURAL'),
         F('Stickiness_Band', 'Float', default=0.0,
           description='The band, in VOL POINTS, Skew_Gradient\'s reserve is taken over - the '
                       'calibration\'s own Stickiness_Band, carried so the deal side needs no '
@@ -1223,6 +1230,8 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 'LogVar2FJModelParameters carries %s, retired with the Poisson residual: %s'
                 % (', '.join(retired), '; '.join('%s -> %s' % (c, LV_RETIRED[c])
                                                  for c in retired)))
+        if self.declared['On_Guard']:
+            logging.info('%s: %s', type(self).__name__, self.declared['On_Guard'])
         self.gaussian = str(self.declared['Residual_Law']) == 'Gaussian'
         if self.gaussian:
             logging.info('%s: Gaussian residual: limit/test mode - no mixer, Alpha and Beta unread',
