@@ -218,21 +218,30 @@ Given the day's two shocks and the block's mixer the interval return is `N(M, G)
 framework's one Cholesky-correlated Gaussian per scenario step multiplies `sqrt(G)` and there is no
 weighted-combination approximation and no drift correction: the leverage factors have conditional
 mean one and `mu_A` forces the residual's. **A declared cross-factor correlation therefore sits on
-the Gaussian GIVEN THE MIXER**, and the correlation the realised block returns carry is that number
-times `E[Sigma]/sd(R)` — at most `sqrt(c_eff)` with `c_eff = c*gamma^2/alpha^2`. Measured on a
-declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation is `0.352` / `0.353`
-/ `0.354` of the declared one — flat in the declared value, against a bound of `0.456` — and the
-Gaussian-residual limit, which has no mixer, reads `0.452` / `0.454` / `0.454`. The historical
-estimator (`LogVar2FJCalibration`) measures its own `eps` on that same object, so a book's matrix
-crosses AS IS and nothing is rescaled. **The dilution is also the CEILING.** The framework hands
-the process a unit normal already correlated with its siblings, and no variance-preserving map of
-a unit normal raises a correlation, so the largest total-return correlation this process can
-realise against a lognormal sibling is `E[√G]/sd(R)` — `√c` exactly under a Gaussian residual,
-0.35 on the monthly blocks above and 0.23 on the daily clock at the Q-sized NIG defaults. A
-DESK-marked correlation is a total-return number and is realised at that fraction of itself
-here, where the pricer's quanto loading realises it exactly ([Market Prices](market_prices.md#logvar2fj));
-un-diluting it is a per-factor scaling of the correlation matrix before the Cholesky, not a
-scaling of the draw — an open ruling on the roadmap.
+the Gaussian GIVEN THE MIXER**, and a pair of factors realises `rho D_i D_j` with
+`D = E[sqrt(G)]/sd(R)` over the SCENARIO INTERVAL — the clock the framework correlates on, not the
+day. `Var(R) = E[S]` for `S` the interval's own integrated variance, and the days' mixers CONVOLVE
+(`lam/m^2` is `gamma^2` whatever the clock), so `G | S ~ IG(c_eff S, gamma^2 (c_eff S)^2)` and `D`
+is a closed form: `sqrt(c_eff)` times the IG's own Jensen factor `utils.ig_sqrt_share`, times the
+state's, quadratured over `lv_state_variance`'s law and sd-weighted over the grid. It is `sqrt(c)`
+exactly under a Gaussian residual with a frozen variance, `sqrt(c_eff)` in the deterministic limit,
+and **one exactly for every other process**, which is the base class's answer. Measured before the
+scaling on a declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation was
+`0.352` / `0.353` / `0.354` of the declared one under the NIG residual and `0.452` / `0.454` /
+`0.454` under the Gaussian, flat in the declared value.
+
+**A DESK-MARKED correlation is a total-return number, so `Credit_Monte_Carlo.get_cholesky_decomp`
+divides each pair by `D_i D_j` before the Cholesky** — the one place it can be done, the framework
+handing the process a unit normal already correlated with its siblings and no variance-preserving
+map of a unit normal raising a correlation. Measured on that same document, a declared 0.30 now
+realises **0.2976 ± 0.0071** under the NIG residual and **0.2984 ± 0.0071** under the Gaussian one.
+**The dilution is therefore also the CEILING**: `|rho| > D_i D_j` is not realisable by the model as
+configured and REFUSES by name with the maximum, every offending pair at once — 0.60 and 0.90 on
+that document refuse against ceilings of 0.3600 (NIG) and 0.4613 (Gaussian). The pricer's quanto
+loading realises the marked number exactly on its own arm ([Market Prices](market_prices.md#logvar2fj)),
+so the two arms now agree. The historical estimator (`LogVar2FJCalibration`) measures its own `eps`
+on the Gaussian-given-mixer object, so an estimated matrix is already on that scale and must not be
+declared as a total-return one.
 
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
 CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside

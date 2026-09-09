@@ -431,6 +431,12 @@ class StochasticProcess(object):
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         pass
 
+    def correlation_dilution(self, deltas):
+        """The share of a DECLARED TOTAL-RETURN correlation this process realises in its own
+        return over the scenario intervals `deltas` (years). One wherever the framework's
+        correlated draw is the return's only shock, which is every process but a mixed one."""
+        return 1.0
+
     def basis_decay(self):
         """`(phi, lam)` — how a composed spot's basis tail decays away from its current level,
         consumed at compile by `instruments.get_observed_basis_decay` for pricers that project a
@@ -5177,6 +5183,58 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     @property
     def correlation_name(self):
         return 'LogVar2FJSpotProcess', [()]
+
+    def correlation_dilution(self, deltas):
+        """`E[sqrt(G)]/sd(R)` over each scenario interval of `deltas` (years), sd-weighted - the
+        share of a DECLARED TOTAL-RETURN correlation this process realises, and so the largest one
+        it can realise at all.
+
+        An interval's return is `M + sqrt(G) Z` for the framework's correlated `Z`, with
+        `Var(R) = E[S]` at `S` the interval's own integrated variance, so a pair realises
+        `rho D_i D_j`. The days' mixers CONVOLVE - `lam/m^2` is `gamma^2` whatever the clock - so
+        `G | S ~ IG(c_eff S, gamma^2 (c_eff S)^2)` and `E[sqrt(G)|S]` is `ig_sqrt_share`'s;
+        `S` is moment-matched lognormal off the log-variance's own OU covariance, EXACT on a
+        one-day interval, and integrated by Gauss-Hermite. Under a Gaussian residual the clock IS
+        the mixer, leaving `sqrt(c)` times that interval's own Jensen factor. Read at each
+        interval's OWN bucket and off the UNCAPPED law, the cap being a guard at a 1000% vol.
+        """
+        param, spy = self.implied.param, self.steps_per_year
+        sub = utils.substep_schedule(np.asarray(deltas) * spy)
+        step = np.concatenate([np.array(x) for x in sub]) / spy
+        at = np.concatenate([[0.0], np.cumsum(step)])
+        start = np.cumsum([0] + [len(x) for x in sub])
+        lever = lambda name, t: utils.bucket_at(
+            param[name].array[:, 0], torch.tensor(param[name].array[:, 1]),
+            torch.tensor(at[t])).numpy()
+        ou = {x: torch.tensor(float(param[x])) for x in ('Kappa_L', 'Sigma_L', 'Kappa_S')}
+        ou['Sigma_S'] = torch.tensor(lever('Sigma_S', slice(0, -1)))
+        clock = torch.tensor(step)
+        # the two OU variances apart: their sum IS `lv_state_variance`, and the Markov covariance
+        # `exp(-kappa dt) Var(earlier)` needs them per factor
+        v_l, v_s = [utils.lv_state_variance(dict(ou, **{x: torch.zeros_like(ou[x])}), clock)
+                    [:-1].numpy() for x in ('Sigma_S', 'Sigma_L')]
+        rho_s, alpha, beta = (lever(x, start[:-1]) for x in ('Rho_S', 'Alpha', 'Beta'))
+        c = 1.0 - rho_s * rho_s - float(param['Rho_L']) ** 2
+        c_eff = c if self.implied.gaussian else c * (1.0 - (beta / alpha) ** 2)
+        node, weight = np.polynomial.hermite_e.hermegauss(utils.LV_DILUTION_NODES)
+        weight, drawn, sd = weight / weight.sum(), 0.0, 0.0
+        budget = step * lever('Xi_Curve', slice(0, -1))
+        for j, (a, b) in enumerate(zip(start[:-1], start[1:])):
+            variance = budget[a:b].sum()
+            if variance <= 0.0:
+                continue
+            lag = np.abs(at[a:b, None] - at[None, a:b])
+            first = np.minimum(np.arange(a, b)[:, None], np.arange(a, b)[None, :])
+            # a deterministic variance makes the double sum the square of the sum to ROUNDING,
+            # and a spread a few ulps under zero is a nan under the root below
+            spread = np.log(max(1.0, (budget[a:b, None] * budget[a:b] * np.exp(
+                np.exp(-float(ou['Kappa_L']) * lag) * v_l[first] +
+                np.exp(-float(ou['Kappa_S']) * lag) * v_s[first])).sum() / variance ** 2))
+            m = c_eff[j] * np.exp(np.log(variance) - 0.5 * spread + np.sqrt(spread) * node)
+            root = np.sqrt(m) if self.implied.gaussian else np.sqrt(m) * utils.ig_sqrt_share(
+                (alpha[j] * alpha[j] - beta[j] * beta[j]) * m)
+            drawn, sd = drawn + (weight * root).sum(), sd + np.sqrt(variance)
+        return float(drawn / sd)
 
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         """The carry curves - the underlying's own, `GBMAssetPriceTSModelImplied`'s pair."""

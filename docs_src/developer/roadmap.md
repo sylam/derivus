@@ -11,6 +11,22 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
+- **The Barclays netting set declares three pairs the model cannot realise** (2026-09-09, lane
+  C) — as `notebooks/CVAMarketData_CalibratedLV.json` marks them and on the book's own 2y grid:
+  SX5E/SD3E 0.8039 against a maximum of 0.3443, SX5E/NKY 0.3500 against 0.2086, NKY/SD3E 0.3188
+  against 0.2156. The equity/FX pairs are all inside (SX5E/ZAR 0.3069, SD3E/ZAR 0.3253, NKY/JPY
+  −0.2351 against per-factor ceilings 0.5772 / 0.5965 / 0.3614). The set does not run under the
+  LogVar2FJ outer until the numbers are marked inside the bound or the shared mixer is built.
+- **The owner's declared matrix is keyed on `LognormalDiffusionProcess`** (2026-09-09, lane C) —
+  move an equity to `LogVar2FJImpliedSpotModel` and its `correlation_name` becomes
+  `LogVar2FJSpotProcess.<name>`, which the file does not carry, so every declared equity correlation
+  reads 0.0 and the refusal above never fires until the keys are re-written. Silent, and the reason
+  lane 4's xVA documents carry no correlation at all; a correlation declared under a process name no
+  simulated factor answers to should be named.
+- **`correlation_dilution` reads one bucket per interval and the uncapped law** (2026-09-09, lane
+  C) — an interval straddling a calendar-bucket knot is read at the bucket its START falls in
+  rather than split into its two pieces, and `E[S]` is `Xi_Curve`'s integral with no cap; both are
+  exact wherever a calibrated model lives and neither is asserted.
 - **`LVFit.cap_level` is never re-evaluated after the polish** (2026-09-09, lane P2) — it runs at
   the seed and after stage 4, so a polish that raises `Sigma_S` leaves `Cap_A` where a smaller
   `Sigma_S` put it: NKY at `Residual_Horizon: 0.0`, seed 1, converged in 23 polish evaluations and
@@ -421,16 +437,12 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     leaf does not need. The bump is the leaf's oracle. (Decision 12 as it stood — return-level ρ
     or the loading divided by the Gaussian-shocked share — CLOSED 2026-09-08 by measurement:
     the loading as built already realises the marked total-return correlation, see Built.)
-13. **The outer process's correlation ceiling.** `LogVar2FJImpliedSpotModel` multiplies the
-    framework's correlated unit normal by `√G`, so a declared correlation against a lognormal
-    sibling is realised at `E[√G]/sd(R)` — `√c` under a Gaussian residual, 0.35 on monthly blocks
-    and 0.23 on the daily clock at the Q-sized NIG defaults — and no scaling of a unit normal can
-    raise it: that fraction is the largest total-return correlation the process can realise, so a
-    book declaring 0.6 against a LogVar2FJ factor is asking for what the generator cannot produce,
-    and the pricer's quanto arm (exact) and the outer arm (diluted) disagree on the same marked ρ.
-    Two remedies, one ruling: a per-factor scaling of the correlation matrix before the Cholesky in
-    `Credit_Monte_Carlo.get_cholesky_decomp` (the do-not-touch block), or the walk's leverage
-    shocks on the framework's Gaussian (a law change with its own hex gate).
+13. **The outer process's correlation ceiling.** CLOSED 2026-09-09 by the ruling and the build:
+    the matrix is scaled per factor before the Cholesky, and the ceiling refuses by name. The
+    dilution the ruling names — `√c_eff` — is the GAUSSIAN-SHOCKED bound and not what is realised,
+    and the pooled per-path daily ratio is not it either; what sets the realised correlation is
+    the ratio of EXPECTATIONS `E[√G]/sd(R)` on the SCENARIO INTERVAL's clock. See Built, and the
+    shared mixer under Designed, not built.
 14. **`Prices` in process: warning or refusal.** The field is mandatory on the multiprocessing
     path and a warning naming the fix in process, where the family knows its own type; a refusal
     would cost an edit at about twenty test and gate sites that write
@@ -452,6 +464,25 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     consequential number it produces and its standard error is what carries a desk mark.
 
 ## Designed, not built
+
+**A shared mixer component across a netting set's LogVar2FJ factors** (2026-09-09, the owner's
+scheduled requirement for any netting set whose declared correlations exceed the bound). The
+ceiling is Jensen on INDEPENDENT mixers: `E[sqrt(G_i G_j)] = E[sqrt(G_i)]E[sqrt(G_j)]` only because
+the two subordinators are independent. Give the set ONE subordinator with a loading per factor —
+`G_i = c_eff,i S_i X` with a common unit-mean `X` — and `E[sqrt(G_i G_j)]` gains `E[X]` where it had
+`E[sqrt(X)]^2`: **the mixer's own Jensen factor cancels out of the pair** and the ceiling rises to
+`sqrt(c_eff,i c_eff,j) J_i J_j`, `J` the STATE's factor alone. On the book's fits at the Barclays
+grid that is SX5E/SD3E **0.3443 → 0.4334**, SX5E/NKY **0.2086 → 0.4351**, NKY/SD3E **0.2156 →
+0.3656** — enough for two of the three declared pairs (0.3500 and 0.3188) and still short of
+SX5E/SD3E's 0.8039, which is a two-index correlation no idiosyncratic-share model reaches. The
+fast-variance-shock alternative the brief names beside it adds at most `|rho_s,i rho_s,j|`: on these
+fits **+0.0000 / +0.0000 / +0.0097**, because `rho_s` is −0.02 on NKY and 0.00 on SX5E. The mixer
+is the mechanism. TOUCHES: the kit's `residual` (one uniform per netting set per step rather than
+per factor, so `mixers` moves up to the calculation), the outer process's `draws`, the calibrator's
+per-factor `Alpha`/`Beta` (a shared `X` constrains the shapes to agree, or the loading absorbs the
+difference and the marginals stop being the fitted NIG — the honest form is probably
+`X_i = w_i X_common + (1 − w_i) X_i,own` with `w_i` fitted), and the estimator, which gains a second
+object to estimate. Nothing built.
 
 **LogVar2FJ, what remains** (designed 2026-09-04; phase 1, the three pricers and the calibrator
 with spec 5.4's engine bootstrapper built 2026-09-05/06 - see Built and `logvar2fj_spec.md`). In
@@ -576,6 +607,31 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The CVA simulation realises the correlation the desk declares, or refuses by name**
+  (2026-09-09, lane C, the owner's ruling 1 of that morning) — a desk's `rho` is a TOTAL-RETURN
+  number and the framework's sits on the Gaussian each process correlates, so
+  `Credit_Monte_Carlo.get_cholesky_decomp` divides each pair by `D_i D_j` before the Cholesky,
+  refusing what the model cannot realise. `LogVar2FJImpliedSpotModel.correlation_dilution` states
+  `D` off its own parameters with no simulation: the interval's mixers convolve, so
+  `G | S ~ IG(c_eff S, gamma^2 (c_eff S)^2)` and `E[sqrt(G)] = sqrt(c_eff S) J(gamma^2 c_eff S)` with
+  `J = utils.ig_sqrt_share` the IG's Bessel moment `K_0(z) e^z sqrt(2z/pi)` — 6.5e-7 from a
+  2^20-point stratified read of `ig_quantile` at the worst clock — integrated over the interval's
+  own log-variance by a 48-node Gauss–Hermite, sd-weighted over the grid; **9.5–13.8 ms per factor
+  per calculation**, once at compile. MEASURED: `sqrt(c)` to twelve digits under a Gaussian residual
+  with the vol-of-vol off, 1.0 exactly for every Hull-White and GBM sibling, and the pooled reading
+  of the same closed form within **0.24%** of `ceiling.py`'s four simulated blocks. G3-5 after
+  scaling realises **0.2976 ± 0.0071 / 0.2984 ± 0.0071** of a declared 0.30 (NIG / Gaussian) against
+  0.1055 / 0.1356 before; 0.60 and 0.90 refuse with ceilings 0.3600 / 0.4613. On the desk's own deal
+  229524957 over `0d 2d 1w(1w) 3m(1m) 5y(3m)`, the marked NKY/JPY −0.2351 was realised at
+  **−0.0843 ± 0.0155** and is now **−0.2159 ± 0.0149**, and with that correlation declared the
+  deal RE-MARKS rather than refuses: CVA **2,559,670 → 2,768,202 ZAR (+8.2%)** uncollateralised and
+  **525,525 → 546,400 (+4.0%)** collateralised. Hex: 4,180 floats over 16 documents and lane Q's
+  3,641 over 6, 0 mismatches; the desk's two xVA documents bit-identical without a declared
+  correlation. FOUND, NOT FIXED: `D` reads **8–10% high** on a grid with quarterly
+  intervals, the closed form dropping the leverage's serial covariance in `sd(R)` — 0.99 of
+  declared on monthly blocks, 0.92 on the desk's 5y grid; and the `Alternating_Projections`
+  healing branch raises `UFuncTypeError` on a complex dtype (one `np.real()`), measured identically
+  on the clean head. Engine net +135 lines. Pack `artifacts/lv_cva_correlation_20260909/`.
 - **LogVar2FJ v2 — one price for every prior, and the forward view withdrawn** (lanes P and P2,
   2026-09-09, the owner's rulings 2 and 3 of that morning) — every prior on the fit is a SOFT ROW
   scaled so that one standard error of miss costs what one quote missing by one vol point costs on
