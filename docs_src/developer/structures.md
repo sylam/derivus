@@ -225,23 +225,24 @@ day. `Var(R) = E[S]` for `S` the interval's own integrated variance, and the day
 is a closed form: `sqrt(c_eff)` times the IG's own Jensen factor `utils.ig_sqrt_share`, times the
 state's, quadratured over `lv_state_variance`'s law and sd-weighted over the grid. It is `sqrt(c)`
 exactly under a Gaussian residual with a frozen variance, `sqrt(c_eff)` in the deterministic limit,
-and **one exactly for every other process**, which is the base class's answer. Measured before the
-scaling on a declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation was
-`0.352` / `0.353` / `0.354` of the declared one under the NIG residual and `0.452` / `0.454` /
-`0.454` under the Gaussian, flat in the declared value.
+and **one exactly for every other process**, which is the base class's answer. Measured on a
+declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation was `0.352` /
+`0.353` / `0.354` of the declared one under the NIG residual and `0.452` / `0.454` / `0.454` under
+the Gaussian, flat in the declared value; it is a property of the grid as much as of the fit, NKY
+reading 0.34 on a daily interval and 0.70 on a one-year one, because the days' mixers convolve.
 
-**A DESK-MARKED correlation is a total-return number, so `Credit_Monte_Carlo.get_cholesky_decomp`
-divides each pair by `D_i D_j` before the Cholesky** — the one place it can be done, the framework
-handing the process a unit normal already correlated with its siblings and no variance-preserving
-map of a unit normal raising a correlation. Measured on that same document, a declared 0.30 now
-realises **0.2976 ± 0.0071** under the NIG residual and **0.2984 ± 0.0071** under the Gaussian one.
-**The dilution is therefore also the CEILING**: `|rho| > D_i D_j` is not realisable by the model as
-configured and REFUSES by name with the maximum, every offending pair at once — 0.60 and 0.90 on
-that document refuse against ceilings of 0.3600 (NIG) and 0.4613 (Gaussian). The pricer's quanto
-loading realises the marked number exactly on its own arm ([Market Prices](market_prices.md#logvar2fj)),
-so the two arms now agree. The historical estimator (`LogVar2FJCalibration`) measures its own `eps`
-on the Gaussian-given-mixer object, so an estimated matrix is already on that scale and must not be
-declared as a total-return one.
+**The engine REPORTS that share and never scales for it** (the owner's ruling of 2026-09-09
+evening, which withdrew the per-factor scaling of the matrix built that morning). The declared
+number is the correlation of the innovations, as it is for every other process, and
+`get_cholesky_decomp` logs each mixed factor's `D` on the calculation's own grid at INFO. The
+marginal law is clock-free; the cross-name law of this process is not, because each name's mixer
+and its two variance shocks are private to it, so on a netting set of several names the outer
+walk realises less than the marks and by an amount that moves with the fit and the grid. **The
+book therefore runs on the GBM term-structure outer with the LogVar2FJ pricer**, where a mark
+means what it says under the Cholesky, and this process is the opt-in for a single-name exposure
+or a PFE study. The design that makes it honest for a set, three sub-factors per name with the
+mixers coupled by one uniform per step, is on the roadmap; the estimator's `eps` is already the
+innovation the framework correlates, so a historically estimated row needs no conversion.
 
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
 CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside

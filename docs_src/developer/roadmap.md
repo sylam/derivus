@@ -11,12 +11,6 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
-- **The Barclays netting set declares three pairs the model cannot realise** (2026-09-09, lane
-  C) — as `notebooks/CVAMarketData_CalibratedLV.json` marks them and on the book's own 2y grid:
-  SX5E/SD3E 0.8039 against a maximum of 0.3443, SX5E/NKY 0.3500 against 0.2086, NKY/SD3E 0.3188
-  against 0.2156. The equity/FX pairs are all inside (SX5E/ZAR 0.3069, SD3E/ZAR 0.3253, NKY/JPY
-  −0.2351 against per-factor ceilings 0.5772 / 0.5965 / 0.3614). The set does not run under the
-  LogVar2FJ outer until the numbers are marked inside the bound or the shared mixer is built.
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09) — the lookup in `get_cholesky_decomp` reads 0.0 for a missing pair, which is
   right for an undeclared one and wrong for one filed under a stale key; the row that found it
@@ -242,6 +236,24 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **The LogVar2FJ outer is not designed for a netting set of several names, and the book does
+  not use it as one** (2026-09-09 evening, the owner's ruling, which closes the morning's
+  per-factor scaling and the Barclays row with it) — the process's marginal law is clock-free
+  but its cross-name law is not: each name's mixer and its two variance shocks are private, so a
+  correlated Gaussian scaled by a private random number realises less than its declared value
+  on returns, by a share `D` that climbs with the interval (NKY 0.34 daily, 0.70 at a year) and
+  moves with the fit. The scaling of the matrix by `1/(D_i D_j)`, its ceiling refusal and
+  `Correlation_Repair_Tolerance` are gone (−58 engine lines); `correlation_dilution` stays and
+  `get_cholesky_decomp` logs each mixed factor's share at INFO. A declared correlation is the
+  INNOVATIONS' for every process, which is what the file's `LognormalDiffusionProcess` rows and
+  the estimator's `eps` both are. THE BOOK RUNS ON THE GBM TERM-STRUCTURE OUTER WITH THE
+  LOGVAR2FJ PRICER: marks realise as declared, the whole set simulates, and the pricer keeps the
+  smile, the forward skew, the quanto arm and the reserve. The LogVar2FJ outer stays the opt-in
+  for a single-name exposure or a PFE study, where the state does carry to the pricer's row and
+  a fork continues the outer path to a bit. Measured on the desk's NKY deal at 128 × 1,024 with
+  no correlation reaching either outer: GBM outer 2.26m / 0.68m ZAR against LogVar2FJ outer
+  2.10m / 0.51m (−6.9% / −25%), a gap to explain before the outer is ever chosen on the
+  scenario's behalf. The design that makes the outer honest for a set is under Designed.
 - **The LogVar2FJ outer process asked for a correlation row nobody writes** (2026-09-09, found by
   lane C as "the owner's matrix is keyed on `LognormalDiffusionProcess`"; CLOSED the same evening
   on the owner's reading) — `LogVar2FJImpliedSpotModel.correlation_name` answered a key of its
@@ -445,12 +457,12 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
     leaf does not need. The bump is the leaf's oracle. (Decision 12 as it stood — return-level ρ
     or the loading divided by the Gaussian-shocked share — CLOSED 2026-09-08 by measurement:
     the loading as built already realises the marked total-return correlation, see Built.)
-13. **The outer process's correlation ceiling.** CLOSED 2026-09-09 by the ruling and the build:
-    the matrix is scaled per factor before the Cholesky, and the ceiling refuses by name. The
-    dilution the ruling names — `√c_eff` — is the GAUSSIAN-SHOCKED bound and not what is realised,
-    and the pooled per-path daily ratio is not it either; what sets the realised correlation is
-    the ratio of EXPECTATIONS `E[√G]/sd(R)` on the SCENARIO INTERVAL's clock. See Built, and the
-    shared mixer under Designed, not built.
+13. **The outer process's correlation ceiling.** CLOSED 2026-09-09, twice. The morning's ruling
+    scaled the matrix per factor before the Cholesky and refused above the ceiling; the evening's
+    withdrew it: a declared correlation is the innovations' for every process, the LogVar2FJ
+    outer realises `E[√G]/sd(R)` of it on the scenario interval's clock and says so at INFO, and
+    the book runs on the GBM term-structure outer. See Closed, and the three-factor process
+    under Designed, not built.
 14. **`Prices` in process: warning or refusal.** The field is mandatory on the multiprocessing
     path and a warning naming the fix in process, where the family knows its own type; a refusal
     would cost an edit at about twenty test and gate sites that write
@@ -473,8 +485,20 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 
 ## Designed, not built
 
-**A shared mixer component across a netting set's LogVar2FJ factors** (2026-09-09, the owner's
-scheduled requirement for any netting set whose declared correlations exceed the bound). The
+**The LogVar2FJ outer as a process the one-step logic applies to the PAIR** (2026-09-09 evening).
+A step rolls four dice and the framework hands the process one, so the other three are private to
+each name, and private is why they are uncorrelated across names. Ask for four: sub-factors
+beside the return innovation on `PC1…PCn`'s pattern — the two variance shocks, each log-variance
+factor's node-to-node transition driven exactly by one framework normal per interval with the
+daily path an OU bridge between the endpoints from the process's own generator, so node placement
+moves nothing and a fork still continues the outer path; and the MIXER, drawn through its own
+quantile from a framework normal, `G = F_IG^-1(Phi(Z))`, which is how it is drawn from a uniform
+today. Every marginal stays the fitted NIG; declare the mixer rows at one across the set and the
+return correlation is the innovation correlation on any interval where the shapes agree, a few
+percent under where they do not; declare them lower and the set's tails decouple by that much.
+Then `D` is a number nobody needs. What it needs from the data are the variance and mixer rows, a
+mark or the joint estimator. Below it, the earlier shared-mixer reading, kept for its
+numbers: **a shared mixer component across a netting set's LogVar2FJ factors** — the
 ceiling is Jensen on INDEPENDENT mixers: `E[sqrt(G_i G_j)] = E[sqrt(G_i)]E[sqrt(G_j)]` only because
 the two subordinators are independent. Give the set ONE subordinator with a loading per factor —
 `G_i = c_eff,i S_i X` with a common unit-mean `X` — and `E[sqrt(G_i G_j)]` gains `E[X]` where it had
@@ -616,7 +640,9 @@ set; and five model items in the punchlist below.
 ## Built
 
 - **The CVA simulation realises the correlation the desk declares, or refuses by name**
-  (2026-09-09, lane C, the owner's ruling 1 of that morning) — a desk's `rho` is a TOTAL-RETURN
+  (2026-09-09, lane C, the owner's ruling 1 of that morning; THE SCALING AND THE REFUSAL WERE
+  WITHDRAWN THE SAME EVENING, see Closed — `correlation_dilution` and its measurements stand,
+  as a report) — a desk's `rho` is a TOTAL-RETURN
   number and the framework's sits on the Gaussian each process correlates, so
   `Credit_Monte_Carlo.get_cholesky_decomp` divides each pair by `D_i D_j` before the Cholesky,
   refusing what the model cannot realise. `LogVar2FJImpliedSpotModel.correlation_dilution` states

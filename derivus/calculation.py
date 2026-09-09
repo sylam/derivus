@@ -914,10 +914,6 @@ class Credit_Monte_Carlo(Calculation):
           description='Which leaves the sensitivity engine differentiates'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
-        F('Correlation_Repair_Tolerance', 'Float', default=0.02,
-          description='Largest entry move the nearest-correlation-matrix repair may make to the '
-                      'declared matrix once it is scaled onto the Gaussian each process '
-                      'correlates. Read only where a process dilutes a correlation'),
         F('Boundary_AAD_Window_Touch', 'Text', default='No', values=['Yes', 'No'],
           description='Register the partial-time barrier\'s window-touch decision as a boundary '
                       'latch. OFF by default and deliberately: the correction decides the SIGN of '
@@ -1183,7 +1179,7 @@ class Credit_Monte_Carlo(Calculation):
     def get_cholesky_decomp(self):
         correlation_matrix = np.eye(self.num_factors, dtype=np.float64)
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
-        correlation_factors, dilutions = [], []
+        correlation_factors = []
         intervals = np.diff(np.insert(self.time_grid.time_grid_years, 0, 0.0))
         self.process_ofs = {}
         for key, value in self.stoch_factors.items():
@@ -1192,9 +1188,13 @@ class Credit_Monte_Carlo(Calculation):
             # too — generate() ignores it, but the precalc plumbing indexes process_ofs)
             self.process_ofs.setdefault(key, len(correlation_factors))
             dilution = value.correlation_dilution(intervals)
+            if dilution < 1.0:
+                # a mixed process correlates the Gaussian given its mixer, so its return realises
+                # this share of a declared correlation on this grid - reported, never scaled
+                logging.info('%s realises %.4f of a declared correlation on this grid',
+                             utils.check_tuple_name(key), dilution)
             for sub_factors in proc_corr_factors:
                 correlation_factors.append(utils.Factor(proc_corr_type, key.name + sub_factors))
-                dilutions.append(dilution)
 
         for index1 in range(self.num_factors):
             for index2 in range(index1 + 1, self.num_factors):
@@ -1205,12 +1205,6 @@ class Credit_Monte_Carlo(Calculation):
                 rho = self.config.params['Correlations'].get(key, 0.0) if factor1 != factor2 else 1.0
                 correlation_matrix[index1, index2] = rho
                 correlation_matrix[index2, index1] = rho
-
-        # a desk's rho is a TOTAL-RETURN number and the framework's sits on each process's own
-        # Gaussian, so a diluted pair realises rho D_i D_j: scale it up before the Cholesky
-        scaled = utils.scale_correlation(correlation_matrix, correlation_factors, dilutions)
-        if scaled is not None:
-            correlation_matrix = scaled
 
         raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
         eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
@@ -1247,22 +1241,6 @@ class Credit_Monte_Carlo(Calculation):
             correlation_matrix = new_correlation_matrix
             raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
             eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
-
-        if scaled is not None:
-            move = np.abs(correlation_matrix - scaled)
-            index1, index2 = np.unravel_index(move.argmax(), move.shape)
-            tolerance = self.params.get('Correlation_Repair_Tolerance', 0.02)
-            if move[index1, index2] > tolerance:
-                raise ValueError(
-                    'Repairing the dilution-scaled correlation matrix moved %s/%s from %.4f to '
-                    '%.4f, past Correlation_Repair_Tolerance %g: scaled up onto the Gaussian each '
-                    'process correlates, the declared matrix is no longer positive semi-definite '
-                    'and its repair is no longer the desk\'s matrix' % (
-                        utils.check_tuple_name(correlation_factors[index1]),
-                        utils.check_tuple_name(correlation_factors[index2]),
-                        scaled[index1, index2], correlation_matrix[index1, index2], tolerance))
-            logging.info('Correlation repair moved the scaled matrix by at most %.4f',
-                         move[index1, index2])
 
         correlation_matrix = torch.tensor(
             correlation_matrix, device=self.device, dtype=self.dtype, requires_grad=False)

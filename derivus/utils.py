@@ -2551,37 +2551,6 @@ def ig_sqrt_share(z):
     return scipy.special.kve(0.0, z) * np.sqrt(2.0 * z / np.pi)
 
 
-def scale_correlation(matrix, factors, dilutions):
-    """A declared TOTAL-RETURN correlation matrix rescaled onto the Gaussian each process actually
-    correlates, or ``None`` where nothing dilutes one - that matrix is untouched.
-
-    A process realising a share ``D_i`` of a declared correlation in its own return realises
-    ``rho D_i D_j`` on a pair, so the pair is divided by ``D_i D_j`` and the diagonal reset to 1.
-    ``|rho| > D_i D_j`` is not realisable by the model as configured and REFUSES by name with the
-    maximum, every offending pair at once.
-    """
-    d = np.asarray(dilutions, dtype=np.float64)
-    if not (d < 1.0).any():
-        return None
-    bound = np.outer(d, d)
-    np.fill_diagonal(bound, 1.0)
-    over = np.argwhere(np.triu(np.abs(matrix) > bound, 1))
-    if over.size:
-        raise ValueError(
-            'The declared correlations are TOTAL-RETURN numbers this netting set cannot realise: '
-            '%s. A diluted factor correlates on its own residual Gaussian, so a pair realises at '
-            'most D_i D_j - mark inside the bound, or give the set a shared mixer component'
-            % '; '.join('%s/%s declared %.4f against a maximum of %.4f' % (
-                check_tuple_name(factors[i]), check_tuple_name(factors[j]),
-                matrix[i, j], bound[i, j]) for i, j in over))
-    scaled = matrix / bound
-    np.fill_diagonal(scaled, 1.0)
-    logging.info('Correlation scaled by the realised dilution (%s): largest entry move %.4f',
-                 ', '.join('%s %.4f' % (check_tuple_name(factors[i]), d[i])
-                           for i in np.flatnonzero(d < 1.0)), np.abs(scaled - matrix).max())
-    return scaled
-
-
 def lv_cap(x, a, beta):
     """Smooth cap on log-variance, a - beta*softplus((a-x)/beta) (spec 2.7); a None is uncapped."""
     if a is None:
