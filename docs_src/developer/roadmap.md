@@ -17,12 +17,10 @@ caller** (several items below are deliberately not started), and **look before y
   against 0.2156. The equity/FX pairs are all inside (SX5E/ZAR 0.3069, SD3E/ZAR 0.3253, NKY/JPY
   −0.2351 against per-factor ceilings 0.5772 / 0.5965 / 0.3614). The set does not run under the
   LogVar2FJ outer until the numbers are marked inside the bound or the shared mixer is built.
-- **The owner's declared matrix is keyed on `LognormalDiffusionProcess`** (2026-09-09, lane C) —
-  move an equity to `LogVar2FJImpliedSpotModel` and its `correlation_name` becomes
-  `LogVar2FJSpotProcess.<name>`, which the file does not carry, so every declared equity correlation
-  reads 0.0 and the refusal above never fires until the keys are re-written. Silent, and the reason
-  lane 4's xVA documents carry no correlation at all; a correlation declared under a process name no
-  simulated factor answers to should be named.
+- **A correlation declared under a process name no simulated factor answers to is silent**
+  (2026-09-09) — the lookup in `get_cholesky_decomp` reads 0.0 for a missing pair, which is
+  right for an undeclared one and wrong for one filed under a stale key; the row that found it
+  (lane 4's own `LogVar2FJSpotProcess`, Closed below) says what it costs. Name it at INFO.
 - **`correlation_dilution` reads one bucket per interval and the uncapped law** (2026-09-09, lane
   C) — an interval straddling a calendar-bucket knot is read at the bucket its START falls in
   rather than split into its two pieces, and `E[S]` is `Xi_Curve`'s integral with no cap; both are
@@ -244,6 +242,16 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **The LogVar2FJ outer process asked for a correlation row nobody writes** (2026-09-09, found by
+  lane C as "the owner's matrix is keyed on `LognormalDiffusionProcess`"; CLOSED the same evening
+  on the owner's reading) — `LogVar2FJImpliedSpotModel.correlation_name` answered a key of its
+  own, `LogVar2FJSpotProcess`, where the implied GBM answers the factor's row
+  (`LognormalDiffusionProcess`, the same key as the historical process), so every correlation the
+  book marks on a LogVar2FJ equity read 0.0 in silence and the ceiling refusal never fired on the
+  book. A correlation is the FACTOR's, whichever process walks it, and the historical estimator
+  hands `calibrate_factors` the same one-factor object GBM's does (`CalibrationInfo(param,
+  [[1.0]], eps)`), so no second key was ever needed: the process now answers the factor's row.
+  The book is untouched; lane C's proof documents are re-keyed to the factor's row and re-read.
 - **`utils.ig_quantile` at a ZERO clock was `nan`, and the kit reached it whenever an MTM row landed
   exactly on a remaining fixing** (2026-09-08, lane 4; CLOSED by lane G the same evening) -
   `ig_root`'s bracket `hi = 200m + 200m²/λ` is 0/0 there, `LogVar2FJKit.grid` made one step of

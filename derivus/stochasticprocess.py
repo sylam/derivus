@@ -5182,7 +5182,9 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
 
     @property
     def correlation_name(self):
-        return 'LogVar2FJSpotProcess', [()]
+        # the factor's own row, as the implied GBM answers it: a correlation is the factor's, and
+        # the historical estimator hands the framework the same one-factor object GBM's does
+        return 'LognormalDiffusionProcess', [()]
 
     def correlation_dilution(self, deltas):
         """`E[sqrt(G)]/sd(R)` over each scenario interval of `deltas` (years), sd-weighted - the
