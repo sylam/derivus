@@ -105,13 +105,17 @@ unmeasured — a limitation without a number is absolution, not documentation
   ladder would read every trigger at the initial level's moneyness.
 - **A digital contra booked with `Cash_Payoff` 0.0 prices to zero without a word** (2026-09-08):
   two of the Barclays structures carry one, worth 2.9e8 and 2.85e8 of payoff in the legs it was
-  meant to cancel. `derivus_compact_autocalls.py` names it and the fold repairs it; the load should
-  refuse it.
-- **A simulated equity and a static rate curve cannot share a floating-leg deal** (2026-09-08):
-  the known resets are shaped by the scenario count and the static curve's by one, and the
-  concatenation refuses — 13 of the Barclays book's 21 deals skipped in a credit Monte Carlo under
-  a traceback that reads like a deal fault, so the profile reported was the option legs and the
-  NDFs.
+  meant to cancel, and under a credit Monte Carlo both skip with `float division by zero`.
+  `derivus_compact_autocalls.py` names it and the fold repairs it; the load should refuse it.
+- **The energy and commodity floating legs concatenate their resets the way the rate legs did**
+  (2026-09-10): `pricing.py`'s two `torch.cat`s of known against forecast resets off a
+  `ForwardPrice` curve refuse a static curve in the words the rate legs refused with until
+  `utils.concat_resets` — one call at each site, unmade because no document in the packs reaches
+  it and an unmeasured change is not a fix.
+- **Ten `shape '[1]' is invalid for input of size N` skips on the Barclays book's equity binary
+  legs and three autocall arms** (2026-09-10), the same with the rate curves simulated or frozen.
+  Adjacent to the `Sticky_Strike` row below but a `reshape`, not that row's `IndexError`;
+  unexplained.
 - **`EquityPriceVol` under `Sticky_Strike` cannot reach a fixing strip** (2026-09-08):
   `calc_moneyness` returns the bare strike for a parametric surface and every fixing-strip pricer
   raises `IndexError` at `pricing.py:343`. The book works around it with `Explicit` surfaces.

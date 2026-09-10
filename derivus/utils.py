@@ -1617,6 +1617,17 @@ class TimeGrid(object):
         return DealTimeDependencies(self.mtm_time_grid, deal_time_grid[deal_time_grid <= expiry])
 
 
+def concat_resets(blocks, dim):
+    """Join reset blocks whose trailing scenario axis a STATIC curve answers with one column.
+
+    A frozen curve's forward is that one number in every scenario, so it broadcasts - which every
+    later product and sum does for free and only `torch.cat` refuses.
+    """
+    batch = max(x.shape[-1] for x in blocks)
+    return torch.cat([x if x.shape[-1] == batch else x.expand(*x.shape[:-1], batch)
+                      for x in blocks], dim)
+
+
 class TensorResets(TensorSchedule):
     def __init__(self, schedule, offsets):
         super(TensorResets, self).__init__(schedule, offsets)
@@ -1646,9 +1657,15 @@ class TensorResets(TensorSchedule):
             old_resets.gather_weighted_curve(shared, delta_end, delta_start)) * reset_weights \
             if sim_resets.np.any() else shared.fillvalue
 
+        if shared.simulation_batch > 1 and not all(r[FACTOR_INDEX_Stoch] for r in forward):
+            logging.info('floating leg forecasts off STATIC %s - its resets are one number in '
+                         'every scenario', ' + '.join(check_tuple_name(r[FACTOR_INDEX_Offset])
+                                                      for r in forward
+                                                      if not r[FACTOR_INDEX_Stoch]))
+
         # fetch all fixed resets
         return torch.squeeze(
-            torch.concat(
+            concat_resets(
                 [shared.fillvalue if not known_resets else torch.stack(known_resets), reset_values], dim=0)
             , dim=1)
 

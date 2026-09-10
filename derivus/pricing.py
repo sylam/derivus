@@ -4583,7 +4583,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 past_resets = torch.tile(
                     torch.unsqueeze(old_resets[reset_offset:reset_offset + offset], dim=0), [size, 1, 1])
-                all_resets = torch.concat([past_resets, future_resets], dim=1) if past_resets.any() else future_resets
+                all_resets = utils.concat_resets([past_resets, future_resets], dim=1)
                 all_int, _ = pricer_float_cashflows(all_resets, cashflows.tn, shared)
                 # the trailing axis is the inner-simulation one
                 floating_legs.append(torch.unsqueeze(all_int, dim=-1))
@@ -5290,7 +5290,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             future_resets = torch.expm1(forward_rates.gather_weighted_curve(
                 shared, future_ends, future_starts)) * future_weights
 
-            all_resets = torch.cat(
+            all_resets = utils.concat_resets(
                 [old_resets[reset_offset:reset_offset + offset].expand(size, -1, -1), future_resets], dim=1)
 
             # cashflows that pay no interest (bullets) own no resets and are held out of the fold

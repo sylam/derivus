@@ -160,7 +160,7 @@ def test_the_pricer_logs_what_it_decided(tmp_path):
     assert lines, 'the autocall logged nothing at DEBUG'
     organ = lines[-1]
     assert 'coupons=1' in organ, organ
-    assert 'averaging=0' in organ, organ        # one fixing per coupon: the OSS branch
+    assert 'fullpath=0' in organ, organ         # one fixing per coupon: the OSS branch
     assert 'blocks=1' in organ, organ
 
 
