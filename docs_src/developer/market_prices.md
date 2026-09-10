@@ -388,10 +388,10 @@ determinism rather than agreement.
 | `LV_IG_EXPAND`, `LV_IG_STEPS` | 3, 34 | lane S: the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a ruling rather than a measurement |
 | `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
 | `Forward_Smile_Source` | `None` (`Prior` withdrawn) | a sticky-delta TARGET costs 0.4–1.1 vol points of spot fit on all four index ladders and a 0.5y bucket does not repair it; the tie-breaker that capped that cost bound stage 5 alone, and on a one-bucket ladder stage 5 does not run |
-| `Residual_Horizon` | 0.25 | it governs `α` alone since lane L; `β` keeps a soft row the wings outvote. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation (the product row above), not the horizon's; horizon zero was the wrong fix |
-| `Alpha_Prior_Defaults`, `Beta_Prior_Defaults` | 44, −22 for every class | brief 2 sizes the residual ONCE, at the index `(44, −22)`, and states no separate FX number |
+| `Residual_Horizon` | 0.25 | since lane L2 it switches no row off: both residual rows stay and the wings outvote them. Its one reader is the report's own line saying whether the ladder's wings reach the residual. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation, not the horizon's; horizon zero was the wrong fix |
+| `Alpha_Prior_Defaults` | 44 for every class | brief 2 sizes the residual ONCE, at the index `(44, −22)`, and states no separate FX number; a soft row beside the wings since lane L2, where a walk to the 500 ceiling costs 5.1 standard errors |
 | `Alpha_Prior_Sd` | 0.5 on `log α` | brief 5's log-normal spread, a factor of 1.65 either way — and the bar a history's own SE must beat to be called informative |
-| `Beta_Prior_Sd` | 10 | brief 5 sizes it on the residual's one-month skewness; as the informative test it fails the index history (`β^P` −0.28 ± 14.4) and passes the FX one (−20.5 ± 7.4), which is the discrimination the hierarchy exists for |
+| `Residual_Skew_Share_Defaults`, `Residual_Skew_Share_Sd` | −0.5 for every class, 0.2 | the −22/44 sizing restated as the share the smile sees (lane L2); `Beta_Prior_Defaults` and `Beta_Prior_Sd` are retired and refuse by name. The 0.2 is asserted, not measured: what would measure it is the estimator's `β^P/α^P` spread on an uncontaminated history, which no index history here is |
 | `Contamination_Ratio` | 2.0 | brief 8's `C_Eff > 2c`; the estimator's own report already names the ratio at this threshold |
 | `Leverage_Prior_Weight` | 0.02 | one instance of the general rule: `0.01 × 0.2 / 0.1` is one quote-vol-point per tenth of `ρ_s`. Since lane L the row is on the product and the scale is this over `Sigma_S_Reference`, the same statement at the reference vol-of-vol; a history's product carries a delta-method error and is weighted by it. At a fitted `σ_s` of 5 a unit of `ρ_s` is five of product, so the row reads 6.5 quote rows on `ρ_s` where it read 2.3 — open decision 16 |
 | `Leverage_Product_Defaults` | index −1.9, FX 0.0 | brief §2: `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement; the ruling's number over the spec's −1.8 |
@@ -465,15 +465,25 @@ was measured letting the fit buy the product it wanted through the factor nobody
 suppressed the call wing until the residual took a POSITIVE skew (`β` +23 / +13 / +15 over three
 seeds) to lift it back — two mechanisms compensating along the direction vanillas cannot see, and a
 right-skewed residual on an index carried into every terminal put on the book (the owner's ruling
-of 2026-09-09). The target is read in one order: the block's `Leverage_Prior` (a `ρ_s` on the
-engine's axis, the desk seed's convention, kept) times `Sigma_S_Reference` (2.4, the state's own
-vol-of-vol seed); else a LogVar2FJ history's `Rho_S × Sigma_S` with its standard error by the delta
-method; else `Leverage_Product_Defaults`, an index **−1.9**, an FX pair **0.0**. The weight is the
-same statement as before at the reference vol-of-vol — `Leverage_Prior_Weight / Sigma_S_Reference`,
-one quote-vol-point per 0.24 of product, which is one quote per tenth of `ρ_s` at `σ_s` 2.4 — and a
-history's row is weighted by its own error. `Leverage_Prior_Defaults` (an index −0.7, FX 0.0) keeps
-one job, the SIGN: it seeds `ρ_s` at `sign·0.75` and, through the fitted fast leverage, signs the
-slow pair's pin; a class whose product and `ρ_s` defaults disagree in sign refuses by name.
+of 2026-09-09). **It is TWO rows** (lane L2, 2026-09-10): one on `ρ_s` and one on the product,
+because a product row alone was met on NKY by `ρ_s` falling to −0.37 with `σ_s` still on its 5.0
+box, which the log-vol band consents to. Each is read in one order — the block's own declaration
+(`Leverage_Prior`, a `ρ_s` on the engine's axis, with an optional `Leverage_Prior_SE`;
+`Leverage_Product_Prior` with `Leverage_Product_Prior_SE`, a blank product being
+`Leverage_Prior × Sigma_S_Reference`, 2.4), else a LogVar2FJ history's `Rho_S ± Rho_S_SE` and its
+`Rho_S × Sigma_S` with the delta-method error, else the class defaults `Leverage_Prior_Defaults`
+(an index −0.7, FX 0.0) and `Leverage_Product_Defaults` (an index **−1.9**, FX **0.0**). A
+declared error weights its row at one quote per standard error; a blank one takes the nominal
+weight, `Leverage_Prior_Weight` on `ρ_s` and that over `Sigma_S_Reference` on the product. **The
+block's own numbers come from the IMPLIED REGRESSION** brief §2 sizes the reference by — the daily
+log change of the index's implied-vol index on the index's return, `σ_s` the annualised sd of the
+log-variance change, with Fisher, `σ/√2N` and delta-method errors
+(`artifacts/lv_corrtest_20260909/fetch_vi.py`): SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
+product −1.89 ± 0.05, the reference to the second decimal; NDX/VXN −0.712, 1.88, −1.34; NKY against
+the Nikkei VI **−0.529 ± 0.025, 3.07, −1.62 ± 0.09** — a weaker correlation and more vol-of-vol
+than SPX, which is why NKY's wings wanted a positive residual skew at SPX's −1.85: it is not NKY's
+number. `Leverage_Prior_Defaults` also signs the seed (`sign·0.75`) and the slow pair's pin, and a
+class whose product and `ρ_s` defaults disagree in sign refuses by name.
 
 That history now has a producer, and where the ladder cannot see the residual pair it is one of the
 three things that can anchor them. `Rho_S`, the slow pair, `Alpha` and `Beta` each arrive with their
@@ -513,9 +523,18 @@ hierarchy of three, the tier in force named in the report on every fit:
 
 | tier | when | the row |
 | --- | --- | --- |
-| **the short-dated wings** | the ladder quotes a wing at or under `Residual_Horizon` | none for `α` — the wings free it; `β` KEEPS its soft row beside them (the ruling of 2026-09-09: the wings outvote the prior rather than switch it off) |
-| **the history** | its own standard error is at or under the class prior's spread | `(x − x^P)/SE^P` at that estimate |
+| **the short-dated wings** | the ladder quotes a wing at or under `Residual_Horizon` | the rows stay and the wings OUTVOTE them (lane L2, 2026-09-10): the report says the wings reach the residual, and `Residual_Horizon` reads nothing else |
+| **the history** | its own standard error is at or under the class prior's spread, and its `α^P` is not contaminated | `(x − x^P)/SE^P` at that estimate |
 | **the class default** | otherwise | `(x − x_class)/SD_class`, reported as *class prior, history uninformative* with the standard error that failed |
+
+**The two residual rows are on the coordinates a smile sees** — `log α` at `Alpha_Prior_Defaults`
+44 with spread `Alpha_Prior_Sd` 0.5, and the SKEW SHARE `β/α` at `Residual_Skew_Share_Defaults`
+−0.5 with spread `Residual_Skew_Share_Sd` 0.2, a history's `β^P/α^P` with its delta-method error
+where informative. A prior has to sit on a coordinate the price depends on, or the optimiser
+satisfies it for free: the row lane L put on `β` alone was obeyed on NKY and SX5E by running `α` to
+its 500 ceiling, where any `β` is a label on a Gaussian (`|β|/α` 0.044, the `β` row 690 quote rows
+against quote rows worth 1.8e-04). `Beta_Prior_Defaults` and `Beta_Prior_Sd` are RETIRED and refuse
+by name naming the share; the residual seed is `share × α_seed`, −22 at the defaults to the digit.
 
 **That test IS the definition of informative**, and it is declared: `Beta_Prior_Sd` (10, sized in
 brief 5 on the residual's one-month skewness) and `Alpha_Prior_Sd` (0.5 on `log α`, a factor of 1.65
@@ -552,12 +571,30 @@ the forward-skew reserve **falls 11.71m → 7.21m** (38%): with the residual nea
 **On-guard fits are reported and flagged, never stood behind.** A fit a box or a floor is holding
 is not a fitted one: `LVFit.on_guard` names every guard θ\* sits on — a `Sigma_S`, `Alpha` or
 `Sigma_L` on either edge of its declared box, `|β|/α` within `C_Margin` (0.05) of the conditioning
-bound 0.7746, or `c` within `C_Margin` of its `C_Min` floor — in one sentence, logged as a WARNING
-by the report, written on the factor as the structural Text field `On_Guard` (blank where clean),
-logged at INFO when the factor loads, and collected by `Base_Revaluation` into `Stats['On_Guard']`
-per factor it priced off, so a mark carries the flag. Scored on the clean tree's own fits the guard
-names exactly the corner above: every base fit is on guard somewhere (`Sigma_S[0y] on its 5 box;
-|beta|/alpha 0.742 within 0.05 of 0.7746` on NKY), and two of lane L's seven are clean.
+bound 0.7746, `c` within `C_Margin` of its `C_Min` floor, or **a prior row whose column norm exceeds
+one quote row's in its own coordinate by more than `LV_PRIOR_RATIO` (100)** at the last stage that
+fitted it — the signature of a prior on a coordinate the data cannot see, which is what the
+identification line now prints per row (*Rho_S[0y] 38.5x, Beta[0y] 5.92x …*) — in one sentence,
+logged as a WARNING by the report, written on the factor as the structural Text field `On_Guard`
+(blank where clean), logged at INFO when the factor loads, and collected by `Base_Revaluation` into
+`Stats['On_Guard']` per factor it priced off, so a mark carries the flag. Scored on lane L's own
+fits the fourth guard names the α escape in one number (`Alpha[0y] 566x … Beta[0y] 551x` on NKY,
+SX5E at 532x where the three box rules had read it clean), and on lane L2's it names one thing: NDX
+at the regression's own 0.015 error, whose `ρ_s` row is 138 quote rows — a 1.5%-standard-error
+desk view is a pin on that ladder, and the mark says so rather than standing behind it.
+
+**With the rows on the smile's coordinates NKY lands where the ruling said** (lane L2): at its own
+implied leverage over seeds 1–3, `α` **39.4 / 40.9 / 38.8**, `β` −11.4 / −12.9 / −11.9, the share
+−0.29 / −0.32 / −0.31 (the wings outvoting the −0.5 row by about one standard error), `ρ_s` −0.523,
+`σ_s` **3.105 / 3.105 / 3.109 inside its box** at the ratio of the two rows, the product −1.62, and
+`On_Guard` BLANK — the first clean NKY fit in the programme. `α` is off its ceiling on every ladder
+in the book (25.6 to 53.9 across seven fits) and `σ_s` inside its box on every ladder but the
+history-anchored NKY. The price is vanilla fit, NKY 1.614 → **1.985** vol points with the miss in the
+one-month wing, and the desk's autocall marks **−36.29m ZAR** at 32,768 paths (lane L's −38.94m,
+P2's −37.49m) with `Skew_Reserve` **7.64m**, the residual now live in it. At the CLASS defaults
+(SPX's −1.9 with a −0.7 `ρ_s`) NKY REFUSES by name at production `Cap_A` on the cap headroom, and
+at `Cap_A` 6 lands `σ_s` on its 5.0 box with `ρ_s` −0.397: an index class default is not a shape
+this model can carry on NKY, which is the argument for the per-name implied numbers.
 
 THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book
 is *USD per rand* and a desk's `+0.4` on an EM cross quoted USD-per-currency is **−0.4** here. The

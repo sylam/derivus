@@ -11,23 +11,25 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Open
 
-- **The `β` prior is on `β`, but the residual's skew is `|β|/α`, so a fit obeys the row for
-  free by inflating `α`** (2026-09-10, lane L) — with the product row anchoring the leverage and
-  the wings still asking for a positive residual skew, NKY (all three seeds) and SX5E run `α` to
-  its 500 ceiling, `|β|/α` falls to 0.044 and the residual is effectively Gaussian: in stage 2's
-  coordinates the `β` prior row reads 690 quote rows while the quote rows carry 1.8e-04, so nothing
-  there is identified, and the whole smile is leverage at the Q size for 1.308 → 1.614 vol points
-  on NKY. The history tier does not reach it (`α` 7.99, `β` −2.35, 1.171 vol points) because the
-  weaker product leaves the residual live. A prior on the SKEW SHARE `β/α`, or `α`'s ceiling as a
-  row rather than a wall, is a different declaration and its own measurement — the owner's
-  expected `β` of −2 to −10 at the class-default tier waits on it. `Alpha` on its box IS now an
-  on-guard condition (landed with lane L).
-- **NKY's `σ_s` sits on its 5.0 box with the log-vol band's consent** (2026-09-10, lane L) — the
-  stationary sd at `σ_s` 5.0 reads 0.878, inside the 0.4–0.9 `Log_Vol_Sd_Band`, and the gradient
-  into the bound is 1.1e-05, so the ladder wants that vol-of-vol and the product prior is
-  satisfied by `ρ_s` −0.37 instead. Reported with the flag; the box is not widened. A ladder that
-  wants more short-dated skew than Q-sized leverage plus a left-skewed residual gives is a report
-  about the ladder.
+- **The index class defaults are a shape this model cannot carry on NKY** (2026-09-10, lane L2)
+  — with the leverage as two rows at the class defaults (`ρ_s` −0.7, product −1.9, SPX's numbers)
+  NKY REFUSES at production `Cap_A` on the cap headroom (4.2e-05 of path-days within `5·Cap_Beta`
+  against the 1e-05 allowed), and at `Cap_A` 6 lands `σ_s` on its 5.0 box with `ρ_s` −0.397, the
+  stationary sd 0.878 inside the band. Not a bigger cap: the per-name implied numbers (NKY's own
+  −0.529 / −1.62 land clean) are the answer, so the emitter has to write them (production list).
+- **A declared standard error tight enough makes its own row a pin, and the guard says so**
+  (2026-09-10, lane L2) — NDX at the regression's own 0.015 reads 138 quote rows on `ρ_s` and is
+  flagged; NKY at 0.025 reads 38.5x and is not. Whether a 1,149-day regression's sampling error
+  is the right spread for a Q-measure prior is a modelling question — the SE is the estimator's,
+  not the desk's view of how wrong it might be — and `Leverage_Prior_SE` is where a desk states
+  the second.
+- **`Alpha`'s prior row is on bucket 0 while the share's and the leverage's are per bucket**
+  (2026-09-10, lane L2) — no reading moves, every book ladder being `Global` with one bucket; a
+  `Bootstrap`-mode multi-bucket fit with priors on is where it would, and nothing runs one.
+- **`Residual_Skew_Share_Sd` 0.2 is asserted, not measured** (2026-09-10, lane L2) — the wings win
+  by about one standard error on every index ladder (−0.29 to −0.49 against −0.5); the estimator's
+  own `β^P/α^P` spread on an uncontaminated history would measure it, and no index history here is
+  uncontaminated (NKY's `C_Eff` 0.9967 against `c` 0.2671).
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09) — the lookup in `get_cholesky_decomp` reads 0.0 for a missing pair, which is
   right for an undeclared one and wrong for one filed under a stale key; the row that found it
@@ -253,6 +255,16 @@ caller** (several items below are deliberately not started), and **look before y
 
 ### Closed
 
+- **The `β` prior was on `β`, and a fit obeyed it for free by inflating `α`; NKY's `σ_s` sat on
+  its box with the band's consent** (found 2026-09-10 by lane L; CLOSED the same day by lane L2 on
+  the owner's ruling: a prior has to sit on a coordinate the price depends on) — the residual's
+  prior is on the SKEW SHARE `β/α` (−0.5 ± 0.2, `Beta_Prior_*` retired), `α`'s class prior stays a
+  soft row beside the wings (a walk to 500 costs 5.1 SE), the leverage is TWO rows (`ρ_s` and the
+  product) so `σ_s` sits at their ratio, and a prior row more than 100× a quote row in its own
+  coordinate is an on-guard condition. NKY at its own implied leverage: `α` 39–41, `β` −11 to −13,
+  the share −0.29 to −0.32, `σ_s` 3.11 inside its box, `On_Guard` blank on three seeds; `α` off its
+  ceiling on every ladder (25.6–53.9), `σ_s` inside its box on every ladder but the history-anchored
+  NKY; SX5E 500 → 46.6. The guard scores lane L's own fits at 566–1,025× on `Alpha`/`Beta`.
 - **The LogVar2FJ outer is not designed for a netting set of several names, and the book does
   not use it as one** (2026-09-09 evening, the owner's ruling, which closes the morning's
   per-factor scaling and the Barclays row with it) — the process's marginal law is clock-free
@@ -494,13 +506,13 @@ Every decision the board is waiting on, collected. Nothing below is blocked on w
 16. **`Leverage_Prior_Weight` 0.02 is three to four quote rows on these ladders, not one**: the
     prior row's `Rho_S` column norm reads 2.0e-02 against 4.8e-03 to 6.1e-03 for one quote row at
     θ\*, because the field assumes a 0.2 quote weight and a 0.1 standard error no ladder states.
-    Since lane L the row is on the PRODUCT at scale `0.02 / Sigma_S_Reference`, exact per unit of
-    product at the 2.4 reference — but at a fitted `σ_s` of 5 a unit of `ρ_s` is five of product,
-    so the same row reads **6.5 quote rows on `ρ_s`** against the base's 2.3. Sizing the weight
-    off the fitted `σ_s` would make the row's scale a function of θ, a different objective; a
-    `Leverage_Prior_SE` companion or a weight re-read as `q1/0.1` are the two declarations. Beside
-    it: a history's product −1.05 ± 0.67 moves the desk mark −37.49m → −41.87m through that one
-    row, so the estimator's leverage is the single most consequential number it produces.
+    Since lane L2 a block declares its own errors (`Leverage_Prior_SE`, `Leverage_Product_Prior_SE`)
+    and the nominal weight applies only where none exists; what remains open is the nominal one
+    (0.02 on `ρ_s`, that over `Sigma_S_Reference` on the product), which at a fitted `σ_s` of 5
+    reads several quote rows and at the class-default tier is what NKY cannot carry (the Open row).
+    Beside it: a history's `ρ_s` −0.20 ± 0.09 and product −1.05 ± 0.67 move the desk mark to
+    −41.9m through those rows, so the estimator's leverage is the single most consequential number
+    it produces, and its own SE is a sampling error rather than a desk's spread.
 
 ## Designed, not built
 
@@ -658,6 +670,35 @@ set; and five model items in the punchlist below.
 
 ## Built
 
+- **The priors sit on the coordinates the smile sees** (2026-09-10, lane L2, the owner's ruling on
+  lane L's report: a prior has to sit on a coordinate the price depends on, or the optimiser
+  satisfies it for free) — `α`'s class prior is a soft row beside the wings (`log 44 ± 0.5`);
+  the residual's skew prior is on the SHARE `β/α` (`Residual_Skew_Share_Defaults` −0.5,
+  `Residual_Skew_Share_Sd` 0.2, a history's `β^P/α^P` with its delta-method error where informative
+  and its `α^P` not contaminated), `Beta_Prior_Defaults`/`Beta_Prior_Sd` retired and refusing by
+  name, the seed `share × α_seed` = −22 to the digit; `Residual_Horizon` switches no row off and
+  its one reader is the report's line; the leverage prior is TWO rows, `ρ_s` and the product, each
+  read from the block (`Leverage_Prior` ± `Leverage_Prior_SE`, `Leverage_Product_Prior` ±
+  `Leverage_Product_Prior_SE`), else a history, else the class defaults, a declared error weighting
+  its row at one quote per SE; `LVFit.unidentified` reads `prior_ratios` at the last stage that
+  fitted each coordinate and a ratio past `LV_PRIOR_RATIO` (100) is `on_guard`'s fourth clause,
+  the identification line printing the ratios. The block's own numbers come from the implied
+  regression (`lv_corrtest_20260909/fetch_vi.py`: SPX −0.762/2.48/−1.89, the reference to the
+  second decimal; NDX −0.712/1.88/−1.34; NKY −0.529/3.07/−1.62). MEASURED: NKY at its own leverage
+  over seeds 1–3 `α` 39.4 / 40.9 / 38.8, `β` −11.4 / −12.9 / −11.9, share −0.29 / −0.32 / −0.31,
+  `ρ_s` −0.523, `σ_s` **3.105 / 3.105 / 3.109 inside its box**, product −1.62, `On_Guard` BLANK,
+  every prior row 5.9–39x a quote row, RMSE 1.985 / 1.994 / 1.991 (the one-month wing; lane L
+  1.614, base 1.308) at 23 / 21 / 22 evaluations; NKY at the class defaults REFUSES at production
+  `Cap_A` and at `Cap_A` 6 lands `σ_s` on its box with `ρ_s` −0.397; NKY with the index history `α`
+  25.6, `β` −10.5, `σ_s` on its box, both residual rows at the class default because `α^P` is
+  contaminated; NDX on its own pair to three digits (`σ_s` 1.8785, product −1.336) and flagged
+  `prior on an unidentified coordinate: Rho_S[0y] 138x`; SX5E `α` 500 → 46.6 at 0.176 vol points;
+  SD3E refuses at Refuse and fits at Floor with the sd 0.348; the desk's 229524957 **−36,287,476
+  ZAR** at 32,768 paths (lane L −38,941,569, P2 −37,494,705) with `Skew_Reserve` **7,640,544** and
+  no on-guard entry in `Stats`; the guard over lane L's fits names NKY s1–s3 at 566–1,025x and
+  SX5E at 532x; `Model_Priors: Off` 56 floats at 0 ULP against 5b42c34, every stage line equal;
+  the hex set 4,180 / 0; the TARF `-0x1.2c48f36318e38p+5`; seven refusals by name; partition 34.
+  Found, not fixed: four Open rows above. Engine net +154 lines. Pack `artifacts/lv_leverage2_20260910/`.
 - **The leverage prior is on the product, `β`'s prior stays soft beside the wings, and on-guard
   fits are flagged** (2026-09-10, lane L, the owner's ruling on the positive residual skew) — the
   row `w (ρ_s − prior)` on the first bucket let the fit buy the product it wanted through `σ_s`,

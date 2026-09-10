@@ -1193,7 +1193,8 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('On_Guard', 'Text', default='',
           description='Every guard the calibration that wrote this factor landed ON, as its own '
                       'sentence - a $\\sigma$ on its box, $|\\beta|/\\alpha$ at the conditioning '
-                      'bound, or $c$ on **C_Min** - and blank where the fit is clean. A held '
+                      'bound, $c$ on **C_Min**, or a PRIOR ROW on a coordinate the quotes do not '
+                      'identify - and blank where the fit is clean. A held '
                       'parameter is the BOX speaking and not the data, so anything priced off it '
                       'inherits that: `Base_Revaluation` reports the flag in `Stats` under the '
                       'same key. Written by the fit, never authored - STRUCTURAL'),
