@@ -61,6 +61,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   longer grid is one question to Bloomberg support, the owner's.
 - **Three dials stayed module constants**: `bootstrappers.ALPHA_SEED` `(0.5, 0.05)`, `xtol=1e-12`
   in `LVFit.solve`, and `Sigma_Knots`' ten-knot default grid.
+- **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10,
+  lane T): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
+  which injects skew and convexity a flat surface does not want, so a flat 20% ladder fitted with
+  `Model_Priors: Off` lands at 0.21 vol points RMSE on one rung and 0.44 on two rather than at
+  zero, at a fitted `ρ_s σ_s` of −0.001 beside the pinned −0.400. Every ladder a short-dated FX
+  desk quotes is such a ladder; the flat-limit gate needs one reaching 1.5 years.
 
 ### The xVA outer and the correlation
 
@@ -76,6 +82,11 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
   one filed under a stale key. Name it at INFO.
+- **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10, lane T): `Config`
+  keys the section by a `(name, name)` tuple and builds it only on the `MarketDataFile` path, while
+  `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
+  lands under a string key that `get_cholesky_decomp` never looks up — a silent zero. Every
+  correlated document needs a market-data file today.
 - **`Steps_Per_Year` is two clocks** (2026-09-08): the deal declares it and the fitted block
   declares it, and the xVA outer process reads neither — a class literal 252 — so a document
   declaring 126 walks its inner OSS on 126 and its scenario grid on 252, silently.
@@ -87,7 +98,10 @@ unmeasured — a limitation without a number is absolution, not documentation
   `calc_statistics` and a re-read of every banked `Correlations` block.
 - **`calibrate_factors` reports a calibration class's own refusal as "Data errors in factor"**, and
   raises `AttributeError: 'NoneType' object has no attribute 'corr'` where every factor is skipped
-  (2026-09-07).
+  (2026-09-07). The same swallow one layer up: a bootstrapper family that refuses at CONSTRUCTION
+  (the leverage tables' sign refusal) is caught by `Config.bootstrap`, logged, and the factor left
+  unwritten, so a caller that does not read the log sees a bootstrap that succeeded and a
+  `KeyError` at the first pricer that wants the factor (2026-09-10, lane T).
 - **`Correlations` vs `save_params` author a quanto in different bases, unchecked**: `save_params`
   emits `ρ̄ᵢ = corr(dW, dWᵢ)` while the section's rows are the independent normals the Cholesky
   consumes (`a = ρ̄₁`, `b = (ρ̄₂ − ρ·ρ̄₁)/√(1−ρ²)`); copying `ρ̄₂` in gives a world whose drift and
@@ -344,17 +358,33 @@ every risk-neutral calibration inherits.
   The full suite runs at campaign boundaries with the tree held still.
 - **The standing hex gates every landing runs**: `artifacts/lv_nig_20260907/hexcheck.py` (4,180
   floats over 16 GBM and Hull-White documents, diffed by `hexdiff.py`) and the crisp GBM TARF
-  `artifacts/autocall_model_validation_20260904/campaign/tarf_hex.py` (`-0x1.2c48f36318e38p+5`);
-  the LogVar2FJ module `tests/test_logvar2fj_json.py` is the standing gate over the model's own
-  documents.
+  `artifacts/autocall_model_validation_20260904/campaign/tarf_hex.py` (`-0x1.2c48f36318e38p+5`).
+- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (lane T, 2026-09-10): 32 gates over
+  a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
+  book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
+  the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
+  under 1e-10, wing RMSE 0.789 against a 1.0 bound), the retired declarations refusing by name,
+  the on-guard flag on the factor and in `Stats`, `Model_Priors: Off` bit-identical to its banked
+  20 floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve
+  composed to 1e-9, the correlation key (0.1379 realised against 0.3 × 0.4525 declared-times-share,
+  0.5 se), and 76 floats over six repo documents hex for hex. About five minutes on the card, 213 s
+  of it one shared five-expiry fit; every gate's killing mutation went red except the wing-RMSE
+  row, whose mutation stalls the fit and whose bound is set at 3.2× below the unfitted seed. Two
+  fixture facts: the banked floats are the CARD's (device reductions; a CPU-only box re-banks),
+  and the repo's only autocall fixture has ONE fixing at maturity, so a vol-strip term-structure
+  error is invisible to it (the cumulative variance × 1.000001 leaves both autocall hex rows
+  green).
 - **A fixture must not zero the quantity its gate is sensitive to** — the checklist and the
   plugin are on [Conventions](conventions.md#fixture-degeneracy). A mutant that survives a gate
   means the fixture is wrong, not that the code is right.
 
 ## Tidy-ups
 
-- `gates/reach.py --dirty` dies on the Windows box decoding `git`'s output as cp1252; per-symbol
-  queries work. Decode the diff as UTF-8.
+- `gates/reach.py --dirty` died on the Windows box decoding `git`'s output as cp1252 (2026-09-08)
+  and ran clean there on 2026-09-10; if it recurs, decode the diff as UTF-8.
+- `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
+  on a `.md` at the repo root, so a lane that adds a fixture cannot use the selector until the next
+  boundary run rebuilds the map.
 - `artifacts/logvar2fj/`'s second spelling no longer imports (it walks the Poisson residual); delete
   the pack or re-spell its G-gate scripts against the NIG residual.
 - Inline comment density: ~12 blocks of 4–11 comment lines from the boundary-correction work
