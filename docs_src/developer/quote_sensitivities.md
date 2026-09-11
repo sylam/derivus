@@ -107,7 +107,7 @@ cannot move a PV.
 
 ## The solve {#the-solve}
 
-`bootstrappers.damped_newton` is the plain solver — the one the IFT wrapper runs unchanged in its
+`utils.damped_newton` is the plain solver — the one the IFT wrapper runs unchanged in its
 forward pass. The curves being solved are flattened into **one** system, so a projection curve and
 the discount curve it prices against are a single Jacobian. That Jacobian is autograd on the
 residual: one backward pass per benchmark gives a whole row, no bump loop over the knots, and it is
@@ -159,7 +159,7 @@ check is acknowledged tech debt** — it works, and it is subtle enough to be wr
 
 ## The IFT contract {#the-ift-contract}
 
-`bootstrappers.CalibrationSolve` is the bootstrap as one differentiable node.
+`utils.CalibrationSolve` is the bootstrap as one differentiable node.
 
 **Forward is the ordinary solve.** It calls `damped_newton` and nothing else — same iterations, same
 tolerances, same float64 — so enabling quote gradients cannot move a mark by construction. Autograd
@@ -194,7 +194,7 @@ the iterate *before* it; that costs one iteration's work.
 
 ## The stationarity contract — increment 2 {#the-stationarity-contract}
 
-`bootstrappers.LeastSquaresSolve` is the HW2F swaption calibration as one differentiable node: the
+`utils.LeastSquaresSolve` is the HW2F swaption calibration as one differentiable node: the
 contract above with one word changed, the fixed point being the **stationarity** of a least-squares
 loss rather than the root of a residual. Everything below is what that word costs.
 
@@ -345,7 +345,7 @@ unique-looking number that is the derivative of a different problem.
 
     **The box is part of the fixed point.** What holds at θ\* inside a box is the KKT condition, not
     `Jᵀr = 0`, so the contraction is taken over the coordinates the active set leaves free:
-    `bootstrappers.active_set` holds a coordinate that lies within 1e-4 of the box width of a bound
+    `utils.active_set` holds a coordinate that lies within 1e-4 of the box width of a bound
     *and* whose gradient `(Jᵀr)_j` points into it — scipy's own `active_mask` is a step-length report
     and reads empty with a coordinate jammed against its floor. Contracting a held coordinate answers
     in a direction the fit cannot move in: on a reduced LogVar2FJ fit `Nu` read −3791 where a

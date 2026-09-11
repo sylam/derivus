@@ -14,7 +14,8 @@
 import calendar
 import math
 from functools import reduce, wraps
-from collections import namedtuple, deque
+import threading
+from collections import namedtuple, deque, OrderedDict
 from typing import Tuple, List
 from dataclasses import dataclass
 
@@ -4884,3 +4885,422 @@ LV_RETIRED = {
 
 #: The tenor grammar `Forward_Tenors` is written in.
 LV_TENOR_UNITS = {'d': 1.0 / 365.0, 'w': 7.0 / 365.0, 'm': 1.0 / 12.0, 'y': 1.0}
+
+
+# The least-squares calibration node: the box algebra, the damped Newton, the implicit-function backward and the artifact
+def column_scale(jacobian):
+    """`(J/||J_:,j||, ||J_:,j||)` - the `x_scale='jac'` matrix `least_squares` itself steps on,
+    which is what both the identification table and the quote contraction read. An all-zero column
+    keeps unit scale rather than dividing by nothing."""
+    norms = jacobian.norm(dim=0)
+    norms = torch.where(norms > 0.0, norms, torch.ones_like(norms))
+    return jacobian / norms, norms
+
+
+def on_box(x, lower, upper, tol=1e-4):
+    """`(on the lower edge, on the upper edge)` as two masks: within `tol` of a bound relative to
+    the box's width, an infinite half-width taking the finite side's and `max(1, |x|)` where both
+    are infinite. The KKT active set and the on-guard flag read the same edge."""
+    x, lower, upper = (np.asarray(v, dtype=float) for v in (x, lower, upper))
+    span = np.where(np.isfinite(upper), upper, 0.0) - np.where(np.isfinite(lower), lower, 0.0)
+    edge = tol * np.where(np.isfinite(upper) | np.isfinite(lower),
+                          np.abs(span), np.maximum(1.0, np.abs(x)))
+    return x - lower <= edge, upper - x <= edge
+
+
+def active_set(x, lower, upper, g, tol=1e-4):
+    """The KKT active set at `x` as a boolean mask - the coordinates the BOX holds: on a bound
+    (`on_box`) AND the objective's gradient `g = J^T r` pointing into it.
+
+    Both conditions, because either alone is wrong: a solver stops a hair short of a floor it is
+    jammed against, and a coordinate resting against a bound the data pulls away from is free.
+    """
+    low, high = on_box(x, lower, upper, tol)
+    g = np.asarray(g, dtype=float)
+    return (low & (g > 0.0)) | (high & (g < 0.0))
+
+
+def active_bounds(labels, x, lower, upper, g):
+    """One line per coordinate `active_set` holds - a CALIBRATION statement, reported whether or
+    not quote sensitivities were asked for: the data is pushing that parameter through a bound, so
+    the surface wants something outside the box and the number written there is not a fitted one.
+    """
+    held = active_set(x, lower, upper, g)
+    return ['{} HELD at {:.6g} on its {} bound {:.6g}, gradient {:+.3e} pushing into it'.format(
+        labels[i], x[i], 'lower' if g[i] > 0.0 else 'upper',
+        lower[i] if g[i] > 0.0 else upper[i], g[i]) for i in np.flatnonzero(held)]
+
+
+def null_basis(scaled, norms, rcond):
+    """An orthonormal basis of the null space of the UNSCALED Jacobian at the declared cutoff - the
+    right singular vectors the cutoff DISCARDS, mapped back by `D^-1` and re-orthonormalised.
+
+    The pseudo-inverse is minimum-norm in the metric the solve steps in, so the part of a quote
+    delta lying here is that CONVENTION and not anything the quotes identify.
+    """
+    _, values, right = torch.linalg.svd(scaled, full_matrices=True)
+    dropped = torch.ones(right.shape[0], dtype=torch.bool, device=right.device)
+    dropped[:values.numel()] = values <= rcond * values.max()
+    basis = (right[dropped] / norms).t()
+    return torch.linalg.qr(basis)[0] if basis.shape[1] else basis
+
+
+def damped_newton(residual, theta, n_iter, tol, halvings):
+    """Solve `residual(theta) = 0` for a `{Factor: tensor}` of curve nodes, in float64.
+
+    The curves are flattened into ONE system, so a projection curve solved against a discount curve
+    in the same call is a single Jacobian. That Jacobian comes from autograd on the residual - one
+    backward pass per benchmark gives a row - which is the same derivative the implicit function
+    theorem needs, so the residual is written once and differentiated twice.
+
+    Damping is a backtracking line search on the residual's max-norm: full step first, halved until
+    it decreases. Near the root Newton takes the full step.
+
+    `n_iter`, `tol` and `halvings` are declared fields of the block being solved.
+    """
+    keys = list(theta)
+    sizes = [theta[key].numel() for key in keys]
+
+    def unflatten(flat):
+        return dict(zip(keys, flat.split(sizes)))
+
+    x = torch.cat([theta[key].detach() for key in keys])
+    for iteration in range(n_iter):
+        x = x.detach().requires_grad_(True)
+        f = residual(unflatten(x))
+        jacobian = torch.stack([torch.autograd.grad(f[i], x, retain_graph=True)[0]
+                                for i in range(f.numel())])
+        step = torch.linalg.solve(jacobian, f.detach())
+
+        # convergence is tested on the step BEFORE the line search: a step this small is inside the
+        # linear solve's own rounding, and a residual at noise level cannot decrease again
+        if step.abs().max() <= tol:
+            return unflatten((x - step).detach())
+
+        norm = f.detach().abs().max()
+        damping = 1.0
+        for _ in range(halvings + 1):
+            trial = x.detach() - damping * step
+            if residual(unflatten(trial)).abs().max() < norm:
+                break
+            damping *= 0.5
+        else:
+            raise Exception('Curve bootstrap: no damped Newton step reduces the residual '
+                            '(iteration {}, residual {:.6g})'.format(iteration, float(norm)))
+        x = trial
+
+    raise Exception('Curve bootstrap: {} Newton iterations without converging'.format(n_iter))
+
+
+def split_theta(benchmarks, theta):
+    """The flat solved vector back as the `{Factor: nodes}` the residual takes, in `solve_for`
+    order - which is the order `CalibrationSolve` concatenated it in."""
+    sizes = [benchmarks.tenors[factor].size for factor in benchmarks.solve_for]
+    return dict(zip(benchmarks.solve_for, theta.split(sizes)))
+
+
+def residual_jacobians(benchmarks, theta):
+    """The residual at `theta` and both its Jacobians: `dF/dtheta` (n x n) and `dF/dq` (n x m).
+
+    One backward pass per benchmark gives both. Materialising the whole `dF/dq` costs nothing over
+    contracting one cotangent through it, which is why `CalibrationSolve.backward`, the artifact's
+    calibration Jacobian and its drift metric all read this one function.
+
+    Every `grad` retains the graph: the residual's subgraph is shared with the forward pass
+    (`pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep`), so freeing it would take the
+    forward pass's graph with it.
+    """
+    x = torch.cat([theta[factor] for factor in benchmarks.solve_for]).detach().requires_grad_(True)
+    residual = benchmarks(split_theta(benchmarks, x))
+    rows = [torch.autograd.grad(residual[i], [x, benchmarks.quotes], retain_graph=True)
+            for i in range(residual.numel())]
+    return (residual, torch.stack([row[0] for row in rows]),
+            torch.stack([row[1] for row in rows]))
+
+
+def calibration_jacobian(benchmarks, theta):
+    """`dtheta/dq` at the fixed point.
+
+    The implicit function theorem in matrix form, `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` - which is
+    `CalibrationSolve.backward`'s arithmetic with every cotangent solved at once. No second solve:
+    the fixed point is where the forward pass left it, so this costs one Newton iteration.
+
+    `dF/dtheta` has to be invertible, which is a ROOT FIND's property; a least-squares fixed point
+    would contract a pseudo-inverse instead. `J` is n x m and nothing assumes the two are equal.
+
+    Over a COUPLED SET this is the whole block matrix, so `dtheta_2/dq_1` falls out of the one
+    inverse - see `coupled_sets`.
+    """
+    with torch.enable_grad():
+        _, d_theta, d_quote = residual_jacobians(benchmarks, theta)
+    return -torch.linalg.solve(d_theta, d_quote)
+
+
+class CalibrationSolve(torch.autograd.Function):
+    """The bootstrap as one differentiable node: quotes in, calibrated nodes out.
+
+    FORWARD IS THE ORDINARY SOLVE - `damped_newton` and nothing else - so enabling quote gradients
+    cannot move a mark. Autograd runs `forward` with grad mode off, which the solve needs on for its
+    own Jacobian, so it is re-enabled here and the iteration's graph discarded with it.
+
+    BACKWARD IS THE IMPLICIT FUNCTION THEOREM, never an unrolled solver. At the fixed point
+    `F(theta*, q) = 0`, so `dtheta/dq = -(dF/dtheta)^-1 (dF/dq)` and a cotangent `v = dL/dtheta*`
+    contracts to
+
+        w = (dF/dtheta)^-T v      then      dL/dq = -(dF/dq)^T w
+
+    Both come from `residual_jacobians` at `(theta*, q)`. The residual is written once and
+    differentiated twice, so the quote derivative cannot drift from the solve's own, nor from the
+    `dtheta/dq` an artifact publishes. The Jacobian is recomputed at theta* rather than reused from
+    the last Newton step, which was taken at the iterate before it.
+    """
+
+    @staticmethod
+    def forward(ctx, benchmarks, seed, n_iter, tol, halvings, quotes):
+        with torch.enable_grad():
+            theta = damped_newton(benchmarks, seed, n_iter, tol, halvings)
+        ctx.benchmarks, ctx.theta = benchmarks, theta
+        return torch.cat([theta[factor] for factor in benchmarks.solve_for])
+
+    @staticmethod
+    def backward(ctx, cotangent):
+        with torch.enable_grad():
+            _, d_theta, d_quote = residual_jacobians(ctx.benchmarks, ctx.theta)
+            w = torch.linalg.solve(d_theta.t(), cotangent)
+        return None, None, None, None, None, -(d_quote.t() @ w)
+
+
+class CalibrationArtifact(object):
+    """One calibration of one coupled set, frozen as an operator - `(theta*, J, q0, timestamp)` and
+    the compiled benchmark set the first two were read off.
+
+    `theta*` is the solved node vector in `solve_for` order, `J` is `dtheta/dq` at that fixed point
+    (exact by the implicit function theorem), `q0` the quote vector it was fitted at, in percent.
+    Between two fits a small tick propagates linearly: `theta ~ theta* + J (q_now - q0)`, one matvec.
+
+    IT COVERS THE SET, NOT THE BLOCK. `members` are the `Market Prices` blocks that solve as one
+    system, in the order their quotes and nodes are concatenated in, and `J` is the whole block
+    matrix. A partial ride is unrepresentable - one theta, one q0, one drift number for the set.
+
+    `timestamp` is REPORTED rather than read: it reaches no number and no hash, so a wall clock
+    cannot make two runs disagree.
+
+    Plan-side and content-addressed. `key` is the SLOT (`plan_key`), so every tick of one strip
+    lands on the same slot and a re-authored strip addresses a different one. `artifact_id` is the
+    slot plus the quotes fitted at, so it MOVES with every refit and is a replay coordinate.
+
+    Nothing here mutates. `ride` is a pure function of this artifact and the quotes it is handed,
+    stored nowhere, so two EXECUTEs off one `(artifact, q_now)` are bit-identical; a refit publishes
+    a NEW artifact into the same slot.
+
+    It holds tensors and a compiled deal tree, so it cannot live in `Price Factors` and cannot be
+    serialised: it lives in `ARTIFACTS`, in process. A cold start has none and the first tick
+    REFUSES rather than pricing something else.
+    """
+
+    def __init__(self, key, members, theta, jacobian, quotes, benchmarks, drift=None):
+        # `config` imports from this module, so the package edge runs one way only
+        from . import content_hash
+
+        self.key = key
+        self.members = tuple(members)
+        self.theta = theta
+        self.jacobian = jacobian
+        self.quotes = quotes
+        self.benchmarks = benchmarks
+        self.drift = drift
+        self.timestamp = pd.Timestamp.utcnow()
+        self.artifact_id = content_hash({'key': key, 'quotes': quotes.tolist()})
+
+    @property
+    def factors(self):
+        """The curves this operator carries, in the order `theta` concatenates them."""
+        return self.benchmarks.solve_for
+
+    @property
+    def jacobian_norm(self):
+        """`||J||inf`, the induced max-row-sum norm - the conversion between the quote-space units
+        `Drift_Tolerance` is declared in and the curve units a desk reads staleness in, since
+        `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order."""
+        return float(self.jacobian.abs().sum(dim=1).max())
+
+    def ride(self, quotes):
+        """`theta* + J (q_now - q0)` - the operator. Pure, and a matvec."""
+        return self.theta + self.jacobian @ (quotes - self.quotes)
+
+    def nodes(self, theta, factor):
+        """One member curve's slice of a set-wide theta, as the numpy column a price factor is."""
+        return split_theta(self.benchmarks, theta)[factor].detach().cpu().numpy()
+
+    def mispricing(self, theta, quotes):
+        """Every benchmark's residual at `(theta, quotes)`, in QUOTE SPACE: the move in that
+        benchmark's own quote, in percent, that would close it. Exact at any theta and any quote.
+
+        The set was compiled at `q0`, and needs no re-compile to be scored elsewhere: a benchmark's
+        PV is affine in its own quote at fixed theta (measured in `_carry_quotes`, second difference
+        exactly zero), so
+
+            F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)
+
+        holds with no remainder - provided `dF/dq` is taken at the theta being scored.
+        `residual_jacobians` re-differentiates HERE, at the ridden theta: 71.7ms against a 594ms
+        refit on the ZAR strip. Reusing the `dF/dq` stored at `theta*` is cheaper by one backward
+        and misses by `(d2F/dtheta dq) dtheta dq` - the same order as the residual it estimates -
+        reading low (0.886 of the truth at worst) on the tick shapes the tolerance exists to refuse.
+
+        Dividing each row by its own quote sensitivity is what makes `Drift_Tolerance` a number a
+        desk can set. It is a row max rather than a diagonal, so a family whose benchmarks are not
+        one-quote-each stays expressible.
+        """
+        with torch.enable_grad():
+            residual, _, d_quote = residual_jacobians(
+                self.benchmarks, split_theta(self.benchmarks, theta))
+        d_quote = d_quote.detach()
+        return ((residual.detach() + d_quote @ (quotes - self.quotes)) /
+                d_quote.abs().amax(dim=1))
+
+
+class ArtifactStore(object):
+    """Calibration artifacts under their plan keys - the PlanCache's discipline for the other half
+    of a prepared job.
+
+    Bounded and least-recently-used, because an artifact is a refit and never the record of
+    anything - the replay tuple is that. Locked because a slot is written by whatever thread ran the
+    bootstrap and read by whatever runs the EXECUTE.
+
+    Content-addressed, so an entry is immutable under its key: a refit REPLACES the artifact in a
+    slot. A moved quote NUMBER keeps the slot, which is what makes a ride possible, while a
+    re-authored quote SET addresses a different one and finds it empty.
+
+    `covering` returns CANDIDATES - every artifact holding that curve, most-recently-used first -
+    and never picks one: the caller recomputes each candidate's slot off the market data standing
+    now. Two artifacts can cover one curve at once (a Hermite job and a linear one).
+
+    Scanned rather than indexed by factor: an index can disagree with the store, and this holds 32.
+    """
+
+    def __init__(self, size=32):
+        self.size = size
+        self.artifacts = OrderedDict()
+        self.lock = threading.Lock()
+
+    def put(self, artifact):
+        with self.lock:
+            self.artifacts[artifact.key] = artifact
+            self.artifacts.move_to_end(artifact.key)
+            if len(self.artifacts) > self.size:
+                self.artifacts.popitem(last=False)
+            return artifact.key
+
+    def get(self, key):
+        with self.lock:
+            if key not in self.artifacts:
+                return None
+            self.artifacts.move_to_end(key)
+            return self.artifacts[key]
+
+    def covering(self, factor):
+        with self.lock:
+            return [self.artifacts[key] for key in reversed(self.artifacts)
+                    if factor in self.artifacts[key].factors]
+
+
+class LeastSquaresSolve(torch.autograd.Function):
+    """A least-squares calibration as one differentiable node: quotes in, calibrated parameters out.
+
+    The operand is the calibration - `solve()` for theta*, `__call__(x)` for the residual at it,
+    `interior(x, g)` for the coordinates the box leaves free, `labels` to name them - so the two
+    families differ in the operand and in nothing here.
+
+    FORWARD IS THE ORDINARY SOLVE, re-enabling the grad mode autograd turns off around it, so
+    asking for quote gradients cannot move theta*.
+
+    BACKWARD IS THE IMPLICIT FUNCTION THEOREM at a stationarity point rather than a root: what is
+    held fixed is `g = J^T r = 0`, and dropping the term in `d(J^T)/dtheta . r` - Gauss-Newton,
+    second order on these residuals - leaves `(J^T J) dtheta/dq = -J^T dr/dq`, a cotangent `v`
+    contracting as `dL/dq = -(dr/dq)^T J (J^T J)^+ v`. THE BOX IS PART OF THAT FIXED POINT: the
+    condition at theta* is KKT, so the contraction is taken over `interior` alone and a coordinate
+    the box holds has `dtheta/dq` zero. It runs on the COLUMN-SCALED Jacobian `J/||J_:,j||` - the
+    `x_scale='jac'` matrix the solve steps on - at `Jacobian_Rcond` on ITS singular values, so one
+    number cuts one matrix here and in the identification table, and `J (J^T J)^+` being `(J^+)^T`
+    one `pinv` says both.
+
+    Every quote delta is logged beside the share of it lying in the null space `Jacobian_Rcond`
+    discards - minimum-norm being a CONVENTION there, and one in the scaled metric.
+
+    Both Jacobians come from ONE fresh evaluation at `(theta*, q)` through `autograd.grad` and not
+    off `.grad`, which accumulates across the optimizer's evaluations and would be a path sum; they
+    are MEMOED, theta* not moving between cotangents. Every `grad` retains the graph, for the
+    reason `CalibrationSolve` gives.
+
+    REFUSED: `create_graph`, the backward carrying no second derivative; and `||J^T r||` over the
+    free coordinates above `Stationarity_Tol`, `solve` being free to return the seed.
+    """
+
+    @staticmethod
+    def forward(ctx, calibration, rcond, stationarity, *quotes):
+        with torch.enable_grad():
+            theta = calibration.solve()
+        ctx.calibration, ctx.theta, ctx.quotes = calibration, theta, quotes
+        ctx.rcond, ctx.stationarity, ctx.memo = rcond, stationarity, None
+        return theta
+
+    @staticmethod
+    def backward(ctx, cotangent):
+        # grad mode here means `create_graph` - a second differentiation Gauss-Newton cannot give
+        if torch.is_grad_enabled():
+            raise Exception('Calibration: create_graph is not supported - the backward is a '
+                            'Gauss-Newton contraction and carries no second derivative')
+        calibration = ctx.calibration
+        with torch.enable_grad():
+            if ctx.memo is None:
+                x = ctx.theta.detach().requires_grad_(True)
+                residual = calibration(x)
+                eye = torch.eye(residual.numel(), dtype=x.dtype, device=x.device)
+                jacobian = torch.autograd.grad(residual, x, eye, is_grads_batched=True,
+                                               retain_graph=True)[0].double()
+                slope = jacobian.t() @ residual.detach().double()
+                free = calibration.interior(x.detach().cpu().numpy(), slope.cpu().numpy())
+                inner = jacobian[:, free]
+                gradient = float(slope[free].norm())
+                held = [name for i, name in enumerate(calibration.labels) if i not in set(free)]
+                logging.info(
+                    '  quote sensitivity: ||J^T r|| {:.3e} against ||r|| {:.3e} over {} rows and '
+                    '{} fitted coordinates{} - the Gauss-Newton contraction is exact where the '
+                    'first is zero'.format(
+                        gradient, float(residual.detach().norm()), residual.numel(), x.numel(),
+                        '' if not held else ', {} of them HELD by the box ({}), whose quote '
+                        'derivative is zero'.format(len(held), ', '.join(held))))
+                if gradient > ctx.stationarity:
+                    raise Exception(
+                        'Calibration: theta* is not stationary - ||J^T r|| is {:.6g} against a '
+                        'Stationarity_Tol of {:.6g}, so the implicit function theorem does not '
+                        'hold there'.format(gradient, ctx.stationarity))
+                scaled, norms = column_scale(inner)
+                columns = torch.cat([column.reshape(residual.numel(), -1)
+                                     for column in torch.autograd.grad(
+                                         residual, ctx.quotes, eye, is_grads_batched=True,
+                                         retain_graph=True)], 1).double()
+                pseudo = torch.linalg.pinv(scaled, rtol=ctx.rcond)
+                ctx.memo = (residual, free, norms, pseudo.t(),
+                            -(pseudo @ columns) / norms[:, None],
+                            null_basis(scaled, norms, ctx.rcond))
+            residual, free, norms, contraction, delta, null = ctx.memo
+            v = cotangent.double()[free]
+            projected = null @ (null.t() @ delta)
+            logging.info(
+                '  quote deltas, minimum-norm in the COLUMN-SCALED metric over a {}-dimensional '
+                'null space - the share lying in it is that convention and not identified:'.format(
+                    null.shape[1]))
+            for j, descriptor in enumerate(calibration.descriptors):
+                value = float(v @ delta[:, j])
+                logging.info(
+                    '    {}: dV/dq {:+.6g}, direction share {:.3f}, value share {}'.format(
+                        descriptor, value,
+                        float(projected[:, j].norm() / delta[:, j].norm()),
+                        'n/a' if value == 0.0 else
+                        '{:+.3f}'.format(float(v @ projected[:, j]) / value)))
+            grads = torch.autograd.grad(
+                residual, ctx.quotes, retain_graph=True,
+                grad_outputs=-(contraction @ (v / norms)).to(residual.dtype))
+        return (None, None, None) + grads

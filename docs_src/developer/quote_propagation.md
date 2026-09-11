@@ -43,7 +43,7 @@ Measured on the ZAR strip: a refit is **594 ms**, a ride **74.5 ms** (8×), the 
 
 ## The artifact {#the-artifact}
 
-`bootstrappers.CalibrationArtifact` is one calibration of one **coupled set** frozen as an operator:
+`utils.CalibrationArtifact` is one calibration of one **coupled set** frozen as an operator:
 `(θ*, J, q₀, timestamp)`, its `members`, and the compiled `BenchmarkInstruments` the first two were
 read off. `θ*` is the solved node vector in `solve_for` order, `J = dθ/dq` at that fixed point, `q₀`
 the quote vector it was fitted at in percent.

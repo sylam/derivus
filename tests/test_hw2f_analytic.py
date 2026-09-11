@@ -79,8 +79,9 @@ import torch
 
 import derivus
 from derivus import bootstrappers, riskfactors, utils
-from derivus.bootstrappers import (HullWhite2FactorModelParameters, LeastSquaresSolve,
+from derivus.bootstrappers import (HullWhite2FactorModelParameters,
                                    RiskNeutralInterestRate_State, SwaptionCalibration)
+from derivus.utils import LeastSquaresSolve
 from derivus.config import ModelParams
 from derivus.stochasticprocess import (HW_ALPHA_FLOOR, HW_ALPHA_SERIES_B, HW_ALPHA_SERIES_H,
                                        HW_ALPHA_SERIES_IJK, HullWhite1FactorInterestRateModel,

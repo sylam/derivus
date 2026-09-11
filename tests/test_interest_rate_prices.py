@@ -32,8 +32,12 @@ import pytest
 import torch
 
 from derivus import utils
-from derivus.bootstrappers import (BenchmarkInstruments, InterestRateCurveParameters, author_quote,
-                                   damped_newton, quote_knots, quote_node)
+from derivus.bootstrappers import (BenchmarkInstruments,
+                                   InterestRateCurveParameters,
+                                   author_quote,
+                                   quote_knots,
+                                   quote_node)
+from derivus.utils import damped_newton
 from derivus.config import Config, ModelParams
 
 from rates_world import BASE, deposit, fra, par_swap, ois_swap
