@@ -27,15 +27,6 @@ These are defects in the engine: each has a change to this library that closes i
 - **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
   (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
   `Bootstrap` fit with priors on is unexercised.
-- **The log-variance cap has never been measured against its own absence** (2026-09-12): the cap
-  is declared structural at a level of log 100, the level rule lifts it to six stationary
-  deviations above the fitted level, and a fit whose path-days come within five widths of it is
-  refused, so no accepted fit runs near it. The comparison that would justify it has not been run:
-  the same ladder fitted and the same exotic priced with the cap and with the level set to `None`,
-  which the cap function already accepts and nothing exercises. Until it runs the cap is assumed
-  rather than shown, and its smooth form sits below the identity at every level, so the model's
-  expected variance is under the ξ curve it is calibrated to by a term that is exponentially small
-  in the distance to the cap and never zero. Both readings come out of one document run twice.
 - **`LVFit.cap_level` is not re-evaluated after the polish** (2026-09-09). A polish that raises
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
@@ -321,6 +312,20 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
+- **The log-variance cap becomes a corner, and the calibration stops carrying one.** The smooth
+  cap sits below the identity at every level, so it biases the variance under the ξ curve it is
+  calibrated to and blocks the closed forms; a hard minimum does neither. The fit then runs
+  uncapped, where the clock's moments are exactly lognormal and a European is a low-dimensional
+  quadrature with no paths, no seed and exact derivatives, which is the direct answer to the
+  bimodal objective. The written factor carries one level, derived at the end of the fit from the
+  fitted stationary law at a declared exceedance, and only the simulation applies the minimum, so
+  the exponential is never evaluated above it. The cap width goes with the bend, and the guard
+  that counts path-days within five widths becomes an exceedance probability in closed form, which
+  reads as one path-day in so many rather than a distance in an arbitrary unit. The corner's
+  second derivative is a boundary like any other and is priced exactly behind
+  `Branch_And_Weight` where it matters. First measurement, and the one that says whether any cap
+  is needed at all: one ladder fitted and one exotic and one exposure priced three ways, smooth
+  cap, hard minimum, and none.
 - **The density recursion** — one FFT convolution per monitored date against the block Gaussian,
   as an alternative inner estimator. The daily walk's tape at 2,048 × 2,048 × 509 does not fit a
   24 GiB card in either direction (the draws alone are 3 × 7.95 GiB), which is what the per-block
