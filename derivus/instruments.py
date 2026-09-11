@@ -4115,7 +4115,9 @@ class QEDI_CustomAutoCallSwap(Deal):
         with no free parameter, and every arm reads it: whether the OSS arm is admitted at all,
         which fixings are observations, and which coupon's trigger level each fixing's vol strip is
         read at. Only the PAST coupons filter the fixings - a coupon before the base date closes
-        every window it opened.
+        every window it opened. A BARRIER DATE IS A FIXING: dated on a coupon it names that
+        coupon, dated on a fixing it names the coupon whose window holds it, and either way it is
+        observed on the window and settled on the coupon date.
 
         THE ZERO-COUPON ROW IS THE FATAL REFUSAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
@@ -4137,13 +4139,6 @@ class QEDI_CustomAutoCallSwap(Deal):
         coupon_dates = [x[0] for x in self.field['Autocall_Coupons']]
         fixing_dates = [x[0] for x in self.field['Price_Fixing']]
 
-        # merge all the dates - except fixings - those will be added later
-        all_dates = reduce(set.union, [
-            set(coupon_dates),
-            set(self.field.get('Barrier_Dates', [])),
-            set([x[0] for x in self.field.get('Autocall_Floating', [])])
-        ])
-
         pf = dict(self.field['Price_Fixing'])
         ac = dict(self.field['Autocall_Coupons'])
         at = dict(self.field['Autocall_Thresholds'])
@@ -4160,9 +4155,20 @@ class QEDI_CustomAutoCallSwap(Deal):
         ac_dates = sorted([x for x in ac if x >= base_date])
         prior = [x for x in ac if x < min(ac_dates)]
         pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
-        barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
         pf_dates, ends = self.coupon_windows(pf_dates, ac_dates)
         one_each = ends is not None and len(ends) == len(pf_dates)
+        # A BARRIER DATE IS A FIXING: observed on its coupon's window, settled on the coupon date.
+        # A row dated on a coupon names that coupon; one dated on a fixing names the coupon whose
+        # window holds it, and its flag lands on the coupon's row
+        if ends is not None:
+            starts = np.concatenate([[0], ends[:-1] + 1])
+            window_of = {f: c for k, c in enumerate(ac_dates)
+                         for f in pf_dates[starts[k]:ends[k] + 1]}
+            ab = {x if x < base_date or x in coupon_dates else window_of.get(x, x) for x in ab}
+        barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
+        # merge all the dates - except fixings - those will be added later
+        all_dates = reduce(set.union, [
+            set(coupon_dates), ab, set([x[0] for x in self.field.get('Autocall_Floating', [])])])
         oss_windows = barriers_on_coupons and ends is not None and (
             one_each or spot_model != 'None')
 
@@ -4223,8 +4229,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             # would read the same remaining-fixing strip either side of it
             all_dates = sorted(all_dates.union(fixing_dates) if not one_each else all_dates)
             # a threshold row is the coupon row of its own POSITION whatever date it carries - the
-            # book dates them on the observation and the repo on the coupon - and a barrier date is
-            # read by date and must sit ON a coupon date
+            # book dates them on the observation and the repo on the coupon
             tl = {c: at[t] for c, t in zip(ac, at)}
 
             if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):

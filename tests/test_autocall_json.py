@@ -164,6 +164,35 @@ def test_the_pricer_logs_what_it_decided(tmp_path):
     assert 'blocks=1' in organ, organ
 
 
+def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_path):
+    """A barrier date is a fixing: observed on its coupon's window, settled on the coupon date.
+
+    Two coupons fixed three days early with a 70% put. The barrier dated on the FIXINGS prices
+    bit-identically to the barrier dated on the COUPONS (-0.0542905931889), both on the
+    one-step-survival arm, and the put is live: the no-barrier document reads +0.2804032290490.
+    Killing mutation: read a barrier date by date alone, with no window behind it, and the
+    fixing-dated document falls to the full-path arm (`fullpath=1`, the averaging warning) and
+    reads +0.0185267 - the barrier observed on a row that is nobody's coupon.
+    """
+    coupons, fixings = ['2024-12-27', '2025-06-27'], ['2024-12-24', '2025-06-24']
+
+    def doc(dates, barrier=0.7):
+        return _job(Expiry_Date={'.Timestamp': coupons[-1]},
+                    Price_Fixing=[[{'.Timestamp': x}, 0.0] for x in fixings],
+                    Autocall_Coupons=[[{'.Timestamp': x}, 0.04] for x in coupons],
+                    Autocall_Thresholds=[[{'.Timestamp': x}, 1.0] for x in coupons],
+                    Barrier=barrier, Barrier_Dates=[{'.Timestamp': x} for x in dates])
+
+    on_coupons, log_c = _run(doc(coupons), tmp_path, 'bar_c', debug=True)
+    on_fixings, log_f = _run(doc(fixings), tmp_path, 'bar_f', debug=True)
+    none, _ = _run(doc([], barrier=0.0), tmp_path, 'bar_0')
+    assert _mtm(on_fixings) == _mtm(on_coupons), (_mtm(on_fixings), _mtm(on_coupons))
+    for log in (log_c, log_f):
+        organ = [ln for ln in log.splitlines() if 'AUTOCALL ' in ln and 'coupons=2' in ln][-1]
+        assert 'fullpath=0' in organ and 'barrier=70' in organ, organ
+    assert _mtm(none) != _mtm(on_coupons)
+
+
 # --------------------------------------------------------------------------------------------
 # compo: the same digital on the CONVERTED spot
 # --------------------------------------------------------------------------------------------
