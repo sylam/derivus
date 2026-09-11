@@ -964,7 +964,13 @@ at the fast factor's κ = 6 is 3.0e36 at seven years against float32's 3.4e38, s
 past 7.4 years priced NaN at float32 — the desk's book is five-year, which is why nothing had hit
 it. The stable spellings are the given: `−expm1(−2κδ)/(2κ)` for the step weight and
 `−δ_A(2β+1)/(√(α²−(β+1)²)+γ)` for the forced drift, each at rounding in double where the old
-forms read 2.9e-10 and 6.5e-11 against a 60-digit reference.
+forms read 2.9e-10 and 6.5e-11 against a 60-digit reference. What float32 costs on a mark, at the
+reading of record (the desk's LogVar2FJ xVA document, 512 outer × 2,048 pricing paths, three seeds,
+uncollateralised): float32 and float64 estimate the same expectation — means 2,278,302 against
+2,281,298 ZAR, a −0.13% gap that is 0.05 of the seed spread, the spreads themselves 2.6% and
+2.3% — so the −14% read at 32 × 256 was two samples of a nonlinear walk, not rounding; and the
+tree before this pattern agrees with it row for row to 1e-15 at float64 and 1e-6 at float32,
+so the pattern moved nothing on a five-year book but the NaN past 7.4 years.
 
 ## The validation triangle {#the-validation-triangle}
 
