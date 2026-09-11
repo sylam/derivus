@@ -122,12 +122,15 @@ unmeasured — a limitation without a number is absolution, not documentation
   `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
   lands under a string key that `get_cholesky_decomp` never looks up — a silent zero. Every
   correlated document needs a market-data file today.
-- **Every correlation between a `calc_statistics` factor and a newer estimator is a business day
-  out** (2026-09-07): `calc_statistics` indexes an innovation at the return's start date, the
-  GARCH, HMM, basis and LogVar2FJ estimators at its end, and `calibrate_factors` correlates the two
-  families as they stand. On one simulated series GARCH against GBM reads 0.009 and against the
-  LogVar2FJ estimator's `eps` 0.335 (GBM −0.008) where the sibling was drawn at 0.6. One line in
-  `calc_statistics` and a re-read of every banked `Correlations` block.
+- **The newer historical estimators index an innovation one business day away from the incumbent**
+  (2026-09-07): `calc_statistics`, which every ordinary factor is estimated with, places a return's
+  innovation on the date the return STARTS; the GARCH, regime-switching, basis and LogVar2FJ
+  estimators place it on the date the return ends, and the factor calibration correlates the two
+  families as they stand. Measured on one simulated pair drawn at 0.6: a GARCH factor reads 0.009
+  against a lognormal sibling and 0.335 against the LogVar2FJ estimator's own residual. The shift
+  belongs to the four newer estimators, not to `calc_statistics` — every correlation a desk has
+  banked was estimated under the incumbent's convention, and moving it would silently re-date all of
+  them. Aligning the four leaves banked market data untouched and needs no re-read.
 - **`calibrate_factors` reports a calibration class's own refusal as "Data errors in factor"**, and
   raises `AttributeError: 'NoneType' object has no attribute 'corr'` where every factor is skipped
   (2026-09-07). The same swallow one layer up: a bootstrapper family that refuses at CONSTRUCTION
