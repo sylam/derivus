@@ -546,7 +546,12 @@ class CMC_State(utils.Calculation_State):
         One chunk - every dimension at or below the cap - is the single draw unchanged, engine,
         position and bytes.
 
-        The memo, the clamp and the icdf happen once, below, for both arms.
+        The memo, the clamp and the icdf happen once, below, for both arms. THE DRAW IS TAKEN IN
+        DOUBLE and returned three ways - `(icdf, u, u in double)` - the first two in the job's own
+        dtype and bit-identical to a float32 draw, a Sobol point being a dyadic rational both
+        conversions round the same way. A float32 uniform holds 24 bits, so `1 - u` at the clamp's
+        own margin carries 3% error: the third is for a consumer that reads the TAIL, the
+        inverse-Gaussian mixer being the one that does.
         """
         batch_key = (dimension, sample_size)
         call = self.t_quasi_rng_batch.setdefault(batch_key, 0)
@@ -577,17 +582,18 @@ class CMC_State(utils.Calculation_State):
             chunks, at = [], position
             for start in range(0, dimension, SOBOL_MAX_DIMENSION):
                 engine = self._sobol_at(min(SOBOL_MAX_DIMENSION, dimension - start), at)
-                chunks.append(engine.draw(sample_size, dtype=self.one.dtype))
+                chunks.append(engine.draw(sample_size, dtype=torch.float64))
                 at += sample_size
                 self.sobol_engine[engine.dimension] = (engine, at)
             self.sobol_position[dimension] = at
             sample_sobol = chunks[0] if len(chunks) == 1 else torch.cat(chunks, dim=1)
             margin = 1.0e-6
             u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
-            self.t_quasi_rng[sample_key] = (utils.norm_icdf(u), u)
+            self.t_quasi_rng[sample_key] = (utils.norm_icdf(u.to(self.one.dtype)), u)
 
         self.t_quasi_rng_batch[batch_key] += 1
-        return self.t_quasi_rng[sample_key]
+        z, u = self.t_quasi_rng[sample_key]
+        return z, u.to(self.one.dtype), u
 
     def _sobol_at(self, dimension, position):
         """This dimension's engine, standing at `position`.
@@ -714,13 +720,13 @@ class CMC_State_Inner(CMC_State):
         # Sobol-based correlated Gaussian: draw T*B*B2 quasi-normal vectors of dim num_factors,
         # transpose to (num_factors, T*B*B2), correlate via cholesky, reshape.
         if use_antithetic:
-            Z_normal, _ = self.quasi_rng(num_factors, T * B * (B2 // 2))
+            Z_normal = self.quasi_rng(num_factors, T * B * (B2 // 2))[0]
             half = torch.matmul(
                 self.t_cholesky, Z_normal.transpose(0, 1)
             ).reshape(num_factors, T, B, B2 // 2)
             self.t_random_numbers = torch.cat([half, -half], dim=-1)
         else:
-            Z_normal, _ = self.quasi_rng(num_factors, T * B * B2)                    # (T*B*B2, num_factors)
+            Z_normal = self.quasi_rng(num_factors, T * B * B2)[0]                    # (T*B*B2, num_factors)
             self.t_random_numbers = torch.matmul(
                 self.t_cholesky, Z_normal.transpose(0, 1)
             ).reshape(num_factors, T, B, B2)

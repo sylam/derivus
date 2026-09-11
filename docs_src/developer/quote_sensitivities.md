@@ -946,6 +946,26 @@ therefore *inside* the backward:
   θ\* it converges as $h^2$ (1e-2, 1e-4, 1e-6). The derivative is right; float32 is what it is
   reported in.
 
+**The LogVar2FJ walk follows the Hull-White pattern** (2026-09-10). Every nonlinear piece that is
+a function of the grid and the parameters alone — the OU step weights and cumulated decays, the ξ
+curve and the Jensen term the level is derived with, the NIG budget `(δ_A, μ_A, γ)`, the bucket
+search — is computed in double through `utils.lv_wide`, a differentiable cast, and cast once into
+the job's dtype; the walk multiplies and adds. The inverse-Gaussian root and both of
+`ig_quantile`'s Newton steps run in double (`LV_IG_TOL` is 1e-11 against float32's own 6e-8, and
+`ig_cdf`'s second term adds `2λ/m` — 2,092 on a quarterly interval at α 500 — to a log-tail of the
+same size), and the mixer uniform reaches them in double: `CMC_State.quasi_rng` draws Sobol in
+float64 and returns `(icdf, u, u in double)`, the first two bit-identical to a float32 draw because
+a Sobol point is a dyadic rational, the third for the one consumer that reads the tail, where
+`1 − u` at the clamp's own margin carries 3% error in float32. `lv_walk`'s two block sums
+accumulate in double where the block is narrow. A double caller gets its own arithmetic back, so
+the calibrator, which fits in double, is unmoved at the level of every primitive (870 floats, value
+and gradient, hex for hex on the CPU). What it closed: `lv_state_variance` rides `exp(2κT)`, which
+at the fast factor's κ = 6 is 3.0e36 at seven years against float32's 3.4e38, so a LogVar2FJ grid
+past 7.4 years priced NaN at float32 — the desk's book is five-year, which is why nothing had hit
+it. The stable spellings are the given: `−expm1(−2κδ)/(2κ)` for the step weight and
+`−δ_A(2β+1)/(√(α²−(β+1)²)+γ)` for the forced drift, each at rounding in double where the old
+forms read 2.9e-10 and 6.5e-11 against a 60-digit reference.
+
 ## The validation triangle {#the-validation-triangle}
 
 Three corners, deliberately independent. Of the six rows only **round trip vs θ_true** still runs

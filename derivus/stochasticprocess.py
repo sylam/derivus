@@ -5227,11 +5227,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                 continue
             lag = np.abs(at[a:b, None] - at[None, a:b])
             first = np.minimum(np.arange(a, b)[:, None], np.arange(a, b)[None, :])
-            # a deterministic variance makes the double sum the square of the sum to ROUNDING,
-            # and a spread a few ulps under zero is a nan under the root below
-            spread = np.log(max(1.0, (budget[a:b, None] * budget[a:b] * np.exp(
+            # the moment match through `expm1`/`log1p`: a deterministic variance makes the double
+            # sum the square of the sum, and `exp(Cov) - 1` there is all cancellation - the guard
+            # against a spread a few ulps under zero goes with it, every covariance being positive
+            spread = np.log1p((budget[a:b, None] * budget[a:b] * np.expm1(
                 np.exp(-float(ou['Kappa_L']) * lag) * v_l[first] +
-                np.exp(-float(ou['Kappa_S']) * lag) * v_s[first])).sum() / variance ** 2))
+                np.exp(-float(ou['Kappa_S']) * lag) * v_s[first])).sum() / variance ** 2)
             m = c_eff[j] * np.exp(np.log(variance) - 0.5 * spread + np.sqrt(spread) * node)
             root = np.sqrt(m) if self.implied.gaussian else np.sqrt(m) * utils.ig_sqrt_share(
                 (alpha[j] * alpha[j] - beta[j] * beta[j]) * m)
@@ -5287,14 +5288,19 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         sub = utils.substep_schedule(
             np.diff(np.insert(time_grid.time_grid_years, 0, 0.0)) * self.steps_per_year)
         step = np.concatenate([np.array(x) for x in sub]) / self.steps_per_year
-        self.deltas = shared.one.new_tensor(step)
         at = np.concatenate([[0.0], np.cumsum(step)])
-        t = shared.one.new_tensor(at)
+        # the clock, the curves read on it and the Jensen term in DOUBLE, cast ONCE into the job's
+        # dtype (`HullWhite1FactorInterestRateModel.precalculate`'s pattern): the walk multiplies
+        # and adds these and computes none of them
+        wide = shared.one.new_tensor(step, dtype=torch.float64)
+        t = shared.one.new_tensor(at, dtype=torch.float64)
+        self.deltas = wide.to(shared.one.dtype)
         self.levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                        for x in pricing.LogVar2FJKit.step_names}
-        self.curve = torch.log(utils.bucket_at(
-            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)) - 0.5 * utils.lv_state_variance(
-            dict(self.params, Sigma_S=self.levers['Sigma_S']), self.deltas)
+        self.curve = (torch.log(utils.lv_wide(utils.bucket_at(
+            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)))
+            - 0.5 * utils.lv_state_variance(
+                dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)).to(shared.one.dtype)
         bucket, k, self.pieces = utils.bucket_index(self.knots['Alpha'], at[:-1]), 0, []
         for n in [len(x) for x in sub]:
             rows, a = [], k
@@ -5324,10 +5330,11 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
 
     def mixers(self, shared_mem, shape, mirror):
         """One mixer uniform per residual draw per path on `quasi_rng`, in the calc's own
-        orientation; `1 - u` on the antithetic half."""
+        orientation and IN DOUBLE - the root reads a tail 24 bits cannot express; `1 - u` on the
+        antithetic half."""
         if not self.n_mixers:
             return None
-        u = shared_mem.quasi_rng(self.n_mixers, int(np.prod(shape)))[1].transpose(0, 1).reshape(
+        u = shared_mem.quasi_rng(self.n_mixers, int(np.prod(shape)))[2].transpose(0, 1).reshape(
             [self.n_mixers] + shape)
         return torch.cat([u, 1.0 - u], dim=-1) if mirror else u
 
@@ -5404,8 +5411,9 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         return {'ell': 1, 's': 1}
 
     def privileged_factors(self, simulated):
-        return {name: value.to(torch.float32).unsqueeze(-1)
-                for name, value in zip(('ell', 's'), self.last_state)}
+        """The revealed state in the JOB's dtype - it is the walk's own coordinate, not a critic
+        feature the process gets to round."""
+        return {name: value.unsqueeze(-1) for name, value in zip(('ell', 's'), self.last_state)}
 
     def reveal_state_at(self, t, buffer):
         """State-first / price-last: `(ell_t, s_t)` is this model's SUFFICIENT statistic - the

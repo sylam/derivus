@@ -2452,14 +2452,24 @@ LV_DILUTION_NODES = 48
 BUCKET_TOL = 1.0e-9
 
 
+def lv_wide(x):
+    """``x`` in float64, tensor or number, carrying its graph - what every nonlinear piece of the
+    model computes in before it is cast ONCE into the job's dtype (`HullWhite1FactorInterestRateModel
+    .precalculate`'s pattern). A double caller gets its own tensor back, so the arithmetic there is
+    the arithmetic it always was."""
+    return x.to(torch.float64) if torch.is_tensor(x) else torch.tensor(float(x),
+                                                                       dtype=torch.float64)
+
+
 def bucket_at(knots, values, t):
     """A bucketed curve's value in force at times ``t`` in years: PIECEWISE CONSTANT, the last knot
     at or before ``t`` (within ``BUCKET_TOL``) and the first value before the first knot.
     ``knots`` is structural (numpy), ``values`` the differentiable leaf, and the answer carries
-    ``t``'s shape."""
+    ``t``'s shape. The SEARCH is in double whatever the leaf is: a knot rounded to float32 moves by
+    5e-9, which is the tolerance itself."""
     k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
-                        dtype=values.dtype, device=values.device) - BUCKET_TOL
-    return values[torch.clamp(torch.searchsorted(k, t, right=True) - 1, min=0)]
+                        dtype=torch.float64, device=values.device) - BUCKET_TOL
+    return values[torch.clamp(torch.searchsorted(k, lv_wide(t), right=True) - 1, min=0)]
 
 
 def sqrt_or_zero(v):
@@ -2485,11 +2495,16 @@ def lv_nig_budget(A, alpha, beta):
     ``gamma = sqrt(alpha^2 - beta^2)``; ``delta_A = A gamma^3/alpha^2`` makes the variance the clock
     exactly and ``mu_A = delta_A (sqrt(alpha^2 - (beta+1)^2) - gamma)`` forces ``E[exp(X_A)] = 1``.
     Both are LINEAR in the clock, which is what composes the residual: a month cut into days is one
-    law once the clock is one number.
+    law once the clock is one number. All three are computed in DOUBLE and cast once, and ``mu_A``
+    is spelled ``-delta_A (2 beta + 1) / (sqrt(alpha^2 - (beta+1)^2) + gamma)`` - the rationalised
+    form of a difference of two roots a part in ten thousand apart at the box's own alpha.
     """
+    narrow = torch.result_type(A, alpha)
+    A, alpha, beta = lv_wide(A), lv_wide(alpha), lv_wide(beta)
     gamma = torch.sqrt(alpha * alpha - beta * beta)
     delta = A * gamma * gamma * gamma / (alpha * alpha)
-    return delta, delta * (torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0)) - gamma), gamma
+    mu = -delta * (2.0 * beta + 1.0) / (torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0)) + gamma)
+    return delta.to(narrow), mu.to(narrow), gamma.to(narrow)
 
 
 def ig_cdf(x, m, lam):
@@ -2522,8 +2537,13 @@ def ig_root(u, m, lam):
     THE FALLBACK BISECTS GEOMETRICALLY. The bracket spans ten decades, so its midpoint is a ratio
     and not a width: an arithmetic halving spends thirty steps walking down to the small end where
     the root of a skewed clock lives, and the budget it needs is twice the geometric one's.
+
+    IN DOUBLE, and the answer is double: `LV_IG_TOL` is 1e-11 against float32's own 6e-8, and
+    `ig_cdf`'s second term adds `2 lam/m` - four thousand on a quarterly clock - to a log-tail of
+    the same size, a cancellation float32 cannot hold at all.
     """
     with torch.no_grad():
+        u, m, lam = lv_wide(u), lv_wide(m), lv_wide(lam)
         lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
         for _ in range(LV_IG_EXPAND):
             hi = torch.where(ig_cdf(hi, m, lam) < u, hi * 4.0, hi)
@@ -2548,14 +2568,16 @@ def ig_quantile(u, m, lam):
     the VALUE is the root's while ``dG/dtheta = -(dF/dtheta)/f`` is the IFT exactly; the second
     step's input carries the first's graph, which is what makes the SECOND derivative the Newton
     map's own. Spot never enters, so delta and gamma bypass this node.
+
+    BOTH STEPS IN DOUBLE, cast once: their backward carries ``1/x^4`` terms that leave float32's
+    range at a residual clock under a 4% vol, and the forward's own cancellation in `ig_cdf` is
+    wider than the tolerance the root was found to.
     """
+    narrow = torch.result_type(m, lam)
+    m, lam, u = lv_wide(m), lv_wide(lam), lv_wide(u)
     x = ig_root(u, m, lam)
     x = x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
-    # the second step's backward carries 1/x^4 terms that leave float32's range at a residual
-    # clock under a 4% vol - a clock the carried state reaches - so it is taken in double
-    wide = lambda t: torch.as_tensor(t, device=x.device).to(torch.float64)
-    x2, m2, lam2, u2 = wide(x), wide(m), wide(lam), wide(u)
-    return (x2 - (ig_cdf(x2, m2, lam2) - u2) / ig_pdf(x2, m2, lam2)).to(x.dtype)
+    return (x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)).to(narrow)
 
 
 def ig_sqrt_share(z):
@@ -2580,12 +2602,18 @@ def lv_cap(x, a, beta):
 def lv_ou_step_weights(kappa, sigma, deltas):
     """Per-step decay phi and shock weight w of an OU factor on a non-uniform grid.
 
+    Both are functions of the GRID and the parameters alone, so both are computed in double and
+    cast ONCE into the caller's own dtype, the radicand ``-expm1(-2 kappa delta) / (2 kappa)`` where
+    ``1 - phi^2`` loses half its digits on a daily step; the walk multiplies the answer.
+
     A ZERO-length step - an MTM row landing on a remaining fixing hands the walk one - makes the
     radicand an exact zero, whose `sqrt` backward is `inf * 0`; `sqrt_or_zero` gives the weight's
     own derivative there, which is zero because the weight is identically zero in delta.
     """
+    narrow = torch.result_type(kappa, deltas)
+    kappa, deltas = lv_wide(kappa), lv_wide(deltas)
     phi = torch.exp(-kappa * deltas)
-    return phi, sigma * sqrt_or_zero((1.0 - phi * phi) / (2.0 * kappa))
+    return phi.to(narrow), sigma * sqrt_or_zero(-torch.expm1(-2.0 * kappa * deltas) / (2.0 * kappa)).to(narrow)
 
 
 def lv_ou_path(kappa, w, e, y0, deltas):
@@ -2596,10 +2624,15 @@ def lv_ou_path(kappa, w, e, y0, deltas):
     scaled back by ``exp(C_k)`` - a handful of dispatches on ``[..., n]`` tensors where the scan
     spends n of them on ``[...]`` ones. Every partial sum is scaled by the decay at ITS OWN k, so
     the rounding stays local to the step rather than riding the block's whole decay range.
+
+    The cumulated decay is the GRID's, so it is accumulated and exponentiated in double and cast
+    ONCE; the shocks and their running sum stay in the caller's dtype.
     """
-    cum = -kappa.reshape(-1) * torch.cat([deltas.new_zeros(1), deltas.cumsum(0)])
-    shocks = w * e * torch.exp(-cum[1:])
-    return torch.exp(cum) * (y0.unsqueeze(-1) + torch.cat(
+    narrow = torch.result_type(kappa, deltas)
+    kappa, wide = lv_wide(kappa), lv_wide(deltas)
+    cum = -kappa.reshape(-1) * torch.cat([wide.new_zeros(1), wide.cumsum(0)])
+    shocks = w * e * torch.exp(-cum[1:]).to(narrow)
+    return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + torch.cat(
         [torch.zeros_like(shocks[..., :1]), shocks.cumsum(-1)], -1))
 
 
@@ -2611,14 +2644,19 @@ def lv_state_variance(params, deltas):
     each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no
     second spelling. Measured from WHEREVER the walk starts, so a re-seeded row reads ``xi``
     exactly rather than under-shooting it.
+
+    WHOLLY IN DOUBLE, cast once. It rides the grid's own cumulated decay ``exp(2 kappa T)``, which
+    at the fast factor's 6 leaves float32's range on a grid past seven years, and it is a function
+    of the grid and the parameters alone, so the walk is handed the answer and not the recurrence.
     """
     # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
     # walk's state is flattened here rather than spreading a spurious axis along the whole grid
-    w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], deltas)[1].reshape(-1)
-    w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)[1].reshape(-1)
-    zero = deltas.new_zeros(())
-    return (lv_ou_path(2.0 * params['Kappa_S'], w_s, w_s, zero, deltas)
-            + lv_ou_path(2.0 * params['Kappa_L'], w_l, w_l, zero, deltas))
+    wide = lv_wide(deltas)
+    w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], wide)[1].reshape(-1)
+    w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], wide)[1].reshape(-1)
+    zero = wide.new_zeros(())
+    return (lv_ou_path(2.0 * lv_wide(params['Kappa_S']), w_s, w_s, zero, wide)
+            + lv_ou_path(2.0 * lv_wide(params['Kappa_L']), w_l, w_l, zero, wide)).to(deltas.dtype)
 
 
 def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):
@@ -2680,10 +2718,17 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     V = deltas * torch.exp(lv_cap(x, a, beta))
     sq = sqrt_or_zero(V)
     e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)
-    M = -0.5 * (rs * rs + rl * rl) * V + rl * sq * e_l + rs * sq * e_s
+    # the step's two leverage coefficients are the GRID's and the parameters', so they are formed
+    # in double and cast once; a narrow block then ACCUMULATES in double, a double one summing
+    # exactly as it always did - an accumulate dtype picks another reduction kernel on the card
+    wl, ws = lv_wide(rl), lv_wide(rs)
+    lever, idio = (-0.5 * (ws * ws + wl * wl)).to(V.dtype), (1.0 - ws * ws - wl * wl).to(V.dtype)
+    total = lambda t: (t.sum(-1) if t.dtype == torch.float64
+                       else t.sum(-1, dtype=torch.float64).to(t.dtype))
+    M = lever * V + rl * sq * e_l + rs * sq * e_s
     if quanto is not None:
         M = M - quanto * sq
-    return M.sum(-1), ((1.0 - rs * rs - rl * rl) * V).sum(-1), l, s
+    return total(M), total(idio * V), l, s
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse

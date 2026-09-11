@@ -454,7 +454,7 @@ def test_the_historical_arm_is_still_one_free_running_engine():
 
     for dimension, size in plan:
         expected = reference.draw(size, dtype=torch.float64)
-        _, u = state.quasi_rng(dimension, size)
+        u = state.quasi_rng(dimension, size)[1]
         margin = 1.0e-6
         assert torch.equal(u, expected.clamp(min=margin, max=1.0 - margin)), (
             'the historical arm left the free-running engine at (%d, %d)' % (dimension, size))

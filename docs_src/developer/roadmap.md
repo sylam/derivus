@@ -61,6 +61,15 @@ unmeasured — a limitation without a number is absolution, not documentation
   longer grid is one question to Bloomberg support, the owner's.
 - **Three dials stayed module constants**: `bootstrappers.ALPHA_SEED` `(0.5, 0.05)`, `xtol=1e-12`
   in `LVFit.solve`, and `Sigma_Knots`' ten-knot default grid.
+- **Under `Sampling: Pseudo` the mixer uniform is 24 bits at float32** (2026-09-10, lane F):
+  `torch.rand` at float32 is the draw, and widening it changes the generator's consumption and so
+  the stream a float64 document reproduces; `1 − u` at the clamp margin carries 2.98% there.
+  Production takes Sobol above 16 scenarios, where the uniform is drawn in double.
+- **`lv_ou_path`'s integrating factor is range-limited at float32** past κT = 88 (2026-09-10):
+  every caller keeps it safe — the walk's 21-step segments, the state variance in double — but the
+  primitive would overflow a float32 caller. The fix is a chunked rescale, not a cast. Beside it
+  the clock `A` is still summed across blocks in the job's dtype; widening it cascades into `G`
+  and every pricer reading the law, a design change.
 - **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10,
   lane T): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
   which injects skew and convexity a flat surface does not want, so a flat 20% ladder fitted with
@@ -82,6 +91,13 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
   one filed under a stale key. Name it at INFO.
+- **The float32 bias of the LogVar2FJ outer at production size is unmeasured** (2026-09-10, lane
+  F): the desk's NKY autocall under the LogVar2FJ outer reads −14.09% between float32 and float64
+  at 32 outer × 256 pricing paths, reproduced to the digit on the base and the landed tree — two
+  samples of a nonlinear walk, not rounding, since the two precisions take different mixer roots
+  and walk different worlds. The 2,048 × 2,048 table over three seeds per precision is the
+  reading (`artifacts/lv_precision_20260910/batch.sh`, resumable row by row; about 2.5 hours a
+  tree on a free card); the expectation is that the gap is sampling and no bias survives.
 - **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10, lane T): `Config`
   keys the section by a `(name, name)` tuple and builds it only on the `MarketDataFile` path, while
   `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
@@ -173,6 +189,10 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The engine
 
+- **The privileged surface's dtype differs across processes** (2026-09-10, lane F): the LogVar2FJ
+  outer publishes `(ell, s)` in the job's dtype while `LogOUSpotModel`, `MarkovHMMSpotModel` and
+  `GARCHSpotModel` cast theirs to float32 — inert while `HedgeMonteCarlo` runs at float32 whatever
+  the job says; a float64 `solve_hedge` would hand the critic one float64 block among float32.
 - **`NettingCollateralSet`'s backward is nondeterministic on the GPU**: one gradient entry takes two
   distinct float64 values from bit-identical inputs (a reduction order, not a graph defect). It
   bounds how tightly any collateralised sensitivity gate can be pinned.

@@ -170,10 +170,15 @@ class LogVar2FJKit(object):
 
         ONE TRADING DAY PER INTERNAL STEP on the `Steps_Per_Year` clock - the day is the model -
         every fixing landing ON a grid point, so there are no stubs and the block sums are exact.
+
+        The ABSOLUTE times stay in double: they are read against calendar bucket knots within
+        `utils.BUCKET_TOL`, and a float32 cumsum over a daily five-year grid drifts three orders
+        of magnitude past it.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year)), 1) for dt in deltas]
-        delta = torch.cat([(dt / n).expand(n) for dt, n in zip(deltas, steps)])
-        return steps, delta, float(row_t) + torch.cat([delta.new_zeros(1), delta.cumsum(0)])
+        wide = torch.cat([(utils.lv_wide(dt) / n).expand(n) for dt, n in zip(deltas, steps)])
+        return (steps, wide.to(deltas.dtype),
+                float(row_t) + torch.cat([wide.new_zeros(1), wide.cumsum(0)]))
 
     def pieces(self, row_t, deltas):
         """Each fixing interval as the list of ``(first step, last step, bucket)`` its residual
@@ -235,9 +240,12 @@ class LogVar2FJKit(object):
         steps, delta, t = self.grid(row_t, deltas)
         levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
                   for x in self.step_names}
-        curve = torch.log(utils.bucket_at(
-            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)) - 0.5 * utils.lv_state_variance(
-            dict(self.params, Sigma_S=levers['Sigma_S']), delta)
+        # the level the walk reverts to is the GRID's and the parameters' - double, cast once
+        curve = (torch.log(utils.lv_wide(utils.bucket_at(
+            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)))
+            - 0.5 * utils.lv_state_variance(
+                dict(self.params, Sigma_S=levers['Sigma_S']),
+                utils.lv_wide(delta))).to(delta.dtype)
         shape = [shared.simulation_batch, num_sims]
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
@@ -467,22 +475,30 @@ def quanto_step_loading(kit, factor_dep, rho, row_t, deltas, shared):
 
 
 def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
-    """Antithetic uniforms for a one-step-survival loop: ``[n_fix + extra, batch, 2 * num_sims]``.
+    """Antithetic uniforms for a one-step-survival loop, as ``(oss, mixers)``: the OSS columns
+    ``[n_fix, batch, 2 * num_sims]`` in the job's dtype and the ``extra`` mixer columns beside them.
 
     One Sobol/pseudo draw plus its ``1 - u`` mirror, pairing an OSS step's truncated final draws
     with the antithetic halves of the kit's own walk. ``extra`` widens the request AFTER the OSS
     columns - a walking kit's mixer uniform per residual draw - so a GBM deal asks for nothing new
-    and its stream is untouched. NOT used by ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws
-    the same Sobol block but consumes it raw - adopting this there would change that estimator.
+    and its stream is untouched, and where the stream carries them in DOUBLE the mixers come back
+    that way: the inverse-Gaussian root reads a tail 24 bits cannot express. NOT used by
+    ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws the same Sobol block but consumes it
+    raw - adopting this there would change that estimator.
     """
     rows = n_fix + extra
     if sobol:
-        u = shared.quasi_rng(shared.simulation_batch, rows * num_sims)[1].T.reshape(
-            rows, shared.simulation_batch, -1)
+        draw = shared.quasi_rng(shared.simulation_batch, rows * num_sims)
+        shape = lambda x: x.T.reshape(rows, shared.simulation_batch, -1)
+        # one reshape where the mixers want the wide draw - a cast and a permutation commute
+        wide = shape(draw[2]) if extra else None
+        u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
     else:
         u = torch.rand([rows, shared.simulation_batch, num_sims],
                        dtype=shared.one.dtype, device=shared.one.device)
-    return torch.concat([u, 1.0 - u], dim=-1)
+        wide = u
+    mirror = lambda x: torch.concat([x, 1.0 - x], dim=-1)
+    return mirror(u[:n_fix]), mirror(wide[n_fix:]) if extra else None
 
 
 def oss_truncated_draw(u, z_bound, survive_below):
@@ -1657,14 +1673,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
             # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
             n_mix = 0 if kit is None else kit.mixers(row_times[blk], times[blk])
-            u = oss_uniforms(shared, N_fix, num_sims, sobol, n_mix)
+            u, mix = oss_uniforms(shared, N_fix, num_sims, sobol, n_mix)
 
             D_T = D[-1].reshape(-1, 1)  # terminal discount: [batch, 1]
 
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                 law = kit.blocks(row_times[blk], times[blk], carry[blk], shared, num_sims, True,
-                                 u[N_fix:])
+                                 mix)
 
             if direction == BARRIER_IN:
                 if kit is None:
@@ -2639,11 +2655,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             if kit is None:
                 vols = vols_all[i]
             n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-            u = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
+            u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
-                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
-                                 u[reduced_samples:])
+                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True, mix)
             Sj = torch.unsqueeze(s, 1)
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
             L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
@@ -3288,7 +3303,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 growth = torch.exp(log_fwd[tail] - log_fwd[m])
                 A = torch.sum(rel_pay * growth, dim=0)
                 B = torch.sum(rel_pay, dim=0)
-                u = oss_uniforms(shared, 1, shared.MCMC_sims, sobol)[0]
+                u = oss_uniforms(shared, 1, shared.MCMC_sims, sobol)[0][0]
                 prev = s0.reshape(-1, 1).expand(-1, u.shape[-1])
                 p_ext, s_ext = oss_extend(prev, log_fwd[m], total_var[m], H, u)
                 c_ext = forward_sign * notional * (A.reshape(-1, 1) * s_ext - k2 * B.reshape(-1, 1))
@@ -3314,7 +3329,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
             boundaries = extension_boundaries(row_index, first_decision) \
                 if first_decision is not None else {}
             n_future = len([j for j in decision_indices if fixing_days[j] > mtm_day])
-            u_all = oss_uniforms(shared, n_future, shared.MCMC_sims, sobol) if n_future else None
+            u_all = oss_uniforms(shared, n_future, shared.MCMC_sims, sobol)[0] if n_future else None
             u_ptr = 0
             sims = 2 * shared.MCMC_sims
             L = shared.one.new_ones((shared.simulation_batch, sims))
@@ -3508,11 +3523,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 vols = vols_all[i]
             if reduced_samples:
                 n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-                u = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
+                u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
                 if kit is not None:
                     # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
-                                     u[reduced_samples:])
+                                     mix)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1]
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
@@ -4127,18 +4142,23 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
                     rows = reduced_samples + n_mix
                     if sobol:
-                        u = shared.quasi_rng(shared.simulation_batch, rows * num_sims)[1].T.reshape(
-                            rows, shared.simulation_batch, -1)
+                        draw = shared.quasi_rng(shared.simulation_batch, rows * num_sims)
+                        shape = lambda x: x.T.reshape(rows, shared.simulation_batch, -1)
+                        # one reshape: a cast and a permutation commute, so the narrow columns
+                        # come off the wide draw rather than being shuffled a second time
+                        wide = shape(draw[2]) if n_mix else None
+                        u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
+                        mix = None if wide is None else wide[reduced_samples:]
                     else:
                         u = torch.rand([rows, shared.simulation_batch, num_sims],
                                        dtype=shared.one.dtype, device=shared.one.device)
+                        mix = u[reduced_samples:] if n_mix else None
                 Sj = torch.unsqueeze(
                     s if last_fixing is None else past_fixings[last_fixing], 1)
                 if kit is not None and reduced_samples:
                     # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False,
-                                     u[reduced_samples:],
-                                     quanto[i] if quanto.numel() else None)
+                                     mix, quanto[i] if quanto.numel() else None)
 
                 P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
                 L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
