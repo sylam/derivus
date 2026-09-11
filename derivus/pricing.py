@@ -100,7 +100,7 @@ class LogVar2FJKit(object):
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
-        self.steps_per_year = float(factor_dep['Steps_Per_Year'])
+        self.steps_per_year = float(structural['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
         # where an OUTER LogVar2FJ process publishes its carried state: keyed by the underlying's
         # own factor, whose type this deal does not name, and read on the DEAL's own day count
@@ -457,6 +457,25 @@ def forward_vol_rate(vols, cum_t, dt):
     fwd = torch.sqrt(cum_var.diff(dim=-2).clamp(min=torch.finfo(vols.dtype).eps) /
                      torch.where(step > 0, step, torch.ones_like(step)))
     return torch.cat([vols[..., :1, :], fwd], dim=-2)
+
+
+def trigger_vol_strip(deal_data, strike, levels, spot, carry_rate, fixings, cum_t, times, shared):
+    """The interval vol strip with each fixing read at the strike its own coupon's trigger tests,
+    ``levels[j] * strike`` - what a six-leg booking prices, every digital its own deal.
+
+    ONE strip per distinct level, each differenced over the whole fixing axis at that level's own
+    constant strike, and a fixing takes the strip its coupon reads: a forward variance is a
+    difference of two CUMULATIVE variances at one strike, so a level changing mid-axis cannot be
+    differenced across. A ladder at one level builds exactly the one strip it always did.
+    """
+    strip = None
+    for level in np.unique(levels):
+        rung = forward_vol_rate(forward_vol_strip(
+            deal_data, strike * float(level) * shared.one, spot, carry_rate, fixings, shared),
+            cum_t, times)
+        strip = rung if strip is None else torch.where(
+            torch.as_tensor(levels == level, device=rung.device).reshape(-1, 1), rung, strip)
+    return strip
 
 
 def quanto_step_loading(kit, factor_dep, rho, row_t, deltas, shared):
@@ -3424,10 +3443,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     the surviving branch, and only the ITM leg accrues toward the target - the OTM leg affects PV
     only, plus the optional knock-in barrier.
 
-    Spot-model limitations - accepted design semantics, stated so they are not re-derived:
-    (F1) ``Steps_Per_Year`` must match the internal clock the factor was calibrated on - a mismatch
-         silently rescales the variance horizon;
-    (F2) the walk re-seeds at every MTM row - there is no outer-grid variance term structure.
+    Spot-model limitation - accepted design semantics, stated so it is not re-derived: the walk
+    re-seeds at every MTM row, so there is no outer-grid variance term structure. The internal
+    clock is the FACTOR's - a deal declaring a different ``Steps_Per_Year`` is refused by name at
+    ``instruments.set_spot_model_index`` rather than silently rescaling the variance horizon.
     Absent the model's scalars the GBM path is byte-identical. RECOMPUTE: the vol strip is built at
     the call site and the simulation RETURNS its settled cashflows and registrations. THE RECIPROCAL
     AXIS (``Invert_Spot``) is the declared kit's own; nothing here knows of it.
@@ -3948,8 +3967,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
     ONE STRIP PER LEG UNDER GBM, each read at the strike that leg decides on - which is what a
     six-leg booking of the same economics prices, every leg a deal of its own on its own smile.
-    The coupon/trigger leg reads the deal's declared moneyness, the initial level, which IS the
-    trigger's own strike wherever the threshold is one; the PUT LEG gets a SECOND strip at its own
+    The coupon/trigger leg reads `trigger_vol_strip`, each fixing at ITS OWN coupon's
+    `threshold * strike`, so a DECLINING ladder reads each digital at the level it tests rather
+    than every one at the initial level (identical wherever every threshold is one, which is every
+    document here); the PUT LEG gets a SECOND strip at its own
     strike - the barrier for a `Rebate` 0 full loss, both halves of that payoff being struck there,
     and the level the payoff crosses zero otherwise. That strip's first interval is measured from
     the PATH's own prefix, so a leg whose barrier opens mid-deal still reads its own total variance
@@ -4460,9 +4481,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         fixing_indices = counts.cumsum() - 1
         eq_start_index = eq_start_idx[fixing_indices]
         cp_start_index = cp_start_idx[fixing_indices]
-        coupon_equity_index = equity_samples.schedule[:, utils.RESET_INDEX_Reset_Day].searchsorted(
-            coupon_samples.schedule[:, utils.RESET_INDEX_Reset_Day], 'right') - 1
-        coupon_equity_index = np.append(coupon_equity_index, coupon_equity_index[-1] + 1)
+        # each coupon's LAST observation, as `calc_dependencies` paired it; the extra entry is the
+        # open window a block past every coupon reads
+        coupon_equity_index = np.append(
+            factor_dep['Coupon_Windows'], factor_dep['Coupon_Windows'][-1] + 1)
         # each coupon's window OPENS one past its predecessor's last fixing
         coupon_window_lo = np.concatenate([[0], coupon_equity_index[:-1] + 1])
 
@@ -4633,16 +4655,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = windows = None
             # the interval carry and vol strips, which is also what puts the FULL-PATH branch's
             # `carry * dt` and `vols * vols * dt` on interval integrals. Both take the ZERO carry
-            # `drifts`; the strip reads the TRIGGER's strike (the deal's declared moneyness, the
-            # initial level) and the put leg gets a second strip read at its own
+            # `drifts`; the strip reads each TRIGGER's own strike and the put leg gets a second
+            # strip read at its own
             cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
             put_vols = spot_block.new_empty(0)
             if fixing_block.any():
-                interval_vols = forward_vol_rate(forward_vol_strip(
-                    deal_data, strike * shared.one, spot_block, drifts, fixing_block, shared),
-                    cum_t, sample_ts)
+                levels = (factor_dep['Fixing_Thresholds'][eq_start_index[index]:]
+                          if windows is not None else np.ones(fixing_block.shape[-1]))
+                interval_vols = trigger_vol_strip(
+                    deal_data, strike, levels, spot_block, drifts, fixing_block, cum_t,
+                    sample_ts, shared)
                 if (windows is not None and not scalars and putBarrier > 0.0
                         and max(BarrierDates) > 0):
                     # THE PUT LEG'S OWN STRIP, its own strike at every fixing's own tenor - the

@@ -103,9 +103,6 @@ unmeasured — a limitation without a number is absolution, not documentation
   `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
   lands under a string key that `get_cholesky_decomp` never looks up — a silent zero. Every
   correlated document needs a market-data file today.
-- **`Steps_Per_Year` is two clocks** (2026-09-08): the deal declares it and the fitted block
-  declares it, and the xVA outer process reads neither — a class literal 252 — so a document
-  declaring 126 walks its inner OSS on 126 and its scenario grid on 252, silently.
 - **Every correlation between a `calc_statistics` factor and a newer estimator is a business day
   out** (2026-09-07): `calc_statistics` indexes an innovation at the return's start date, the
   GARCH, HMM, basis and LogVar2FJ estimators at its end, and `calibrate_factors` correlates the two
@@ -125,30 +122,25 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The autocall, TARF and barrier pricers
 
-- **The autocall's fixing-to-coupon alignment is a guess the booking never states** (2026-09-08):
-  fixings more than a month before the first unpaid coupon are dropped and the rest are paired with
-  the coupons positionally; a deal fixing five weeks before a long settlement silently falls out of
-  that pairing and prices on the full-path arm. The fix is a schedule that declares it.
-- **The autocall trigger digital reads the initial level, not the threshold times it**
-  (2026-09-08): the interval strip is read at `Strike_Price`, which is each trigger's own strike
-  only where `Autocall_Thresholds` is 1.0 — every document in the book and the repo. A declining
-  ladder would read every trigger at the initial level's moneyness.
-- **A digital contra booked with `Cash_Payoff` 0.0 prices to zero without a word** (2026-09-08):
-  two of the Barclays structures carry one, worth 2.9e8 and 2.85e8 of payoff in the legs it was
-  meant to cancel, and under a credit Monte Carlo both skip with `float division by zero`.
-  `derivus_compact_autocalls.py` names it and the fold repairs it; the load should refuse it.
+- **A coupon with no `Autocall_Thresholds` row prices a NEGATIVE trigger** (2026-09-11, lane A):
+  the positional read fills a missing row with −1, so `K = −strike` and the coupon fires on
+  every path, and the `min(tl.values()) <= 0` guard cannot see it because the −1 never enters the
+  table. Since lane A the fixing-level read is `tl[c]`, so such a document skips on a `KeyError`
+  naming the deal; it should refuse by name. Every booking in the packs has one row per coupon.
 - **The energy and commodity floating legs concatenate their resets the way the rate legs did**
   (2026-09-10): `pricing.py`'s two `torch.cat`s of known against forecast resets off a
   `ForwardPrice` curve refuse a static curve in the words the rate legs refused with until
   `utils.concat_resets` — one call at each site, unmade because no document in the packs reaches
   it and an unmeasured change is not a fix.
-- **Ten `shape '[1]' is invalid for input of size N` skips on the Barclays book's equity binary
-  legs and three autocall arms** (2026-09-10), the same with the rate curves simulated or frozen.
-  Adjacent to the `Sticky_Strike` row below but a `reshape`, not that row's `IndexError`;
-  unexplained.
 - **`EquityPriceVol` under `Sticky_Strike` cannot reach a fixing strip** (2026-09-08):
-  `calc_moneyness` returns the bare strike for a parametric surface and every fixing-strip pricer
-  raises `IndexError` at `pricing.py:343`. The book works around it with `Explicit` surfaces.
+  `calc_moneyness` returns the bare strike for a parametric (`Skew`/`SVI`) surface, one number with
+  no fixing axis, and `forward_vol_strip` indexes it on a fixing axis it does not have — at one
+  reporting row an `IndexError` at `pricing.py:425`, at more than one the reshape one line below
+  dies with `shape '[1]' is invalid for input of size N`, N the block's row count. The desk's book
+  declares `Skew` with `Sticky_Strike` on every equity surface, so its ten binary-leg and autocall
+  skips ARE this row (reproduced on one leg, 2026-09-11): a book of skew-parameterised surfaces
+  cannot price a discrete barrier, an accumulator, a TARF or an autocall. The fix is a broadcast
+  of the moneyness onto the fixing axis at the one site that knows the strip's shape.
 - **A second consecutive coupon whose window is wholly observed reads the first one's last fixing**
   under `'Spot'` on the OSS arm — the same staleness its prefix already carries; no document here
   reaches it. And a lagged block's terminal rows price the final coupon crisply off a fixing the row
@@ -193,6 +185,14 @@ unmeasured — a limitation without a number is absolution, not documentation
   outer publishes `(ell, s)` in the job's dtype while `LogOUSpotModel`, `MarkovHMMSpotModel` and
   `GARCHSpotModel` cast theirs to float32 — inert while `HedgeMonteCarlo` runs at float32 whatever
   the job says; a float64 `solve_hedge` would hand the critic one float64 block among float32.
+- **A document's numbers depend on how many documents ran before it in the process**
+  (2026-09-11, lane A): a GBM autocall CVA document moves 9,146 of its 12,250 floats — the CVA by
+  12% — between running first and running forty-third in one process, at the same seed on the
+  same tree, while two runs at the same position agree to the bit. Process-global random-number
+  state that a job's `reset()` does not reset (the quasi-RNG batch counter the RNG-ordering note
+  names). A document-set gate has to fix its ORDER as well as its list, and a mark quoted from a
+  batch run is not the mark the document prices to alone. Measured on one document; the extent
+  across the other draw paths is unmeasured.
 - **`NettingCollateralSet`'s backward is nondeterministic on the GPU**: one gradient entry takes two
   distinct float64 values from bit-identical inputs (a reduction order, not a graph defect). It
   bounds how tightly any collateralised sensitivity gate can be pinned.
@@ -385,7 +385,7 @@ every risk-neutral calibration inherits.
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
   under 1e-10, wing RMSE 0.789 against a 1.0 bound), the retired declarations refusing by name,
   the on-guard flag on the factor and in `Stats`, `Model_Priors: Off` bit-identical to its banked
-  20 floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve
+  21 floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve
   composed to 1e-9, the correlation key (0.1379 realised against 0.3 × 0.4525 declared-times-share,
   0.5 se), and 76 floats over six repo documents hex for hex. About five minutes on the card, 213 s
   of it one shared five-expiry fit; every gate's killing mutation went red except the wing-RMSE
@@ -405,6 +405,14 @@ every risk-neutral calibration inherits.
 - `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
   on a `.md` at the repo root, so a lane that adds a fixture cannot use the selector until the next
   boundary run rebuilds the map.
+- `gates/reach.py`'s document map is stale in substance as well as in commit: of the 43 autocall
+  documents it names, 31 no longer load on the head (16 carry the Poisson-era factor block, 14
+  the retired component family, one is gone), so a bit-identity claim over "every document the
+  map names" is over the 12 that price. Rebuild the map (`--build-map`) at the next campaign
+  boundary.
+- `derivus_jupyter.set_repr` raises on any multi-column Table outside a four-name allowlist, which
+  now includes `EquityBarrierBinaryOption.Barrier_Dates` and `QEDI_CustomAutoCallSwap.Coupon_Observations`;
+  loading, pricing, the generated docs and the MCP descriptors are unaffected.
 - `artifacts/logvar2fj/`'s second spelling no longer imports (it walks the Poisson residual); delete
   the pack or re-spell its G-gate scripts against the NIG residual.
 - Inline comment density: ~12 blocks of 4–11 comment lines from the boundary-correction work

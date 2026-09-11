@@ -1158,9 +1158,10 @@ class LogVar2FJModelParameters(CurveModelParameters):
     the conditioning share $1-(\\beta/\\alpha)^2\\ge0.4$, past which the mixer carries the return.
 
     **Residual_Law** `Gaussian` is the limit/test mode - no mixer, the clock IS the variance and
-    **Alpha** and **Beta** are unread. **Cap_A**, **Cap_Beta**, **C_Min** and **Residual_Law** are
-    STRUCTURAL, not leaves: the cap and the floor are guards a calibrated model never reaches and
-    the law is a code path, so a derivative reported at any of them would be wrong. The five FITTED
+    **Alpha** and **Beta** are unread. **Cap_A**, **Cap_Beta**, **C_Min**, **Residual_Law** and
+    **Steps_Per_Year** are STRUCTURAL, not leaves: the cap and the floor are guards a calibrated
+    model never reaches, the law is a code path and the clock is the grid the parameters were
+    fitted on, so a derivative reported at any of them would be wrong. The five FITTED
     curves' knots are structural and their VALUES are `bind='value'` leaves.
     """
     fields = [
@@ -1175,6 +1176,11 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
         F('Cap_Beta', 'Float', default=0.25,
           description='Log-variance cap width $\\beta_c$ - STRUCTURAL'),
+        F('Steps_Per_Year', 'Float', default=252.0,
+          description='Trading days a year the fitted block stepped - the clock the parameters '
+                      'MEAN, so the pricer\'s internal walk and the xVA outer\'s scenario grid '
+                      'read it here and a deal declaring a different one refuses by name. A '
+                      'factor written before this field existed loads at 252 - STRUCTURAL'),
         F('C_Min', 'Float', default=utils.LV_C_MIN,
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
@@ -1308,12 +1314,13 @@ class LogVar2FJModelParameters(CurveModelParameters):
 
     def curve_tenors(self):
         """Every structural fact the kit reads off this factor: each fitted curve's knots - the xi
-        segments, and for the four levers the buckets - the structural scalars and the residual
-        law at their declared defaults where unauthored, and the reserve line the calibration
-        wrote, which a deal's own sensitivity report composes. Resolved once at dependency time, so
-        nothing rides the tensor side that carries no derivative."""
+        segments, and for the four levers the buckets - the structural scalars, the residual law
+        and the step clock at their declared defaults where unauthored, and the reserve line the
+        calibration wrote, which a deal's own sensitivity report composes. Resolved once at
+        dependency time, so nothing rides the tensor side that carries no derivative."""
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
                     Residual_Law=self.declared['Residual_Law'],
+                    Steps_Per_Year=self.declared['Steps_Per_Year'],
                     **{x: self.declared[x] for x in self.structural + utils.LV_RESERVE_LINE})
 
 

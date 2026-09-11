@@ -129,6 +129,23 @@ def refuse_consequence_field(field, name, deal_type, remedy):
                 field.get('Reference', deal_type), name, name, field[name], remedy))
 
 
+def refuse_zero_cash_payoff(field, deal_type):
+    """Refuse a digital whose `Cash_Payoff` is exactly 0.0.
+
+    The leg pays nothing on every path it is in the money, so it prices to zero and the structure
+    it was booked to CANCEL keeps its whole payoff - a leg of no value is not a contra, and
+    `Cash_Payoff` is REQUIRED precisely because 0.0 is falsy and reads as unauthored. A named
+    SKIP, not the fatal class: the netting set prices without the leg and the log names it.
+    """
+    if field['Cash_Payoff'] == 0.0:
+        raise ValueError(
+            '{}: {} declares Cash_Payoff 0.0, and a digital that pays nothing is not a deal - it '
+            'prices to exactly zero on every path and the leg it was booked to cancel keeps its '
+            'whole payoff. Author the amount the leg cancels (derivus_compact_autocalls.py names '
+            'it on a six-leg structure), or delete the leg'.format(
+                field.get('Reference', deal_type), deal_type))
+
+
 def became(source, deal_type, calendars, valuation_options, **overrides):
     """`source` as a live `deal_type`, carrying every field that type declares plus `overrides`.
 
@@ -559,12 +576,25 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
                    factor.curve_tenors()])]
 
 
-def set_spot_model_index(field_index, model, options):
-    """Write a declared spot model's compile facts - the parameter factor and the trading-day clock
-    it steps once per day of. A GBM deal writes none."""
+def set_spot_model_index(field_index, model, options, reference):
+    """Write a declared spot model's parameter factor, refusing a deal that re-declares its clock.
+
+    The trading-day clock is what the fitted parameters MEAN, so it is the factor's and the kit
+    reads it there; a `Steps_Per_Year` on the deal beside a different one on the block is two
+    clocks for one walk. A GBM deal writes nothing and keeps its own declaration."""
     if model is not None:
         field_index['Spot_Model'] = model
-        field_index['Steps_Per_Year'] = options.get('Steps_Per_Year', 252.0)
+        fitted = float(model[0][utils.FACTOR_INDEX_Tenor_Index]['Steps_Per_Year'])
+        declared = options.get('Steps_Per_Year')
+        if declared is not None and float(declared) != fitted:
+            raise utils.UnpriceableSchedule(
+                '{}: the Valuation Configuration declares Steps_Per_Year {:g} and the {} factor '
+                'this deal prices on was fitted on {:g}. The step clock is what the fitted '
+                'parameters mean - the walk reads the block\'s own number and a deal cannot '
+                're-declare it, or one document values the same parameters on two grids. Drop '
+                'Steps_Per_Year from the Valuation Configuration, or refit the block on {:g}'.format(
+                    reference, float(declared), model[0][utils.FACTOR_INDEX_SubType], fitted,
+                    float(declared)))
 
 
 def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference):
@@ -3689,6 +3719,7 @@ class EquityBarrierBinaryOption(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        refuse_zero_cash_payoff(self.field, 'EquityBarrierBinaryOption')
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
@@ -3733,7 +3764,7 @@ class EquityBarrierBinaryOption(Deal):
         hn = get_spot_model_params_factor(
             self.options.get('SpotModel', 'None'), field['Equity'],
             all_factors, static_offsets, stochastic_offsets)
-        set_spot_model_index(field_index, hn, self.options)
+        set_spot_model_index(field_index, hn, self.options, self.field.get('Reference'))
 
         return field_index
 
@@ -3885,12 +3916,21 @@ class EquityBinaryOption(EquityOptionDeal):
         'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
         'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
         'either side of the strike, rather than the single-vol closed form, so the vol surface',
-        'smile is picked up automatically.'])
+        'smile is picked up automatically.',
+        '',
+        'A **Cash_Payoff** of exactly 0.0 is refused by name at compile: the leg would price to',
+        'zero on every path and the structure it was booked to cancel would keep its whole payoff.'])
 
     def __init__(self, params, valuation_options):
         super(EquityBinaryOption, self).__init__(params, valuation_options)
         self.options = {'Relative_Digital_Spread': 0.0}
         self.options.update(valuation_options)
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        refuse_zero_cash_payoff(self.field, 'EquityBinaryOption')
+        return super(EquityBinaryOption, self).calc_dependencies(
+            base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3995,8 +4035,9 @@ class QEDI_CustomAutoCallSwap(Deal):
                       'fx surface\'s ATM forward strip on the walk\'s own grid; declaring one without that',
                       'correlation is a loud skip rather than an uncorrelated pair. `Compo` stays refused:',
                       'it is the product S*X and this arm walks the equity alone.',
-                      '- **Steps_Per_Year**: trading-day count converting year fractions to integer GARCH steps',
-                      '(default 252; only read when SpotModel is not `None`).'])
+                      '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and',
+                      'not to the deal - a Valuation Configuration declaring one that differs',
+                      'from the fitted block is refused by name.'])
 
     def __init__(self, params, valuation_options):
         super(QEDI_CustomAutoCallSwap, self).__init__(params, valuation_options)
@@ -4006,6 +4047,56 @@ class QEDI_CustomAutoCallSwap(Deal):
         floatdates = set([x[0] for x in self.field.get('Autocall_Floating', [])])
         coupondates = set([x[0] for x in self.field['Autocall_Coupons']])
         self.add_reval_dates(coupondates.union(floatdates), self.field['Payoff_Currency'])
+
+    def coupon_windows(self, fixings, coupons):
+        """Which fixings each coupon is observed on: the observations, and each coupon's LAST one.
+
+        DECLARED by `Coupon_Observations`, one row per coupon, which is the whole pairing where it
+        is authored. Otherwise DERIVED: a coupon's window is every fixing after its predecessor's
+        date up to and including its own (`pricing.oss_window_ends`), and where every window after
+        the first holds exactly ONE fixing the deal fixes once per coupon, so the fixings before
+        the first coupon's own observation are its strike observation and no coupon's and are
+        dropped. `ends` is None where the fixings do not partition into one non-empty window per
+        coupon, which is the full-path arm.
+        """
+        declared = dict(self.field.get('Coupon_Observations', []))
+        if declared:
+            ref = self.field.get('Reference', 'this QEDI_CustomAutoCallSwap')
+            authored = {x[0] for x in self.field['Price_Fixing']}
+            named = [declared.get(c) for c in coupons]
+            for coupon, observed in zip(coupons, named):
+                if observed is None:
+                    raise utils.UnpriceableSchedule(
+                        '{}: Coupon_Observations names no fixing for the coupon dated {:%Y-%m-%d}. '
+                        'The table IS the pairing where it is authored - one row per coupon - so a '
+                        'coupon it leaves out has no observation at all. Name that coupon\'s '
+                        'fixing, or delete the table and let the schedule derive every window'
+                        .format(ref, coupon))
+                if observed not in authored:
+                    raise utils.UnpriceableSchedule(
+                        '{}: Coupon_Observations dates the coupon of {:%Y-%m-%d} on a fixing of '
+                        '{:%Y-%m-%d}, which is not a row of Price_Fixing - an observation the deal '
+                        'never books is not a level. Add that fixing, or name one that is booked'
+                        .format(ref, coupon, observed))
+                if observed > coupon:
+                    raise utils.UnpriceableSchedule(
+                        '{}: Coupon_Observations dates the coupon of {:%Y-%m-%d} on a fixing of '
+                        '{:%Y-%m-%d}, which falls AFTER it - a coupon is decided on a level the '
+                        'market has already printed. Name a fixing on or before the coupon'
+                        .format(ref, coupon, observed))
+            if any(b <= a for a, b in zip(named, named[1:])):
+                raise utils.UnpriceableSchedule(
+                    '{}: Coupon_Observations pairs the coupons {} with the fixings {}, which do '
+                    'not run in the same order - a fixing named by two coupons, or a pairing that '
+                    'crosses. Each coupon observes a fixing of its own, later than the one before '
+                    'it'.format(ref, [x.strftime('%Y-%m-%d') for x in coupons],
+                                [x.strftime('%Y-%m-%d') for x in named]))
+            return named, np.arange(len(coupons))
+
+        ends = pricing.oss_window_ends(fixings, coupons)
+        step = np.diff(ends) if ends is not None else np.empty(0)
+        return ((fixings[ends[0]:], ends - ends[0]) if step.size and (step == 1).all()
+                else (fixings, ends))
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -4020,11 +4111,17 @@ class QEDI_CustomAutoCallSwap(Deal):
         and pricing with no quanto drift at all. Those refusals land in the deal-skip path, so a
         refusal is an attributable value loss rather than a wrong number.
 
+        THE FIXING-TO-COUPON PAIRING is `coupon_windows`, declared or derived from the schedule
+        with no free parameter, and every arm reads it: whether the OSS arm is admitted at all,
+        which fixings are observations, and which coupon's trigger level each fixing's vol strip is
+        read at. Only the PAST coupons filter the fixings - a coupon before the base date closes
+        every window it opened.
+
         THE ZERO-COUPON ROW IS THE FATAL REFUSAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
         reach it. An `'Average'` barrier date whose coupon window holds no fixing is the same kind
-        - the mean it would read is a mean of nothing. The
-        max(all_dates) <= Expiry_Date warning is currently DISABLED."""
+        - the mean it would read is a mean of nothing, and so is a `Coupon_Observations` table that
+        does not pair. The max(all_dates) <= Expiry_Date warning is currently DISABLED."""
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -4059,21 +4156,15 @@ class QEDI_CustomAutoCallSwap(Deal):
         # coupon date; a window of ONE is the common case the fast calc below was written for, and
         # a longer one is the arithmetic average, which only a kit whose conditioning step IS the
         # fixing interval can truncate the prefix of (`pv_MC_AutoCallSwap`, spec 2.4.1).
-        # HACK - fixings are aligned to coupons by assuming a fixing is at most a month early
         spot_model = self.options.get('SpotModel', 'None')
         ac_dates = sorted([x for x in ac if x >= base_date])
-        pf_dates = sorted([x for x in pf if x > min(ac_dates) - pd.DateOffset(months=1)])
+        prior = [x for x in ac if x < min(ac_dates)]
+        pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
         barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
-        one_each = len(pf_dates) == len(ac_dates) and np.all(
-            [f <= c for f, c in zip(pf_dates, ac_dates)])
-        if not one_each:
-            # a WINDOW's own observed fixings reach back to its own coupon's predecessor, further
-            # than the month above, and every one of them enters the average as a constant
-            prior = [x for x in ac if x < min(ac_dates)]
-            pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
-        oss_windows = barriers_on_coupons and (one_each or (
-            spot_model != 'None'
-            and pricing.oss_window_ends(pf_dates, ac_dates) is not None))
+        pf_dates, ends = self.coupon_windows(pf_dates, ac_dates)
+        one_each = ends is not None and len(ends) == len(pf_dates)
+        oss_windows = barriers_on_coupons and ends is not None and (
+            one_each or spot_model != 'None')
 
         if self.field['Barrier_Observation'] == 'Average':
             # AN `Average` BARRIER READS ITS COUPON'S WINDOW, which opens after that coupon's
@@ -4131,7 +4222,9 @@ class QEDI_CustomAutoCallSwap(Deal):
             # a WINDOW's fixings are grid dates of their own: a block whose rows straddle one
             # would read the same remaining-fixing strip either side of it
             all_dates = sorted(all_dates.union(fixing_dates) if not one_each else all_dates)
-            # move the threshold dates to the coupon dates
+            # a threshold row is the coupon row of its own POSITION whatever date it carries - the
+            # book dates them on the observation and the repo on the coupon - and a barrier date is
+            # read by date and must sit ON a coupon date
             tl = {c: at[t] for c, t in zip(ac, at)}
 
             if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):
@@ -4147,6 +4240,10 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'Price_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
                 'Coupon_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
                 'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
+                'Coupon_Windows': ends,
+                # every fixing carries the trigger level of the coupon whose window it is in, which
+                # is the strike that coupon's digital is read at
+                'Fixing_Thresholds': np.repeat([tl[c] for c in ac_dates], np.diff(ends, prepend=-1)),
                 'oss_windows': True
             })
         else:
@@ -4201,7 +4298,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                        self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
-        set_spot_model_index(field_index, hn, self.options)
+        set_spot_model_index(field_index, hn, self.options, self.field.get('Reference'))
 
         return field_index
 
@@ -4525,8 +4622,9 @@ class EquityBarrierOption(Deal):
                      'market data is a loud skip, never a silent lognormal fallback. Requires a',
                      'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
                      'one alongside a non-`None` SpotModel is the same loud skip.',
-                     '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal',
-                     'steps (default 252; only read when SpotModel is not `None`).'])
+                     '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not',
+                     'to the deal - a Valuation Configuration declaring one that differs from the',
+                     'fitted block is refused by name.'])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)
@@ -4631,7 +4729,7 @@ class EquityBarrierOption(Deal):
                                 self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
-        set_spot_model_index(field_index, hn, self.options)
+        set_spot_model_index(field_index, hn, self.options, self.field.get('Reference'))
 
         return field_index
 
@@ -5761,8 +5859,9 @@ class FXTARFOptionDeal(Deal):
             'one the calibration writes (e.g. `LogVar2FJModelParameters.EUR` for an EURUSD leg on a',
             'USD book, whichever side the deal is written from). Switching the model on without that',
             'factor in the market data is a loud skip, never a silent lognormal fallback.',
-            '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal steps',
-            '(default 252; only read when SpotModel is not `None`).'])
+            '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not to',
+            'the deal - a Valuation Configuration declaring one that differs from the fitted',
+            'block is refused by name.'])
 
     def __init__(self, params, valuation_options):
         super(FXTARFOptionDeal, self).__init__(params, valuation_options)
@@ -5831,7 +5930,7 @@ class FXTARFOptionDeal(Deal):
                 field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
-            set_spot_model_index(field_index, hn, self.options)
+            set_spot_model_index(field_index, hn, self.options, self.field.get('Reference'))
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):
@@ -5912,8 +6011,9 @@ class FXAccumulatorOptionDeal(Deal):
             '`LogVar2FJ`, resolved by naming convention from',
             '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; it walks',
             'its own INTERNAL step and hands each fixing interval the block law this loop truncates at.',
-            '- **Steps_Per_Year**: trading-day count converting year fractions to integer internal',
-            'steps (default 252; only read when SpotModel is not `None`).'])
+            '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not to',
+            'the deal - a Valuation Configuration declaring one that differs from the fitted',
+            'block is refused by name.'])
 
     def __init__(self, params, valuation_options):
         super(FXAccumulatorOptionDeal, self).__init__(params, valuation_options)
@@ -6016,7 +6116,7 @@ class FXAccumulatorOptionDeal(Deal):
                 field['Underlying_Currency'], field['Currency'], self.base_currency),
             all_factors, static_offsets, stochastic_offsets)
         if hn is not None:
-            set_spot_model_index(field_index, hn, self.options)
+            set_spot_model_index(field_index, hn, self.options, self.field.get('Reference'))
             if spot_model_reciprocal_axis(
                     self.options['SpotModel'], field['Underlying_Currency'], field['Currency'],
                     self.base_currency, self.field.get('Reference')):

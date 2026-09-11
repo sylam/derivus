@@ -14,6 +14,7 @@
  "Sigma_L": "0x1.0000000000000p+0",
  "Sigma_S[0][0]": "0x0.0p+0",
  "Sigma_S[0][1]": "0x1.e3b60cc9133aep+0",
+ "Steps_Per_Year": "0x1.f800000000000p+7",
  "Stickiness_Band": "0x1.0000000000000p-1",
  "Xi_Curve[0][0]": "0x0.0p+0",
  "Xi_Curve[0][1]": "0x1.4ffcf9121b66bp-5",

@@ -5160,10 +5160,6 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     factor_types = ('EquityPrice', 'FxRate')
     fields = []
 
-    #: The step IS the trading day (brief 0) rather than a setting, and the OSS pricers declare the
-    #: same number on the deal as `Steps_Per_Year`.
-    steps_per_year = 252.0
-
     #: The pricer's own mixer draw and shock stream, bound here as methods: outer == inner ==
     #: pricer is STRUCTURAL, so neither the root nor the draws have a second spelling.
     residual = pricing.LogVar2FJKit.residual
@@ -5179,6 +5175,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     @staticmethod
     def num_factors():
         return 1
+
+    @property
+    def steps_per_year(self):
+        """The fitted block's own trading-day clock, off the parameter factor - the step IS the
+        trading day (brief 0), and the scenario grid steps the one the parameters mean."""
+        return float(self.implied.declared['Steps_Per_Year'])
 
     @property
     def correlation_name(self):

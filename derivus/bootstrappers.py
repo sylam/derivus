@@ -2808,13 +2808,17 @@ class LVFit(object):
     def written(self):
         """The `LogVar2FJModelParameters` price factor: the scalars, the structural ones the kit
         reads, and the five curves - `xi` on the segments, the four levers on their buckets. The xi
-        strip is the ONE `finish` banked, so the factor and `connect`'s tensors are one solve."""
+        strip is the ONE `finish` banked, so the factor and `connect`'s tensors are one solve.
+
+        `Steps_Per_Year` is read off the BLOCK rather than the fit's state: it is the clock the
+        parameters mean, not one of them, and every pricer of this factor reads it here."""
         knots, values = self.l_knots(self.levels)
         values = values.detach().exp()
         nearest = min(self.skew_rows, default=None)
         return {'Property_Aliases': None,
                 **{name: float(self.state[name])
                    for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES},
+                'Steps_Per_Year': float(self.instrument['Steps_Per_Year']),
                 'C_Min': self.c_min, 'Residual_Law': self.law,
                 'On_Guard': self.on_guard(),
                 'Skew_Gradient': '' if nearest is None else '{:.12g},{:.12g}'.format(

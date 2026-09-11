@@ -609,6 +609,11 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Units', 'Float', default=0.0),
     F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
     F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
+    F('Coupon_Observations', 'Table', default='null',
+      row=Row([F('Coupon', 'Date'), F('Observation', 'Date')]),
+      description='Which price fixing each coupon is observed on, one row per coupon. Absent - '
+                  'the default - the pairing is DERIVED from the schedule: a coupon observes '
+                  'every fixing after its predecessor up to and including its own date'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Observation', 'Text', default='Spot', values=['Spot', 'Average'],
