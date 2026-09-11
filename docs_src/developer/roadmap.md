@@ -142,11 +142,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The autocall, TARF and barrier pricers
 
-- **A coupon with no `Autocall_Thresholds` row prices a NEGATIVE trigger** (2026-09-11, lane A):
-  the positional read fills a missing row with −1, so `K = −strike` and the coupon fires on
-  every path, and the `min(tl.values()) <= 0` guard cannot see it because the −1 never enters the
-  table. Since lane A the fixing-level read is `tl[c]`, so such a document skips on a `KeyError`
-  naming the deal; it should refuse by name. Every booking in the packs has one row per coupon.
 - **The energy and commodity floating legs concatenate their resets the way the rate legs did**
   (2026-09-10): `pricing.py`'s two `torch.cat`s of known against forecast resets off a
   `ForwardPrice` curve refuse a static curve in the words the rate legs refused with until
@@ -213,12 +208,6 @@ unmeasured — a limitation without a number is absolution, not documentation
   names). A document-set gate has to fix its ORDER as well as its list, and a mark quoted from a
   batch run is not the mark the document prices to alone. Measured on one document; the extent
   across the other draw paths is unmeasured.
-- **An `FxRate` declaring no `Domestic_Currency` kills both implied spot processes** (2026-09-11):
-  `GBMAssetPriceTSModelImplied.calc_references` and `LogVar2FJImpliedSpotModel.calc_references`
-  pass `None` as the default to `get_domestic_currency`, and `check_rate_name(None)` raises
-  `AttributeError` naming nothing where a default to the base currency or a refusal by name
-  belongs; the plain `GBMAssetPriceModel` never asks, which is why a fixture's `FxRate.EUR`
-  simulated happily until it was put on a walking outer.
 - **`NettingCollateralSet`'s backward is nondeterministic on the GPU**: one gradient entry takes two
   distinct float64 values from bit-identical inputs (a reduction order, not a graph defect). It
   bounds how tightly any collateralised sensitivity gate can be pinned.
@@ -234,11 +223,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **`HullWhite2FactorImpliedInterestRateModel.precalculate` reads `Lambda_1` off a `Price Models`
   block an implied model does not need**, so omitting it raises a `TypeError` naming neither field
   nor factor; `FXVolSurfaceParameters` subscripts `point['Timestamp']` the same way.
-- **An FX vol ladder with nothing usable in it escapes `/book/market` as a 500** (2026-09-11): an
-  `FXVolPrices` block whose `Points` are empty, or every point `Use: 'No'`, raises `IndexError` out of
-  `FXVolSurfaceParameters` past the endpoint's `(ValueError, KeyError)` net — an unhandled 500 on a
-  tick where every other bad tick gets a sentence. The refusal belongs in the family, beside the
-  collapsed-ladder one.
 - **`create_market_swaps`' `Distribution_Type` lives on the surface**, which the Bloomberg emitter
   does not author, so a lognormally-declared factor gets a lognormal fit of normal quotes — the two
   conventions are 9.7–11.4× apart in premium.
