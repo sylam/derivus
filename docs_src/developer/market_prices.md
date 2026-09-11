@@ -276,9 +276,10 @@ correlation** — the ruling of 2026-09-08, and what a desk measures. It is appl
 return sd `√V_k`, and that IS the un-diluted framework correlation: the framework applies a
 correlation to the Gaussian GIVEN THE MIXER, whose sd is `E[Σ_k] = D √V_k` with
 `Σ_k² = (ρ_ℓ² + ρ_s²) V_k + G_k`, so a loading on `√V_k` is `ρ_q/D` applied to `Σ_k` and the
-normalisation the ruling asked for is the identity. `D` is **1 exactly** under a Gaussian residual
-(`Σ_k ≡ √V_k`), **0.9256** at the Q-sized NIG defaults and **0.597** on the desk's NKY fit (`c`
-0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
+normalisation the ruling asked for is the identity. That share `D` is a property of the law
+and no longer a number the engine computes (the four-sub-factor outer of 2026-09-11 retired
+the dilution): **1 exactly** under a Gaussian residual (`Σ_k ≡ √V_k`), **0.9256** at the
+Q-sized NIG defaults and **0.597** on the desk's NKY fit (`c` 0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
 joint whose realised total-return correlation IS the marked −0.40 puts the exact quanto forward
 `E[SX]/E[X]` within **1.2 SE** of the loading as built, where the loading times `D` sits 8.4 SE
 away and the loading over `D` — the ruling's arithmetic taken literally — 11.6 SE away, so the

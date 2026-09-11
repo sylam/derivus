@@ -550,6 +550,8 @@ def test_a_priors_off_fit_is_bit_identical_to_its_banked_reading():
 GRID = '1d 3m(3m) 2y'
 OUTER_GBM = {'EquityPrice': 'GBMAssetPriceTSModelImplied', 'FxRate': 'GBMAssetPriceModel'}
 OUTER_LV = {'EquityPrice': 'LogVar2FJImpliedSpotModel', 'FxRate': 'GBMAssetPriceModel'}
+#: both names on the walking outer, so all FOUR of each name's sub-factor rows have a counterpart
+OUTER_PAIR = dict(OUTER_LV, FxRate='LogVar2FJImpliedSpotModel')
 
 
 def _credit(paths=4096, scenarios='No'):
@@ -570,10 +572,10 @@ def _netted(deal):
         'Children': [{'Instrument': {'.Deal': deal}}]}]
 
 
-def _outer(models, spot_model='LogVar2FJ', factor=None):
+def _outer(models, spot_model='LogVar2FJ', factor=None, **extra):
     """A CREDIT document's sections: the scenario generator each factor type is simulated by, the
     implied GBM factor that generator reads, and the priced deal's own switch and factor."""
-    sections = _priced(spot_model, factor)
+    sections = _priced(spot_model, factor, **extra)
     sections['Model Configuration'] = {'.ModelParams': {
         'modeldefaults': models, 'modelfilters': {}}}
     sections['Price Factors']['GBMAssetPriceTSModelParameters.INDEX_A'] = {
@@ -601,46 +603,57 @@ def test_the_gbm_limit_holds_through_the_cva():
     assert abs(both[0] - both[1]) <= np.spacing(np.float32(both[1])), both
 
 
-def test_a_logvar2fj_equity_reads_its_correlation_under_the_innovation_key():
-    """A correlation is a correlation OF AN INNOVATION, so the LogVar2FJ outer answers the same
-    `LognormalDiffusionProcess` row the implied GBM does - not a key named after its own process.
+def _pair_reading(models, sections=None):
+    """The realised log-return correlation of the two simulated names, and its PATH-level error.
 
-    The world declares the pair TWICE: +0.30 under `LognormalDiffusionProcess`, which every
-    process walking a Gaussian answers, and -0.90 under `LogVar2FJSpotProcess`, which nothing
-    answers. The realised scenario correlation is POSITIVE, so the row that was read is the
-    innovation's; the invented key is inert, which is the reading a document keyed on it gets -
-    a silent zero.
-
-    The realised share is DILUTED: the return also carries the leverage and the mixer's own
-    spread, so a declared rho realises `rho D_i D_j`. `get_cholesky_decomp` states `D` at INFO -
-    0.4525 on this grid, the GBM sibling's being 1 - and the gate holds the realised correlation
-    to that product within three standard errors. MEASURED: 0.1379 against 0.3 x 0.4525 = 0.1358
-    over 49,152 intervals, 0.5 se; the invented key would put it at -0.41.
+    Consecutive returns on one path share a log-variance state that reverts over months, so the
+    iid formula on `paths x intervals` reads an error an order of magnitude too small. The paths
+    are independent: the sd of the per-path correlation over the root of their number is the one
+    a difference of this size is measured in.
     """
-    buf, root = io.StringIO(), logging.getLogger()
-    handler, level = logging.StreamHandler(buf), root.level
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
-    try:
-        out = _run(_job(_credit(scenarios='All'), _netted(_autocall()),
-                        **_outer(OUTER_LV, factor=LIVE_NIG)), 'corr')
-    finally:
-        root.removeHandler(handler)
-        root.setLevel(level)
+    out = _run(_job(_credit(scenarios='All'), _netted(_autocall()),
+                    **_outer(models, factor=LIVE_NIG, **(sections or {}))), 'corr')
+    a, b = (np.diff(np.log(out['Results']['scenarios'][key].values), axis=1)
+            for key in ('EquityPrice.INDEX_A', 'FxRate.EUR'))
+    each = np.array([np.corrcoef(x, y)[0, 1] for x, y in zip(a, b)])
+    return (float(np.corrcoef(a.ravel(), b.ravel())[0, 1]),
+            float(each.std(ddof=1) / np.sqrt(len(each))))
 
-    line = [ln for ln in buf.getvalue().splitlines()
-            if 'realises' in ln and 'declared correlation' in ln]
-    assert line, 'the dilution was not reported at INFO'
-    dilution = float(re.search(r'realises ([\d.]+) of', line[-1]).group(1))
-    assert 0.0 < dilution < 1.0, dilution
 
-    scenarios = out['Results']['scenarios']
-    equity = np.log(scenarios['EquityPrice.INDEX_A'].values)
-    rate = np.log(scenarios['FxRate.EUR'].values)
-    a, b = np.diff(equity, axis=1).ravel(), np.diff(rate, axis=1).ravel()
-    realised = float(np.corrcoef(a, b)[0, 1])
-    assert realised > 0.0, ('the invented key was read', realised)
-    assert abs(realised - 0.3 * dilution) <= 3.0 / np.sqrt(a.size), (realised, dilution)
+def test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare():
+    """A LogVar2FJ name takes FOUR framework normals a step and answers four rows under the
+    innovation's own key, so nothing in a step is private and a declared correlation is realised
+    rather than diluted.
+
+    The world declares the pair FOUR times under `LognormalDiffusionProcess` - the return row and
+    the `.S`, `.L` and `.G` sub-factors, each +0.30 - and once more at -0.90 under
+    `LogVar2FJSpotProcess`, which nothing answers. The realised correlation is POSITIVE either
+    way, so the row that was read is the innovation's and the invented key is inert; the reading a
+    document keyed on it gets is a silent zero.
+
+    TWO ARMS, differing in the sibling's process alone. With the sibling on GBM only the RETURN row
+    has a counterpart and the other three are inert: the return also carries the leverage and the
+    mixer's own spread, so 0.30 realises **0.1520** here - 51% of it, and the reading the one-row
+    process gave (0.1379, 2.6 se away on its own sampling error), because a row with no counterpart
+    is not a row. With the sibling walking too all four rows are live and 0.30 realises **0.2040**,
+    68%, the two arms 6.6 path-level standard errors apart.
+
+    Lane 4F's pair table reads the same experiment at a declared 0.60 over a two-year DAILY grid:
+    0.0282 one row, 0.4833 four rows, 0.7323 at variance rows 0.80 and a mixer row of 1.0, each
+    within 0.003 of a truth simulated outside the engine on the same clock. This world's shares are
+    higher than that table's daily ones because its intervals are a quarter, over which the days'
+    mixers convolve.
+    """
+    four, se = _pair_reading(OUTER_PAIR, {'Price Factors': {
+        'LogVar2FJModelParameters.EUR': dict(GBM_LIMIT, **LIVE_NIG),
+        # the walking arm reads the pair's own two curves, so the sibling names its domestic leg -
+        # a plain `GBMAssetPriceModel` reads its drift off its own block and never asks
+        'FxRate.EUR': dict(_W['Price Factors']['FxRate.EUR'], Domestic_Currency='USD')}})
+    one, one_se = _pair_reading(OUTER_LV)
+    assert one > 0.0 and four > 0.0, ('the invented key was read', one, four)
+    assert abs(one - 0.1520) <= 3.0 * one_se, (one, one_se)
+    assert abs(four - 0.2040) <= 3.0 * se, (four, se)
+    assert four - one > 3.0 * np.hypot(se, one_se), (four, one, se, one_se)
 
 
 # ------------------------------------------------------------------------------------------

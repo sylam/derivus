@@ -216,6 +216,15 @@
    "LognormalDiffusionProcess.INDEX_A": {
     "LognormalDiffusionProcess.EUR": 0.3
    },
+   "LognormalDiffusionProcess.INDEX_A.S": {
+    "LognormalDiffusionProcess.EUR.S": 0.3
+   },
+   "LognormalDiffusionProcess.INDEX_A.L": {
+    "LognormalDiffusionProcess.EUR.L": 0.3
+   },
+   "LognormalDiffusionProcess.INDEX_A.G": {
+    "LognormalDiffusionProcess.EUR.G": 0.3
+   },
    "LogVar2FJSpotProcess.INDEX_A": {
     "LogVar2FJSpotProcess.EUR": -0.9
    }

@@ -431,12 +431,6 @@ class StochasticProcess(object):
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         pass
 
-    def correlation_dilution(self, deltas):
-        """The share of a DECLARED TOTAL-RETURN correlation this process realises in its own
-        return over the scenario intervals `deltas` (years). One wherever the framework's
-        correlated draw is the return's only shock, which is every process but a mixed one."""
-        return 1.0
-
     def basis_decay(self):
         """`(phi, lam)` — how a composed spot's basis tail decays away from its current level,
         consumed at compile by `instruments.get_observed_basis_decay` for pricers that project a
@@ -4940,9 +4934,15 @@ class LogVar2FJCalibration(object):
     returns and this is a filter, not a recursion: the Kalman likelihood is exact and maximised by
     AAD; the leverages are the regression of the diffusive remainder on the SMOOTHED state shocks;
     what is left of that remainder is the model's OWN NIG residual, fitted by maximum likelihood on
-    the day's variance budget with the clock's SHARE fitted beside the law; and `delta` is that
-    residual's Gaussian GIVEN THE MIXER, so the framework's correlation is estimated on the object
-    6.1 applies it to and no input is rescaled.
+    the day's variance budget with the clock's SHARE fitted beside the law.
+
+    THE ESTIMATOR'S MAP FROM A DAY BACK TO FOUR NORMALS IS THE PROCESS'S MAP FROM FOUR NORMALS TO
+    A STEP, INVERTED, so a historically estimated row is the row the outer realises. `delta`
+    carries one column per sub-factor of `LogVar2FJImpliedSpotModel.correlation_name`, in its
+    order: the residual's Gaussian GIVEN THE MIXER, the fast and slow smoothed state shocks each
+    divided by the sd the smoother left them (the correlation is scale-free, but an emitted column
+    that is not a unit innovation is not the thing the row is a row OF), and the day's mixer back
+    through its own inverse-Gaussian CDF and `Phi^-1`. Nothing is rescaled on the way in.
 
     THERE IS NO OUTLIER MASK. An NIG law has tails, so a day a Gaussian filter would have thrown
     away is a day the residual's own law explains, and only declared `Event_Days` are excluded; the
@@ -4981,7 +4981,7 @@ class LogVar2FJCalibration(object):
     def __init__(self, model, param):
         self.model = model
         self.param = param
-        self.num_factors = 1
+        self.num_factors = 4
 
     def implied(self):
         """The declared Q values of `Implied_Values`, the sanity table's right-hand side."""
@@ -5028,9 +5028,16 @@ class LogVar2FJCalibration(object):
         remainder = (z[:-1] - shocks @ rho) * np.sqrt(budget)
         nig, nig_se, nig_loglik, gauss_loglik = lv_nig_fit(remainder[keep], budget[keep])
         clock = nig['C_Eff'] * budget
-        mixer = lv_nig_mixer(*(torch.tensor(v, dtype=torch.float64) for v in (
+        wide = lambda v: torch.tensor(v, dtype=torch.float64)
+        mixer = lv_nig_mixer(*(wide(v) for v in (
             remainder, clock, nig['Alpha'], nig['Beta'], nig['Residual_Drift']))).numpy()
         eps = (remainder - nig['Residual_Drift'] * clock - nig['Beta'] * mixer) / np.sqrt(mixer)
+        # the mixer's own INNOVATION: the day's clock parameters put G back through its own
+        # quantile, which is the process's map from the framework normal to G inverted
+        budget_a, _, gamma_a = utils.lv_nig_budget(
+            wide(clock), wide(nig['Alpha']), wide(nig['Beta']))
+        g_eps = utils.norm_icdf(utils.ig_cdf(
+            wide(mixer), budget_a / gamma_a, budget_a * budget_a)).numpy()
         outliers = int((np.abs(np.where(event, 0.0, r - drift))
                         > threshold * np.sqrt(predicted * delta)).sum())
 
@@ -5050,8 +5057,9 @@ class LogVar2FJCalibration(object):
                                            for n in row))
         pinned = [n for n in se if not LV_HIST_BOX[n][0] < theta[n] < LV_HIST_BOX[n][1]]
         logging.info(
-            '  c %.4f (ridge %.3g, slow shock sd %.4f), eps sd %.4f, filtered h against RV '
-            '%.4f RMS in logs%s', c, ridge, float(shocks[:, 1].std()),
+            '  c %.4f (ridge %.3g, shock sd fast %.4f slow %.4f - what the smoother left of a '
+            'unit innovation, divided out of the emitted column), eps sd %.4f, filtered h against '
+            'RV %.4f RMS in logs%s', c, ridge, float(shocks[:, 0].std()), float(shocks[:, 1].std()),
             float(eps.std()),
             float(np.sqrt(np.mean((np.log(h[seen]) - (y[seen] - theta['Offset'])) ** 2))),
             '; ON ITS BOX BOUND: ' + ', '.join(pinned) if pinned else '')
@@ -5102,8 +5110,12 @@ class LogVar2FJCalibration(object):
                       'Residual_Log_Likelihood': nig_loglik,
                       'Gaussian_Log_Likelihood': gauss_loglik,
                       'Calibration_DT_Years': delta})
+        # the four innovations in `LogVar2FJImpliedSpotModel.correlation_name`'s own order, each
+        # unit-variance, so a row estimated here is the row the outer process realises
+        columns = {name: eps, name + '.S': shocks[:, 0] / shocks[:, 0].std(),
+                   name + '.L': shocks[:, 1] / shocks[:, 1].std(), name + '.G': g_eps}
         return utils.CalibrationInfo(
-            param, [[1.0]], pd.DataFrame({name: eps}, index=bar.index[1:-1]).loc[keep])
+            param, np.eye(4).tolist(), pd.DataFrame(columns, index=bar.index[1:-1]).loc[keep])
 
 class LogVar2FJImpliedSpotModel(StochasticProcess):
     """The xVA outer process of the LogVar2FJ model - the pricer's OWN walk on the trading day.
@@ -5115,26 +5127,23 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     step: the OU transitions are exact at any delta and the residual's clock is linear in it, so
     the fractional step is exact rather than blended.
 
-    THE CORRELATED DRAW IS EXACT. Given the day's two shocks and the block's mixer the interval
-    return is `N(M, G)`, so the framework's one Cholesky-correlated Gaussian per scenario step
-    multiplies `sqrt(G)` with no weighted-combination approximation. CROSS-FACTOR CORRELATION
-    THEREFORE SITS ON THE GAUSSIAN GIVEN THE MIXER: the realised block return also carries the
-    leverage and the mixer's own spread, so a declared correlation is diluted in the return by
-    `E[sqrt(G)]/sd(R)`, bounded above by `sqrt(c_eff) = sqrt(c gamma^2/alpha^2)`.
-    `LogVar2FJCalibration` estimates the matrix on that same object, so a book's matrix crosses AS
-    IS and nothing is rescaled. A DESK-MARKED correlation is a total-return number and would want
-    the framework's divided by that dilution, which no scaling of the draw can do - the correlated
-    normal is already a unit normal, so the dilution is also the LARGEST total-return correlation
-    this process can realise. Un-diluting one belongs in the matrix, per factor.
+    FOUR SUB-FACTORS PER NAME, so nothing in a step is private and the return correlation is a
+    function of the declared rows alone. The framework hands one normal per sub-factor per
+    scenario step and this process asks for all four: the return's Gaussian given the mixer (the
+    row the implied GBM answers), each log-variance factor's own interval transition, and the
+    mixer through its own quantile. Each variance factor's node-to-node step is the EXACT OU
+    transition on the scenario interval driven by its framework normal; the daily path inside the
+    interval is the OU bridge between those endpoints, its bridge noise the segment generator's as
+    before, so node placement and the bridge move no endpoint.
 
     The daily shocks come from a `torch.Generator` per CALENDAR-ANCHORED segment of
     `pricing.LV_CHECKPOINT_STEPS` days: never stored, redrawn inside the checkpoint's recompute,
     and grid-invariant - a day's shock is a function of the DAY, not of where the scenario nodes
-    fall. `-eta` on the antithetic half, as the framework mirrors its own normals; the mixer
-    uniform per scenario step is `quasi_rng`'s, `1 - u` on that half. `Checkpoint_Outer_Walk`
-    (default Yes) puts the walk and the mixer under the non-reentrant checkpoint so the CVA's
-    double backward passes through them. There is no drift correction and none is owed: the
-    leverage factors have conditional mean one and `mu_A` forces the residual's.
+    fall. `-eta` on the antithetic half, as the framework mirrors its own normals; the mixer is
+    `Phi` of the fourth normal in DOUBLE, which mirrors as `1 - u` for free.
+    `Checkpoint_Outer_Walk` (default Yes) puts the walk and the mixer under the non-reentrant
+    checkpoint so the CVA's double backward passes through them. There is no drift correction and
+    none is owed: the leverage factors have conditional mean one and `mu_A` forces the residual's.
 
     Replay is REFUSED - the variance is autonomous, so the state is not a function of realised
     returns (`reseed_from_path`).
@@ -5154,8 +5163,9 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         '`LogVar2FJModelParameters` factor the pricing kit reads, so the scenario generator and',
         'the pricer are ONE model on one set of AAD leaves.',
         '',
-        'Cross-factor correlation is applied to $Z_j$ - the return\'s idiosyncratic Gaussian GIVEN',
-        'the mixer - and is diluted in the realised return by the leverage and residual shares.'])
+        'The process takes FOUR framework normals a step - $Z_j$, each log-variance factor\'s own',
+        'interval transition and the mixer through its quantile - so every die of a step is a',
+        'declared row and a cross-factor correlation is realised as it is declared.'])
 
     factor_types = ('EquityPrice', 'FxRate')
     fields = []
@@ -5174,7 +5184,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
 
     @staticmethod
     def num_factors():
-        return 1
+        return 4
 
     @property
     def steps_per_year(self):
@@ -5184,62 +5194,9 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
 
     @property
     def correlation_name(self):
-        # the factor's own row, as the implied GBM answers it: a correlation is the factor's, and
-        # the historical estimator hands the framework the same one-factor object GBM's does
-        return 'LognormalDiffusionProcess', [()]
-
-    def correlation_dilution(self, deltas):
-        """`E[sqrt(G)]/sd(R)` over each scenario interval of `deltas` (years), sd-weighted - the
-        share of a DECLARED TOTAL-RETURN correlation this process realises, and so the largest one
-        it can realise at all.
-
-        An interval's return is `M + sqrt(G) Z` for the framework's correlated `Z`, with
-        `Var(R) = E[S]` at `S` the interval's own integrated variance, so a pair realises
-        `rho D_i D_j`. The days' mixers CONVOLVE - `lam/m^2` is `gamma^2` whatever the clock - so
-        `G | S ~ IG(c_eff S, gamma^2 (c_eff S)^2)` and `E[sqrt(G)|S]` is `ig_sqrt_share`'s;
-        `S` is moment-matched lognormal off the log-variance's own OU covariance, EXACT on a
-        one-day interval, and integrated by Gauss-Hermite. Under a Gaussian residual the clock IS
-        the mixer, leaving `sqrt(c)` times that interval's own Jensen factor. Read at each
-        interval's OWN bucket and off the UNCAPPED law, the cap being a guard at a 1000% vol.
-        """
-        param, spy = self.implied.param, self.steps_per_year
-        sub = utils.substep_schedule(np.asarray(deltas) * spy)
-        step = np.concatenate([np.array(x) for x in sub]) / spy
-        at = np.concatenate([[0.0], np.cumsum(step)])
-        start = np.cumsum([0] + [len(x) for x in sub])
-        lever = lambda name, t: utils.bucket_at(
-            param[name].array[:, 0], torch.tensor(param[name].array[:, 1]),
-            torch.tensor(at[t])).numpy()
-        ou = {x: torch.tensor(float(param[x])) for x in ('Kappa_L', 'Sigma_L', 'Kappa_S')}
-        ou['Sigma_S'] = torch.tensor(lever('Sigma_S', slice(0, -1)))
-        clock = torch.tensor(step)
-        # the two OU variances apart: their sum IS `lv_state_variance`, and the Markov covariance
-        # `exp(-kappa dt) Var(earlier)` needs them per factor
-        v_l, v_s = [utils.lv_state_variance(dict(ou, **{x: torch.zeros_like(ou[x])}), clock)
-                    [:-1].numpy() for x in ('Sigma_S', 'Sigma_L')]
-        rho_s, alpha, beta = (lever(x, start[:-1]) for x in ('Rho_S', 'Alpha', 'Beta'))
-        c = 1.0 - rho_s * rho_s - float(param['Rho_L']) ** 2
-        c_eff = c if self.implied.gaussian else c * (1.0 - (beta / alpha) ** 2)
-        node, weight = np.polynomial.hermite_e.hermegauss(utils.LV_DILUTION_NODES)
-        weight, drawn, sd = weight / weight.sum(), 0.0, 0.0
-        budget = step * lever('Xi_Curve', slice(0, -1))
-        for j, (a, b) in enumerate(zip(start[:-1], start[1:])):
-            variance = budget[a:b].sum()
-            if variance <= 0.0:
-                continue
-            lag = np.abs(at[a:b, None] - at[None, a:b])
-            first = np.minimum(np.arange(a, b)[:, None], np.arange(a, b)[None, :])
-            # the moment match through `expm1`/`log1p`: a deterministic variance makes the double
-            # sum the square of the sum, and `exp(Cov) - 1` there is all cancellation - the guard
-            # against a spread a few ulps under zero goes with it, every covariance being positive
-            spread = np.log1p((budget[a:b, None] * budget[a:b] * np.expm1(
-                np.exp(-float(ou['Kappa_L']) * lag) * v_l[first] +
-                np.exp(-float(ou['Kappa_S']) * lag) * v_s[first])).sum() / variance ** 2)
-            m = c_eff[j] * np.exp(np.log(variance) - 0.5 * spread + np.sqrt(spread) * node)
-            root = np.sqrt(m) if self.implied.gaussian else np.sqrt(m) * utils.ig_sqrt_share(
-                (alpha[j] * alpha[j] - beta[j] * beta[j]) * m)
-            drawn, sd = drawn + (weight * root).sum(), sd + np.sqrt(variance)
-        return float(drawn / sd)
+        # the return row keeps the key the implied GBM answers - a correlation is the factor's -
+        # and the two log-variance shocks and the mixer are sub-factors of that same object
+        return 'LognormalDiffusionProcess', [(), ('S',), ('L',), ('G',)]
 
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         """The carry curves - the underlying's own, `GBMAssetPriceTSModelImplied`'s pair."""
@@ -5303,41 +5260,85 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             self.knots['Xi_Curve'], self.values['Xi_Curve'], t)))
             - 0.5 * utils.lv_state_variance(
                 dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)).to(shared.one.dtype)
-        bucket, k, self.pieces = utils.bucket_index(self.knots['Alpha'], at[:-1]), 0, []
-        for n in [len(x) for x in sub]:
-            rows, a = [], k
-            for b in range(k + 1, k + n + 1):
-                if b == k + n or bucket[b] != bucket[a]:
+        edge = np.cumsum([0] + [len(x) for x in sub]).tolist()
+        self.spans = list(zip(edge[:-1], edge[1:]))
+        bucket, self.pieces = utils.bucket_index(self.knots['Alpha'], at[:-1]), []
+        for first, last in self.spans:
+            rows, a = [], first
+            for b in range(first + 1, last + 1):
+                if b == last or bucket[b] != bucket[a]:
                     if step[a:b].sum() > 0.0:
                         rows.append((a, b, int(bucket[a])))
                     a = b
             self.pieces.append(rows)
-            k += n
-        self.n_mixers = 0 if self.gaussian else sum(len(x) for x in self.pieces)
+        self.loadings = self.bridge(wide, shared)
+        self.n_extra = 0 if self.gaussian else sum(max(len(x) - 1, 0) for x in self.pieces)
+        if self.n_extra:
+            logging.info('%s: a calendar bucket knot cuts %d scenario intervals, whose SECOND '
+                         'mixer is the segment stream\'s own uniform and not a framework normal',
+                         utils.check_tuple_name(self.factor_key), self.n_extra)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             # the clock this grid actually built - the one thing a surprising scenario grid hides
             logging.debug('LV_OUTER %s: %d nodes, %d daily steps, %d residual draws, day '
                           'fractions %s', utils.check_tuple_name(self.factor_key),
-                          self.scenario_horizon, len(step), self.n_mixers,
+                          self.scenario_horizon, len(step),
+                          0 if self.gaussian else sum(len(x) for x in self.pieces),
                           sorted({round(float(x) * self.steps_per_year, 6) for x in step}))
 
-    def segment(self, key, offset, shape, mirror, params, curve, deltas, l, s):
+    def bridge(self, wide, shared):
+        """Each daily step's loading on its own scenario interval's OU transition, `[2, n]` in the
+        walk's draw order (slow, fast), a UNIT vector over every interval.
+
+        `u_k = exp(-kappa (t_b - t_{k+1})) w_k / w_interval`, so conditioning the free daily shocks
+        on `u'e = Z` leaves the endpoint `phi y_a + w_interval Z` - a function of the previous
+        endpoint and the framework normal alone, with node placement and the bridge moving no
+        endpoint. One step an interval gives `u = 1` exactly: the framework normal IS the day's
+        shock. In DOUBLE and cast ONCE, being a function of the grid and the parameters.
+        """
+        at = torch.cat([wide.new_zeros(1), wide.cumsum(0)])
+        rows = []
+        # flattened as `lv_state_variance` flattens: a scalar leaf arrives as [1, 1] to broadcast
+        # against the walk's state, and would slice the wrong axis here
+        for name, sigma in (('Kappa_L', self.params['Sigma_L']),
+                            ('Kappa_S', self.levers['Sigma_S'])):
+            kappa = utils.lv_wide(self.params[name]).reshape(-1)
+            w = utils.lv_ou_step_weights(kappa, utils.lv_wide(sigma), wide)[1].reshape(-1)
+            columns = []
+            for first, last in self.spans:
+                v = torch.exp(-kappa * (at[last] - at[first + 1:last + 1])) * w[first:last]
+                norm = torch.sqrt((v * v).sum())
+                columns.append(v / norm if float(norm) > 0.0 else torch.zeros_like(v))
+            rows.append(torch.cat(columns))
+        return torch.stack(rows).to(shared.one.dtype)
+
+    def segment(self, key, offset, shape, mirror, params, curve, deltas, l, s, load, free, node):
         """One CALENDAR-ANCHORED segment of the walk, drawn WHOLE and read at this block's own
         columns - which is what makes a day's shock a function of the day rather than of where the
-        scenario nodes fell."""
+        scenario nodes fell - with each factor's draws CONDITIONED on its interval's framework
+        normal, `e = z - u (u'z) + u Z`, which is the OU bridge between the endpoints that normal
+        fixes. Spelled in that order so a one-step interval returns `Z` to the last bit."""
         z = self.draws(key, shape + [pricing.LV_CHECKPOINT_STEPS], deltas, mirror)
         n = int(deltas.shape[0])
-        return utils.lv_walk(params, curve, deltas, z[0][..., offset:offset + n],
-                             z[1][..., offset:offset + n], (l, s), False)
+        u = load.reshape([2] + [1] * len(shape) + [n])
+        eta = z[..., offset:offset + n] - u * free.unsqueeze(-1) + u * node.unsqueeze(-1)
+        return utils.lv_walk(params, curve, deltas, eta[0], eta[1], (l, s), False)
+
+    def project(self, key, offset, shape, mirror, deltas, load):
+        """`u'z` over one segment, per factor - the component of the free draws the bridge
+        replaces with the interval's framework normal."""
+        z = self.draws(key, shape + [pricing.LV_CHECKPOINT_STEPS], deltas, mirror)
+        n = int(load.shape[-1])
+        return (z[..., offset:offset + n] * load.reshape([2] + [1] * len(shape) + [n])).sum(-1)
 
     def mixers(self, shared_mem, shape, mirror):
-        """One mixer uniform per residual draw per path on `quasi_rng`, in the calc's own
-        orientation and IN DOUBLE - the root reads a tail 24 bits cannot express; `1 - u` on the
-        antithetic half."""
-        if not self.n_mixers:
+        """The uniforms the EXTRA residual draws take - one per bucket knot cutting a scenario
+        interval's clock in two - on `quasi_rng`, in the calc's own orientation and IN DOUBLE, with
+        `1 - u` on the antithetic half. Every interval's FIRST draw takes the framework's own
+        mixer normal instead."""
+        if not self.n_extra:
             return None
-        u = shared_mem.quasi_rng(self.n_mixers, int(np.prod(shape)))[2].transpose(0, 1).reshape(
-            [self.n_mixers] + shape)
+        u = shared_mem.quasi_rng(self.n_extra, int(np.prod(shape)))[2].transpose(0, 1).reshape(
+            [self.n_extra] + shape)
         return torch.cat([u, 1.0 - u], dim=-1) if mirror else u
 
     def carry(self, shared_mem, ndim):
@@ -5351,15 +5352,23 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     def generate(self, shared_mem):
         """Walk the daily clock between scenario nodes and return the spot path.
 
+        FOUR ROWS of the correlated block, in `correlation_name`'s own order: the return's Gaussian
+        given the mixer, the fast and slow log-variance transitions - stacked here in the walk's
+        draw order (slow, fast) - and the mixer through `Phi` in DOUBLE, whose antithetic half is
+        `1 - u` because the framework mirrors `Z`.
+
         Dual-mode on `Z.ndim` - outer (T, B) or inner MC (T, B, B2) - with the antithetic half
         detected on the LAST axis, the one the framework mirrors on in both modes.
         """
-        Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
+        block = shared_mem.t_random_numbers[
+                self.z_offset:self.z_offset + self.num_factors(), :self.scenario_horizon]
+        Z, node = block[0], torch.stack([block[2], block[1]])
         batch, check = list(Z.shape[1:]), getattr(shared_mem, 'checkpoint_outer_walk', True)
         h = batch[-1] // 2
         mirror = not batch[-1] % 2 and torch.equal(Z[..., :h], -Z[..., h:])
         shape = batch[:-1] + [h] if mirror else list(batch)
-        u = self.mixers(shared_mem, shape, mirror)
+        u = None if self.gaussian else utils.norm_cdf(block[3].to(torch.float64))
+        extra = self.mixers(shared_mem, shape, mirror)
         # the segment stream's own key, off the plain generator, so a deterministic batch derives
         # it from that batch's seed and a checkpoint's recompute redraws exactly what it drew
         seed = int(torch.randint(1 << 42, (1,)).item()) << 20
@@ -5375,9 +5384,15 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             self.curve[0] if start[0] is None else start[0])
         s = torch.zeros_like(l) + (0.0 if start[1] is None else start[1])
         M, var, ell, fast, drawn = [], [], [], [], 0
-        for rows in self.pieces:
+        for j, rows in enumerate(self.pieces):
             m, v = torch.zeros_like(l), torch.zeros_like(l)
-            for first, last, bucket in rows:
+            # the whole interval's free component along each loading, before any of it is walked
+            free, a = 0.0, rows[0][0] if rows else 0
+            while rows and a < rows[-1][1]:
+                b = min((a // step + 1) * step, rows[-1][1])
+                free, a = free + run(self.project, seed + a // step, a % step, shape, mirror,
+                                     self.deltas[a:b], self.loadings[:, a:b]), b
+            for piece, (first, last, bucket) in enumerate(rows):
                 clock, a = torch.zeros_like(l), first
                 while a < last:
                     b = min((a // step + 1) * step, last)
@@ -5385,11 +5400,13 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                         self.segment, seed + a // step, a % step, shape, mirror,
                         dict(self.params, **{x: self.levers[x][a:b]
                                              for x in pricing.LogVar2FJKit.step_names}),
-                        self.curve[a:b + 1], self.deltas[a:b], l, s)
+                        self.curve[a:b + 1], self.deltas[a:b], l, s,
+                        self.loadings[:, a:b], free, node[:, j])
                     m, clock, a = m + dm, clock + dA, b
+                mix = None if self.gaussian else (u[j] if not piece else extra[drawn])
                 drift, G = run(self.residual, clock, self.values['Alpha'][bucket],
-                               self.values['Beta'][bucket], None if self.gaussian else u[drawn])
-                m, v, drawn = m + drift, v + G, drawn + 1
+                               self.values['Beta'][bucket], mix)
+                m, v, drawn = m + drift, v + G, drawn + bool(piece)
             M.append(m)
             var.append(v)
             ell.append(l)

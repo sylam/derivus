@@ -70,6 +70,15 @@ unmeasured — a limitation without a number is absolution, not documentation
   primitive would overflow a float32 caller. The fix is a chunked rescale, not a cast. Beside it
   the clock `A` is still summed across blocks in the job's dtype; widening it cascades into `G`
   and every pricer reading the law, a design change.
+- **On a closes-only archive the historical estimator's shock rows come back attenuated**
+  (2026-09-11, lane 4F): two names drawn from the four-sub-factor outer with every row at 0.60
+  and re-estimated through `Config.calibrate_factors` read return 0.5468 ± 0.012, fast shock
+  0.3177 ± 0.015, slow shock 0.5281 ± 0.012, mixer 0.3549 ± 0.015. The smoothed shock is a linear
+  functional of that name's own noisy observations, so its cross-name correlation is the state's
+  share of that functional's variance, driven down by the measurement noise (`Sigma_U` 2.22 on the
+  `log r²` fallback); the mixer column is further compressed by a fit whose `α^P` reads 258–380
+  against a truth of 44. The estimator now logs both shock sds by name. A range-bar archive is the
+  measurement that would close it (`artifacts/lv_four_factor_20260911/bars.py`, written, not run).
 - **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10,
   lane T): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
   which injects skew and convexity a flat surface does not want, so a flat 20% ladder fitted with
@@ -79,15 +88,15 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The xVA outer and the correlation
 
-- **The LogVar2FJ outer is not designed for a netting set of several names, and the book does not
-  use it as one** (the owner's ruling, 2026-09-09). The marginal law is clock-free; the cross-name
-  law is not, because each name's mixer and its two variance shocks are private, so a declared
-  correlation realises `E[√G]/sd(R)` of itself on the scenario interval (NKY 0.34 on a day, 0.70 at
-  a year) and moves with the fit. The engine reports that share at INFO and never scales for it;
-  the book runs the GBM term-structure outer with the LogVar2FJ pricer, and the LogVar2FJ outer is
-  the opt-in for a single-name exposure or a PFE study. The four-sub-factor process below closes
-  it. Beside it: `correlation_dilution` reads one bucket per interval and the uncapped law, and
-  reads 8–10% high on quarterly intervals for want of the leverage's serial covariance.
+- **The cut-interval second mixer is still a private die** (2026-09-11): the outer takes one
+  framework normal per scenario interval for its mixer, so where a calendar `Alpha` bucket knot
+  cuts an interval's clock into two residual draws the second piece's mixer comes from the
+  process's own stream, named at INFO; every factor in the book carries one `Alpha` bucket, so
+  nothing reaches it. Beside it, `Φ` of the mixer normal in double saturates past 8.3σ, where
+  `ig_root` answers its bracket's top — one draw in 1e16, named rather than guarded.
+- **Lane 4's banked `out_g23.json` no longer reproduces at float64** on any tree since
+  2026-09-08 (`M_lev` 4.163e-17 banked against 2.776e-17), the float32 half reproducing exactly;
+  a re-bank at the head.
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
   one filed under a stale key. Name it at INFO.
@@ -199,6 +208,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   names). A document-set gate has to fix its ORDER as well as its list, and a mark quoted from a
   batch run is not the mark the document prices to alone. Measured on one document; the extent
   across the other draw paths is unmeasured.
+- **An `FxRate` declaring no `Domestic_Currency` kills both implied spot processes** (2026-09-11):
+  `GBMAssetPriceTSModelImplied.calc_references` and `LogVar2FJImpliedSpotModel.calc_references`
+  pass `None` as the default to `get_domestic_currency`, and `check_rate_name(None)` raises
+  `AttributeError` naming nothing where a default to the base currency or a refusal by name
+  belongs; the plain `GBMAssetPriceModel` never asks, which is why a fixture's `FxRate.EUR`
+  simulated happily until it was put on a walking outer.
 - **`NettingCollateralSet`'s backward is nondeterministic on the GPU**: one gradient entry takes two
   distinct float64 values from bit-identical inputs (a reduction order, not a graph defect). It
   bounds how tightly any collateralised sensitivity gate can be pinned.
@@ -291,20 +306,6 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
-- **The LogVar2FJ outer as a process the one-step logic applies to the PAIR** (2026-09-09). A
-  step rolls four dice and the framework hands the process one, so the other three are private to
-  each name, which is why they are uncorrelated across names. Ask for four sub-factors on the
-  `PC1…PCn` pattern: the return innovation, the two variance shocks (each factor's node-to-node
-  transition driven by one framework normal per interval), and the mixer drawn through its own
-  quantile from a framework normal, `G = F_IG⁻¹(Φ(Z))`. The estimator returns the four innovation
-  columns under the inverse map, so every marginal stays the fitted NIG and a historically estimated
-  row needs no conversion. Measured by simulation at the Q-sized truth over 5,040 days with the
-  return rows declared at 0.60: 0.017 realised as built, 0.100 with the mixers coupled by one
-  uniform, 0.454 with all four rows at 0.60, 0.701 with the variance rows at 0.8 and the mixer at 1
-  (se 0.009) — the return correlation is a function of the declared rows only once nothing in a
-  step is private. A shared-mixer component alone (the earlier design) raises the pair ceiling on
-  the Barclays grid from 0.344 / 0.209 / 0.216 to 0.433 / 0.435 / 0.366 — enough for two of the
-  three declared pairs and not for SX5E/SD3E's 0.804.
 - **The density recursion** — one FFT convolution per monitored date against the block Gaussian,
   as an alternative inner estimator. The daily walk's tape at 2,048 × 2,048 × 509 does not fit a
   24 GiB card in either direction (the draws alone are 3 × 7.95 GiB), which is what the per-block
@@ -392,8 +393,8 @@ every risk-neutral calibration inherits.
   under 1e-10, wing RMSE 0.789 against a 1.0 bound), the retired declarations refusing by name,
   the on-guard flag on the factor and in `Stats`, `Model_Priors: Off` bit-identical to its banked
   21 floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve
-  composed to 1e-9, the correlation key (0.1379 realised against 0.3 × 0.4525 declared-times-share,
-  0.5 se), and 76 floats over six repo documents hex for hex. About five minutes on the card, 213 s
+  composed to 1e-9, the four sub-factor rows (a declared 0.3 on all four realises 0.2040 on returns against
+  0.1520 with the sibling on GBM, 6.6 path-level se apart), and 76 floats over six repo documents hex for hex. About five minutes on the card, 213 s
   of it one shared five-expiry fit; every gate's killing mutation went red except the wing-RMSE
   row, whose mutation stalls the fit and whose bound is set at 3.2× below the unfitted seed. Two
   fixture facts: the banked floats are the CARD's (device reductions; a CPU-only box re-banks),

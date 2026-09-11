@@ -214,35 +214,34 @@ shorter step. Outer, inner and pricer are one walk and one mixer STRUCTURALLY:
 are the same function objects, so a fork seeded at an outer node cannot disagree with the stride it
 continues.
 
-Given the day's two shocks and the block's mixer the interval return is `N(M, G)` exactly, so the
-framework's one Cholesky-correlated Gaussian per scenario step multiplies `sqrt(G)` and there is no
-weighted-combination approximation and no drift correction: the leverage factors have conditional
-mean one and `mu_A` forces the residual's. **A declared cross-factor correlation therefore sits on
-the Gaussian GIVEN THE MIXER**, and a pair of factors realises `rho D_i D_j` with
-`D = E[sqrt(G)]/sd(R)` over the SCENARIO INTERVAL — the clock the framework correlates on, not the
-day. `Var(R) = E[S]` for `S` the interval's own integrated variance, and the days' mixers CONVOLVE
-(`lam/m^2` is `gamma^2` whatever the clock), so `G | S ~ IG(c_eff S, gamma^2 (c_eff S)^2)` and `D`
-is a closed form: `sqrt(c_eff)` times the IG's own Jensen factor `utils.ig_sqrt_share`, times the
-state's, quadratured over `lv_state_variance`'s law and sd-weighted over the grid. It is `sqrt(c)`
-exactly under a Gaussian residual with a frozen variance, `sqrt(c_eff)` in the deterministic limit,
-and **one exactly for every other process**, which is the base class's answer. Measured on a
-declared 0.3 / 0.6 / 0.9 against a lognormal sibling, the realised correlation was `0.352` /
-`0.353` / `0.354` of the declared one under the NIG residual and `0.452` / `0.454` / `0.454` under
-the Gaussian, flat in the declared value; it is a property of the grid as much as of the fit, NKY
-reading 0.34 on a daily interval and 0.70 on a one-year one, because the days' mixers convolve.
+Given the day's two shocks and the block's mixer the interval return is `N(M, G)` exactly, and
+the process declares FOUR sub-factors per name — the return's Gaussian given the mixer (the row
+every book already marks, under the key GBM's estimator answers), the fast and the slow
+log-variance shocks (`.S`, `.L`) and the mixer (`.G`) — so the framework hands it one normal per
+row per scenario step and a declared correlation on each is realised (2026-09-11). Each variance
+factor's node-to-node step is the exact OU transition on the interval driven by its framework
+normal; the daily path inside the interval is the OU bridge between the endpoints, spelled as a
+conditioning of the free shocks (`e = z − u(u'z) + uZ` with `Σu² = 1`), so the walk is untouched,
+the endpoint is a function of the previous endpoint and the framework normal alone, and a daily
+grid leaves `u = 1` exactly. The mixer is the fourth normal through its own quantile,
+`G = F_IG⁻¹(Φ(Z_G))`, `Φ` taken in double. Measured on two names at the Q-sized truth against a
+truth simulated outside the engine at the document's own clock: the return row alone at 0.60
+realises **0.028** on returns (the private-dice behaviour it replaces), all four rows at 0.60
+**0.483** against 0.482, the variance rows at 0.8 with the mixer at 1 **0.732** against 0.729;
+put one die back to a private draw and the four-row reading collapses to 0.432. The historical
+estimator returns the four innovation columns under the inverse map — `eps`, the two smoothed
+shocks standardised, `Φ⁻¹(F_IG(Ĝ))` — so an estimated row is the row the outer realises; on a
+closes-only archive the Kalman smoother attenuates the shock columns (0.32 and 0.53 against a
+drawn 0.60, where the return and mixer columns read 0.55 and 0.35), a property of the measurement
+the estimator states by name.
 
-**The engine REPORTS that share and never scales for it** (the owner's ruling of 2026-09-09
-evening, which withdrew the per-factor scaling of the matrix built that morning). The declared
-number is the correlation of the innovations, as it is for every other process, and
-`get_cholesky_decomp` logs each mixed factor's `D` on the calculation's own grid at INFO. The
-marginal law is clock-free; the cross-name law of this process is not, because each name's mixer
-and its two variance shocks are private to it, so on a netting set of several names the outer
-walk realises less than the marks and by an amount that moves with the fit and the grid. **The
-book therefore runs on the GBM term-structure outer with the LogVar2FJ pricer**, where a mark
-means what it says under the Cholesky, and this process is the opt-in for a single-name exposure
-or a PFE study. The design that makes it honest for a set, three sub-factors per name with the
-mixers coupled by one uniform per step, is on the roadmap; the estimator's `eps` is already the
-innovation the framework correlates, so a historically estimated row needs no conversion.
+The dilution `D` and the INFO line that reported it are gone with the private dice. Which outer
+a book runs — the GBM term-structure outer with the LogVar2FJ pricer, or the LogVar2FJ outer
+across a netting set — is the desk's `Model Configuration`; both mean what they say under the
+Cholesky. A calendar bucket knot cutting one scenario interval's clock into two residual draws
+takes the second piece's mixer from the process's own stream, there being one framework normal
+per interval, which `precalculate` names at INFO; every factor in the book carries one `Alpha`
+bucket, so nothing reaches it.
 
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
 CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside

@@ -1186,19 +1186,12 @@ class Credit_Monte_Carlo(Calculation):
         correlation_matrix = np.eye(self.num_factors, dtype=np.float64)
         logging.root.name = self.config.deals['Attributes'].get('Reference', self.config.file_ref)
         correlation_factors = []
-        intervals = np.diff(np.insert(self.time_grid.time_grid_years, 0, 0.0))
         self.process_ofs = {}
         for key, value in self.stoch_factors.items():
             proc_corr_type, proc_corr_factors = value.correlation_name
             # record the offset of this factor model (derived 0-factor processes get one
             # too — generate() ignores it, but the precalc plumbing indexes process_ofs)
             self.process_ofs.setdefault(key, len(correlation_factors))
-            dilution = value.correlation_dilution(intervals)
-            if dilution < 1.0:
-                # a mixed process correlates the Gaussian given its mixer, so its return realises
-                # this share of a declared correlation on this grid - reported, never scaled
-                logging.info('%s realises %.4f of a declared correlation on this grid',
-                             utils.check_tuple_name(key), dilution)
             for sub_factors in proc_corr_factors:
                 correlation_factors.append(utils.Factor(proc_corr_type, key.name + sub_factors))
 

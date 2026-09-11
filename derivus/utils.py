@@ -19,8 +19,8 @@ from typing import Tuple, List
 from dataclasses import dataclass
 
 import logging
+import scipy.optimize
 import scipy.stats
-import scipy.special
 import pandas as pd
 import numpy as np
 
@@ -2441,11 +2441,6 @@ LV_AB_EPS = 1.0e-6
 #: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
 LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 3, 34, 1.0e-11
 
-#: Gauss-Hermite nodes the correlation dilution integrates the interval's own log-variance over.
-#: The integrand is smooth, so 16 already reads this to 1e-13 on the book's four fits at a daily
-#: and a quarterly clock; a CEILING as well as a choice, `hermegauss` overflowing past about 64.
-LV_DILUTION_NODES = 48
-
 #: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
 #: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
 #: late; buckets are calendar dates and never sit within the 30 ms this allows.
@@ -2578,18 +2573,6 @@ def ig_quantile(u, m, lam):
     x = ig_root(u, m, lam)
     x = x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
     return (x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)).to(narrow)
-
-
-def ig_sqrt_share(z):
-    """``E[sqrt(X)]/sqrt(E[X])`` for ``X ~ IG(m, lam)`` at ``z = lam/m`` - the mixer's own Jensen
-    factor, one in the deterministic limit and falling as ``sqrt(2z/pi) log(2/z)`` on a short clock.
-
-    The IG is ``GIG(-1/2, lam/m^2, lam)``, whose ``E[X^n] = m^n K_{n-1/2}(z)/K_{-1/2}(z)`` with
-    ``K_{-1/2}(z) = sqrt(pi/2z)e^{-z}``, so the ratio is ``K_0(z)e^z sqrt(2z/pi)``; `kve` carries
-    the ``e^z`` that overflows past ``z ~ 700``. A VALUE and NUMPY - the correlation matrix is
-    assembled before the graph exists.
-    """
-    return scipy.special.kve(0.0, z) * np.sqrt(2.0 * z / np.pi)
 
 
 def lv_cap(x, a, beta):
