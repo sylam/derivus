@@ -199,14 +199,15 @@ unmeasured — a limitation without a number is absolution, not documentation
   outer publishes `(ell, s)` in the job's dtype while `LogOUSpotModel`, `MarkovHMMSpotModel` and
   `GARCHSpotModel` cast theirs to float32 — inert while `HedgeMonteCarlo` runs at float32 whatever
   the job says; a float64 `solve_hedge` would hand the critic one float64 block among float32.
-- **A document's numbers depend on how many documents ran before it in the process**
-  (2026-09-11): a GBM autocall CVA document moves 9,146 of its 12,250 floats — the CVA by
-  12% — between running first and running forty-third in one process, at the same seed on the
-  same tree, while two runs at the same position agree to the bit. Process-global random-number
-  state that a job's `reset()` does not reset (the quasi-RNG batch counter the RNG-ordering note
-  names). A document-set gate has to fix its ORDER as well as its list, and a mark quoted from a
-  batch run is not the mark the document prices to alone. Measured on one document; the extent
-  across the other draw paths is unmeasured.
+- **A document's numbers depend on where it runs in a sequence of documents** (2026-09-11): the same
+  autocall CVA document, run first and run forty-third in one process, moves 9,146 of its 12,250
+  reported floats and the CVA by 12%. The framework's own scenario shocks are not the cause: the
+  simulation state reseeds the tensor generator at construction, so a factor driven by the
+  correlated Gaussian block is unaffected. The consumers that draw their own quasi-random numbers
+  are the suspects — the path-dependent pricers (autocall, accumulator, target redemption, barrier)
+  and the regime-switching processes — whose position in the low-discrepancy sequence advances with
+  use. Unconfirmed: the mechanism has not been isolated, and until it is, a set of documents
+  compared across versions must be run in a fixed order.
 - **`NettingCollateralSet`'s backward is not bit-reproducible on the GPU**: one gradient entry can
   differ in its last bits between runs of bit-identical inputs — the backward of `gather`, `scatter`
   and `index_add` accumulates atomically on CUDA, in whatever order the threads land. Far below the
