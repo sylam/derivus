@@ -42,7 +42,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
   polish, or let the guard raise it once and re-walk.
-- **The identification line divides by an unquoted coordinate** (2026-09-11, lane G): a block
+- **The identification line divides by an unquoted coordinate** (2026-09-11): a block
   quoting one ATM per expiry and no wing reports *prior on an unidentified coordinate: Alpha[0y]
   5.8e13x, Beta 1.0e14x, Rho_S 9.5e13x, Sigma_S 2.2e14x* — a division by a quote-row column norm
   at zero, not a reading — and `On_Guard` carries it onto the factor and into `Stats`, so a wingless
@@ -79,7 +79,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   longer grid is one question to Bloomberg support, the owner's.
 - **Three dials stayed module constants**: `bootstrappers.ALPHA_SEED` `(0.5, 0.05)`, `xtol=1e-12`
   in `LVFit.solve`, and `Sigma_Knots`' ten-knot default grid.
-- **Under `Sampling: Pseudo` the mixer uniform is 24 bits at float32** (2026-09-10, lane F):
+- **Under `Sampling: Pseudo` the mixer uniform is 24 bits at float32** (2026-09-10):
   `torch.rand` at float32 is the draw, and widening it changes the generator's consumption and so
   the stream a float64 document reproduces; `1 − u` at the clamp margin carries 2.98% there.
   Production takes Sobol above 16 scenarios, where the uniform is drawn in double.
@@ -89,7 +89,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   the clock `A` is still summed across blocks in the job's dtype; widening it cascades into `G`
   and every pricer reading the law, a design change.
 - **On a closes-only archive the historical estimator's shock rows come back attenuated**
-  (2026-09-11, lane 4F): two names drawn from the four-sub-factor outer with every row at 0.60
+  (2026-09-11): two names drawn from the four-sub-factor outer with every row at 0.60
   and re-estimated through `Config.calibrate_factors` read return 0.5468 ± 0.012, fast shock
   0.3177 ± 0.015, slow shock 0.5281 ± 0.012, mixer 0.3549 ± 0.015. The smoothed shock is a linear
   functional of that name's own noisy observations, so its cross-name correlation is the state's
@@ -97,8 +97,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   `log r²` fallback); the mixer column is further compressed by a fit whose `α^P` reads 258–380
   against a truth of 44. The estimator now logs both shock sds by name. A range-bar archive is the
   measurement that would close it (`artifacts/lv_four_factor_20260911/bars.py`, written, not run).
-- **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10,
-  lane T): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
+- **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
   which injects skew and convexity a flat surface does not want, so a flat 20% ladder fitted with
   `Model_Priors: Off` lands at 0.21 vol points RMSE on one rung and 0.44 on two rather than at
   zero, at a fitted `ρ_s σ_s` of −0.001 beside the pinned −0.400. Every ladder a short-dated FX
@@ -118,7 +117,7 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
   one filed under a stale key. Name it at INFO.
-- **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10, lane T): `Config`
+- **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10): `Config`
   keys the section by a `(name, name)` tuple and builds it only on the `MarketDataFile` path, while
   `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
   lands under a string key that `get_cholesky_decomp` never looks up — a silent zero. Every
@@ -134,7 +133,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   (2026-09-07). The same swallow one layer up: a bootstrapper family that refuses at CONSTRUCTION
   (the leverage tables' sign refusal) is caught by `Config.bootstrap`, logged, and the factor left
   unwritten, so a caller that does not read the log sees a bootstrap that succeeded and a
-  `KeyError` at the first pricer that wants the factor (2026-09-10, lane T).
+  `KeyError` at the first pricer that wants the factor (2026-09-10).
 - **`Correlations` vs `save_params` author a quanto in different bases, unchecked**: `save_params`
   emits `ρ̄ᵢ = corr(dW, dWᵢ)` while the section's rows are the independent normals the Cholesky
   consumes (`a = ρ̄₁`, `b = (ρ̄₂ − ρ·ρ̄₁)/√(1−ρ²)`); copying `ρ̄₂` in gives a world whose drift and
@@ -196,12 +195,12 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The engine
 
-- **The privileged surface's dtype differs across processes** (2026-09-10, lane F): the LogVar2FJ
+- **The privileged surface's dtype differs across processes** (2026-09-10): the LogVar2FJ
   outer publishes `(ell, s)` in the job's dtype while `LogOUSpotModel`, `MarkovHMMSpotModel` and
   `GARCHSpotModel` cast theirs to float32 — inert while `HedgeMonteCarlo` runs at float32 whatever
   the job says; a float64 `solve_hedge` would hand the critic one float64 block among float32.
 - **A document's numbers depend on how many documents ran before it in the process**
-  (2026-09-11, lane A): a GBM autocall CVA document moves 9,146 of its 12,250 floats — the CVA by
+  (2026-09-11): a GBM autocall CVA document moves 9,146 of its 12,250 floats — the CVA by
   12% — between running first and running forty-third in one process, at the same seed on the
   same tree, while two runs at the same position agree to the bit. Process-global random-number
   state that a job's `reset()` does not reset (the quasi-RNG batch counter the RNG-ordering note
@@ -382,7 +381,7 @@ every risk-neutral calibration inherits.
 - **The standing hex gates every landing runs**: `artifacts/lv_nig_20260907/hexcheck.py` (4,180
   floats over 16 GBM and Hull-White documents, diffed by `hexdiff.py`) and the crisp GBM TARF
   `artifacts/autocall_model_validation_20260904/campaign/tarf_hex.py` (`-0x1.2c48f36318e38p+5`).
-- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (lane T, 2026-09-10): 32 gates over
+- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 32 gates over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
