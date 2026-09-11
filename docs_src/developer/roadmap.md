@@ -42,6 +42,24 @@ unmeasured — a limitation without a number is absolution, not documentation
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
   polish, or let the guard raise it once and re-walk.
+- **The identification line divides by an unquoted coordinate** (2026-09-11, lane G): a block
+  quoting one ATM per expiry and no wing reports *prior on an unidentified coordinate: Alpha[0y]
+  5.8e13x, Beta 1.0e14x, Rho_S 9.5e13x, Sigma_S 2.2e14x* — a division by a quote-row column norm
+  at zero, not a reading — and `On_Guard` carries it onto the factor and into `Stats`, so a wingless
+  fit marks every shape parameter as prior-held. The guard wants a floor on the denominator or an
+  "unquoted coordinate" branch that says so in words.
+- **`LogVar2FJModelParameters` lost `fx_minimum_contracts = 8` in the Heston-Nandi retirement**
+  (2026-09-11): 9d4b91e deleted the parent class and carried three of its four ladder declarations
+  onto the re-hoisted one; the family now reads `OptionQuoteFamily`'s 6, sized for the plain family's
+  five parameters, while the Bloomberg equity emitter still refuses under 8 and its gate pins that
+  wording. A ladder collapsing onto 6 or 7 distinct contracts is accepted where it was declared
+  refused; no document in the repo changes side. One line restores it; whether a thin desk surface
+  that passes at 6 should refuse at 8 is the call before it lands.
+- **`prepare_quotes` no longer writes a blank `Strike` back** (2026-09-11): e475bee's hoist made
+  `strike = forward if not option['Strike'] else option['Strike']` a local, so a block quoting
+  `Strike: 0.0` reads 0.0 after the fit and a book cannot be read back to see what its fit was
+  struck at; one line writes it back, and it mutates every round-tripped block, so the reach comes
+  first.
 - **`Skew_Reserve` is one number per calculation**, composed from the one gradient
   `Base_Revaluation` takes, and read at the two block ends nearest the declared `Forward_Tenors`
   (NKY: 0.51y into 2.23y for a declared 6m-into-6m) — honest, and not the tenor a 2y autocall is
@@ -229,6 +247,11 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **`HullWhite2FactorImpliedInterestRateModel.precalculate` reads `Lambda_1` off a `Price Models`
   block an implied model does not need**, so omitting it raises a `TypeError` naming neither field
   nor factor; `FXVolSurfaceParameters` subscripts `point['Timestamp']` the same way.
+- **An FX vol ladder with nothing usable in it escapes `/book/market` as a 500** (2026-09-11): an
+  `FXVolPrices` block whose `Points` are empty, or every point `Use: 'No'`, raises `IndexError` out of
+  `FXVolSurfaceParameters` past the endpoint's `(ValueError, KeyError)` net — an unhandled 500 on a
+  tick where every other bad tick gets a sentence. The refusal belongs in the family, beside the
+  collapsed-ladder one.
 - **`create_market_swaps`' `Distribution_Type` lives on the surface**, which the Bloomberg emitter
   does not author, so a lognormally-declared factor gets a lognormal fit of normal quotes — the two
   conventions are 9.7–11.4× apart in premium.

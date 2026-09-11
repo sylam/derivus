@@ -72,7 +72,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
                 'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values',
                 'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg',
-                'describe_structure', 'solve_structure', 'book_quote', 'calibrate_heston_nandi',
+                'describe_structure', 'solve_structure', 'book_quote', 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva'}
     assert set(tools) == expected
     for name, tool in tools.items():
@@ -82,7 +82,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'recalc_xva', 'calibrate_heston_nandi'}
+                       'recalc_xva', 'calibrate_spot_model'}
 
 
 def test_the_progress_tool_does_not_advertise_its_context():

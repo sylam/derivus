@@ -662,21 +662,37 @@ def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(
 
 
 def test_a_bootstrap_that_complains_writes_nothing(book):
-    """A quote block no price family reads is refused BY NAME before any bootstrap runs - a 422
-    naming the family and listing the ones that exist - and the book must never carry a market its
-    bootstrap would have complained about: the file is byte-identical after the refusal."""
+    """A bootstrap that reports an ERROR refuses the WHOLE write with its own messages - the good
+    half of the tick with it, because a book must never carry a market its bootstrap complained
+    about. Both refusals, and the file untouched by either.
+
+    THE COMPLAINT is a configured family that writes no factor: the USDZAR surface ticks in
+    perfectly well and the Hull-White fit declared beside it has no block, so the run says so and
+    the whole edit is dropped.
+
+    THE ORPHAN is a block no configured family READS, which never reaches a bootstrapper at all -
+    `Config.bootstrap` refuses it by name, with the families it does read, and the endpoint answers
+    422 rather than a refusal outcome.
+    """
     doc = json.loads(book.read_text())
-    doc['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+    doc['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        'FXVolSurfaceParameters': {}, 'HullWhite2FactorModelParameters': {}}
     book.write_text(json.dumps(doc, indent=2), newline='\n')
     before = book.read_bytes()
 
-    ghost = {'GhostPrices.NOWHERE': {'instrument': {'Points': []}}}
-    refused = CLIENT.post('/book/market', content=dump({'quotes': ghost}), headers=JSON)
+    outcome = CLIENT.post('/book/market', content=dump(
+        {'quotes': fx_vol_quotes()}), headers=JSON).json()
 
-    assert refused.status_code == 422
-    assert 'GhostPrices' in refused.json()['detail']
-    assert 'no price family reads' in refused.json()['detail']
+    assert outcome['written'] is False
+    assert any('wrote no' in message for message in outcome['refused'])
+    assert book.read_bytes() == before
+
+    ghost = {'GhostPrices.NOWHERE': {'instrument': {'Points': []}}}
+    orphan = CLIENT.post('/book/market', content=dump({'quotes': ghost}), headers=JSON)
+
+    assert orphan.status_code == 422
+    assert 'GhostPrices' in orphan.json()['detail'], 'a refusal that does not name the block'
+    assert 'FXVolPrices' in orphan.json()['detail'], 'a refusal that does not say what is read'
     assert book.read_bytes() == before
 
 
@@ -976,7 +992,9 @@ def hand_authored_block(vols):
 
     The shift gate needs the fit's ARITHMETIC, not its ladder, so the expiries are the shortest
     that still make three step counts and the gate runs in seconds instead of the emitter ladder's
-    quarter hour. Everything else is the block the emitter writes.
+    quarter hour. `Stationary_Spread` is `Floor` because a three-week smile fits a vol-of-vol the
+    VIX band does not carry (sd 0.287 against 0.4), and the band is not what is measured here.
+    Everything else is the block the emitter writes.
     """
     return {'instrument': {
         'Underlying': 'ZAR', 'Underlying_Type': 'FxRate',
@@ -984,7 +1002,8 @@ def hand_authored_block(vols):
         'Discount_Rate': 'USD', 'Discount_Rate_Type': 'InterestRate',
         'Yield': 'ZAR', 'Yield_Type': 'InterestRate',
         'Quote_Type': 'Implied_Volatility', 'Use_Forward': 'Yes', 'Invert_Moneyness': 'Yes',
-        'Steps_Per_Year': 252.0, 'Max_Iterations': 2, 'Paths': 1024, 'Internal_Step_Days': 5,
+        'Stationary_Spread': 'Floor',
+        'Steps_Per_Year': 252.0, 'Max_Iterations': 2, 'Paths': 1024,
         'European_Options': [
             {'Expiry_Date': BASE + pd.DateOffset(days=days), 'Strike': SPOT * ratio,
              'Option_Type': 'Call' if ratio >= 1.0 else 'Put', 'Units': 1.0, 'Weight': 1.0 / 9.0,
@@ -994,21 +1013,29 @@ def hand_authored_block(vols):
 
 
 def fitted_scalars(path, block, delta):
-    """The scalar parameters a book fits `block` to, at `Volatility_Delta` `delta` - through the
-    market seam, off the file, exactly as a tick calibrates."""
+    """Every fitted curve value a book lands on for `block` at `Volatility_Delta` `delta` - through
+    the market seam, off the file, exactly as a tick calibrates.
+
+    THE FIT IS THE CURVES. `LV_PARAM_NAMES` are structural priors a ladder does not identify and
+    sit at their declared defaults whatever the quotes say, so what is read is `LV_CURVE_NAMES`.
+    And the previously written factor is DROPPED first, because a fit warm starts off one: three
+    comparable fits have to be three cold ones.
+    """
     document = json.loads(path.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['System Parameters']['Volatility_Delta'] = delta
     market['Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {}}
     market.get('Market Prices', {}).pop('LogVar2FJModelPrices.ZAR', None)
+    market['Price Factors'].pop('LogVar2FJModelParameters.ZAR', None)
     path.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     written = CLIENT.post('/book/market', content=dump(
         {'quotes': {'LogVar2FJModelPrices.ZAR': block}}), headers=JSON).json()
     assert written['written'] is True, written
-    factor = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+    factor = derivus.Context().load_json(str(path)).current_cfg.params[
         'Price Factors']['LogVar2FJModelParameters.ZAR']
-    return {key: float(factor[key]) for key in utils.LV_PARAM_NAMES}
+    return [float(value) for name in utils.LV_CURVE_NAMES
+            for value in factor[name].array[:, 1]]
 
 
 def test_a_volatility_delta_moves_the_fitted_world_once(tmp_path):
@@ -1018,7 +1045,7 @@ def test_a_volatility_delta_moves_the_fitted_world_once(tmp_path):
 
     Two halves. The emitter is delta-BLIND: a block authored at 0.01 is the block authored at 0.0
     bit for bit, because a quote block is a QUOTE. And the fit applies the shift ONCE: fitting
-    unshifted quotes under a 0.01 scenario lands on the same five parameters as fitting HAND-BUMPED
+    unshifted quotes under a 0.01 scenario lands on the same fitted curves as fitting HAND-BUMPED
     quotes under none. The third fit rules out a shift that did nothing.
     """
     path = built_surface(tmp_path / 'book.json', json.loads(dump(desk_smile())))
@@ -1043,8 +1070,8 @@ def test_a_volatility_delta_moves_the_fitted_world_once(tmp_path):
             tuple(vol + 0.01 for vol in vols)), 0.0)
         unmoved = fitted_scalars(path, hand_authored_block(vols), 0.0)
 
-        # MEASURED at 7.7e-9 relative: one ulp between the two worlds' quoted vols amplified by a
-        # line search, not a second application. A doubled shift moves these by percent
+        # MEASURED bit-identical across the seven curve values, the shift itself moving each of
+        # them by 8.1 to 26.1%. The band is a fit's noise floor, not what was read
         assert scenario == pytest.approx(by_hand, rel=1e-6), (
             'a 1 vol point scenario did not fit the world 1 vol point away')
         assert scenario != pytest.approx(unmoved, rel=1e-3), (
@@ -1056,11 +1083,11 @@ def test_a_volatility_delta_moves_the_fitted_world_once(tmp_path):
 def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(tmp_path):
     """The two things an unconditional argmin does not do, both silent when they happen.
 
-    A COLLAPSED LADDER. The canned surface carries 3M and 1Y only, so ten rungs land on FOUR
-    distinct contracts and a five-parameter fit is handed them as though they were ten quotes. What
-    identifies `H0`, `Beta` and `Omega` is the ATM TERM STRUCTURE, which a collapse destroys - so
-    the emitter refuses, naming the pillars, the ladder, the count and the remedy. The
-    `expiry.size < 2` guard cannot see this: the canned surface IS a grid.
+    A COLLAPSED LADDER. The canned surface carries 3M and 1Y; move the 1Y pillar to 2Y and 3M is
+    the only one inside the ladder's own cap, so twenty-two rungs land on FIVE distinct contracts -
+    one ATM and one expiry's four wings - and the later buckets of `Rho_S` and `Beta` are
+    identified by nothing. The emitter refuses, naming the pillars, the ladder, the count and the
+    remedy. The `expiry.size < 2` guard cannot see this: the surface IS a grid.
 
     NOTHING PAST A YEAR. Snapping is an argmin over every pillar, so a surface quoting 2Y answers
     the 1Y rung with 2Y and a sub-year fit borrows from a smile nobody quotes. Here the four-pillar
@@ -1069,11 +1096,15 @@ def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(t
     """
     from derivus.bootstrappers import LogVar2FJModelParameters as Family
 
+    collapsed = json.loads(dump(fx_vol_quotes()))
+    for point in collapsed['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        if point['Expiry'] == 1.0:
+            point['Expiry'] = 2.0
     with pytest.raises(ValueError) as refusal:
-        spot_model_block(built_surface(tmp_path / 'canned.json'))
+        spot_model_block(built_surface(tmp_path / 'canned.json', collapsed))
     service.BOOK = None
-    assert 'distinct contracts' in str(refusal.value)
-    assert 'FXVol.USD.ZAR carries pillars 0.25/1' in str(refusal.value)
+    assert '5 distinct contracts' in str(refusal.value)
+    assert 'FXVol.USD.ZAR carries pillars 0.25/2' in str(refusal.value)
     assert 'term structure' in str(refusal.value), 'a refusal that does not say what was lost'
     assert 'more expiries' in str(refusal.value), 'a refusal without a remedy'
 
@@ -1108,7 +1139,7 @@ def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(t
     service.BOOK = None
     assert '0 distinct contracts' in str(dropped.value)
     assert 'ATM 1 DROPPED - no pillar at or under 1' in str(dropped.value)
-    assert '0.25d 0.5 DROPPED' in str(dropped.value)
+    assert '0.25/0.1d 0.5 DROPPED' in str(dropped.value)
 
 
 # THE ROUND TRIP - the verb authoring a block, installing it through the market seam,
@@ -1799,11 +1830,21 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
         0.0, abs=premium * 1e-4)
 
 
-#: A calibrated spot-model factor for the rand, as `/book/model` writes one. Not a fit: a stationary
-#: set (persistence 0.90) near the surface's own vol, with `Gamma_Star` on the sign this pair's
-#: smile carries. The gate is about the MODEL reaching the book with the trade.
-CALIBRATED = {'Property_Aliases': None, 'Omega': 1e-12, 'Alpha': 2.0e-6, 'Beta': 0.45,
-              'Gamma_Star': -474.34, 'H0': 7.8e-5}
+#: A calibrated spot-model factor for the rand, as `/book/model` writes one: the ladder
+#: `fx_surface_block` authors off this file's own bootstrapped `FXVol.USD.ZAR`, fitted through
+#: `Config.bootstrap` at 2,048 paths and pasted here. The gate is about the MODEL reaching the book
+#: with the trade, so what it needs of the fit is that the engine wrote it.
+CALIBRATED = {
+    'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.5, 'Rho_L': 0.2, 'Kappa_S': 6.0,
+    'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'Steps_Per_Year': 252.0, 'C_Min': 0.12,
+    'Residual_Law': 'NIG', 'On_Guard': '', 'Stickiness_Band': 0.5,
+    'Skew_Gradient': '-0.0222277544361,-2.12183436316',
+    'Xi_Curve': utils.Curve([], [[0.0, 0.020733491013238004],
+                                 [0.2493150684931507, 0.02438547422614177]]),
+    'Rho_S': utils.Curve([], [[0.0, 0.08094527234766719]]),
+    'Beta': utils.Curve([], [[0.0, -10.934407669066678]]),
+    'Sigma_S': utils.Curve([], [[0.0, 2.256886996797385]]),
+    'Alpha': utils.Curve([], [[0.0, 60.24372735960779]])}
 
 #: An accumulator on the RAND: the orientation whose underlying IS the token a spot model is keyed
 #: on, so it rides the fit as written and crosses no axis. The keying's own gates are in
@@ -1829,7 +1870,7 @@ def test_a_leg_quoted_under_a_model_books_into_a_book_that_marks_it(quoting):
     """
     document = json.loads(quoting.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['Price Factors']['LogVar2FJModelParameters.ZAR'] = dict(CALIBRATED)
+    market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
     document['Calc']['Calculation']['MCMC_Simulations'] = 1024
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(quoting))

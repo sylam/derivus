@@ -715,10 +715,17 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
 
 def test_the_floor_and_the_defaults_are_the_families_own_numbers():
     """The emitter cannot import the engine, so every number it hard-codes is held against the
-    engine's own DECLARATION here. A default that moves on either side has to move on both."""
+    engine's own DECLARATION here. A default that moves on either side has to move on both.
+
+    THE CONTRACT FLOOR IS THE ONE EXCEPTION: `LogVar2FJModelParameters` declares no
+    `fx_minimum_contracts` of its own and reads `OptionQuoteFamily`'s 6, which was sized for a
+    five-parameter family rather than for a ladder whose ATM rungs are spent on the L bootstrap.
+    So the emitter's 8 is its own number - pinned by the refusal-wording gate above - and what is
+    held here is that it is never LOOSER than the family it writes for.
+    """
     from derivus.bootstrappers import LogVar2FJModelParameters as Family
 
-    assert EquityLadder().minimum_contracts == Family.fx_minimum_contracts == 8
+    assert EquityLadder().minimum_contracts == 8 >= Family.fx_minimum_contracts
     declared = {field.name: field.default for field in Family.fields}
     assert equity_chain.STEPS_PER_YEAR == declared['Steps_Per_Year']
     assert equity_chain.REFERENCE_TYPES.keys() == Family.factor_types.keys()
@@ -1372,8 +1379,8 @@ def repo_world(market_prices=None, deals=()):
 
 def probe_block(funding=REPO, days=FORWARD_DAYS):
     """A `LogVar2FJModelPrices.SPX` block whose every quote leaves `Strike` at ZERO - the declared
-    meaning of which is `0 reads the forward`, and the family fills the row in in place. So after a
-    real bootstrap each row's `Strike` IS the fit's own forward, read out of the engine.
+    meaning of which is `0 reads the forward`. So every rung is struck AT the fit's own forward and
+    `fitted_forwards` reads that forward out of the engine's own quote preparation.
 
     `Steps_Per_Year` is 12 because a 3y rung at 252 is 756 sequential recursions per price. The
     premiums are plausible ATM prints; the fit's quality is not what is measured.
@@ -1403,10 +1410,16 @@ def probe_block(funding=REPO, days=FORWARD_DAYS):
 
 
 def fitted_forwards(block, deals=()):
-    """`(forwards, the five fitted parameters, the run output)` - one real bootstrap of `block` in
-    the repo world, with `deals` priced against the same market in the same job."""
+    """`(forwards, the four `LV_PARAM_NAMES` scalars, the run output)` - one real bootstrap of
+    `block` in the repo world, with `deals` priced against the same market in the same job.
+
+    THE FORWARD IS THE FIT'S OWN. `prepare_quotes` is the arithmetic every stage of the fit prices
+    on, run here over the bootstrapped market with the block's own instrument, so what comes back
+    is the number the objective used and not a replica of it.
+    """
     import derivus
     from derivus import run_baseval, utils
+    from derivus.bootstrappers import construct_bootstrapper
     from derivus.config import CustomJsonEncoder
 
     name = 'LogVar2FJModelPrices.SPX'
@@ -1416,11 +1429,17 @@ def fitted_forwards(block, deals=()):
     config = derivus.Context().load_json(
         (json.dumps(document, cls=CustomJsonEncoder), 'forward-identity')).current_cfg
     config.bootstrap()
-    rows = config.params['Market Prices'][name]['instrument']['European_Options']
-    written = config.params['Price Factors']['LogVar2FJModelParameters.SPX']
+    params = config.params
+    family = construct_bootstrapper('LogVar2FJModelParameters', {})
+    instrument = dict(family.param, **params['Market Prices'][name]['instrument'])
+    factors, spot = type(family).resolve_block(
+        name, instrument, params['Price Factors'], params['Price Factor Interpolation'],
+        params['System Parameters'])
+    forwards = [forward for _, _, _, _, forward, _, _, _, _ in family.prepare_quotes(
+        params['System Parameters'], instrument, factors, spot)]
+    written = params['Price Factors']['LogVar2FJModelParameters.SPX']
     out = run_baseval(config)[1] if deals else None
-    return ([row['Strike'] for row in rows],
-            [float(written[key]) for key in utils.LV_PARAM_NAMES], out)
+    return (forwards, [float(written[key]) for key in utils.LV_PARAM_NAMES], out)
 
 
 def probe_deals(expiries):
@@ -1442,9 +1461,10 @@ def test_the_calibrated_forward_is_the_priced_forward_at_every_pillar():
     index with a borrow spread the two parted and the fit sat where the pricer never visits.
 
     The block declares `Funding_Rate` now, and both forwards are read out of the ENGINE: the fit's
-    off the `Strike` column it filled in, the pricer's off an `EquityForwardDeal`'s MtM in the same
-    job. They agree to 1e-13. Non-vacuous by construction: with no `Funding_Rate` the same probe is
-    the old arithmetic, off by exactly the spread's own carry (over 0.3%) at every pillar.
+    off `prepare_quotes`, the arithmetic the objective priced on, the pricer's off an
+    `EquityForwardDeal`'s MtM in the same job. They agree to 1e-13. Non-vacuous by construction:
+    with no `Funding_Rate` the same probe is the old arithmetic, off by exactly the spread's own
+    carry (over 0.3%) at every pillar.
     """
     expiries, block = probe_block()
     deals = probe_deals(expiries)

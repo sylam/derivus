@@ -52,8 +52,8 @@ ACCRUAL_SIMS = 16384
 #: of them, a barrier level inverted twice, moves the solved strike by percent).
 AXIS_TOLERANCE = 2e-4
 
-#: The same band under the fitted spot model, MEASURED on the FX gate's own book: 2.0e-4 apart at
-#: 16,384 paths against the lognormal's 4.1e-5 - the two shocks' estimator error, both orientations
+#: The same band under the fitted spot model, MEASURED on the FX gate's own book: 3.1e-4 apart at
+#: 16,384 paths against the lognormal's 2.5e-5 - the two shocks' estimator error, both orientations
 #: walking one law rather than reading a surface at two moneynesses.
 MODEL_AXIS_TOLERANCE = 5e-4
 
@@ -63,19 +63,20 @@ MODEL_AXIS_TOLERANCE = 5e-4
 DECLARED_DEFAULTS = {'leverage': 2.0}
 
 #: A calibrated LogVar2FJ factor for the rand, as `/book/model` writes one - the JOINING side of
-#: the pair. The banked USDZAR `Global` fit, rounded to what a gate reading a note and a solved
-#: strike needs; the curves are the fit's own segments, in years.
+#: the pair. THIS FILE'S OWN SURFACE, fitted once: the ladder `fx_surface_block` authors off the
+#: bootstrapped `FXVol.USD.ZAR` (22 quotes), run through `Config.bootstrap` at 2,048 paths, and the
+#: written factor pasted here. `On_Guard` is blank, so every number below is the data's.
 MODEL_PARAMS = {
-    'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.0, 'Rho_L': 0.0, 'Kappa_S': 6.0,
-    'Nu': 4.401650676117734e-08, 'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'C_Min': 0.12,
-    'Lambda': utils.Curve([], [[0.0, 0.07345372461752837]]),
-    'L_Curve': utils.Curve([], [[0.0, -4.79855357189], [0.0821917808219, -4.92096383098],
-                                [0.167123287671, -4.88786832253], [0.249315068493, -4.84055015853],
-                                [0.498630136986, -4.69955594235], [0.747945205479, -4.61140627756]]),
-    'Rho_S': utils.Curve([], [[0.0, -0.452329478871]]),
-    'Mu_J': utils.Curve([], [[0.0, -0.0850191941054]]),
-    'Sigma_S': utils.Curve([], [[0.0, 3.62882617626]]),
-    'Sigma_J': utils.Curve([], [[0.0, 0.0200000020229]])}
+    'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.5, 'Rho_L': 0.2, 'Kappa_S': 6.0,
+    'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'Steps_Per_Year': 252.0, 'C_Min': 0.12,
+    'Residual_Law': 'NIG', 'On_Guard': '', 'Stickiness_Band': 0.5,
+    'Skew_Gradient': '-0.0222277544361,-2.12183436316',
+    'Xi_Curve': utils.Curve([], [[0.0, 0.020733491013238004],
+                                 [0.2493150684931507, 0.02438547422614177]]),
+    'Rho_S': utils.Curve([], [[0.0, 0.08094527234766719]]),
+    'Beta': utils.Curve([], [[0.0, -10.934407669066678]]),
+    'Sigma_S': utils.Curve([], [[0.0, 2.256886996797385]]),
+    'Alpha': utils.Curve([], [[0.0, 60.24372735960779]])}
 
 #: The strip: monthly fixings to the tenor, and a cap of 1.50 rand of cumulative favourable move on
 #: a spot of 18.50 - reachable enough that the redemption is part of the price.
@@ -1158,12 +1159,13 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     A USDZAR TARF is forced onto the pair's BASE currency, so it used to look up a factor named for
     a NUMERAIRE, which can name no block - and rode GBM however many times the pair was calibrated.
     That showed as BIT-IDENTITY: the solved strike under the declared model and under none were the
-    same float. MEASURED before: 16.774620757621133 both ways, separation exactly 0.0. After:
-    17.409375992866366 against the same GBM 16.774620757621133, 3.78% apart, against a solve floor
-    of 2.5e-5 at this path count.
+    same float, separation exactly 0.0. MEASURED under `MODEL_PARAMS`: 16.832891643626950 against
+    the same GBM 16.774620757621133, 0.347% apart - 139 times the solve floor of 2.5e-5 at this
+    path count, and the band below is forty times that floor.
 
-    THE ACCUMULATOR'S EXISTING HIT IS UNMOVED: its notional is the rand, so its underlying was
-    already the non-base token. 18.15503015327775 before and after.
+    THE ACCUMULATOR'S ORIENTATION ALREADY JOINED: its notional is the rand, so its underlying was
+    already the non-base token. Its strike is pinned to the digit at 17.390492998425863, so the
+    arm that never had the defect cannot lose the fit either.
     """
     gbm = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
@@ -1173,15 +1175,15 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     lognormal = leg(gbm, 'tarf')['strike_market']
     garch = leg(modelled, 'tarf')['strike_market']
     assert lognormal != garch, 'the declared model priced the lognormal, to the bit'
-    assert abs(garch / lognormal - 1.0) > 1e-2, (garch, lognormal)
+    assert abs(garch / lognormal - 1.0) > 1e-3, (garch, lognormal)
     assert abs(gbm['net']) <= SOLVE_TOLERANCE and abs(modelled['net']) <= SOLVE_TOLERANCE
 
     accumulator = structures.quote(calibrated(accrual_book), 'Accumulator', dict(
         accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
-    # BIT-IDENTICAL across the change when measured directly; the band here is the accumulation
-    # order's, not the claim's - the hit it must not lose is 5.1e-2
+    # the band is the accumulation order's, not the claim's - what a lost fit costs this arm is
+    # 5.1e-2, and the strike it solves under the factor is pinned here to the digit
     assert leg(accumulator, 'accumulator')['strike_market'] == pytest.approx(
-        18.15503015327775, rel=1e-9), 'the orientation that already joined moved'
+        17.390492998425863, rel=1e-9), 'the orientation that already joined moved'
 
 
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
@@ -1193,7 +1195,7 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
     the two solve 3.7e-3 apart and the gap does NOT close with the path count: a Siegel drift, not
     noise.
 
-    MEASURED on the FX gate's book: 2.0e-4 apart at 16,384 paths against the lognormal's 4.1e-5 -
+    MEASURED on the FX gate's book: 3.1e-4 apart at 16,384 paths against the lognormal's 2.5e-5 -
     the shocks' estimator error rather than the numeraire. The band is 5e-4.
     """
     document = calibrated(accrual_book)
