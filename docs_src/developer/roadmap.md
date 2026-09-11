@@ -315,9 +315,9 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 - **The log-variance cap becomes a corner, and the calibration stops carrying one.** The smooth
   cap sits below the identity at every level, so it biases the variance under the ξ curve it is
   calibrated to and blocks the closed forms; a hard minimum does neither. The fit then runs
-  uncapped, where the clock's moments are exactly lognormal and a European is a low-dimensional
-  quadrature with no paths, no seed and exact derivatives, which is the direct answer to the
-  bimodal objective. The written factor carries one level, derived at the end of the fit from the
+  uncapped, where the instantaneous variance is exactly lognormal, so the moments of the clock the
+  residual is subordinated to are closed form and a European is a low-dimensional quadrature with
+  no paths, no seed and exact derivatives, which is the direct answer to the bimodal objective. The written factor carries one level, derived at the end of the fit from the
   fitted stationary law at a declared exceedance, and only the simulation applies the minimum, so
   the exponential is never evaluated above it. The cap width goes with the bend, and the guard
   that counts path-days within five widths becomes an exceedance probability in closed form, which
