@@ -17,27 +17,16 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The LogVar2FJ calibration
 
+These are defects in the engine: each has a change to this library that closes it.
+
 - **The index class defaults are a shape this model cannot carry on NKY** (2026-09-10). At the
   class leverage (`ρ_s` −0.7, product −1.9, SPX's numbers) NKY refuses at production `Cap_A`
   (4.2e-05 of path-days within `5·Cap_Beta` against the 1e-05 allowed) and at `Cap_A` 6 lands
   `σ_s` on its 5.0 box with `ρ_s` −0.397. NKY's own implied pair (−0.529 / −1.62) lands clean, so
   the emitter has to write per-name numbers; a bigger cap is not the fix.
-- **A declared standard error tight enough is a pin, and the guard says so** (2026-09-10). NDX at
-  the regression's own 0.015 reads 138 quote rows on `ρ_s` and is flagged; NKY at 0.025 reads 38.5x
-  and is not. Whether a 1,149-day regression's sampling error is the right spread for a Q-measure
-  prior is a modelling question; `Leverage_Prior_SE` is where a desk states its own.
-- **`Residual_Skew_Share_Sd` 0.2 is asserted, not measured** (2026-09-10). The wings win by about
-  one standard error on every index ladder (−0.29 to −0.49 against −0.5). The estimator's own
-  `β^P/α^P` spread on an uncontaminated history would measure it, and no index history here is
-  uncontaminated (NKY's `C_Eff` 0.9967 against `c` 0.2671).
 - **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
   (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
   `Bootstrap` fit with priors on is unexercised.
-- **The NKY chain block's vanilla-only objective is bimodal** (2026-09-08): thirteen fits over three
-  seeds and four path counts land between RMSE 0.976 and 1.016 but split into `Alpha` 0.6–2.1 or
-  7.6–8.0, and `Pseudo` 8192 lands in one mode at seed 1 and the other at seeds 2 and 3. A
-  same-answer gate on that ladder proves determinism, not agreement; the forward block is the
-  identification it lacks.
 - **`LVFit.cap_level` is not re-evaluated after the polish** (2026-09-09). A polish that raises
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
@@ -73,10 +62,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **`LV_CHECKPOINT_STEPS` 21 was measured for the walk alone**; the mixer's per-draw checkpoint
   beside it took peak memory 8,392 → 9,990 MiB at 2,048 × 2,048. The residual's granularity is the
   dial if that headroom is wanted.
-- **The vendor's implied-vol grid answers at 30, 60 and 90 days only**, so the long end of every
-  equity fit is the file's own surface or the listed chain; the desk's NKY mark moves 4.6% between
-  a chain-only fit and one carrying the file's 2.74y ATM. Whether the workstation is entitled to a
-  longer grid is one question to Bloomberg support, the owner's.
 - **Three dials stayed module constants**: `bootstrappers.ALPHA_SEED` `(0.5, 0.05)`, `xtol=1e-12`
   in `LVFit.solve`, and `Sigma_Knots`' ten-knot default grid.
 - **Under `Sampling: Pseudo` the mixer uniform is 24 bits at float32** (2026-09-10):
@@ -88,6 +73,30 @@ unmeasured — a limitation without a number is absolution, not documentation
   primitive would overflow a float32 caller. The fix is a chunked rescale, not a cast. Beside it
   the clock `A` is still summed across blocks in the job's dtype; widening it cascades into `G`
   and every pricer reading the law, a design change.
+
+#### What the quotes cannot say
+
+These are properties of the market data available, not of the engine. No change to this
+library closes one; each is a limit on what a fit of that data can be asked to identify, and
+is recorded so a reader knows which readings rest on it.
+
+- **A declared standard error tight enough is a pin, and the guard says so** (2026-09-10). NDX at
+  the regression's own 0.015 reads 138 quote rows on `ρ_s` and is flagged; NKY at 0.025 reads 38.5x
+  and is not. Whether a 1,149-day regression's sampling error is the right spread for a Q-measure
+  prior is a modelling question; `Leverage_Prior_SE` is where a desk states its own.
+- **`Residual_Skew_Share_Sd` 0.2 is asserted, not measured** (2026-09-10). The wings win by about
+  one standard error on every index ladder (−0.29 to −0.49 against −0.5). The estimator's own
+  `β^P/α^P` spread on an uncontaminated history would measure it, and no index history here is
+  uncontaminated (NKY's `C_Eff` 0.9967 against `c` 0.2671).
+- **The NKY chain block's vanilla-only objective is bimodal** (2026-09-08): thirteen fits over three
+  seeds and four path counts land between RMSE 0.976 and 1.016 but split into `Alpha` 0.6–2.1 or
+  7.6–8.0, and `Pseudo` 8192 lands in one mode at seed 1 and the other at seeds 2 and 3. A
+  same-answer gate on that ladder proves determinism, not agreement; the forward block is the
+  identification it lacks.
+- **The vendor's implied-vol grid answers at 30, 60 and 90 days only**, so the long end of every
+  equity fit is the file's own surface or the listed chain; the desk's NKY mark moves 4.6% between
+  a chain-only fit and one carrying the file's 2.74y ATM. Whether the workstation is entitled to a
+  longer grid is one question to Bloomberg support, the owner's.
 - **On a closes-only archive the historical estimator's shock rows come back attenuated**
   (2026-09-11): two names drawn from the four-sub-factor outer with every row at 0.60
   and re-estimated through `Config.calibrate_factors` read return 0.5468 ± 0.012, fast shock
