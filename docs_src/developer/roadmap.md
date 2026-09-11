@@ -208,9 +208,11 @@ unmeasured — a limitation without a number is absolution, not documentation
   names). A document-set gate has to fix its ORDER as well as its list, and a mark quoted from a
   batch run is not the mark the document prices to alone. Measured on one document; the extent
   across the other draw paths is unmeasured.
-- **`NettingCollateralSet`'s backward is nondeterministic on the GPU**: one gradient entry takes two
-  distinct float64 values from bit-identical inputs (a reduction order, not a graph defect). It
-  bounds how tightly any collateralised sensitivity gate can be pinned.
+- **`NettingCollateralSet`'s backward is not bit-reproducible on the GPU**: one gradient entry can
+  differ in its last bits between runs of bit-identical inputs — the backward of `gather`, `scatter`
+  and `index_add` accumulates atomically on CUDA, in whatever order the threads land. Far below the
+  1% the desk reads, so noted and left (2026-09-11). A gate that ever needs the gradient pinned
+  switches `torch.use_deterministic_algorithms(True, warn_only=True)` on beside the cuBLAS pin.
 - **The exposure profile is reported undeflated**, `Deflation_Interest_Rate` applied only inside the
   CVA/FVA scalars, so a deflated expiry-row EPE cannot be read from the tables; publish `Dt_T`
   beside `mtm`.
