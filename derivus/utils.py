@@ -2371,8 +2371,7 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
 
 # ======================================================================================
 # LOGVAR2FJ - two-factor log-variance with a normal-inverse-Gaussian residual on the variance
-# clock, walked on an INTERNAL step and priced through the sample-then-Phi stride. Theory:
-# logvar2fj_v2_brief.md.
+# clock, walked on an INTERNAL step and priced through the sample-then-Phi stride.
 #
 # One Markov chain on an internal step delta; a stride from any date to any date is a BLOCK of that
 # chain, so two dates give the same law however the interval between them is cut. Given every
@@ -2393,25 +2392,25 @@ LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S')
 #: than a modelling device. A leaf at either would report a derivative nothing carries.
 LV_STRUCTURAL_NAMES = ('Cap_A', 'Cap_Beta')
 
-#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2` (brief 1): the factor
+#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2`: the factor
 #: asserts it at load, the surface's stages 3-4 box the fit by it, and the historical leverage
 #: regression is ridged onto it where the slow shock is too weak to carry a coefficient.
 LV_C_MIN = 0.12
 
 #: The floor on the residual's CONDITIONING SHARE `gamma^2/alpha^2 = 1 - (Beta/Alpha)^2` - the
-#: share of its variance that stays in the Gaussian once the mixer is sampled (brief 2's
+#: share of its variance that stays in the Gaussian once the mixer is sampled (the bound
 #: `|Beta|/Alpha <= 0.77`). Past it the mixer carries the return and the OSS advantage goes too.
 LV_COND_MIN = 0.4
 
 #: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
-#: knots (brief 2) - one knot at 0 is the constant-parameter model. `Rho_S` and `Beta` are the
+#: knots - one knot at 0 is the constant-parameter model. `Rho_S` and `Beta` are the
 #: forward-skew pair; `Sigma_S` and `Alpha` carry buckets because Bootstrap mode frees them per
 #: expiry. All four carry the same buckets, which the factor asserts.
 LV_BUCKET_NAMES = ('Rho_S', 'Beta', 'Sigma_S', 'Alpha')
 
 #: The CURVE parameters, in the order the kit unpacks them. `Xi_Curve` is the EXPECTED FORWARD
 #: VARIANCE `E_0[h_t]` - what a variance swap pays - piecewise CONSTANT on the segments its knots
-#: START, off which the OU mean level is DERIVED with the Jensen term (brief 1); all five carry
+#: START, off which the OU mean level is DERIVED with the Jensen term; all five carry
 #: structural knots and VALUES that are leaves.
 LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 
@@ -2420,16 +2419,16 @@ LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
 #: underlying's own name, and every estimate a reader takes, EACH WITH ITS OWN `_SE` BESIDE IT -
 #: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S`/`Sigma_S` the leverage
 #: prior's own PRODUCT and its delta-method error, and `Beta` the sanity table's P side, reported
-#: and never crossed (brief 8).
+#: and never crossed.
 LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel',
                    ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S', 'Sigma_S'))
 
 #: What the calibration writes on the factor for a DEAL's own sensitivity report to compose its
-#: forward-skew reserve with (brief 5) - structural, carried by the same route the cap and the law
+#: forward-skew reserve with - structural, carried by the same route the cap and the law
 #: are, and declared here because the bootstrapper writes it and the pricer reads it.
 LV_RESERVE_LINE = ('Skew_Gradient', 'Stickiness_Band')
 
-#: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)` (brief 5). Here
+#: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)`. Here
 #: because the factor's refusals quote the map the fit lands inside.
 LV_AB_EPS = 1.0e-6
 
@@ -2485,7 +2484,7 @@ def bucket_index(knots, t):
 
 
 def lv_nig_budget(A, alpha, beta):
-    """``(delta_A, mu_A, gamma)`` of the NIG increment that spends variance ``A`` (brief 1).
+    """``(delta_A, mu_A, gamma)`` of the NIG increment that spends variance ``A``.
 
     ``gamma = sqrt(alpha^2 - beta^2)``; ``delta_A = A gamma^3/alpha^2`` makes the variance the clock
     exactly and ``mu_A = delta_A (sqrt(alpha^2 - (beta+1)^2) - gamma)`` forces ``E[exp(X_A)] = 1``.
@@ -2503,7 +2502,7 @@ def lv_nig_budget(A, alpha, beta):
 
 
 def ig_cdf(x, m, lam):
-    """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr`` (brief 3).
+    """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr``.
 
     ``exp(2 lam/m)`` overflows at the clocks a daily grid produces - ``lam/m`` is ``delta*gamma``
     and reaches the hundreds - while its product with the tail probability does not, so the two are
@@ -2576,7 +2575,7 @@ def ig_quantile(u, m, lam):
 
 
 def lv_cap(x, a, beta):
-    """Smooth cap on log-variance, a - beta*softplus((a-x)/beta) (spec 2.7); a None is uncapped."""
+    """Smooth cap on log-variance, a - beta*softplus((a-x)/beta); a None is uncapped."""
     if a is None:
         return x
     return a - beta * torch.nn.functional.softplus((a - x) / beta)
@@ -2621,7 +2620,7 @@ def lv_ou_path(kappa, w, e, y0, deltas):
 
 def lv_state_variance(params, deltas):
     """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
-    derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2`` (brief 1).
+    derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2``.
 
     ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor, which is `lv_ou_path` at twice the reversion with
     each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no

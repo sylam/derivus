@@ -1141,7 +1141,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
     reverts to a derived level $L^*(t)$ at $\\kappa_\\ell$ and the fast $s$ to zero at $\\kappa_s$,
     and the part of a return that leverage does not explain is a normal-inverse-Gaussian increment
     on the clock $c\\,V$. Given the shocks and the block's mixer a block return is exactly
-    Gaussian, which is the whole of the pricing (logvar2fj_v2_brief.md).
+    Gaussian, which is the whole of the pricing.
 
     **Xi_Curve** is $\\xi(t)=E_0[h_t]$, the expected forward variance a variance swap pays,
     piecewise CONSTANT and strictly positive on the segments its knots start. The OU mean level is
@@ -1277,7 +1277,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 'LogVar2FJModelParameters: the bucket at %gy declares Rho_S %g against Rho_L %g, '
                 'so c = 1 - Rho_S^2 - Rho_L^2 = %g, below C_Min %g. The truncation conditions '
                 "on c of the interval's variance, and a surface wanting less wants a one-shock "
-                'model (brief 1) - fit against the bound, do not declare past it'
+                'model - fit against the bound, do not declare past it'
                 % (knots['Rho_S'][i], rho_s[i], rho_l, c[i], c_min))
         if not self.gaussian:
             self.assert_residual(knots['Alpha'], self.param['Alpha'].array[:, 1],
@@ -1285,7 +1285,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
 
     @staticmethod
     def assert_residual(buckets, alpha, beta):
-        """The NIG residual's admissibility, per bucket and by name (brief 2).
+        """The NIG residual's admissibility, per bucket and by name.
 
         $|\\beta|<\\alpha$ is the law, $|\\beta+1|<\\alpha$ the forced drift $\\mu_A$, and the
         conditioning share $\\gamma^2/\\alpha^2\\ge$ `LV_COND_MIN` the share of the residual's
@@ -1307,7 +1307,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 raise ValueError(
                     'LogVar2FJModelParameters: the bucket at %gy declares Alpha %g against Beta '
                     '%g, so the conditioning share gamma^2/Alpha^2 = 1 - (Beta/Alpha)^2 = %g, '
-                    'below the %g brief 2 floors it at (|Beta|/Alpha <= %.4f). Past it the mixer '
+                    'below the %g it is floored at (|Beta|/Alpha <= %.4f). Past it the mixer '
                     'carries the return and the OSS advantage goes with it'
                     % (t, a, b, share, utils.LV_COND_MIN,
                        np.sqrt(1.0 - utils.LV_COND_MIN)))

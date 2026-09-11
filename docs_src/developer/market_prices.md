@@ -390,12 +390,12 @@ determinism rather than agreement.
 | `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
 | `Forward_Smile_Source` | `None` (`Prior` withdrawn) | a sticky-delta TARGET costs 0.4–1.1 vol points of spot fit on all four index ladders and a 0.5y bucket does not repair it; the tie-breaker that capped that cost bound stage 5 alone, and on a one-bucket ladder stage 5 does not run |
 | `Residual_Horizon` | 0.25 | since lane L2 it switches no row off: both residual rows stay and the wings outvote them. Its one reader is the report's own line saying whether the ladder's wings reach the residual. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation, not the horizon's; horizon zero was the wrong fix |
-| `Alpha_Prior_Defaults` | 44 for every class | brief 2 sizes the residual ONCE, at the index `(44, −22)`, and states no separate FX number; a soft row beside the wings since lane L2, where a walk to the 500 ceiling costs 5.1 standard errors |
-| `Alpha_Prior_Sd` | 0.5 on `log α` | brief 5's log-normal spread, a factor of 1.65 either way — and the bar a history's own SE must beat to be called informative |
+| `Alpha_Prior_Defaults` | 44 for every class | the residual is sized ONCE, at the index `(44, −22)`, and states no separate FX number; a soft row beside the wings since lane L2, where a walk to the 500 ceiling costs 5.1 standard errors |
+| `Alpha_Prior_Sd` | 0.5 on `log α` | a log-normal spread, a factor of 1.65 either way — and the bar a history's own SE must beat to be called informative |
 | `Residual_Skew_Share_Defaults`, `Residual_Skew_Share_Sd` | −0.5 for every class, 0.2 | the −22/44 sizing restated as the share the smile sees (lane L2); `Beta_Prior_Defaults` and `Beta_Prior_Sd` are retired and refuse by name. The 0.2 is asserted, not measured: what would measure it is the estimator's `β^P/α^P` spread on an uncontaminated history, which no index history here is |
-| `Contamination_Ratio` | 2.0 | brief 8's `C_Eff > 2c`; the estimator's own report already names the ratio at this threshold |
+| `Contamination_Ratio` | 2.0 | the estimator's `C_Eff > 2c`; the estimator's own report already names the ratio at this threshold |
 | `Leverage_Prior_Weight` | 0.02 | one instance of the general rule: `0.01 × 0.2 / 0.1` is one quote-vol-point per tenth of `ρ_s`. Since lane L the row is on the product and the scale is this over `Sigma_S_Reference`, the same statement at the reference vol-of-vol; a history's product carries a delta-method error and is weighted by it. At a fitted `σ_s` of 5 a unit of `ρ_s` is five of product, so the row reads 6.5 quote rows on `ρ_s` where it read 2.3 — open decision 16 |
-| `Leverage_Product_Defaults` | index −1.9, FX 0.0 | brief §2: `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement; the ruling's number over the spec's −1.8 |
+| `Leverage_Product_Defaults` | index −1.9, FX 0.0 | `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement; the ruling's number |
 | `Sigma_S_Reference` | 2.4 | the state's own `Sigma_S` seed, the Q-sized vol-of-vol a declared `Leverage_Prior` is multiplied by to reach the product; refused at or below zero |
 | the fit's device | the job's | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s |
 
@@ -450,7 +450,7 @@ one month against the "≈ 1 strongly non-Gaussian" the sizing note gives, and t
 coefficient of variation is 11.4. Every declared guard is satisfied there (`c` 0.311 ≥ 0.12,
 `γ²/α²` **1.000** ≥ 0.4). `Bootstrap`, which frees `α` per expiry against that expiry's own wings,
 does not reach the corner (`α` 41.6, `γ²/α²` 0.930) and reads an eighth of `Global`'s one-month
-wing. **Nothing in the brief bounds `α` from below**; the residual-shape floor below closes it. `Bootstrap` is structurally the mode for a deal read at many
+wing. **Nothing else bounds `α` from below**; the residual-shape floor below closes it. `Bootstrap` is structurally the mode for a deal read at many
 fixings rather than the mode that fits a surface best — bucket `k` acts only on `[E_{k−1}, E_k)`
 while the option to `E_k` averages over every bucket before it — and the report says per bucket
 which parameters were free and which tied.
@@ -538,9 +538,9 @@ against quote rows worth 1.8e-04). `Beta_Prior_Defaults` and `Beta_Prior_Sd` are
 by name naming the share; the residual seed is `share × α_seed`, −22 at the defaults to the digit.
 
 **That test IS the definition of informative**, and it is declared: `Beta_Prior_Sd` (10, sized in
-brief 5 on the residual's one-month skewness) and `Alpha_Prior_Sd` (0.5 on `log α`, a factor of 1.65
+the residual's one-month skewness) and `Alpha_Prior_Sd` (0.5 on `log α`, a factor of 1.65
 either way) are both the class spread AND the bar a history has to beat. It discriminates the way
-the brief's own two measurements do: on a simulated index history `β^P` reads **−0.28 ± 14.4**
+two measurements do: on a simulated index history `β^P` reads **−0.28 ± 14.4**
 against a truth of −22 and FAILS, so the class prior `Beta_Prior_Defaults` **−22** stands; on the
 FX-sized test `β^P` reads −20.5 ± 7.4 against −15.4 and PASSES. `α` is a scale, so its prior is on
 `log α` and a history's own error is read in the same units. `β^P` crosses only as a prior with its
@@ -551,7 +551,7 @@ equal but that the ladder has nothing to say.
 **`Residual_Horizon` stays 0.25, and the positive skew it left free was the leverage's doing.**
 Over `Random_Seed` 1–3 on the NKY chain block at 8,192 paths with no history, the wings alone
 landed `β` at **+23.11, +12.68 and +14.85** at `|β|/α` 0.74 / 0.68 / 0.74 against the 0.77 bound —
-spec 5.3's own failure mode, reached by the wings — and horizon zero forced it to −13.76 / −20.11 /
+the objective's own failure mode, reached by the wings — and horizon zero forced it to −13.76 / −20.11 /
 −14.35 for 0.43–0.49 vol points while leaving `σ_s` on its box, the wrong fix for the right
 symptom. With the product row in force (lane L, 2026-09-10) `β` is negative on every book fit:
 NKY **−21.89 / −21.97 / −21.91** with the product −1.85 in place of −2.97, SX5E −21.97, NDX −20.99,
@@ -615,7 +615,7 @@ identify it, and a history's slow pair where the ladder fits it — all four sca
 above. `Off` restores the one-sided box with the vanilla-only objective it replaced, and is the
 switch a bit-identity gate runs under.
 
-**`Residual_Shape_Floor` is the lower bound on `α` that brief 2 does not have.** `|β|/α ≤ 0.77`
+**`Residual_Shape_Floor` is the lower bound on `α` the residual sizing does not have.** `|β|/α ≤ 0.77`
 bounds the skew share and nothing bounds `α` from below, so on a nearly symmetric smile the fit has
 no use for residual SKEW and buys CONVEXITY instead by walking `α` to the admissible map's own
 softplus floor — the 22-rung USDZAR ladder in `Global` landed at `α` 5.45 with `α·δ_A` **7.7e-03** at
@@ -654,7 +654,7 @@ the class default off the factor type `Underlying` resolves to: **FX (0.2, 0.5),
 runs on the `FxRate`'s own axis, so a USDZAR block whose deal convention has vol rising as the rand
 weakens fits `ρ_s < 0` on `FxRate.ZAR`, and pinning `ρ_l = −0.4` from the index seed would be the
 right sign here but the wrong one on the reciprocal — the rule reads it off the data instead of
-assuming it. **On this engine it always reads negative**: spec 5.2 stage 3 boxes
+assuming it. **On this engine it always reads negative**: stage 3 boxes
 `ρ_s ∈ [−√(1 − ρ_l² − c_min), 0]`, so no fit can produce a positive fast leverage and the FX default
 resolves to (−0.2, 0.5) on every ladder — the rule is the right one and it is inert until that box
 opens. A pin is applied to every name without an 18-month wing, so a floor-BY-DEFAULT would
@@ -753,7 +753,7 @@ match noise, and it did: a ratio target of `1.0,1.0` on the 22-rung USDZAR ladde
 5.3's own failure mode. The same ladder at `0.0,0.0` — the identical assumption, sticky-delta,
 written as differences — moves that guarded RMSE by **−0.012**: it does not reproduce the failure.
 What it does not buy is the rest of the surface. The wings still go 0.135 → **0.433** and the spot
-RMSE 0.115 → 0.369, because spec 5.3's guard watches the TARGET maturities (0.5y and 1y here) and
+RMSE 0.115 → 0.369, because the objective's guard watches the TARGET maturities (0.5y and 1y here) and
 the degradation lands on the shorter expiries it does not watch; the forward block is expensive on a
 sub-year FX ladder either way, and what changed is that it is no longer expensive for a reason that
 was arithmetic. The fit lands at `Δ_skew` −1.84 (6m into 6m) and −2.54 (1y into 1y) against a target
@@ -792,7 +792,7 @@ read at is a fact about the QUOTES: on a chain quoting 0.51y and 2.74y the 6m-in
 for is reported as 0.51y into 2.23y, and the log line says so.
 
 **`Forward_Smile_Source` defaults to `None`, and `Prior` is WITHDRAWN.** *Vanillas do not close this
-model* — brief 0.6 — but a target is not a source: measured on all four index ladders, a
+model* — but a target is not a source: measured on all four index ladders, a
 sticky-delta TARGET on a one-bucket ladder is reached only by driving `α` to its box, flipping `β`
 to its admissibility bound and carrying the skew on `ρ_s = −0.8`, at 0.4–1.1 vol points of spot fit,
 and a 0.5y bucket does not repair it on a listed chain. **The block exists with a market or a

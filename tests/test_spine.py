@@ -33,7 +33,7 @@ home's own key and its chain hash recomputed checks out as a chain; only the int
 catches it, and on a copy with no blind key ONLY that. The dual keeps the binding honest and leaves
 the idempotency tag stale, which only the blinded recomputation notices.
 
-The rest is the brief's law one bullet at a time: a retry that is the same fact by construction,
+The rest is the design's law one bullet at a time: a retry that is the same fact by construction,
 collision that refuses, blinding that leaves an unentitled holder no computable check, a
 crypto-shred that empties the bodies and leaves the chain standing, referential closure at the
 writer AND over the whole history, a closed vocabulary and a closed frame, break-glass declared at
@@ -690,7 +690,7 @@ def test_events_sharing_an_effective_time_replay_in_lsn_order(tmp_path):
 # The synthetic book - the fixture every later increment's reconstruction gate folds.
 
 def synthetic_book(tmp_path):
-    """The brief's fixture, appended through the ordinary writer: a late booking (Monday's fill
+    """The design's fixture, appended through the ordinary writer: a late booking (Monday's fill
     recorded after Wednesday's), a backdated amendment behind it, an exercise election, an approval
     and a second seat's rejection, a determination and a status transition, an administrator's
     republished fixing under the same key, and a backdated observation after an official close -
@@ -1095,7 +1095,7 @@ def test_a_copied_home_verifies_extends_and_still_catches_a_tamper(tmp_path):
 
 
 def test_a_replica_holding_only_the_log_and_the_blobs_verifies_its_chain(tmp_path):
-    """The brief's replica, in the two directories it names: the full log and the blob store,
+    """The design's replica, in the two directories it names: the full log and the blob store,
     ciphertext where unentitled, no key of any kind.
 
     That posture is why the chain is taken over the CIPHERTEXT, and it has to be reachable to be

@@ -132,7 +132,7 @@ def seated(tmp_path, name='hub', read=(DESK,), enrolled=(DESK,)):
 
 
 def replica_of(home, into):
-    """The brief's replica: the full log and the blob store, an empty `keys/`, no key of any kind."""
+    """The design's replica: the full log and the blob store, an empty `keys/`, no key of any kind."""
     into.mkdir(parents=True)
     for part in ('log', 'blobs'):
         shutil.copytree(str(home / part), str(into / part))

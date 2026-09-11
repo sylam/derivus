@@ -47,7 +47,7 @@ STDLIB_FALLBACK = frozenset(
 STDLIB = frozenset(getattr(sys, 'stdlib_module_names', None) or STDLIB_FALLBACK)
 
 #: The spine's own name is not a dependency (a package importing itself is structure), and
-#: `cryptography` is the single declared exception the brief allows.
+#: `cryptography` is the single declared exception the design allows.
 ALLOWED = STDLIB | {'cryptography', 'derivus_spine'}
 FORBIDDEN = {'derivus', 'torch', 'numpy', 'pandas', 'scipy', 'requests', 'duckdb'}
 

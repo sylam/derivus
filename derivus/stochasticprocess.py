@@ -4611,7 +4611,7 @@ def lv_bars(data_frame):
 
 def lv_filter(y, seen, theta, delta, offset):
     """The exact Gaussian likelihood of `log RV_t = l_t + s_t + offset + u_t` on the model's own
-    two-factor OU state with its own step coefficients (spec 5.5.1), started stationary.
+    two-factor OU state with its own step coefficients, started stationary.
 
     `seen` masks a day the measurement does not carry - a jump day, whose range is the jump's, an
     event day, a non-positive range - which the filter passes through as a pure prediction.
@@ -4657,7 +4657,7 @@ def lv_history_start(y, seen, fixed):
 
 
 def lv_history_fit(y, seen, delta, fixed):
-    """The filter's MLE with standard errors off the inverse Hessian (spec 5.5.1), returning
+    """The filter's MLE with standard errors off the inverse Hessian, returning
     `(theta, se, loglik, m, cov)`.
 
     AAD, not finite differences. The standard errors ARE the deliverable - stage 4 pins the slow
@@ -4706,7 +4706,7 @@ def lv_ou_pair(theta, delta):
 
 def lv_predicted(m, cov, phi, w, level):
     """The PREDICTABLE daily variance `E[exp(l + s) | y_{<t}]` - the filter's one-step prediction,
-    started stationary, which is the budget brief 1 reads at the START of the day.
+    started stationary, which is the budget read at the START of the day.
 
     NOT the filtered variance. A range measurement is built from the DAY'S OWN path, so it carries
     the day's own residual: standardising the return by the filtered `h` shrinks exactly the days
@@ -4723,7 +4723,7 @@ def lv_predicted(m, cov, phi, w, level):
 
 def lv_smooth_shocks(m, cov, phi, w, level):
     """The state's OWN per-step shocks `E[eta_t | y]` by one RTS backward pass over the filtered
-    path - the object spec 5.5.1's leverage regression runs on.
+    path - the object the leverage regression runs on.
 
     The FILTERED increment is `k_j v` in both components, PROPORTIONAL, so a regression on it
     cannot separate the two leverages at all; the smoother's increment is what distinguishes a
@@ -4741,7 +4741,7 @@ def lv_smooth_shocks(m, cov, phi, w, level):
 
 
 def lv_leverage(shocks, z, c_min):
-    """The two leverages: spec 5.5.1's regression of the diffusive remainder on the state's own
+    """The two leverages: the regression of the diffusive remainder on the state's own
     shocks, inside the MODEL's own box `1 - rho_s^2 - rho_l^2 >= c_min` (2.2.2).
 
     A decade of daily data holds few slow cycles, so the smoothed slow shock keeps a small
@@ -4809,7 +4809,7 @@ def lv_nig_mixer(x, clock, alpha, beta, mu):
     `GIG(-1, q^2, alpha^2)` in the density's own `q`, whose mean is `(q/alpha)K_0(z)/K_1(z)` at
     `z = alpha q`.
 
-    The framework's cross-factor correlation sits on the Gaussian GIVEN THE MIXER (brief 7), so
+    The framework's cross-factor correlation sits on the Gaussian GIVEN THE MIXER, so
     this is what `eps` is standardised by - the law's own sd would leave the mixer's fat tails in
     the series the correlation is measured on.
     """
@@ -4819,14 +4819,14 @@ def lv_nig_mixer(x, clock, alpha, beta, mu):
 
 
 def lv_nig_fit(x, budget):
-    """The residual's P-law by maximum likelihood (brief 8) on the day's VARIANCE BUDGET `V`,
+    """The residual's P-law by maximum likelihood on the day's VARIANCE BUDGET `V`,
     returning `(values, se, loglik, gaussian_loglik)`.
 
     The clock is `A = c_eff V` with the SHARE FITTED. `c = 1 - rho_s^2 - rho_l^2` is the share the
     residual would carry if the leverage came out whole; the smoothed shocks are attenuated, so the
     remainder keeps what the regression could not take out and its variance is not `c V` at all.
     Fitting the share is what makes `Var(X_A) = A` hold on the object rather than on an assumption,
-    and `c_eff` against `c` is that attenuation reported (brief 7).
+    and `c_eff` against `c` is that attenuation reported.
 
     Searched in `alpha = exp(a)`, `beta = alpha tanh(b)`, `c_eff = exp(e)`, which is `|beta| <
     alpha` at every iterate - `|beta+1| < alpha` is the MARTINGALE's constraint and P does not force
@@ -4883,7 +4883,7 @@ def lv_nig_start(x, budget):
 
 def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
     """A batched bootstrap particle filter on the same state and the same measurement, WITHOUT the
-    linear filter's two approximations (spec 5.5.1).
+    linear filter's two approximations.
 
     The measurement is the same one the Kalman reads, on the same mask - what this drops is the
     LOG-LINEARISATION of it and the forced Gaussian posterior, which are the two approximations the
@@ -4926,7 +4926,7 @@ def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
 
 
 class LogVar2FJCalibration(object):
-    """The P-measure historical estimate of the LogVar2FJ state (spec 5.5), whose purpose is the
+    """The P-measure historical estimate of the LogVar2FJ state, whose purpose is the
     correlation matrix and the priors and NOT the pricing parameters.
 
     `log RV_t = l_t + s_t + u_t` measures the two-factor OU state through a range estimator. The
@@ -4948,7 +4948,7 @@ class LogVar2FJCalibration(object):
     away is a day the residual's own law explains, and only declared `Event_Days` are excluded; the
     count a 4-sigma threshold would have flagged is REPORTED beside the likelihood the tails buy.
 
-    What crosses into a pricing model (5.5.3, brief 8) is that correlation, the two reversion
+    What crosses into a pricing model is that correlation, the two reversion
     speeds as priors, the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the
     ladder carries no wing, `Rho_S` as the leverage prior's value and `alpha^P` as a seed and a
     sanity check. The vol-of-vols, `beta` and the leverages as VALUES are a sanity table against
@@ -4974,7 +4974,7 @@ class LogVar2FJCalibration(object):
           description='The fitted factor\'s own Q values as name=value pairs - the RIGHT-hand '
                       'side of the P-vs-Q table, and what Scale_To_Sector scales onto'),
         F('Scale_To_Sector', 'Text', default='No', values=['Yes', 'No'],
-          description='Spec 5.5.3\'s no-liquid-surface mode: write the sector\'s implied values '
+          description='The no-liquid-surface mode: write the sector\'s implied values '
                       'in place of the history\'s own, stating each ratio')
     ]
 
@@ -4995,7 +4995,7 @@ class LogVar2FJCalibration(object):
         sector = self.implied() if self.param['Scale_To_Sector'] == 'Yes' else {}
         if self.param['Scale_To_Sector'] == 'Yes' and not sector:
             raise ValueError(
-                '{}: Scale_To_Sector is Yes and Implied_Values is blank. Spec 5.5.3 lets a whole '
+                '{}: Scale_To_Sector is Yes and Implied_Values is blank. The sector mode lets a whole '
                 'history cross into Q for an underlying with no liquid surface ONLY scaled to the '
                 "sector's own implied values, with the report stating the scaling - and there is "
                 'nothing here to scale to. Write the sector values, or leave the mode off and the '
@@ -5072,14 +5072,14 @@ class LogVar2FJCalibration(object):
             '' if nig['C_Eff'] < 2.0 * c else
             '. THE REMAINDER IS MOSTLY LEVERAGE - its clock is {:.1f}x the model\'s c, so Alpha '
             'and Beta are the REMAINDER\'s law and not the residual\'s, Alpha reading toward '
-            'Gaussian; brief 8 crosses Alpha as a SEED for that reason'.format(nig['C_Eff'] / c),
+            'Gaussian; Alpha crosses as a SEED for that reason'.format(nig['C_Eff'] / c),
             '' if LV_NIG_MIN * 1.001 < nig['Alpha'] < LV_NIG_MAX * 0.999
             else '; ALPHA ON ITS BOX BOUND')
         for n, q in sorted(self.implied().items()):
             note = ''
             if n == 'Alpha' and not 0.5 <= abs(values[n] / q if q else 0.0) <= 2.0:
                 note = (' - FLAGGED past 2x: alpha^P is a SEED and a sanity check, Esscher '
-                        'invariance being an assumption about the risk premium (brief 8)')
+                        'invariance being an assumption about the risk premium')
             elif n == 'Beta':
                 note = (' - reported, NEVER crossed: an Esscher tilt moves beta by one unit at '
                         'most, so the P and Q skews are not the same number')
@@ -5093,7 +5093,7 @@ class LogVar2FJCalibration(object):
         if miss >= 0.10:
             raise ValueError(
                 "{}: the particle filter reads the filtered h path {:.1f}% RMS from the Kalman's, "
-                'past the 10% spec 5.5.1 gates it at. The two agree only where the linear '
+                'past the 10% it is gated at. The two agree only where the linear '
                 'measurement carries the whole of the variance, and nothing is masked out of it '
                 'now, so what is wrong is the MEASUREMENT: sigma_u {:.4f} on the {} estimator, '
                 'against 2.22 for squared returns and 0.8 for a finely printed bar'.format(
@@ -5189,7 +5189,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     @property
     def steps_per_year(self):
         """The fitted block's own trading-day clock, off the parameter factor - the step IS the
-        trading day (brief 0), and the scenario grid steps the one the parameters mean."""
+        trading day, and the scenario grid steps the one the parameters mean."""
         return float(self.implied.declared['Steps_Per_Year'])
 
     @property

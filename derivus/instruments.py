@@ -4150,7 +4150,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         # THE OSS ARM. Every coupon owns a WINDOW of fixings and every barrier date sits on a
         # coupon date; a window of ONE is the common case the fast calc below was written for, and
         # a longer one is the arithmetic average, which only a kit whose conditioning step IS the
-        # fixing interval can truncate the prefix of (`pv_MC_AutoCallSwap`, spec 2.4.1).
+        # fixing interval can truncate the prefix of (`pv_MC_AutoCallSwap`).
         spot_model = self.options.get('SpotModel', 'None')
         ac_dates = sorted([x for x in ac if x >= base_date])
         prior = [x for x in ac if x < min(ac_dates)]
@@ -4276,7 +4276,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'SpotModel=%s requires the one-step-survival autocall: every barrier date ON a '
                 'coupon date, and every coupon owning a window of fixings that its predecessor '
                 'does not. A window of MORE than one fixing is the arithmetic average, which the '
-                'OSS arm prices by truncating the prefix of the window (spec 2.4.1) and so needs '
+                'OSS arm prices by truncating the prefix of the window and so needs '
                 'a kit whose conditioning step IS the fixing interval - LogVar2FJ; a DAILY kit '
                 'has only its last daily sub-step and takes one fixing per coupon. The '
                 'averaging (full-path) sim has no non-GBM path at all.' % spot_model)

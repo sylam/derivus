@@ -107,7 +107,7 @@ all real stores in temp dirs, every fault injected by doctoring DATA on disk. Th
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
 dual caught by the stale tag, each proven independently load-bearing in the posture where the other is
-absent; the brief's synthetic book (late booking, backdated amendment, republished fixing under one
+absent; the design's synthetic book (late booking, backdated amendment, republished fixing under one
 (index, date, source) key, superseding close) driving all sixteen fact types through the writer with
 as-of provably departing from as-at; and restore as file-copy, both replica shapes re-verified on the
 far side.
@@ -120,7 +120,7 @@ refuses `none` and every HMAC by name before any key is selected (the alg-confus
 not warnings), with `kid` selection across key types, the ES256 raw-`R||S` signature contract,
 `exp`/`nbf` on an injectable clock, and OIDC Core's `azp` rule so a co-audienced client cannot replay
 its own token as a spine credential. The subject reference is the token's `sub`, pseudonymous by the
-brief's rule; display names live in `names.json`, a mutable side table OUTSIDE the log whose erasure is
+the design's rule; display names live in `names.json`, a mutable side table OUTSIDE the log whose erasure is
 gated to leave every chain byte identical.
 
 **Capabilities are one document and one pure function.** The document — grants of (verb × book) over
@@ -144,7 +144,7 @@ re-addressed to another seat refuses to open — plus an escrow wrap under a dec
 is idempotent and driven by the document in force; `grant` reports the rewrap it now owes, so "rewrap on
 grant change" is a printed obligation rather than operator memory; `materialize` turns a chain-only
 replica entitled off its wrap without overwriting anything; escrow recovery is gated on a
-crypto-shredded copy. **THREE residuals are declared**: the brief's two (forward-only revocation,
+crypto-shredded copy. **THREE residuals are declared**: the design's two (forward-only revocation,
 traffic shape) and this increment's own — a hub-minted seat key is a bootstrap the hub has seen, stated
 in `custody.py`'s docstring, with seat-generated `--public-key` enrollment as the form that eliminates
 it.
@@ -166,7 +166,7 @@ two fields: a nullable seed (a job declaring no `Random_Seed` is hashed with a n
 substituted zero would name a tuple no result was ever filed under) and an object of name-to-number for
 a quote's solved coordinates.
 
-**The verbs live in the spine and the engine gets delegators.** The brief's build order says "booking
+**The verbs live in the spine and the engine gets delegators.** The build order says "booking
 verbs on `Context`"; the house's first law says no module under `derivus/` learns about users, workflow
 or storage. Both hold because the LOGIC is `derivus_spine/verbs.py` — plain functions over plain data —
 and `Context` gains five one-line delegators (`book | amend | apply_lifecycle | declare_market |
@@ -263,7 +263,7 @@ it to an anchor target is deployment data, out of scope by the design's own sent
 Two boundaries of increment 3's own, declared rather than discovered. `pin_result` reads its tolerance
 policy and re-executes BEFORE the writer adjudicates the append, so an unscoped actor can make the hub
 pay for one execution it will then refuse; the fix is not a second authorization check inside the verb
-(one evaluator, one place) but queue admission, which the brief puts under its own capability in
+(one evaluator, one place) but queue admission, which the design puts under its own capability in
 increment 5. And a STANDING run must post its job document — a `plan_id` names a parse,
 `Context.save_json` is explicitly not a complete round trip, and a provenance chain whose first link is
 a document nobody can recompile is worse than none — so it refuses by name.

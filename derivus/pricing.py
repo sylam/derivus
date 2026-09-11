@@ -79,7 +79,7 @@ class LogVar2FJKit(object):
     interval reads its own Gaussian block law ``(M, Sigma)``.
 
     There is no per-step state for a pricer to carry: given the walk's shocks and the block's own
-    mixer the whole interval's return is exactly Gaussian (brief 1). So the pricer's GBM arithmetic
+    mixer the whole interval's return is exactly Gaussian. So the pricer's GBM arithmetic
     serves this model verbatim: ``p`` is one Phi, the continuing draw one Phi^-1 and the put leg's
     fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
 
@@ -136,7 +136,7 @@ class LogVar2FJKit(object):
         would have held them, so no tensor of the whole grid's shape exists at any point. The key
         is the row's ``base`` - one int64 off the plain generator, which `utils.rng_position`
         replays under `InnerMCRecompute` - plus the segment's index. ``antithetic`` mirrors along
-        the SIMS axis, ``-eta`` (brief 3); the mixer's uniforms are the PRICER's, mirrored there.
+        the SIMS axis, ``-eta``; the mixer's uniforms are the PRICER's, mirrored there.
         """
         gen = torch.Generator(device=deltas.device).manual_seed(key)
         z = torch.randn([2] + shape, dtype=torch.float32, device=deltas.device, generator=gen)
@@ -148,7 +148,7 @@ class LogVar2FJKit(object):
         return utils.lv_walk(params, curve, deltas, z[0], z[1], (l, s), self.invert, quanto)
 
     def residual(self, A, alpha, beta, u):
-        """One residual draw's ``(mean shift, mixer)`` on the clock ``A`` (brief 1).
+        """One residual draw's ``(mean shift, mixer)`` on the clock ``A``.
 
         ``G ~ IG(delta_A/gamma, delta_A^2)`` from one uniform, and the Gaussian is then
         ``N(mu_A + Beta G, G)``. Under ``invert`` the mixer is the ESSCHER-TILTED one,
@@ -185,7 +185,7 @@ class LogVar2FJKit(object):
         draws take: one per interval, and one MORE wherever a bucket knot falls inside one.
 
         A knot inside a fixing interval splits that interval's CLOCK - two residual draws, one
-        Gaussian whose ``M`` and ``Sigma^2`` sum (brief 1's no-knot-inside-a-clock rule) - so it is
+        Gaussian whose ``M`` and ``Sigma^2`` sum (the no-knot-inside-a-clock rule) - so it is
         never a refusal and never a law read at the wrong bucket.
 
         A piece whose CLOCK IS ZERO takes no draw: a reporting row landing exactly on a remaining
@@ -286,8 +286,8 @@ class LogVar2FJKit(object):
         already-hit leg, where a daily kit reads its closed form. The strip's per-interval laws
         sum into the terminal one (variances add), off which each path prices a conditional Black
         (`lognormal_fired_gain`) or, for a digital, the block's own Phi, averaged over the walk -
-        the expectation spec 2.4 writes. A TERMINAL row has NO strip left, so Sigma is exactly zero
-        and the division is guarded there (spec 2.8): the leg reads its intrinsic, the digital
+        that expectation. A TERMINAL row has NO strip left, so Sigma is exactly zero
+        and the division is guarded there: the leg reads its intrinsic, the digital
         0.5 at the strike."""
         M, sd = law[0].sum(-1), utils.sqrt_or_zero((law[1] * law[1]).sum(-1))
         z = (torch.log(K / S) - M) / sd.clamp_min(torch.finfo(sd.dtype).tiny)
@@ -3991,7 +3991,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     ``lognormal_fired_gain``, the payoff is the average either way, and a window of one is one bit
     under both. On the OSS arm the
     window's own fixing-to-fixing blocks are SAMPLED as plain Gaussians and the survival truncates
-    the PREFIX return alone (spec 2.4.1) - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
+    the PREFIX return alone - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
     observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in ``R_pre``
     and every leg on the average is ``lognormal_fired_gain`` at a shifted forward. A fixing AT the
     row is an observation, not a step. Only a kit whose conditioning step IS the fixing interval is
@@ -4532,7 +4532,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         raise ValueError(
             "Branch_And_Weight: 'Yes' is refused on {} because it prices on the FULL-PATH branch - "
             'a barrier date off the coupon dates, or a window of fixings under GBM or a DAILY spot '
-            'model, which have no block law to truncate the window prefix against (spec 2.4.1). '
+            'model, which have no block law to truncate the window prefix against. '
             'That branch has no crisp per-scenario decision for the switch to replace: its '
             'termination is a smoothed per-inner-path weight (pricing.smooth_heaviside_up) and its '
             'breach is a hard indicator on the AVERAGE, whose conditioning law is the distribution '

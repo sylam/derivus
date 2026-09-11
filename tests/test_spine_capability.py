@@ -234,7 +234,7 @@ def test_the_frame_is_still_the_twelve_fields_increment_one_froze(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# The brief's capability-denial gate: every verb, refused and recorded.
+# The capability-denial gate: every verb, refused and recorded.
 
 def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
     """Every verb, with the unscoped actor refused and the refusal itself logged. One declaration
@@ -281,7 +281,7 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
 def test_a_repeated_refusal_is_one_fact_because_it_is_one_fact(tmp_path):
     """Idempotency reaches the denials too. "This subject was refused this verb over this book for
     this type" is one fact however many times it is attempted - the tempo of the attempts is
-    serving-layer telemetry under its own retention, which the brief keeps out of the record."""
+    serving-layer telemetry under its own retention, which the design keeps out of the record."""
     home, log = minted(tmp_path)
     declare(log, MINT, document())
 
@@ -362,7 +362,7 @@ def test_a_granted_actor_appends_and_a_book_scope_reaches_exactly_its_book(tmp_p
 
 def test_the_evaluator_is_one_pure_function_over_a_document_and_a_fold():
     """No home, no log, no store, no clock. Everything `evaluate` needs was folded out of the record
-    before it was called, which is what lets a replica reach the hub's verdict locally - the brief's
+    before it was called, which is what lets a replica reach the hub's verdict locally - the design's
     "a check both sides evaluate locally because both hold the same log and the same policy fold."
     """
     doc = document(grants=((DESK, BOOK, BOOK_ONE), (GOVERNOR, ADMIN, ANY_BOOK)))
@@ -434,7 +434,7 @@ def test_authorization_answers_as_of_the_lsn_it_is_asked_about(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# Strand and recover - the brief's break-glass gate, walked.
+# Strand and recover - the break-glass gate, walked.
 
 def test_a_declaration_can_strand_the_last_admin_and_break_glass_is_the_way_back(tmp_path):
     """The walk, every step an ordinary appended fact. A replacement with zero admin grants LANDS
@@ -682,7 +682,7 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
 def test_the_classifier_is_the_seam_and_it_answers_firm_in_phase_one():
     """Class is DERIVED, not assigned - one function whose inputs a later declaration changes,
     rather than ten thousand per-object ACLs. Phase 1 is one trading unit, so it answers `firm` for
-    everything, and the mechanism ships dormant exactly as the brief's posture says."""
+    everything, and the mechanism ships dormant exactly as the design's posture says."""
     for event_type in EVENT_TYPES:
         assert classify(event_type, None) == 'firm'
         assert classify(event_type, BOOK_ONE) == 'firm'
