@@ -4828,13 +4828,6 @@ class RiskNeutralInterestRateModel(object):
                 objective, optimizers, implied_var, market_swaptions, benchmarks = self.calc_loss(
                     implied_params, base_date, time_grid, process, implied_obj, ir_factor, swaptionvol)
 
-                if debug is not None:
-                    debug.deals['Deals']['Children'] = [{'instrument': x} for x in benchmarks]
-                    try:
-                        debug.write_trade_file(market_factor.name[0] + '.aap')
-                    except Exception:
-                        logging.error('Could not write output file {}'.format(market_factor.name[0] + '.aap'))
-
                 # check the time
                 time_now = time.monotonic()
                 calibration = SwaptionCalibration(

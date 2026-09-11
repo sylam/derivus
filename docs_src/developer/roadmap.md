@@ -242,8 +242,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **Two plan-hash pins** (`platinum_hedge_shipping.json`, `policy_test_simulate_only.json`) have
   hashed differently since 91c29de; whether that is a declared plan change or a values-plane field
   leaking into the plan is unclassified.
-- **The HW2F solve's debug block writes `ZAR.aap` in the CWD** — inert today, an artifact where the
-  no-artifacts rule forbids one.
 - **The Jupyter write path**: `set_value_from_widget`'s hardcoded whitelist raises on `Names`,
   `Sampling_Data_*` and `Barrier_Dates`, and fourteen output-shaped descriptors have no widget.
   Superseded for viewing by the web UI.
