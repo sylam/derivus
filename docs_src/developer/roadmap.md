@@ -95,9 +95,15 @@ unmeasured — a limitation without a number is absolution, not documentation
   F): the desk's NKY autocall under the LogVar2FJ outer reads −14.09% between float32 and float64
   at 32 outer × 256 pricing paths, reproduced to the digit on the base and the landed tree — two
   samples of a nonlinear walk, not rounding, since the two precisions take different mixer roots
-  and walk different worlds. The 2,048 × 2,048 table over three seeds per precision is the
-  reading (`artifacts/lv_precision_20260910/batch.sh`, resumable row by row; about 2.5 hours a
-  tree on a free card); the expectation is that the gap is sampling and no bias survives.
+  and walk different worlds. Read at 1,024 × 1,024 over three seeds on the landed tree
+  (2026-09-11, uncollateralised): float32 2,343,389 / 2,197,659 / 2,242,540 ZAR, float64
+  2,314,719 / 2,286,907 / 2,279,913 — the float32 mean 1.42% under the float64 mean, 0.8
+  standard errors of its own three-seed mean, so no bias is resolved at this size and the gap
+  that was 14% at 32 × 256 is sampling; what the reading does show is that float32 is the NOISIER
+  estimator of the same expectation, its seed spread 3.3% against float64's 0.8%. The 2,048 ×
+  2,048 table (`artifacts/lv_precision_20260910/batch_main.sh`, resumable row by row) halves the
+  standard error and is the reading of record; until it lands, price at float64 where the
+  number matters.
 - **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10, lane T): `Config`
   keys the section by a `(name, name)` tuple and builds it only on the `MarketDataFile` path, while
   `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
