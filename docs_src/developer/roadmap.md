@@ -27,6 +27,15 @@ These are defects in the engine: each has a change to this library that closes i
 - **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
   (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
   `Bootstrap` fit with priors on is unexercised.
+- **The log-variance cap has never been measured against its own absence** (2026-09-12): the cap
+  is declared structural at a level of log 100, the level rule lifts it to six stationary
+  deviations above the fitted level, and a fit whose path-days come within five widths of it is
+  refused, so no accepted fit runs near it. The comparison that would justify it has not been run:
+  the same ladder fitted and the same exotic priced with the cap and with the level set to `None`,
+  which the cap function already accepts and nothing exercises. Until it runs the cap is assumed
+  rather than shown, and its smooth form sits below the identity at every level, so the model's
+  expected variance is under the ξ curve it is calibrated to by a term that is exponentially small
+  in the distance to the cap and never zero. Both readings come out of one document run twice.
 - **`LVFit.cap_level` is not re-evaluated after the polish** (2026-09-09). A polish that raises
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
