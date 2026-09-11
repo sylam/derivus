@@ -772,7 +772,7 @@ this is the ONLY place a desk's forward-smile view is priced. The calibration wr
 `Skew_Gradient` — `∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket at the nearest forward
 tenor, in vol points per unit — and `Stickiness_Band` beside it on the `LogVar2FJModelParameters`
 factor, both STRUCTURAL. A deal reporting `Greeks: First` on that factor composes
-`bootstrappers.lv_skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
+`utils.lv_skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
 the answer as **`Skew_Reserve`** beside `Value` on the `mtm` frame. Two parameters carry one target,
 so the parameter move behind a vol point of `Δ_skew` is the MINIMUM-NORM one, `Jᵀ/(J Jᵀ)` — the
 convention the quote contraction takes over its null space. **It is a NETTING-SET number**:

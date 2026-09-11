@@ -1194,7 +1194,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
                       'nearest forward tenor, in vol points per unit, comma separated. A deal '
                       'reporting Greeks First composes '
                       '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
-                      'it and its own two derivatives (`bootstrappers.lv_skew_reserve`). Blank '
+                      'it and its own two derivatives (`utils.lv_skew_reserve`). Blank '
                       'where the fit stated none - STRUCTURAL'),
         F('On_Guard', 'Text', default='',
           description='Every guard the calibration that wrote this factor landed ON, as its own '

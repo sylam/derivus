@@ -4785,3 +4785,102 @@ def compress_no_compounding(cashflows, groupsize, check_resets=True):
 
 if __name__ == '__main__':
     pass
+
+
+# The LogVar2FJ coordinate maps, parsers and the skew reserve
+def lv_retired(where, block):
+    """Refuse BY NAME where a block or a section declares a key this family no longer reads,
+    naming what replaced each one."""
+    retired = [x for x in LV_RETIRED if x in block]
+    if retired:
+        raise ValueError(
+            '{}: it carries {}, which this family no longer declares, and what each is replaced '
+            'by is {}'.format(where, ', '.join(retired),
+                              '; '.join('%s - %s' % (x, LV_RETIRED[x]) for x in retired)))
+
+
+def lv_skew_reserve(pv_gradient, skew_gradient, band):
+    """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band`, from the two halves
+    that live apart: `pv_gradient` is `(dPV/dBeta, dPV/dRho_S)` off the pricer's own tape and
+    `skew_gradient` the calibrator's `(d(Delta_skew)/dBeta, d(Delta_skew)/dRho_S)` at theta*, both
+    in the LAST bucket, with `band` the `Stickiness_Band` in vol points.
+
+    Two parameters carry one target, so the parameter move behind a vol point of `Delta_skew` is
+    the MINIMUM-NORM one - `J^T/(J J^T)` - which is the same convention the quote contraction
+    takes over the null space, and the reserve is `dPV/dtheta` contracted with it. A model whose
+    forward skew does not move with either lever has no reserve to state and returns `None`.
+    """
+    row = np.asarray(skew_gradient, dtype=float)
+    scale = float(row @ row)
+    return None if not scale > 0.0 else abs(
+        float(np.asarray(pv_gradient, dtype=float) @ row) / scale) * float(band)
+
+
+def lv_ab(raw_alpha, raw_skew):
+    """`(alpha, beta)` from the unconstrained pair - tensors, on the tape."""
+    alpha = 0.5 + LV_AB_EPS + torch.nn.functional.softplus(raw_alpha)
+    return alpha, -0.5 + (alpha - 0.5 - LV_AB_EPS) * torch.tanh(raw_skew)
+
+
+def lv_ab_inv(alpha, beta):
+    """The unconstrained pair from `(alpha, beta)` - the seed and the warm start, in floats."""
+    span = alpha - 0.5 - LV_AB_EPS
+    return float(np.log(np.expm1(span))), float(np.arctanh(
+        np.clip((beta + 0.5) / span, -1.0 + 1e-12, 1.0 - 1e-12)))
+
+
+def lv_tenor(text):
+    """`'6m'` as years. The one grammar `Forward_Tenors` is written in."""
+    text = text.strip().lower()
+    if text[-1:] not in LV_TENOR_UNITS:
+        raise ValueError(
+            'Forward_Tenors: {!r} is not a tenor - write a number and one of {} (6m, 1y, 2w), '
+            'each pair as T1:Delta and the list comma separated'.format(
+                text, '/'.join(sorted(LV_TENOR_UNITS))))
+    return float(text[:-1]) * LV_TENOR_UNITS[text[-1]]
+
+
+def lv_parse_floats(text, name, count=None):
+    """A comma-separated numeric field as a tuple, refusing BY NAME on a wrong count - the one
+    parse `LVFit.floats` and the family's own construction-time check both call, so a malformed
+    Bootstrapper Configuration block refuses before a single quote is read rather than deep inside
+    the fit of whichever quote happens to touch it first."""
+    values = tuple(float(x) for x in str(text).split(','))
+    if count is not None and len(values) != count:
+        raise ValueError('{}: expected {} comma-separated numbers, read {!r}'.format(
+            name, count, text))
+    return values
+
+
+def lv_parse_bounds(text, name):
+    """A `lower,upper` field, refusing BY NAME where it is not ordered."""
+    lo, hi = lv_parse_floats(text, name, 2)
+    if not lo < hi:
+        raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
+    return lo, hi
+
+
+#: What a retired field is replaced by. An authored key the family no longer declares would be
+#: carried silently past `declared_defaults`, so the block or the section refuses by NAME instead.
+LV_RETIRED = {
+    'Beta_Prior_Defaults': 'Residual_Skew_Share_Defaults - the prior is on the SHARE beta/alpha '
+                           'the smile sees, a row on beta alone being obeyed for free by running '
+                           'alpha to its ceiling',
+    'Beta_Prior_Sd': 'Residual_Skew_Share_Sd, the spread on that share and the bar a history has '
+                     'to beat',
+    'Jump_Share': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
+    'Lambda': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
+    'Wing_Strike': 'the residual is not sized off one wing; Alpha and Beta are fitted on the 1-3m '
+                   'rows',
+    'Diffusive_Share': 'there is no split to override - the whole of xi is the model E[h]',
+    'Vanilla_Guard': 'nothing - the forward block runs with a market or reference SOURCE or not '
+                     'at all, so there is no view for a guard to price',
+    'Vanilla_Band': 'nothing - a cap on what a forward view may cost the vanillas covered one '
+                    'stage while the damage occurred in another, and was withdrawn with the view',
+    'Stickiness_Prior': 'the RESERVE LINE - Forward_Smile_Source Prior is withdrawn, and a desk\'s '
+                        'forward-smile view is priced as Stickiness_Band times the deal\'s own '
+                        'dPV/dDelta_skew rather than fitted as a target'}
+
+
+#: The tenor grammar `Forward_Tenors` is written in.
+LV_TENOR_UNITS = {'d': 1.0 / 365.0, 'w': 7.0 / 365.0, 'm': 1.0 / 12.0, 'y': 1.0}

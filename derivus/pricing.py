@@ -1104,8 +1104,6 @@ def skew_reserve(shared, grad):
     every ladder today, so the two halves live apart and meet here. Summed over factors: what is
     reported is one portfolio number, as the gradient it is composed with is.
     """
-    # the local import is the module cycle: `bootstrappers` prices through this module
-    from derivus.bootstrappers import lv_skew_reserve
     total = None
     for key, line in getattr(shared, 'reserve_line', {}).items():
         row = [float(x) for x in str(line['Skew_Gradient']).split(',') if x.strip()]
@@ -1113,7 +1111,7 @@ def skew_reserve(shared, grad):
                  for name in ('Beta', 'Rho_S')]
         if len(row) != 2 or not all(x is not None and np.size(x) for x in lever):
             continue
-        one = lv_skew_reserve([float(np.ravel(x)[-1]) for x in lever], row,
+        one = utils.lv_skew_reserve([float(np.ravel(x)[-1]) for x in lever], row,
                               float(line['Stickiness_Band']))
         total = one if total is None else total + (one or 0.0)
     return total

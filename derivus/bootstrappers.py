@@ -583,8 +583,8 @@ class CSForwardPriceModelParameters(object):
         #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
         self.param = declared_defaults(type(self), param)
         for name in ('Sigma_Bounds', 'Alpha_Bounds'):
-            lv_parse_bounds(self.param[name], name)
-        lv_parse_floats(self.param['Seed'], 'Seed', 2)
+            utils.lv_parse_bounds(self.param[name], name)
+        utils.lv_parse_floats(self.param['Seed'], 'Seed', 2)
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
         '''
@@ -669,10 +669,10 @@ class CSForwardPriceModelParameters(object):
 
                 block = implied_params['instrument']
                 result = scipy.optimize.minimize(
-                    calc_error, lv_parse_floats(block['Seed'], 'Seed', 2),
+                    calc_error, utils.lv_parse_floats(block['Seed'], 'Seed', 2),
                     args=(block['Energy_Futures_Options'],),
-                    bounds=[lv_parse_bounds(block['Sigma_Bounds'], 'Sigma_Bounds'),
-                            lv_parse_bounds(block['Alpha_Bounds'], 'Alpha_Bounds')])
+                    bounds=[utils.lv_parse_bounds(block['Sigma_Bounds'], 'Sigma_Bounds'),
+                            utils.lv_parse_bounds(block['Alpha_Bounds'], 'Alpha_Bounds')])
 
                 # log the results
                 for option in implied_params['instrument']['Energy_Futures_Options']:
@@ -1353,37 +1353,6 @@ LV_FACTOR_DEFAULTS = {field.name: field.default
 #: from the bucket before it.
 LV_FREE_ORDER = ('Beta', 'Sigma_S', 'Rho_S', 'Alpha')
 
-#: What a retired field is replaced by. An authored key the family no longer declares would be
-#: carried silently past `declared_defaults`, so the block or the section refuses by NAME instead.
-LV_RETIRED = {
-    'Beta_Prior_Defaults': 'Residual_Skew_Share_Defaults - the prior is on the SHARE beta/alpha '
-                           'the smile sees, a row on beta alone being obeyed for free by running '
-                           'alpha to its ceiling',
-    'Beta_Prior_Sd': 'Residual_Skew_Share_Sd, the spread on that share and the bar a history has '
-                     'to beat',
-    'Jump_Share': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
-    'Lambda': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
-    'Wing_Strike': 'the residual is not sized off one wing; Alpha and Beta are fitted on the 1-3m '
-                   'rows',
-    'Diffusive_Share': 'there is no split to override - the whole of xi is the model E[h]',
-    'Vanilla_Guard': 'nothing - the forward block runs with a market or reference SOURCE or not '
-                     'at all, so there is no view for a guard to price',
-    'Vanilla_Band': 'nothing - a cap on what a forward view may cost the vanillas covered one '
-                    'stage while the damage occurred in another, and was withdrawn with the view',
-    'Stickiness_Prior': 'the RESERVE LINE - Forward_Smile_Source Prior is withdrawn, and a desk\'s '
-                        'forward-smile view is priced as Stickiness_Band times the deal\'s own '
-                        'dPV/dDelta_skew rather than fitted as a target'}
-
-
-def lv_retired(where, block):
-    """Refuse BY NAME where a block or a section declares a key this family no longer reads,
-    naming what replaced each one."""
-    retired = [x for x in LV_RETIRED if x in block]
-    if retired:
-        raise ValueError(
-            '{}: it carries {}, which this family no longer declares, and what each is replaced '
-            'by is {}'.format(where, ', '.join(retired),
-                              '; '.join('%s - %s' % (x, LV_RETIRED[x]) for x in retired)))
 
 #: The residual's two levers, fitted in the UNCONSTRAINED coordinates -
 #: `alpha = 1/2 + eps + softplus(a)`, `beta = -1/2 + (alpha - 1/2 - eps) tanh(b)` - which land
@@ -1408,70 +1377,6 @@ LV_BUCKET_ROWS = (LV_LEVERAGE, LV_SHARE)
 LV_PRIOR_RATIO = 100.0
 
 
-def lv_skew_reserve(pv_gradient, skew_gradient, band):
-    """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band`, from the two halves
-    that live apart: `pv_gradient` is `(dPV/dBeta, dPV/dRho_S)` off the pricer's own tape and
-    `skew_gradient` the calibrator's `(d(Delta_skew)/dBeta, d(Delta_skew)/dRho_S)` at theta*, both
-    in the LAST bucket, with `band` the `Stickiness_Band` in vol points.
-
-    Two parameters carry one target, so the parameter move behind a vol point of `Delta_skew` is
-    the MINIMUM-NORM one - `J^T/(J J^T)` - which is the same convention the quote contraction
-    takes over the null space, and the reserve is `dPV/dtheta` contracted with it. A model whose
-    forward skew does not move with either lever has no reserve to state and returns `None`.
-    """
-    row = np.asarray(skew_gradient, dtype=float)
-    scale = float(row @ row)
-    return None if not scale > 0.0 else abs(
-        float(np.asarray(pv_gradient, dtype=float) @ row) / scale) * float(band)
-
-
-def lv_ab(raw_alpha, raw_skew):
-    """`(alpha, beta)` from the unconstrained pair - tensors, on the tape."""
-    alpha = 0.5 + utils.LV_AB_EPS + torch.nn.functional.softplus(raw_alpha)
-    return alpha, -0.5 + (alpha - 0.5 - utils.LV_AB_EPS) * torch.tanh(raw_skew)
-
-
-def lv_ab_inv(alpha, beta):
-    """The unconstrained pair from `(alpha, beta)` - the seed and the warm start, in floats."""
-    span = alpha - 0.5 - utils.LV_AB_EPS
-    return float(np.log(np.expm1(span))), float(np.arctanh(
-        np.clip((beta + 0.5) / span, -1.0 + 1e-12, 1.0 - 1e-12)))
-
-#: The tenor grammar `Forward_Tenors` is written in.
-LV_TENOR_UNITS = {'d': 1.0 / 365.0, 'w': 7.0 / 365.0, 'm': 1.0 / 12.0, 'y': 1.0}
-
-
-def lv_tenor(text):
-    """`'6m'` as years. The one grammar `Forward_Tenors` is written in."""
-    text = text.strip().lower()
-    if text[-1:] not in LV_TENOR_UNITS:
-        raise ValueError(
-            'Forward_Tenors: {!r} is not a tenor - write a number and one of {} (6m, 1y, 2w), '
-            'each pair as T1:Delta and the list comma separated'.format(
-                text, '/'.join(sorted(LV_TENOR_UNITS))))
-    return float(text[:-1]) * LV_TENOR_UNITS[text[-1]]
-
-
-def lv_parse_floats(text, name, count=None):
-    """A comma-separated numeric field as a tuple, refusing BY NAME on a wrong count - the one
-    parse `LVFit.floats` and the family's own construction-time check both call, so a malformed
-    Bootstrapper Configuration block refuses before a single quote is read rather than deep inside
-    the fit of whichever quote happens to touch it first."""
-    values = tuple(float(x) for x in str(text).split(','))
-    if count is not None and len(values) != count:
-        raise ValueError('{}: expected {} comma-separated numbers, read {!r}'.format(
-            name, count, text))
-    return values
-
-
-def lv_parse_bounds(text, name):
-    """A `lower,upper` field, refusing BY NAME where it is not ordered."""
-    lo, hi = lv_parse_floats(text, name, 2)
-    if not lo < hi:
-        raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
-    return lo, hi
-
-
 def lv_parse_class_priors(text, name, count):
     """A `class:numbers; class:numbers` field as `{asset class: tuple}`, one entry per underlying
     type this family fits.
@@ -1490,7 +1395,7 @@ def lv_parse_class_priors(text, name, count):
         if asset not in classes:
             raise ValueError('{}: {!r} is no underlying this family fits - write {}'.format(
                 name, asset, '/'.join(classes)))
-        priors[asset] = lv_parse_floats(numbers, '{} {}'.format(name, asset), count)
+        priors[asset] = utils.lv_parse_floats(numbers, '{} {}'.format(name, asset), count)
     missing = [asset for asset in classes if asset not in priors]
     if missing:
         raise ValueError('{}: no prior for {} - a fit resolving to it would have none to fall '
@@ -1542,7 +1447,7 @@ class LVFit(object):
         self.prec, self.device = family.prec, family.device
         self.tensor, self.vector = family.tensor, family.vector
         self.factors = factors
-        lv_retired('{} block'.format(market_price), instrument)
+        utils.lv_retired('{} block'.format(market_price), instrument)
         #: the block COMPLETED by its own declarations, so every read is an index and the block
         #: and the declaration cannot disagree
         self.instrument = read = declared_defaults(type(family), instrument)
@@ -1573,22 +1478,22 @@ class LVFit(object):
         #: the fitted box per coordinate; Rho_S's own lower edge is derived from Rho_L
         #: and C_Min at every stage and so is not here, and Alpha/Beta are boxed in the
         #: UNCONSTRAINED coordinates LV_RAW names, which is where the fit moves them
-        self.box = {'Sigma_L': lv_parse_bounds(read['Sigma_L_Bounds'], 'Sigma_L_Bounds'),
-                   'Rho_L': lv_parse_bounds(read['Rho_L_Bounds'], 'Rho_L_Bounds'),
-                   'Sigma_S': lv_parse_bounds(read['Sigma_S_Bounds'], 'Sigma_S_Bounds'),
-                   'Alpha': lv_parse_bounds(read['Alpha_Bounds'], 'Alpha_Bounds'),
-                   'Beta': lv_parse_bounds(read['Beta_Bounds'], 'Beta_Bounds')}
-        self.stage_horizons = lv_parse_bounds(read['Stage_Horizons'], 'Stage_Horizons')
+        self.box = {'Sigma_L': utils.lv_parse_bounds(read['Sigma_L_Bounds'], 'Sigma_L_Bounds'),
+                   'Rho_L': utils.lv_parse_bounds(read['Rho_L_Bounds'], 'Rho_L_Bounds'),
+                   'Sigma_S': utils.lv_parse_bounds(read['Sigma_S_Bounds'], 'Sigma_S_Bounds'),
+                   'Alpha': utils.lv_parse_bounds(read['Alpha_Bounds'], 'Alpha_Bounds'),
+                   'Beta': utils.lv_parse_bounds(read['Beta_Bounds'], 'Beta_Bounds')}
+        self.stage_horizons = utils.lv_parse_bounds(read['Stage_Horizons'], 'Stage_Horizons')
         self.slow_horizon = float(read['Slow_Horizon'])
         self.l_iterations = int(read['Xi_Solve_Iterations'])
         self.l_damping = float(read['Xi_Solve_Damping'])
         self.cap_headroom_max = float(read['Cap_Headroom_Max'])
-        self.log_vol_sd_band = lv_parse_bounds(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
+        self.log_vol_sd_band = utils.lv_parse_bounds(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
         self.atm_miss_max = float(read['Atm_Miss_Max'])
         self.psi_floor = float(read['Psi_Floor'])
         self.exposure_horizon = float(read['Exposure_Horizon'])
         self.prior_strikes = self.floats('Prior_Strikes')
-        self.psi_strikes = lv_parse_floats(read['Psi_Strikes'], 'Psi_Strikes', 3)
+        self.psi_strikes = utils.lv_parse_floats(read['Psi_Strikes'], 'Psi_Strikes', 3)
         if not self.psi_strikes[0] < self.psi_strikes[2]:
             raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
                              .format(read['Psi_Strikes']))
@@ -1651,7 +1556,7 @@ class LVFit(object):
     def floats(self, name):
         """A comma-separated numeric field as a tuple - the list convention `Forward_Tenors`
         already writes, reused for every bound and strike grid."""
-        return lv_parse_floats(self.instrument[name], name)
+        return utils.lv_parse_floats(self.instrument[name], name)
 
     def draw(self, paths, steps, blocks, seed):
         """The walk's two normals per STEP and the mixer's uniform per BLOCK - fixed for the whole
@@ -2017,7 +1922,7 @@ class LVFit(object):
             else:
                 levers[name][bucket] = x[i]
         for bucket in sorted({b for _, b in raw}):
-            alpha, beta = lv_ab(*[raw.get((name, bucket), self.tensor(
+            alpha, beta = utils.lv_ab(*[raw.get((name, bucket), self.tensor(
                 self.raw_of(name, bucket))) for name in LV_RAW])
             levers['Alpha'][bucket], levers['Beta'][bucket] = alpha, beta
         for (name, bucket), _ in sorted(self.ties.items(), key=lambda item: item[0][1]):
@@ -2026,7 +1931,7 @@ class LVFit(object):
 
     def raw_of(self, name, bucket):
         """One bucket's `Alpha` or `Beta` in the coordinate the fit moves it in."""
-        return lv_ab_inv(self.state['Alpha'][bucket],
+        return utils.lv_ab_inv(self.state['Alpha'][bucket],
                          self.state['Beta'][bucket])[LV_RAW.index(name)]
 
     def evaluate(self, x=None, coords=()):
@@ -2900,7 +2805,7 @@ class LVFit(object):
 
         The calibrator has no deal, so it cannot state `|dPV/dDelta_skew| x band`; what it can
         state is the map from the two levers a pricer's tape already carries to the quantity the
-        band is on, and `lv_skew_reserve` composes the two. The fit MOVES the residual pair in its
+        band is on, and `utils.lv_skew_reserve` composes the two. The fit MOVES the residual pair in its
         unconstrained coordinate, so each row is rescaled by `dlever/dx` into the MODEL's own
         number - which is the leaf the factor writes and the tape differentiates. The L strip is
         banked and put back: `written` and `connect` publish the ONE solve `finish` took.
@@ -3155,13 +3060,13 @@ class LVFit(object):
                     + (bfly[0] - bfly[2], bfly[1] - bfly[2], self.ratio(*bfly))))
         # THE RESERVE LINE wherever the forward smile was not QUOTED: the calibrator has
         # no deal, so it states the map from the two levers to Delta_skew, writes the nearest
-        # tenor's pair on the factor, and `lv_skew_reserve` composes the rest at the deal
+        # tenor's pair on the factor, and `utils.lv_skew_reserve` composes the rest at the deal
         for (T1, tenor), (d_beta, d_rho) in (
                 {} if self.source in ('Quotes', 'Reference') else self.skew_rows).items():
             logging.info(
                 '  reserve line ({:g}y into {:g}y{}), band {:g} vol points: d(Delta_skew)/dBeta '
                 '{:+.4g} and d(Delta_skew)/dRho_S {:+.4g} vol points per unit at the {:g}y bucket '
-                '- a deal\'s |dPV/dDelta_skew| x band is bootstrappers.lv_skew_reserve of these '
+                '- a deal\'s |dPV/dDelta_skew| x band is utils.lv_skew_reserve of these '
                 'and its own (dPV/dBeta, dPV/dRho_S)'.format(
                     T1, tenor, '' if self.targets else ', REPORTED - the block is off and these '
                     'rows are the ladder\'s own maturities, fitted to nothing',
@@ -3376,7 +3281,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          'grid, the draws and $\\theta^*$ are the vanilla-only fit own to the bit and the tenor the',
          'reserve is read at is a fact about the QUOTES. A deal reporting *Greeks* **First** composes',
          '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ band from them and its own two',
-         'derivatives (`bootstrappers.lv_skew_reserve`) and reports it as **Skew_Reserve**. It is',
+         'derivatives (`utils.lv_skew_reserve`) and reports it as **Skew_Reserve**. It is',
          'a NETTING-SET number: *Base_Revaluation* reports one gradient for the whole portfolio,',
          'so that is what the reserve is composed from, and a per-deal one wants a per-deal',
          'gradient this calculation does not produce.',
@@ -3559,7 +3464,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'sticky-delta and LSV-like views of Delta_skew. The calibrator has no deal, '
                       'so it reports the model half - d(Delta_skew)/dBeta and d(Delta_skew)/dRho_S '
                       'at theta* - and a pricing report composes |dPV/dDelta_skew| x band from it '
-                      'through bootstrappers.lv_skew_reserve'),
+                      'through utils.lv_skew_reserve'),
         F('Model_Priors', 'Text', default='On', values=['On', 'Off'],
           description='The soft terms that are ROUTINE: the leverage prior and the floor on '
                       'the residual\'s shape alpha*delta_A at the shortest calibrated expiry, '
@@ -3828,12 +3733,12 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         super(LogVar2FJModelParameters, self).__init__(param, device, dtype)
         # refuse a malformed hyperparameter BEFORE a single quote is read, not deep inside the
         # first fit that happens to touch it - a quote overriding one is checked again there
-        lv_retired('Bootstrapper Configuration LogVar2FJModelParameters', self.param)
+        utils.lv_retired('Bootstrapper Configuration LogVar2FJModelParameters', self.param)
         lv_share_priors(self.param)
         for name in ('Sigma_L_Bounds', 'Rho_L_Bounds', 'Sigma_S_Bounds', 'Alpha_Bounds',
                     'Beta_Bounds', 'Log_Vol_Sd_Band', 'Stage_Horizons'):
-            lv_parse_bounds(self.param[name], name)
-        strikes = lv_parse_floats(self.param['Psi_Strikes'], 'Psi_Strikes', 3)
+            utils.lv_parse_bounds(self.param[name], name)
+        strikes = utils.lv_parse_floats(self.param['Psi_Strikes'], 'Psi_Strikes', 3)
         if not strikes[0] < strikes[2]:
             raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
                              .format(self.param['Psi_Strikes']))
@@ -4029,7 +3934,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         for pair in str(fit.instrument['Expiry_Weights']).split(','):
             if pair.strip():
                 tenor, value = pair.split(':')
-                by_expiry[min(expiries, key=lambda T: abs(T - lv_tenor(tenor)))] = float(value)
+                by_expiry[min(expiries, key=lambda T: abs(T - utils.lv_tenor(tenor)))] = float(value)
         if wing == 1.0 and not by_expiry:
             return quotes
         logging.info('  {}: the fit is weighted {} on the {} wing{} and {} along the term '
@@ -4142,7 +4047,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         """
         windows, rows = set(), []
         for pair in str(fit.instrument['Forward_Tenors']).split(','):
-            wanted = [lv_tenor(x) for x in pair.split(':')]
+            wanted = [utils.lv_tenor(x) for x in pair.split(':')]
             t1 = min(at, key=lambda T: abs(T - wanted[0]))
             beyond = [T for T in at if T > t1]
             if beyond:
@@ -5336,9 +5241,9 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         #: the fitted box per coordinate, read once off the section: the basin step clips into it,
         #: the least-squares stage is bounded by it and `SwaptionCalibration.interior` reads its
         #: KKT active set off it
-        self.sigma_bounds = lv_parse_bounds(self.param['Sigma_Bounds'], 'Sigma_Bounds')
-        self.alpha_bounds = lv_parse_bounds(self.param['Alpha_Bounds'], 'Alpha_Bounds')
-        self.corr_bounds = lv_parse_bounds(self.param['Correlation_Bounds'], 'Correlation_Bounds')
+        self.sigma_bounds = utils.lv_parse_bounds(self.param['Sigma_Bounds'], 'Sigma_Bounds')
+        self.alpha_bounds = utils.lv_parse_bounds(self.param['Alpha_Bounds'], 'Alpha_Bounds')
+        self.corr_bounds = utils.lv_parse_bounds(self.param['Correlation_Bounds'], 'Correlation_Bounds')
 
     def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor, vol_surface):
 
