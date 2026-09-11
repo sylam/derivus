@@ -662,8 +662,9 @@ def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(
 
 
 def test_a_bootstrap_that_complains_writes_nothing(book):
-    """A quote block the bootstrap cannot turn into a factor refuses the WHOLE write with the
-    bootstrap's own messages: a book must never carry a market its bootstrap complained about."""
+    """A quote block no price family reads is refused BY NAME before any bootstrap runs - a 422
+    naming the family and listing the ones that exist - and the book must never carry a market its
+    bootstrap would have complained about: the file is byte-identical after the refusal."""
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
@@ -671,10 +672,11 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     before = book.read_bytes()
 
     ghost = {'GhostPrices.NOWHERE': {'instrument': {'Points': []}}}
-    outcome = CLIENT.post('/book/market', content=dump({'quotes': ghost}), headers=JSON).json()
+    refused = CLIENT.post('/book/market', content=dump({'quotes': ghost}), headers=JSON)
 
-    assert outcome['written'] is False
-    assert any('wrote no' in message for message in outcome['refused'])
+    assert refused.status_code == 422
+    assert 'GhostPrices' in refused.json()['detail']
+    assert 'no price family reads' in refused.json()['detail']
     assert book.read_bytes() == before
 
 
@@ -1128,6 +1130,12 @@ def test_a_pair_with_no_built_surface_refuses_at_the_verb(tmp_path):
         assert 'FXVol.EUR.USD' in refused.json()['detail']
         assert 'FXVolPrices' in refused.json()['detail'], 'the refusal must name the remedy'
         assert unnamed.status_code == 422 and 'pair' in unnamed.json()['detail']
+        # ONE PAIR GRAMMAR across the verbs: the quote verbs' USDZAR and USD/ZAR name the same
+        # surface the factor spells USD.ZAR (killing mutation: read the pair as a factor name
+        # alone, and 'EURUSD' is refused as the surface FXVol.EURUSD, which nothing writes)
+        for spelling in ('EURUSD', 'EUR/USD'):
+            other = CLIENT.post('/book/model', json={'pair': spelling})
+            assert other.status_code == 422 and 'FXVol.EUR.USD' in other.json()['detail'], spelling
         assert path.read_bytes() == before
     finally:
         service.BOOK = None

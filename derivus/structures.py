@@ -424,9 +424,11 @@ def structure_named(name):
 
 
 def split_pair(pair):
-    """A quoted pair as `(base, quote)`. 'USDZAR' and 'USD/ZAR' are the same pair; anything that is
-    not two three-letter codes refuses, because guessing the split mis-books a trade."""
-    codes = str(pair).split('/') if '/' in str(pair) else [str(pair)[:3], str(pair)[3:]]
+    """A quoted pair as `(base, quote)`. 'USDZAR', 'USD/ZAR' and 'USD.ZAR' (the factor's own
+    spelling) are the same pair; anything that is not two three-letter codes refuses, because
+    guessing the split mis-books a trade."""
+    text = str(pair).strip()
+    codes = text.replace('.', '/').split('/') if '/' in text or '.' in text else [text[:3], text[3:]]
     if len(codes) != 2 or not all(len(c) == 3 and c.isalpha() for c in codes):
         raise ValueError('{!r} is not a quoted pair - USDZAR or USD/ZAR'.format(pair))
     return codes[0].upper(), codes[1].upper()

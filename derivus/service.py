@@ -1741,8 +1741,11 @@ def book_model(request: dict):
     document, etag = live.read()
     pair, family = request.get('pair'), request.get('family') or structures.SPOT_MODEL
     if not pair:
-        raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USD.ZAR"}')
+        raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USDZAR"}')
     try:
+        # one pair grammar across the verbs: the quote verbs' USDZAR / USD/ZAR and the factor's
+        # own USD.ZAR all name the surface FXVol.USD.ZAR
+        pair = '{}.{}'.format(*structures.split_pair(pair))
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
         # names is a fact about the book a desk must hear now rather than poll for
         params = load(document).current_cfg.params
