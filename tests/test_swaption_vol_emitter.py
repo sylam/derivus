@@ -220,32 +220,32 @@ def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
     """
     import inspect
 
-    from derivus import bootstrappers, riskfactors, utils
+    from derivus import riskfactors, utils
 
-    body = inspect.getsource(bootstrappers.create_market_swaps)
+    body = inspect.getsource(utils.create_market_swaps)
     assert 'get_subtype' in body, (
         'create_market_swaps no longer reads the surface\'s declared convention - the roadmap row '
         'this gate closes is open again')
     assert 'PREMIUM_CONVENTIONS' in body and 'displacement' in body, body[:400]
-    assert bootstrappers.PREMIUM_CONVENTIONS['Normal'] == (
+    assert utils.PREMIUM_CONVENTIONS['Normal'] == (
         utils.bachelier_european_option_price, utils.bachelier_european_option), (
         'a Normal surface has to reach the Bachelier pair, numpy premium and tensor twin alike')
-    assert bootstrappers.PREMIUM_CONVENTIONS['Lognormal'] == (
+    assert utils.PREMIUM_CONVENTIONS['Lognormal'] == (
         utils.black_european_option_price, utils.black_european_option)
     declared = next(f for f in riskfactors.InterestYieldVol.fields
                     if f.name == 'Distribution_Type')
-    assert sorted(declared.values) == sorted(bootstrappers.PREMIUM_CONVENTIONS), (
+    assert sorted(declared.values) == sorted(utils.PREMIUM_CONVENTIONS), (
         'the surface declares {} and the calibration prices {} - a value a block can author and '
         'the engine cannot price is the same defect one layer over'.format(
-            declared.values, sorted(bootstrappers.PREMIUM_CONVENTIONS)))
-    assert SHIPPED['distribution'] in bootstrappers.PREMIUM_CONVENTIONS, (
+            declared.values, sorted(utils.PREMIUM_CONVENTIONS)))
+    assert SHIPPED['distribution'] in utils.PREMIUM_CONVENTIONS, (
         'the seed declares a distribution this engine cannot price')
 
     # the behavioural read: this ladder's own quotes, priced under each declaration
     row = list(rows_of(block_of()[1]).values())[0]
     quote, expiry = row['Market_Volatility']['.Percent'] / 100.0, 2.0
     premium = {name: pricer(0.09, 0.09, 0.0, quote, expiry, 1.0, 1.0)
-               for name, (pricer, _) in bootstrappers.PREMIUM_CONVENTIONS.items()}
+               for name, (pricer, _) in utils.PREMIUM_CONVENTIONS.items()}
     assert premium['Normal'] / premium['Lognormal'] > 5.0, (
         'the two conventions price {} within {:.3g}x of each other - a normal vol read as a '
         'lognormal one is the defect this gate exists for'.format(

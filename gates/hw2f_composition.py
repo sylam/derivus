@@ -462,7 +462,7 @@ def fit_closure(config, market_price, device=torch.device('cpu'), dtype=DTYPE):
     mtm = set([base_date + x['Start'] for x in block['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
     time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
-    implied_var, objective, swaps, _ = boot.calc_loss_on_ir_curve(
+    implied_var, objective, swaps = boot.calc_loss_on_ir_curve(
         {'instrument': block}, base_date, time_grid, process, implied_obj, ir_factor, surface)
     # THE CLOSURE IS RETURNED READY, and that is not a convenience. `schrager_pelsser_swaption`
     # reads J, the reversion speeds and the correlation off `precalculate` and REFUSES BY NAME

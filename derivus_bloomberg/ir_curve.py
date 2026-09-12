@@ -550,7 +550,7 @@ def _business_days(start, end):
 
 def _dates_backward(end, start, frequency):
     """The coupon dates of one leg, rolled BACKWARD from maturity and clipped at the effective date
-    - `instruments.generate_dates_backward`, re-spelled.
+    - `utils.generate_dates_backward`, re-spelled.
 
     BACKWARD RATHER THAN FORWARD, so the stub is at the FRONT. That is the market's roll and what
     the engine does generating a `SwapInterestDeal`'s legs, so both authoring shapes put the stub

@@ -310,7 +310,7 @@ def calibration():
     time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
     time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
 
-    implied_var, objective, market_swaps, _ = model.calc_loss_on_ir_curve(
+    implied_var, objective, market_swaps = model.calc_loss_on_ir_curve(
         {'instrument': instrument}, BASE, time_grid, process, implied_obj, ir_factor, vol_surface)
     return process, implied_var, objective.loss, market_swaps
 
@@ -1084,10 +1084,10 @@ def identified_closure(benchmarks=CHECKER_BENCHMARKS, zero=ID_ZERO, batch_size=8
     time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
     optimizers = None
     if chain:
-        objective, optimizers, implied_var, swaps, _ = boot.calc_loss(
+        objective, optimizers, implied_var, swaps = boot.calc_loss(
             {'instrument': block}, BASE, time_grid, process, implied_obj, ir_factor, surface)
     else:
-        implied_var, objective, swaps, _ = boot.calc_loss_on_ir_curve(
+        implied_var, objective, swaps = boot.calc_loss_on_ir_curve(
             {'instrument': block}, BASE, time_grid, process, implied_obj, ir_factor, surface)
     for name, value in (ID_THETA if theta is None else theta).items():
         implied_var[name].data = torch.tensor(value, dtype=dtype, device=device)
@@ -1108,11 +1108,10 @@ def checker_legs(world):
     The clock is the CURVE's ACT_365 and not `utils.DAYS_IN_YEAR`: `read_cache` builds
     `time_grid_years` with the day count, so a 365.25ths expiry would miss its node by 7e-4 years.
     """
-    from derivus import bootstrappers
     out, curve = {}, world['curve']
     for instrument in world['block']['Instrument_Definitions']:
-        name = 'Swaption_{}_{}'.format(bootstrappers.date_fmt(instrument['Start']),
-                                       bootstrappers.date_fmt(instrument['Tenor']))
+        name = 'Swaption_{}_{}'.format(utils.date_fmt(instrument['Start']),
+                                       utils.date_fmt(instrument['Tenor']))
         effective = BASE + instrument['Start']
         dates = utils.generate_dates_backward(
             effective + instrument['Tenor'], effective, instrument['Fixed_Frequency'])
@@ -1517,7 +1516,7 @@ def declared_shape_closure(objective, *popped):
     world = identified_closure(benchmarks=((1, 1, 3, 3),), batch_size=8192, Objective=objective)
     for key in popped:
         world['block'].pop(key)
-    implied_var, chosen, _, _ = world['model'].calc_loss_on_ir_curve(
+    implied_var, chosen, _ = world['model'].calc_loss_on_ir_curve(
         {'instrument': world['block']}, BASE, world['time_grid'], world['process'],
         world['implied_obj'], world['ir_factor'], world['surface'])
     for name, value in ID_THETA.items():
@@ -3521,7 +3520,7 @@ def quanto_objective(world):
     """
     process = HullWhite2FactorImpliedInterestRateModel(
         world['curve'], {'Lambda_1': 0.0, 'Lambda_2': 0.0}, world['implied_obj'])
-    implied_var, objective, _, _ = world['model'].calc_loss_on_ir_curve(
+    implied_var, objective, _ = world['model'].calc_loss_on_ir_curve(
         {'instrument': world['block']}, BASE, world['time_grid'], process,
         world['implied_obj'], world['ir_factor'], world['surface'])
     for name, value in ID_THETA.items():

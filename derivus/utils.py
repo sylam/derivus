@@ -13,7 +13,7 @@
 
 import calendar
 import math
-from functools import reduce, wraps
+from functools import partial, reduce, wraps
 import threading
 from collections import namedtuple, deque, OrderedDict
 from typing import Tuple, List
@@ -2941,6 +2941,309 @@ def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared, cash_p
             prem = callorput * (forward * norm_cdf(callorput * d1) - strike * norm_cdf(callorput * d2))
             value = torch.relu(callorput * (forward - strike))
     return buyorsell * torch.where(guard, prem, value)
+
+
+def implied_vol(premium, forward, strike, rate, steps, T, units, parity):
+    """One quoted premium as a Black vol: the units and the yield rescale stripped, the put put
+    back on parity, and `bs_implied_total_var` off the same forward. `rate` is per step over
+    `steps` of them, which is the clock a GARCH family counts in; `T` is the year fraction the
+    total variance is annualised by."""
+    call = float(premium) / float(units) + parity
+    return np.sqrt(max(bs_implied_total_var(
+        call, float(forward), float(strike), float(rate), int(steps)), 0.0) / T)
+
+
+class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
+    """One benchmark swaption's FIXED leg, in the curve's own year fractions.
+
+    The clock is the interest rate factor's `get_day_count_accrual` and not `DAYS_IN_YEAR`:
+    that is what `read_cache` builds `time_grid_years` with, hence the grid every `J` integral is
+    taken on. The two are 7e-4 years apart at a 1Y expiry, enough to miss a grid node.
+
+    `expiry` is the same float the premium was struck on, so a normal vol round-trips exactly.
+
+    `accruals` and `pay_times` are the fixed leg's, because the annuity is. Where both legs share a
+    frequency `set_fixed_amount` writes the coupon into the float leg, which is then the leg read.
+    """
+
+
+class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedule quote premium',
+                                   defaults=(None, None))):
+    """One benchmark swaption of a risk-neutral IR calibration: the compiled par swap, the market
+    premium the model has to reproduce, the weight it carries in the objective, and the fixed leg
+    the analytic objective reads.
+
+    `quote` and `premium` are the quote side and absent by default - the float64 leaf the market
+    number arrived on, and the map from that leaf to this swaption's premium (`create_market_swaps`).
+    Both objectives splice the same pair onto their own residual, so `quote_leaves` is one shape.
+
+    `premium` is a CALLABLE so the twin is rebuilt inside every evaluation: `make_basin_hopping_loss`
+    calls `backward()` with no `retain_graph`, and a compile-time subgraph hanging off the residual
+    would be freed with the first evaluation. It costs one scalar Black per benchmark per call.
+    """
+
+    def error(self, model, resid):
+        """This swaption's weighted relative pricing error against its `model` price.
+
+        The quote rides in as the splice `base + (carried - detach(carried))`: exactly zero in the
+        forward pass, derivative one, so enabling the quote side cannot move a mark.
+
+        `model` is detached in the carried half and only there. Left attached it would reach the
+        model parameters as well as the quote and double the calibration Jacobian.
+
+        The splice sits at the error and not at the price because `price` is a numpy scalar and
+        torch divides a tensor by a scalar at the scalar's precision - a float64 tensor there rounds
+        twice where the engine rounds once, moving the residual by an ulp.
+        """
+        base = self.weight * resid(100.0 * (self.price / model - 1.0))
+        if self.premium is None:
+            return base
+        carried = self.weight * resid(100.0 * (self.premium(self.quote) / model.detach() - 1.0))
+        return base + (carried - carried.detach()).to(base.dtype)
+
+    def market_normal_vol(self, annuity):
+        """This swaption's market premium as an ATM normal (Bachelier) vol, in closed form.
+
+        At the money the Bachelier premium is $A\\sigma_N\\sqrt{T_0/2\\pi}$, so the inversion is a
+        division and not a root find:
+
+        $$\\sigma_N = \\frac{P}{A}\\sqrt{\\frac{2\\pi}{T_0}}$$
+
+        Every quoting convention rides in through the premium `create_market_swaps` already built,
+        struck on `schedule.expiry` itself - so under `'Normal'` the round trip is exact.
+
+        `annuity` is the analytic price's own annuity off the t=0 curve, built in numpy, so it
+        carries no derivative in theta and the residual is the premium residual over a constant.
+
+        The quote side is the splice `base + (carried - detach(carried))`. Nothing is detached here,
+        unlike `error`: the carried half divides by that severed annuity, so the market side is a
+        function of the quote alone and $\\partial^2 r/\\partial\\theta\\partial q$ is structurally
+        zero - the cross term Gauss-Newton drops is absent rather than small.
+        """
+        base = self.price * np.sqrt(2.0 * np.pi / self.schedule.expiry) / annuity
+        if self.premium is None:
+            return base
+        carried = self.premium(self.quote) * np.sqrt(
+            2.0 * np.pi / self.schedule.expiry) / annuity.double()
+        return base + (carried - carried.detach()).to(base.dtype)
+
+    def normal_vol_error(self, swaption):
+        """This swaption's weighted normal-vol residual against the market, plain.
+
+        Vols against vols and not squared. `error` returns a residual that is already a square, so
+        `least_squares` minimises a quartic and $J = \\partial r/\\partial\\theta$ carries a factor
+        of the pricing error in every row
+        ([Quote Sensitivities](quote_sensitivities.md#the-stationarity-contract)). Here the residual
+        is the difference itself, in absolute normal vol, and `least_squares` does the squaring.
+
+        This chain reaches $\\|J^Tr\\|$ 8.63e-7 on the identified block against the squared
+        residual's 3.16e2 - either side of `Stationarity_Tol`'s 1e-3 default.
+
+        The residual is separable, a theta-function minus a q-function, so $\\partial r/\\partial q$
+        is diagonal and the mixed second derivative is exactly zero. `market_normal_vol` carries the
+        splice that puts the market half on the tape.
+        """
+        return self.weight * (swaption.normal_vol - self.market_normal_vol(swaption.annuity))
+
+
+date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
+# date formatter
+date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwds.items()])
+
+
+#: The two quoting conventions this family prices, each as the matched pair `create_market_swaps`
+#: needs: the numpy pricer that builds the market premium, and the tensor twin of that same formula
+#: which the quote side differentiates. Keyed by `InterestYieldVol`'s declared `Distribution_Type`,
+#: whose declared default is `'Lognormal'`.
+PREMIUM_CONVENTIONS = {
+    'Lognormal': (black_european_option_price, black_european_option),
+    'Normal': (bachelier_european_option_price, bachelier_european_option)}
+
+
+#: The bracket the `Volatility_Delta` implied-vol re-solve runs in, as a function of the row's own
+#: quoted vol. Co-keyed with `PREMIUM_CONVENTIONS` off the same declared `Distribution_Type`, so the
+#: convention that picks the pricer picks the scale its bracket is in.
+#:
+#: A lognormal vol is a fraction of the rate and a 1% floor sits under every quoted surface. A normal
+#: vol is an absolute rate move, where 0.01 is 100 basis points - above ordinary EUR and JPY levels,
+#: and a quote below it left both bracket ends the same sign - so that bracket is multiplicative
+#: around the quote instead. Two orders either side suffices because the ATM Bachelier premium is
+#: exactly linear in the vol, so the bracket has only to contain a division; further out is a broken
+#: premiums file and still refuses. The quote is floored at 1e-6 so the band cannot collapse.
+IMPLIED_VOL_BRACKETS = {
+    'Lognormal': lambda vol: (0.01, vol + .5),
+    'Normal': lambda vol: (max(vol, 1e-6) * 0.01, max(vol, 1e-6) * 100.0)}
+
+
+def market_premium(pvbp, strike, expiry, delta, option, quote):
+    """One ATM swaption's premium as a differentiable function of its vol quote.
+
+    `option` is the tensor half of this surface's `PREMIUM_CONVENTIONS` pair, so this is the twin of
+    the numpy premium `create_market_swaps` builds beside it; the two share a signature, so the
+    convention arrives bound rather than branched on. At the money, the only place this is called,
+    the pairs agree to 1e-12 (Black) and to the hex digit (Bachelier).
+    """
+    return pvbp * option(
+        quote.new_tensor(strike), quote.new_tensor(strike), quote + delta, expiry, 1.0, 1.0, None)
+
+
+def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_factor,
+                        instrument_definitions, unit=None):
+    """The benchmark swaptions of one risk-neutral IR calibration: a compiled par swap, the market
+    premium the model has to reproduce, and the objective weight.
+
+    THE QUOTE SIDE. `unit` is the residual's unit tensor when the block asks for `Quote_Sensitivity`
+    and `None` otherwise. The market premium is numpy, so each swaption carries a pair - the quote as
+    a float64 leaf and the map back to its premium - which `market_swap_class.error` splices on. A
+    vol-quoted row carries the vol and maps through `market_premium`; a premium-quoted one carries
+    the premium and the map is the identity.
+
+    The premium is priced in the surface's declared convention, read through `get_subtype` as the
+    deal path reads it: see `PREMIUM_CONVENTIONS`. The `Volatility_Delta` re-solve brackets in that
+    same declared scale, `IMPLIED_VOL_BRACKETS` being co-keyed with it. The displacement is
+    `vol_surface.displacement`, where the declared `Shift` outranks the `Property_Aliases` legacy
+    (see `riskfactors.InterestYieldVol.displacement`). An absent or zero `Market_Volatility` refuses.
+
+    THE SCHEDULE the analytic objective reads is extracted here for every benchmark whatever the
+    block's `Objective` - see `swaption_schedule_class` for why the curve's own clock.
+
+    ONE EXPIRY YEAR FRACTION, and it is `curve_factor.get_day_count_accrual`: it prices the numpy
+    premium, strikes the float64 twin, brackets the brentq re-solve and is `schedule.expiry`. The
+    DATES are untouched - `exp_days`, the `mtm_time_grid` search and both leg generators read days
+    and the instrument's own day counts, and 365.25 still converts vol tenors to grid days.
+    """
+    # a brentq implied-vol solve carries no derivative, so the quote side declines that combination
+    if unit is not None and vol_surface.premiums is not None and vol_surface.delta:
+        raise Exception('Quote_Sensitivity: a premium re-struck at Volatility_Delta reaches the '
+                        'residual through a brentq implied-vol solve, which carries no derivative')
+    # store the benchmark instruments
+    all_deals = {}
+    # the surface's declared convention, read once - `get_subtype` is the deal path's own read
+    distribution = vol_surface.get_subtype()[0]
+    if distribution not in PREMIUM_CONVENTIONS:
+        raise Exception(
+            "InterestYieldVol declares Distribution_Type '{}', which is not a convention this "
+            'calibration prices a benchmark premium in - they are {}. Correct the surface\'s '
+            'Distribution_Type to one of those'.format(
+                distribution, ' and '.join(sorted(PREMIUM_CONVENTIONS))))
+    price_option, tensor_option = PREMIUM_CONVENTIONS[distribution]
+    # the re-solve's bracket off that same read - the quote's scale is the convention's
+    vol_bracket = IMPLIED_VOL_BRACKETS[distribution]
+    # cater for shifted lognormal vols - declared `Shift` first, `Property_Aliases` behind it
+    shift_parameter = vol_surface.displacement
+    for instrument in instrument_definitions:
+        # set up the instrument
+        effective = base_date + instrument['Start']
+        maturity = effective + instrument['Tenor']
+        exp_days = (effective - base_date).days
+        # one clock, the curve's: this prices the premium, strikes the twin, brackets the re-solve
+        # and is `schedule.expiry` below, so the Bachelier inversion reads back what it struck on
+        expiry = float(curve_factor.get_day_count_accrual(base_date, exp_days))
+        time_index = np.searchsorted(time_grid.mtm_time_grid, [exp_days], side='right') - 1
+        swaption_name = 'Swaption_{}_{}'.format(
+            date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
+
+        float_pay_dates = generate_dates_backward(
+            maturity, effective, instrument['Floating_Frequency'])
+
+        float_cash = generate_float_cashflows(
+            base_date, time_grid, float_pay_dates, 1.0, None, None,
+            instrument['Floating_Frequency'], pd.DateOffset(month=0),
+            get_day_count(instrument['Floating_Day_Count']), 0.0)
+
+        K, pvbp = float_cash.get_par_swap_rate(base_date, curve_factor)
+
+        if instrument['Fixed_Frequency'] != instrument['Floating_Frequency']:
+            fixed_pay_dates = generate_dates_backward(
+                maturity, effective, instrument['Fixed_Frequency'])
+            fixed_cash = generate_fixed_cashflows(
+                base_date, fixed_pay_dates, 1.0, None, get_day_count(instrument['Fixed_Day_Count']), 0.0)
+            pv_float = K * pvbp
+            pvbp = fixed_cash.get_par_swap_rate(base_date, curve_factor)
+            K = pv_float / pvbp
+            fixed_cash.set_fixed_amount(K)
+            fixed_indices = float_cash[:, CASHFLOW_INDEX_Pay_Day].searchsorted(
+                fixed_cash[:, CASHFLOW_INDEX_Pay_Day])
+
+            if not (float_cash[fixed_indices, CASHFLOW_INDEX_Pay_Day] ==
+                    fixed_cash[:, CASHFLOW_INDEX_Pay_Day]).all():
+                logging.error('Float leg and Fixed legs do not coincide')
+                raise Exception('Float leg and Fixed legs do not coincide')
+
+            # set the float leg fixed amount
+            float_cash.schedule[fixed_indices, CASHFLOW_INDEX_FixedAmt] = \
+                -fixed_cash[:, CASHFLOW_INDEX_FixedAmt]
+            fixed_schedule = fixed_cash.schedule
+        else:
+            float_cash.set_fixed_amount(-K)
+            fixed_schedule = float_cash.schedule
+
+        # the annuity's own leg, in the CURVE's year fractions - see `swaption_schedule_class`
+        schedule = swaption_schedule_class(
+            expiry=expiry,
+            pay_times=curve_factor.get_day_count_accrual(
+                base_date, fixed_schedule[:, CASHFLOW_INDEX_Pay_Day]),
+            accruals=fixed_schedule[:, CASHFLOW_INDEX_Year_Frac].copy())
+
+        # a benchmark has to carry a quote: neither an absent nor a zero vol is a price
+        if 'Market_Volatility' not in instrument:
+            raise Exception(
+                '{}: the benchmark carries no Market_Volatility, and a swaption with no quote is '
+                'not a benchmark. Author the vol on the row, or drop the row'.format(swaption_name))
+        vol = instrument['Market_Volatility'].amount
+        if not vol:
+            raise Exception(
+                '{}: Market_Volatility is quoted ZERO, and a zero vol is not a price - it used to '
+                "read the surface's own ATM instead, which calibrates against a quote nobody gave. "
+                'Author the vol on the row, or drop the row'.format(swaption_name))
+
+        deal_data = DealDataType(
+            Instrument=None, Factor_dep={'Cashflows': float_cash, 'Forward': curve_index,
+                                         'Discount': curve_index, 'CompoundingMethod': 'None'},
+            Time_dep=DealTimeDependencies(time_grid.mtm_time_grid, time_index), Calc_res=None)
+
+        shifted_strike = K + shift_parameter
+        # first check if we have the actual premium (not implied)
+        if vol_surface.premiums is not None:
+            swaption_price = vol_surface.get_premium(date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
+            if vol_surface.delta:
+                # one bracket for both solves, in the scale this surface quotes its vols in
+                bracket = vol_bracket(vol)
+                try:
+                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
+                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
+                        *bracket)
+                except:
+                    modified_k = vol_surface.get_strike_from_premiums(date_fmt(instrument['Start']),
+                                                                      date_fmt(instrument['Tenor']))
+                    logging.warning(
+                        'Implied vol calc during delta bump failed - calculated strike is {} - using strike from premium file {}'.format(
+                            K, modified_k))
+                    shifted_strike = modified_k + shift_parameter
+                    implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
+                        shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
+                        *bracket)
+
+                swaption_price = pvbp * price_option(
+                    shifted_strike, shifted_strike, 0.0, implied_vol + vol_surface.delta, expiry, 1.0, 1.0)
+        else:
+            swaption_price = pvbp * price_option(
+                shifted_strike, shifted_strike, 0.0, vol + vol_surface.delta, expiry, 1.0, 1.0)
+
+        # the quote side - a float64 leaf and the map back to this swaption's premium, see docstring
+        quote, premium = None, None
+        if unit is not None:
+            premium_quoted = vol_surface.premiums is not None
+            quote = unit.new_tensor(
+                swaption_price if premium_quoted else vol, dtype=torch.float64).requires_grad_(True)
+            premium = (lambda q: q) if premium_quoted else partial(
+                market_premium, pvbp, shifted_strike, expiry, vol_surface.delta, tensor_option)
+
+        all_deals[swaption_name] = market_swap_class(
+            deal_data=deal_data, price=swaption_price, weight=instrument['Weight'],
+            schedule=schedule, quote=quote, premium=premium)
+
+    return all_deals
 
 
 # tenor manipulation
