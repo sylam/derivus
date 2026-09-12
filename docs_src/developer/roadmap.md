@@ -228,9 +228,11 @@ is recorded so a reader knows which readings rest on it.
   `torch.use_deterministic_algorithms(True)` is bit-identical across runs and torch accepts it,
   so a deterministic kernel exists for both. `cumsum` is not implicated: its backward is
   bit-identical over five runs on this version and raises nothing under the same switch. The
-  effect is far below the 1% a desk reads, so it is noted and left, and the switch beside the
-  cuBLAS pin is what a gate turns on when it needs the gradient pinned. It pins one machine and
-  one build, not results across cards or versions.
+  effect is far below the 1% a desk reads, so the switch becomes a DECLARED FIELD on the
+  calculation rather than a default: off is the faster arithmetic, on pins the gradient for a run
+  that has to reproduce, and the document records which it was. It is set beside the cuBLAS pin so
+  the dispatch workers inherit it, and it pins one machine and one build, not results across cards
+  or versions. Unread: what the deterministic kernels cost on this workload.
 - **The exposure profile is reported undeflated**, `Deflation_Interest_Rate` applied only inside the
   CVA/FVA scalars, so a deflated expiry-row EPE cannot be read from the tables; publish `Dt_T`
   beside `mtm`.
