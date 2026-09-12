@@ -126,7 +126,29 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
 ALPHA_SEED = (0.5, 0.05)
 
 
-class CSForwardPriceModelParameters(object):
+class Construction:
+    """A construction turns quotes into a market factor with no model behind it - deposits, FRAs
+    and swaps into a curve, delta quotes into a volatility surface, a volatility strip into a
+    lognormal term structure. Deterministic - closed form or a chain of one-dimensional roots, no
+    fitted parameters - and cheap enough to run on every tick.
+
+    Every family declares `market_factor_type` (the `Market Prices` type it selects work by),
+    `price_factor_type` (the `Price Factors` block it writes, which keys its `Bootstrapper
+    Configuration` entry) and `reads` (what orders a run against what other families write).
+    """
+
+
+class ImpliedCalibration:
+    """An implied calibration turns factors plus benchmark instruments into model parameters by a
+    solve - Hull-White off the curve and the swaption volatilities, LogVar2FJ off the surface's
+    ladder, Clewlow-Strickland off energy futures options. Seconds rather than milliseconds, and
+    only worth running when what it reads has moved.
+
+    Declares the same three as a construction.
+    """
+
+
+class CSForwardPriceModelParameters(ImpliedCalibration):
     documentation = (
         'Energy',
         ['For Risk Neutral simulation, the Clewlow Strickland Model is calibrated to a set of European Energy',
@@ -302,7 +324,7 @@ class CSForwardPriceModelParameters(object):
                     'Alpha': result.x[1]}
 
 
-class OptionQuoteFamily(object):
+class OptionQuoteFamily(ImpliedCalibration):
     documentation = (
         'Fx And Equity',
         ['The quote preparation every European option family in this module shares - what a block',
@@ -3818,7 +3840,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         fit.levels, fit.warm = list(levels), list(levels)
 
 
-class GBMAssetPriceTSModelParameters(object):
+class GBMAssetPriceTSModelParameters(Construction):
     documentation = (
         'Fx And Equity',
         ['For Risk Neutral simulation, an integrated curve $\\bar{\\sigma}(t)$ needs to be specified and is',
@@ -4250,7 +4272,7 @@ class SwaptionCalibration(object):
         return theta
 
 
-class RiskNeutralInterestRateModel(object):
+class RiskNeutralInterestRateModel(ImpliedCalibration):
     def __init__(self, param, device, dtype):
         #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
         #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
@@ -5312,7 +5334,7 @@ def quote_knots(nodes, base_date, day_count, calendars):
         base_date, (maturity - base_date).days, code) for maturity in maturities])
 
 
-class InterestRateCurveParameters(object):
+class InterestRateCurveParameters(Construction):
     """A zero curve solved from deposit, FRA, swap and FX forward quotes, priced by the engine's
     own pricers.
 
@@ -5860,7 +5882,7 @@ class InterestRateCurveParameters(object):
         return artifact.nodes(theta, factor), artifact.artifact_id
 
 
-class FXVolSurfaceParameters(object):
+class FXVolSurfaceParameters(Construction):
     """An `FXVol` surface bootstrapped from the ATM / risk-reversal / butterfly quotes it ticks in as.
 
     An FX smile is quoted in DELTA - one ATM vol per expiry and, per delta pillar, the risk reversal
@@ -6284,12 +6306,13 @@ def family_class(btype):
     """The price family a `Bootstrapper Configuration` entry names: the `Price Factors` TYPE it
     writes, or its class name, which stays an alias for every book written before that. An unknown
     name refuses by name, listing both spellings."""
-    cls = globals().get(WRITERS.get(btype, btype))
+    cls = WRITERS.get(btype) or globals().get(btype)
     if not (isinstance(cls, type) and 'market_factor_type' in cls.__dict__):
         raise ValueError(
             'Bootstrapper Configuration names {}, which is no price family; the families are {} '
             '(or, as older books spell them, {})'.format(
-                btype, ', '.join(sorted(WRITERS)), ', '.join(sorted(FAMILIES))))
+                btype, ', '.join(sorted(WRITERS)),
+                ', '.join(sorted(cls.__name__ for cls in WRITERS.values()))))
     return cls
 
 
@@ -6328,11 +6351,12 @@ def market_prices_for(btype, market_prices, declared=None):
 
     THE CONFIGURATION DRIVES THE LOOP where the engine is importable: `Config.bootstrap` selects
     here and hands a family its own blocks. `declared` is the entry's own `Prices` STEM where it
-    carries one, VERIFIED against `FAMILIES` so a section routing a family at another family's type
-    refuses by name rather than fitting nothing. Each family still filters by type in its own
-    `bootstrap`, because `derivus_bootstrap` hands one task the whole section where it must.
+    carries one, VERIFIED against the family's own `market_factor_type` so a section routing a
+    family at another family's type refuses by name rather than fitting nothing. Each family
+    still filters by type in its own `bootstrap`, because `derivus_bootstrap` hands one task the
+    whole section where it must.
     """
-    wanted = FAMILIES[family_class(btype).__name__]
+    wanted = family_class(btype).market_factor_type
     if declared and declared + 'Prices' != wanted:
         raise ValueError(
             'Bootstrapper Configuration.{0}: {1} {2!r} routes it at {3}, which {0} does not read - '
@@ -6353,11 +6377,16 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     return family_class(btype)(param, device, dtype)
 
 
-#: class name -> the `Market Prices` type it reads, one row per family (the emitter's own rule)
-FAMILIES = {name: cls.__dict__['market_factor_type'] for name, cls in list(globals().items())
-            if isinstance(cls, type) and 'market_factor_type' in cls.__dict__}
-
-#: the `Price Factors` type a family writes -> its class name. That type is what a `Bootstrapper
-#: Configuration` entry names, so a section reads as the factors it produces; four of the six write
-#: a block named for their own class and two do not (`InterestRate`, `FXVol`).
-WRITERS = {globals()[name].__dict__['price_factor_type']: name for name in FAMILIES}
+#: THE REGISTRY: the `Price Factors` type a family writes -> the family, keyed by what a
+#: `Bootstrapper Configuration` entry names it by, so a section reads as the factors it produces.
+#: Four of the six write a block named for their own class - whose name stays an alias resolved
+#: through the module's own globals, the house dispatch - and two do not (`InterestRate`,
+#: `FXVol`): the one mapping here that is information rather than spelling.
+WRITERS = {
+    'CSForwardPriceModelParameters': CSForwardPriceModelParameters,
+    'LogVar2FJModelParameters': LogVar2FJModelParameters,
+    'GBMAssetPriceTSModelParameters': GBMAssetPriceTSModelParameters,
+    'HullWhite2FactorModelParameters': HullWhite2FactorModelParameters,
+    'InterestRate': InterestRateCurveParameters,
+    'FXVol': FXVolSurfaceParameters,
+}

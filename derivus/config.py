@@ -30,8 +30,8 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 from . import utils
 from . import schema
 from .bootstrappers import (bootstrap_order, construct_bootstrapper, family_class,
-                           market_prices_for, InterestRateCurveParameters, FAMILIES,
-                           PRICES_KEY)
+                            market_prices_for, InterestRateCurveParameters, WRITERS,
+                            PRICES_KEY)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -561,15 +561,15 @@ class Config(object):
         against the family's own declared `price_factor_type`.
         """
         # a block no family reads, or a family no class answers to, is a refusal, never a skip
-        orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
-                         - set(FAMILIES.values()))
+        families = sorted(cls.market_factor_type for cls in WRITERS.values())
+        orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']} - set(families))
         if orphans:
             raise ValueError('Market Prices carries {}, which no price family reads; the families read '
-                             '{}'.format(', '.join(orphans), ', '.join(sorted(FAMILIES.values()))))
+                             '{}'.format(', '.join(orphans), ', '.join(families)))
         entries = self.params['Bootstrapper Configuration']
         # every entry names a class before any of them runs, and the order is what it reads
         section = [(name, entries[name]) for name in bootstrap_order(entries)]
-        claimed = {FAMILIES[family_class(name).__name__] for name, _ in section}
+        claimed = {family_class(name).market_factor_type for name, _ in section}
         unclaimed = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
                            - claimed)
         if unclaimed:
@@ -585,14 +585,14 @@ class Config(object):
                     'looked up and {2} used, but the multiprocessing path routes without the '
                     'engine and needs it. Write {1} {3!r}'.format(
                         bootstrapper_name, PRICES_KEY,
-                        FAMILIES[family_class(bootstrapper_name).__name__],
-                        FAMILIES[family_class(bootstrapper_name).__name__][:-len('Prices')]))
+                        family_class(bootstrapper_name).market_factor_type,
+                        family_class(bootstrapper_name).market_factor_type[:-len('Prices')]))
             blocks = market_prices_for(
                 bootstrapper_name, self.params['Market Prices'], declared=stem)
             if not blocks:
+                family = family_class(bootstrapper_name).market_factor_type
                 logging.warning('Bootstrapper {} is configured and the book carries no {} block '
-                                'for it - nothing to fit'.format(
-                                    bootstrapper_name, FAMILIES[bootstrapper_name]))
+                                'for it - nothing to fit'.format(bootstrapper_name, family))
             try:
                 bootstrapper = construct_bootstrapper(bootstrapper_name, params)
             except Exception:
