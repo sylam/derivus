@@ -221,10 +221,16 @@ is recorded so a reader knows which readings rest on it.
   use. Unconfirmed: the mechanism has not been isolated, and until it is, a set of documents
   compared across versions must be run in a fixed order.
 - **`NettingCollateralSet`'s backward is not bit-reproducible on the GPU**: one gradient entry can
-  differ in its last bits between runs of bit-identical inputs — the backward of `gather`, `scatter`
-  and `index_add` accumulates atomically on CUDA, in whatever order the threads land. Far below the
-  1% the desk reads, so noted and left (2026-09-11). A gate that ever needs the gradient pinned
-  switches `torch.use_deterministic_algorithms(True, warn_only=True)` on beside the cuBLAS pin.
+  differ in its last bits between runs of bit-identical inputs. Isolated on this card
+  (2026-09-12): the backward of `gather` and of `index_select` accumulates atomically wherever
+  indices collide, and five runs of one such backward differ by up to 5.3e-05 absolute, about
+  forty float32 epsilons over the accumulated terms; the same backward under
+  `torch.use_deterministic_algorithms(True)` is bit-identical across runs and torch accepts it,
+  so a deterministic kernel exists for both. `cumsum` is not implicated: its backward is
+  bit-identical over five runs on this version and raises nothing under the same switch. The
+  effect is far below the 1% a desk reads, so it is noted and left, and the switch beside the
+  cuBLAS pin is what a gate turns on when it needs the gradient pinned. It pins one machine and
+  one build, not results across cards or versions.
 - **The exposure profile is reported undeflated**, `Deflation_Interest_Rate` applied only inside the
   CVA/FVA scalars, so a deflated expiry-row EPE cannot be read from the tables; publish `Dt_T`
   beside `mtm`.
