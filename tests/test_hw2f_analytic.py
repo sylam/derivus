@@ -1108,13 +1108,13 @@ def checker_legs(world):
     The clock is the CURVE's ACT_365 and not `utils.DAYS_IN_YEAR`: `read_cache` builds
     `time_grid_years` with the day count, so a 365.25ths expiry would miss its node by 7e-4 years.
     """
-    from derivus import bootstrappers, instruments
+    from derivus import bootstrappers
     out, curve = {}, world['curve']
     for instrument in world['block']['Instrument_Definitions']:
         name = 'Swaption_{}_{}'.format(bootstrappers.date_fmt(instrument['Start']),
                                        bootstrappers.date_fmt(instrument['Tenor']))
         effective = BASE + instrument['Start']
-        dates = instruments.generate_dates_backward(
+        dates = utils.generate_dates_backward(
             effective + instrument['Tenor'], effective, instrument['Fixed_Frequency'])
         cash = utils.generate_fixed_cashflows(
             BASE, dates, 1.0, None, utils.get_day_count(instrument['Fixed_Day_Count']), 0.0)

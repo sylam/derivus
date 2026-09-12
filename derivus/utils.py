@@ -1987,6 +1987,36 @@ class DerivedForwardCurve(object):
 
 # date generation utils
 
+def adjust_date(bus_day, modified, date):
+    adj_date = bus_day.rollforward(date) if bus_day else date
+    return bus_day.rollback(date) if (modified and adj_date.month != date.month) else adj_date
+
+
+def generate_dates_backward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
+    i, new_date = 1, end_date
+    dates = [adjust_date(bus_day, modified, new_date)]
+    date_kwds = date_offset.kwds.items()
+    while new_date > start_date:
+        period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
+        new_date = max(start_date, end_date - period) if clip else end_date - period
+        dates.append(adjust_date(bus_day, modified, new_date))
+        i += 1
+    dates.reverse()
+    return pd.DatetimeIndex(dates)
+
+
+def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
+    i, new_date = 1, start_date
+    dates = [adjust_date(bus_day, modified, new_date)]
+    date_kwds = date_offset.kwds.items()
+    while new_date < end_date:
+        period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
+        new_date = min(end_date, start_date + period) if clip else start_date + period
+        dates.append(adjust_date(bus_day, modified, new_date))
+        i += 1
+    return pd.DatetimeIndex(dates)
+
+
 def cds_dates(base, num_months):
     base_month = base.month
     initial = pd.DateOffset(months=(3 - base_month % 3) % 3, day=20)

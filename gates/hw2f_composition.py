@@ -92,7 +92,8 @@ from derivus import riskfactors, utils
 from derivus.bootstrappers import (BenchmarkInstruments, HullWhite2FactorModelParameters,
                                    quote_nodes)
 from derivus.config import Config, CustomJsonEncoder
-from derivus.instruments import construct_instrument, generate_dates_backward
+from derivus.instruments import construct_instrument
+from derivus.utils import generate_dates_backward
 
 DTYPE = torch.float64
 #: The three benchmarks the composition prices, as `(start, tenor)` period strings. Every one is a

@@ -346,7 +346,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         swaption_name = 'Swaption_{}_{}'.format(
             date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
 
-        float_pay_dates = instruments.generate_dates_backward(
+        float_pay_dates = utils.generate_dates_backward(
             maturity, effective, instrument['Floating_Frequency'])
 
         float_cash = utils.generate_float_cashflows(
@@ -357,7 +357,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         K, pvbp = float_cash.get_par_swap_rate(base_date, curve_factor)
 
         if instrument['Fixed_Frequency'] != instrument['Floating_Frequency']:
-            fixed_pay_dates = instruments.generate_dates_backward(
+            fixed_pay_dates = utils.generate_dates_backward(
                 maturity, effective, instrument['Fixed_Frequency'])
             fixed_cash = utils.generate_fixed_cashflows(
                 base_date, fixed_pay_dates, 1.0, None, utils.get_day_count(instrument['Fixed_Day_Count']), 0.0)
@@ -5562,7 +5562,7 @@ def _pin_deposit_schedule(deal, quote):
     """A deposit has no rate field of its own. Pinning every accrual start is what makes it price
     as a fixed leg, which is also what keeps it off the forecast curve the solve is building -
     `DepositDeal.reset` drops that dependency when the schedule covers every start."""
-    starts = instruments.generate_dates_backward(
+    starts = utils.generate_dates_backward(
         deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'])[:-1]
     deal['Interest_Rate_Schedule'] = utils.DateList({date: quote for date in starts})
 

@@ -26,36 +26,6 @@ import torch
 import torch.nn.functional as Fn
 
 
-def adjust_date(bus_day, modified, date):
-    adj_date = bus_day.rollforward(date) if bus_day else date
-    return bus_day.rollback(date) if (modified and adj_date.month != date.month) else adj_date
-
-
-def generate_dates_backward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
-    i, new_date = 1, end_date
-    dates = [adjust_date(bus_day, modified, new_date)]
-    date_kwds = date_offset.kwds.items()
-    while new_date > start_date:
-        period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
-        new_date = max(start_date, end_date - period) if clip else end_date - period
-        dates.append(adjust_date(bus_day, modified, new_date))
-        i += 1
-    dates.reverse()
-    return pd.DatetimeIndex(dates)
-
-
-def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
-    i, new_date = 1, start_date
-    dates = [adjust_date(bus_day, modified, new_date)]
-    date_kwds = date_offset.kwds.items()
-    while new_date < end_date:
-        period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
-        new_date = min(end_date, start_date + period) if clip else start_date + period
-        dates.append(adjust_date(bus_day, modified, new_date))
-        i += 1
-    return pd.DatetimeIndex(dates)
-
-
 def get_business_day_offsets(calendar_names, calendars, business_days=2):
 
     def calendar_business_day(calendar_name, calendars):
@@ -89,7 +59,7 @@ def forward_settlement_date(date_to_roll, calendar_names, calendars, business_da
     """Return expiry plus settlement lag, rolled using the configured calendars."""
     bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days=business_days)
     if len(bus_day_offsets)>1:
-        return adjust_date(bus_day_offsets[0], False, date_to_roll + bus_day_offsets[1])
+        return utils.adjust_date(bus_day_offsets[0], False, date_to_roll + bus_day_offsets[1])
     else:
         return date_to_roll + bus_day_offsets[0]
 
@@ -1114,7 +1084,7 @@ class NettingCollateralSet(Deal):
                 'Collateral_Call_Frequency') else pd.DateOffset(days=1)
 
             if call_freq.kwds != {'days': 1}:
-                coll_dates = generate_dates_forward(
+                coll_dates = utils.generate_dates_forward(
                     max(grid_dates), base_call_date, call_freq,
                     bus_day=self.calendar, modified=True)
                 grid_dates.update(coll_dates)
@@ -1224,7 +1194,7 @@ class NettingCollateralSet(Deal):
 
                     for col_bond in collateral_bond:
                         if np.array(list(col_bond['Coupon_Interval'].kwds.values())).any():
-                            reset_dates = generate_dates_backward(
+                            reset_dates = utils.generate_dates_backward(
                                 base_date + col_bond['Maturity'], base_date, col_bond['Coupon_Interval'])
                         else:
                             reset_dates = np.array([base_date, base_date + col_bond['Maturity']])
@@ -1306,7 +1276,7 @@ class NettingCollateralSet(Deal):
             call_mask = np.ones(time_grid.mtm_time_grid.size, dtype=np.int32)
 
             if call_freq.kwds != {'days': 1}:
-                all_call_days = generate_dates_forward(
+                all_call_days = utils.generate_dates_forward(
                     max(self.get_reval_dates()), base_call_date, call_freq,
                     bus_day=self.calendar, modified=True)
                 approx_calls = pd.DatetimeIndex(sorted(time_grid.mtm_dates)).intersection(all_call_days)
@@ -1713,10 +1683,10 @@ class MtMCrossCurrencySwapDeal(Deal):
 
     def reset(self, calendars):
         super(MtMCrossCurrencySwapDeal, self).reset()
-        self.paydates = generate_dates_backward(
+        self.paydates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'],
             self.field.get('Pay_Frequency', pd.DateOffset(months=6)))
-        self.recdates = generate_dates_backward(
+        self.recdates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'],
             self.field.get('Receive_Frequency', pd.DateOffset(months=6)))
         self.add_reval_dates(self.paydates, self.field['Pay_Currency'])
@@ -2266,7 +2236,7 @@ class DepositDeal(Deal):
 
     def reset(self, calendars):
         super(DepositDeal, self).reset()
-        self.paydates = generate_dates_backward(
+        self.paydates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Payment_Frequency'])
         self.add_reval_dates(self.paydates, self.field['Currency'])
         schedule = self.field['Interest_Rate_Schedule']
@@ -2384,9 +2354,9 @@ class SwapInterestDeal(Deal):
 
     def reset(self, calendars):
         super(SwapInterestDeal, self).reset()
-        self.paydates = generate_dates_backward(
+        self.paydates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Pay_Frequency'])
-        self.recdates = generate_dates_backward(
+        self.recdates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Receive_Frequency'])
         self.add_reval_dates(self.paydates, self.field['Currency'])
         self.add_reval_dates(self.recdates, self.field['Currency'])
@@ -2926,7 +2896,7 @@ class CapDeal(Deal):
 
     def reset(self, calendars):
         super(CapDeal, self).reset()
-        self.resetdates = generate_dates_backward(
+        self.resetdates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Payment_Interval'])
         self.add_reval_dates(self.resetdates, self.field['Currency'])
         # this swap could be quantoed
@@ -3037,7 +3007,7 @@ class FloorDeal(Deal):
 
     def reset(self, calendars):
         super(FloorDeal, self).reset()
-        self.resetdates = generate_dates_backward(
+        self.resetdates = utils.generate_dates_backward(
             self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Payment_Interval'])
         self.add_reval_dates(self.resetdates, self.field['Currency'])
         # this swap could be quantoed
@@ -3210,9 +3180,9 @@ class SwaptionDeal(Deal):
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
         self.add_reval_dates({self.field['Option_Expiry_Date']}, self.field['Currency'])
-        self.paydates = generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
+        self.paydates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
                                                 self.field['Pay_Frequency'])
-        self.recdates = generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
+        self.recdates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
                                                 self.field['Receive_Frequency'])
 
         if self.field['Settlement_Style'] == 'Physical':
@@ -6561,7 +6531,7 @@ class CreditNthToDefault(Deal):
         if list(self.field['Pay_Frequency'].kwds.values()) == [0]:
             self.resetdates = pd.DatetimeIndex([self.field['Effective_Date'], self.field['Maturity_Date']])
         else:
-            self.resetdates = generate_dates_backward(
+            self.resetdates = utils.generate_dates_backward(
                 self.field['Maturity_Date'], self.field['Effective_Date'],
                 self.field['Pay_Frequency'], bus_day=bus_day)
         self.add_reval_dates(self.resetdates, self.field['Currency'])
@@ -6696,13 +6666,13 @@ class DealDefaultSwap(Deal):
             self.resetdates = pd.DatetimeIndex([self.field['Effective_Date'], self.field['Maturity_Date']])
         else:
             if self.field.get('Penultimate_Coupon_Date'):
-                self.resetdates = generate_dates_backward(
+                self.resetdates = utils.generate_dates_backward(
                     self.field['Penultimate_Coupon_Date'], self.field['Effective_Date'],
                     self.field['Pay_Frequency'], bus_day=bus_day)
                 if self.field['Maturity_Date'] > self.field['Penultimate_Coupon_Date']:
                     self.resetdates = self.resetdates.append(pd.DatetimeIndex([self.field['Maturity_Date']]))
             else:
-                self.resetdates = generate_dates_backward(
+                self.resetdates = utils.generate_dates_backward(
                     self.field['Maturity_Date'], self.field['Effective_Date'],
                     self.field['Pay_Frequency'], bus_day=bus_day)
 
