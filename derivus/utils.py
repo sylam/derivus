@@ -5369,6 +5369,13 @@ def calibration_jacobian(benchmarks, theta):
     return -torch.linalg.solve(d_theta, d_quote)
 
 
+def vmapped_jacobian(terms, x, retain_graph=False):
+    """dr/dx from an evaluated residual: one batched backward over the rows, which is the per-row
+    loop's answer at a fifth of its cost on this graph."""
+    return torch.autograd.grad(terms, x, torch.eye(terms.numel(), dtype=x.dtype, device=x.device),
+                               is_grads_batched=True, retain_graph=retain_graph)[0]
+
+
 class CalibrationSolve(torch.autograd.Function):
     """The bootstrap as one differentiable node: quotes in, calibrated nodes out.
 
@@ -5538,6 +5545,41 @@ class ArtifactStore(object):
                     if factor in self.artifacts[key].factors]
 
 
+class Residual:
+    """The operand frame a least-squares calibration answers to: named parameters as a flat vector
+    over a fitted box, and the KKT free set the quote contraction is taken over. `LeastSquaresSolve`
+    solves and differentiates whatever subclasses it - the families differ in the residual rows and
+    in nothing here.
+
+    `keys` and `sizes` are the parameter dict's own order; `labels` is one name per flat coordinate,
+    so a coordinate the box holds is named; `edges` is the (lower, upper) box the fit moved in; and
+    `split` is the one place the flat vector comes apart, so a factor leaf cannot be handed the
+    wrong slice of the vector the Jacobian was read off. A stage-driven fit carries its own label
+    format and overrides `labels`.
+    """
+
+    keys = ()
+    sizes = ()
+    edges = None
+
+    @property
+    def labels(self):
+        return ['{}[{}]'.format(key, i) if size > 1 else key
+                for key, size in zip(self.keys, self.sizes) for i in range(size)]
+
+    def interior(self, x, g):
+        """The free coordinates at `(x, g)` - what the KKT active set does not hold on a bound."""
+        return np.flatnonzero(~active_set(x, self.edges[0], self.edges[1], g)).tolist()
+
+    def split(self, theta):
+        """`{name: tensor}` in the parameter dict's own order, sharing theta's graph."""
+        return dict(zip(self.keys, theta.split(self.sizes)))
+
+    def unflatten(self, theta):
+        """`{name: numpy}` in the parameter dict's own order - the shape `save_params` takes."""
+        return {name: value.detach().cpu().numpy() for name, value in self.split(theta).items()}
+
+
 class LeastSquaresSolve(torch.autograd.Function):
     """A least-squares calibration as one differentiable node: quotes in, calibrated parameters out.
 
@@ -5590,8 +5632,7 @@ class LeastSquaresSolve(torch.autograd.Function):
                 x = ctx.theta.detach().requires_grad_(True)
                 residual = calibration(x)
                 eye = torch.eye(residual.numel(), dtype=x.dtype, device=x.device)
-                jacobian = torch.autograd.grad(residual, x, eye, is_grads_batched=True,
-                                               retain_graph=True)[0].double()
+                jacobian = vmapped_jacobian(residual, x, retain_graph=True).double()
                 slope = jacobian.t() @ residual.detach().double()
                 free = calibration.interior(x.detach().cpu().numpy(), slope.cpu().numpy())
                 inner = jacobian[:, free]

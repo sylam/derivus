@@ -1058,7 +1058,7 @@ def lv_share_priors(read):
     return priors, spread
 
 
-class LVFit(object):
+class LVFit(utils.Residual):
     """ONE LogVar2FJ calibration: the prepared quotes, the walk they are priced on, the fitted
     state, and every verb that moves it.
 
@@ -1627,15 +1627,14 @@ class LVFit(object):
         return torch.cat([term.reshape(-1) for term in terms])
 
     def jacobian(self, x, coords, judged, forwards, **kw):
-        """dr/dx by autograd at a fitted leaf - ONE vmapped backward over the residual rows, which
-        reads the per-row loop's answer to the bit at a fifth of its cost on this graph."""
+        """dr/dx by autograd at a fitted leaf - ONE vmapped backward over the residual rows
+        (`utils.vmapped_jacobian`), which reads the per-row loop's answer to the bit at a fifth of
+        its cost on this graph."""
         self.calls['j'] += 1
         leaf = torch.tensor(np.asarray(x, dtype=float), device=self.device,
                             dtype=self.prec, requires_grad=True)
         terms = self.residual(leaf, coords, judged, forwards, **kw)
-        return torch.autograd.grad(
-            terms, leaf, torch.eye(terms.numel(), dtype=self.prec, device=self.device),
-            is_grads_batched=True)[0].cpu().numpy()
+        return utils.vmapped_jacobian(terms, leaf).cpu().numpy()
 
     def label(self, coord):
         return coord[0] if coord[1] is None else '{}[{:g}y]'.format(
@@ -1742,10 +1741,6 @@ class LVFit(object):
     def descriptors(self):
         """One name per quote, in `leaf`'s own order - what the quote deltas are reported against."""
         return ['{:g}y {:g}'.format(quote.T, quote.strike) for quote in self.quotes]
-
-    def interior(self, x, g):
-        """The last stage's free coordinates at `(x, g)` - what the KKT active set does not hold."""
-        return np.flatnonzero(~utils.active_set(x, self.edges[0], self.edges[1], g)).tolist()
 
     def cap_level(self):
         """The level rule `a = max(Cap_A, L(0) + 6 s_inf)`, at the widest bucket's spread -
@@ -4106,13 +4101,14 @@ class swaption_objective_class(namedtuple('swaption_objective', 'loss reduce rep
     """
 
 
-class SwaptionCalibration(object):
+class SwaptionCalibration(utils.Residual):
     """One risk-neutral swaption calibration as an operand: the residual, and the solve over it.
 
     The residual is what `calc_loss_on_ir_curve` builds - one weighted error per
     `Instrument_Definitions` row, per the block's `Objective` - and the solve is the optimizer chain
     `calc_loss` hands over. Holding both beside the parameter dict they share lets
-    `utils.LeastSquaresSolve` run the ordinary solve forward and differentiate the same residual backward.
+    `utils.LeastSquaresSolve` run the ordinary solve forward and differentiate the same residual backward;
+    the frame - labels, box, the flat vector's split - is `utils.Residual`'s.
 
     The parameter vector is FLAT here and a dict everywhere else: scipy takes a vector, the process
     takes `{name: tensor}`, and the two scipy adapters own that boundary with `tn_var.data = ...`.
@@ -4145,28 +4141,6 @@ class SwaptionCalibration(object):
     def descriptors(self):
         """The benchmark names of `quotes`, in its order - what `quote_leaves` pairs them with."""
         return [name for name, swap in self.market_swaps.items() if swap.quote is not None]
-
-    @property
-    def labels(self):
-        """One name per coordinate of the flat vector, so a coordinate the box holds is named."""
-        return ['{}[{}]'.format(key, i) if size > 1 else key
-                for key, size in zip(self.keys, self.sizes) for i in range(size)]
-
-    def interior(self, x, g):
-        """The free coordinates at `(x, g)` - what the KKT active set does not hold on a bound."""
-        return np.flatnonzero(~utils.active_set(x, self.edges[0], self.edges[1], g)).tolist()
-
-    def split(self, theta):
-        """`{name: tensor}` in the closure's own parameter order, sharing theta's graph.
-
-        The one place the flat vector is taken apart, so a factor leaf cannot be handed the wrong
-        slice of the vector the Jacobian was read off.
-        """
-        return dict(zip(self.keys, theta.split(self.sizes)))
-
-    def unflatten(self, theta):
-        """`{name: numpy}` in the closure's own parameter order - the shape `save_params` takes."""
-        return {name: value.detach().cpu().numpy() for name, value in self.split(theta).items()}
 
     def __call__(self, x):
         """The residual vector at flat parameters `x`, differentiable in `x` and in the quotes.
