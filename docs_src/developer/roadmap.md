@@ -31,12 +31,19 @@ These are defects in the engine: each has a change to this library that closes i
   `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
   6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
   polish, or let the guard raise it once and re-walk.
-- **The identification line divides by an unquoted coordinate** (2026-09-11): a block
-  quoting one ATM per expiry and no wing reports *prior on an unidentified coordinate: Alpha[0y]
-  5.8e13x, Beta 1.0e14x, Rho_S 9.5e13x, Sigma_S 2.2e14x* — a division by a quote-row column norm
-  at zero, not a reading — and `On_Guard` carries it onto the factor and into `Stats`, so a wingless
-  fit marks every shape parameter as prior-held. The guard wants a floor on the denominator or an
-  "unquoted coordinate" branch that says so in words.
+- **A fit warns with a meaningless number when the quotes say nothing about a parameter**
+  (2026-09-11). The calibration reports, for each fitted parameter, how hard a declared prior
+  belief pushes it compared with the market quotes, and warns when the prior is doing most of the
+  work, so that a reader can tell a fitted value from an assumed one. That comparison divides by
+  how much the quotes constrain the parameter. When they do not constrain it at all, which is what
+  happens to the skew parameters on a surface quoting only at-the-money options and no wings, the
+  divisor is zero and the warning reports ratios above ten trillion. Its conclusion is right, since
+  those parameters really are held by the prior, but the number is an artefact of dividing by zero
+  rather than a reading, and it is written onto the calibrated factor and republished in every
+  valuation priced off it. A reader cannot then separate a prior a hundred times stronger than the
+  quotes, which is worth investigating, from quotes that are silent, which is a different
+  situation with a different remedy. Either floor the divisor or detect the silent case and say so
+  in words.
 - **`LogVar2FJModelParameters` lost `fx_minimum_contracts = 8` in the Heston-Nandi retirement**
   (2026-09-11): 9d4b91e deleted the parent class and carried three of its four ladder declarations
   onto the re-hoisted one; the family now reads `OptionQuoteFamily`'s 6, sized for the plain family's
