@@ -182,15 +182,11 @@ is recorded so a reader knows which readings rest on it.
   one, which exists and is proven; the two energy and commodity sites still use the plain join.
   One call at each, unmade because no document in the repository reaches it and an unmeasured
   change is not a fix.
-- **`EquityPriceVol` under `Sticky_Strike` cannot reach a fixing strip** (2026-09-08):
-  `calc_moneyness` returns the bare strike for a parametric (`Skew`/`SVI`) surface, one number with
-  no fixing axis, and `forward_vol_strip` indexes it on a fixing axis it does not have — at one
-  reporting row an `IndexError` at `pricing.py:425`, at more than one the reshape one line below
-  dies with `shape '[1]' is invalid for input of size N`, N the block's row count. The desk's book
-  declares `Skew` with `Sticky_Strike` on every equity surface, so its ten binary-leg and autocall
-  skips ARE this row (reproduced on one leg, 2026-09-11): a book of skew-parameterised surfaces
-  cannot price a discrete barrier, an accumulator, a TARF or an autocall. The fix is a broadcast
-  of the moneyness onto the fixing axis at the one site that knows the strip's shape.
+- **A parametric FX surface never mints its parameter sub-factors** (2026-09-15). The equity
+  surface lookup has a branch for a surface declared by its skew or by its SVI parameters and the
+  FX surface lookup has none, so an FX surface declared that way fails at the lookup with an
+  attribute error, under either moneyness rule, before any strip is read. Two documents in the
+  artifacts store reproduce it.
 - **Two stale-fixing reads in the autocall's observation arm.** A second consecutive coupon whose
   observation window is already wholly in the past reads the first coupon's last fixing under spot
   observation, the same staleness the window's prefix already carries; no document here reaches
