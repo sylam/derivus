@@ -2834,63 +2834,61 @@ def norm_icdf(x):
     return 1.4142135623730951 * torch.erfinv(2.0 * x - 1.0)
 
 
+#: the twenty-point Gauss-Legendre rule, ten positive nodes each read at +x and -x
+BVN_GAUSS = (
+    (0.993128599185095, 0.96397192727791381, 0.91223442825132595, 0.83911697182221878,
+     0.7463319064601508, 0.63605368072651502, 0.51086700195082713, 0.37370608871541955,
+     0.22778585114164507, 0.076526521133497338),
+    (0.017614007139150893, 0.040601429800386446, 0.06267204833410879, 0.083276741576704713,
+     0.10193011981724071, 0.11819453196151861, 0.13168863844917689, 0.1420961093183824,
+     0.14917298647260424, 0.15275338713072628))
+
+
 def BivN(P, Q, rho):
-    from scipy.stats import multivariate_normal
-    mvn = np.vectorize(lambda x: multivariate_normal(cov=[[1.0, x], [x, 1.0]]))
-    z2 = mvn(rho)
-    cdf = np.vectorize(lambda z, x, y: z.cdf([x, y]))
-    return cdf(z2, P, Q)
-
-
-def ApproxBivN(P, Q, rho):
-    """Bivariate normal integral, accurate to about 4 decimal places - Tsay and Ke, "A Simple
-    Approximation for Bivariate Normal Integral Based on Error Function". Chosen for being fully
-    vectorized rather than for accuracy.
+    """The lower tail P(X <= P, Y <= Q) of a standard bivariate normal with correlation rho, by
+    Genz's algorithm: twenty-point Gauss-Legendre in polar coordinates for |rho| < 0.925, and over
+    his tail expansion beyond it. About 1e-15 in double and the last bits in single, differentiable
+    in all three arguments (1 - rho^2 is floored so the tail's derivatives stay finite at |rho| = 1)
+    and vectorised over any broadcastable shapes, in the inputs' dtype and on their device.
     """
-    # work out the cases
-    denom = torch.sqrt(1.0 - rho * rho)
-    a = -rho / denom
-    b = P / denom
-    numer = a * Q + b
+    h, k, r = torch.broadcast_tensors(-P, -Q, rho)
+    node = torch.tensor(BVN_GAUSS[0], dtype=h.dtype, device=h.device)
+    node = torch.cat([1.0 - node, 1.0 + node])
+    weight = torch.tensor(BVN_GAUSS[1], dtype=h.dtype, device=h.device).repeat(2)
+    hk = h * k
 
-    case1 = (a > 0.0) & (numer >= 0.0)
-    case2 = (a > 0.0) & (numer < 0.0)
-    case3 = (a < 0.0) & (numer >= 0.0)
-    case4 = (a < 0.0) & (numer < 0.0)
+    # |rho| < 0.925: integrate the density over the polar angle out to arcsin(rho)
+    asr = torch.asin(r.clamp(-0.925, 0.925))
+    sn = torch.sin(0.5 * asr.unsqueeze(-1) * node)
+    polar = torch.exp((sn * hk.unsqueeze(-1) - (0.5 * (h * h + k * k)).unsqueeze(-1))
+                      / (1.0 - sn * sn)) @ weight
+    polar = polar * asr / 12.566370614359172 + norm_cdf(-h) * norm_cdf(-k)
 
-    c1 = -1.0950081470333
-    c2 = -0.75651138383854
-    r2 = 1.4142135623730951
-    ma2c2 = 1.0 - a * a * c2
-    two_sq_ma2c2 = 2.0 * torch.sqrt(ma2c2)
-    a2c1_2 = a * a * c1 * c1
-    q_part = r2 * (Q - a * c2 * (a * Q + b))
-    root4_p = torch.exp((a2c1_2 + 2 * b * (r2 * c1 + b * c2)) / (4.0 * ma2c2)) / (2.0 * two_sq_ma2c2)
-    root4_m = torch.exp((a2c1_2 - 2 * b * (r2 * c1 - b * c2)) / (4.0 * ma2c2)) / (2.0 * two_sq_ma2c2)
-    erf2_p = torch.erf((q_part + a * c1) / two_sq_ma2c2)
-    erf2_m = torch.erf((q_part - a * c1) / two_sq_ma2c2)
-    erf_p1 = (r2 * b) / (a * two_sq_ma2c2)
-    erf_p2 = (a * a * c1) / (a * two_sq_ma2c2)
-    erf1 = torch.erf(erf_p1 + erf_p2)
-    erf3 = torch.erf(erf_p1 - erf_p2)
-    final = norm_cdf(P) * norm_cdf(Q)
-
-    for c, f in enumerate([case1, case2, case3, case4]):
-        if f.any():
-            if c == 0:
-                case = .5 * (
-                        torch.erf(Q / r2) + torch.erf(b / (r2 * a))) + root4_m * (
-                               1.0 - erf3) - root4_p * (erf2_m + erf1)
-            elif c == 1:
-                case = root4_m * (1 + erf2_p)
-            elif c == 2:
-                case = .5 * (1 + torch.erf(Q / r2)) - root4_p * (1.0 + erf2_m)
-            else:
-                case = .5 * (1 - torch.erf(b / (r2 * a))) - root4_p * (1.0 - erf1) + root4_m * (erf2_p + erf3)
-
-            final[f] = case[f]
-
-    return final
+    # |rho| >= 0.925: a negative correlation is reflected, then the singular part of the same
+    # integral is taken analytically and its fifth-order remainder over the same nodes. Every
+    # exponent is clamped where its term is dropped, so no inf reaches the backward.
+    sign = 1.0 - 2.0 * (r < 0).to(h.dtype)
+    kt, hkt = sign * k, sign * hk
+    var = ((1.0 - r) * (1.0 + r)).clamp(min=torch.finfo(h.dtype).eps)
+    a, b = torch.sqrt(var), (h - kt).abs()
+    bs = b * b
+    c, d = (4.0 - hkt) / 8.0, (12.0 - hkt) / 16.0
+    asr = -0.5 * (bs / var + hkt)
+    tail = torch.where(asr > -100.0, a * torch.exp(asr.clamp(min=-100.0)) * (
+        1.0 - c * (bs - var) * (1.0 - 0.2 * d * bs) / 3.0 + 0.2 * c * d * var * var), 0.0)
+    tail = tail - torch.where(-hkt < 100.0, 2.5066282746310002 * b * norm_cdf(-b / a) * (
+        1.0 - c * bs * (1.0 - 0.2 * d * bs) / 3.0) * torch.exp(-0.5 * hkt.clamp(min=-100.0)), 0.0)
+    xs = 0.25 * var.unsqueeze(-1) * (node * node)
+    rs = torch.sqrt(1.0 - xs)
+    asr = -0.5 * (bs.unsqueeze(-1) / xs + hkt.unsqueeze(-1))
+    quad = torch.exp(asr.clamp(min=-100.0)) * (
+        torch.exp((-0.5 * hkt.unsqueeze(-1) * (1.0 - rs) / (1.0 + rs)).clamp(max=100.0)) / rs
+        - (1.0 + c.unsqueeze(-1) * xs * (1.0 + d.unsqueeze(-1) * xs)))
+    tail = -(tail + 0.5 * a * (torch.where(asr > -100.0, quad, 0.0) @ weight)) / 6.283185307179586
+    lim = norm_cdf(kt) - norm_cdf(h)
+    tail = torch.where(r > 0.0, tail + norm_cdf(-torch.maximum(h, kt)),
+                       0.5 * (lim + lim.abs()) - tail)
+    return torch.where(r.abs() < 0.925, polar, tail)
 
 
 def declared_spot(code, name):

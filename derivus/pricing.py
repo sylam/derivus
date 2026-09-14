@@ -1384,12 +1384,12 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
         # remaining life: one bivariate per reflected term, correlation sqrt(limit/expiry)
         rho = torch.sqrt(window / expiry)
         g2, g4 = (-h + nu * expiry) / v_exp, (h + nu * expiry) / v_exp
-        no_touch = (utils.ApproxBivN(eta * e2, eta * g2, rho) -
-                    reflect * utils.ApproxBivN(-eta * e4, eta * g4, -rho))
+        no_touch = (utils.BivN(eta * e2, eta * g2, rho) -
+                    reflect * utils.BivN(-eta * e4, eta * g4, -rho))
         # the last term is the path already BEYOND the barrier at `limit`: it touches there, and
         # is paid discounted to `limit` rather than to a first passage after it
-        touch = (plus * utils.ApproxBivN(-eta * z_lim, eta * z_exp, -rho) +
-                 minus * utils.ApproxBivN(-eta * z_lim2, eta * z_exp2, -rho) +
+        touch = (plus * utils.BivN(-eta * z_lim, eta * z_exp, -rho) +
+                 minus * utils.BivN(-eta * z_lim2, eta * z_exp2, -rho) +
                  torch.exp(-r * window) * utils.norm_cdf(-eta * e2))
     return no_touch * torch.exp(-r * expiry), touch
 
@@ -1415,8 +1415,8 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
         return strike, spot, spot * strike / barrier, r - b, -b, -upDown
 
     def PartialBarrierCalc(forward, strike, log1, log2, rho1, rho2, p1, p2, p3, p4, p5, p6, p7, p8):
-        return (forward * (utils.ApproxBivN(p1, p2, rho1) - torch.exp(log1) * utils.ApproxBivN(p3, p4, rho2)) -
-                strike * (utils.ApproxBivN(p5, p6, rho1) - torch.exp(log2) * utils.ApproxBivN(p7, p8, rho2)))
+        return (forward * (utils.BivN(p1, p2, rho1) - torch.exp(log1) * utils.BivN(p3, p4, rho2)) -
+                strike * (utils.BivN(p5, p6, rho1) - torch.exp(log2) * utils.BivN(p7, p8, rho2)))
 
     def partial_barrier_option(spot, strike, barrier, r, b, eta):
         rho = torch.sqrt(window / expiry)

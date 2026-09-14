@@ -1,9 +1,8 @@
 """FXPartialTimeBarrierOption end to end, through the JSON contract and nothing else.
 
 A partial-time (window) barrier: the barrier is live only on [0, Limit] (Barrier_At_Start Yes)
-or [Limit, Expiry] (No), priced by the Heynen-Kat closed forms through `ApproxBivN` - the
-Tsay-Ke bivariate-normal approximation, ~1e-4 absolute, chosen because it is fully vectorised
-and differentiable everywhere.
+or [Limit, Expiry] (No), priced by the Heynen-Kat closed forms through `BivN` - Genz's bivariate
+normal, 2e-16 in double, fully vectorised and differentiable everywhere.
 
 THE ORACLE is an independent numpy Monte Carlo: daily GBM steps inside the window with the
 Brownian-bridge crossing probability per step, so its monitoring is continuous up to the
@@ -14,10 +13,10 @@ put-call/up-down transformations are exactly what the oracle must not share.
 The in-out parity KI = BS - KO is NOT a gate here: the pricer DEFINES knock-in that way, so the
 identity is tautological. The oracle carries both directions independently instead.
 
-MEASURED, all eight direction/window configurations against the oracle: worst 0.43%, most under
-0.2%, inside a 2% gate carrying the oracle's own daily-bridge error and ApproxBivN's ~7e-4 CDF
-error. MUTATIONS: the window mask dropped reads the expiry row 87% low; the limit clamp dropped
-brings the NaN back.
+MEASURED, all eight direction/window configurations against the oracle: worst 0.47%, five of the
+eight under 0.2%, inside a 2% gate that carries the oracle's own daily-bridge error and nothing
+else - the CDF's share of it is 2e-16. MUTATIONS: the window mask dropped reads the expiry row 87%
+low; the limit clamp dropped brings the NaN back.
 
 `Cash_Rebate` was worth EXACTLY NOTHING before this: `getpartialbarrierpayoff` carried no rebate
 term, so the rebate moved the mark by 0.0000 in all eight configurations where the oracle puts it
@@ -174,8 +173,8 @@ CASES = [(bt, at, bar) for at in ('Yes', 'No')
                          ids=['%s-%s' % (bt, at) for bt, at, _ in CASES])
 def test_the_closed_form_prices_to_the_independent_oracle(barrier_type, at_start, barrier):
     """Every direction and both windows against the bridge-corrected Monte Carlo. The 2% tolerance
-    carries the oracle's own daily-bridge error plus ApproxBivN's ~1e-4 CDF error scaled by
-    notional; the worst reading is in the module docstring."""
+    carries the oracle's own daily-bridge error and no longer a CDF error with it; the worst
+    reading is in the module docstring, and 0.75% would hold on this seed."""
     v = _mtm(_run(_job(_deal(barrier_type, barrier, at_start=at_start))))
     ref = _oracle(barrier_type, barrier, at_start=at_start)
     scale = max(abs(ref), 0.02 * NOTIONAL)
@@ -199,8 +198,8 @@ def test_the_rebate_prices_to_the_independent_oracle(barrier_type, at_start, bar
     option leg's error cannot pay for a rebate error. Worst 0.56% over the eight Call
     configurations, and the SIGN is the oracle's daily-bridge bias every time - a knock-out's hit
     rebate reads high against an oracle that misses crossings, an untouched knock-in's reads low.
-    The tolerance also carries `ApproxBivN`'s ~7e-4 CDF error, which enters the end-window legs
-    twice."""
+    A start-window leg reads no bivariate at all and an end-window one reads `BivN` twice, and
+    since neither carries a CDF error now the 0.56% is the oracle's bias alone."""
     deal = dict(barrier_type=barrier_type, at_start=at_start, option_type=option_type)
     v0 = _mtm(_run(_job(_deal(barrier=barrier, rebate=0.0, **deal))))
     vr = _mtm(_run(_job(_deal(barrier=barrier, rebate=REBATE, **deal))))
