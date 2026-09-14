@@ -34,7 +34,7 @@ from . import schema
 from . import fields
 from . import utils
 from .instruments import construct_instrument
-from .config import CustomJsonEncoder, Config, deal_at
+from .config import CustomJsonEncoder, Config, correlation_names, correlation_pairs, deal_at
 
 
 def update_dict(d, u):
@@ -460,12 +460,13 @@ class Context:
                     self.config_cache[market_data['MarketDataFile']] = new_cfg
 
                 cfg = self.config_cache[market_data['MarketDataFile']]
-                for section, section_data in market_data['ExplicitMarketData'].items():
-                    cfg.params[section].update(section_data)
             else:
                 cfg = Config()
-                for section, section_data in market_data.get('ExplicitMarketData', {}).items():
-                    cfg.params[section].update(section_data)
+            # `Correlations` is keyed by name PAIR wherever it is authored, file or job, or the
+            # cholesky looks up a tuple the section does not carry and reads a silent zero
+            for section, section_data in market_data.get('ExplicitMarketData', {}).items():
+                cfg.params[section].update(
+                    correlation_pairs(section_data) if section == 'Correlations' else section_data)
 
         if data['Calc'].get('CalendDataFile'):
             if data['Calc']['CalendDataFile'] not in self.holiday_cfg_cache:
@@ -504,7 +505,8 @@ class Context:
 
         def write_final_json(out_json, cfg, section):
             if cfg.params[section]:
-                out_json[section] = cfg.params[section]
+                out_json[section] = correlation_names(cfg.params[section]) \
+                    if section == 'Correlations' else cfg.params[section]
 
         cfg = self.current_cfg
         try:

@@ -28,7 +28,7 @@ import torch
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
 from .schema import (F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, declared_defaults,
-                     partition_market_price)
+                     partition_market_price, quote_table)
 from ._version import __version__
 
 import scipy.optimize
@@ -915,7 +915,7 @@ class OptionQuoteFamily(ImpliedCalibration):
                         '/'.join(cls.tabular_surfaces)))
         return factors, float(factors['Underlying'].current_value()[0])
 
-    def prepare_quotes(self, sys_params, instrument, factors, spot):
+    def prepare_quotes(self, sys_params, instrument, factors, spot, market_price=None):
         """Each `European_Options` row as `(option, t, r, q, forward, sign, strike, sigma,
         premium)` - the numbers every family in this hierarchy builds its objective from.
 
@@ -930,7 +930,7 @@ class OptionQuoteFamily(ImpliedCalibration):
         quote_type = instrument['Quote_Type']
         use_forward = instrument.get('Use_Forward') == 'Yes'
         invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
-        for option in instrument['European_Options']:
+        for option in quote_table(instrument, market_price, 'European_Options'):
             t = discount.get_day_count_accrual(
                 sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
             r = float(discount.current_value(t))
@@ -3604,7 +3604,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             quoted=sigma if fit.is_vol else option['Quoted_Market_Value'],
             vega=option['Units'] * self.fx_black_vega(forward, strike, r, sigma, t))
             for option, t, r, q, forward, sign, strike, sigma, premium
-            in self.prepare_quotes(sys_params, fit.instrument, factors, spot)]
+            in self.prepare_quotes(sys_params, fit.instrument, factors, spot, fit.market_price)]
         dead = [quote for quote in quotes if not quote.vega > 0.0]
         if dead:
             logging.warning(
@@ -4058,12 +4058,13 @@ class GBMAssetPriceTSModelParameters(Construction):
         axis is log(F/K), whose ATM is at 0 - so a hand-authored Malz surface reads a wing.
         """
         family = FXVolSurfaceParameters
-        quoted = market_prices.get(utils.check_tuple_name(utils.Factor(
-            family.market_factor_type, vol_factor.name)))
+        quoted_name = utils.check_tuple_name(utils.Factor(
+            family.market_factor_type, vol_factor.name))
+        quoted = market_prices.get(quoted_name)
         written = price_factors.get(utils.check_tuple_name(vol_factor), {})
         if quoted is not None and written.get('Surface_Type') == family.surface_type and \
                 'Grid_Tolerance' in written:
-            atm = family.atm_quotes(family.used(quoted['instrument']))
+            atm = family.atm_quotes(family.used(quoted['instrument'], quoted_name))
             if set(atm) != set(vol_surface.expiry):
                 raise ValueError(
                     '{} is quoted at expiries {} and carries a surface over {} - the quotes moved '
@@ -5578,7 +5579,7 @@ class InterestRateCurveParameters(Construction):
         self.quote_leaves = {}
 
     @staticmethod
-    def benchmark_curves(block):
+    def benchmark_curves(block, market_price=None):
         """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
         type's own `factor_fields` and recursing into `Children`.
 
@@ -5598,7 +5599,8 @@ class InterestRateCurveParameters(Construction):
             for child in deal.get('Children', ()):
                 yield from walk(child, child.get('Object', ''))
 
-        return {curve for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'
+        return {curve for point in quote_table(block, market_price)
+                if point.get('Use', 'Yes') == 'Yes'
                 for curve in walk(point['Deal'], point['DealType'])}
 
     def in_dependency_order(self, market_prices):
@@ -5623,7 +5625,7 @@ class InterestRateCurveParameters(Construction):
         graph = {}
         for name, implied_params in blocks.items():
             block = implied_params['instrument']
-            reads = {block['Discount_Rate']} | self.benchmark_curves(block)
+            reads = {block['Discount_Rate']} | self.benchmark_curves(block, name)
             graph[name] = sorted({builds[curve] for curve in reads
                                   if curve in builds and builds[curve] != name})
         # `topological_sort` deletes what it resolves, so what is left is exactly the cycle
@@ -5837,7 +5839,7 @@ class InterestRateCurveParameters(Construction):
         second filter beside this one is how a ridden theta ends up indexed differently from the
         artifact it rode.
         """
-        return [point for point in block['Points']
+        return [point for point in quote_table(block, market_price)
                 if point['Use'] == 'Yes' and cls.takes(point, market_price)]
 
     @classmethod
@@ -6116,9 +6118,9 @@ class FXVolSurfaceParameters(Construction):
         self.quote_leaves = {}
 
     @staticmethod
-    def used(block):
+    def used(block, market_price=None):
         """The block's quotes that enter the surface - `Use` holds one out without deleting it."""
-        return [point for point in block['Points'] if point['Use'] == 'Yes']
+        return [point for point in quote_table(block, market_price) if point['Use'] == 'Yes']
 
     @staticmethod
     def descriptor(point):
@@ -6357,7 +6359,7 @@ class FXVolSurfaceParameters(Construction):
                         'terminate there'.format(market_price, tolerance,
                                                  *self.grid_tolerance_bounds))
 
-                quotes = self.used(block)
+                quotes = self.used(block, market_price)
                 delta_surface = self.smile(quotes)
                 expiries = np.unique(delta_surface[:, 1])
                 skews = riskfactors.Factor2D.malz_skews(delta_surface, expiries)
@@ -6368,7 +6370,7 @@ class FXVolSurfaceParameters(Construction):
                     grid = riskfactors.Factor2D.malz_grid(skews, tolerance)
 
                 surface = riskfactors.Factor2D.malz_surface(skews, grid)
-                stamps = [point['Timestamp'] for point in quotes if point['Timestamp']]
+                stamps = [point['Timestamp'] for point in quotes if point.get('Timestamp')]
                 price_factors[vol_name] = {
                     'Property_Aliases': None, 'Surface_Type': self.surface_type,
                     'Moneyness_Rule': self.moneyness_rule,

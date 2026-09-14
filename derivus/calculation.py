@@ -947,7 +947,9 @@ class Credit_Monte_Carlo(Calculation):
               F('Stochastic_Hazard_Rates', 'Text', default='No', values=['Yes', 'No']),
               F('Gradient', 'Text', default='No', values=['Yes', 'No']),
               F('Hessian', 'Text', default='No', values=['Yes', 'No'],
-                description='Second derivatives of the CVA as well as the first'),
+                description='Second derivatives of the CVA as well as the first. Read only beside '
+                            'Gradient: Yes - the tape they are taken through is the one the first '
+                            'derivatives are reported off - and refused without it'),
               F('CDS_Tenors', 'Container', default=[],
                 description='Tenors in years to add to the survival curve so CDS rates can be '
                             'interpolated off it')]),
@@ -1195,6 +1197,14 @@ class Credit_Monte_Carlo(Calculation):
             for sub_factors in proc_corr_factors:
                 correlation_factors.append(utils.Factor(proc_corr_type, key.name + sub_factors))
 
+        # a pair filed under a process name nothing simulates reads 0.0 like an undeclared one
+        simulated = {utils.check_tuple_name(factor) for factor in correlation_factors}
+        unread = sorted({name for pair in self.config.params['Correlations'] for name in pair}
+                        - simulated)
+        if unread:
+            logging.info('Correlations declares {}, which no simulated factor answers to - every '
+                         'pair filed under those names reads zero'.format(', '.join(unread)))
+
         for index1 in range(self.num_factors):
             for index2 in range(index1 + 1, self.num_factors):
                 factor1, factor2 = utils.check_tuple_name(correlation_factors[index1]), utils.check_tuple_name(
@@ -1403,6 +1413,13 @@ class Credit_Monte_Carlo(Calculation):
         """
         # the declaration is the single source of an omitted field's default
         params = declared_defaults(type(self), params)
+        credit = params['Credit_Valuation_Adjustment']
+        if credit.get('Hessian', 'No') == 'Yes' and credit.get('Gradient', 'No') != 'Yes':
+            raise ValueError(
+                "Credit_Valuation_Adjustment Hessian: 'Yes' needs Gradient: 'Yes' beside it - the "
+                'second derivatives are taken through the tape the first ones are reported off, '
+                'which is built only where the gradient is asked for, so this run would report '
+                'neither. Write Gradient: Yes for both blocks, or Hessian: No for the value alone')
         base_date = pd.Timestamp(params['Run_Date'])
 
         self.input_time_grid = params['Time_grid']

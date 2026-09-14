@@ -86,8 +86,11 @@ BARRIERS = [('Down_And_Out', 1.12, 1.25, 'Call'), ('Down_And_In', 1.12, 1.25, 'C
 PINNED = {
     'autocall_job.json': (
         'a5f6560a00df96fd7f0a5b5b1087e60495c6321517431c54e6afcb13931f5d73', 5, 0),
+    # re-pinned 2026-09-14: the document's own `Correlations` section is keyed by name PAIR on the
+    # explicit path too, so the plan carries the four correlations it declares instead of a
+    # section keyed by a string nothing reads. The factor universe is untouched
     'commodity_aps_world.json': (
-        '1847aa7c7053b57255426bee4aae1da44954b955b52116a6a14d5ad26be6b07f', 6, 0),
+        'b18b01c43a4dbdf4562d1441624e00e06d145e255aae2a14791f8fcce74baf35', 6, 0),
     # re-pinned 2026-09-03: the DOCUMENT changed, not the reading of it. `Barrier_Hit` retired -
     # the knock-out is a fold over the schedule - so the block lost a field and the plan is a
     # different program. The factor universe is untouched (5, 0) and the mark is bit-identical at

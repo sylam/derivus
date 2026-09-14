@@ -507,6 +507,24 @@ def quote_containers(module):
         if keys <= {c.key for c in (f.row.fields if f.row is not None else f.sub_fields or [])}}))
 
 
+def quote_table(block, market_price, key='Points'):
+    """The quote ROWS of one `Market Prices` block, refused by name where the block carries none.
+
+    A Table's declared blank is the string `'null'`, so a block completed from its declarations
+    rather than authored carries that where a document carries rows, and every reader that walks
+    the table walks the string instead. One read for all of them.
+    """
+    rows = block.get(key)
+    if not isinstance(rows, list):
+        found = repr(rows)
+        raise ValueError(
+            '{0} carries no {1} table, so there is nothing to fit: the block reads {2} where a '
+            'list of quote rows belongs. Author the quotes under {1}, or drop the block'.format(
+                market_price or 'A Market Prices block', key,
+                found if len(found) < 48 else found[:45] + '...'))
+    return rows
+
+
 def quote_rows(instrument):
     """`(container key, rows)` for the one quote table on this block that carries values, or
     `(None, None)` where the family quotes somewhere the value plane does not reach.

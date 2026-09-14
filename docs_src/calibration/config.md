@@ -65,8 +65,9 @@ configuration that depends on the factor (e.g. linked sibling factor) flows thro
 
 Calibration classes that don't need any tuning can have a minimal entry containing just
 `ID` and `Method`. A class omitted from this block is **not** filtered out up front: the factor
-still enters the map with `calibration=None`, and it is skipped only downstream, when
-`rate_value.calibration.calibrate` raises `AttributeError` into a bare `except` that logs it as
-*"Data errors in factor … resulting in flawed calibration"* — a message naming the wrong cause. And
-it only reaches that far if the factor has archive columns at all; otherwise the unguarded
+still enters the map with `calibration=None` and is skipped downstream, named as
+*"… is not calibrated and is skipped — CalibrationConfig names no Method for …"*; every other skip
+is named in the calibration class's own words. A factor skipped for any reason writes no `Price
+Models` entry, and a set where every factor is skipped is refused rather than reported empty. It
+only reaches that far if the factor has archive columns at all; otherwise the unguarded
 `self.archive_columns[…]` subscript in `calibrate_factors` raises `KeyError` first.

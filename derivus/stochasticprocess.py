@@ -986,6 +986,14 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         return self.cache['time_grid_years'], fwd_curve, self.cache['t']
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        if self.param is None:
+            # the calibrated parameters come off the implied factor; these two do not
+            raise ValueError(
+                'Price Models.{0} is not declared, and Lambda_1 and Lambda_2 - the market price of '
+                'risk this process carries per factor - are read off it. Write the block with both '
+                'at 0.0 to simulate {1} without one'.format(
+                    utils.check_tuple_name(utils.Factor(type(self).__name__, self.factor_key.name)),
+                    utils.check_tuple_name(self.factor_key)))
         time_grid_years, fwd_curve, t = self.read_cache(ref_date, time_grid, tensor, shared, process_ofs)
 
         alpha = [hw_alpha_floor(implied_tensor['Alpha_1'][0].type(torch.float64)),

@@ -278,7 +278,7 @@ class TreePanel(metaclass=ABCMeta):
                 else:
                     raise Exception('Unknown Array Field type {0}'.format(field_name))
             elif isinstance(obj, pd.DateOffset):
-                return_value = ''.join(['%d%s' % (v, rf.config.Config.reverse_offset[k]) for k, v in obj.kwds.items()])
+                return_value = rf.config.offset_string(obj)
             elif isinstance(obj, pd.Timestamp):
                 # leave datepickers unaltered but convert everything else to a string
                 return_value = obj if field_meta['widget'] == 'DatePicker' else obj.strftime('%Y-%m-%d')

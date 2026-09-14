@@ -130,6 +130,39 @@ class ModelParams(object):
         return self.modeldefaults.get(price_factor_type)
 
 
+def offset_string(offset):
+    """A `DateOffset` as the `.DateOffset` string both decoders read, units largest first.
+
+    The order is `Config.reverse_offset`'s rather than `DateOffset.kwds`', which is a set's: a
+    two-unit period would otherwise be written `6M2D` by one process and `2D6M` by the next, and a
+    written file's bytes are what a hash is taken over.
+    """
+    return ''.join('{}{}'.format(offset.kwds[unit], code)
+                   for unit, code in Config.reverse_offset.items() if unit in offset.kwds)
+
+
+def correlation_pairs(section):
+    """A `Correlations` section keyed by the `(name, name)` pair the cholesky looks it up under.
+
+    JSON has no tuple key, so the section travels nested by name (`{rate1: {rate2: rho}}`) whether
+    it arrives as a market-data file or inside a job's own explicit block. One read for both, or a
+    correlation lands under a key nothing looks up and reads as a silent zero.
+    """
+    pairs = {}
+    for rate1, rate_list in section.items():
+        for rate2, correlation in rate_list.items():
+            pairs.setdefault((rate1, rate2), correlation)
+    return pairs
+
+
+def correlation_names(pairs):
+    """`correlation_pairs` inverted - the section nested by name, which is the shape JSON holds."""
+    nested = {}
+    for (rate1, rate2), value in pairs.items():
+        nested.setdefault(rate1, {}).setdefault(rate2, value)
+    return nested
+
+
 class CustomJsonEncoder(json.JSONEncoder):
     def default(self, obj):
         return_value = {'.Unknown': str(type(obj))}
@@ -148,7 +181,7 @@ class CustomJsonEncoder(json.JSONEncoder):
         elif isinstance(obj, utils.Offsets):
             grid = []
             for x in obj.data:
-                w = [''.join(['{}{}'.format(v, Config.reverse_offset[k]) for k, v in obj.kwds.items()]) for obj in x]
+                w = [offset_string(obj) for obj in x]
                 grid.append({'.DateOffset': w[0]} if len(w) == 1 else {'.DateOffset': w[0], '.Offset': w[1]})
             return {'.Grid': grid}
         elif isinstance(obj, utils.CreditSupportList):
@@ -159,8 +192,7 @@ class CustomJsonEncoder(json.JSONEncoder):
         elif isinstance(obj, utils.DateList):
             return_value = {'.DateList': [[date.strftime('%Y-%m-%d'), value] for date, value in obj.data.items()]}
         elif isinstance(obj, DateOffset):
-            return_value = {'.DateOffset': ''.join(
-                ['{}{}'.format(v, Config.reverse_offset[k]) for k, v in obj.kwds.items()])}
+            return_value = {'.DateOffset': offset_string(obj)}
         elif isinstance(obj, Timestamp):
             # a date stays a date (old files re-encode byte-stable); a non-midnight stamp keeps its
             # time, or values_hash cannot tell the 09:15 snapshot from the 16:30 one
@@ -346,7 +378,8 @@ class Config(object):
 
     month_lookup = dict((m, i) for i, m in enumerate(calendar.month_abbr) if m)
     offset_lookup = {'M': 'months', 'D': 'days', 'Y': 'years', 'W': 'weeks'}
-    reverse_offset = {'months': 'M', 'days': 'D', 'years': 'Y', 'weeks': 'W'}
+    #: the wire spelling per unit, largest first - `offset_string` writes a period in this order
+    reverse_offset = {'years': 'Y', 'months': 'M', 'weeks': 'W', 'days': 'D'}
 
     def __init__(self, base_currency='USD'):
         """The default state of the system.
@@ -595,10 +628,13 @@ class Config(object):
                                 'for it - nothing to fit'.format(bootstrapper_name, family))
             try:
                 bootstrapper = construct_bootstrapper(bootstrapper_name, params)
-            except Exception:
-                logging.error('Cannot execute Bootstrapper for {0} - skipping'.format(
-                    bootstrapper_name), exc_info=True)
-                continue
+            except Exception as refusal:
+                raise ValueError(
+                    'Bootstrapper Configuration {0} refuses the declarations it was given, so no '
+                    '{1} price factor is written and the first deal that wants one fails on a '
+                    'missing factor instead. Fix the entry or remove it - {2}'.format(
+                        bootstrapper_name, family_class(bootstrapper_name).price_factor_type,
+                        refusal)) from refusal
 
             bootstrapper.bootstrap(self.params['System Parameters'],
                                    self.params['Price Models'],
@@ -705,9 +741,13 @@ class Config(object):
 
             try:
                 result = rate_value.calibration.calibrate(data_frame, vol_shift, num_business_days=252.0)
-            except:
-                logging.error('Data errors in factor {0} resulting in flawed calibration - skipping'.format(
-                    rate_value.archive_name))
+            except Exception as refusal:
+                # the calibration class's own words, or the one case where there is no class
+                logging.error('{0} is not calibrated and is skipped - {1}'.format(
+                    rate_value.archive_name,
+                    'CalibrationConfig names no Method for {}'.format(rate_value.model_name)
+                    if rate_value.calibration is None else '{} refused it: {}'.format(
+                        type(rate_value.calibration).__name__, refusal)))
                 continue
 
             if (np.array(result.correlation).max() > 1) or (np.array(result.correlation).min() < -1) or (
@@ -733,6 +773,13 @@ class Config(object):
 
             num_indexes += result.delta.shape[1]
             num_factors += rate_value.calibration.num_factors
+
+        if consolidated_df is None:
+            raise ValueError(
+                'Every one of the {0} factors asked for was skipped, so there is no innovation to '
+                'correlate and nothing to write: {1}. The reason each was skipped is logged above '
+                'it'.format(len(factors), ', '.join(sorted(
+                    rate.archive_name for rate in factors.values()))))
 
         a = np.zeros((num_factors, num_indexes))
         rho = consolidated_df.corr()
@@ -1237,12 +1284,7 @@ class Config(object):
 
         if 'MarketData' in data:
             market_data = data['MarketData']
-            correlations = {}
-            for rate1, rate_list in market_data['Correlations'].items():
-                for rate2, correlation in rate_list.items():
-                    correlations.setdefault((rate1, rate2), correlation)
-
-            market_data['Correlations'] = correlations
+            market_data['Correlations'] = correlation_pairs(market_data['Correlations'])
             self.params = market_data
             self.version = data['Version']
 
@@ -1317,13 +1359,8 @@ class Config(object):
 
     def write_marketdata_json(self, json_filename):
         old_correlations = self.params['Correlations']
-
-        correlations = {}
-        for correlation, value in old_correlations.items():
-            correlations.setdefault(correlation[0], {}).setdefault(correlation[1], value)
-
         # correlations go out nested by name pair (JSON has no tuple key) and are restored after
-        self.params['Correlations'] = correlations
+        self.params['Correlations'] = correlation_names(old_correlations)
 
         with open(json_filename, 'wt', encoding='utf-8') as f:
             f.write(json.dumps({'MarketData': self.params,
