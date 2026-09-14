@@ -3014,9 +3014,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
 
     def _restricted_struct(self, outer_struct, cutoff_mtm_idx, window_end_idx=None):
         """Mirror `outer_struct` with each deal's `Time_dep` restricted to events at mtm positions
-        >= `cutoff_mtm_idx` (`copy_restricted`), or windowed to
-        [`cutoff_mtm_idx`, `window_end_idx`] when that is given (`copy_window` - the one-step fork
-        prices exactly {t, t+1}). `Factor_dep` is shared by reference and `Calc_res` is fresh, so
+        >= `cutoff_mtm_idx`, or windowed to [`cutoff_mtm_idx`, `window_end_idx`] when that is given
+        (the one-step fork prices exactly {t, t+1}). `Factor_dep` is shared by reference and `Calc_res` is fresh, so
         inner pricing cannot clobber outer storage; deals entirely in the past are dropped. Does not
         recurse into sub_structures.
 
@@ -3025,8 +3024,10 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         'Value' D2H copy was 93% of the fork's host egress."""
         inner = DealStructure(outer_struct.obj.Instrument, store_results=False)
         for dd in outer_struct.dependencies:
-            new_td = (dd.Time_dep.copy_restricted(cutoff_mtm_idx) if window_end_idx is None
-                      else dd.Time_dep.copy_window(cutoff_mtm_idx, window_end_idx))
+            keep = dd.Time_dep.deal_time_grid >= cutoff_mtm_idx
+            if window_end_idx is not None:
+                keep &= dd.Time_dep.deal_time_grid <= window_end_idx
+            new_td = dd.Time_dep.restricted(keep)
             if new_td is None:
                 continue
             inner.dependencies.append(utils.DealDataType(

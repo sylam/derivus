@@ -1552,51 +1552,36 @@ class TensorSchedule(object):
 
 
 class DealTimeDependencies(object):
+    """A deal's view of the calculation's mtm grid: the positions it is valued at, the days its
+    values run to, and the prior-event index and weight each of those days interpolates from."""
+
     def __init__(self, mtm_time_grid, deal_time_grid):
         self.mtm_time_grid = mtm_time_grid
-        self.delta = np.hstack(((mtm_time_grid[deal_time_grid[1:]] -
-                                 mtm_time_grid[deal_time_grid[:-1]]), [1]))
-        self.interp = mtm_time_grid[mtm_time_grid <= mtm_time_grid[deal_time_grid[-1]]]
+        self.delta = np.hstack((np.diff(mtm_time_grid[deal_time_grid]), [1]))
+        self.events(deal_time_grid, deal_time_grid[-1])
+
+    def events(self, deal_time_grid, expiry):
+        """The events interpolated from and the mtm position the days run to: the index, the next
+        index and the weight of every day, with the cached tensor weight cleared."""
         self.deal_time_grid = deal_time_grid
-        # store the indices for linear interpolation
-        self.update_indices()
-
-    def assign(self, time_dependencies):
-        # only assign up to the max of this set of dependencies
-        expiry = self.deal_time_grid[-1]
-        query = time_dependencies.deal_time_grid <= expiry
-        self.delta = time_dependencies.delta[query]
-        self.deal_time_grid = time_dependencies.deal_time_grid[query]
         self.interp = self.mtm_time_grid[self.mtm_time_grid <= self.mtm_time_grid[expiry]]
-        # store the indices for linear interpolation
-        self.update_indices()
-
-    def copy_restricted(self, cutoff_mtm_index):
-        """Fresh DealTimeDependencies covering only deal events at mtm positions >=
-        cutoff_mtm_index; delta/interp/indices/alpha are recomputed for the sliced view, so the
-        interpolate path stays aligned with mtm_time_grid. None if every event is past the
-        cutoff."""
-        keep = self.deal_time_grid >= cutoff_mtm_index
-        if not keep.any():
-            return None
-        return type(self)(self.mtm_time_grid, self.deal_time_grid[keep])
-
-    def copy_window(self, from_mtm_index, to_mtm_index):
-        """Fresh DealTimeDependencies covering only deal events at mtm positions in
-        [from_mtm_index, to_mtm_index] — the one-step inner-MC fork prices at exactly {t, t+1}, so
-        the AAD tape and the scenario buffer stop at t+1. Assumes hedge-mode deals reval on every
-        mtm date. None if no event falls inside the window."""
-        keep = (self.deal_time_grid >= from_mtm_index) & (self.deal_time_grid <= to_mtm_index)
-        if not keep.any():
-            return None
-        return type(self)(self.mtm_time_grid, self.deal_time_grid[keep])
-
-    def update_indices(self):
-        self.index = np.searchsorted(self.deal_time_grid, np.arange(self.interp.size), side='right') - 1
-        self.index_next = (self.index + 1).clip(0, self.deal_time_grid.size - 1)
-        self.alpha = (np.array((self.interp - self.interp[self.deal_time_grid[self.index]]) /
-                               self.delta[self.index]).reshape(-1, 1))
+        self.index = np.searchsorted(deal_time_grid, np.arange(self.interp.size), side='right') - 1
+        self.index_next = (self.index + 1).clip(0, deal_time_grid.size - 1)
+        self.alpha = ((self.interp - self.interp[deal_time_grid[self.index]])
+                      / self.delta[self.index]).reshape(-1, 1)
         self.t_alpha = None
+
+    def assign(self, other):
+        """Narrowed in place to `other`'s events up to this expiry, the days still running to it."""
+        expiry = self.deal_time_grid[-1]
+        keep = other.deal_time_grid <= expiry
+        self.delta = other.delta[keep]
+        self.events(other.deal_time_grid[keep], expiry)
+
+    def restricted(self, keep):
+        """A fresh view over the events `keep` marks - a fork's cutoff or window - or None where
+        it marks none."""
+        return type(self)(self.mtm_time_grid, self.deal_time_grid[keep]) if keep.any() else None
 
     def fetch_index_by_day(self, days):
         return self.interp.searchsorted(days)

@@ -93,7 +93,7 @@ Two deals compile outside a `DealStructure` and bind for themselves: `bootstrapp
 
 ## Inner-MC subsystem
 
-`_run_inner_mc_at_t` forks the simulator from each outer-path state at outer step `t`: truncates the grid (`TimeGrid.truncate_to`), windows every deal's `Time_dep` to `{t,t+1}` (`copy_window`), and runs ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples — no partition, so peak memory is a function of those two JSON fields and an over-wide config raises CUDA OOM naming the fork. The pass:
+`_run_inner_mc_at_t` forks the simulator from each outer-path state at outer step `t`: truncates the grid (`TimeGrid.truncate_to`), windows every deal's `Time_dep` to `{t,t+1}` (`restricted`), and runs ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples — no partition, so peak memory is a function of those two JSON fields and an over-wide config raises CUDA OOM naming the fork. The pass:
 
 1. `reset_inner` (Sobol).
 2. Per-process `precalculate` from `outer_buf[key][t]` — a grad leaf under `with_grad`, which also backs the print-seed state so the conditioning rides the AAD tape.
