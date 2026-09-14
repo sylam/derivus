@@ -327,6 +327,18 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
+- **Whether the LogVar2FJ cap stays** (2026-09-14). The model bounds its log variance with a smooth
+  cap as a safety valve for the rare runaway path. Measured on the fixture world with the cap as
+  it stands, as a hard corner at the same level, and absent: the fit lands on the same parameters
+  to one part in ten billion, the expected variance sits under the ξ curve by at most 2.6e-10
+  under the smooth cap and by nothing under the other two, and an autocall and a collateralised
+  CVA agree across the three to a millionth of their own seed spread, while a deliberately low cap
+  separates them by two and sixteen seed deviations, so the switch is real. The fit sits thirty
+  cap widths below the level. All three arms are declarable today: `Cap_Beta: 0` is the corner,
+  `Cap_A: null` is none. The call: make the corner or none the default and delete the width,
+  which moves every banked reading by about 1e-10 and re-banks the hex set, or leave the smooth cap
+  as the default and the other two as options. With no cap the fit's moments are closed form,
+  which is what a quadrature European needs.
 - **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
   The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
   its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
@@ -335,20 +347,6 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
   moves by a small amount. It is a solver-tuning decision, not a defect, and it wants its own
   reading before it is taken: iterations, the stationarity norm at the stopping point, and what
   the marks do, on the four-quote fixture and one desk ladder.
-- **The log-variance cap becomes a corner, and the calibration stops carrying one.** The smooth
-  cap sits below the identity at every level, so it biases the variance under the ξ curve it is
-  calibrated to and blocks the closed forms; a hard minimum does neither. The fit then runs
-  uncapped, where the instantaneous variance is exactly lognormal, so the moments of the clock the
-  residual is subordinated to are closed form and a European is a low-dimensional quadrature with
-  no paths, no seed and exact derivatives, which is the direct answer to the bimodal objective. The written factor carries one level, derived at the end of the fit from the
-  fitted stationary law at a declared exceedance, and only the simulation applies the minimum, so
-  the exponential is never evaluated above it. The cap width goes with the bend, and the guard
-  that counts path-days within five widths becomes an exceedance probability in closed form, which
-  reads as one path-day in so many rather than a distance in an arbitrary unit. The corner's
-  second derivative is a boundary like any other and is priced exactly behind
-  `Branch_And_Weight` where it matters. First measurement, and the one that says whether any cap
-  is needed at all: one ladder fitted and one exotic and one exposure priced three ways, smooth
-  cap, hard minimum, and none.
 - **The density recursion** — one FFT convolution per monitored date against the block Gaussian,
   as an alternative inner estimator. The daily walk's tape at 2,048 × 2,048 × 509 does not fit a
   24 GiB card in either direction (the draws alone are 3 × 7.95 GiB), which is what the per-block
