@@ -542,7 +542,7 @@ class Config(object):
         return {'present': model_factor, 'absent': remaining_factor}
 
     def bootstrap(self):
-        """Runs all the bootstrappers in one process with debugging on. For multiprocessing
+        """Runs all the bootstrappers in one process. For multiprocessing
         bootstrapping, call `construct_bootstrapper` directly.
 
         THE CONFIGURATION DRIVES THE LOOP: each `Bootstrapper Configuration` entry names a family,
@@ -605,8 +605,7 @@ class Config(object):
                                    self.params['Price Factors'],
                                    self.params['Price Factor Interpolation'],
                                    blocks,
-                                   self.holidays,
-                                   debug=self)
+                                   self.holidays)
 
             # a family that kept its calibration on the tape hands the leaves over here, for
             # `_build_factor_state`. Its OWN keys are dropped first, so a run that stops publishing

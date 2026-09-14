@@ -126,7 +126,22 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
 ALPHA_SEED = (0.5, 0.05)
 
 
-class Construction:
+class Family:
+    """What every price family is built from: the block it was configured with, completed by
+    its own declared defaults (a quote's own instrument is unioned onto it and wins on conflict),
+    and the device and precision of the job. A family that pins its own precision - the
+    LogVar2FJ fit is double whatever the job is - declares `prec` on the class and keeps it.
+    """
+    prec = None
+
+    def __init__(self, param, device, dtype):
+        self.param = declared_defaults(type(self), param)
+        self.device = device
+        if self.prec is None:
+            self.prec = dtype
+
+
+class Construction(Family):
     """A construction turns quotes into a market factor with no model behind it - deposits, FRAs
     and swaps into a curve, delta quotes into a volatility surface, a volatility strip into a
     lognormal term structure. Deterministic - closed form or a chain of one-dimensional roots, no
@@ -138,7 +153,7 @@ class Construction:
     """
 
 
-class ImpliedCalibration:
+class ImpliedCalibration(Family):
     """An implied calibration turns factors plus benchmark instruments into model parameters by a
     solve - Hull-White off the curve and the swaption volatilities, LogVar2FJ off the surface's
     ladder, Clewlow-Strickland off energy futures options. Seconds rather than milliseconds, and
@@ -205,16 +220,12 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
     ]
 
     def __init__(self, param, device, dtype):
-        self.device = device
-        self.prec = dtype
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
+        super().__init__(param, device, dtype)
         for name in ('Sigma_Bounds', 'Alpha_Bounds'):
             utils.lv_parse_bounds(self.param[name], name)
         utils.lv_parse_floats(self.param['Seed'], 'Seed', 2)
 
-    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars):
         '''
         Checks for Declining variance in the ATM vols of the relevant price factor and corrects accordingly.
         '''
@@ -438,12 +449,6 @@ class OptionQuoteFamily(ImpliedCalibration):
         F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE + QUOTE_TWO_WAY),
           description='The option quotes the five parameters are fitted to, each with the two-way '
                       'it was dealt on and the print\'s own clock where the source printed them')]
-
-    def __init__(self, param, device, dtype):
-        self.device = device
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
 
     @classmethod
     def resolve(cls, instrument, field, price_factors):
@@ -3384,7 +3389,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         self.quote_leaves = {}
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
-                  calendars, debug=None):
+                  calendars):
         """Calibrates the LogVar2FJ parameters and writes a `LogVar2FJModelParameters` price
         factor.
 
@@ -3882,11 +3887,7 @@ class GBMAssetPriceTSModelParameters(Construction):
     ]
 
     def __init__(self, param, device, dtype):
-        self.device = device
-        self.prec = dtype
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
+        super().__init__(param, device, dtype)
         #: What `Quote_Sensitivity` leaves behind: the integrated vol curve still connected to its
         #: ATM quotes, keyed as `_build_factor_state` mints its `Vol` leaf, plus the quote leaf per
         #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -4005,7 +4006,7 @@ class GBMAssetPriceTSModelParameters(Construction):
 
         return torch.stack(curve)
 
-    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars):
         '''
         Turns the ATM column of the named vol surface into the integrated vol curve the risk neutral
         process reads, repairing any declining variance on the way - see `integrated_vol`.
@@ -4250,11 +4251,7 @@ class SwaptionCalibration(utils.Residual):
 
 class RiskNeutralInterestRateModel(ImpliedCalibration):
     def __init__(self, param, device, dtype):
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
-        self.device = device
-        self.prec = dtype
+        super().__init__(param, device, dtype)
         #: The Monte Carlo sample shape of the last block built - a REPORT. Nothing prices off
         #: these: the residual closure captures its own shape as locals, because one bootstrapper
         #: runs every curve and a closure reaching through `self` would take the next block's count.
@@ -4429,7 +4426,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         else:
             return implied_var, chosen, market_swaps
 
-    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars, debug=None):
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars):
         base_date = sys_params['Base_Date']
         base_currency = sys_params['Base_Currency']
         master_curve_list = sys_params.get('Master_Curves')
@@ -5429,11 +5426,7 @@ class InterestRateCurveParameters(Construction):
     ]
 
     def __init__(self, param, device, dtype):
-        self.device = device
-        self.prec = dtype
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
+        super().__init__(param, device, dtype)
         #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
         #: per curve, plus the quote leaf per block. `Config.bootstrap` harvests both - tensors
         #: cannot live in `Price Factors`.
@@ -5505,7 +5498,7 @@ class InterestRateCurveParameters(Construction):
         return [(name, blocks[name]) for name in order]
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
-                  calendars, debug=None):
+                  calendars):
         """Solve every block for the zero curve that reprices its used quotes to par, one COUPLED
         SET at a time.
 
@@ -5971,11 +5964,7 @@ class FXVolSurfaceParameters(Construction):
     ]
 
     def __init__(self, param, device, dtype):
-        self.device = device
-        self.prec = dtype
-        #: the hyperparameters this Bootstrapper Configuration block declares, completed by their
-        #: own defaults - each quote's own instrument is unioned onto this and wins on conflict
-        self.param = declared_defaults(type(self), param)
+        super().__init__(param, device, dtype)
         #: What `Quote_Sensitivity` leaves behind: the log-moneyness surface still connected to its
         #: quotes, keyed as `_build_factor_state` mints the `FXVol` leaf, plus the quote leaf per
         #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
@@ -6192,7 +6181,7 @@ class FXVolSurfaceParameters(Construction):
         return {T: surface.array[surface.array[:, 1] == T][:, 0] for T in expiries}
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
-                  calendars, debug=None):
+                  calendars):
         """Turn each block's quotes into the log-moneyness `FXVol` surface the pricers read.
 
         The x-grid is taken from the factor this wrote last if it still describes the same expiries
