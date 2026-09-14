@@ -995,9 +995,9 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
         'the family wrote no factor off a premium-quoted chain block - Config.bootstrap keys on '
         'the CLASS name, and a mismatch there is a silent no-op')
     assert not [record for record in caplog.records if 'skipping' in record.getMessage()]
-    for key in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES + ('C_Min',):
+    for key in utils.LogVar2FJ.PARAM_NAMES + utils.LogVar2FJ.STRUCTURAL_NAMES + ('C_Min',):
         assert key in written and math.isfinite(float(written[key])), key
-    for curve in utils.LV_CURVE_NAMES:
+    for curve in utils.LogVar2FJ.CURVE_NAMES:
         assert len(written[curve].array), curve
     # the four levers carry the SAME buckets and the xi curve a knot at tenor zero, which is what
     # price factor asserts at load - so the loader is the gate on what was written
@@ -1011,7 +1011,7 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
     assert 'the product rho_s*sigma_s -1.8900 +- 0.0500 from the declared Leverage_Product_Prior' \
         in report
     print('\nfitted off the chain block: {}\nxi (annualised vol): {}'.format(
-        {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
+        {key: float(written[key]) for key in utils.LogVar2FJ.PARAM_NAMES},
         [(float(knot), round(float(math.sqrt(level)), 4))
          for knot, level in written['Xi_Curve'].array]))
 
@@ -1264,7 +1264,7 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
         'a reference was skipped rather than read or refused')
     from derivus import utils
-    for key in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES:
+    for key in utils.LogVar2FJ.PARAM_NAMES + utils.LogVar2FJ.STRUCTURAL_NAMES:
         assert key in written and math.isfinite(float(written[key])), key
     # the xi curve: a knot per segment between ATM expiries, the first at tenor zero
     curve = written['Xi_Curve']
@@ -1276,7 +1276,7 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     assert reported, 'the family fitted and reported nothing about it'
     print('\nfitted off the chain block, no surface in the book: {}\nxi (variance): {}\n{}\n'
           'bootstrap wall clock {:.1f}s'.format(
-              {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
+              {key: float(written[key]) for key in utils.LogVar2FJ.PARAM_NAMES},
               [(float(knot), round(float(level), 4)) for knot, level in curve.array],
               reported[-1].strip(), elapsed))
 
@@ -1300,7 +1300,7 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
             (json.dumps(document, cls=CustomJsonEncoder), 'equity_chain')).current_cfg
         config.bootstrap()
         written = config.params['Price Factors']['LogVar2FJModelParameters.SPX']
-        return [float(written[key]) for key in utils.LV_PARAM_NAMES]
+        return [float(written[key]) for key in utils.LogVar2FJ.PARAM_NAMES]
 
     with_surface, without = fitted(True), fitted(False)
     assert with_surface == without, (
@@ -1461,7 +1461,7 @@ def probe_block(funding=REPO, days=FORWARD_DAYS):
 
 
 def fitted_forwards(block, deals=()):
-    """`(forwards, the four `LV_PARAM_NAMES` scalars, the run output)` - one real bootstrap of
+    """`(forwards, the four `LogVar2FJ.PARAM_NAMES` scalars, the run output)` - one real bootstrap of
     `block` in the repo world, with `deals` priced against the same market in the same job.
 
     THE FORWARD IS THE FIT'S OWN. `prepare_quotes` is the arithmetic every stage of the fit prices
@@ -1490,7 +1490,7 @@ def fitted_forwards(block, deals=()):
         params['System Parameters'], instrument, factors, spot)]
     written = params['Price Factors']['LogVar2FJModelParameters.SPX']
     out = run_baseval(config)[1] if deals else None
-    return (forwards, [float(written[key]) for key in utils.LV_PARAM_NAMES], out)
+    return (forwards, [float(written[key]) for key in utils.LogVar2FJ.PARAM_NAMES], out)
 
 
 def probe_deals(expiries):

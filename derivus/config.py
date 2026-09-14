@@ -30,7 +30,7 @@ from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Opti
 from . import utils
 from . import schema
 from .bootstrappers import (bootstrap_order, construct_bootstrapper, family_class,
-                            market_prices_for, InterestRateCurveParameters, WRITERS,
+                            market_prices_for, InterestRateCurveParameters, FAMILIES,
                             PRICES_KEY)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
@@ -594,7 +594,7 @@ class Config(object):
         against the family's own declared `price_factor_type`.
         """
         # a block no family reads, or a family no class answers to, is a refusal, never a skip
-        families = sorted(cls.market_factor_type for cls in WRITERS.values())
+        families = sorted(cls.market_factor_type for cls in FAMILIES)
         orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']} - set(families))
         if orphans:
             raise ValueError('Market Prices carries {}, which no price family reads; the families read '

@@ -266,7 +266,7 @@ Under a walking kit the equity has no implied vol to read: its instantaneous var
 state's own and it moves along the path. So each business day's leverage mean gains
 `−ρ_q σ_FX,k √(V_k δ_k)` — the day's own budget `V_k`, so the quanto drift follows the variance
 path — and `calc_vol_adjustment` hands the walking arm `(ρ_q, σ_FX)` in place of the carry, which
-it returns as zero. `utils.lv_walk` takes the loading `q_k = ρ_q σ_FX,k √δ_k` as one more per-step
+it returns as zero. `utils.LogVar2FJ.walk` takes the loading `q_k = ρ_q σ_FX,k √δ_k` as one more per-step
 tensor and adds `−q_k √V_k`; absent, the arithmetic is bit-identical, and under `Invert_Spot` it is
 added the same way, a drift being a drift on either axis.
 
@@ -313,7 +313,7 @@ What that costs is one graph pass per segment per iterate: the search itself run
 the previous sweep's slope. **The walk is the block's CLOSED FORM, not a scan.** Both factors are
 linear in their own shocks, and the OU transition `exp(C_k − C_{j+1})` on the cumulated `−κδ`
 factorises, so the whole block's state path is one cumulative sum of the discounted shocks scaled
-back by the cumulated decay (`utils.lv_ou_path`) and the clock, the leverage mean and the quanto
+back by the cumulated decay (`utils.LogVar2FJ.ou_path`) and the clock, the leverage mean and the quanto
 drift are elementwise over the step axis with one reduction each — tens of dispatches a block
 where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is **0.156 s against the scan's 0.349 s**, and
 with its backward **0.251 s against 0.704 s**; the same walk on an RTX 3090 is **0.0062 s and
@@ -386,7 +386,7 @@ determinism rather than agreement.
 | `Sampling` | `Pseudo` | under the PRODUCTION objective `Beta` changes SIGN across `Random_Seed` on three of the four book ladders, and no stream is uniformly tighter (§2) |
 | `Paths` | 8192 | the same reading; and on the card the path count is no longer a speed lever, an eight-fold cut buying about 1.4x an evaluation |
 | `Tolerance` | 1e-8 | lane S: 1e-6 buys ONE evaluation of forty-four and moves theta\* by 4e-5 relative |
-| `LV_IG_EXPAND`, `LV_IG_STEPS` | 3, 34 | lane S: the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a ruling rather than a measurement |
+| `LogVar2FJ.IG_EXPAND`, `LogVar2FJ.IG_STEPS` | 3, 34 | lane S: the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a ruling rather than a measurement |
 | `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
 | `Forward_Smile_Source` | `None` (`Prior` withdrawn) | a sticky-delta TARGET costs 0.4–1.1 vol points of spot fit on all four index ladders and a 0.5y bucket does not repair it; the tie-breaker that capped that cost bound stage 5 alone, and on a one-bucket ladder stage 5 does not run |
 | `Residual_Horizon` | 0.25 | since lane L2 it switches no row off: both residual rows stay and the wings outvote them. Its one reader is the report's own line saying whether the ladder's wings reach the residual. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation, not the horizon's; horizon zero was the wrong fix |
@@ -412,8 +412,8 @@ The inverse-Gaussian root's safeguard BISECTS GEOMETRICALLY. Its bracket spans t
 `[m·1e-8, 200m + 200m²/λ]` — so its midpoint is a ratio, not a width: measured over 2e5 uniforms
 with the tails out to 1e-300, at clocks 1e-6 to 3 across the whole admissible `(α, β)` box, the
 arithmetic halving needs 53 Newton steps against the geometric one's 26, and the bracket never
-doubles at all. The fixed budget is therefore `LV_IG_EXPAND, LV_IG_STEPS = 3, 34` where it was
-`20, 60` — the same root to `LV_IG_TOL`, reached in 37 CDF evaluations instead of 80.
+doubles at all. The fixed budget is therefore `LogVar2FJ.IG_EXPAND, IG_STEPS = 3, 34` where it was
+`20, 60` — the same root to `LogVar2FJ.IG_TOL`, reached in 37 CDF evaluations instead of 80.
 
 The CJOW harness tables that stood here were readings of the Poisson residual against a reference
 surface priced by the retired Heston-Nandi half of `utils`; the harness could not be re-run after
@@ -575,7 +575,7 @@ the forward-skew reserve **falls 11.71m → 7.21m** (38%): with the residual nea
 is not a fitted one: `LVFit.on_guard` names every guard θ\* sits on — a `Sigma_S`, `Alpha` or
 `Sigma_L` on either edge of its declared box, `|β|/α` within `C_Margin` (0.05) of the conditioning
 bound 0.7746, `c` within `C_Margin` of its `C_Min` floor, or **a prior row whose column norm exceeds
-one quote row's in its own coordinate by more than `LV_PRIOR_RATIO` (100)** at the last stage that
+one quote row's in its own coordinate by more than `LVFit.PRIOR_RATIO` (100)** at the last stage that
 fitted it — the signature of a prior on a coordinate the data cannot see, which is what the
 identification line now prints per row (*Rho_S[0y] 38.5x, Beta[0y] 5.92x …*) — in one sentence,
 logged as a WARNING by the report, written on the factor as the structural Text field `On_Guard`
@@ -643,7 +643,7 @@ the forward-smile block is what separates them.
 **The slow factor's prior is per ASSET CLASS, and the floor is the guard beneath it.** Where the
 ladder carries no wing at 18 months or longer, `(ρ_l, σ_l)` are fitted to nothing and are pinned
 instead. What they are pinned at is read in one order — `Slow_Factor_Prior` where the block declares
-one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LV_SLOW_HISTORY`
+one, else a LogVar2FJ history for the underlying in `Price Models` (the `utils.LogVar2FJ.SLOW_HISTORY`
 shape — the one place both lanes declare it — which is `Rho_L`, `Sigma_L`, `Alpha`, `Beta`, `Rho_S`
 and `Sigma_S`, EACH WITH ITS OWN `_SE`; a block missing any one of the twelve refuses by name from the write
 side. The slow pair is reported with both standard errors and taken to the floor by name where it
@@ -774,7 +774,7 @@ this is the ONLY place a desk's forward-smile view is priced. The calibration wr
 `Skew_Gradient` — `∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket at the nearest forward
 tenor, in vol points per unit — and `Stickiness_Band` beside it on the `LogVar2FJModelParameters`
 factor, both STRUCTURAL. A deal reporting `Greeks: First` on that factor composes
-`utils.lv_skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
+`utils.LogVar2FJ.skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
 the answer as **`Skew_Reserve`** beside `Value` on the `mtm` frame. Two parameters carry one target,
 so the parameter move behind a vol point of `Δ_skew` is the MINIMUM-NORM one, `Jᵀ/(J Jᵀ)` — the
 convention the quote contraction takes over its null space. **It is a NETTING-SET number**:

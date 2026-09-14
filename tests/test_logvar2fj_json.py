@@ -179,7 +179,7 @@ def test_the_gbm_limit_reproduces_the_gbm_arm():
 # ------------------------------------------------------------------------------------------
 def test_the_quanto_loading_is_off_at_zero_correlation():
     """A quanto drift is `-rho_q sigma_FX sqrt(V_k delta_k)` per day, so at `rho_q = 0` the walk is
-    the un-quantoed one BIT FOR BIT - `utils.lv_walk` adds a tensor of exact zeros.
+    the un-quantoed one BIT FOR BIT - `utils.LogVar2FJ.walk` adds a tensor of exact zeros.
 
     HOLDS 0 ULP (-0x1.f68b7d9f0e5d5p-2) against the SINGLE-CURRENCY TWIN - the same schedule paid
     in the same USD off the same EUR discount curve, which is the one document differing from the

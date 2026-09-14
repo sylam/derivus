@@ -1016,8 +1016,8 @@ def fitted_scalars(path, block, delta):
     """Every fitted curve value a book lands on for `block` at `Volatility_Delta` `delta` - through
     the market seam, off the file, exactly as a tick calibrates.
 
-    THE FIT IS THE CURVES. `LV_PARAM_NAMES` are structural priors a ladder does not identify and
-    sit at their declared defaults whatever the quotes say, so what is read is `LV_CURVE_NAMES`.
+    THE FIT IS THE CURVES. `LogVar2FJ.PARAM_NAMES` are structural priors a ladder does not identify and
+    sit at their declared defaults whatever the quotes say, so what is read is `LogVar2FJ.CURVE_NAMES`.
     And the previously written factor is DROPPED first, because a fit warm starts off one: three
     comparable fits have to be three cold ones.
     """
@@ -1034,7 +1034,7 @@ def fitted_scalars(path, block, delta):
     assert written['written'] is True, written
     factor = derivus.Context().load_json(str(path)).current_cfg.params[
         'Price Factors']['LogVar2FJModelParameters.ZAR']
-    return [float(value) for name in utils.LV_CURVE_NAMES
+    return [float(value) for name in utils.LogVar2FJ.CURVE_NAMES
             for value in factor[name].array[:, 1]]
 
 

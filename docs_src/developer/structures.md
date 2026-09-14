@@ -173,7 +173,7 @@ from its Esscher-tilted law: tilting the joint law by `exp(X)` leaves the invers
 `delta_A^2` alone and moves its mean from `delta_A/gamma` to `delta_A/gamma_1` with
 `gamma_1 = sqrt(alpha^2 - (beta+1)^2)`, which is the same `gamma_1` the forced drift already
 carries. Given the mixer the Gaussian's mean then gains `+G`, which IS the block law's existing
-`-(M + Sigma^2)` spelling at the deal's own carry (`utils.lv_walk`, `pricing.LogVar2FJKit`). One
+`-(M + Sigma^2)` spelling at the deal's own carry (`utils.LogVar2FJ.walk`, `pricing.LogVar2FJKit`). One
 law, two currencies, no second fit, and one line under `invert`. In the Gaussian-residual limit the
 reciprocal-axis accumulator is GBM's to **7.8e-16** relative (the direct axis 1.9e-15); a strip of
 forwards on `1/S` at 2^18 paths reads **7.9e-05** relative against `Σ_j D_j N S_0 exp(carry t_j)`
@@ -208,7 +208,7 @@ neither retired family carried.
 **The scenario generator is the pricer's own walk.** `LogVar2FJImpliedSpotModel` is the xVA outer
 process: an implied process reading the same calibrated `LogVar2FJModelParameters` factor the OSS
 kit prices off — through `implied_tensor`, so CVA vega reaches ONE leaf and not two — and stepping
-`utils.lv_walk` on the trading day between scenario nodes, whole days plus the remainder as one
+`utils.LogVar2FJ.walk` on the trading day between scenario nodes, whole days plus the remainder as one
 shorter step. Outer, inner and pricer are one walk and one mixer STRUCTURALLY:
 `LogVar2FJImpliedSpotModel.draws is LogVar2FJKit.draws` and `.residual is LogVar2FJKit.residual`
 are the same function objects, so a fork seeded at an outer node cannot disagree with the stride it
@@ -244,7 +244,7 @@ per interval, which `precalculate` names at INFO; every factor in the book carri
 bucket, so nothing reaches it.
 
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
-CALENDAR-ANCHORED segment of `LV_CHECKPOINT_STEPS` trading days, never stored and redrawn inside
+CALENDAR-ANCHORED segment of `LogVar2FJKit.CHECKPOINT_STEPS` trading days, never stored and redrawn inside
 the checkpoint's recompute, so where the scenario nodes fall moves no draw; `-eta` on the antithetic
 half, as the framework mirrors its own normals, and the mixer uniform per scenario step is
 `quasi_rng`'s with `1 - u` on that half. `Checkpoint_Outer_Walk` (default `Yes`) is the outer tape's

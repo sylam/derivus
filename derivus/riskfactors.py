@@ -1123,18 +1123,6 @@ class CurveModelParameters(Factor0D):
                     **{c: self.param[c].array[:, 1] for c in self.curve_names})
 
 
-#: What a retired LogVar2FJ name is replaced by, so a document authored against the Poisson
-#: residual refuses by NAME rather than being read with the key silently dropped.
-LV_RETIRED = {
-    'Cap_Beta': 'retired with the smooth cap - Cap_A is the corner min(l+s, Cap_A); delete the key',
-    'Nu': 'the co-jump is gone with the Poisson residual',
-    'Lambda': 'the co-jump is gone with the Poisson residual',
-    'Mu_J': 'Beta, the NIG residual\'s skew, carries what the jump mean carried',
-    'Sigma_J': 'Alpha, the NIG residual\'s tail thickness, carries what the jump dispersion did',
-    'L_Curve': 'Xi_Curve, the EXPECTED FORWARD VARIANCE E[h] - not a log level; the Jensen term '
-               'is derived inside the model'}
-
-
 class LogVar2FJModelParameters(CurveModelParameters):
     """The LogVar2FJ parameters - two mean-reverting log-variance factors and an NIG residual.
 
@@ -1182,7 +1170,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
                       'MEAN, so the pricer\'s internal walk and the xVA outer\'s scenario grid '
                       'read it here and a deal declaring a different one refuses by name. A '
                       'factor written before this field existed loads at 252 - STRUCTURAL'),
-        F('C_Min', 'Float', default=utils.LV_C_MIN,
+        F('C_Min', 'Float', default=utils.LogVar2FJ.C_MIN,
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
         F('Residual_Law', 'Text', default='NIG', values=['NIG', 'Gaussian'],
@@ -1195,7 +1183,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
                       'nearest forward tenor, in vol points per unit, comma separated. A deal '
                       'reporting Greeks First composes '
                       '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
-                      'it and its own two derivatives (`utils.lv_skew_reserve`). Blank '
+                      'it and its own two derivatives (`utils.LogVar2FJ.skew_reserve`). Blank '
                       'where the fit stated none - STRUCTURAL'),
         F('On_Guard', 'Text', default='',
           description='Every guard the calibration that wrote this factor landed ON, as its own '
@@ -1225,19 +1213,14 @@ class LogVar2FJModelParameters(CurveModelParameters):
     ]
     #: one source of truth for each name set - utils owns the canonical tuples, which the free
     #: functions and the kit consume by the same names
-    parameters = utils.LV_PARAM_NAMES
-    structural = utils.LV_STRUCTURAL_NAMES
-    curve_names = utils.LV_CURVE_NAMES
+    parameters = utils.LogVar2FJ.PARAM_NAMES
+    structural = utils.LogVar2FJ.STRUCTURAL_NAMES
+    curve_names = utils.LogVar2FJ.CURVE_NAMES
 
     def __init__(self, param):
         super(LogVar2FJModelParameters, self).__init__(param)
         self.declared = declared_defaults(type(self), param)
-        retired = [c for c in LV_RETIRED if c in param]
-        if retired:
-            raise ValueError(
-                'LogVar2FJModelParameters carries %s, retired with the Poisson residual: %s'
-                % (', '.join(retired), '; '.join('%s -> %s' % (c, LV_RETIRED[c])
-                                                 for c in retired)))
+        utils.LogVar2FJ.retired(type(self).__name__, param)
         if self.declared['On_Guard']:
             logging.info('%s: %s', type(self).__name__, self.declared['On_Guard'])
         self.gaussian = str(self.declared['Residual_Law']) == 'Gaussian'
@@ -1255,12 +1238,12 @@ class LogVar2FJModelParameters(CurveModelParameters):
                 '[[0.0, x]] is the one-bucket model that reproduces it'
                 % ', '.join(flat))
         knots = self.curve_tenors()
-        odd = [c for c in utils.LV_BUCKET_NAMES if not np.array_equal(knots[c], knots['Rho_S'])]
+        odd = [c for c in utils.LogVar2FJ.BUCKET_NAMES if not np.array_equal(knots[c], knots['Rho_S'])]
         if odd:
             raise ValueError(
                 'LogVar2FJModelParameters: %s are piecewise constant on the SAME calendar '
                 'buckets, so their knots must be equal - %s against Rho_S %s'
-                % (', '.join(utils.LV_BUCKET_NAMES),
+                % (', '.join(utils.LogVar2FJ.BUCKET_NAMES),
                    ', '.join('%s %s' % (c, knots[c].tolist()) for c in odd),
                    knots['Rho_S'].tolist()))
         xi = self.param['Xi_Curve'].array
@@ -1289,7 +1272,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
         """The NIG residual's admissibility, per bucket and by name.
 
         $|\\beta|<\\alpha$ is the law, $|\\beta+1|<\\alpha$ the forced drift $\\mu_A$, and the
-        conditioning share $\\gamma^2/\\alpha^2\\ge$ `LV_COND_MIN` the share of the residual's
+        conditioning share $\\gamma^2/\\alpha^2\\ge$ `utils.LogVar2FJ.COND_MIN` the share of the residual's
         variance the mixer leaves in the Gaussian - the quantity OSS efficiency depends on.
         """
         for i, (t, a, b) in enumerate(zip(buckets, alpha, beta)):
@@ -1304,14 +1287,14 @@ class LogVar2FJModelParameters(CurveModelParameters):
                     '- gamma) needs |Beta + 1| < Alpha - without it E[exp(X)] = 1 has no answer'
                     % (t, a, b))
             share = 1.0 - (b / a) ** 2
-            if share < utils.LV_COND_MIN:
+            if share < utils.LogVar2FJ.COND_MIN:
                 raise ValueError(
                     'LogVar2FJModelParameters: the bucket at %gy declares Alpha %g against Beta '
                     '%g, so the conditioning share gamma^2/Alpha^2 = 1 - (Beta/Alpha)^2 = %g, '
                     'below the %g it is floored at (|Beta|/Alpha <= %.4f). Past it the mixer '
                     'carries the return and the OSS advantage goes with it'
-                    % (t, a, b, share, utils.LV_COND_MIN,
-                       np.sqrt(1.0 - utils.LV_COND_MIN)))
+                    % (t, a, b, share, utils.LogVar2FJ.COND_MIN,
+                       np.sqrt(1.0 - utils.LogVar2FJ.COND_MIN)))
 
     def curve_tenors(self):
         """Every structural fact the kit reads off this factor: each fitted curve's knots - the xi
@@ -1322,7 +1305,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
         return dict({c: self.param[c].array[:, 0] for c in self.curve_names},
                     Residual_Law=self.declared['Residual_Law'],
                     Steps_Per_Year=self.declared['Steps_Per_Year'],
-                    **{x: self.declared[x] for x in self.structural + utils.LV_RESERVE_LINE})
+                    **{x: self.declared[x] for x in self.structural + utils.LogVar2FJ.RESERVE_LINE})
 
 
 class GBMAssetPriceTSModelParameters(Factor1D):

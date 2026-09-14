@@ -4575,198 +4575,6 @@ class BasisLinkedSpotCalibration(object):
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
-#: The daily variance the filter measures, in the order the frame's own columns decide (spec
-#: 5.5.1). Each entry is the bar columns the estimator needs, the estimator on
-#: (open, high, low, close, previous close), and the law's OWN measurement noise where it has one:
-#: `log r^2` is log-chi^2_1 with mean -1.27 and variance 4.93 (Harvey-Ruiz-Shephard QML), while a
-#: range estimator fits its noise and carries the lognormal offset -sigma_u^2/2 instead.
-LV_MEASURES = {
-    'Yang_Zhang': (('OPEN', 'HIGH', 'LOW'),
-                   lambda o, h, l, c, p: np.log(o / p) ** 2 + np.log(h / c) * np.log(h / o)
-                   + np.log(l / c) * np.log(l / o), {}),
-    'Garman_Klass': (('HIGH', 'LOW'),
-                     lambda o, h, l, c, p: 0.5 * np.log(h / l) ** 2
-                     - (2.0 * np.log(2.0) - 1.0) * np.log(c / p) ** 2, {}),
-    'Log_Chi2': ((), lambda o, h, l, c, p: np.log(c / p) ** 2,
-                 {'Sigma_U': float(np.sqrt(4.93)), 'Offset': -1.27})}
-
-#: The box the historical fit runs in, in the order the parameter vector takes. The two reversion
-#: speeds are DISJOINT at the six-month half-life: which factor is the fast one is structural, and
-#: a likelihood surface carrying two interchangeable labels should not have to decide it.
-LV_HIST_BOX = {'Kappa_S': (2.0, 120.0), 'Sigma_S': (0.05, 8.0), 'Kappa_L': (0.02, 2.0),
-               'Sigma_L': (0.02, 4.0), 'L': (float(np.log(1.0e-4)), float(np.log(4.0))),
-               'Sigma_U': (0.05, 3.0)}
-
-#: The residual's P-law as it is written: the tail and skew of `NIG(alpha, beta, delta_A, mu A)`,
-#: the share of the day's variance budget its CLOCK is, and the free location per unit clock.
-#: `alpha` is searched in logs between these two, a decade either side of the Q-sized 44 - a sample
-#: cannot say a residual is more Gaussian than `LV_NIG_MAX` nor a jump law sharper than
-#: `LV_NIG_MIN`.
-LV_NIG_NAMES = ('Alpha', 'Beta', 'C_Eff', 'Residual_Drift')
-LV_NIG_MIN, LV_NIG_MAX = 0.5, 4000.0
-
-
-def lv_bars(data_frame):
-    """The factor's own bar and the measurement its columns decide: the unsuffixed archive column
-    is the close and `,OPEN` / `,HIGH` / `,LOW` the rest, the mode the first of `LV_MEASURES` the
-    bar carries whole."""
-    name = data_frame.columns[0].split(',')[0]
-    bar = data_frame[[c for c in data_frame.columns if c.split(',')[0] == name]].dropna()
-    bar.columns = [(c.split(',') + ['CLOSE'])[1] for c in bar.columns]
-    return name, bar.astype(np.float64), next(
-        m for m, (cols, _, _) in LV_MEASURES.items() if set(cols) <= set(bar.columns))
-
-
-def lv_filter(y, seen, theta, delta, offset):
-    """The exact Gaussian likelihood of `log RV_t = l_t + s_t + offset + u_t` on the model's own
-    two-factor OU state with its own step coefficients, started stationary.
-
-    `seen` masks a day the measurement does not carry - a jump day, whose range is the jump's, an
-    event day, a non-positive range - which the filter passes through as a pure prediction.
-    Returns `(loglik, m, cov)`, the filtered mean [T, 2] and covariance [T, 3] as (ss, sl, ll);
-    the covariance is data-free, so the smoother needs nothing else.
-    """
-    phi_s, w_s = utils.lv_ou_step_weights(theta['Kappa_S'], theta['Sigma_S'], delta)
-    phi_l, w_l = utils.lv_ou_step_weights(theta['Kappa_L'], theta['Sigma_L'], delta)
-    level, su2 = theta['L'], theta['Sigma_U'] ** 2
-    m1, m2 = 0.0 * level, level + 0.0
-    p11 = theta['Sigma_S'] ** 2 / (2.0 * theta['Kappa_S'])
-    p22 = theta['Sigma_L'] ** 2 / (2.0 * theta['Kappa_L'])
-    p12, loglik, rows, cov = 0.0 * p11, 0.0 * level, [], []
-    for t in range(len(seen)):
-        if t:
-            m1, m2 = phi_s * m1, level + phi_l * (m2 - level)
-            p11, p12, p22 = (phi_s * phi_s * p11 + w_s * w_s, phi_s * phi_l * p12,
-                             phi_l * phi_l * p22 + w_l * w_l)
-        if seen[t]:
-            f = p11 + 2.0 * p12 + p22 + su2
-            v = y[t] - (m1 + m2 + offset)
-            k1, k2 = (p11 + p12) / f, (p12 + p22) / f
-            m1, m2 = m1 + k1 * v, m2 + k2 * v
-            p11, p12, p22 = (p11 - k1 * (p11 + p12), p12 - k1 * (p12 + p22),
-                             p22 - k2 * (p12 + p22))
-            loglik = loglik - 0.5 * (torch.log(2.0 * np.pi * f) + v * v / f)
-        rows += [m1, m2]
-        cov += [p11, p12, p22]
-    return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3)
-
-
-def lv_history_start(y, seen, fixed):
-    """Moment starts inside the box: the level off the observed mean, the measurement noise off the
-    one-day difference, the two vol-of-vols splitting what is left of the sample variance at the
-    spec's own reversion priors."""
-    obs = y[seen]
-    su = fixed.get('Sigma_U', float(np.sqrt(max(0.4 * np.var(np.diff(obs)), 1.0e-4))))
-    spread = max(float(np.var(obs)) - su * su, 1.0e-3)
-    start = {'Kappa_S': 6.0, 'Sigma_S': np.sqrt(6.0 * spread), 'Kappa_L': 0.5,
-             'Sigma_L': np.sqrt(0.5 * spread), 'Sigma_U': su,
-             'L': float(np.mean(obs)) - fixed.get('Offset', -0.5 * su * su)}
-    return {n: float(np.clip(v, *LV_HIST_BOX[n])) for n, v in start.items()}
-
-
-def lv_history_fit(y, seen, delta, fixed):
-    """The filter's MLE with standard errors off the inverse Hessian, returning
-    `(theta, se, loglik, m, cov)`.
-
-    AAD, not finite differences. The standard errors ARE the deliverable - stage 4 pins the slow
-    pair by them - and a differenced Hessian of a 1,260-step filter has no step that is both large
-    enough to see curvature and small enough not to be noise; the same tape gives L-BFGS-B its
-    gradient, so there is one recursion and no second spelling of it.
-    """
-    from scipy.optimize import minimize
-    free = [name for name in LV_HIST_BOX if name not in fixed]
-    held = {n: torch.tensor(v, dtype=torch.float64) for n, v in fixed.items() if n in LV_HIST_BOX}
-
-    def negative(vector):
-        theta = dict(held, **{n: vector[i] for i, n in enumerate(free)})
-        return -lv_filter(y, seen, theta, delta,
-                          fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))[0]
-
-    def objective(x):
-        vector = torch.tensor(x, dtype=torch.float64, requires_grad=True)
-        value = negative(vector)
-        return float(value.detach()), torch.autograd.grad(value, vector)[0].numpy()
-
-    start = lv_history_start(y, seen, fixed)
-    best = minimize(objective, np.array([start[n] for n in free]), jac=True, method='L-BFGS-B',
-                    bounds=[LV_HIST_BOX[n] for n in free])
-    x = torch.tensor(best.x, dtype=torch.float64)
-    spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, x)).diagonal()
-    theta = dict({n: float(v) for n, v in fixed.items() if n in LV_HIST_BOX},
-                 **{n: float(best.x[i]) for i, n in enumerate(free)})
-    se = dict({n: 0.0 for n in fixed if n in LV_HIST_BOX},
-              **{n: float(spread[i].sqrt()) if spread[i] > 0 else float('inf')
-                 for i, n in enumerate(free)})
-    loglik, m, cov = lv_filter(
-        y, seen, {n: torch.tensor(v, dtype=torch.float64) for n, v in theta.items()},
-        delta, fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))
-    return theta, se, float(loglik), m.detach().numpy(), cov.detach().numpy()
-
-
-def lv_ou_pair(theta, delta):
-    """`(phi, w)` for the fast and slow factors as numpy pairs - `utils.lv_ou_step_weights` read
-    at a fitted theta, so the smoother and the cross-check filter step the model itself rather
-    than a second spelling of it."""
-    return tuple(x.numpy() for x in utils.lv_ou_step_weights(
-        torch.tensor([theta['Kappa_S'], theta['Kappa_L']], dtype=torch.float64),
-        torch.tensor([theta['Sigma_S'], theta['Sigma_L']], dtype=torch.float64), delta))
-
-
-def lv_predicted(m, cov, phi, w, level):
-    """The PREDICTABLE daily variance `E[exp(l + s) | y_{<t}]` - the filter's one-step prediction,
-    started stationary, which is the budget read at the START of the day.
-
-    NOT the filtered variance. A range measurement is built from the DAY'S OWN path, so it carries
-    the day's own residual: standardising the return by the filtered `h` shrinks exactly the days
-    whose residual was large, which turns a left-skewed residual into a right-skewed remainder and
-    is the endogeneity the predictable budget exists to forbid.
-    """
-    mean = np.vstack([[0.0, level], m[:-1] * phi + [0.0, level * (1.0 - phi[1])]])
-    step = np.array([phi[0] * phi[0], phi[0] * phi[1], phi[1] * phi[1]])
-    shock = np.array([w[0] * w[0], 0.0, w[1] * w[1]])
-    var = np.vstack([shock / np.array([1.0 - phi[0] ** 2, 1.0, 1.0 - phi[1] ** 2]),
-                     cov[:-1] * step + shock])
-    return np.exp(mean.sum(1) + 0.5 * (var[:, 0] + 2.0 * var[:, 1] + var[:, 2]))
-
-
-def lv_smooth_shocks(m, cov, phi, w, level):
-    """The state's OWN per-step shocks `E[eta_t | y]` by one RTS backward pass over the filtered
-    path - the object the leverage regression runs on.
-
-    The FILTERED increment is `k_j v` in both components, PROPORTIONAL, so a regression on it
-    cannot separate the two leverages at all; the smoother's increment is what distinguishes a
-    shock that persists from one that decays, and its wide standard error on the slow side is
-    5.5.2's poor identification measured rather than assumed.
-    """
-    step = np.diag(phi)
-    drift = np.array([0.0, level * (1.0 - phi[1])])
-    smooth, q = m.copy(), np.diag(w * w)
-    for t in range(len(m) - 2, -1, -1):
-        p = np.array([[cov[t, 0], cov[t, 1]], [cov[t, 1], cov[t, 2]]])
-        gain = p @ step @ np.linalg.inv(step @ p @ step + q)
-        smooth[t] = m[t] + gain @ (smooth[t + 1] - drift - step @ m[t])
-    return (smooth[1:] - drift - smooth[:-1] @ step) / w
-
-
-def lv_leverage(shocks, z, c_min):
-    """The two leverages: the regression of the diffusive remainder on the state's own
-    shocks, inside the MODEL's own box `1 - rho_s^2 - rho_l^2 >= c_min` (2.2.2).
-
-    A decade of daily data holds few slow cycles, so the smoothed slow shock keeps a small
-    fraction of its unit variance and is 0.7-0.8 correlated with the fast one; the normal
-    equations will put anything at all on it. The ridge that lands the pair back on the box IS
-    that box, and the standard error beside it is 5.5.2's poor identification as a number.
-    """
-    from scipy.optimize import brentq
-    a, b, radius = shocks.T @ shocks, shocks.T @ z, np.sqrt(1.0 - c_min)
-    ridge, rho = 0.0, np.linalg.solve(a, b)
-    if rho @ rho > radius * radius:
-        ridge = brentq(lambda x: np.linalg.norm(np.linalg.solve(a + x * np.eye(2), b)) - radius,
-                       0.0, np.linalg.norm(b) / radius)
-        rho = np.linalg.solve(a + ridge * np.eye(2), b)
-    return rho, np.linalg.inv(a) * float((z - shocks @ rho).var(ddof=2)), ridge
-
-
 class BesselRatio(torch.autograd.Function):
     """`K_0(z)/K_1(z)` ON THE TAPE. Its own derivative is `r^2 + r/z - 1`, a function of itself, so
     one Bessel evaluation carries every order - which is what the standard errors need, torch
@@ -4800,138 +4608,6 @@ class LogBesselK1(torch.autograd.Function):
         return -grad * (BesselRatio.apply(z) + 1.0 / z)
 
 
-def lv_nig_logpdf(x, clock, alpha, beta, mu):
-    """The log-density of `NIG(alpha, beta, delta_A, mu A)` at `x` on the variance clock `A`:
-    `utils.lv_nig_budget`'s own `delta_A`, so the variance IS the clock, and a location `mu A`
-    LINEAR in it as `delta_A` is, so the law still composes. `mu` is free because P does not force
-    the drift, where Q's `mu_A` is the martingale's."""
-    delta, _, gamma = utils.lv_nig_budget(clock, alpha, beta)
-    d = x - mu * clock
-    q = torch.sqrt(delta * delta + d * d)
-    return (torch.log(alpha * delta / np.pi) + delta * gamma + beta * d - torch.log(q)
-            + LogBesselK1.apply(alpha * q))
-
-
-def lv_nig_mixer(x, clock, alpha, beta, mu):
-    """`E[G | x]`, the posterior mean of the residual's inverse-Gaussian mixer: `G | x` is a
-    `GIG(-1, q^2, alpha^2)` in the density's own `q`, whose mean is `(q/alpha)K_0(z)/K_1(z)` at
-    `z = alpha q`.
-
-    The framework's cross-factor correlation sits on the Gaussian GIVEN THE MIXER, so
-    this is what `eps` is standardised by - the law's own sd would leave the mixer's fat tails in
-    the series the correlation is measured on.
-    """
-    delta, _, _ = utils.lv_nig_budget(clock, alpha, beta)
-    q = torch.sqrt(delta * delta + (x - mu * clock) ** 2)
-    return q * BesselRatio.apply(alpha * q) / alpha
-
-
-def lv_nig_fit(x, budget):
-    """The residual's P-law by maximum likelihood on the day's VARIANCE BUDGET `V`,
-    returning `(values, se, loglik, gaussian_loglik)`.
-
-    The clock is `A = c_eff V` with the SHARE FITTED. `c = 1 - rho_s^2 - rho_l^2` is the share the
-    residual would carry if the leverage came out whole; the smoothed shocks are attenuated, so the
-    remainder keeps what the regression could not take out and its variance is not `c V` at all.
-    Fitting the share is what makes `Var(X_A) = A` hold on the object rather than on an assumption,
-    and `c_eff` against `c` is that attenuation reported.
-
-    Searched in `alpha = exp(a)`, `beta = alpha tanh(b)`, `c_eff = exp(e)`, which is `|beta| <
-    alpha` at every iterate - `|beta+1| < alpha` is the MARTINGALE's constraint and P does not force
-    the drift - off the AAD gradient, with the standard errors from the inverse Hessian of the same
-    likelihood in the NATURAL coordinates, as the Kalman half takes its own. `gaussian_loglik` is
-    the same remainder read as `N(m V, s V)` at its own closed-form `(m, s)`: the model comparison
-    that says whether the tails are real, TWO free parameters apart.
-    """
-    from scipy.optimize import minimize
-    x, budget = (torch.tensor(v, dtype=torch.float64) for v in (x, budget))
-    negative = lambda v: -lv_nig_logpdf(x, v[2] * budget, v[0], v[1], v[3]).sum()
-
-    def objective(vector):
-        v = torch.tensor(vector, dtype=torch.float64, requires_grad=True)
-        alpha = torch.exp(v[0])
-        value = negative(torch.stack([alpha, alpha * torch.tanh(v[1]), torch.exp(v[2]), v[3]]))
-        return float(value.detach()), torch.autograd.grad(value, v)[0].numpy()
-
-    start = lv_nig_start(x.numpy(), budget.numpy())
-    best = minimize(objective, start, jac=True, method='L-BFGS-B',
-                    bounds=[(np.log(LV_NIG_MIN), np.log(LV_NIG_MAX)), (-6.0, 6.0),
-                            (np.log(1.0e-3), np.log(4.0)), (None, None)])
-    alpha, share = float(np.exp(best.x[0])), float(np.exp(best.x[2]))
-    theta = torch.tensor([alpha, alpha * np.tanh(best.x[1]), share, best.x[3]],
-                         dtype=torch.float64)
-    spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, theta)).diagonal()
-    location = x.sum() / budget.sum()
-    scale = ((x - location * budget) ** 2 / budget).mean()
-    gaussian = -0.5 * (torch.log(2.0 * np.pi * scale * budget)
-                       + (x - location * budget) ** 2 / (scale * budget)).sum()
-    return (dict(zip(LV_NIG_NAMES, (float(v) for v in theta))),
-            dict(zip(LV_NIG_NAMES, (float(v.sqrt()) if v > 0 else float('inf') for v in spread))),
-            -float(best.fun), float(gaussian))
-
-
-def lv_nig_start(x, budget):
-    """`(a, b, log c_eff, mu)` from the remainder's own moments: the share is its variance over the
-    budget, and on what is left an NIG's skewness `3 s/sqrt(delta gamma)` and excess kurtosis
-    `3(1 + 4 s^2)/(delta gamma)` in `s = beta/alpha` invert in closed form. Moments those two do
-    not place inside the admissible map take the index-sized default instead."""
-    v = x / np.sqrt(budget)
-    share = float(v.var())
-    d = (v - v.mean()) / np.sqrt(share)
-    g1, g2 = float((d ** 3).mean()), float((d ** 4).mean()) - 3.0
-    mu = float(x.sum() / budget.sum() / share)
-    ratio = g1 * g1 / (3.0 * g2 - 4.0 * g1 * g1) if 3.0 * g2 > 4.0 * g1 * g1 + 1.0e-9 else 1.0
-    if not 0.0 <= ratio < 0.9:
-        return [float(np.log(44.0)), float(np.arctanh(-0.5)), float(np.log(share)), mu]
-    scale = (3.0 * (1.0 + 4.0 * ratio) / g2 / (share * float(budget.mean()))
-             / (1.0 - ratio) ** 2)
-    return [float(np.log(np.clip(np.sqrt(scale), LV_NIG_MIN, LV_NIG_MAX))),
-            float(np.arctanh(np.copysign(np.sqrt(ratio), g1))), float(np.log(share)), mu]
-
-
-def lv_particle_gate(y, seen, theta, delta, particles, replicates, seed):
-    """A batched bootstrap particle filter on the same state and the same measurement, WITHOUT the
-    linear filter's two approximations.
-
-    The measurement is the same one the Kalman reads, on the same mask - what this drops is the
-    LOG-LINEARISATION of it and the forced Gaussian posterior, which are the two approximations the
-    gate exists to size. Under the NIG residual no threshold hides a tail day from either filter,
-    so the two now disagree about the MEASUREMENT alone and the gate says so when it refuses.
-    `replicates` independent clouds run as ONE batch, so the gate carries its own noise. Returns
-    the log-likelihood per replicate and the posterior-mean `h` path.
-    """
-    generator = torch.Generator().manual_seed(seed)
-    shape, su2 = (replicates, particles), theta['Sigma_U'] ** 2
-    phi, w = lv_ou_pair(theta, delta)
-    stationary = w / np.sqrt(1.0 - phi * phi)
-
-    def draw():
-        return torch.randn(shape, generator=generator, dtype=torch.float64)
-
-    s = stationary[0] * draw()
-    l = theta['L'] + stationary[1] * draw()
-    weight = torch.full(shape, 1.0 / particles, dtype=torch.float64)
-    loglik, path = torch.zeros(replicates, dtype=torch.float64), []
-    for t in range(len(y)):
-        if t:
-            s = phi[0] * s + w[0] * draw()
-            l = theta['L'] + phi[1] * (l - theta['L']) + w[1] * draw()
-        h = torch.exp(l + s)
-        if seen[t]:
-            mean = torch.log(h) + theta['Offset']
-            like = torch.exp(-0.5 * (y[t] - mean) ** 2 / su2) / np.sqrt(2.0 * np.pi * su2)
-            loglik = loglik + torch.log((weight * like).sum(-1))
-            weight = weight * like
-            weight = weight / weight.sum(-1, keepdim=True)
-        path.append((weight * h).sum(-1))
-        # resample on effective sample size, not every step: the slow factor mixes over months, so
-        # a step that resamples flat weights costs it ancestors it cannot draw back
-        if float((1.0 / (weight * weight).sum(-1)).min()) < 0.5 * particles:
-            index = torch.multinomial(weight, particles, replacement=True, generator=generator)
-            s, l = s.gather(1, index), l.gather(1, index)
-            weight = torch.full_like(weight, 1.0 / particles)
-    return loglik.numpy(), torch.stack(path).mean(-1).numpy()
-
 
 class LogVar2FJCalibration(object):
     """The P-measure historical estimate of the LogVar2FJ state, whose purpose is the
@@ -4957,7 +4633,7 @@ class LogVar2FJCalibration(object):
     count a 4-sigma threshold would have flagged is REPORTED beside the likelihood the tails buy.
 
     What crosses into a pricing model is that correlation, the two reversion
-    speeds as priors, the slow pair `utils.LV_SLOW_HISTORY` names, which stage 4 pins by where the
+    speeds as priors, the slow pair `utils.LogVar2FJ.SLOW_HISTORY` names, which stage 4 pins by where the
     ladder carries no wing, `Rho_S` as the leverage prior's value and `alpha^P` as a seed and a
     sanity check. The vol-of-vols, `beta` and the leverages as VALUES are a sanity table against
     the fitted factor and nothing more - invariant in theory, and in practice neither
@@ -4965,7 +4641,330 @@ class LogVar2FJCalibration(object):
     5.5.3's last row, for an underlying with no liquid surface: the history's parameters are taken
     to the sector's own implied values, per name, with the report stating each ratio.
     """
-    model_type = utils.LV_SLOW_HISTORY[0]
+    model_type = utils.LogVar2FJ.SLOW_HISTORY[0]
+
+    #: The daily variance the filter measures, in the order the frame's own columns decide. Each
+    #: entry is the bar columns the estimator needs, the estimator on
+    #: (open, high, low, close, previous close), and the law's OWN measurement noise where it has one:
+    #: `log r^2` is log-chi^2_1 with mean -1.27 and variance 4.93 (Harvey-Ruiz-Shephard QML), while a
+    #: range estimator fits its noise and carries the lognormal offset -sigma_u^2/2 instead.
+    MEASURES = {
+        'Yang_Zhang': (('OPEN', 'HIGH', 'LOW'),
+                       lambda o, h, l, c, p: np.log(o / p) ** 2 + np.log(h / c) * np.log(h / o)
+                       + np.log(l / c) * np.log(l / o), {}),
+        'Garman_Klass': (('HIGH', 'LOW'),
+                         lambda o, h, l, c, p: 0.5 * np.log(h / l) ** 2
+                         - (2.0 * np.log(2.0) - 1.0) * np.log(c / p) ** 2, {}),
+        'Log_Chi2': ((), lambda o, h, l, c, p: np.log(c / p) ** 2,
+                     {'Sigma_U': float(np.sqrt(4.93)), 'Offset': -1.27})}
+
+    #: The box the historical fit runs in, in the order the parameter vector takes. The two reversion
+    #: speeds are DISJOINT at the six-month half-life: which factor is the fast one is structural, and
+    #: a likelihood surface carrying two interchangeable labels should not have to decide it.
+    HIST_BOX = {'Kappa_S': (2.0, 120.0), 'Sigma_S': (0.05, 8.0), 'Kappa_L': (0.02, 2.0),
+                'Sigma_L': (0.02, 4.0), 'L': (float(np.log(1.0e-4)), float(np.log(4.0))),
+                'Sigma_U': (0.05, 3.0)}
+
+    #: The residual's P-law as it is written: the tail and skew of `NIG(alpha, beta, delta_A, mu A)`,
+    #: the share of the day's variance budget its CLOCK is, and the free location per unit clock.
+    #: `alpha` is searched in logs between these two, a decade either side of the Q-sized 44 - a sample
+    #: cannot say a residual is more Gaussian than `NIG_MAX` nor a jump law sharper than `NIG_MIN`.
+    NIG_NAMES = ('Alpha', 'Beta', 'C_Eff', 'Residual_Drift')
+    NIG_MIN, NIG_MAX = 0.5, 4000.0
+
+    @classmethod
+    def bars(cls, data_frame):
+        """The factor's own bar and the measurement its columns decide: the unsuffixed archive column
+        is the close and `,OPEN` / `,HIGH` / `,LOW` the rest, the mode the first of `MEASURES` the
+        bar carries whole."""
+        name = data_frame.columns[0].split(',')[0]
+        bar = data_frame[[c for c in data_frame.columns if c.split(',')[0] == name]].dropna()
+        bar.columns = [(c.split(',') + ['CLOSE'])[1] for c in bar.columns]
+        return name, bar.astype(np.float64), next(
+            m for m, (cols, _, _) in cls.MEASURES.items() if set(cols) <= set(bar.columns))
+
+    @staticmethod
+    def filter(y, seen, theta, delta, offset):
+        """The exact Gaussian likelihood of `log RV_t = l_t + s_t + offset + u_t` on the model's own
+        two-factor OU state with its own step coefficients, started stationary.
+
+        `seen` masks a day the measurement does not carry - a jump day, whose range is the jump's, an
+        event day, a non-positive range - which the filter passes through as a pure prediction.
+        Returns `(loglik, m, cov)`, the filtered mean [T, 2] and covariance [T, 3] as (ss, sl, ll);
+        the covariance is data-free, so the smoother needs nothing else.
+        """
+        phi_s, w_s = utils.LogVar2FJ.ou_step_weights(theta['Kappa_S'], theta['Sigma_S'], delta)
+        phi_l, w_l = utils.LogVar2FJ.ou_step_weights(theta['Kappa_L'], theta['Sigma_L'], delta)
+        level, su2 = theta['L'], theta['Sigma_U'] ** 2
+        m1, m2 = 0.0 * level, level + 0.0
+        p11 = theta['Sigma_S'] ** 2 / (2.0 * theta['Kappa_S'])
+        p22 = theta['Sigma_L'] ** 2 / (2.0 * theta['Kappa_L'])
+        p12, loglik, rows, cov = 0.0 * p11, 0.0 * level, [], []
+        for t in range(len(seen)):
+            if t:
+                m1, m2 = phi_s * m1, level + phi_l * (m2 - level)
+                p11, p12, p22 = (phi_s * phi_s * p11 + w_s * w_s, phi_s * phi_l * p12,
+                                 phi_l * phi_l * p22 + w_l * w_l)
+            if seen[t]:
+                f = p11 + 2.0 * p12 + p22 + su2
+                v = y[t] - (m1 + m2 + offset)
+                k1, k2 = (p11 + p12) / f, (p12 + p22) / f
+                m1, m2 = m1 + k1 * v, m2 + k2 * v
+                p11, p12, p22 = (p11 - k1 * (p11 + p12), p12 - k1 * (p12 + p22),
+                                 p22 - k2 * (p12 + p22))
+                loglik = loglik - 0.5 * (torch.log(2.0 * np.pi * f) + v * v / f)
+            rows += [m1, m2]
+            cov += [p11, p12, p22]
+        return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3)
+
+    @classmethod
+    def history_start(cls, y, seen, fixed):
+        """Moment starts inside the box: the level off the observed mean, the measurement noise off the
+        one-day difference, the two vol-of-vols splitting what is left of the sample variance at the
+        spec's own reversion priors."""
+        obs = y[seen]
+        su = fixed.get('Sigma_U', float(np.sqrt(max(0.4 * np.var(np.diff(obs)), 1.0e-4))))
+        spread = max(float(np.var(obs)) - su * su, 1.0e-3)
+        start = {'Kappa_S': 6.0, 'Sigma_S': np.sqrt(6.0 * spread), 'Kappa_L': 0.5,
+                 'Sigma_L': np.sqrt(0.5 * spread), 'Sigma_U': su,
+                 'L': float(np.mean(obs)) - fixed.get('Offset', -0.5 * su * su)}
+        return {n: float(np.clip(v, *cls.HIST_BOX[n])) for n, v in start.items()}
+
+    @classmethod
+    def history_fit(cls, y, seen, delta, fixed):
+        """The filter's MLE with standard errors off the inverse Hessian, returning
+        `(theta, se, loglik, m, cov)`.
+
+        AAD, not finite differences. The standard errors ARE the deliverable - stage 4 pins the slow
+        pair by them - and a differenced Hessian of a 1,260-step filter has no step that is both large
+        enough to see curvature and small enough not to be noise; the same tape gives L-BFGS-B its
+        gradient, so there is one recursion and no second spelling of it.
+        """
+        from scipy.optimize import minimize
+        free = [name for name in cls.HIST_BOX if name not in fixed]
+        held = {n: torch.tensor(v, dtype=torch.float64) for n, v in fixed.items() if n in cls.HIST_BOX}
+
+        def negative(vector):
+            theta = dict(held, **{n: vector[i] for i, n in enumerate(free)})
+            return -cls.filter(y, seen, theta, delta,
+                               fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))[0]
+
+        def objective(x):
+            vector = torch.tensor(x, dtype=torch.float64, requires_grad=True)
+            value = negative(vector)
+            return float(value.detach()), torch.autograd.grad(value, vector)[0].numpy()
+
+        start = cls.history_start(y, seen, fixed)
+        best = minimize(objective, np.array([start[n] for n in free]), jac=True, method='L-BFGS-B',
+                        bounds=[cls.HIST_BOX[n] for n in free])
+        x = torch.tensor(best.x, dtype=torch.float64)
+        spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, x)).diagonal()
+        theta = dict({n: float(v) for n, v in fixed.items() if n in cls.HIST_BOX},
+                     **{n: float(best.x[i]) for i, n in enumerate(free)})
+        se = dict({n: 0.0 for n in fixed if n in cls.HIST_BOX},
+                  **{n: float(spread[i].sqrt()) if spread[i] > 0 else float('inf')
+                     for i, n in enumerate(free)})
+        loglik, m, cov = cls.filter(
+            y, seen, {n: torch.tensor(v, dtype=torch.float64) for n, v in theta.items()},
+            delta, fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))
+        return theta, se, float(loglik), m.detach().numpy(), cov.detach().numpy()
+
+    @staticmethod
+    def ou_pair(theta, delta):
+        """`(phi, w)` for the fast and slow factors as numpy pairs - `utils.LogVar2FJ.ou_step_weights` read
+        at a fitted theta, so the smoother and the cross-check filter step the model itself rather
+        than a second spelling of it."""
+        return tuple(x.numpy() for x in utils.LogVar2FJ.ou_step_weights(
+            torch.tensor([theta['Kappa_S'], theta['Kappa_L']], dtype=torch.float64),
+            torch.tensor([theta['Sigma_S'], theta['Sigma_L']], dtype=torch.float64), delta))
+
+    @staticmethod
+    def predicted(m, cov, phi, w, level):
+        """The PREDICTABLE daily variance `E[exp(l + s) | y_{<t}]` - the filter's one-step prediction,
+        started stationary, which is the budget read at the START of the day.
+
+        NOT the filtered variance. A range measurement is built from the DAY'S OWN path, so it carries
+        the day's own residual: standardising the return by the filtered `h` shrinks exactly the days
+        whose residual was large, which turns a left-skewed residual into a right-skewed remainder and
+        is the endogeneity the predictable budget exists to forbid.
+        """
+        mean = np.vstack([[0.0, level], m[:-1] * phi + [0.0, level * (1.0 - phi[1])]])
+        step = np.array([phi[0] * phi[0], phi[0] * phi[1], phi[1] * phi[1]])
+        shock = np.array([w[0] * w[0], 0.0, w[1] * w[1]])
+        var = np.vstack([shock / np.array([1.0 - phi[0] ** 2, 1.0, 1.0 - phi[1] ** 2]),
+                         cov[:-1] * step + shock])
+        return np.exp(mean.sum(1) + 0.5 * (var[:, 0] + 2.0 * var[:, 1] + var[:, 2]))
+
+    @staticmethod
+    def smooth_shocks(m, cov, phi, w, level):
+        """The state's OWN per-step shocks `E[eta_t | y]` by one RTS backward pass over the filtered
+        path - the object the leverage regression runs on.
+
+        The FILTERED increment is `k_j v` in both components, PROPORTIONAL, so a regression on it
+        cannot separate the two leverages at all; the smoother's increment is what distinguishes a
+        shock that persists from one that decays, and its wide standard error on the slow side is
+        5.5.2's poor identification measured rather than assumed.
+        """
+        step = np.diag(phi)
+        drift = np.array([0.0, level * (1.0 - phi[1])])
+        smooth, q = m.copy(), np.diag(w * w)
+        for t in range(len(m) - 2, -1, -1):
+            p = np.array([[cov[t, 0], cov[t, 1]], [cov[t, 1], cov[t, 2]]])
+            gain = p @ step @ np.linalg.inv(step @ p @ step + q)
+            smooth[t] = m[t] + gain @ (smooth[t + 1] - drift - step @ m[t])
+        return (smooth[1:] - drift - smooth[:-1] @ step) / w
+
+    @staticmethod
+    def leverage(shocks, z, c_min):
+        """The two leverages: the regression of the diffusive remainder on the state's own
+        shocks, inside the MODEL's own box `1 - rho_s^2 - rho_l^2 >= c_min` (2.2.2).
+
+        A decade of daily data holds few slow cycles, so the smoothed slow shock keeps a small
+        fraction of its unit variance and is 0.7-0.8 correlated with the fast one; the normal
+        equations will put anything at all on it. The ridge that lands the pair back on the box IS
+        that box, and the standard error beside it is 5.5.2's poor identification as a number.
+        """
+        from scipy.optimize import brentq
+        a, b, radius = shocks.T @ shocks, shocks.T @ z, np.sqrt(1.0 - c_min)
+        ridge, rho = 0.0, np.linalg.solve(a, b)
+        if rho @ rho > radius * radius:
+            ridge = brentq(lambda x: np.linalg.norm(np.linalg.solve(a + x * np.eye(2), b)) - radius,
+                           0.0, np.linalg.norm(b) / radius)
+            rho = np.linalg.solve(a + ridge * np.eye(2), b)
+        return rho, np.linalg.inv(a) * float((z - shocks @ rho).var(ddof=2)), ridge
+
+    @staticmethod
+    def nig_logpdf(x, clock, alpha, beta, mu):
+        """The log-density of `NIG(alpha, beta, delta_A, mu A)` at `x` on the variance clock `A`:
+        `utils.LogVar2FJ.nig_budget`'s own `delta_A`, so the variance IS the clock, and a location `mu A`
+        LINEAR in it as `delta_A` is, so the law still composes. `mu` is free because P does not force
+        the drift, where Q's `mu_A` is the martingale's."""
+        delta, _, gamma = utils.LogVar2FJ.nig_budget(clock, alpha, beta)
+        d = x - mu * clock
+        q = torch.sqrt(delta * delta + d * d)
+        return (torch.log(alpha * delta / np.pi) + delta * gamma + beta * d - torch.log(q)
+                + LogBesselK1.apply(alpha * q))
+
+    @staticmethod
+    def nig_mixer(x, clock, alpha, beta, mu):
+        """`E[G | x]`, the posterior mean of the residual's inverse-Gaussian mixer: `G | x` is a
+        `GIG(-1, q^2, alpha^2)` in the density's own `q`, whose mean is `(q/alpha)K_0(z)/K_1(z)` at
+        `z = alpha q`.
+
+        The framework's cross-factor correlation sits on the Gaussian GIVEN THE MIXER, so
+        this is what `eps` is standardised by - the law's own sd would leave the mixer's fat tails in
+        the series the correlation is measured on.
+        """
+        delta, _, _ = utils.LogVar2FJ.nig_budget(clock, alpha, beta)
+        q = torch.sqrt(delta * delta + (x - mu * clock) ** 2)
+        return q * BesselRatio.apply(alpha * q) / alpha
+
+    @classmethod
+    def nig_fit(cls, x, budget):
+        """The residual's P-law by maximum likelihood on the day's VARIANCE BUDGET `V`,
+        returning `(values, se, loglik, gaussian_loglik)`.
+
+        The clock is `A = c_eff V` with the SHARE FITTED. `c = 1 - rho_s^2 - rho_l^2` is the share the
+        residual would carry if the leverage came out whole; the smoothed shocks are attenuated, so the
+        remainder keeps what the regression could not take out and its variance is not `c V` at all.
+        Fitting the share is what makes `Var(X_A) = A` hold on the object rather than on an assumption,
+        and `c_eff` against `c` is that attenuation reported.
+
+        Searched in `alpha = exp(a)`, `beta = alpha tanh(b)`, `c_eff = exp(e)`, which is `|beta| <
+        alpha` at every iterate - `|beta+1| < alpha` is the MARTINGALE's constraint and P does not force
+        the drift - off the AAD gradient, with the standard errors from the inverse Hessian of the same
+        likelihood in the NATURAL coordinates, as the Kalman half takes its own. `gaussian_loglik` is
+        the same remainder read as `N(m V, s V)` at its own closed-form `(m, s)`: the model comparison
+        that says whether the tails are real, TWO free parameters apart.
+        """
+        from scipy.optimize import minimize
+        x, budget = (torch.tensor(v, dtype=torch.float64) for v in (x, budget))
+        negative = lambda v: -cls.nig_logpdf(x, v[2] * budget, v[0], v[1], v[3]).sum()
+
+        def objective(vector):
+            v = torch.tensor(vector, dtype=torch.float64, requires_grad=True)
+            alpha = torch.exp(v[0])
+            value = negative(torch.stack([alpha, alpha * torch.tanh(v[1]), torch.exp(v[2]), v[3]]))
+            return float(value.detach()), torch.autograd.grad(value, v)[0].numpy()
+
+        start = cls.nig_start(x.numpy(), budget.numpy())
+        best = minimize(objective, start, jac=True, method='L-BFGS-B',
+                        bounds=[(np.log(cls.NIG_MIN), np.log(cls.NIG_MAX)), (-6.0, 6.0),
+                                (np.log(1.0e-3), np.log(4.0)), (None, None)])
+        alpha, share = float(np.exp(best.x[0])), float(np.exp(best.x[2]))
+        theta = torch.tensor([alpha, alpha * np.tanh(best.x[1]), share, best.x[3]],
+                             dtype=torch.float64)
+        spread = torch.linalg.inv(torch.autograd.functional.hessian(negative, theta)).diagonal()
+        location = x.sum() / budget.sum()
+        scale = ((x - location * budget) ** 2 / budget).mean()
+        gaussian = -0.5 * (torch.log(2.0 * np.pi * scale * budget)
+                           + (x - location * budget) ** 2 / (scale * budget)).sum()
+        return (dict(zip(cls.NIG_NAMES, (float(v) for v in theta))),
+                dict(zip(cls.NIG_NAMES, (float(v.sqrt()) if v > 0 else float('inf') for v in spread))),
+                -float(best.fun), float(gaussian))
+
+    @classmethod
+    def nig_start(cls, x, budget):
+        """`(a, b, log c_eff, mu)` from the remainder's own moments: the share is its variance over the
+        budget, and on what is left an NIG's skewness `3 s/sqrt(delta gamma)` and excess kurtosis
+        `3(1 + 4 s^2)/(delta gamma)` in `s = beta/alpha` invert in closed form. Moments those two do
+        not place inside the admissible map take the index-sized default instead."""
+        v = x / np.sqrt(budget)
+        share = float(v.var())
+        d = (v - v.mean()) / np.sqrt(share)
+        g1, g2 = float((d ** 3).mean()), float((d ** 4).mean()) - 3.0
+        mu = float(x.sum() / budget.sum() / share)
+        ratio = g1 * g1 / (3.0 * g2 - 4.0 * g1 * g1) if 3.0 * g2 > 4.0 * g1 * g1 + 1.0e-9 else 1.0
+        if not 0.0 <= ratio < 0.9:
+            return [float(np.log(44.0)), float(np.arctanh(-0.5)), float(np.log(share)), mu]
+        scale = (3.0 * (1.0 + 4.0 * ratio) / g2 / (share * float(budget.mean()))
+                 / (1.0 - ratio) ** 2)
+        return [float(np.log(np.clip(np.sqrt(scale), cls.NIG_MIN, cls.NIG_MAX))),
+                float(np.arctanh(np.copysign(np.sqrt(ratio), g1))), float(np.log(share)), mu]
+
+    @staticmethod
+    def particle_gate(y, seen, theta, delta, particles, replicates, seed):
+        """A batched bootstrap particle filter on the same state and the same measurement, WITHOUT the
+        linear filter's two approximations.
+
+        The measurement is the same one the Kalman reads, on the same mask - what this drops is the
+        LOG-LINEARISATION of it and the forced Gaussian posterior, which are the two approximations the
+        gate exists to size. Under the NIG residual no threshold hides a tail day from either filter,
+        so the two now disagree about the MEASUREMENT alone and the gate says so when it refuses.
+        `replicates` independent clouds run as ONE batch, so the gate carries its own noise. Returns
+        the log-likelihood per replicate and the posterior-mean `h` path.
+        """
+        generator = torch.Generator().manual_seed(seed)
+        shape, su2 = (replicates, particles), theta['Sigma_U'] ** 2
+        phi, w = LogVar2FJCalibration.ou_pair(theta, delta)
+        stationary = w / np.sqrt(1.0 - phi * phi)
+
+        def draw():
+            return torch.randn(shape, generator=generator, dtype=torch.float64)
+
+        s = stationary[0] * draw()
+        l = theta['L'] + stationary[1] * draw()
+        weight = torch.full(shape, 1.0 / particles, dtype=torch.float64)
+        loglik, path = torch.zeros(replicates, dtype=torch.float64), []
+        for t in range(len(y)):
+            if t:
+                s = phi[0] * s + w[0] * draw()
+                l = theta['L'] + phi[1] * (l - theta['L']) + w[1] * draw()
+            h = torch.exp(l + s)
+            if seen[t]:
+                mean = torch.log(h) + theta['Offset']
+                like = torch.exp(-0.5 * (y[t] - mean) ** 2 / su2) / np.sqrt(2.0 * np.pi * su2)
+                loglik = loglik + torch.log((weight * like).sum(-1))
+                weight = weight * like
+                weight = weight / weight.sum(-1, keepdim=True)
+            path.append((weight * h).sum(-1))
+            # resample on effective sample size, not every step: the slow factor mixes over months, so
+            # a step that resamples flat weights costs it ancestors it cannot draw back
+            if float((1.0 / (weight * weight).sum(-1)).min()) < 0.5 * particles:
+                index = torch.multinomial(weight, particles, replacement=True, generator=generator)
+                s, l = s.gather(1, index), l.gather(1, index)
+                weight = torch.full_like(weight, 1.0 / particles)
+        return loglik.numpy(), torch.stack(path).mean(-1).numpy()
     fields = [
         F('Jump_Threshold', 'Float', default=4.0,
           description='Standard deviations of the filtered daily variance at which the outlier '
@@ -4999,7 +4998,7 @@ class LogVar2FJCalibration(object):
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
         threshold = float(self.param['Jump_Threshold'])
         delta = 1.0 / float(num_business_days)
-        name, bar, mode = lv_bars(data_frame)
+        name, bar, mode = self.bars(data_frame)
         sector = self.implied() if self.param['Scale_To_Sector'] == 'Yes' else {}
         if self.param['Scale_To_Sector'] == 'Yes' and not sector:
             raise ValueError(
@@ -5008,7 +5007,7 @@ class LogVar2FJCalibration(object):
                 "sector's own implied values, with the report stating the scaling - and there is "
                 'nothing here to scale to. Write the sector values, or leave the mode off and the '
                 'history stands as the P-measure estimate it is'.format(name))
-        _, estimator, fixed = LV_MEASURES[mode]
+        _, estimator, fixed = self.MEASURES[mode]
         close = bar['CLOSE'].values
         arg = {'c': close[1:], 'p': close[:-1]}
         for key, fallback in (('OPEN', 'p'), ('HIGH', 'c'), ('LOW', 'c')):
@@ -5019,37 +5018,37 @@ class LogVar2FJCalibration(object):
                                         str(self.param['Event_Days']).split(',') if x.strip()])
         seen = (rv > 0.0) & ~event
 
-        theta, se, loglik, m, cov = lv_history_fit(y, seen, delta, fixed)
+        theta, se, loglik, m, cov = self.history_fit(y, seen, delta, fixed)
         h = np.exp(m.sum(1) + 0.5 * (cov[:, 0] + 2.0 * cov[:, 1] + cov[:, 2]))
         drift = float(np.mean(r[~event]))
         theta['Offset'] = fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2)
-        pair = lv_ou_pair(theta, delta)
-        shocks = lv_smooth_shocks(m, cov, *pair, theta['L'])
-        predicted = lv_predicted(m, cov, *pair, theta['L'])
+        pair = self.ou_pair(theta, delta)
+        shocks = self.smooth_shocks(m, cov, *pair, theta['L'])
+        predicted = self.predicted(m, cov, *pair, theta['L'])
         z, keep = (r - drift) / np.sqrt(predicted * delta), ~event[:-1]
-        rho, rho_cov, ridge = lv_leverage(shocks[keep], z[:-1][keep], utils.LV_C_MIN)
+        rho, rho_cov, ridge = self.leverage(shocks[keep], z[:-1][keep], utils.LogVar2FJ.C_MIN)
         c = 1.0 - float(rho @ rho)
 
         # the remainder in RETURN units on the day's PREDICTABLE budget: the leverage compensator
         # -0.5 rho.rho V is linear in it, so the free location absorbs it with the drift
         budget = predicted[:-1] * delta
         remainder = (z[:-1] - shocks @ rho) * np.sqrt(budget)
-        nig, nig_se, nig_loglik, gauss_loglik = lv_nig_fit(remainder[keep], budget[keep])
+        nig, nig_se, nig_loglik, gauss_loglik = self.nig_fit(remainder[keep], budget[keep])
         clock = nig['C_Eff'] * budget
         wide = lambda v: torch.tensor(v, dtype=torch.float64)
-        mixer = lv_nig_mixer(*(wide(v) for v in (
+        mixer = self.nig_mixer(*(wide(v) for v in (
             remainder, clock, nig['Alpha'], nig['Beta'], nig['Residual_Drift']))).numpy()
         eps = (remainder - nig['Residual_Drift'] * clock - nig['Beta'] * mixer) / np.sqrt(mixer)
         # the mixer's own INNOVATION: the day's clock parameters put G back through its own
         # quantile, which is the process's map from the framework normal to G inverted
-        budget_a, _, gamma_a = utils.lv_nig_budget(
+        budget_a, _, gamma_a = utils.LogVar2FJ.nig_budget(
             wide(clock), wide(nig['Alpha']), wide(nig['Beta']))
-        g_eps = utils.norm_icdf(utils.ig_cdf(
+        g_eps = utils.norm_icdf(utils.LogVar2FJ.ig_cdf(
             wide(mixer), budget_a / gamma_a, budget_a * budget_a)).numpy()
         outliers = int((np.abs(np.where(event, 0.0, r - drift))
                         > threshold * np.sqrt(predicted * delta)).sum())
 
-        pf_loglik, pf_h = lv_particle_gate(
+        pf_loglik, pf_h = self.particle_gate(
             y, seen, theta, delta, int(self.param['Particle_Count']), 4,
             int(self.param['Random_Seed']))
         miss = float(np.sqrt(np.mean((pf_h / h - 1.0) ** 2)))
@@ -5060,10 +5059,10 @@ class LogVar2FJCalibration(object):
             'LogVar2FJ history %s: %s on %d days, %d measured (%d events); loglik %.2f',
             name, mode, len(r), int(seen.sum()), int(event.sum()), loglik)
         for row in (('Kappa_S', 'Sigma_S', 'Rho_S'), ('Kappa_L', 'Sigma_L', 'Rho_L'),
-                    ('L', 'Sigma_U', 'Drift')) + (LV_NIG_NAMES,):
+                    ('L', 'Sigma_U', 'Drift')) + (self.NIG_NAMES,):
             logging.info('  ' + '   '.join('%s %+.4f +- %.4f' % (n, values[n], errors[n])
                                            for n in row))
-        pinned = [n for n in se if not LV_HIST_BOX[n][0] < theta[n] < LV_HIST_BOX[n][1]]
+        pinned = [n for n in se if not self.HIST_BOX[n][0] < theta[n] < self.HIST_BOX[n][1]]
         logging.info(
             '  c %.4f (ridge %.3g, shock sd fast %.4f slow %.4f - what the smoother left of a '
             'unit innovation, divided out of the emitted column), eps sd %.4f, filtered h against '
@@ -5081,7 +5080,7 @@ class LogVar2FJCalibration(object):
             '. THE REMAINDER IS MOSTLY LEVERAGE - its clock is {:.1f}x the model\'s c, so Alpha '
             'and Beta are the REMAINDER\'s law and not the residual\'s, Alpha reading toward '
             'Gaussian; Alpha crosses as a SEED for that reason'.format(nig['C_Eff'] / c),
-            '' if LV_NIG_MIN * 1.001 < nig['Alpha'] < LV_NIG_MAX * 0.999
+            '' if self.NIG_MIN * 1.001 < nig['Alpha'] < self.NIG_MAX * 0.999
             else '; ALPHA ON ITS BOX BOUND')
         for n, q in sorted(self.implied().items()):
             note = ''
@@ -5145,7 +5144,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     before, so node placement and the bridge move no endpoint.
 
     The daily shocks come from a `torch.Generator` per CALENDAR-ANCHORED segment of
-    `pricing.LV_CHECKPOINT_STEPS` days: never stored, redrawn inside the checkpoint's recompute,
+    `pricing.LogVar2FJKit.CHECKPOINT_STEPS` days: never stored, redrawn inside the checkpoint's recompute,
     and grid-invariant - a day's shock is a function of the DAY, not of where the scenario nodes
     fall. `-eta` on the antithetic half, as the framework mirrors its own normals; the mixer is
     `Phi` of the fourth normal in DOUBLE, which mirrors as `1 - u` for free.
@@ -5236,10 +5235,10 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         structural = self.implied.curve_tenors()
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.curves = {c: utils.TermStructure(structural[c], implied_tensor[c])
-                       for c in utils.LV_CURVE_NAMES}
-        self.params = dict({x: implied_tensor[x] for x in utils.LV_PARAM_NAMES},
-                           **{x: utils.lv_declared(structural.get(x))
-                              for x in utils.LV_STRUCTURAL_NAMES})
+                       for c in utils.LogVar2FJ.CURVE_NAMES}
+        self.params = dict({x: implied_tensor[x] for x in utils.LogVar2FJ.PARAM_NAMES},
+                           **{x: utils.LogVar2FJ.declared(structural.get(x))
+                              for x in utils.LogVar2FJ.STRUCTURAL_NAMES})
         self.spot0 = tensor
         # the carry read: step starts on the scenario grid and each step's own length, verbatim
         # from `GBMAssetPriceTSModelImplied`
@@ -5265,8 +5264,8 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         self.deltas = wide.to(shared.one.dtype)
         self.levers = {x: self.curves[x].at(t[:-1])
                        for x in pricing.LogVar2FJKit.step_names}
-        self.curve = (torch.log(utils.lv_wide(self.curves['Xi_Curve'].at(t)))
-            - 0.5 * utils.lv_state_variance(
+        self.curve = (torch.log(utils.LogVar2FJ.wide(self.curves['Xi_Curve'].at(t)))
+            - 0.5 * utils.LogVar2FJ.state_variance(
                 dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)).to(shared.one.dtype)
         edge = np.cumsum([0] + [len(x) for x in sub]).tolist()
         self.spans = list(zip(edge[:-1], edge[1:]))
@@ -5287,7 +5286,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                          utils.check_tuple_name(self.factor_key), self.n_extra)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             # the clock this grid actually built - the one thing a surprising scenario grid hides
-            logging.debug('LV_OUTER %s: %d nodes, %d daily steps, %d residual draws, day '
+            logging.debug('LogVar2FJ outer %s: %d nodes, %d daily steps, %d residual draws, day '
                           'fractions %s', utils.check_tuple_name(self.factor_key),
                           self.scenario_horizon, len(step),
                           0 if self.gaussian else sum(len(x) for x in self.pieces),
@@ -5305,12 +5304,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         """
         at = torch.cat([wide.new_zeros(1), wide.cumsum(0)])
         rows = []
-        # flattened as `lv_state_variance` flattens: a scalar leaf arrives as [1, 1] to broadcast
+        # flattened as `utils.LogVar2FJ.state_variance` flattens: a scalar leaf arrives as [1, 1] to broadcast
         # against the walk's state, and would slice the wrong axis here
         for name, sigma in (('Kappa_L', self.params['Sigma_L']),
                             ('Kappa_S', self.levers['Sigma_S'])):
-            kappa = utils.lv_wide(self.params[name]).reshape(-1)
-            w = utils.lv_ou_step_weights(kappa, utils.lv_wide(sigma), wide)[1].reshape(-1)
+            kappa = utils.LogVar2FJ.wide(self.params[name]).reshape(-1)
+            w = utils.LogVar2FJ.ou_step_weights(kappa, utils.LogVar2FJ.wide(sigma), wide)[1].reshape(-1)
             columns = []
             for first, last in self.spans:
                 v = torch.exp(-kappa * (at[last] - at[first + 1:last + 1])) * w[first:last]
@@ -5325,16 +5324,16 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         scenario nodes fell - with each factor's draws CONDITIONED on its interval's framework
         normal, `e = z - u (u'z) + u Z`, which is the OU bridge between the endpoints that normal
         fixes. Spelled in that order so a one-step interval returns `Z` to the last bit."""
-        z = self.draws(key, shape + [pricing.LV_CHECKPOINT_STEPS], deltas, mirror)
+        z = self.draws(key, shape + [pricing.LogVar2FJKit.CHECKPOINT_STEPS], deltas, mirror)
         n = int(deltas.shape[0])
         u = load.reshape([2] + [1] * len(shape) + [n])
         eta = z[..., offset:offset + n] - u * free.unsqueeze(-1) + u * node.unsqueeze(-1)
-        return utils.lv_walk(params, curve, deltas, eta[0], eta[1], (l, s), False)
+        return utils.LogVar2FJ.walk(params, curve, deltas, eta[0], eta[1], (l, s), False)
 
     def project(self, key, offset, shape, mirror, deltas, load):
         """`u'z` over one segment, per factor - the component of the free draws the bridge
         replaces with the interval's framework normal."""
-        z = self.draws(key, shape + [pricing.LV_CHECKPOINT_STEPS], deltas, mirror)
+        z = self.draws(key, shape + [pricing.LogVar2FJKit.CHECKPOINT_STEPS], deltas, mirror)
         n = int(load.shape[-1])
         return (z[..., offset:offset + n] * load.reshape([2] + [1] * len(shape) + [n])).sum(-1)
 
@@ -5380,7 +5379,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         # the segment stream's own key, off the plain generator, so a deterministic batch derives
         # it from that batch's seed and a checkpoint's recompute redraws exactly what it drew
         seed = int(torch.randint(1 << 42, (1,)).item()) << 20
-        step = pricing.LV_CHECKPOINT_STEPS
+        step = pricing.LogVar2FJKit.CHECKPOINT_STEPS
 
         def run(fn, *args):
             return torch.utils.checkpoint.checkpoint(

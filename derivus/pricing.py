@@ -68,12 +68,6 @@ DEBUG."""
 # walks it after that.
 
 
-#: Internal steps ONE CHECKPOINTED SEGMENT of the walk holds. The forward keeps two boundary states
-#: per segment and the backward recomputes one segment's intermediates at a time, so a finer split
-#: buys tape and pays in boundaries; a trading month sits near the flat optimum of that trade.
-LV_CHECKPOINT_STEPS = 21
-
-
 class LogVar2FJKit(object):
     """LogVar2FJ as an OSS kit: ONE internal-step walk per MTM row, off which each remaining fixing
     interval reads its own Gaussian block law ``(M, Sigma)``.
@@ -84,12 +78,16 @@ class LogVar2FJKit(object):
     fired branch `lognormal_fired_gain` at this ``(M, Sigma)``.
 
     ``Invert_Spot`` carries the law to the reciprocal axis as a MEASURE CHANGE: the walk's two
-    shocks shift (`utils.lv_walk`) and the mixer is drawn from its Esscher-tilted law here.
+    shocks shift (`utils.LogVar2FJ.walk`) and the mixer is drawn from its Esscher-tilted law here.
     """
 
-    param_names = utils.LV_PARAM_NAMES
-    curve_names = utils.LV_CURVE_NAMES
-    #: what `utils.lv_walk` is handed PER STEP - the two levers the state and the clock read; the
+    #: Internal steps ONE CHECKPOINTED SEGMENT of the walk holds. The forward keeps two boundary
+    #: states per segment and the backward recomputes one segment's intermediates at a time, so a
+    #: finer split buys tape and pays in boundaries; a trading month sits near that trade's optimum.
+    CHECKPOINT_STEPS = 21
+    param_names = utils.LogVar2FJ.PARAM_NAMES
+    curve_names = utils.LogVar2FJ.CURVE_NAMES
+    #: what `utils.LogVar2FJ.walk` is handed PER STEP - the two levers the state and the clock read; the
     #: residual's own pair is read once per DRAW, at its piece's start
     step_names = ('Rho_S', 'Sigma_S')
 
@@ -97,8 +95,8 @@ class LogVar2FJKit(object):
         n = len(self.param_names)
         structural = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Tenor_Index]
         self.params = dict(zip(self.param_names, scalars[:n]),
-                           **{x: utils.lv_declared(structural.get(x))
-                              for x in utils.LV_STRUCTURAL_NAMES})
+                           **{x: utils.LogVar2FJ.declared(structural.get(x))
+                              for x in utils.LogVar2FJ.STRUCTURAL_NAMES})
         self.curves = {name: utils.TermStructure(structural[name], value)
                        for name, value in zip(self.curve_names, scalars[n:])}
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
@@ -145,9 +143,9 @@ class LogVar2FJKit(object):
         return torch.cat([z, -z], dim=-2) if antithetic else z
 
     def segment(self, key, shape, antithetic, params, curve, deltas, l, s, quanto):
-        """One checkpointed segment of the walk: its own draws, then `utils.lv_walk` over them."""
+        """One checkpointed segment of the walk: its own draws, then `utils.LogVar2FJ.walk` over them."""
         z = self.draws(key, shape + [int(deltas.shape[0])], deltas, antithetic)
-        return utils.lv_walk(params, curve, deltas, z[0], z[1], (l, s), self.invert, quanto)
+        return utils.LogVar2FJ.walk(params, curve, deltas, z[0], z[1], (l, s), self.invert, quanto)
 
     def residual(self, A, alpha, beta, u):
         """One residual draw's ``(mean shift, mixer)`` on the clock ``A``.
@@ -161,10 +159,10 @@ class LogVar2FJKit(object):
         """
         if self.gaussian:
             return -0.5 * A, A
-        delta, mu, gamma = utils.lv_nig_budget(A, alpha, beta)
+        delta, mu, gamma = utils.LogVar2FJ.nig_budget(A, alpha, beta)
         if self.invert:
             gamma = torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0))
-        G = utils.ig_quantile(u, delta / gamma, delta * delta)
+        G = utils.LogVar2FJ.ig_quantile(u, delta / gamma, delta * delta)
         return mu + beta * G, G
 
     def grid(self, row_t, deltas):
@@ -178,7 +176,7 @@ class LogVar2FJKit(object):
         of magnitude past it.
         """
         steps = [max(int(round(float(dt) * self.steps_per_year)), 1) for dt in deltas]
-        wide = torch.cat([(utils.lv_wide(dt) / n).expand(n) for dt, n in zip(deltas, steps)])
+        wide = torch.cat([(utils.LogVar2FJ.wide(dt) / n).expand(n) for dt, n in zip(deltas, steps)])
         return (steps, wide.to(deltas.dtype),
                 float(row_t) + torch.cat([wide.new_zeros(1), wide.cumsum(0)]))
 
@@ -221,11 +219,11 @@ class LogVar2FJKit(object):
         ``exp(-(Var_0 - Var_row)/2)``. Where an OUTER LogVar2FJ process walked the scenario, the
         row starts from the state that path actually carries (`carried`) instead.
 
-        EVERY SEGMENT OF `LV_CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
+        EVERY SEGMENT OF `CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
         boundary states and the backward recomputes its intermediates - draws included - one
         segment at a time, which is what puts a daily 2y walk at 2,048 x 2,048 on a 24 GiB card. The
         residual draw is checkpointed beside it, the mixer's root being the tape's other heavy node.
-        `utils.lv_walk` returns each segment's SUMS, so a fixing block's law is the sum over its own
+        `utils.LogVar2FJ.walk` returns each segment's SUMS, so a fixing block's law is the sum over its own
         segments and the widest tensor on the tape is one segment's ``[batch, sims, 21]``.
 
         All five curves are PIECEWISE CONSTANT and read at ABSOLUTE times - ``xi`` on the segments
@@ -242,10 +240,10 @@ class LogVar2FJKit(object):
         steps, delta, t = self.grid(row_t, deltas)
         levers = {x: self.curves[x].at(t[:-1]) for x in self.step_names}
         # the level the walk reverts to is the GRID's and the parameters' - double, cast once
-        curve = (torch.log(utils.lv_wide(self.curves['Xi_Curve'].at(t)))
-                 - 0.5 * utils.lv_state_variance(
+        curve = (torch.log(utils.LogVar2FJ.wide(self.curves['Xi_Curve'].at(t)))
+                 - 0.5 * utils.LogVar2FJ.state_variance(
                      dict(self.params, Sigma_S=levers['Sigma_S']),
-                     utils.lv_wide(delta))).to(delta.dtype)
+                     utils.LogVar2FJ.wide(delta))).to(delta.dtype)
         shape = [shared.simulation_batch, num_sims]
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
@@ -259,8 +257,8 @@ class LogVar2FJKit(object):
             m, v = zero, zero
             for start, end, bucket in rows:
                 clock = 0.0
-                for a in range(start, end, LV_CHECKPOINT_STEPS):
-                    b = min(a + LV_CHECKPOINT_STEPS, end)
+                for a in range(start, end, self.CHECKPOINT_STEPS):
+                    b = min(a + self.CHECKPOINT_STEPS, end)
                     dm, dA, l, s = torch.utils.checkpoint.checkpoint(
                         self.segment, base + j, shape, antithetic,
                         dict(self.params, **{x: levers[x][a:b] for x in self.step_names}),
@@ -1113,8 +1111,8 @@ def skew_reserve(shared, grad):
                  for name in ('Beta', 'Rho_S')]
         if len(row) != 2 or not all(x is not None and np.size(x) for x in lever):
             continue
-        one = utils.lv_skew_reserve([float(np.ravel(x)[-1]) for x in lever], row,
-                              float(line['Stickiness_Band']))
+        one = utils.LogVar2FJ.skew_reserve([float(np.ravel(x)[-1]) for x in lever], row,
+                                           float(line['Stickiness_Band']))
         total = one if total is None else total + (one or 0.0)
     return total
 

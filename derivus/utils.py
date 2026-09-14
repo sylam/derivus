@@ -2425,96 +2425,10 @@ def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
     return prev_touched + (1.0 - prev_touched) * torch.maximum(beyond, crossed)
 
 
-# ======================================================================================
-# LOGVAR2FJ - two-factor log-variance with a normal-inverse-Gaussian residual on the variance
-# clock, walked on an INTERNAL step and priced through the sample-then-Phi stride.
-#
-# One Markov chain on an internal step delta; a stride from any date to any date is a BLOCK of that
-# chain, so two dates give the same law however the interval between them is cut. Given every
-# step's two variance shocks and the block's own mixer the block return is EXACTLY Gaussian - which
-# is what makes survival one Phi, the truncated draw one Phi^-1 and a partial moment Black, so the
-# lognormal primitives in `pricing` serve this model verbatim and nothing is integrated inside a
-# stride.
-#
-# The math is FREE FUNCTIONS taking one parameter dict keyed by the canonical names below - the set
-# the price factor declares; `pricing.LogVar2FJKit` owns the unpack, the grid and the draws.
-# ======================================================================================
-
-#: The `LogVar2FJModelParameters` price factor's SCALAR leaves, in canonical order - the single
-#: source of that name set, shared with the riskfactors class and every consumption site.
-LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S')
-
-#: The structural SCALARS the kit reads off the factor: the cap, a guard on log-variance rather
-#: than a modelling device. A leaf at either would report a derivative nothing carries.
-LV_STRUCTURAL_NAMES = ('Cap_A',)
-
-#: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2`: the factor
-#: asserts it at load, the surface's stages 3-4 box the fit by it, and the historical leverage
-#: regression is ridged onto it where the slow shock is too weak to carry a coefficient.
-LV_C_MIN = 0.12
-
-#: The floor on the residual's CONDITIONING SHARE `gamma^2/alpha^2 = 1 - (Beta/Alpha)^2` - the
-#: share of its variance that stays in the Gaussian once the mixer is sampled (the bound
-#: `|Beta|/Alpha <= 0.77`). Past it the mixer carries the return and the OSS advantage goes too.
-LV_COND_MIN = 0.4
-
-#: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
-#: knots - one knot at 0 is the constant-parameter model. `Rho_S` and `Beta` are the
-#: forward-skew pair; `Sigma_S` and `Alpha` carry buckets because Bootstrap mode frees them per
-#: expiry. All four carry the same buckets, which the factor asserts.
-LV_BUCKET_NAMES = ('Rho_S', 'Beta', 'Sigma_S', 'Alpha')
-
-#: The CURVE parameters, in the order the kit unpacks them. `Xi_Curve` is the EXPECTED FORWARD
-#: VARIANCE `E_0[h_t]` - what a variance swap pays - piecewise CONSTANT on the segments its knots
-#: START, off which the OU mean level is DERIVED with the Jensen term; all five carry
-#: structural knots and VALUES that are leaves.
-LV_CURVE_NAMES = ('Xi_Curve',) + LV_BUCKET_NAMES
-
-#: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the calibrator to
-#: read, declared here because both lanes read it: the model name the block is keyed under with the
-#: underlying's own name, and every estimate a reader takes, EACH WITH ITS OWN `_SE` BESIDE IT -
-#: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S`/`Sigma_S` the leverage
-#: prior's own PRODUCT and its delta-method error, and `Beta` the sanity table's P side, reported
-#: and never crossed.
-LV_SLOW_HISTORY = ('LogVar2FJImpliedSpotModel',
-                   ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S', 'Sigma_S'))
-
-#: What the calibration writes on the factor for a DEAL's own sensitivity report to compose its
-#: forward-skew reserve with - structural, carried by the same route the cap and the law
-#: are, and declared here because the bootstrapper writes it and the pricer reads it.
-LV_RESERVE_LINE = ('Skew_Gradient', 'Stickiness_Band')
-
-#: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)`. Here
-#: because the factor's refusals quote the map the fit lands inside.
-LV_AB_EPS = 1.0e-6
-
-#: The inverse-Gaussian quantile's FIXED budget: bracket doublings, then Newton steps, each masked
-#: to the elements still outside `LV_IG_TOL`. Fixed rather than data-dependent, so a checkpoint's
-#: recompute walks exactly the iterations its forward walked. Measured over 2e5 uniforms with the
-#: tails to 1e-300 at clocks 1e-6 to 3 across the whole admissible (Alpha, Beta) box: the bracket
-#: NEVER doubles, and the GEOMETRIC fallback below converges the worst element in 26 steps where
-#: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
-LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 3, 34, 1.0e-11
-
-#: The quadrature's two guards: the clock/leverage correlation, kept inside the unit disc its own
-#: conditional variance needs, and the LOG span the mixer's own node may sit at from its mean -
-#: seventeen decades either way, past every node that carries mass, and what keeps a clock the
-#: lognormal surrogate has underflowed from dividing by its own zero in the density's exponent.
-LV_QUAD_RHO, LV_QUAD_SPAN = 1.0 - 1.0e-9, 40.0
-
 #: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
 #: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
 #: late; buckets are calendar dates and never sit within the 30 ms this allows.
 BUCKET_TOL = 1.0e-9
-
-
-def lv_wide(x):
-    """``x`` in float64, tensor or number, carrying its graph - what every nonlinear piece of the
-    model computes in before it is cast ONCE into the job's dtype (`HullWhite1FactorInterestRateModel
-    .precalculate`'s pattern). A double caller gets its own tensor back, so the arithmetic there is
-    the arithmetic it always was."""
-    return x.to(torch.float64) if torch.is_tensor(x) else torch.tensor(float(x),
-                                                                       dtype=torch.float64)
 
 
 class TermStructure:
@@ -2539,7 +2453,7 @@ class TermStructure:
     def index(self, t):
         """The segment each time in ``t`` falls in, on the device - taken ONCE by a fit whose
         knots are fixed and whose leaves change every evaluation."""
-        return torch.clamp(torch.searchsorted(self.knots.tn, lv_wide(t), right=True) - 1, min=0)
+        return torch.clamp(torch.searchsorted(self.knots.tn, LogVar2FJ.wide(t), right=True) - 1, min=0)
 
     def at(self, t, values=None):
         return (self.values if values is None else values)[self.index(t)]
@@ -2565,383 +2479,584 @@ def bucket_index(knots, t):
                    0, len(knots) - 1)
 
 
-def lv_nig_budget(A, alpha, beta):
-    """``(delta_A, mu_A, gamma)`` of the NIG increment that spends variance ``A``.
+class LogVar2FJ:
+    """Two-factor log-variance with a normal-inverse-Gaussian residual on the variance clock,
+    walked on an INTERNAL step and priced through the sample-then-Phi stride.
 
-    ``gamma = sqrt(alpha^2 - beta^2)``; ``delta_A = A gamma^3/alpha^2`` makes the variance the clock
-    exactly and ``mu_A = delta_A (sqrt(alpha^2 - (beta+1)^2) - gamma)`` forces ``E[exp(X_A)] = 1``.
-    Both are LINEAR in the clock, which is what composes the residual: a month cut into days is one
-    law once the clock is one number. All three are computed in DOUBLE and cast once, and ``mu_A``
-    is spelled ``-delta_A (2 beta + 1) / (sqrt(alpha^2 - (beta+1)^2) + gamma)`` - the rationalised
-    form of a difference of two roots a part in ten thousand apart at the box's own alpha.
+    One Markov chain on an internal step delta; a stride from any date to any date is a BLOCK of
+    that chain, so two dates give the same law however the interval between them is cut. Given
+    every step's two variance shocks and the block's own mixer the block return is EXACTLY Gaussian
+    - which is what makes survival one Phi, the truncated draw one Phi^-1 and a partial moment
+    Black, so the lognormal primitives in `pricing` serve this model verbatim and nothing is
+    integrated inside a stride.
+
+    The math takes one parameter dict keyed by the canonical names below - the set the price factor
+    declares; `pricing.LogVar2FJKit` owns the unpack, the grid and the draws.
     """
-    narrow = torch.result_type(A, alpha)
-    A, alpha, beta = lv_wide(A), lv_wide(alpha), lv_wide(beta)
-    gamma = torch.sqrt(alpha * alpha - beta * beta)
-    delta = A * gamma * gamma * gamma / (alpha * alpha)
-    mu = -delta * (2.0 * beta + 1.0) / (torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0)) + gamma)
-    return delta.to(narrow), mu.to(narrow), gamma.to(narrow)
 
+    # the names
 
-def ig_cdf(x, m, lam):
-    """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr``.
+    #: The `LogVar2FJModelParameters` price factor's SCALAR leaves, in canonical order - the single
+    #: source of that name set, shared with the riskfactors class and every consumption site.
+    PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S')
 
-    ``exp(2 lam/m)`` overflows at the clocks a daily grid produces - ``lam/m`` is ``delta*gamma``
-    and reaches the hundreds - while its product with the tail probability does not, so the two are
-    added in logs and exponentiated once.
-    """
-    r = torch.sqrt(lam / x)
-    return (norm_cdf(r * (x / m - 1.0))
-            + torch.exp(2.0 * lam / m + torch.special.log_ndtr(-r * (x / m + 1.0))))
+    #: The structural SCALARS the kit reads off the factor: the cap, a guard on log-variance rather
+    #: than a modelling device. A leaf at either would report a derivative nothing carries.
+    STRUCTURAL_NAMES = ('Cap_A',)
 
+    #: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2`: the factor
+    #: asserts it at load, the surface's stages 3-4 box the fit by it, and the historical leverage
+    #: regression is ridged onto it where the slow shock is too weak to carry a coefficient.
+    C_MIN = 0.12
 
-def ig_pdf(x, m, lam):
-    """Inverse-Gaussian density in mean/shape form."""
-    return torch.sqrt(lam / (2.0 * np.pi * x * x * x)) * torch.exp(
-        -lam * (x - m) * (x - m) / (2.0 * m * m * x))
+    #: The floor on the residual's CONDITIONING SHARE `gamma^2/alpha^2 = 1 - (Beta/Alpha)^2` - the
+    #: share of its variance that stays in the Gaussian once the mixer is sampled (the bound
+    #: `|Beta|/Alpha <= 0.77`). Past it the mixer carries the return and the OSS advantage goes too.
+    COND_MIN = 0.4
 
+    #: The four levers piecewise CONSTANT on calendar-time buckets whose START times are the curves'
+    #: knots - one knot at 0 is the constant-parameter model. `Rho_S` and `Beta` are the
+    #: forward-skew pair; `Sigma_S` and `Alpha` carry buckets because Bootstrap mode frees them per
+    #: expiry. All four carry the same buckets, which the factor asserts.
+    BUCKET_NAMES = ('Rho_S', 'Beta', 'Sigma_S', 'Alpha')
 
-def ig_root(u, m, lam):
-    """The IG quantile as a VALUE, OFF THE TAPE: safeguarded Newton with a bisection fallback from
-    the lognormal moment-matched start, bracketed by expansion. The model's one root.
+    #: The CURVE parameters, in the order the kit unpacks them. `Xi_Curve` is the EXPECTED FORWARD
+    #: VARIANCE `E_0[h_t]` - what a variance swap pays - piecewise CONSTANT on the segments its knots
+    #: START, off which the OU mean level is DERIVED with the Jensen term; all five carry
+    #: structural knots and VALUES that are leaves.
+    CURVE_NAMES = ('Xi_Curve',) + BUCKET_NAMES
 
-    A FIXED budget - `LV_IG_EXPAND` doublings then `LV_IG_STEPS` steps, each masked to the elements
-    still outside `LV_IG_TOL` - because an exit taken on the data would let a checkpoint's recompute
-    walk a different number of iterations from its forward. The IG at the shape a daily clock
-    produces is extremely skewed, which is what the expansion is for.
+    #: What `stochasticprocess.LogVar2FJCalibration` writes into `Price Models` for the calibrator to
+    #: read, declared here because both lanes read it: the model name the block is keyed under with the
+    #: underlying's own name, and every estimate a reader takes, EACH WITH ITS OWN `_SE` BESIDE IT -
+    #: `Rho_L`/`Sigma_L` are stage 4's pin, `Alpha` the residual seed, `Rho_S`/`Sigma_S` the leverage
+    #: prior's own PRODUCT and its delta-method error, and `Beta` the sanity table's P side, reported
+    #: and never crossed.
+    SLOW_HISTORY = ('LogVar2FJImpliedSpotModel',
+                    ('Rho_L', 'Sigma_L', 'Alpha', 'Beta', 'Rho_S', 'Sigma_S'))
 
-    THE FALLBACK BISECTS GEOMETRICALLY. The bracket spans ten decades, so its midpoint is a ratio
-    and not a width: an arithmetic halving spends thirty steps walking down to the small end where
-    the root of a skewed clock lives, and the budget it needs is twice the geometric one's.
+    #: What the calibration writes on the factor for a DEAL's own sensitivity report to compose its
+    #: forward-skew reserve with - structural, carried by the same route the cap and the law
+    #: are, and declared here because the bootstrapper writes it and the pricer reads it.
+    RESERVE_LINE = ('Skew_Gradient', 'Stickiness_Band')
 
-    IN DOUBLE, and the answer is double: `LV_IG_TOL` is 1e-11 against float32's own 6e-8, and
-    `ig_cdf`'s second term adds `2 lam/m` - four thousand on a quarterly clock - to a log-tail of
-    the same size, a cancellation float32 cannot hold at all.
-    """
-    with torch.no_grad():
-        u, m, lam = lv_wide(u), lv_wide(m), lv_wide(lam)
-        lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
-        for _ in range(LV_IG_EXPAND):
-            hi = torch.where(ig_cdf(hi, m, lam) < u, hi * 4.0, hi)
-        sx = torch.sqrt(torch.log1p(m / lam))
-        x = m * torch.exp(sx * norm_icdf(u) - 0.5 * sx * sx)
-        x = torch.minimum(torch.maximum(x, lo * 2.0), hi * 0.5)
-        for _ in range(LV_IG_STEPS):
-            F = ig_cdf(x, m, lam)
-            done = (F - u).abs() < LV_IG_TOL
-            lo, hi = torch.where(F < u, x, lo), torch.where(F > u, x, hi)
-            step = x - (F - u) / ig_pdf(x, m, lam)
-            bad = ~torch.isfinite(step) | (step <= lo) | (step >= hi)
-            x = torch.where(done, x, torch.where(bad, torch.sqrt(lo * hi), step))
-    return x
+    #: The admissible map's epsilon, the calibrator's `alpha = 1/2 + eps + softplus(a)`. Here
+    #: because the factor's refusals quote the map the fit lands inside.
+    AB_EPS = 1.0e-6
 
+    #: What a retired field is replaced by. An authored key the family no longer declares would be
+    #: carried silently past `declared_defaults`, so the block or the section refuses by NAME instead.
+    RETIRED = {
+        'Cap_Beta': 'retired with the smooth cap - a declared Cap_A is the corner min(l+s, Cap_A); '
+                    'delete the key',
+        'Beta_Prior_Defaults': 'Residual_Skew_Share_Defaults - the prior is on the SHARE beta/alpha '
+                               'the smile sees, a row on beta alone being obeyed for free by running '
+                               'alpha to its ceiling',
+        'Beta_Prior_Sd': 'Residual_Skew_Share_Sd, the spread on that share and the bar a history has '
+                         'to beat',
+        'Jump_Share': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
+        'Lambda': 'the residual has no intensity and the co-jump went with the Poisson law - '
+                  'Alpha and Beta are fitted from the wings',
+        'Nu': 'the co-jump went with the Poisson residual',
+        'Mu_J': 'Beta, the NIG residual\'s skew, carries what the jump mean carried',
+        'Sigma_J': 'Alpha, the NIG residual\'s tail thickness, carries what the jump dispersion '
+                   'did',
+        'L_Curve': 'Xi_Curve, the EXPECTED FORWARD VARIANCE E[h] - not a log level; the Jensen '
+                   'term is derived inside the model',
+        'Wing_Strike': 'the residual is not sized off one wing; Alpha and Beta are fitted on the 1-3m '
+                       'rows',
+        'Diffusive_Share': 'there is no split to override - the whole of xi is the model E[h]',
+        'Vanilla_Guard': 'nothing - the forward block runs with a market or reference SOURCE or not '
+                         'at all, so there is no view for a guard to price',
+        'Vanilla_Band': 'nothing - a cap on what a forward view may cost the vanillas covered one '
+                        'stage while the damage occurred in another, and was withdrawn with the view',
+        'Stickiness_Prior': 'the RESERVE LINE - Forward_Smile_Source Prior is withdrawn, and a desk\'s '
+                            'forward-smile view is priced as Stickiness_Band times the deal\'s own '
+                            'dPV/dDelta_skew rather than fitted as a target'}
 
-def ig_quantile(u, m, lam):
-    """``F_IG^-1(u; m, lam)`` carrying the implicit-function derivative in ``(m, lam)``.
+    #: The tenor grammar `Forward_Tenors` is written in.
+    TENOR_UNITS = {'d': 1.0 / 365.0, 'w': 7.0 / 365.0, 'm': 1.0 / 12.0, 'y': 1.0}
 
-    The root is `ig_root`'s and DETACHED; what comes back is TWO Newton steps taken at it with
-    `ig_cdf` and `ig_pdf` on the tape. The first step's numerator is a residual at the tolerance, so
-    the VALUE is the root's while ``dG/dtheta = -(dF/dtheta)/f`` is the IFT exactly; the second
-    step's input carries the first's graph, which is what makes the SECOND derivative the Newton
-    map's own. Spot never enters, so delta and gamma bypass this node.
+    # the law
 
-    BOTH STEPS IN DOUBLE, cast once: their backward carries ``1/x^4`` terms that leave float32's
-    range at a residual clock under a 4% vol, and the forward's own cancellation in `ig_cdf` is
-    wider than the tolerance the root was found to.
-    """
-    narrow = torch.result_type(m, lam)
-    m, lam, u = lv_wide(m), lv_wide(lam), lv_wide(u)
-    x = ig_root(u, m, lam)
-    x = x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)
-    return (x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)).to(narrow)
+    #: The inverse-Gaussian quantile's FIXED budget: bracket doublings, then Newton steps, each masked
+    #: to the elements still outside `IG_TOL`. Fixed rather than data-dependent, so a checkpoint's
+    #: recompute walks exactly the iterations its forward walked. Measured over 2e5 uniforms with the
+    #: tails to 1e-300 at clocks 1e-6 to 3 across the whole admissible (Alpha, Beta) box: the bracket
+    #: NEVER doubles, and the GEOMETRIC fallback below converges the worst element in 26 steps where
+    #: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
+    IG_EXPAND, IG_STEPS, IG_TOL = 3, 34, 1.0e-11
 
+    @staticmethod
+    def wide(x):
+        """``x`` in float64, tensor or number, carrying its graph - what every nonlinear piece of the
+        model computes in before it is cast ONCE into the job's dtype (`HullWhite1FactorInterestRateModel
+        .precalculate`'s pattern). A double caller gets its own tensor back, so the arithmetic there is
+        the arithmetic it always was."""
+        return x.to(torch.float64) if torch.is_tensor(x) else torch.tensor(float(x),
+                                                                           dtype=torch.float64)
 
-def lv_declared(x):
-    """A declared scalar as a float, keeping a null - a field a document declares absent - None."""
-    return None if x is None else float(x)
+    @staticmethod
+    def nig_budget(A, alpha, beta):
+        """``(delta_A, mu_A, gamma)`` of the NIG increment that spends variance ``A``.
 
+        ``gamma = sqrt(alpha^2 - beta^2)``; ``delta_A = A gamma^3/alpha^2`` makes the variance the clock
+        exactly and ``mu_A = delta_A (sqrt(alpha^2 - (beta+1)^2) - gamma)`` forces ``E[exp(X_A)] = 1``.
+        Both are LINEAR in the clock, which is what composes the residual: a month cut into days is one
+        law once the clock is one number. All three are computed in DOUBLE and cast once, and ``mu_A``
+        is spelled ``-delta_A (2 beta + 1) / (sqrt(alpha^2 - (beta+1)^2) + gamma)`` - the rationalised
+        form of a difference of two roots a part in ten thousand apart at the box's own alpha.
+        """
+        narrow = torch.result_type(A, alpha)
+        A, alpha, beta = LogVar2FJ.wide(A), LogVar2FJ.wide(alpha), LogVar2FJ.wide(beta)
+        gamma = torch.sqrt(alpha * alpha - beta * beta)
+        delta = A * gamma * gamma * gamma / (alpha * alpha)
+        mu = -delta * (2.0 * beta + 1.0) / (torch.sqrt(alpha * alpha - (beta + 1.0) * (beta + 1.0)) + gamma)
+        return delta.to(narrow), mu.to(narrow), gamma.to(narrow)
 
-def lv_text(x, spec):
-    """A declared scalar for a report line, `none` where the document declares it absent."""
-    return 'none' if x is None else format(float(x), spec)
+    @staticmethod
+    def ig_cdf(x, m, lam):
+        """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr``.
 
+        ``exp(2 lam/m)`` overflows at the clocks a daily grid produces - ``lam/m`` is ``delta*gamma``
+        and reaches the hundreds - while its product with the tail probability does not, so the two are
+        added in logs and exponentiated once.
+        """
+        r = torch.sqrt(lam / x)
+        return (norm_cdf(r * (x / m - 1.0))
+                + torch.exp(2.0 * lam / m + torch.special.log_ndtr(-r * (x / m + 1.0))))
 
-def lv_cap(x, a):
-    """The corner on log-variance, min(x, a) - exactly the identity below the level; a None `a` is
-    unbounded."""
-    return x if a is None else torch.clamp(x, max=a)
+    @staticmethod
+    def ig_pdf(x, m, lam):
+        """Inverse-Gaussian density in mean/shape form."""
+        return torch.sqrt(lam / (2.0 * np.pi * x * x * x)) * torch.exp(
+            -lam * (x - m) * (x - m) / (2.0 * m * m * x))
 
+    @classmethod
+    def ig_root(cls, u, m, lam):
+        """The IG quantile as a VALUE, OFF THE TAPE: safeguarded Newton with a bisection fallback from
+        the lognormal moment-matched start, bracketed by expansion. The model's one root.
 
-def lv_ou_step_weights(kappa, sigma, deltas):
-    """Per-step decay phi and shock weight w of an OU factor on a non-uniform grid.
+        A FIXED budget - `IG_EXPAND` doublings then `IG_STEPS` steps, each masked to the elements
+        still outside `IG_TOL` - because an exit taken on the data would let a checkpoint's recompute
+        walk a different number of iterations from its forward. The IG at the shape a daily clock
+        produces is extremely skewed, which is what the expansion is for.
 
-    Both are functions of the GRID and the parameters alone, so both are computed in double and
-    cast ONCE into the caller's own dtype, the radicand ``-expm1(-2 kappa delta) / (2 kappa)`` where
-    ``1 - phi^2`` loses half its digits on a daily step; the walk multiplies the answer.
+        THE FALLBACK BISECTS GEOMETRICALLY. The bracket spans ten decades, so its midpoint is a ratio
+        and not a width: an arithmetic halving spends thirty steps walking down to the small end where
+        the root of a skewed clock lives, and the budget it needs is twice the geometric one's.
 
-    A ZERO-length step - an MTM row landing on a remaining fixing hands the walk one - makes the
-    radicand an exact zero, whose `sqrt` backward is `inf * 0`; `sqrt_or_zero` gives the weight's
-    own derivative there, which is zero because the weight is identically zero in delta.
-    """
-    narrow = torch.result_type(kappa, deltas)
-    kappa, deltas = lv_wide(kappa), lv_wide(deltas)
-    phi = torch.exp(-kappa * deltas)
-    return phi.to(narrow), sigma * sqrt_or_zero(-torch.expm1(-2.0 * kappa * deltas) / (2.0 * kappa)).to(narrow)
+        IN DOUBLE, and the answer is double: `IG_TOL` is 1e-11 against float32's own 6e-8, and
+        `ig_cdf`'s second term adds `2 lam/m` - four thousand on a quarterly clock - to a log-tail of
+        the same size, a cancellation float32 cannot hold at all.
+        """
+        with torch.no_grad():
+            u, m, lam = cls.wide(u), cls.wide(m), cls.wide(lam)
+            lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
+            for _ in range(cls.IG_EXPAND):
+                hi = torch.where(cls.ig_cdf(hi, m, lam) < u, hi * 4.0, hi)
+            sx = torch.sqrt(torch.log1p(m / lam))
+            x = m * torch.exp(sx * norm_icdf(u) - 0.5 * sx * sx)
+            x = torch.minimum(torch.maximum(x, lo * 2.0), hi * 0.5)
+            for _ in range(cls.IG_STEPS):
+                F = cls.ig_cdf(x, m, lam)
+                done = (F - u).abs() < cls.IG_TOL
+                lo, hi = torch.where(F < u, x, lo), torch.where(F > u, x, hi)
+                step = x - (F - u) / cls.ig_pdf(x, m, lam)
+                bad = ~torch.isfinite(step) | (step <= lo) | (step >= hi)
+                x = torch.where(done, x, torch.where(bad, torch.sqrt(lo * hi), step))
+        return x
 
+    @staticmethod
+    def ig_quantile(u, m, lam):
+        """``F_IG^-1(u; m, lam)`` carrying the implicit-function derivative in ``(m, lam)``.
 
-def lv_ou_path(kappa, w, e, y0, deltas):
-    """``y_{k+1} = phi_k y_k + w_k e_k`` at ALL n+1 grid times at once, in closed form.
+        The root is `ig_root`'s and DETACHED; what comes back is TWO Newton steps taken at it with
+        `ig_cdf` and `ig_pdf` on the tape. The first step's numerator is a residual at the tolerance, so
+        the VALUE is the root's while ``dG/dtheta = -(dF/dtheta)/f`` is the IFT exactly; the second
+        step's input carries the first's graph, which is what makes the SECOND derivative the Newton
+        map's own. Spot never enters, so delta and gamma bypass this node.
 
-    The transition ``exp(C_k - C_{j+1})`` on the cumulated ``-kappa delta`` FACTORISES out of the
-    sum, so the whole path is ONE cumulative sum of the shocks discounted by ``exp(-C_{j+1})``,
-    scaled back by ``exp(C_k)`` - a handful of dispatches on ``[..., n]`` tensors where the scan
-    spends n of them on ``[...]`` ones. Every partial sum is scaled by the decay at ITS OWN k, so
-    the rounding stays local to the step rather than riding the block's whole decay range.
+        BOTH STEPS IN DOUBLE, cast once: their backward carries ``1/x^4`` terms that leave float32's
+        range at a residual clock under a 4% vol, and the forward's own cancellation in `ig_cdf` is
+        wider than the tolerance the root was found to.
+        """
+        narrow = torch.result_type(m, lam)
+        m, lam, u = LogVar2FJ.wide(m), LogVar2FJ.wide(lam), LogVar2FJ.wide(u)
+        x = LogVar2FJ.ig_root(u, m, lam)
+        x = x - (LogVar2FJ.ig_cdf(x, m, lam) - u) / LogVar2FJ.ig_pdf(x, m, lam)
+        return (x - (LogVar2FJ.ig_cdf(x, m, lam) - u) / LogVar2FJ.ig_pdf(x, m, lam)).to(narrow)
 
-    The cumulated decay is the GRID's, so it is accumulated and exponentiated in double and cast
-    ONCE; the shocks and their running sum stay in the caller's dtype.
-    """
-    narrow = torch.result_type(kappa, deltas)
-    kappa, wide = lv_wide(kappa), lv_wide(deltas)
-    cum = -kappa.reshape(-1) * torch.cat([wide.new_zeros(1), wide.cumsum(0)])
-    shocks = w * e * torch.exp(-cum[1:]).to(narrow)
-    return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + torch.cat(
-        [torch.zeros_like(shocks[..., :1]), shocks.cumsum(-1)], -1))
+    # the walk
 
+    @staticmethod
+    def cap(x, a):
+        """The corner on log-variance, min(x, a) - exactly the identity below the level; a None `a` is
+        unbounded."""
+        return x if a is None else torch.clamp(x, max=a)
 
-def lv_state_variance(params, deltas):
-    """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
-    derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2``.
+    @staticmethod
+    def ou_step_weights(kappa, sigma, deltas):
+        """Per-step decay phi and shock weight w of an OU factor on a non-uniform grid.
 
-    ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor, which is `lv_ou_path` at twice the reversion with
-    each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no
-    second spelling. Measured from WHEREVER the walk starts, so a re-seeded row reads ``xi``
-    exactly rather than under-shooting it.
+        Both are functions of the GRID and the parameters alone, so both are computed in double and
+        cast ONCE into the caller's own dtype, the radicand ``-expm1(-2 kappa delta) / (2 kappa)`` where
+        ``1 - phi^2`` loses half its digits on a daily step; the walk multiplies the answer.
 
-    WHOLLY IN DOUBLE, cast once. It rides the grid's own cumulated decay ``exp(2 kappa T)``, which
-    at the fast factor's 6 leaves float32's range on a grid past seven years, and it is a function
-    of the grid and the parameters alone, so the walk is handed the answer and not the recurrence.
-    """
-    # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
-    # walk's state is flattened here rather than spreading a spurious axis along the whole grid
-    wide = lv_wide(deltas)
-    w_s = lv_ou_step_weights(params['Kappa_S'], params['Sigma_S'], wide)[1].reshape(-1)
-    w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], wide)[1].reshape(-1)
-    zero = wide.new_zeros(())
-    return (lv_ou_path(2.0 * lv_wide(params['Kappa_S']), w_s, w_s, zero, wide)
-            + lv_ou_path(2.0 * lv_wide(params['Kappa_L']), w_l, w_l, zero, wide)).to(deltas.dtype)
+        A ZERO-length step - an MTM row landing on a remaining fixing hands the walk one - makes the
+        radicand an exact zero, whose `sqrt` backward is `inf * 0`; `sqrt_or_zero` gives the weight's
+        own derivative there, which is zero because the weight is identically zero in delta.
+        """
+        narrow = torch.result_type(kappa, deltas)
+        kappa, deltas = LogVar2FJ.wide(kappa), LogVar2FJ.wide(deltas)
+        phi = torch.exp(-kappa * deltas)
+        return phi.to(narrow), sigma * sqrt_or_zero(-torch.expm1(-2.0 * kappa * deltas) / (2.0 * kappa)).to(narrow)
 
+    @staticmethod
+    def ou_path(kappa, w, e, y0, deltas):
+        """``y_{k+1} = phi_k y_k + w_k e_k`` at ALL n+1 grid times at once, in closed form.
 
-def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):
-    """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
+        The transition ``exp(C_k - C_{j+1})`` on the cumulated ``-kappa delta`` FACTORISES out of the
+        sum, so the whole path is ONE cumulative sum of the shocks discounted by ``exp(-C_{j+1})``,
+        scaled back by ``exp(C_k)`` - a handful of dispatches on ``[..., n]`` tensors where the scan
+        spends n of them on ``[...]`` ones. Every partial sum is scaled by the decay at ITS OWN k, so
+        the rounding stays local to the step rather than riding the block's whole decay range.
 
-    eta_l, eta_s are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is ``L*`` at its
-    n+1 grid times, params[name] for `Rho_S` and `Sigma_S` is that curve's value in force at each
-    step start and state0 = (l, s) is [batch, sims]. Returns (M_lev, A, l, s): the block's LEVERAGE
-    mean - no carry and no residual, the caller adds both - the residual's own CLOCK, and the end
-    state, which seeds the next block.
+        The cumulated decay is the GRID's, so it is accumulated and exponentiated in double and cast
+        ONCE; the shocks and their running sum stay in the caller's dtype.
+        """
+        narrow = torch.result_type(kappa, deltas)
+        kappa, wide = LogVar2FJ.wide(kappa), LogVar2FJ.wide(deltas)
+        cum = -kappa.reshape(-1) * torch.cat([wide.new_zeros(1), wide.cumsum(0)])
+        shocks = w * e * torch.exp(-cum[1:]).to(narrow)
+        return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + torch.cat(
+            [torch.zeros_like(shocks[..., :1]), shocks.cumsum(-1)], -1))
 
-    The two factors are LINEAR in their own shocks, so the whole block's state path is
-    `lv_ou_path`'s closed form - ``l`` detrended by the curve it reverts to - and the clock, the
-    leverage mean and the quanto drift are then elementwise over the step axis and one reduction
-    each. The block costs tens of dispatches rather than fifteen per step.
+    @staticmethod
+    def state_variance(params, deltas):
+        """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
+        derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2``.
 
-    `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`Invert_Spot`): the step's density
-    exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
-    eta_l ~ N(rho_l sq, 1) and eta_s ~ N(rho_s sq, 1) here, the residual's mixer taking the tilt at
-    the caller (`pricing.LogVar2FJKit`). That shift is the state's OWN sqrt(V), which makes the
-    transition state-dependent, so the path there is the recursion itself; the sums below are the
-    one spelling either way.
+        ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor, which is `ou_path` at twice the reversion with
+        each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no
+        second spelling. Measured from WHEREVER the walk starts, so a re-seeded row reads ``xi``
+        exactly rather than under-shooting it.
 
-    `quanto` is the PAYOFF-CURRENCY measure's drift as a per-step loading
-    ``q_k = rho_q sigma_FX,k sqrt(delta_k)``, and the day's leverage mean gains ``-q_k sqrt(V_k)``:
-    the drift is read off the state's OWN budget rather than an implied ATM vol, so it follows the
-    variance path. `rho_q` is the book's marked equity/fx correlation read as a TOTAL-RETURN
-    correlation and applied to the return's OWN sd ``sqrt(V_k)``: the framework's correlation sits
-    on the Gaussian given the mixer, whose sd is ``E[Sigma] = D sqrt(V_k)``, so a loading on the
-    total sd is that correlation already divided by the dilution ``D`` - one exactly under a
-    Gaussian residual. A drift on either axis, so `invert` adds it the same way. None where the
-    payoff is single-currency, which is bit-identical.
-    """
-    rl = params['Rho_L']
-    a = params['Cap_A']
-    # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
-    # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED, so a
-    # 0-dim leaf is not demoted against the draws' own dtype.
-    ones = torch.ones_like(deltas).unsqueeze(0)
-    rs, ss = params['Rho_S'] * ones, params['Sigma_S'] * ones
-    l, s = state0
-    phi_s, w_s = lv_ou_step_weights(params['Kappa_S'], ss, deltas)
-    phi_l, w_l = lv_ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
-    if invert:
-        rows = []
-        for k in range(deltas.shape[0]):
-            rows.append(l + s)
-            # each shock's own loading, so the shift feeds the variance path as it feeds the return
-            sq = sqrt_or_zero(deltas[k] * torch.exp(lv_cap(l + s, a)))
-            s = phi_s[..., k] * s + w_s[..., k] * (eta_s[..., k] + rs[..., k] * sq)
-            l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
-                 + w_l[..., k] * (eta_l[..., k] + rl * sq))
-        x = torch.stack(rows, -1)
-    else:
-        path_s = lv_ou_path(params['Kappa_S'], w_s, eta_s, s, deltas)
-        path_l = lv_ou_path(params['Kappa_L'], w_l, eta_l, l - curve_at_grid[0], deltas)
-        x = path_s[..., :-1] + path_l[..., :-1] + curve_at_grid[:-1]
-        l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1]
-    V = deltas * torch.exp(lv_cap(x, a))
-    sq = sqrt_or_zero(V)
-    e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)
-    # the step's two leverage coefficients are the GRID's and the parameters', so they are formed
-    # in double and cast once; a narrow block then ACCUMULATES in double, a double one summing
-    # exactly as it always did - an accumulate dtype picks another reduction kernel on the card
-    wl, ws = lv_wide(rl), lv_wide(rs)
-    lever, idio = (-0.5 * (ws * ws + wl * wl)).to(V.dtype), (1.0 - ws * ws - wl * wl).to(V.dtype)
-    total = lambda t: (t.sum(-1) if t.dtype == torch.float64
-                       else t.sum(-1, dtype=torch.float64).to(t.dtype))
-    M = lever * V + rl * sq * e_l + rs * sq * e_s
-    if quanto is not None:
-        M = M - quanto * sq
-    return total(M), total(idio * V), l, s
+        WHOLLY IN DOUBLE, cast once. It rides the grid's own cumulated decay ``exp(2 kappa T)``, which
+        at the fast factor's 6 leaves float32's range on a grid past seven years, and it is a function
+        of the grid and the parameters alone, so the walk is handed the answer and not the recurrence.
+        """
+        # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
+        # walk's state is flattened here rather than spreading a spurious axis along the whole grid
+        wide = LogVar2FJ.wide(deltas)
+        w_s = LogVar2FJ.ou_step_weights(params['Kappa_S'], params['Sigma_S'], wide)[1].reshape(-1)
+        w_l = LogVar2FJ.ou_step_weights(params['Kappa_L'], params['Sigma_L'], wide)[1].reshape(-1)
+        zero = wide.new_zeros(())
+        return (LogVar2FJ.ou_path(2.0 * LogVar2FJ.wide(params['Kappa_S']), w_s, w_s, zero, wide)
+                + LogVar2FJ.ou_path(2.0 * LogVar2FJ.wide(params['Kappa_L']), w_l, w_l, zero, wide)).to(deltas.dtype)
 
+    @staticmethod
+    def walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):
+        """Walk both log-variance factors over ONE block and return its sums and the state it ends in.
 
-#: The parameter-only half of the quadrature's moments: the per-step pieces the curve is added to,
-#: and the three STRICTLY UPPER matrices each double sum is a matrix-vector product against - the
-#: clock's `expm1` of the pairwise covariance, and the two shock decays carrying its square root.
-LVKernel = namedtuple('lv_kernel', 'base var c b clock swing slow fast a_l a_s')
+        eta_l, eta_s are [batch, sims, n] over the BLOCK's own steps, curve_at_grid is ``L*`` at its
+        n+1 grid times, params[name] for `Rho_S` and `Sigma_S` is that curve's value in force at each
+        step start and state0 = (l, s) is [batch, sims]. Returns (M_lev, A, l, s): the block's LEVERAGE
+        mean - no carry and no residual, the caller adds both - the residual's own CLOCK, and the end
+        state, which seeds the next block.
 
+        The two factors are LINEAR in their own shocks, so the whole block's state path is
+        `ou_path`'s closed form - ``l`` detrended by the curve it reverts to - and the clock, the
+        leverage mean and the quanto drift are then elementwise over the step axis and one reduction
+        each. The block costs tens of dispatches rather than fifteen per step.
 
-def lv_quad_kernel(params, deltas, times):
-    """Everything in `lv_quad_moments` that the CURVE does not touch, minted once per sweep.
+        `invert` is the S-NUMERAIRE measure, for a deal paying on 1/S (`Invert_Spot`): the step's density
+        exp(R_k - b_k delta_k) is one in expectation and factorises over its own draws, so
+        eta_l ~ N(rho_l sq, 1) and eta_s ~ N(rho_s sq, 1) here, the residual's mixer taking the tilt at
+        the caller (`pricing.LogVar2FJKit`). That shift is the state's OWN sqrt(V), which makes the
+        transition state-dependent, so the path there is the recursion itself; the sums below are the
+        one spelling either way.
 
-    ``y_k = l_k + s_k`` is Gaussian - the OU recursion's own variance and the pairwise covariance
-    ``exp(-kappa (t_k - t_j)) Var_j`` per factor - and the curve enters only as the MEAN, so both
-    double sums are a rank-one outer product on matrices that are the grid's and the parameters'
-    alone. Those matrices are the n x n cost, and a sweep of the xi bootstrap prices ten prefixes
-    at one parameter set: built here, each of those is three matrix-vector products, forward and
-    backward alike. `swing` is the clock matrix's own diagonal, which is `expm1(Var)` and needs no
-    matrix at all. WHOLLY IN DOUBLE.
-    """
-    wide = lv_wide(deltas)
-    n = wide.shape[0]
-    ks, kl, rl = (lv_wide(params[x]) for x in ('Kappa_S', 'Kappa_L', 'Rho_L'))
-    rs = lv_wide(params['Rho_S']) * torch.ones_like(wide)
-    w_s = lv_ou_step_weights(ks, lv_wide(params['Sigma_S']), wide)[1]
-    w_l = lv_ou_step_weights(kl, lv_wide(params['Sigma_L']), wide)[1]
-    zero = wide.new_zeros(())
-    v_s = lv_ou_path(2.0 * ks, w_s, w_s, zero, wide)[:-1]
-    v_l = lv_ou_path(2.0 * kl, w_l, w_l, zero, wide)[:-1]
-    var, t = v_s + v_l, lv_wide(times)[:n]
-    early = torch.arange(n, device=wide.device)
-    early = torch.minimum(early[:, None], early[None, :])
-    gap = (t[None, :] - t[:, None]).abs()
-    fast, slow = torch.exp(-ks * gap), torch.exp(-kl * gap)
-    grown = torch.expm1(fast * v_s[early] + slow * v_l[early])
-    half = torch.sqrt(grown + 1.0)
-    return LVKernel(torch.log(wide) + 0.5 * var, var,
-                    1.0 - rs * rs - rl * rl, rs * rs + rl * rl,
-                    torch.triu(grown, 1), torch.expm1(var),
-                    torch.triu(slow * half, 1), torch.triu(fast * half, 1),
-                    rl * w_l * torch.exp(kl * wide), rs * w_s * torch.exp(ks * wide))
+        `quanto` is the PAYOFF-CURRENCY measure's drift as a per-step loading
+        ``q_k = rho_q sigma_FX,k sqrt(delta_k)``, and the day's leverage mean gains ``-q_k sqrt(V_k)``:
+        the drift is read off the state's OWN budget rather than an implied ATM vol, so it follows the
+        variance path. `rho_q` is the book's marked equity/fx correlation read as a TOTAL-RETURN
+        correlation and applied to the return's OWN sd ``sqrt(V_k)``: the framework's correlation sits
+        on the Gaussian given the mixer, whose sd is ``E[Sigma] = D sqrt(V_k)``, so a loading on the
+        total sd is that correlation already divided by the dilution ``D`` - one exactly under a
+        Gaussian residual. A drift on either axis, so `invert` adds it the same way. None where the
+        payoff is single-currency, which is bit-identical.
+        """
+        rl = params['Rho_L']
+        a = params['Cap_A']
+        # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
+        # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED, so a
+        # 0-dim leaf is not demoted against the draws' own dtype.
+        ones = torch.ones_like(deltas).unsqueeze(0)
+        rs, ss = params['Rho_S'] * ones, params['Sigma_S'] * ones
+        l, s = state0
+        phi_s, w_s = LogVar2FJ.ou_step_weights(params['Kappa_S'], ss, deltas)
+        phi_l, w_l = LogVar2FJ.ou_step_weights(params['Kappa_L'], params['Sigma_L'], deltas)
+        if invert:
+            rows = []
+            for k in range(deltas.shape[0]):
+                rows.append(l + s)
+                # each shock's own loading, so the shift feeds the variance path as it feeds the return
+                sq = sqrt_or_zero(deltas[k] * torch.exp(LogVar2FJ.cap(l + s, a)))
+                s = phi_s[..., k] * s + w_s[..., k] * (eta_s[..., k] + rs[..., k] * sq)
+                l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
+                     + w_l[..., k] * (eta_l[..., k] + rl * sq))
+            x = torch.stack(rows, -1)
+        else:
+            path_s = LogVar2FJ.ou_path(params['Kappa_S'], w_s, eta_s, s, deltas)
+            path_l = LogVar2FJ.ou_path(params['Kappa_L'], w_l, eta_l, l - curve_at_grid[0], deltas)
+            x = path_s[..., :-1] + path_l[..., :-1] + curve_at_grid[:-1]
+            l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1]
+        V = deltas * torch.exp(LogVar2FJ.cap(x, a))
+        sq = sqrt_or_zero(V)
+        e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)
+        # the step's two leverage coefficients are the GRID's and the parameters', so they are formed
+        # in double and cast once; a narrow block then ACCUMULATES in double, a double one summing
+        # exactly as it always did - an accumulate dtype picks another reduction kernel on the card
+        wl, ws = LogVar2FJ.wide(rl), LogVar2FJ.wide(rs)
+        lever, idio = (-0.5 * (ws * ws + wl * wl)).to(V.dtype), (1.0 - ws * ws - wl * wl).to(V.dtype)
+        total = lambda t: (t.sum(-1) if t.dtype == torch.float64
+                           else t.sum(-1, dtype=torch.float64).to(t.dtype))
+        M = lever * V + rl * sq * e_l + rs * sq * e_s
+        if quanto is not None:
+            M = M - quanto * sq
+        return total(M), total(idio * V), l, s
 
+    # the quadrature
 
-def lv_quad_moments(kernel, curve, n):
-    """``(E[A], Var A, Var Lev, Cov(A, Lev))`` CUMULATED to every one of the first ``n`` step ends,
-    off `lv_quad_kernel`'s matrices and the curve.
+    #: The quadrature's two guards: the clock/leverage correlation, kept inside the unit disc its own
+    #: conditional variance needs, and the LOG span the mixer's own node may sit at from its mean -
+    #: seventeen decades either way, past every node that carries mass, and what keeps a clock the
+    #: lognormal surrogate has underflowed from dividing by its own zero in the density's exponent.
+    QUAD_RHO, QUAD_SPAN = 1.0 - 1.0e-9, 40.0
 
-    ``V_k = delta_k exp(y_k)`` is lognormal, so every moment is closed form.
-    ``E[A] = sum_k c_k delta_k xi(t_k)`` is the xi curve's own grid integral; ``Var A`` is a double
-    sum over `expm1` of the pairwise covariance, which is where the near-equal difference would
-    otherwise be; ``Var Lev = E[sum_k (rho_s^2 + rho_l^2) V_k]`` is exact, each shock being
-    independent of the variance it multiplies; and ``Cov(A, Lev)`` is the same double sum weighted
-    by the loading a shock carries into the later step, by Gaussian integration by parts. Each is
-    the kernel's own matrix read from the LEFT by the curve's rank-one vector - a prefix being the
-    matrix's own leading block.
-    """
-    log_v = kernel.base[:n] + lv_wide(curve)[:n]
-    mass = kernel.c[:n] * torch.exp(log_v)
-    lead = torch.exp(0.5 * log_v - 0.125 * kernel.var[:n])
-    return (torch.cumsum(mass, 0),
-            torch.cumsum(mass * (2.0 * (mass @ kernel.clock[:n, :n])
-                                 + mass * kernel.swing[:n]), 0),
-            torch.cumsum(kernel.b[:n] * torch.exp(log_v), 0),
-            torch.cumsum(mass * ((lead * kernel.a_l[:n]) @ kernel.slow[:n, :n]
-                                 + (lead * kernel.a_s[:n]) @ kernel.fast[:n, :n]), 0))
+    #: The parameter-only half of the quadrature's moments: the per-step pieces the curve is added to,
+    #: and the three STRICTLY UPPER matrices each double sum is a matrix-vector product against - the
+    #: clock's `expm1` of the pairwise covariance, and the two shock decays carrying its square root.
+    Kernel = namedtuple('kernel', 'base var c b clock swing slow fast a_l a_s')
 
+    @classmethod
+    def quad_kernel(cls, params, deltas, times):
+        """Everything in `quad_moments` that the CURVE does not touch, minted once per sweep.
 
-@lru_cache(maxsize=8)
-def lv_quad_nodes(clock_nodes, mixer_nodes, device):
-    """The quadrature's fixed abscissae and weights, MINTED ONCE per node pair and device: the
-    Hermite rule is an eigenproblem and the tensors are a host transfer, and a fit asks for them at
-    every pillar pass. The clock's index is the slow one, so a reshape splits the two axes."""
-    node, w_node = np.polynomial.hermite_e.hermegauss(clock_nodes)
-    mixer, w_mixer = np.polynomial.hermite_e.hermegauss(mixer_nodes)
-    host = lambda a: torch.as_tensor(a, dtype=torch.float64, device=device).reshape(-1, 1)
-    return (host(np.repeat(node, mixer_nodes)), host(np.tile(mixer, clock_nodes)),
-            host(np.repeat(w_node, mixer_nodes) / np.sqrt(2.0 * np.pi)),
-            host(np.log(np.tile(w_mixer, clock_nodes))))
+        ``y_k = l_k + s_k`` is Gaussian - the OU recursion's own variance and the pairwise covariance
+        ``exp(-kappa (t_k - t_j)) Var_j`` per factor - and the curve enters only as the MEAN, so both
+        double sums are a rank-one outer product on matrices that are the grid's and the parameters'
+        alone. Those matrices are the n x n cost, and a sweep of the xi bootstrap prices ten prefixes
+        at one parameter set: built here, each of those is three matrix-vector products, forward and
+        backward alike. `swing` is the clock matrix's own diagonal, which is `expm1(Var)` and needs no
+        matrix at all. WHOLLY IN DOUBLE.
+        """
+        wide = cls.wide(deltas)
+        n = wide.shape[0]
+        ks, kl, rl = (cls.wide(params[x]) for x in ('Kappa_S', 'Kappa_L', 'Rho_L'))
+        rs = cls.wide(params['Rho_S']) * torch.ones_like(wide)
+        w_s = cls.ou_step_weights(ks, cls.wide(params['Sigma_S']), wide)[1]
+        w_l = cls.ou_step_weights(kl, cls.wide(params['Sigma_L']), wide)[1]
+        zero = wide.new_zeros(())
+        v_s = cls.ou_path(2.0 * ks, w_s, w_s, zero, wide)[:-1]
+        v_l = cls.ou_path(2.0 * kl, w_l, w_l, zero, wide)[:-1]
+        var, t = v_s + v_l, cls.wide(times)[:n]
+        early = torch.arange(n, device=wide.device)
+        early = torch.minimum(early[:, None], early[None, :])
+        gap = (t[None, :] - t[:, None]).abs()
+        fast, slow = torch.exp(-ks * gap), torch.exp(-kl * gap)
+        grown = torch.expm1(fast * v_s[early] + slow * v_l[early])
+        half = torch.sqrt(grown + 1.0)
+        return cls.Kernel(torch.log(wide) + 0.5 * var, var,
+                          1.0 - rs * rs - rl * rl, rs * rs + rl * rl,
+                          torch.triu(grown, 1), torch.expm1(var),
+                          torch.triu(slow * half, 1), torch.triu(fast * half, 1),
+                          rl * w_l * torch.exp(kl * wide), rs * w_s * torch.exp(ks * wide))
 
+    @staticmethod
+    def quad_moments(kernel, curve, n):
+        """``(E[A], Var A, Var Lev, Cov(A, Lev))`` CUMULATED to every one of the first ``n`` step ends,
+        off `quad_kernel`'s matrices and the curve.
 
-def lv_quadrature(kernel, params, curve, ends, nodes):
-    """``(drift, variance, weight, mixer)`` at every quadrature node of every block end in ``ends``
-    - the conditional Black the caller prices, and the weights it averages with.
+        ``V_k = delta_k exp(y_k)`` is lognormal, so every moment is closed form.
+        ``E[A] = sum_k c_k delta_k xi(t_k)`` is the xi curve's own grid integral; ``Var A`` is a double
+        sum over `expm1` of the pairwise covariance, which is where the near-equal difference would
+        otherwise be; ``Var Lev = E[sum_k (rho_s^2 + rho_l^2) V_k]`` is exact, each shock being
+        independent of the variance it multiplies; and ``Cov(A, Lev)`` is the same double sum weighted
+        by the loading a shock carries into the later step, by Gaussian integration by parts. Each is
+        the kernel's own matrix read from the LEFT by the curve's rank-one vector - a prefix being the
+        matrix's own leading block.
+        """
+        log_v = kernel.base[:n] + LogVar2FJ.wide(curve)[:n]
+        mass = kernel.c[:n] * torch.exp(log_v)
+        lead = torch.exp(0.5 * log_v - 0.125 * kernel.var[:n])
+        return (torch.cumsum(mass, 0),
+                torch.cumsum(mass * (2.0 * (mass @ kernel.clock[:n, :n])
+                                     + mass * kernel.swing[:n]), 0),
+                torch.cumsum(kernel.b[:n] * torch.exp(log_v), 0),
+                torch.cumsum(mass * ((lead * kernel.a_l[:n]) @ kernel.slow[:n, :n]
+                                     + (lead * kernel.a_s[:n]) @ kernel.fast[:n, :n]), 0))
 
-    THE SURROGATE, as the approximation it is: the clock ``A`` is LOGNORMAL matched on its first
-    two moments, and the leverage share ``B = sum_k (rho_s^2 + rho_l^2) V_k`` - both the
-    compensator the walk carries per step and the leverage functional's own conditional variance -
-    is tied to it by their ratio of means, which is exact where `Rho_S` holds one value. The
-    leverage functional is then GAUSSIAN given the clock, its mean the matched covariance and its
-    variance ``B`` less what that mean explains, so its unconditional variance is ``E[B]``
-    exactly and ``E[exp(return)]`` is exactly the forward. The mixer given the clock is the walk's
-    own inverse Gaussian, EXACTLY, so the tail the residual carries is not surrogated at all.
+    @staticmethod
+    @lru_cache(maxsize=8)
+    def quad_nodes(clock_nodes, mixer_nodes, device):
+        """The quadrature's fixed abscissae and weights, MINTED ONCE per node pair and device: the
+        Hermite rule is an eigenproblem and the tensors are a host transfer, and a fit asks for them at
+        every pillar pass. The clock's index is the slow one, so a reshape splits the two axes."""
+        node, w_node = np.polynomial.hermite_e.hermegauss(clock_nodes)
+        mixer, w_mixer = np.polynomial.hermite_e.hermegauss(mixer_nodes)
+        host = lambda a: torch.as_tensor(a, dtype=torch.float64, device=device).reshape(-1, 1)
+        return (host(np.repeat(node, mixer_nodes)), host(np.tile(mixer, clock_nodes)),
+                host(np.repeat(w_node, mixer_nodes) / np.sqrt(2.0 * np.pi)),
+                host(np.log(np.tile(w_mixer, clock_nodes))))
 
-    Gauss-Hermite over the clock's own normal, and over the mixer AGAINST ITS OWN DENSITY: the
-    abscissae are a lognormal matched to the inverse Gaussian's first two moments, which is the map
-    that makes the ratio smooth at any shape, and each node carries the IG density's weight at it -
-    a fixed rule with no root to find, where the walk inverts the CDF per draw because a draw has
-    to be a draw. The weights are formed in LOGS and normalised per clock node, so the mode's own
-    ``delta^2/G + gamma^2 G`` - thousands on a daily clock - never leaves the exponent.
+    @classmethod
+    def quadrature(cls, kernel, params, curve, ends, nodes):
+        """``(drift, variance, weight, mixer)`` at every quadrature node of every block end in ``ends``
+        - the conditional Black the caller prices, and the weights it averages with.
 
-    ``Alpha`` and ``Beta`` are read at the FIRST bucket: a mixer summed over two of them is not
-    inverse Gaussian, which is the one thing this pricer refuses.
-    """
-    e_a, var_a, e_b, cross = lv_quad_moments(kernel, curve, int(ends[-1]))
-    at = torch.as_tensor(np.asarray(ends) - 1, device=e_a.device)
-    e_a, var_a, e_b, cross = (x[at] for x in (e_a, var_a, e_b, cross))
-    width = (int(nodes[0]), int(nodes[1]))
-    clock, score, weight, log_mixer = lv_quad_nodes(width[0], width[1], e_a.device)
-    spread = sqrt_or_zero(torch.log1p(var_a / (e_a * e_a)))
-    # the leverage's correlation to the clock's own normal: the surrogate writes the functional as
-    # sqrt(B) times a standard normal correlated with it, and `roll`/`tilt` are that surrogate's
-    # own Cov(A, Lev) and Var(Lev) per unit, which invert to rho in closed form and rescale the
-    # clock's leverage share so the variance comes back to E[B] and the mean to zero
-    roll = e_a * sqrt_or_zero(e_b) * spread * (
-        1.5 * torch.exp(0.375 * spread * spread) - 0.5 * torch.exp(-0.125 * spread * spread))
-    tilt = spread * spread * (1.0 - 0.25 * torch.exp(-0.25 * spread * spread))
-    live = roll != 0.0
-    q = torch.where(live, cross / torch.where(live, roll, torch.ones_like(roll)),
-                    torch.zeros_like(roll))
-    share = (q * q / (1.0 - q * q * tilt)).clamp(0.0, LV_QUAD_RHO)
-    rho, scale = torch.sign(q) * sqrt_or_zero(share), 1.0 + share * tilt
-    alpha, beta = (lv_wide(params[name][0]) for name in ('Alpha', 'Beta'))
-    A = e_a * torch.exp(spread * clock - 0.5 * spread * spread)
-    B = (e_b / e_a) * A
-    nu = sqrt_or_zero(B / scale)
-    lever = rho * (nu * clock - sqrt_or_zero(e_b / scale) * 0.5 * spread * torch.exp(
-        -0.125 * spread * spread))
-    delta, mu, gamma = lv_nig_budget(A, alpha, beta)
-    # the mixer's own lognormal map and the IG density's log weight at it, whose whole shape in
-    # that coordinate is `-delta gamma cosh(step) - step/2`: everything else - the normaliser, the
-    # `exp(delta gamma)` that reaches the thousands - is constant along the axis the softmax
-    # normalises, so it never has to be carried against its own negative, and there is no division
-    budget = delta * gamma
-    tight = sqrt_or_zero(torch.log1p(1.0 / budget.clamp(min=np.exp(-LV_QUAD_SPAN))))
-    step = (tight * score - 0.5 * tight * tight).clamp(-LV_QUAD_SPAN, LV_QUAD_SPAN)
-    G = (delta / gamma) * torch.exp(step)
-    log_w = log_mixer - 0.5 * step + 0.5 * score * score - budget * torch.cosh(step)
-    weight = weight * torch.softmax(
-        log_w.reshape(width[0], width[1], -1), 1).reshape(log_w.shape)
-    return (-0.5 * B + lever + mu + beta * G, (1.0 - share) * nu * nu + G,
-            weight, (weight * G).sum(0, keepdim=True))
+        THE SURROGATE, as the approximation it is: the clock ``A`` is LOGNORMAL matched on its first
+        two moments, and the leverage share ``B = sum_k (rho_s^2 + rho_l^2) V_k`` - both the
+        compensator the walk carries per step and the leverage functional's own conditional variance -
+        is tied to it by their ratio of means, which is exact where `Rho_S` holds one value. The
+        leverage functional is then GAUSSIAN given the clock, its mean the matched covariance and its
+        variance ``B`` less what that mean explains, so its unconditional variance is ``E[B]``
+        exactly and ``E[exp(return)]`` is exactly the forward. The mixer given the clock is the walk's
+        own inverse Gaussian, EXACTLY, so the tail the residual carries is not surrogated at all.
+
+        Gauss-Hermite over the clock's own normal, and over the mixer AGAINST ITS OWN DENSITY: the
+        abscissae are a lognormal matched to the inverse Gaussian's first two moments, which is the map
+        that makes the ratio smooth at any shape, and each node carries the IG density's weight at it -
+        a fixed rule with no root to find, where the walk inverts the CDF per draw because a draw has
+        to be a draw. The weights are formed in LOGS and normalised per clock node, so the mode's own
+        ``delta^2/G + gamma^2 G`` - thousands on a daily clock - never leaves the exponent.
+
+        ``Alpha`` and ``Beta`` are read at the FIRST bucket: a mixer summed over two of them is not
+        inverse Gaussian, which is the one thing this pricer refuses.
+        """
+        e_a, var_a, e_b, cross = cls.quad_moments(kernel, curve, int(ends[-1]))
+        at = torch.as_tensor(np.asarray(ends) - 1, device=e_a.device)
+        e_a, var_a, e_b, cross = (x[at] for x in (e_a, var_a, e_b, cross))
+        width = (int(nodes[0]), int(nodes[1]))
+        clock, score, weight, log_mixer = cls.quad_nodes(width[0], width[1], e_a.device)
+        spread = sqrt_or_zero(torch.log1p(var_a / (e_a * e_a)))
+        # the leverage's correlation to the clock's own normal: the surrogate writes the functional as
+        # sqrt(B) times a standard normal correlated with it, and `roll`/`tilt` are that surrogate's
+        # own Cov(A, Lev) and Var(Lev) per unit, which invert to rho in closed form and rescale the
+        # clock's leverage share so the variance comes back to E[B] and the mean to zero
+        roll = e_a * sqrt_or_zero(e_b) * spread * (
+            1.5 * torch.exp(0.375 * spread * spread) - 0.5 * torch.exp(-0.125 * spread * spread))
+        tilt = spread * spread * (1.0 - 0.25 * torch.exp(-0.25 * spread * spread))
+        live = roll != 0.0
+        q = torch.where(live, cross / torch.where(live, roll, torch.ones_like(roll)),
+                        torch.zeros_like(roll))
+        share = (q * q / (1.0 - q * q * tilt)).clamp(0.0, cls.QUAD_RHO)
+        rho, scale = torch.sign(q) * sqrt_or_zero(share), 1.0 + share * tilt
+        alpha, beta = (cls.wide(params[name][0]) for name in ('Alpha', 'Beta'))
+        A = e_a * torch.exp(spread * clock - 0.5 * spread * spread)
+        B = (e_b / e_a) * A
+        nu = sqrt_or_zero(B / scale)
+        lever = rho * (nu * clock - sqrt_or_zero(e_b / scale) * 0.5 * spread * torch.exp(
+            -0.125 * spread * spread))
+        delta, mu, gamma = cls.nig_budget(A, alpha, beta)
+        # the mixer's own lognormal map and the IG density's log weight at it, whose whole shape in
+        # that coordinate is `-delta gamma cosh(step) - step/2`: everything else - the normaliser, the
+        # `exp(delta gamma)` that reaches the thousands - is constant along the axis the softmax
+        # normalises, so it never has to be carried against its own negative, and there is no division
+        budget = delta * gamma
+        tight = sqrt_or_zero(torch.log1p(1.0 / budget.clamp(min=np.exp(-cls.QUAD_SPAN))))
+        step = (tight * score - 0.5 * tight * tight).clamp(-cls.QUAD_SPAN, cls.QUAD_SPAN)
+        G = (delta / gamma) * torch.exp(step)
+        log_w = log_mixer - 0.5 * step + 0.5 * score * score - budget * torch.cosh(step)
+        weight = weight * torch.softmax(
+            log_w.reshape(width[0], width[1], -1), 1).reshape(log_w.shape)
+        return (-0.5 * B + lever + mu + beta * G, (1.0 - share) * nu * nu + G,
+                weight, (weight * G).sum(0, keepdim=True))
+
+    # the coordinates, parsers and the reserve
+
+    @staticmethod
+    def declared(x):
+        """A declared scalar as a float, keeping a null - a field a document declares absent - None."""
+        return None if x is None else float(x)
+
+    @staticmethod
+    def text(x, spec):
+        """A declared scalar for a report line, `none` where the document declares it absent."""
+        return 'none' if x is None else format(float(x), spec)
+
+    @classmethod
+    def retired(cls, where, block):
+        """Refuse BY NAME where a factor, a block or a section declares a key this model no
+        longer reads, naming what replaced each one."""
+        retired = [x for x in cls.RETIRED if x in block]
+        if retired:
+            raise ValueError(
+                '{}: it carries {}, which this model no longer declares, and what each is replaced '
+                'by is {}'.format(where, ', '.join(retired),
+                                  '; '.join('%s - %s' % (x, cls.RETIRED[x]) for x in retired)))
+
+    @staticmethod
+    def skew_reserve(pv_gradient, skew_gradient, band):
+        """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band`, from the two halves
+        that live apart: `pv_gradient` is `(dPV/dBeta, dPV/dRho_S)` off the pricer's own tape and
+        `skew_gradient` the calibrator's `(d(Delta_skew)/dBeta, d(Delta_skew)/dRho_S)` at theta*, both
+        in the LAST bucket, with `band` the `Stickiness_Band` in vol points.
+
+        Two parameters carry one target, so the parameter move behind a vol point of `Delta_skew` is
+        the MINIMUM-NORM one - `J^T/(J J^T)` - which is the same convention the quote contraction
+        takes over the null space, and the reserve is `dPV/dtheta` contracted with it. A model whose
+        forward skew does not move with either lever has no reserve to state and returns `None`.
+        """
+        row = np.asarray(skew_gradient, dtype=float)
+        scale = float(row @ row)
+        return None if not scale > 0.0 else abs(
+            float(np.asarray(pv_gradient, dtype=float) @ row) / scale) * float(band)
+
+    @classmethod
+    def ab(cls, raw_alpha, raw_skew):
+        """`(alpha, beta)` from the unconstrained pair - tensors, on the tape."""
+        alpha = 0.5 + cls.AB_EPS + torch.nn.functional.softplus(raw_alpha)
+        return alpha, -0.5 + (alpha - 0.5 - cls.AB_EPS) * torch.tanh(raw_skew)
+
+    @classmethod
+    def ab_inv(cls, alpha, beta):
+        """The unconstrained pair from `(alpha, beta)` - the seed and the warm start, in floats."""
+        span = alpha - 0.5 - cls.AB_EPS
+        return float(np.log(np.expm1(span))), float(np.arctanh(
+            np.clip((beta + 0.5) / span, -1.0 + 1e-12, 1.0 - 1e-12)))
+
+    @classmethod
+    def tenor(cls, text):
+        """`'6m'` as years. The one grammar `Forward_Tenors` is written in."""
+        text = text.strip().lower()
+        if text[-1:] not in cls.TENOR_UNITS:
+            raise ValueError(
+                'Forward_Tenors: {!r} is not a tenor - write a number and one of {} (6m, 1y, 2w), '
+                'each pair as T1:Delta and the list comma separated'.format(
+                    text, '/'.join(sorted(cls.TENOR_UNITS))))
+        return float(text[:-1]) * cls.TENOR_UNITS[text[-1]]
+
+    @staticmethod
+    def parse_floats(text, name, count=None):
+        """A comma-separated numeric field as a tuple, refusing BY NAME on a wrong count - the one
+        parse the fit and the family's own construction-time check both call, so a malformed
+        Bootstrapper Configuration block refuses before a single quote is read rather than deep inside
+        the fit of whichever quote happens to touch it first."""
+        values = tuple(float(x) for x in str(text).split(','))
+        if count is not None and len(values) != count:
+            raise ValueError('{}: expected {} comma-separated numbers, read {!r}'.format(
+                name, count, text))
+        return values
+
+    @staticmethod
+    def parse_bounds(text, name):
+        """A `lower,upper` field, refusing BY NAME where it is not ordered."""
+        lo, hi = LogVar2FJ.parse_floats(text, name, 2)
+        if not lo < hi:
+            raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
+        return lo, hi
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse
@@ -5319,107 +5434,6 @@ def compress_no_compounding(cashflows, groupsize, check_resets=True):
 
 if __name__ == '__main__':
     pass
-
-
-# The LogVar2FJ coordinate maps, parsers and the skew reserve
-def lv_retired(where, block):
-    """Refuse BY NAME where a block or a section declares a key this family no longer reads,
-    naming what replaced each one."""
-    retired = [x for x in LV_RETIRED if x in block]
-    if retired:
-        raise ValueError(
-            '{}: it carries {}, which this family no longer declares, and what each is replaced '
-            'by is {}'.format(where, ', '.join(retired),
-                              '; '.join('%s - %s' % (x, LV_RETIRED[x]) for x in retired)))
-
-
-def lv_skew_reserve(pv_gradient, skew_gradient, band):
-    """ONE DEAL'S forward-skew reserve `|dPV/dDelta_skew| x band`, from the two halves
-    that live apart: `pv_gradient` is `(dPV/dBeta, dPV/dRho_S)` off the pricer's own tape and
-    `skew_gradient` the calibrator's `(d(Delta_skew)/dBeta, d(Delta_skew)/dRho_S)` at theta*, both
-    in the LAST bucket, with `band` the `Stickiness_Band` in vol points.
-
-    Two parameters carry one target, so the parameter move behind a vol point of `Delta_skew` is
-    the MINIMUM-NORM one - `J^T/(J J^T)` - which is the same convention the quote contraction
-    takes over the null space, and the reserve is `dPV/dtheta` contracted with it. A model whose
-    forward skew does not move with either lever has no reserve to state and returns `None`.
-    """
-    row = np.asarray(skew_gradient, dtype=float)
-    scale = float(row @ row)
-    return None if not scale > 0.0 else abs(
-        float(np.asarray(pv_gradient, dtype=float) @ row) / scale) * float(band)
-
-
-def lv_ab(raw_alpha, raw_skew):
-    """`(alpha, beta)` from the unconstrained pair - tensors, on the tape."""
-    alpha = 0.5 + LV_AB_EPS + torch.nn.functional.softplus(raw_alpha)
-    return alpha, -0.5 + (alpha - 0.5 - LV_AB_EPS) * torch.tanh(raw_skew)
-
-
-def lv_ab_inv(alpha, beta):
-    """The unconstrained pair from `(alpha, beta)` - the seed and the warm start, in floats."""
-    span = alpha - 0.5 - LV_AB_EPS
-    return float(np.log(np.expm1(span))), float(np.arctanh(
-        np.clip((beta + 0.5) / span, -1.0 + 1e-12, 1.0 - 1e-12)))
-
-
-def lv_tenor(text):
-    """`'6m'` as years. The one grammar `Forward_Tenors` is written in."""
-    text = text.strip().lower()
-    if text[-1:] not in LV_TENOR_UNITS:
-        raise ValueError(
-            'Forward_Tenors: {!r} is not a tenor - write a number and one of {} (6m, 1y, 2w), '
-            'each pair as T1:Delta and the list comma separated'.format(
-                text, '/'.join(sorted(LV_TENOR_UNITS))))
-    return float(text[:-1]) * LV_TENOR_UNITS[text[-1]]
-
-
-def lv_parse_floats(text, name, count=None):
-    """A comma-separated numeric field as a tuple, refusing BY NAME on a wrong count - the one
-    parse `LVFit.floats` and the family's own construction-time check both call, so a malformed
-    Bootstrapper Configuration block refuses before a single quote is read rather than deep inside
-    the fit of whichever quote happens to touch it first."""
-    values = tuple(float(x) for x in str(text).split(','))
-    if count is not None and len(values) != count:
-        raise ValueError('{}: expected {} comma-separated numbers, read {!r}'.format(
-            name, count, text))
-    return values
-
-
-def lv_parse_bounds(text, name):
-    """A `lower,upper` field, refusing BY NAME where it is not ordered."""
-    lo, hi = lv_parse_floats(text, name, 2)
-    if not lo < hi:
-        raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
-    return lo, hi
-
-
-#: What a retired field is replaced by. An authored key the family no longer declares would be
-#: carried silently past `declared_defaults`, so the block or the section refuses by NAME instead.
-LV_RETIRED = {
-    'Cap_Beta': 'retired with the smooth cap - a declared Cap_A is the corner min(l+s, Cap_A); '
-                'delete the key',
-    'Beta_Prior_Defaults': 'Residual_Skew_Share_Defaults - the prior is on the SHARE beta/alpha '
-                           'the smile sees, a row on beta alone being obeyed for free by running '
-                           'alpha to its ceiling',
-    'Beta_Prior_Sd': 'Residual_Skew_Share_Sd, the spread on that share and the bar a history has '
-                     'to beat',
-    'Jump_Share': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
-    'Lambda': 'the residual has no intensity - Alpha and Beta are fitted from the wings',
-    'Wing_Strike': 'the residual is not sized off one wing; Alpha and Beta are fitted on the 1-3m '
-                   'rows',
-    'Diffusive_Share': 'there is no split to override - the whole of xi is the model E[h]',
-    'Vanilla_Guard': 'nothing - the forward block runs with a market or reference SOURCE or not '
-                     'at all, so there is no view for a guard to price',
-    'Vanilla_Band': 'nothing - a cap on what a forward view may cost the vanillas covered one '
-                    'stage while the damage occurred in another, and was withdrawn with the view',
-    'Stickiness_Prior': 'the RESERVE LINE - Forward_Smile_Source Prior is withdrawn, and a desk\'s '
-                        'forward-smile view is priced as Stickiness_Band times the deal\'s own '
-                        'dPV/dDelta_skew rather than fitted as a target'}
-
-
-#: The tenor grammar `Forward_Tenors` is written in.
-LV_TENOR_UNITS = {'d': 1.0 / 365.0, 'w': 7.0 / 365.0, 'm': 1.0 / 12.0, 'y': 1.0}
 
 
 # The least-squares calibration node: the box algebra, the damped Newton, the implicit-function backward and the artifact

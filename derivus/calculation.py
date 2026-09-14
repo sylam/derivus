@@ -2056,9 +2056,9 @@ class Base_Revaluation(Calculation):
         # the reserve line a calibration WROTE on its factor, which nothing on the tensor side
         # carries: `pricing.skew_reserve` composes it with the portfolio's own two derivatives
         shared_mem.reserve_line = {
-            key: {name: factor.declared[name] for name in utils.LV_RESERVE_LINE}
+            key: {name: factor.declared[name] for name in utils.LogVar2FJ.RESERVE_LINE}
             for key, factor in self.static_factors.items()
-            if all(name in getattr(factor, 'declared', {}) for name in utils.LV_RESERVE_LINE)}
+            if all(name in getattr(factor, 'declared', {}) for name in utils.LogVar2FJ.RESERVE_LINE)}
         return shared_mem
 
     def report(self):

@@ -1292,7 +1292,7 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
 
     The rand orientation rides the fit as written; the dollar orientation is on the RECIPROCAL of
     the fitted axis and settles in the other currency, so the law is carried to that numeraire
-    (`utils.lv_walk`'s own measure change). Uncarried - walking the fitted law and reading `1/s` -
+    (`utils.LogVar2FJ.walk`'s own measure change). Uncarried - walking the fitted law and reading `1/s` -
     the two solve 3.7e-3 apart and the gap does NOT close with the path count: a Siegel drift, not
     noise.
 

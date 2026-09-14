@@ -573,7 +573,7 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
 
     An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
     `1/s` and settles in the other currency. LogVar2FJ transports to that numeraire as a measure
-    change inside its walk (`utils.lv_walk`).
+    change inside its walk (`utils.LogVar2FJ.walk`).
 
     An ALLOW-LIST, so a family added without a carry refuses rather than pricing a fit on the
     wrong axis. Compared on `check_rate_name` tuples, the same spelling-blind test
@@ -587,7 +587,7 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
             'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
             'has no law of its own - and this deal pays on its reciprocal, settled in {3}. '
             'LogVar2FJ carries to that numeraire with a measure change inside its walk '
-            '(utils.lv_walk); {1} carries no such derivation. Declare LogVar2FJ, or quote the pair '
+            '(utils.LogVar2FJ.walk); {1} carries no such derivation. Declare LogVar2FJ, or quote the pair '
             'the other way up so the deal is written on {3} and no axis is crossed'.format(
                 reference, spot_model, '.'.join(underlying), '.'.join(currency)))
     return True

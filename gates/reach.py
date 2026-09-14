@@ -29,7 +29,7 @@ is not:
     reached from C). NAMING a class constructs it; it does not run all of it. An `isinstance(x,
     Config)` that reached `Config.bootstrap` put every deal on every bootstrapper;
   * anything else `x.attr` -> a GUESS to every symbol so named. Guesses are NOT chained: chained,
-    45 of 50 deals reach `lv_walk` through `.blocks` on an unrelated object. `--loose` chains them
+    45 of 50 deals reach `LogVar2FJ.walk` through `.blocks` on an unrelated object. `--loose` chains them
     and the count is printed on every query, so a duck-typed-only route is never silently absent.
 CONSUMERS are deals, pricers, processes, factors, bootstrapper families, calculations, and the
 model families deals declare in `spot_models` (whose members are the kit from
@@ -253,7 +253,7 @@ class Graph:
         for recv, at, call in attrs:
             qual = '{}.{}'.format(recv, at)
             if recv in self.mods and qual in self.node:
-                out.add(qual)                          # `utils.lv_walk` - exact
+                out.add(qual)                          # `utils.LogVar2FJ.walk` - exact
                 continue
             if recv in imports and imports[recv] is None:
                 continue                               # `np.where` - not derivus
