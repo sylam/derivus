@@ -304,11 +304,42 @@ data cannot move a price. `spread_note` names the absence.
 
 **The mirror.** Everything above is CLIENT paper and a trading book holds the BANK's position, so
 `structures.mirror` is the one seam where paper becomes position: every leg's `Buy_Sell` flipped,
-nothing else touched, sales margin never entering. `/book/quote` books the mirror, so a two-sided
+nothing else touched, no charge added or removed. `/book/quote` books the mirror, so a two-sided
 quote's `edge` lands on the book as positive day-one P&L, and the risk-impact step prices the book PLUS
 the same mirror — the risk measured and the trade booked are one object, and a sign cannot disagree
 between them. The pending file keeps the client frame it was quoted in; the flip is the booking's act,
 by the owner's ruling: quote client-frame, mirror once, book the mirror.
+
+## The sales margin moves the coordinate the recipe solves {#margin}
+
+The two-way is what the market charges and the risk-impact step below is what the residual costs. What
+the DESK adds on top is a sales margin, and it is quoted the way a client agrees one: `margin` on
+`/book/structure` and `solve_structure` is `{'amount': 50000.0, 'currency': 'ZAR'}` — money, in whatever
+currency it was negotiated in, which need not be a currency of the pair. `/book/solve` and `solve_deal`
+take the same form in place of their float `target`.
+
+**The conversion.** `structures.margin_value` crosses it to the run's reporting currency on the ratio of
+the document's own two `FxRate.<ccy>.Spot` blocks — the same read `engine_spot` makes for every strike
+bracket, off the same copy the live tick has already moved, so the margin and the legs see one market. A
+currency the book carries no `FxRate` for refuses BY NAME at the verb (422), with the client still on
+the phone. The answer states both halves: `margin` carries the amount as declared and its `value` in the
+`pricing_currency`.
+
+**The charge, and its sign.** There is exactly one place for it to go: the coordinate the recipe already
+SOLVES. A financing leg's target becomes the premiums it finances plus the charge; a single-solve strip
+targets minus the charge instead of zero. A recipe that solves nothing — a straddle, a strangle — has no
+coordinate to charge on and refuses by name rather than dropping the margin silently. Because the quote
+is client paper, `net` reads the margin back NEGATIVE: the client holds a structure worth minus what
+they paid for it, and the mirror the approval books marks the bank at plus it. Both readings are gated
+on the same quote — `net` converted at the quote's own spot, and the mirror priced against the book. A
+collar's cap comes IN and a TARF's strike moves UP, each by more than any solve tolerance.
+
+`edge` is left alone: it measures `net − net_mid`, a spread, and the margin sits on both sides of that
+difference. The composed `StructuredDeal` records `Sales_Margin` and `Sales_Margin_Currency` — declared
+on the shared `Admin` group, since a margin is a property of a TICKET rather than of an asset class, so
+the container, an FX leg and a cashflow solved to a margin target all record it one way. Nothing prices
+off the field; the charge is already inside the terms. With no `margin` asked for there is no `margin`
+in the answer and no `Sales_Margin` on the deal, and the quote is the one the runner always gave.
 
 ## The risk prices the spread {#risk-impact}
 
@@ -436,6 +467,14 @@ zero within the solve's own residual; re-quoting the solved cap as a given stran
 premiums; the whole day (quote → pending file → approve → book marks it at ~0) runs over the served
 book; and a hand-authored knock-IN plus knock-OUT call must be the vanilla, which is the first test to
 demand a number from `pv_barrier_option`'s analytic knock-in branch (1.1e-16 relative).
+
+**The margin is gated from both ends**, because one end alone cannot catch a sign: a collar quoted at
+50,000 rand nets minus 50,000 rand at the quote's own spot on the client's paper, and the mirror of that
+same deal, priced against the book and then booked through the service and marked, holds plus its dollar
+value. Beside them: the strip's solved strike moving UP by 9.2e-4 relative — 37 times its estimator
+noise — a quote with no margin carrying no `margin` and no `Sales_Margin` at all, a margin of zero
+reproducing the zero-cost quote to the bit, and the three refusals (a currency with no rate, a recipe
+with nothing to solve, an amount with no currency).
 
 **The accrual tolerance is measured, not chosen.** A strip is Monte Carlo priced, so its zero-cost
 strike is a root find over an ESTIMATOR — deterministic for a fixed seed, which is what lets `brentq`

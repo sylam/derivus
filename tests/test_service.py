@@ -1830,6 +1830,81 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
         0.0, abs=premium * 1e-4)
 
 
+#: The desk's charge through the verb, and the notional it is quoted against. This book's
+#: `FxRate.ZAR` carries 18.5 DOLLARS per rand, so 50,000 rand is 925,000 dollars - which is a sales
+#: margin against the notional below and the whole trade against `COLLAR`'s.
+MARGIN = {'amount': 50_000.0, 'currency': 'ZAR'}
+MARGIN_COLLAR = dict(COLLAR, notional=AMOUNT * 200)
+
+
+def test_a_collar_quoted_at_a_margin_books_the_bank_at_plus_it(quoting, tmp_path):
+    """The margin through the whole loop, and the sign read from both ends of it.
+
+    The quote is CLIENT paper, so the cap the recipe solves funds the bought put and the charge
+    together and `net` comes back at minus the margin - converted at the quote's own spot, minus
+    50,000 rand. What BOOKS is the mirror, and the book then marks it at plus the margin's dollar
+    value, which is the engine on the deal actually written rather than anything the runner said.
+    The ticket records what was agreed, in the currency it was agreed in.
+    """
+    plain = quote_of('ZeroCostCollar', MARGIN_COLLAR)
+    quote = quote_of('ZeroCostCollar', MARGIN_COLLAR, margin=MARGIN)
+    charge = quote['margin']
+
+    assert charge == {'amount': 50_000.0, 'currency': 'ZAR', 'pricing_currency': 'USD',
+                      'value': pytest.approx(50_000.0 * SPOT, rel=1e-12)}
+    assert quote['net'] * quote['spot']['value_market'] == pytest.approx(-50_000.0, abs=0.01)
+    assert quote['legs'][1]['strike_market'] < plain['legs'][1]['strike_market'], (
+        'the financing strike did not move for the margin')
+    assert (quote['deal']['Sales_Margin'],
+            quote['deal']['Sales_Margin_Currency']) == (50_000.0, 'ZAR')
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    on_disk = json.loads(quoting.read_text())
+    node = deal_at(on_disk, booked['deal_path'])
+
+    assert booked['written'] is True
+    assert node['Instrument']['.Deal']['Sales_Margin'] == 50_000.0
+    assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
+        {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]
+
+    marked_id, marked = run(on_disk)
+    assert marked['status'] == 'done', marked.get('error')
+    assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
+        charge['value'], abs=1.0), 'the book does not hold the margin the desk charged'
+
+
+def test_a_margin_in_a_currency_the_book_cannot_cross_refuses_at_the_verb(quoting):
+    """A margin nobody can value is a price nobody can quote, and the salesperson finds out on the
+    call rather than off a failed job: the verb refuses 422, naming the rate the book would need."""
+    refused = CLIENT.post('/book/structure', content=dump(
+        {'structure': 'ZeroCostCollar', 'params': MARGIN_COLLAR,
+         'margin': {'amount': 50_000.0, 'currency': 'JPY'}}), headers=JSON)
+
+    assert refused.status_code == 422
+    assert 'FxRate.JPY' in refused.json()['detail']
+
+
+def test_a_solve_takes_its_target_as_money_in_a_currency_the_book_carries(quoting):
+    """The same margin on the deal verb. `target` is a number in the run's own currency or an
+    amount in one the book carries a rate for; this book reports dollars and the ask is in rand, so
+    the verb crosses it at the book's own spot and solves against THAT. The deal being solved is
+    the one the desk books, so it marks at PLUS the margin - the opposite side from the client
+    paper a structure quote hands back, and the same number."""
+    submitted = CLIENT.post('/book/solve', content=dump({
+        'deal': FX_OPTION, 'field': 'Strike_Price', 'target': MARGIN,
+        'bounds': [12.0, 30.0]}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    solved = result['stats']['Solved']
+
+    assert result['status'] == 'done', result.get('error')
+    assert solved['target'] == pytest.approx(50_000.0 * SPOT, rel=1e-12), (
+        'the solve ran against the amount rather than the money')
+    assert solved['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
+                                'pricing_currency': 'USD', 'value': solved['target']}
+    assert mtm(submitted['result_id'])['OPT1'] == pytest.approx(50_000.0 * SPOT, abs=0.01)
+
+
 #: A calibrated spot-model factor for the rand, as `/book/model` writes one: the ladder
 #: `fx_surface_block` authors off this file's own bootstrapped `FXVol.USD.ZAR`, fitted through
 #: `Config.bootstrap` at 2,048 paths and pasted here. The gate is about the MODEL reaching the book

@@ -552,12 +552,19 @@ def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800
 
 
 @MCP.tool()
-def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None = None,
+def solve_deal(deal: dict, field: str, target: float | dict = 0.0, bounds: list | None = None,
                calculation_overrides: dict | None = None, wait_seconds: float = 300.0) -> dict:
     """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the
     deal back READY TO BOOK - the structuring tool. A par forward: solve the amount to target 0.
     A sales margin: target the margin. A zero-cost collar: fix one strike, solve the other to
     target 0. A strike to a premium: solve `Strike_Price` with `bounds` around spot.
+
+    `target` is a number in the book's reporting currency, or MONEY - `{'amount': 50000.0,
+    'currency': 'ZAR'}` - which is how a sales margin is actually agreed: an amount in a currency,
+    crossed to the reporting one at the book's own spots, refusing by name a currency the book
+    carries no rate for. This deal is the one the desk BOOKS, so a margin target marks it at plus
+    the margin, and `solved_deal` comes back carrying `Sales_Margin` and `Sales_Margin_Currency` -
+    the record of what was charged, which prices nothing and books with the trade.
 
     Prefer this over hand-iterating `price_candidate`: the root find runs server-side against the
     book's market data (brentq inside `bounds`, else a secant from the field's current value -
@@ -581,12 +588,16 @@ def solve_deal(deal: dict, field: str, target: float = 0.0, bounds: list | None 
     if solved is not None:
         outcome['solved'] = solved
         outcome['solved_deal'] = dict(deal, **{field: solved['value']})
+        if solved.get('margin'):
+            outcome['solved_deal'].update(
+                Sales_Margin=solved['margin']['amount'],
+                Sales_Margin_Currency=solved['margin']['currency'])
     return outcome
 
 
 @MCP.tool()
 def solve_structure(structure: str, params: dict, netting_set: str | None = None,
-                    wait_seconds: float = 120.0) -> dict:
+                    margin: dict | None = None, wait_seconds: float = 120.0) -> dict:
     """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
     the one to reach for instead of composing legs by hand: the structure declares its own legs,
     their conventions and the order they solve in, so the finance does not depend on this
@@ -606,10 +617,22 @@ def solve_structure(structure: str, params: dict, netting_set: str | None = None
     holds, rather than at the approval when the client already has the sheet. Left out, the
     approval books at the root exactly as before.
 
+    `margin` is the SALES MARGIN, and it is how a desk actually quotes: `{'amount': 50000.0,
+    'currency': 'ZAR'}` - an amount in the currency it was agreed in, which need not be a currency
+    of the pair. It crosses to the book's pricing currency at the book's own spots and is charged
+    by moving the coordinate the recipe already solves, so the cap of a collar comes in and the
+    strike of a strip moves against the client by exactly that much. A currency the book carries no
+    rate for refuses by name rather than being crossed at a rate somebody guessed, and so does a
+    structure whose recipe SOLVES nothing - a strangle is quoted at the client's own two strikes,
+    so there is no coordinate to charge on.
+
     The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
     buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
-    zero-cost structure, the margin otherwise. `deal` rides with it, the composed structured deal
-    ready to book.
+    zero-cost structure, MINUS the margin where one was charged, since every premium here is in
+    the client's sign and the client's paper is worth minus what they paid for it. The `margin`
+    block says what was charged and what it converted to; the booked mirror is the bank's side of
+    it, marking at plus the margin. `deal` rides with it, the composed structured deal ready to
+    book, carrying `Sales_Margin` and `Sales_Margin_Currency` as the record of what was agreed.
 
     A quote prices on the LIVE spot when this workstation's terminal is up, and on the book's last
     ticked one - with the reason named - when it is not; the outcome's `spot` block says which was
@@ -644,7 +667,7 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     """
     submitted = service().call('POST', '/book/structure',
                                json={'structure': structure, 'params': params,
-                                     'netting_set': netting_set})
+                                     'netting_set': netting_set, 'margin': margin})
     outcome = _await_result(submitted['result_id'], wait_seconds)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:

@@ -1872,14 +1872,18 @@ class SolveJob:
     loop itself is `derivus.solve_deal_field` - this only packages what came back, with the
     solved coordinates riding the run's own Stats."""
 
-    def __init__(self, document, deal_path, solve):
+    def __init__(self, document, deal_path, solve, margin=None):
         self.document, self.deal_path, self.solve = document, deal_path, solve
+        self.margin = margin
 
     def run_job(self):
         solved, evaluations, residual, out = solve_deal_field(
             self.document, self.deal_path, **self.solve)
-        out['Stats'] = dict(out.get('Stats', {}), Solved=dict(
-            self.solve, value=solved, evaluations=evaluations, residual=residual))
+        answer = dict(self.solve, value=solved, evaluations=evaluations, residual=residual)
+        if self.margin:
+            # the target as it was asked for, beside the number it was solved against
+            answer['margin'] = self.margin
+        out['Stats'] = dict(out.get('Stats', {}), Solved=answer)
         return None, out
 
 
@@ -1889,6 +1893,13 @@ def book_solve(request: dict):
     calculation_overrides?}` finds the value of `deal[field]` at which the deal's own base
     valuation marks at `target` (default 0 - par), against the book's market data, on an
     in-memory copy - the file never moves.
+
+    `target` is a number in the run's own reporting currency, or the money form
+    `{'amount': 50000.0, 'currency': 'ZAR'}` - a sales margin as it was agreed - which crosses to
+    that currency at the book's own spots and refuses 422 on a currency it carries no rate for.
+    The deal here is the one the desk will BOOK, so a margin target marks it at PLUS the margin;
+    the answer's `stats.Solved.margin` carries the amount as declared beside the number solved
+    against.
 
     Not a calculation type: a root find over ordinary base valuations (brentq inside declared
     bounds, else a secant - exact in two pricings for a field the value is affine in). The
@@ -1909,10 +1920,19 @@ def book_solve(request: dict):
              if key in request}
     if 'field' not in solve:
         raise HTTPException(422, 'a solve names the field it moves')
+    # a target stated as money crosses to the run's own currency here, so the loop below solves
+    # against a number exactly as it always has
+    margin = None
+    if isinstance(solve.get('target'), dict):
+        try:
+            margin = structures.margin_value(document, solve['target'])
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        solve['target'] = margin['value']
     # the identity is the request against this exact book state - the same solve twice is one run
     submitted = Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
                                   'calculation': document['Calc']['Calculation']}),
-                    SolveJob(document, deal_path, solve), {})
+                    SolveJob(document, deal_path, solve, margin), {})
     # a solve is base valuations under the hood - light, so it jumps a draining recalc
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
@@ -2157,9 +2177,9 @@ class StructureJob:
     key erases. With no home the pending file is byte for byte what it always was.
     """
 
-    def __init__(self, document, structure, params, netting_set=None, request=None):
+    def __init__(self, document, structure, params, netting_set=None, request=None, margin=None):
         self.document, self.structure, self.params = document, structure, params
-        self.netting_set, self.request = netting_set, request
+        self.netting_set, self.request, self.margin = netting_set, request, margin
 
     def pinned(self):
         """The book's two hashes and the values vector behind them, or None with no home.
@@ -2194,7 +2214,7 @@ class StructureJob:
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
         outcome = structures.quote(self.document, self.structure, self.params, spot_source,
-                                   self.netting_set)
+                                   self.netting_set, self.margin)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
@@ -2220,9 +2240,16 @@ class StructureJob:
 
 @app.post('/book/structure', summary='Quote a named structure against the book')
 def book_structure(request: dict):
-    """`{structure: name, params: {...}, netting_set?}` - the sales verb: a structure named the way
-    a desk names it, its parameters in MARKET terms, and back comes the whole quote with every leg
-    priced and the solved ones solved.
+    """`{structure: name, params: {...}, netting_set?, margin?}` - the sales verb: a structure named
+    the way a desk names it, its parameters in MARKET terms, and back comes the whole quote with
+    every leg priced and the solved ones solved.
+
+    `margin` is what the desk charges - `{'amount': 50000.0, 'currency': 'ZAR'}`, money in whatever
+    currency it was agreed in. It converts to the book's pricing currency at the book's own spots
+    and is charged by moving the coordinate the recipe solves, so the quote comes back netting
+    MINUS the margin on the client's paper and the booked mirror marks the bank at plus it. A
+    currency the book carries no rate for refuses 422 HERE, naming it, with the client still on the
+    phone. Left out, the quote is the zero-cost one it always was.
 
     The recipe runs against the book's market data on an in-memory copy - the book file never
     moves, a quote not being a trade. The SPOT on that copy is this workstation's live one when the
@@ -2249,17 +2276,21 @@ def book_structure(request: dict):
     if not structure:
         raise HTTPException(422, 'a quote names the structure it prices')
     params = request.get('params', {})
-    netting_set = request.get('netting_set')
-    # validated on THIS thread: a 422 a salesperson can read beats an `error` status to poll for
+    netting_set, margin = request.get('netting_set'), request.get('margin')
+    # validated on THIS thread: a 422 a salesperson can read beats an `error` status to poll for.
+    # The margin is read against the book as it stands; the quote converts it again on its own
+    # copy, at the spot it prices on
     try:
         structures.check_netting_set(document, netting_set)
+        structures.margin_value(document, margin)
     except ValueError as error:
         raise HTTPException(422, str(error))
     # a quote is an ACT, not a function of the book: asking twice is two quotes, both filed
     result_id = content_hash({'book': etag, 'structure': structure, 'params': params,
-                              'netting_set': netting_set, 'at': time.perf_counter()})
+                              'netting_set': netting_set, 'margin': margin,
+                              'at': time.perf_counter()})
     submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
-                                            request.get('request')), {}, spine.STANDING)
+                                            request.get('request'), margin), {}, spine.STANDING)
     # base valuations under the hood, so a salesperson's ask jumps every XVA set still waiting
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}

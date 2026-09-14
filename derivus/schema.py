@@ -632,13 +632,21 @@ ADMIN = Group('Admin', [
     F('Object', 'Text', default=''),
     F('Reference', 'Text', default=''),
     F('Tags', 'Text', default=''),
-    F('MtM', 'Text', default='')
+    F('MtM', 'Text', default=''),
+    F('Sales_Margin', 'Float', default=0,
+      description='What the desk charged for this ticket over the mid, in Sales_Margin_Currency '
+                  'and positive when the desk earns it. A RECORD of what was agreed: the charge '
+                  'is already inside the terms, so nothing is priced off this field. Every deal '
+                  'declares it, a margin being a property of the ticket rather than of an asset '
+                  'class'),
+    F('Sales_Margin_Currency', 'Text', default='',
+      description='The currency Sales_Margin is stated in. A margin is an AMOUNT rather than a '
+                  'rate, and it need not be a currency this deal settles or discounts in')
 ])
 
 FX_ADMIN = Group('FXAdmin', [
     F('Trade_Date', 'Date', default=''),
     F('Delivery_Date', 'Date', default=''),
-    F('Sales_Margin', 'Float', default=0),
     F('Structure_Reference', 'Text', default='')
 ])
 

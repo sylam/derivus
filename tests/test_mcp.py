@@ -183,6 +183,28 @@ def test_solving_then_booking_a_structured_deal(book):
     assert mcp_server.deal_values(run['result_id'])['SLV1'] == pytest.approx(200_000.0, abs=0.01)
 
 
+def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
+    """A sales margin is an amount in a currency, not a number in whatever the book reports in.
+    This book reports DOLLARS and carries a rand rate, so `{'amount': 50000, 'currency': 'ZAR'}`
+    crosses at the book's own spot and the deal is solved to mark there - the desk's own side of
+    the ticket, at PLUS the margin. What comes back records the charge as agreed, and books with
+    it: the field is on every deal, a margin being a property of the ticket."""
+    outcome = mcp_server.solve_deal(
+        json.loads(dump(dict(BOOKED, Reference='SLV2'))), 'Amount',
+        target={'amount': 50_000.0, 'currency': 'ZAR'})
+
+    assert outcome['status'] == 'done'
+    assert outcome['solved']['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
+                                           'pricing_currency': 'USD', 'value': 50_000.0 * SPOT}
+    assert outcome['solved_deal']['Sales_Margin'] == 50_000.0
+    assert outcome['solved_deal']['Sales_Margin_Currency'] == 'ZAR'
+
+    assert mcp_server.book_deal(outcome['solved_deal'])['written'] is True
+    run = mcp_server.execute_book()
+    assert mcp_server.deal_values(run['result_id'])['SLV2'] == pytest.approx(
+        50_000.0 * SPOT, abs=0.01)
+
+
 def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
     """Four tool calls: a Bloomberg-normalized quote block ticks the market, the bootstrap writes
     the surface, `solve_deal` finds the strike marking the option at the target premium, and the
@@ -242,9 +264,9 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         # this book's FxRate.ZAR carries 18.5 USD per ZAR, so the pair's MARKET quote is its
         # reciprocal: the desk asks in market terms and the runner does the inversion, which is
         # the convention under test. A floor 5% out of the money.
-        quote = mcp_server.solve_structure('ZeroCostCollar', {
-            'pair': 'USDZAR', 'expiry': expiry, 'notional': 1_000_000.0,
-            'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)})
+        asked = {'pair': 'USDZAR', 'expiry': expiry, 'notional': 1_000_000.0,
+                 'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)}
+        quote = mcp_server.solve_structure('ZeroCostCollar', asked)
 
         assert quote['structure'] == 'ZeroCostCollar' and quote['quote_id']
         assert len(quote['legs']) == 2 and 'protection' in {leg['role'] for leg in quote['legs']}
@@ -252,6 +274,14 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         # zero cost is the CONTRACT - and two worthless legs would satisfy it vacuously
         assert quote['net'] == pytest.approx(0.0, abs=1.0)
         assert min(abs(leg['premium']) for leg in quote['legs']) > 1.0
+
+        # the same collar with the desk's charge in it: a margin is an amount in the currency it
+        # was agreed in, and the client's paper is worth MINUS it
+        charged = mcp_server.solve_structure(
+            'ZeroCostCollar', asked, margin={'amount': 500.0, 'currency': 'ZAR'})
+        assert charged['margin']['value'] == pytest.approx(500.0 * SPOT, rel=1e-12)
+        assert charged['net'] == pytest.approx(-500.0 * SPOT, abs=1.0)
+        assert charged['deal']['Sales_Margin'] == 500.0
 
         pending = quote['files']['quote']
         assert os.path.dirname(pending) == str(tmp_path / 'home' / 'tmp')

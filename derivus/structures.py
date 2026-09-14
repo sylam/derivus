@@ -635,6 +635,31 @@ def engine_spot(document, underlying_currency, settlement_currency):
     return spots[underlying_currency] / spots[settlement_currency]
 
 
+def margin_value(document, margin):
+    """A declared sales margin as money in the currency the legs price in, or `None` for no margin.
+
+    `{'amount': 50000.0, 'currency': 'ZAR'}` is what a desk charges: an AMOUNT and the currency it
+    is stated in, which need not be a currency of the pair. It crosses to the run's reporting
+    currency on the ratio of the two `FxRate.<ccy>.Spot` blocks this document carries - the same
+    read every strike bracket takes, off the same document a live tick has already moved, so the
+    margin converts at the market the quote is struck on. A currency the book carries no rate for
+    refuses by name, since a margin nobody can value is a price nobody can quote.
+
+    The reporting currency is the `Calculation` block's, which is what every premium here is in,
+    falling back to the book's base where a calculation states none.
+    """
+    if margin is None:
+        return None
+    try:
+        amount, currency = float(margin['amount']), str(margin['currency']).upper()
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("a margin is {{'amount': 50000.0, 'currency': 'ZAR'}} - an amount and the "
+                         'currency it is stated in, not {!r}'.format(margin)) from None
+    pricing = document['Calc']['Calculation'].get('Currency') or base_currency(document)
+    return {'amount': amount, 'currency': currency, 'pricing_currency': pricing,
+            'value': amount * engine_spot(document, currency, pricing)}
+
+
 def base_currency(document):
     """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in, or `None`
     where the document does not declare one.
@@ -1103,17 +1128,25 @@ def run_solve(document, leg, field, target, spot):
     return solved, own_value(out, leg.deal['Reference'])
 
 
-def compose(reference, legs):
+def compose(reference, legs, margin=None):
     """The priced legs as ONE bookable deal: a `StructuredDeal` whose `Children` are the legs with
     their solved values in place, exactly as they were priced. Settled in the legs' own settlement
     currency, so the container nets what the parts report without a cross of its own.
 
     The children sit INSIDE the deal here, because a quote is filed, hashed and read back whole.
     The deal TREE holds a container's children one level out - see `book_node`.
+
+    A `margin` is RECORDED on the container as `Sales_Margin` in `Sales_Margin_Currency`, in the
+    currency it was declared in rather than the one it was converted to - what was agreed is what
+    the ticket says. The charge is already inside the solved coordinate, so this changes no value;
+    a quote with no margin composes the block it always did.
     """
-    return {'Object': 'StructuredDeal', 'Reference': reference,
+    deal = {'Object': 'StructuredDeal', 'Reference': reference,
             'Currency': legs[0].deal['Currency'], 'Net_Cashflows': 'Yes',
             'Children': [{'Instrument': {'.Deal': dict(leg.deal)}} for leg in legs]}
+    if margin:
+        deal.update(Sales_Margin=margin['amount'], Sales_Margin_Currency=margin['currency'])
+    return deal
 
 
 def book_node(deal):
@@ -1136,7 +1169,8 @@ def mirror(deal):
     A quote is CLIENT paper while a trading book holds the BANK's position, so this is the one seam
     where paper becomes position. Both consumers read it - the approval that books the trade and
     the risk-impact step that prices the book plus the candidate - so a sign cannot disagree
-    between them. Sales margin never enters: a mirror is a pure change of side.
+    between them. A recorded sales margin rides along unchanged: the client's paper is worth minus
+    the margin and the bank's side plus it, which is the flip doing its work, not a second entry.
     """
     flipped = copy.deepcopy(deal)
     blocks = [flipped] + [child['Instrument']['.Deal'] for child in flipped.get('Children', [])]
@@ -1341,13 +1375,17 @@ def risk_scale(rows, cost, policy, charge_full, min_ticket):
     return scale, saving, scale * charge_full, note
 
 
-def run_recipe(document, structure, params, reference, two_way, wings, surface, spot, scale):
+def run_recipe(document, structure, params, reference, two_way, wings, surface, spot, scale,
+               charge=0.0):
     """One whole pass of the recipe at `scale` times the book's half-spreads, from fresh legs.
 
     Materializes the legs, signs each one's spread by the CLIENT's side, builds the shifted and
     skewed book each side needs, runs the steps in order, and marks the finished legs once more at
     mid. `scale` is the ONE thing that differs between the base pass and a re-quote: it multiplies
     the ATM half-spread and the wing halves alike.
+
+    `charge` is the sales margin in the pricing currency, and it moves the SOLVED coordinate: on
+    the client's paper the structure is worth minus what the desk charges for it.
 
     Both spreads take the client's OWN sign: what the client buys is offered at the ask of every
     quote the vol is composed of, what they sell is taken at each bid. So a leg's copy of the book
@@ -1396,10 +1434,12 @@ def run_recipe(document, structure, params, reference, two_way, wings, surface, 
             premiums[leg.role] = run_price(books[leg.role], leg.deal)
         elif isinstance(step, Solve):
             # the target is the legs already priced ON THEIR OWN SIDES, so a solved coordinate
-            # finances the structure at the vols it was really quoted at
+            # finances the structure at the vols it was really quoted at - and the desk's charge
+            # with them, the client's paper being worth minus the margin
             target = step.target.value(premiums) if isinstance(step.target, Premium) \
                 else float(step.target)
-            value, premiums[leg.role] = run_solve(books[leg.role], leg, step.field, target, spot)
+            value, premiums[leg.role] = run_solve(
+                books[leg.role], leg, step.field, target - charge, spot)
             solved.setdefault(leg.role, {})[step.field] = value
         else:
             raise ValueError('{}: {!r} is not a recipe step'.format(structure.__name__, step))
@@ -1467,7 +1507,7 @@ def risk_impact(document, params, reference, sided, surface, legs, premiums, mid
             'policy': policy, 'note': note}
 
 
-def quote(document, structure_name, params, spot_source=None, netting_set=None):
+def quote(document, structure_name, params, spot_source=None, netting_set=None, margin=None):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
@@ -1494,6 +1534,17 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     `spot` names the market this quote was struck on: `value_market` is the pair as the client
     quotes it, READ off the document the legs priced against rather than taken from the caller,
     beside the caller's `source` ('terminal' or 'book') and its `note`.
+
+    THE SALES MARGIN. `margin` is `{'amount': 50000.0, 'currency': 'ZAR'}`, what the desk charges,
+    stated as money in whatever currency it was agreed in. It crosses to the pricing currency at
+    this document's own spots (`margin_value`) and is charged by moving the coordinate the recipe
+    SOLVES: the financing leg raises the premiums it finances plus the charge, a single-solve strip
+    targets minus the charge rather than zero. So `net` reads the margin back NEGATIVE - the client
+    holds paper worth minus what they paid for it - the booked `mirror` marks the bank's side at
+    plus it, and the composed deal records the amount as declared. A structure whose recipe solves
+    nothing has no coordinate to charge on and refuses by name. `edge` stays what it measures, the
+    two-way capture: `net - net_mid` is a spread, and the margin is on both sides of that
+    difference. Absent, the answer carries no `margin` at all and every number is what it was.
 
     THE RISK-IMPACT HALF, off unless the book declares a `Calc['Quote Policy']` block. Where it
     does, the base pass is quoted at the full two-way, its candidate is MIRRORED into the desk's
@@ -1525,11 +1576,20 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     # the client is checked before the price: a quote nobody could approve is not worth the solves
     check_netting_set(document, netting_set)
     structure = structure_named(structure_name)
+    margin = margin_value(document, margin)
+    solves = [step for step in structure.recipe if isinstance(step, Solve)]
+    if margin is not None and len(solves) != 1:
+        raise ValueError(
+            'a margin is charged by moving the ONE coordinate a recipe solves, and {} solves {} - '
+            'every strike of it is the client\'s own. Quote it at strikes the margin is already '
+            'in'.format(structure_name,
+                        '{} of them'.format(len(solves)) if solves else 'nothing'))
     # a declared default is part of what was quoted, so it is filled in before the id is hashed and
     # before the outcome reports the parameters, rather than inside `materialize` alone
     params = declared(structure, params)
     quote_id = content_hash({
         'structure': structure_name, 'params': params, 'netting_set': netting_set,
+        'margin': margin,
         'market': document.get('Calc', {}).get('MergeMarketData', {}).get('ExplicitMarketData', {}),
         'at': time.perf_counter()})
     reference = '{}-{}'.format(structure_name, quote_id[:8])
@@ -1539,8 +1599,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     surface = probe.deal['FX_Volatility']
     two_way, wings = atm_two_way(document, surface), wing_two_way(document, surface)
 
+    charge = margin['value'] if margin else 0.0
     legs, spreads, premiums, solved, mid = run_recipe(
-        document, structure, params, reference, two_way, wings, surface, spot, 1.0)
+        document, structure, params, reference, two_way, wings, surface, spot, 1.0, charge)
     risk = risk_impact(document, params, reference, bool(two_way or wings), surface,
                        legs, premiums, mid)
     # what the halves were CHARGED at, which is what the outcome below has to describe: the base
@@ -1549,9 +1610,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
     if risk['scale'] is not None and risk['scale'] < 1.0:
         charged = risk['scale']
         legs, spreads, premiums, solved, mid = run_recipe(
-            document, structure, params, reference, two_way, wings, surface, spot, charged)
+            document, structure, params, reference, two_way, wings, surface, spot, charged, charge)
 
-    return {
+    outcome = {
         'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
         # WHO the quote is for, always said: a null is the root booking, never an unanswered
         # question
@@ -1592,4 +1653,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None):
         'valuation_configuration': {
             deal_type: entry for deal_type, entry in (pinned_models(document) or {}).items()
             if entry != already.get(deal_type)} or None,
-        'deal': compose(reference, legs)}
+        'deal': compose(reference, legs, margin)}
+    if margin:
+        # the charge as declared and as converted. `net` above reads it back NEGATIVE, that being
+        # the client's paper; the booked mirror marks the bank's side at plus it
+        outcome['margin'] = margin
+    return outcome

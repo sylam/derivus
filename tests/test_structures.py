@@ -292,6 +292,84 @@ def test_a_zero_cost_collar_costs_nothing(book):
         protection['premium'], rel=1e-9), 'the same floor repriced differently'
 
 
+#: The desk's charge, as a client agrees one: an amount and the currency it is stated in. Against
+#: the notional below it is a quarter of a percent - a real sales margin, and hundreds of times any
+#: solve tolerance. The book prices in DOLLARS and this is rand, so nothing reads it unconverted.
+MARGIN = {'amount': 50_000.0, 'currency': 'ZAR'}
+MARGIN_NOTIONAL = 20_000_000.0
+
+
+def test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book(book):
+    """The sign of a sales margin, taken from the client-paper convention and read from BOTH ends.
+
+    A quote is client paper: the cap the recipe solves has to fund the bought put AND the charge,
+    so what the client holds is worth MINUS the margin - `net`, converted back at the quote's own
+    spot, is -50,000 rand. The trading book holds the bank's position, which is the MIRROR of that
+    paper, and pricing the mirror against this book marks it at PLUS the margin's dollar value.
+    One number, and the sign is the mirror's doing.
+
+    Nothing else moves. The bought leg is priced before the solve and comes back bit-identical, and
+    the cap comes IN: a call that has to raise more is struck nearer the money.
+    """
+    asked = params(notional=MARGIN_NOTIONAL, floor=SPOT * 0.95)
+    plain = structures.quote(book, 'ZeroCostCollar', dict(asked))
+    outcome = structures.quote(book, 'ZeroCostCollar', dict(asked), margin=MARGIN)
+    charge = outcome['margin']
+
+    assert charge == {'amount': 50_000.0, 'currency': 'ZAR', 'pricing_currency': 'USD',
+                      'value': pytest.approx(50_000.0 / SPOT, rel=1e-12)}
+    assert outcome['net'] * outcome['spot']['value_market'] == pytest.approx(
+        -50_000.0, abs=SOLVE_TOLERANCE * SPOT), 'the client is not holding paper worth -50,000 rand'
+
+    priced = values(book, [structures.mirror(outcome['deal'])])
+    assert priced[outcome['deal']['Reference']] == pytest.approx(
+        charge['value'], abs=SOLVE_TOLERANCE), 'the bank is not marked at the margin it charged'
+
+    assert leg(outcome, 'protection')['premium'] == leg(plain, 'protection')['premium']
+    assert leg(outcome, 'financing')['strike_market'] < leg(plain, 'financing')['strike_market'], (
+        'a cap that funds the margin too is not struck nearer the money')
+    assert (outcome['deal']['Sales_Margin'],
+            outcome['deal']['Sales_Margin_Currency']) == (50_000.0, 'ZAR')
+
+
+def test_a_quote_with_no_margin_is_the_quote_it_always_was(book):
+    """The compatibility contract, stated twice. Absent, the feature is not there at all: no
+    `margin` block in the answer and no `Sales_Margin` on the deal it books. And a margin of ZERO
+    - where every line of the arithmetic DID run - is the same quote to the bit."""
+    plain = structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95))
+    zero = structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95),
+                            margin={'amount': 0.0, 'currency': 'ZAR'})
+
+    assert 'margin' not in plain
+    assert not {'Sales_Margin', 'Sales_Margin_Currency'}.intersection(plain['deal'])
+    assert (zero['net'], zero['net_mid'], zero['edge']) == (
+        plain['net'], plain['net_mid'], plain['edge'])
+    assert [row['strike_market'] for row in zero['legs']] == [
+        row['strike_market'] for row in plain['legs']]
+    assert zero['deal']['Sales_Margin'] == 0.0, 'a zero margin is still what was agreed'
+
+
+def test_a_margin_refuses_where_it_cannot_be_valued_or_cannot_be_charged(book):
+    """Three refusals, each by name. A currency the book carries no `FxRate` for cannot be crossed
+    into the price, and a quote is not struck at a rate somebody guessed. A recipe that SOLVES
+    nothing has no coordinate to charge on - a strangle is two strikes the client named - and a
+    margin quietly dropped is a margin the desk never earns. And a bare number is not a margin: an
+    amount with no currency is exactly the ambiguity this form exists to remove."""
+    with pytest.raises(ValueError) as unpriced:
+        structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95),
+                         margin={'amount': 50_000.0, 'currency': 'JPY'})
+    assert 'FxRate.JPY' in str(unpriced.value)
+
+    with pytest.raises(ValueError) as uncharged:
+        structures.quote(book, 'Strangle', params(floor=SPOT * 0.95, cap=SPOT * 1.05),
+                         margin=MARGIN)
+    assert 'Strangle' in str(uncharged.value) and 'solves nothing' in str(uncharged.value)
+
+    with pytest.raises(ValueError) as shapeless:
+        structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95), margin=50_000.0)
+    assert "'currency'" in str(shapeless.value)
+
+
 def test_a_seagull_nets_to_zero(book):
     """Three legs, two strikes named and one solved. The solve targets the sum of TWO already-priced
     legs, so a runner reading only the last priced leg produces a plausible cap and fails here."""
@@ -1018,6 +1096,29 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     assert only_leg(accumulator)['LeverageNotional'] == 2.0 * NOTIONAL
     assert 'Expiry_Date' not in only_leg(accumulator), (
         'FXAccumulatorOptionDeal declares no Expiry_Date, so the block must not carry one')
+
+
+def test_a_strip_at_a_margin_strikes_further_from_the_client(accrual_book):
+    """The single-solve half of the margin. A strip has no financing leg to move, so the charge
+    goes onto the TARGET itself: zero becomes minus the margin, and the one coordinate the recipe
+    solves - the strike - absorbs it.
+
+    The client accrues `(S - K)+`, so the desk's side is UP, and the direction is the claim: a sign
+    error here quotes the client a BETTER strike for paying a margin. Measured on this book at
+    these paths: 9.2e-4 relative, against the 2.5e-5 the two zero-cost orientations differ by, so
+    the assertion is made at `AXIS_TOLERANCE` and clears it four times over.
+    """
+    asked = dict(accrual_params(target=TARGET), notional_currency='USD')
+    plain = structures.quote(accrual_book, 'TargetRedemptionForward', dict(asked))
+    outcome = structures.quote(accrual_book, 'TargetRedemptionForward', dict(asked), margin=MARGIN)
+    struck, was = leg(outcome, 'tarf')['strike_market'], leg(plain, 'tarf')['strike_market']
+
+    assert outcome['net'] * outcome['spot']['value_market'] == pytest.approx(
+        -50_000.0, abs=SOLVE_TOLERANCE * SPOT)
+    assert outcome['net'] == pytest.approx(-outcome['margin']['value'], abs=SOLVE_TOLERANCE)
+    assert (struck - was) / was > AXIS_TOLERANCE, 'the margin never reached the solved strike'
+    assert (outcome['deal']['Sales_Margin'],
+            outcome['deal']['Sales_Margin_Currency']) == (50_000.0, 'ZAR')
 
 
 def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
