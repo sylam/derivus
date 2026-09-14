@@ -12,11 +12,10 @@
 ########################################################################
 
 import calendar
-import math
 import os
 from functools import lru_cache, partial, reduce, wraps
 import threading
-from collections import namedtuple, deque, OrderedDict
+from collections import namedtuple, OrderedDict
 from typing import Tuple, List
 from dataclasses import dataclass
 
@@ -32,87 +31,6 @@ import torch
 excel_offset = pd.Timestamp('1899-12-30 00:00:00')
 
 
-class DayCount:
-    """The day-count conventions a schedule is authored in: the code each name maps to, and the
-    year fraction each code accrues."""
-
-    # Days in year - could set this to 365.0 or 365.25 if you want that bit extra time
-    DAYS_IN_YEAR = 365.25
-
-    NONE = -1
-    ACT365 = 0
-    ACT360 = 1
-    ACT365IDSA = 2
-    ACT30_360 = 3
-    ACT30_E360 = 4
-    ACTACTICMA = 5
-
-    @staticmethod
-    def code(name):
-        if name == 'ACT_365':
-            return DayCount.ACT365
-        elif name == 'ACT_360':
-            return DayCount.ACT360
-        elif name == '_30_360':
-            return DayCount.ACT30_360
-        elif name == '_30E_360':
-            return DayCount.ACT30_E360
-        elif name == 'ACT_365_ISDA':
-            return DayCount.ACT365IDSA
-        elif name == 'ACT_ACT_ICMA':
-            return DayCount.ACTACTICMA
-        else:
-            raise Exception('Daycount {} Not implemented'.format(name))
-
-    @staticmethod
-    def accrual(reference_date, time_in_days, code):
-        """Need to complete this implementation. time_in_days is incremental"""
-
-        if code == DayCount.ACT360:
-            return time_in_days / 360.0
-        elif code == DayCount.ACT365:
-            return time_in_days / 365.0
-        elif code in (DayCount.ACT365IDSA, DayCount.ACTACTICMA):
-            # TODO
-            return time_in_days / 365.0
-        elif code == DayCount.ACT30_360:
-            e1 = min(reference_date.day, 30)
-            new_date = end_date = reference_date
-            if isinstance(time_in_days, np.ndarray):
-                ret = []
-                for ed in time_in_days.tolist():
-                    end_date += pd.DateOffset(days=ed)
-                    e2 = 30 if end_date.day >= 30 and new_date.day >= 30 else end_date.day
-                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                                360 * (end_date.year - new_date.year)) / 360.0)
-                    new_date = end_date
-                return ret
-            else:
-                end_date = reference_date + pd.DateOffset(days=time_in_days)
-                e2 = 30 if end_date.day >= 30 and reference_date.day >= 30 else end_date.day
-                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                        360 * (end_date.year - reference_date.year)) / 360.0
-        elif code == DayCount.ACT30_E360:
-            e1 = min(reference_date.day, 30)
-            new_date = end_date = reference_date
-            if isinstance(time_in_days, np.ndarray):
-                ret = []
-                for ed in time_in_days.tolist():
-                    end_date += pd.DateOffset(days=ed)
-                    e2 = min(end_date.day, 30)
-                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                                360 * (end_date.year - new_date.year)) / 360.0)
-                    new_date = end_date
-                return ret
-            else:
-                end_date = reference_date + pd.DateOffset(days=time_in_days)
-                e2 = min(end_date.day, 30)
-                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                        360 * (end_date.year - reference_date.year)) / 360.0
-        elif code == DayCount.NONE:
-            return time_in_days
-
-# factor codes
 FACTOR_INDEX_Stoch = 0  # either True for stochastic or False for static
 FACTOR_INDEX_Offset = 1  # index to get the factor name
 FACTOR_INDEX_SubType = 2  # index to get the factor subtype (if any)
@@ -701,6 +619,89 @@ def _mark_side(events):
         logging.debug('MTA BINDING side=%s events=%d runs=%.4g live=%.4g', events[0].side,
                       len(events), float(new_run.to(gaps.dtype).sum(dim=0).max()),
                       float(keep.to(gaps.dtype).sum(dim=0).max()))
+
+
+class DayCount:
+    """The day-count conventions a schedule is authored in: the code each name maps to, and the
+    year fraction each code accrues."""
+
+    # Days in year - could set this to 365.0 or 365.25 if you want that bit extra time
+    DAYS_IN_YEAR = 365.25
+
+    NONE = -1
+    ACT365 = 0
+    ACT360 = 1
+    ACT365IDSA = 2
+    ACT30_360 = 3
+    ACT30_E360 = 4
+    ACTACTICMA = 5
+
+    @staticmethod
+    def code(name):
+        if name == 'ACT_365':
+            return DayCount.ACT365
+        elif name == 'ACT_360':
+            return DayCount.ACT360
+        elif name == '_30_360':
+            return DayCount.ACT30_360
+        elif name == '_30E_360':
+            return DayCount.ACT30_E360
+        elif name == 'ACT_365_ISDA':
+            return DayCount.ACT365IDSA
+        elif name == 'ACT_ACT_ICMA':
+            return DayCount.ACTACTICMA
+        else:
+            raise Exception('Daycount {} Not implemented'.format(name))
+
+    @staticmethod
+    def accrual(reference_date, time_in_days, code):
+        """Need to complete this implementation. time_in_days is incremental"""
+
+        if code == DayCount.ACT360:
+            return time_in_days / 360.0
+        elif code == DayCount.ACT365:
+            return time_in_days / 365.0
+        elif code in (DayCount.ACT365IDSA, DayCount.ACTACTICMA):
+            # TODO
+            return time_in_days / 365.0
+        elif code == DayCount.ACT30_360:
+            e1 = min(reference_date.day, 30)
+            new_date = end_date = reference_date
+            if isinstance(time_in_days, np.ndarray):
+                ret = []
+                for ed in time_in_days.tolist():
+                    end_date += pd.DateOffset(days=ed)
+                    e2 = 30 if end_date.day >= 30 and new_date.day >= 30 else end_date.day
+                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
+                                360 * (end_date.year - new_date.year)) / 360.0)
+                    new_date = end_date
+                return ret
+            else:
+                end_date = reference_date + pd.DateOffset(days=time_in_days)
+                e2 = 30 if end_date.day >= 30 and reference_date.day >= 30 else end_date.day
+                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
+                        360 * (end_date.year - reference_date.year)) / 360.0
+        elif code == DayCount.ACT30_E360:
+            e1 = min(reference_date.day, 30)
+            new_date = end_date = reference_date
+            if isinstance(time_in_days, np.ndarray):
+                ret = []
+                for ed in time_in_days.tolist():
+                    end_date += pd.DateOffset(days=ed)
+                    e2 = min(end_date.day, 30)
+                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
+                                360 * (end_date.year - new_date.year)) / 360.0)
+                    new_date = end_date
+                return ret
+            else:
+                end_date = reference_date + pd.DateOffset(days=time_in_days)
+                e2 = min(end_date.day, 30)
+                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
+                        360 * (end_date.year - reference_date.year)) / 360.0
+        elif code == DayCount.NONE:
+            return time_in_days
+
+# factor codes
 
 
 # Custom Exceptions
