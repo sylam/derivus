@@ -47,8 +47,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_bloomberg import equity_chain
 from derivus_bloomberg.equity_chain import (ChainContract, EquityForward, EquityLadder,
-                                            black_price, equity_option_block, fetch_equity_chain,
-                                            screen_chain, select_rungs)
+                                            LeveragePrior, black_price, equity_option_block,
+                                            fetch_equity_chain, screen_chain, select_rungs)
 from derivus_bloomberg.errors import (BloombergConfigurationError, IncompleteChain, InvalidQuote,
                                       UnsupportedExerciseStyle)
 from derivus_bloomberg.session import BloombergSession
@@ -912,6 +912,50 @@ def test_the_block_writes_only_fields_the_family_declares():
         'the option row declares the value keys and the value plane does not know it')
 
 
+def test_the_block_carries_the_indexs_own_leverage_pair():
+    """THE CLASS DEFAULT IS SIZED ON THE S&P 500, and an index started from it fits its own
+    vol-of-vol against somebody else's leverage - so the emitter writes the pair that index's own
+    volatility index implies, under the family's own four field names, and `Quote_Source` says
+    which index it was regressed from. An underlying `LEVERAGE_PRIORS` does not carry writes NONE
+    of the four and says so: the named fallback is the family's asset class default."""
+    keys = ('Leverage_Prior', 'Leverage_Prior_SE', 'Leverage_Product_Prior',
+            'Leverage_Product_Prior_SE')
+    pair = equity_chain.LEVERAGE_PRIORS[UNDERLYING]
+    instrument = emitted()[1]['instrument']
+    assert [instrument[key] for key in keys] == \
+        [pair.rho, pair.rho_se, pair.product, pair.product_se] == [-0.762, 0.012, -1.89, 0.05]
+    assert 'leverage prior rho_s -0.762 +- 0.012, the product rho_s*sigma_s -1.89 +- 0.05, off ' \
+           'VIX Index' in instrument['Quote_Source']
+
+    # the same canned chain under an underlying the table does not carry
+    other = fetch_equity_chain(Walked(canned_rows()), 'SX5E Index', AS_OF)
+    plain = equity_option_block(other, FORWARD)[1]['instrument']
+    assert not [key for key in keys if key in plain]
+    assert 'no leverage pair is declared for SX5E Index, so the fit reads the asset class default' \
+        in plain['Quote_Source']
+
+    # declared, the caller's pair is the one written - and a blank error is left out rather than
+    # written as the zero the family refuses
+    explicit = equity_option_block(canned_chain(), FORWARD, leverage=LeveragePrior(
+        -0.5, product=-1.2, source='a desk view'))[1]['instrument']
+    assert (explicit['Leverage_Prior'], explicit['Leverage_Product_Prior']) == (-0.5, -1.2)
+    assert not [key for key in keys if key.endswith('_SE') and key in explicit]
+    assert 'leverage prior rho_s -0.5, the product rho_s*sigma_s -1.2, off a desk view' in \
+        explicit['Quote_Source']
+
+
+def test_a_leverage_pair_the_family_would_refuse_never_reaches_a_block():
+    """Both refusals are the family's own, so a block never carries what the fit would refuse: a
+    standard error at or below zero divides its row by nothing, and a product disagreeing in sign
+    with `rho` pulls the two rows opposite ways along the one axis vanillas cannot see."""
+    with pytest.raises(BloombergConfigurationError, match='LeveragePrior.rho_se is 0'):
+        LeveragePrior(-0.762, 0.0, -1.89, 0.05, 'VIX Index')
+    with pytest.raises(BloombergConfigurationError, match='LeveragePrior.product_se is -0.05'):
+        LeveragePrior(-0.762, 0.012, -1.89, -0.05, 'VIX Index')
+    with pytest.raises(BloombergConfigurationError, match='disagree in SIGN'):
+        LeveragePrior(-0.762, 0.012, 1.89, 0.05, 'VIX Index')
+
+
 def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
     """THE THIRD SPELLING, end to end: the same option table, a header LogVar2FJ declares, and a
     real fit off it.
@@ -959,6 +1003,13 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
     # price factor asserts at load - so the loader is the gate on what was written
     assert written['Xi_Curve'].array[0][0] == 0.0
     LogVar2FJModelParameters(dict(written))
+
+    # the emitter's own pair is what the fit read; its 0.012 holds the rho_s row at about a hundred
+    # times a quote row on two pillars of vanillas, which On_Guard reports and this does not pin
+    report = '\n'.join(record.getMessage() for record in caplog.records)
+    assert 'rho_s -0.7620 +- 0.0120 from the declared Leverage_Prior' in report
+    assert 'the product rho_s*sigma_s -1.8900 +- 0.0500 from the declared Leverage_Product_Prior' \
+        in report
     print('\nfitted off the chain block: {}\nxi (annualised vol): {}'.format(
         {key: float(written[key]) for key in utils.LV_PARAM_NAMES},
         [(float(knot), round(float(math.sqrt(level)), 4))
@@ -1566,7 +1617,7 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
 #: `quotes_per_expiry` is a switch and its OFF position is the delta ladder bit for bit. A relative
 #: tolerance cannot say that: re-associating one weight - `vega * sqrt(OI) / d` into
 #: `vega * (sqrt(OI) / d)` - passes every approx in this file and moves every document in the world.
-DEFAULT_BLOCK_SHA = '1af1f92d4c6c3afb65bee1bb4a07b6aa33ad6747f5e0e6eab36842539580426f'
+DEFAULT_BLOCK_SHA = '6ffa85e62756bd8c1582b5916c4855e93e91a848318065f36e2652a6ed078cfc'
 
 #: The two-pillar ladder of `E2E_LADDER` asking for five quotes an expiry: ten rows, over the
 #: family's own floor of eight, which is what makes the JSON half of this gate minutes and not hours.

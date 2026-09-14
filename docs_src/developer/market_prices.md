@@ -483,7 +483,9 @@ log-variance change, with Fisher, `σ/√2N` and delta-method errors
 product −1.89 ± 0.05, the reference to the second decimal; NDX/VXN −0.712, 1.88, −1.34; NKY against
 the Nikkei VI **−0.529 ± 0.025, 3.07, −1.62 ± 0.09** — a weaker correlation and more vol-of-vol
 than SPX, which is why NKY's wings wanted a positive residual skew at SPX's −1.85: it is not NKY's
-number. `Leverage_Prior_Defaults` also signs the seed (`sign·0.75`) and the slow pair's pin, and a
+number. The Bloomberg chain emitter writes that pair onto the block it emits, keyed by the chain's
+own underlying, so an index it carries starts from its own regression rather than from the class
+default. `Leverage_Prior_Defaults` also signs the seed (`sign·0.75`) and the slow pair's pin, and a
 class whose product and `ρ_s` defaults disagree in sign refuses by name.
 
 That history now has a producer, and where the ladder cannot see the residual pair it is one of the

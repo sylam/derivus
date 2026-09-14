@@ -3198,7 +3198,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'skew and a vanilla-only fit then puts Rho_S wherever it likes, leaving the '
                       'forward smile undetermined, so a weak prior - a zero one included - keeps '
                       'the split near what the vol market says. fx_surface_block writes the '
-                      'desk\'s own number here off its seed'),
+                      'desk\'s own number here off its seed; the equity chain emitter writes each '
+                      'index\'s own pair here off that index\'s volatility index'),
         F('Leverage_Prior_SE', 'Float', default='',
           description='The standard error the declared Leverage_Prior carries, where the desk has '
                       'one - an implied-vol-index regression states rho_s +- 0.012 to 0.025. The '

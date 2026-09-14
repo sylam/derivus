@@ -19,13 +19,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 These are defects in the engine: each has a change to this library that closes it.
 
-- **The index defaults cannot fit the Nikkei** (2026-09-10). A fit starts every index from one set
-  of class defaults for the leverage, the correlation between an index's return and its own
-  volatility, sized on the S&P 500. On the Nikkei those defaults land the fast vol-of-vol on the
-  top of its box with the leverage at −0.40, a fit stopped at a wall rather than at a minimum,
-  while the Nikkei's own implied pair, −0.53 for the leverage and −1.62 for its product with the
-  vol-of-vol, lands clean. The Bloomberg emitter should write per-name numbers from each index's
-  own volatility index; a wider box is not the fix.
 - **One prior is applied to the first bucket only** (2026-09-10). A ladder may fit its residual
   tail per calendar bucket, and the priors on the skew share and the leverage follow the buckets,
   but the prior on the tail parameter `Alpha` sits on the first bucket alone. Nothing moves today,

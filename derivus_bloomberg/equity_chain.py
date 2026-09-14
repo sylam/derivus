@@ -328,6 +328,49 @@ class EquityLadder:
 
 
 @dataclass(frozen=True)
+class LeveragePrior:
+    """ONE INDEX'S OWN LEVERAGE PAIR, written onto the block in place of the class default.
+
+    `rho` is `Rho_S` ON THE ENGINE'S AXIS - the correlation between the index's return and its own
+    volatility - and `product` is `rho_s sigma_s`, the leverage a smile carries and what keeps the
+    fast vol-of-vol at the RATIO of the two rather than on its box. Each standard error weights its
+    own row at one quote-vol-point; left None, the row takes the family's nominal weight. `source`
+    is the volatility index the pair was regressed from and travels into `Quote_Source` with it.
+    """
+    rho: float
+    rho_se: float | None = None
+    product: float | None = None
+    product_se: float | None = None
+    source: str = ''
+
+    def __post_init__(self):
+        for name, error in (('rho_se', self.rho_se), ('product_se', self.product_se)):
+            if error is not None and not error > 0.0:
+                raise BloombergConfigurationError(
+                    'LeveragePrior.{} is {:g} - it is the standard error its row is weighted by, '
+                    'one quote-vol-point per error, so a non-positive one divides the row by '
+                    'nothing and the family refuses the same block by name. State the error the '
+                    'estimate carries, or leave it None for the nominal weight'.format(name, error))
+        if self.product is not None and self.product * self.rho < 0.0:
+            raise BloombergConfigurationError(
+                'LeveragePrior states rho {:+g} against a product rho_s*sigma_s of {:+g}, which '
+                'disagree in SIGN - the product IS rho_s times a positive vol-of-vol, so the two '
+                'rows would pull the fit opposite ways along the one axis vanillas cannot see. '
+                'Correct whichever of the two was read on the other axis'.format(
+                    self.rho, self.product))
+
+
+#: THE PAIR EACH INDEX'S OWN VOLATILITY INDEX IMPLIES, keyed by the chain's Bloomberg underlying:
+#: `rho` is the correlation of the index's daily return with the daily change of its log-variance,
+#: `product` that times the change's annualised sd; 2021-09 to 2026-09, the Nikkei from 2023-01.
+LEVERAGE_PRIORS = {
+    'SPX Index': LeveragePrior(-0.762, 0.012, -1.89, 0.050, 'VIX Index'),
+    'NDX Index': LeveragePrior(-0.712, 0.015, -1.34, 0.039, 'VXN Index'),
+    'NKY Index': LeveragePrior(-0.529, 0.025, -1.62, 0.086, 'VNKY Index'),
+}
+
+
+@dataclass(frozen=True)
 class Rung:
     """One snapped rung: the listed contract a pillar landed on, and everything the block needs."""
     kind: str
@@ -1100,7 +1143,7 @@ def market_price_name(family, forward):
     return '{}.{}'.format(family, forward.underlying_factor)
 
 
-def equity_option_block(chain, forward, ladder=None):
+def equity_option_block(chain, forward, ladder=None, leverage=None):
     """`(Market Prices name, block)` - the chain as ONE `LogVar2FJModelPrices` quote block.
 
     PREMIUMS, NOT VOLS. `Quote_Type` is Premium and `Quoted_Market_Value` the mid of the terminal's
@@ -1112,11 +1155,16 @@ def equity_option_block(chain, forward, ladder=None):
     block names a `Volatility` reference anyway, since a chain-sourced fit still marks against a
     surface downstream.
 
+    THE LEVERAGE PRIOR IS PER INDEX. An explicit `leverage` is written; `None` looks the chain's
+    own underlying up in `LEVERAGE_PRIORS`; an underlying that table does not carry writes NOTHING,
+    and the named fallback is the family's own asset class default.
+
     Refuses by name, with the remedy, on: exercise style killing the ladder, a ladder collapsing
     below `minimum_contracts` distinct contracts, an expiry with no admissible dividend evidence or
     an undeclared carry outside `parity_band`, and a ladder with no weight in it.
     """
     ladder = ladder or EquityLadder()
+    leverage = LEVERAGE_PRIORS.get(chain.underlying) if leverage is None else leverage
     _refuse_american(chain, ladder)
 
     rungs, selection_notes, readings = select_rungs(chain, forward, ladder)
@@ -1159,11 +1207,19 @@ def equity_option_block(chain, forward, ladder=None):
         # forward off Discount_Rate, and a field spelling that out would state a name nobody chose
         **({'Funding_Rate': forward.funding_rate,
             'Funding_Rate_Type': forward.funding_rate_type} if forward.funding_rate else {}),
+        # the family's own four names, a blank standard error left out so that row takes the
+        # nominal weight rather than a declaration nobody made
+        **({} if leverage is None else {
+            name: value for name, value in (
+                ('Leverage_Prior', leverage.rho), ('Leverage_Prior_SE', leverage.rho_se),
+                ('Leverage_Product_Prior', leverage.product),
+                ('Leverage_Product_Prior_SE', leverage.product_se)) if value is not None}),
         'Quote_Type': 'Premium',
         'Use_Forward': 'No', 'Invert_Moneyness': 'No',
         'Steps_Per_Year': ladder.steps_per_year,
         'Quote_Timestamp': _timestamp(chain.as_of),
-        'Quote_Source': quote_source(chain, forward, ladder, rungs, rows, notes, readings),
+        'Quote_Source': quote_source(chain, forward, ladder, rungs, rows, notes, readings,
+                                     leverage),
         'European_Options': quotes}
     return market_price_name(FAMILY, forward), {'instrument': instrument}
 
@@ -1198,7 +1254,7 @@ def _refuse_american(chain, ladder):
                       for verdict, count in sorted(_census(chain).items())) or 'nothing refused'))
 
 
-def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
+def quote_source(chain, forward, ladder, rungs, rows, notes, readings, leverage=None):
     """The block's own account of where its quotes came from, in one line beside the parameters
     they produce - `fx_surface_block`'s `Quote_Source` plus what a chain has that a surface does
     not: the census, the spot's own print date, the declared carry and the carry the chain implies.
@@ -1210,6 +1266,10 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
 
     The two curves are named separately where they differ: `r` is the FUNDING rate the forward grew
     at, and the premium's discount curve is named after it. One curve says so by saying nothing.
+
+    THE LEVERAGE PAIR IS NAMED with its standard errors and the volatility index it was regressed
+    from, or the line says none is declared for this underlying and the fit reads the class
+    default.
 
     The rows are counted beside the rungs because two rungs landing on one listed contract are
     emitted once at their summed weight.
@@ -1245,6 +1305,16 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings):
             ', premiums discounting on {}'.format(forward.discount_rate)
             if forward.funding_rate and forward.funding_rate != forward.discount_rate else '',
             dividends or 'no pillar priced'))
+    if leverage is None:
+        source += '; no leverage pair is declared for {}, so the fit reads the asset class ' \
+                  'default'.format(chain.underlying)
+    else:
+        source += '; leverage prior {}, off {}'.format(', '.join(
+            '{} {:+g}{}'.format(name, value, '' if error is None else ' +- {:g}'.format(error))
+            for name, value, error in (
+                ('rho_s', leverage.rho, leverage.rho_se),
+                ('the product rho_s*sigma_s', leverage.product, leverage.product_se))
+            if value is not None), leverage.source or 'a source the caller did not name')
     if notes:
         source += '; rungs the chain does not list, moved or dropped: {}'.format(', '.join(notes))
     return source
