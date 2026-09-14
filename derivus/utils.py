@@ -2625,10 +2625,26 @@ def ig_quantile(u, m, lam):
     return (x - (ig_cdf(x, m, lam) - u) / ig_pdf(x, m, lam)).to(narrow)
 
 
+def lv_declared(x):
+    """A declared scalar as a float, keeping a null - a field a document declares absent - None."""
+    return None if x is None else float(x)
+
+
+def lv_text(x, spec):
+    """A declared scalar for a report line, `none` where the document declares it absent."""
+    return 'none' if x is None else format(float(x), spec)
+
+
 def lv_cap(x, a, beta):
-    """Smooth cap on log-variance, a - beta*softplus((a-x)/beta); a None is uncapped."""
+    """Smooth cap on log-variance, a - beta*softplus((a-x)/beta).
+
+    A None `a` is uncapped; a zero `beta` is the hard corner min(x, a), which is exactly the
+    identity below the level where the smooth one already sits under it.
+    """
     if a is None:
         return x
+    if not beta:
+        return torch.clamp(x, max=a)
     return a - beta * torch.nn.functional.softplus((a - x) / beta)
 
 

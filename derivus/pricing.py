@@ -97,7 +97,8 @@ class LogVar2FJKit(object):
         n = len(self.param_names)
         structural = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Tenor_Index]
         self.params = dict(zip(self.param_names, scalars[:n]),
-                           **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
+                           **{x: utils.lv_declared(structural[x])
+                              for x in utils.LV_STRUCTURAL_NAMES})
         self.curves = {name: utils.TermStructure(structural[name], value)
                        for name, value in zip(self.curve_names, scalars[n:])}
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'

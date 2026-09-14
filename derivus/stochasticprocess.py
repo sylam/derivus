@@ -5230,7 +5230,8 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         self.curves = {c: utils.TermStructure(structural[c], implied_tensor[c])
                        for c in utils.LV_CURVE_NAMES}
         self.params = dict({x: implied_tensor[x] for x in utils.LV_PARAM_NAMES},
-                           **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
+                           **{x: utils.lv_declared(structural[x])
+                              for x in utils.LV_STRUCTURAL_NAMES})
         self.spot0 = tensor
         # the carry read: step starts on the scenario grid and each step's own length, verbatim
         # from `GBMAssetPriceTSModelImplied`

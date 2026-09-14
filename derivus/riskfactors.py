@@ -1173,9 +1173,11 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Kappa_S', 'Float', default=0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Cap_A', 'Float', default=4.605170185988092,
-          description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol)'),
+          description='Log-variance cap level $a$ - STRUCTURAL, default $\\log 100$ (1000% vol). '
+                      'null declares NO CAP and the walk takes $\\ell+s$ as it stands'),
         F('Cap_Beta', 'Float', default=0.25,
-          description='Log-variance cap width $\\beta_c$ - STRUCTURAL'),
+          description='Log-variance cap width $\\beta_c$ - STRUCTURAL. 0 is the hard corner '
+                      '$\\min(\\ell+s, a)$, exactly the identity below the level'),
         F('Steps_Per_Year', 'Float', default=252.0,
           description='Trading days a year the fitted block stepped - the clock the parameters '
                       'MEAN, so the pricer\'s internal walk and the xVA outer\'s scenario grid '
