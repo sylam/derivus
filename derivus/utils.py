@@ -2446,7 +2446,7 @@ LV_PARAM_NAMES = ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S')
 
 #: The structural SCALARS the kit reads off the factor: the cap, a guard on log-variance rather
 #: than a modelling device. A leaf at either would report a derivative nothing carries.
-LV_STRUCTURAL_NAMES = ('Cap_A', 'Cap_Beta')
+LV_STRUCTURAL_NAMES = ('Cap_A',)
 
 #: The floor on the idiosyncratic share `c(t) = 1 - Rho_S^2 - Rho_L^2`: the factor
 #: asserts it at load, the surface's stages 3-4 box the fit by it, and the historical leverage
@@ -2660,17 +2660,10 @@ def lv_text(x, spec):
     return 'none' if x is None else format(float(x), spec)
 
 
-def lv_cap(x, a, beta):
-    """Smooth cap on log-variance, a - beta*softplus((a-x)/beta).
-
-    A None `a` is uncapped; a zero `beta` is the hard corner min(x, a), which is exactly the
-    identity below the level where the smooth one already sits under it.
-    """
-    if a is None:
-        return x
-    if not beta:
-        return torch.clamp(x, max=a)
-    return a - beta * torch.nn.functional.softplus((a - x) / beta)
+def lv_cap(x, a):
+    """The corner on log-variance, min(x, a) - exactly the identity below the level; a None `a` is
+    unbounded."""
+    return x if a is None else torch.clamp(x, max=a)
 
 
 def lv_ou_step_weights(kappa, sigma, deltas):
@@ -2765,7 +2758,7 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     payoff is single-currency, which is bit-identical.
     """
     rl = params['Rho_L']
-    a, beta = params['Cap_A'], params['Cap_Beta']
+    a = params['Cap_A']
     # the trailing axis is the grid's, the bucketed levers arriving per STEP and a scalar spreading
     # to the constant-parameter model. The leading axis keeps a step's slice DIMENSIONED, so a
     # 0-dim leaf is not demoted against the draws' own dtype.
@@ -2779,7 +2772,7 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
         for k in range(deltas.shape[0]):
             rows.append(l + s)
             # each shock's own loading, so the shift feeds the variance path as it feeds the return
-            sq = sqrt_or_zero(deltas[k] * torch.exp(lv_cap(l + s, a, beta)))
+            sq = sqrt_or_zero(deltas[k] * torch.exp(lv_cap(l + s, a)))
             s = phi_s[..., k] * s + w_s[..., k] * (eta_s[..., k] + rs[..., k] * sq)
             l = (curve_at_grid[k + 1] + phi_l[..., k] * (l - curve_at_grid[k])
                  + w_l[..., k] * (eta_l[..., k] + rl * sq))
@@ -2789,7 +2782,7 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
         path_l = lv_ou_path(params['Kappa_L'], w_l, eta_l, l - curve_at_grid[0], deltas)
         x = path_s[..., :-1] + path_l[..., :-1] + curve_at_grid[:-1]
         l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1]
-    V = deltas * torch.exp(lv_cap(x, a, beta))
+    V = deltas * torch.exp(lv_cap(x, a))
     sq = sqrt_or_zero(V)
     e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)
     # the step's two leverage coefficients are the GRID's and the parameters', so they are formed
@@ -5258,6 +5251,8 @@ def lv_parse_bounds(text, name):
 #: What a retired field is replaced by. An authored key the family no longer declares would be
 #: carried silently past `declared_defaults`, so the block or the section refuses by NAME instead.
 LV_RETIRED = {
+    'Cap_Beta': 'retired with the smooth cap - a declared Cap_A is the corner min(l+s, Cap_A); '
+                'delete the key',
     'Beta_Prior_Defaults': 'Residual_Skew_Share_Defaults - the prior is on the SHARE beta/alpha '
                            'the smile sees, a row on beta alone being obeyed for free by running '
                            'alpha to its ceiling',

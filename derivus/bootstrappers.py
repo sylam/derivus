@@ -1444,15 +1444,15 @@ class LVFit(utils.Residual):
             for quote in quotes])))
 
     def cap_headroom(self, scalars, levers, curve):
-        """The mass of path-days with headroom `(a - (l+s))/beta` under 5, or AT the level where
-        the cap is the corner and zero where the document declares no cap.
+        """The mass of path-days at or above the corner the factor will carry; zero where the walk
+        is unbounded.
 
         The state's own path, which `lv_walk` consumes and does not publish, read ONCE at the
         parameters actually written off the same closed form the walk uses: the cap is a guard, and
         a calibration that reaches it is a failure this report has to be able to state.
         """
         eta_l, eta_s, _ = self.draws
-        a, beta = (utils.lv_declared(scalars[x]) for x in ('Cap_A', 'Cap_Beta'))
+        a = self.cap_level()
         if a is None:
             return 0.0
         sigma_s = levers['Sigma_S'][self.step_bucket[:-1]]
@@ -1461,8 +1461,7 @@ class LVFit(utils.Residual):
         zero = eta_l.new_zeros(eta_l.shape[0])
         state = (utils.lv_ou_path(scalars['Kappa_S'], w_s, eta_s, zero, self.deltas)
                  + utils.lv_ou_path(scalars['Kappa_L'], w_l, eta_l, zero, self.deltas))
-        x = (curve + state)[:, :-1]
-        near = (x >= a if not beta else (a - x) / beta < 5.0).sum()
+        near = ((curve + state)[:, :-1] >= a).sum()
         return float(near) / (eta_l.shape[0] * self.deltas.shape[0])
 
     def l_knots(self, levels):
@@ -1728,8 +1727,6 @@ class LVFit(utils.Residual):
         started = time.time()
         self.soft_priors()
         self.settle()
-        # the LEVEL rule, on the seeded curve and again once the spread is fitted
-        self.state['Cap_A'] = self.cap_level()
         (self.bootstrap_stages if self.mode == 'Bootstrap' else self.global_stages)()
         self.elapsed = time.time() - started
         self.theta = self.vector([self.value_of(coord) for coord in self.fitted])
@@ -1751,11 +1748,14 @@ class LVFit(utils.Residual):
         return ['{:g}y {:g}'.format(quote.T, quote.strike) for quote in self.quotes]
 
     def cap_level(self):
-        """The level rule `a = max(Cap_A, L(0) + 6 s_inf)`, at the widest bucket's spread -
-        raised where the fit asks for it and never lowered. A declared null stays None: a
-        document that declares no cap is not given one."""
-        a, spread = utils.lv_declared(self.instrument.get('Cap_A')), max(self.spreads())
-        return a if a is None else max(a, float(self.levels[0]) + 12.0 * spread)
+        """The corner the written factor carries: `L(0) + 6 s_inf` at the widest bucket's spread
+        where the document declares none, a declared level raised to that and never lowered, and
+        None where the document declares null."""
+        rule = float(self.levels[0]) + 12.0 * max(self.spreads())
+        if 'Cap_A' not in self.instrument:
+            return rule
+        a = utils.lv_declared(self.instrument['Cap_A'])
+        return a if a is None else max(a, rule)
 
     def spreads(self, horizon=None, sigma_l=None):
         """The log-VOL sd per bucket, half the log-variance one - the quantity VIX
@@ -1789,7 +1789,6 @@ class LVFit(utils.Residual):
             self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
         else:
             self.pin_slow()
-        self.state['Cap_A'] = self.cap_level()
 
         last = self.buckets.size - 1
         if self.targets and last:
@@ -2174,7 +2173,6 @@ class LVFit(utils.Residual):
             self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
         else:
             self.pin_slow()
-        self.state['Cap_A'] = self.cap_level()
         for k, expiry in enumerate(self.wings):
             rung = self.wings[expiry]
             free = LV_FREE_ORDER[:min(len(rung), len(LV_FREE_ORDER))]
@@ -2277,12 +2275,12 @@ class LVFit(utils.Residual):
         self.headroom = self.cap_headroom(scalars, levers, self.l_at(self.levels))
         if self.headroom > self.cap_headroom_max:
             raise ValueError(
-                '{}: {:.3e} of path-days sit within 5*Cap_Beta of the cap at Cap_A={:.4g}, above '
+                '{}: {:.3e} of path-days sit at or above the corner Cap_A={:.4g}, above '
                 'the {:g} a calibrated surface may carry. The cap exists to make E[S^p] finite and '
                 'to stop an exp overflowing, NOT to shape a smile, so a fit that reaches it is a '
                 'failure rather than a warning. Raise Cap_A, or fit a surface whose '
                 'vol-of-vol this model can carry'.format(
-                    self.market_price, self.headroom, self.state['Cap_A'],
+                    self.market_price, self.headroom, self.cap_level(),
                     self.cap_headroom_max))
 
     def guard(self, field, message, remedy):
@@ -2353,8 +2351,8 @@ class LVFit(utils.Residual):
         values = values.detach().exp()
         nearest = min(self.skew_rows, default=None)
         return {'Property_Aliases': None,
-                **{name: utils.lv_declared(self.state[name])
-                   for name in utils.LV_PARAM_NAMES + utils.LV_STRUCTURAL_NAMES},
+                **{name: float(self.state[name]) for name in utils.LV_PARAM_NAMES},
+                'Cap_A': self.cap_level(),
                 'Steps_Per_Year': float(self.instrument['Steps_Per_Year']),
                 'C_Min': self.c_min, 'Residual_Law': self.law,
                 'On_Guard': self.on_guard(),
@@ -2658,10 +2656,9 @@ class LVFit(utils.Residual):
                 self.labels, np.array([self.value_of(x) for x in self.fitted]),
                 self.edges[0], self.edges[1], self.slope)):
             logging.info('  {}'.format(line))
-        logging.info('  stationary log-vol sd {}; cap headroom {:.2e} of path-days within '
-                     '5*Cap_Beta of Cap_A={}'.format(
-                         '/'.join('{:.3f}'.format(x) for x in self.spreads()),
-                         self.headroom, utils.lv_text(self.state['Cap_A'], '.4g')))
+        logging.info('  stationary log-vol sd {}; corner {} with {:.2e} of path-days at or above '
+                     'it'.format('/'.join('{:.3f}'.format(x) for x in self.spreads()),
+                                 utils.lv_text(self.cap_level(), '.4g'), self.headroom))
         for note in self.notes:
             logging.warning('  {}: {}'.format(self.market_price, note))
         for line in ([self.pinned_slow] if self.pinned_slow else []) + \
@@ -3000,16 +2997,11 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         F('Kappa_S', 'Float', default=6.0,
           description='STRUCTURAL fast reversion speed, per year, on the same terms as Kappa_L'),
         F('Cap_A', 'Float', default=LV_FACTOR_DEFAULTS['Cap_A'],
-          description='STRUCTURAL log-variance cap level. None by default: the walk takes the '
-                      'log variance as it stands and the headroom guard is off. A declared level '
-                      'bounds it there, raised to L(0) + 6*s_inf where the fitted spread asks for '
-                      'it and never lowered, and a fit reaching within 5 Cap_Beta of it - at it, '
-                      'for the corner - is refused'),
-        F('Cap_Beta', 'Float', default=LV_FACTOR_DEFAULTS['Cap_Beta'],
-          description='STRUCTURAL log-variance cap width, read where a level is declared. 0, the '
-                      'default, is the hard corner min(l+s, Cap_A) - the identity below the level - '
-                      'and the guard then reads the mass AT or above it; a positive width is the '
-                      'smooth cap'),
+          description='STRUCTURAL log-variance corner min(l+s, Cap_A). Omitted, the fit runs unbounded '
+                      'and writes L(0) + 6*s_inf onto the factor, a level only a runaway path reaches; '
+                      'declared, the fit runs under it and the factor carries it raised to that rule '
+                      'where the fitted spread asks for it and never lowered, refusing a fit whose '
+                      'path-days reach it; null writes no level and the walk is unbounded'),
         F('C_Min', 'Float', default=LV_FACTOR_DEFAULTS['C_Min'],
           description='Floor on the idiosyncratic share c = 1 - Rho_S^2 - Rho_L^2, written onto '
                       'the factor and asserted there at load. THE SAME NUMBER bounds Rho_S here, '
@@ -3208,8 +3200,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The largest move in log-variance one xi pillar chord step may take; tames '
                       'only a first step off a bad seed, the price being monotone in the level'),
         F('Cap_Headroom_Max', 'Float', default=1e-5,
-          description='The mass of path-days near a declared cap that REFUSES the fit - within '
-                      '5 Cap_Beta of it, or at it for the corner. Nothing with no cap'),
+          description='The mass of path-days at or above the corner the factor will carry that '
+                      'REFUSES the fit; nothing where the walk is unbounded'),
         F('Log_Vol_Sd_Band', 'Text', default='0.4,0.9',
           description='The stationary log-vol sd band VIX options imply, lower,upper; outside it '
                       'Stationary_Spread\'s guard fires'),
@@ -3827,7 +3819,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         fit.state = {'Kappa_L': float(read['Kappa_L']), 'Kappa_S': float(read['Kappa_S']),
                      'Sigma_L': 1.0, 'Rho_L': -0.4,
                      'Cap_A': utils.lv_declared(read.get('Cap_A')),
-                     'Cap_Beta': float(read['Cap_Beta']),
                      'Rho_S': [float(np.copysign(0.75, fit.prior_rho or -1.0))] * n,
                      'Beta': [fit.class_priors[LV_SHARE][0][fit.asset_class][0] * alpha] * n,
                      'Sigma_S': [2.4] * n, 'Alpha': [alpha] * n}

@@ -104,7 +104,7 @@ def _curve(rows):
 #: RESULT: one sitting in the market data warm starts every fit that runs over it, and a Gaussian
 #: one refuses to seed an NIG block by name.
 GBM_LIMIT = {'Kappa_L': 0.5, 'Sigma_L': 0.0, 'Rho_L': 0.0, 'Kappa_S': 6.0,
-             'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'C_Min': 0.12,
+             'Cap_A': 4.605170185988092, 'C_Min': 0.12,
              'Residual_Law': 'Gaussian', 'On_Guard': '', 'Skew_Gradient': '',
              'Stickiness_Band': 0.0, 'Xi_Curve': _curve([[0.0, XI], [5.0, XI]]),
              'Rho_S': _curve([[0.0, 0.0]]), 'Sigma_S': _curve([[0.0, 0.0]]),
@@ -350,7 +350,7 @@ def test_the_written_factor_carries_every_declared_field(fitted):
     priced off this factor reads a schema default nothing measured.
     """
     factor = fitted[0]
-    for name in ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Cap_A', 'Cap_Beta', 'C_Min',
+    for name in ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Cap_A', 'C_Min',
                  'Residual_Law', 'On_Guard', 'Skew_Gradient', 'Stickiness_Band'):
         assert name in factor, name
     for name in ('Xi_Curve', 'Rho_S', 'Beta', 'Sigma_S', 'Alpha'):

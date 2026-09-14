@@ -1126,6 +1126,7 @@ class CurveModelParameters(Factor0D):
 #: What a retired LogVar2FJ name is replaced by, so a document authored against the Poisson
 #: residual refuses by NAME rather than being read with the key silently dropped.
 LV_RETIRED = {
+    'Cap_Beta': 'retired with the smooth cap - Cap_A is the corner min(l+s, Cap_A); delete the key',
     'Nu': 'the co-jump is gone with the Poisson residual',
     'Lambda': 'the co-jump is gone with the Poisson residual',
     'Mu_J': 'Beta, the NIG residual\'s skew, carries what the jump mean carried',
@@ -1158,7 +1159,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
     the conditioning share $1-(\\beta/\\alpha)^2\\ge0.4$, past which the mixer carries the return.
 
     **Residual_Law** `Gaussian` is the limit/test mode - no mixer, the clock IS the variance and
-    **Alpha** and **Beta** are unread. **Cap_A**, **Cap_Beta**, **C_Min**, **Residual_Law** and
+    **Alpha** and **Beta** are unread. **Cap_A**, **C_Min**, **Residual_Law** and
     **Steps_Per_Year** are STRUCTURAL, not leaves: the cap and the floor are guards a calibrated
     model never reaches, the law is a code path and the clock is the grid the parameters were
     fitted on, so a derivative reported at any of them would be wrong. The five FITTED
@@ -1173,13 +1174,9 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Kappa_S', 'Float', default=0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Cap_A', 'Float', default=None,
-          description='Log-variance cap level $a$ - STRUCTURAL. None by default: the walk takes '
-                      '$\\ell+s$ as it stands. A declared level bounds the log variance there'),
-        F('Cap_Beta', 'Float', default=0,
-          description='Log-variance cap width $\\beta_c$ - STRUCTURAL, read where a level is '
-                      'declared. 0, the default, is the hard corner $\\min(\\ell+s, a)$, exactly '
-                      'the identity below the level; a positive width is the smooth cap '
-                      '$a - \\beta_c\\,\\mathrm{softplus}((a-x)/\\beta_c)$'),
+          description='Log-variance corner $a$ - STRUCTURAL: the walk takes $\\min(\\ell+s, a)$, exactly '
+                      'the identity below the level. The fit writes it six stationary deviations '
+                      'above the fitted level, so only a runaway path reaches it; null is unbounded'),
         F('Steps_Per_Year', 'Float', default=252.0,
           description='Trading days a year the fitted block stepped - the clock the parameters '
                       'MEAN, so the pricer\'s internal walk and the xVA outer\'s scenario grid '

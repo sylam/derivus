@@ -1836,7 +1836,7 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
 #: with the trade, so what it needs of the fit is that the engine wrote it.
 CALIBRATED = {
     'Property_Aliases': None, 'Kappa_L': 0.5, 'Sigma_L': 0.5, 'Rho_L': 0.2, 'Kappa_S': 6.0,
-    'Cap_A': 4.605170185988092, 'Cap_Beta': 0.25, 'Steps_Per_Year': 252.0, 'C_Min': 0.12,
+    'Cap_A': 4.605170185988092, 'Steps_Per_Year': 252.0, 'C_Min': 0.12,
     'Residual_Law': 'NIG', 'On_Guard': '', 'Stickiness_Band': 0.5,
     'Skew_Gradient': '-0.0222277544361,-2.12183436316',
     'Xi_Curve': utils.Curve([], [[0.0, 0.020733491013238004],

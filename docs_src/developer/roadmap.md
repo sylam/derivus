@@ -27,11 +27,6 @@ These are defects in the engine: each has a change to this library that closes i
 - **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
   (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
   `Bootstrap` fit with priors on is unexercised.
-- **`LVFit.cap_level` is not re-evaluated after the polish**, for a document that declares a cap
-  (2026-09-09; none is the default since 2026-09-14). A polish that raises `Sigma_S` leaves the
-  level where a smaller one put it: NKY seed 1 converged and then refused at 6.6e-05 of path-days
-  within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the polish, or let the guard
-  raise it once and re-walk.
 - **A fit warns with a meaningless number when the quotes say nothing about a parameter**
   (2026-09-11). The calibration reports, for each fitted parameter, how hard a declared prior
   belief pushes it compared with the market quotes, and warns when the prior is doing most of the
