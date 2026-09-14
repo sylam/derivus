@@ -39,6 +39,7 @@ MARKET_PRICES = schema.mapping['MarketPrices']
 UNDECLARED_FACTORS = {
     'Factor0D': 'dimension base', 'Factor1D': 'dimension base',
     'Factor2D': 'dimension base', 'Factor3D': 'dimension base',
+    'CurveModelParameters': 'the base of a spot model whose parameters carry term structures, never a type',
     'InterestRateJacobian': 'its block is keyed by BENCHMARK name, so it has no fixed field set',
 }
 
@@ -335,8 +336,9 @@ def test_every_declared_factor_type_is_constructible():
 
 def test_every_riskfactor_class_is_declarable():
     """The converse: a factor class no schema declares cannot be authored or documented. The
-    exemptions are the four dimension bases, which are never a `Factor.type`, and the Jacobian,
-    whose block is keyed by benchmark instrument rather than by a fixed field set."""
+    exemptions are the four dimension bases and the curve-model base, which are never a
+    `Factor.type`, and the Jacobian, whose block is keyed by benchmark instrument rather than by
+    a fixed field set."""
     missing = sorted(set(riskfactor_classes()) - set(FACTOR['types']) - set(UNDECLARED_FACTORS))
     assert not missing, f'riskfactors classes no schema can author: {missing}'
 

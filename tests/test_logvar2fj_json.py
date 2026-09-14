@@ -377,10 +377,12 @@ def test_the_identification_line_is_reported(fitted):
 # ------------------------------------------------------------------------------------------
 # 5  THE ON-GUARD FLAG
 # ------------------------------------------------------------------------------------------
-def test_a_clean_fit_writes_no_guard(fitted):
+def test_a_clean_fit_writes_no_guard(flat_fit):
     """A fit no box is holding says so with a blank `On_Guard`, so nothing priced off it inherits
-    a warning it did not earn. This ladder fits clean."""
-    assert str(fitted[0]['On_Guard']) == '', fitted[0]['On_Guard']
+    a warning it did not earn. The flat ladder is that fit: it wants no leverage. The world's own
+    ladder, priced accurately, wants a leverage share within the margin of its floor, and the
+    guard says so - the forced-onto-a-box gate below reads that path."""
+    assert str(flat_fit[0]['On_Guard']) == '', flat_fit[0]['On_Guard']
 
 
 def test_a_fit_forced_onto_a_box_names_it_and_the_mark_reports_it():

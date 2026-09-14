@@ -1810,7 +1810,8 @@ class LVFit(utils.Residual):
         """The corner the written factor carries: `L(0) + 6 s_inf` at the widest bucket's spread
         where the document declares none, a declared level raised to that and never lowered, and
         None where the document declares null."""
-        rule = float(self.levels[0]) + 12.0 * max(self.spreads())
+        level = self.levels[0]
+        rule = float(level.detach() if torch.is_tensor(level) else level) + 12.0 * max(self.spreads())
         if 'Cap_A' not in self.instrument:
             return rule
         a = utils.lv_declared(self.instrument['Cap_A'])
@@ -3033,8 +3034,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'is what an autocall wants; Bootstrap makes the ladder\'s WING EXPIRIES the '
                       'calendar buckets and fits each given the ones before it, which is what a '
                       'TARF read at many fixings wants'),
-        F('Vanilla_Pricer', 'Text', default='Walk', values=['Walk', 'Quadrature'],
-          description='How a VANILLA quote is priced inside the fit. Walk takes the block\'s '
+        F('Vanilla_Pricer', 'Text', default='Quadrature', values=['Walk', 'Quadrature'],
+          description='How a VANILLA quote is priced inside the fit; Quadrature is the default. '
+                      'Walk takes the block\'s '
                       'conditional Black on the fixed draws, path by path - what Paths, '
                       'Random_Seed and Sampling set the noise floor of. Quadrature prices the same '
                       'law on a deterministic grid instead: with no cap the instantaneous variance '
