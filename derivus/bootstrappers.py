@@ -1754,7 +1754,7 @@ class LVFit(utils.Residual):
         """The level rule `a = max(Cap_A, L(0) + 6 s_inf)`, at the widest bucket's spread -
         raised where the fit asks for it and never lowered. A declared null stays None: a
         document that declares no cap is not given one."""
-        a, spread = utils.lv_declared(self.instrument['Cap_A']), max(self.spreads())
+        a, spread = utils.lv_declared(self.instrument.get('Cap_A')), max(self.spreads())
         return a if a is None else max(a, float(self.levels[0]) + 12.0 * spread)
 
     def spreads(self, horizon=None, sigma_l=None):
@@ -3000,15 +3000,16 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         F('Kappa_S', 'Float', default=6.0,
           description='STRUCTURAL fast reversion speed, per year, on the same terms as Kappa_L'),
         F('Cap_A', 'Float', default=LV_FACTOR_DEFAULTS['Cap_A'],
-          description='STRUCTURAL log-variance cap level, raised to L(0) + 6*s_inf where the '
-                      'fitted spread asks for it (the level rule) and never lowered. The '
-                      'default is 1000% vol; a fit reaching within 5 Cap_Beta of it is refused. '
-                      'null declares NO CAP: the walk takes the log variance as it stands and '
-                      'the headroom guard is off'),
+          description='STRUCTURAL log-variance cap level. None by default: the walk takes the '
+                      'log variance as it stands and the headroom guard is off. A declared level '
+                      'bounds it there, raised to L(0) + 6*s_inf where the fitted spread asks for '
+                      'it and never lowered, and a fit reaching within 5 Cap_Beta of it - at it, '
+                      'for the corner - is refused'),
         F('Cap_Beta', 'Float', default=LV_FACTOR_DEFAULTS['Cap_Beta'],
-          description='STRUCTURAL log-variance cap width. 0 is the hard corner min(l+s, Cap_A) - '
-                      'the identity below the level - and the guard then reads the mass AT or '
-                      'above it'),
+          description='STRUCTURAL log-variance cap width, read where a level is declared. 0, the '
+                      'default, is the hard corner min(l+s, Cap_A) - the identity below the level - '
+                      'and the guard then reads the mass AT or above it; a positive width is the '
+                      'smooth cap'),
         F('C_Min', 'Float', default=LV_FACTOR_DEFAULTS['C_Min'],
           description='Floor on the idiosyncratic share c = 1 - Rho_S^2 - Rho_L^2, written onto '
                       'the factor and asserted there at load. THE SAME NUMBER bounds Rho_S here, '
@@ -3207,7 +3208,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
           description='The largest move in log-variance one xi pillar chord step may take; tames '
                       'only a first step off a bad seed, the price being monotone in the level'),
         F('Cap_Headroom_Max', 'Float', default=1e-5,
-          description='The mass of path-days within 5 Cap_Beta of the cap that REFUSES the fit'),
+          description='The mass of path-days near a declared cap that REFUSES the fit - within '
+                      '5 Cap_Beta of it, or at it for the corner. Nothing with no cap'),
         F('Log_Vol_Sd_Band', 'Text', default='0.4,0.9',
           description='The stationary log-vol sd band VIX options imply, lower,upper; outside it '
                       'Stationary_Spread\'s guard fires'),
@@ -3824,7 +3826,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         alpha = fit.alpha_seed()
         fit.state = {'Kappa_L': float(read['Kappa_L']), 'Kappa_S': float(read['Kappa_S']),
                      'Sigma_L': 1.0, 'Rho_L': -0.4,
-                     'Cap_A': utils.lv_declared(read['Cap_A']),
+                     'Cap_A': utils.lv_declared(read.get('Cap_A')),
                      'Cap_Beta': float(read['Cap_Beta']),
                      'Rho_S': [float(np.copysign(0.75, fit.prior_rho or -1.0))] * n,
                      'Beta': [fit.class_priors[LV_SHARE][0][fit.asset_class][0] * alpha] * n,

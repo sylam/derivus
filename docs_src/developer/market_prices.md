@@ -593,8 +593,8 @@ in the book (25.6 to 53.9 across seven fits) and `σ_s` inside its box on every 
 history-anchored NKY. The price is vanilla fit, NKY 1.614 → **1.985** vol points with the miss in the
 one-month wing, and the desk's autocall marks **−36.29m ZAR** at 32,768 paths (lane L's −38.94m,
 P2's −37.49m) with `Skew_Reserve` **7.64m**, the residual now live in it. At the CLASS defaults
-(SPX's −1.9 with a −0.7 `ρ_s`) NKY REFUSES by name at production `Cap_A` on the cap headroom, and
-at `Cap_A` 6 lands `σ_s` on its 5.0 box with `ρ_s` −0.397: an index class default is not a shape
+(SPX's −1.9 with a −0.7 `ρ_s`) NKY lands `σ_s` on its 5.0 box with `ρ_s` −0.397, and under the
+cap the fit then carried by default it refused on cap headroom first: an index class default is not a shape
 this model can carry on NKY, which is the argument for the per-name implied numbers.
 
 THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book

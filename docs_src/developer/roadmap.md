@@ -20,17 +20,18 @@ unmeasured — a limitation without a number is absolution, not documentation
 These are defects in the engine: each has a change to this library that closes it.
 
 - **The index class defaults are a shape this model cannot carry on NKY** (2026-09-10). At the
-  class leverage (`ρ_s` −0.7, product −1.9, SPX's numbers) NKY refuses at production `Cap_A`
-  (4.2e-05 of path-days within `5·Cap_Beta` against the 1e-05 allowed) and at `Cap_A` 6 lands
-  `σ_s` on its 5.0 box with `ρ_s` −0.397. NKY's own implied pair (−0.529 / −1.62) lands clean, so
-  the emitter has to write per-name numbers; a bigger cap is not the fix.
+  class leverage (`ρ_s` −0.7, product −1.9, SPX's numbers) NKY lands `σ_s` on its 5.0 box with
+  `ρ_s` −0.397; under the cap the fit carried by default until 2026-09-14 it refused on cap
+  headroom before getting there. NKY's own implied pair (−0.529 / −1.62) lands clean, so the
+  emitter has to write per-name numbers.
 - **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
   (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
   `Bootstrap` fit with priors on is unexercised.
-- **`LVFit.cap_level` is not re-evaluated after the polish** (2026-09-09). A polish that raises
-  `Sigma_S` leaves `Cap_A` where a smaller one put it: NKY seed 1 converged and then refused at
-  6.6e-05 of path-days within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the
-  polish, or let the guard raise it once and re-walk.
+- **`LVFit.cap_level` is not re-evaluated after the polish**, for a document that declares a cap
+  (2026-09-09; none is the default since 2026-09-14). A polish that raises `Sigma_S` leaves the
+  level where a smaller one put it: NKY seed 1 converged and then refused at 6.6e-05 of path-days
+  within the cap; declaring `Cap_A` 9.0 lets it land. Re-derive after the polish, or let the guard
+  raise it once and re-walk.
 - **A fit warns with a meaningless number when the quotes say nothing about a parameter**
   (2026-09-11). The calibration reports, for each fitted parameter, how hard a declared prior
   belief pushes it compared with the market quotes, and warns when the prior is doing most of the
@@ -327,18 +328,6 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
-- **Whether the LogVar2FJ cap stays** (2026-09-14). The model bounds its log variance with a smooth
-  cap as a safety valve for the rare runaway path. Measured on the fixture world with the cap as
-  it stands, as a hard corner at the same level, and absent: the fit lands on the same parameters
-  to one part in ten billion, the expected variance sits under the ξ curve by at most 2.6e-10
-  under the smooth cap and by nothing under the other two, and an autocall and a collateralised
-  CVA agree across the three to a millionth of their own seed spread, while a deliberately low cap
-  separates them by two and sixteen seed deviations, so the switch is real. The fit sits thirty
-  cap widths below the level. All three arms are declarable today: `Cap_Beta: 0` is the corner,
-  `Cap_A: null` is none. The call: make the corner or none the default and delete the width,
-  which moves every banked reading by about 1e-10 and re-banks the hex set, or leave the smooth cap
-  as the default and the other two as options. With no cap the fit's moments are closed form,
-  which is what a quadrature European needs.
 - **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
   The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
   its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
