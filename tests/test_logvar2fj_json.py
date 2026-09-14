@@ -43,6 +43,7 @@ import numpy as np
 import pytest
 
 import derivus as rf
+from derivus import bootstrappers
 from derivus.config import CustomJsonEncoder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -709,3 +710,169 @@ def test_a_banked_document_is_unmoved(name, document, overrides):
     read = _document_hex(document, overrides)
     assert read and read == banked, {k: (v, banked.get(k)) for k, v in read.items()
                                      if banked.get(k) != v}
+
+
+# ------------------------------------------------------------------------------------------
+# 11  THE FORWARD BLOCK IS THE IDENTIFICATION THE VANILLAS LACK
+#
+# A SELF-CONSISTENT SYNTHETIC WORLD. `WORLD_FACTOR` is a fit of the world's ladder whose residual
+# pair was declared away from the shipped class priors, and `WORLD_VOLS` is that ladder re-quoted
+# at the factor's OWN vanilla vols - so the factor reprices every quote to the digit and IS the
+# vanilla objective's minimum. What is left to identify is exactly what the vanillas are flat in,
+# and the targets are that same factor's own forward smiles, read off the family's own reader.
+# ------------------------------------------------------------------------------------------
+WORLD_FACTOR = {
+    'Kappa_L': 0.5, 'Sigma_L': 1.0, 'Rho_L': -0.4, 'Kappa_S': 6.0,
+    'Cap_A': 3.8329158963830388, 'C_Min': 0.12, 'Residual_Law': 'NIG',
+    'Xi_Curve': _curve([[0.0, 0.04318756980713686], [0.07671232876712329, 0.04702934519853678],
+                        [0.2493150684931507, 0.050895424812433816],
+                        [0.4986301369863014, 0.05447323287603885],
+                        [0.7479452054794521, 0.05807287748434197]]),
+    'Rho_S': _curve([[0.0, -0.7939878539386854]]),
+    'Beta': _curve([[0.0, -2.0308954107502926]]),
+    'Sigma_S': _curve([[0.0, 2.0536372201266198]]),
+    'Alpha': _curve([[0.0, 20.916694355454386]])}
+
+#: the ladder's fifteen quotes in its own row order - `WORLD_FACTOR`'s own Black vols, three
+#: strikes at each of the five expiries, so its vanilla residual is zero
+WORLD_VOLS = [0.249167864, 0.20076712, 0.171814846, 0.2395575, 0.20249315, 0.167899304,
+              0.233922591, 0.2049863, 0.177805689, 0.231699819, 0.20747945, 0.185184809,
+              0.2311111, 0.2099726, 0.190858974]
+
+#: A ONE-MONTH forward tenor at three start dates. Delta decides whether the residual is visible
+#: at all: over a quarter or more its increment has aggregated to nearly Gaussian and the tilt a
+#: forward smile carries is the leverage's, which is what the declared default windows measure.
+WORLD_TENORS = '3m:1m,6m:1m,1y:1m'
+ALPHA_PRIOR = 44.0
+
+
+def _model_ladder(**declared):
+    """The world's ladder re-quoted at `WORLD_FACTOR`'s own vanilla vols."""
+    sections = _ladder(**declared)
+    for row, vol in zip(sections['Market Prices'][BLOCK]['instrument']['European_Options'],
+                        WORLD_VOLS):
+        row['Quoted_Market_Value'] = vol
+    return sections
+
+
+def _forward_rows(source):
+    """`WORLD_FACTOR`'s own forward smiles at `WORLD_TENORS`, as `Forward_Smiles` rows.
+
+    The family's own reader at a WRITTEN factor - no fit runs - which is the seat a reference
+    model's rows take later: the same table and the same fields, a vol per window and strike.
+    """
+    cx = rf.Context()
+    cx.load_json((_dumps(_job(_base(), (), **dict(
+        _model_ladder(Forward_Tenors=WORLD_TENORS, Forward_Smile_Source=source),
+        **{'Price Factors': {FACTOR: WORLD_FACTOR}}))), 'forward_read.json'))
+    params = cx.current_cfg.params
+    family = bootstrappers.construct_bootstrapper(
+        'LogVar2FJModelParameters',
+        params['Bootstrapper Configuration']['LogVar2FJModelParameters'])
+    smile = family.forward_smiles(
+        params['System Parameters'], params['Price Models'], params['Price Factors'],
+        params['Price Factor Interpolation'],
+        bootstrappers.market_prices_for(
+            'LogVar2FJModelParameters', params['Market Prices']))[BLOCK]
+    return [{'T1': T1, 'Delta': tenor, 'Strike': k, 'Target_Vol': smile[(T1, tenor)][k]}
+            for T1, tenor in sorted(smile) for k in sorted(smile[(T1, tenor)])]
+
+
+def _prior_ratios(report):
+    """`{stage: {coordinate: quote rows}}` off every identification table the report printed."""
+    out, lines = {}, report.splitlines()
+    for line, below in zip(lines, lines[1:]):
+        if 'identification, ' in line and 'multiple of ONE quote row' in below:
+            out[line.split('identification, ')[1].split(':')[0]] = {
+                name: float(value.rstrip('x')) for name, value in
+                (pair.rsplit(' ', 1) for pair in below.split('RMS: ')[1].split(', '))}
+    return out
+
+
+def _lever(factor, name):
+    return float(factor[name].array[0][1])
+
+
+@pytest.fixture(scope='module')
+def forward_fits():
+    """The same ladder fitted three ways - the block OFF, and ON under each source at
+    `WORLD_FACTOR`'s own forward smiles. Cold started, so every fit begins at the class priors."""
+    fits = {'Off': _fit(_model_ladder(Max_Iterations=60, Forward_Tenors=WORLD_TENORS), 'fwd_off')}
+    for source in ('Reference', 'Quotes'):
+        fits[source] = _fit(_model_ladder(
+            Max_Iterations=60, Forward_Tenors=WORLD_TENORS, Forward_Smile_Source=source,
+            Forward_Smiles=_forward_rows(source)), 'fwd_' + source.lower())
+    return fits
+
+
+def test_a_vanilla_only_ladder_leaves_the_residual_pair_at_its_prior(forward_fits):
+    """Fifteen vanillas over five expiries do not identify `Alpha`, and the fit says so twice: it
+    lands ON the class prior and reports the prior row at many times one quote row.
+
+    Measured: `Alpha` 43.76 against the 44 prior, its Jacobian column norm 6.8e-05 where the
+    leverage's is 1.9e-02, and the prior rows read 6.74x on `Alpha` and 4.34x on `Beta`. The
+    ladder is the model's OWN, so this is not a fitting failure - there is nothing in a vanilla
+    to read the residual's tail off.
+    """
+    factor, report = forward_fits['Off']
+    assert abs(_lever(factor, 'Alpha') - ALPHA_PRIOR) <= 0.05 * ALPHA_PRIOR, factor['Alpha'].array
+    rows = _prior_ratios(report)['6 joint polish']
+    assert rows['Alpha[0y]'] > 4.0 and rows['Beta[0y]'] > 3.0, rows
+
+
+def test_the_forward_block_identifies_the_residual_pair(forward_fits):
+    """One month of forward-start smile at three start dates recovers the world's `Alpha` where
+    the vanillas leave it at the prior, and conditions the flat direction the split lives in.
+
+    Measured against the world's `Alpha` 20.92: the block OFF lands 43.76, ON under `Reference`
+    20.27 - inside 4% of the world's, from a prior 2.1 times it. `Beta` goes from -13.50 to -4.78
+    against the world's -2.03, four times closer and not reached: what the rows carry is the
+    SHARE the smile sees, and at this ladder's resolution that is a direction, not a digit.
+
+    The identification line reads it the same way. The prior rows fall from 6.74x to 2.35x on
+    `Alpha` and 4.34x to 2.58x on `Beta`, and the polish's own table taken a SECOND time without
+    the forward rows - same theta*, same ladder - reads its smallest singular value 0.0898 where
+    the rows read 0.1997 and the `Alpha` column 2.7e-04 where the rows read 4.3e-04.
+    """
+    factor, report = forward_fits['Reference']
+    world = WORLD_FACTOR['Alpha']['.Curve']['data'][0][1]
+    assert abs(_lever(factor, 'Alpha') - world) <= 0.15 * world, factor['Alpha'].array
+    off = _lever(forward_fits['Off'][0], 'Beta')
+    beta = WORLD_FACTOR['Beta']['.Curve']['data'][0][1]
+    assert abs(_lever(factor, 'Beta') - beta) < 0.5 * abs(off - beta), (factor['Beta'].array, off)
+    rows, without = _prior_ratios(report), _prior_ratios(forward_fits['Off'][1])
+    assert rows['6 joint polish']['Alpha[0y]'] < 0.6 * without['6 joint polish']['Alpha[0y]'], rows
+    assert rows['6 joint polish']['Beta[0y]'] < 0.8 * without['6 joint polish']['Beta[0y]'], rows
+    assert '6 joint polish, vanillas only' in report, 'the with/without table was not taken'
+
+
+def test_the_two_forward_sources_agree_on_the_same_model(forward_fits):
+    """`Quotes` and `Reference` are the SAME model's forward smiles priced as two instruments -
+    the traded forward-start under the share measure and the ratio expectation - and on synthetic
+    rows both reject the prior the vanillas leave `Alpha` at.
+
+    Measured: `Alpha` 28.01 under `Quotes` against 20.27 under `Reference` and 43.76 with the
+    block off, `Beta` -6.31 against -4.78 and -13.50. The two agree on the direction and on the
+    size of the move and not to a digit: the share measure is a reweighting of the same paths and
+    is worth about a vol point of target on these windows.
+    """
+    alpha = {tag: _lever(forward_fits[tag][0], 'Alpha') for tag in forward_fits}
+    assert alpha['Quotes'] <= 0.8 * alpha['Off'], alpha
+    assert abs(alpha['Quotes'] - alpha['Reference']) <= 0.5 * alpha['Reference'], alpha
+
+
+def test_the_forward_block_costs_this_ladder_no_vanilla_fit(forward_fits):
+    """What the source cost the spot fit, which is the reading a desk decides on.
+
+    The report's cumulative stage-5 line is NOT printed here: it is written where the later
+    buckets are fitted to the forward rows, and this ladder declares one bucket, where stage 5
+    does not run. What is read instead is the vanilla RMSE itself, and it does not degrade -
+    0.337 vol points with the block off, 0.310 under `Reference` and 0.180 under `Quotes` over
+    the same fifteen quotes. The rows point at the parameters that priced those quotes, so on a
+    world the model owns the block pays for itself; a market source on a ladder the model cannot
+    fit is where the reading is a cost, and it is read the same way.
+    """
+    rmse = {tag: _report_floats(report, 'RMSE', 'vol points unweighted')[0]
+            for tag, (_, report) in forward_fits.items()}
+    assert max(rmse.values()) == rmse['Off'], rmse
+    assert rmse['Reference'] <= 1.1 * rmse['Off'], rmse

@@ -55,9 +55,6 @@ These are defects in the engine: each has a change to this library that closes i
   forward tenors, for the Nikkei 0.51 years into 2.23 for a declared six months into six, which
   is honest but is not the tenor a two-year autocall is exposed to. A per-deal reserve needs a
   per-deal gradient, and the declared tenor needs a post-fit reading on its own grid.
-- **A reference-model source for the forward smile is declared and unwired.** The schema accepts
-  `Forward_Smile_Source: Reference`; a fit that declares it says at INFO that no reference model is
-  wired and prices its forward rows as if none were declared.
 - **A Gaussian residual reports two sensitivities the model never reads.** Under `Residual_Law:
   Gaussian` the tail parameters `Alpha` and `Beta` are filled with defaults and reported as
   sensitivities with identically zero rows. Dropping them would make the set of reported
@@ -104,7 +101,11 @@ is recorded so a reader knows which readings rest on it.
   is the prior's as much as the market's. Under the walk this showed as two fitted values from
   different seeds; the quadrature pricer, the default since 2026-09-14, writes the same bytes on
   every run of the same document, so what remains is identification, not the pricer. A block of
-  forward-starting options would identify it, and the vendor's chain does not quote one.
+  forward-starting options identifies it at a tenor short enough for the residual to still be
+  non-Gaussian: measured on a world the model owns, nine ONE-MONTH rows take `Alpha` from the prior
+  44 to 20.27 against the world's 20.92 and the prior row from 6.74 to 2.35 quote rows, where the
+  same rows at the declared default windows move neither. The vendor's chain quotes no
+  forward-start.
 - **The vendor's implied-volatility grid answers at 30, 60 and 90 days only**, so the long end of
   every equity fit comes from the file's own surface or the listed chain; the desk's Nikkei mark
   moves 4.6% between a chain-only fit and one carrying the file's 2.74-year at-the-money point.

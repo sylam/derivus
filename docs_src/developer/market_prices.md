@@ -836,8 +836,31 @@ the skew pair to move, the fit reached `ψ_skew` 1.021 / 1.034 / 0.935 against t
 reference and its harness are retired, so those are records; the mechanism they measured is
 unchanged, the lever now being `β(t)` beside `ρ_s(t)` on the same buckets. A rung that does not
 reach 90 or 110 is named in the log, since `Δ` at that tenor is then measured against an understated
-spot slope. `Forward_Smile_Source: Reference` stays declared and its report line reads
-*unexercised: no reference model wired* until one is.
+spot slope.
+
+**`Reference` prices the RATIO EXPECTATION.** A reference model's forward smile is
+`E[(S_T₂/S_T₁ − k)⁺]` over the block `[T₁, T₂]` under the pricing measure — the same per-path
+conditional Black a traded forward-start takes, WITHOUT the share-measure factor `exp(M₁ + V₁/2)`
+that `Quotes` carries, which is the whole of the difference between the two instruments. Everything
+else is one table: the same rows, the same `tilts` objective, the same refusals, the same Jacobian.
+A written factor's own forward smiles are read back by `LogVar2FJModelParameters.forward_smiles`,
+which prices the block's declared windows at the parameters `Price Factors` carries and runs no
+stage — the instrument being whichever source the block names.
+
+**What the block identifies, measured on a world the model owns.** Take the five-expiry ladder
+re-quoted at one written factor's OWN vanilla vols, so that factor IS the vanilla minimum: the fit
+still leaves `α` on its class prior, 43.76 against the 44 the prior states, with the prior rows
+reading 6.74× one quote row on `α` and 4.34× on `β`. Nine `Reference` rows carrying that same
+factor's forward smiles at a ONE-MONTH tenor, three months, six months and a year forward, land `α`
+at **20.27 against the world's 20.92** and move `β` from −13.50 to −4.78 against −2.03 — the prior
+rows now 2.35× and 2.58×, and the polish's own table taken a second time at the same θ\* WITHOUT
+the forward rows reads its smallest singular value 0.0898 where the rows read 0.1997. The same rows
+priced as traded forward-starts land 28.01 and −6.31: two sources agreeing on the move and not on
+the digit. **`Δ` is what decides it.** The identical measurement at the declared default windows —
+6m into 6m, 1y into 1y, 1y into 3m — lands `α` at 43.48, unmoved, its Jacobian column 6.30e−05
+against the 6.17e−05 the vanillas alone give. Over a quarter the residual's increment has already
+aggregated to nearly Gaussian, so what those windows tilt by is the leverage; a block asked to
+identify the residual pair is asked for a SHORT `Δ`.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

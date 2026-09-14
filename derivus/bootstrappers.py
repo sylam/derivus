@@ -2520,7 +2520,7 @@ class LVFit(utils.Residual):
         for target in self.targets:
             smiles.setdefault((target.T1, target.tenor), {})[target.strike] = (
                 float(self.forward_vol(cum, target).detach()),
-                float(self.target_vol(target, shapes[target.tenor])))
+                float(self.target_vol(target, shapes[target.tenor]).detach()))
         return smiles
 
     def spot_shapes(self, cum, forwards=None):
@@ -2636,7 +2636,7 @@ class LVFit(utils.Residual):
                 continue
             model = self.shape([smile[k][0] for k in self.psi_strikes])
             target = self.shape([smile[k][1] for k in self.psi_strikes])
-            spot = [float(x) for x in self.spot_shape(cum, tenor)]
+            spot = [float(x.detach()) for x in self.spot_shape(cum, tenor)]
             rows[(T1, tenor)] = tuple(100 * x for x in (model[1], target[1], spot[1],
                                                         model[2], target[2], spot[2]))
         return rows
@@ -2779,9 +2779,6 @@ class LVFit(utils.Residual):
             logging.info('    each row is ONE forward pass with everything but the slow pair at '
                          'theta* - the L strip re-bootstrapped, the wings re-priced, no outer '
                          'search - so it APPROXIMATES the re-fit it is not')
-        if self.source == 'Reference':
-            logging.info('  Forward_Smile_Source Reference: unexercised - no reference model wired')
-
         for (T1, tenor), row in self.stickiness(self.cum).items():
             slope, bfly = row[:3], row[3:]
             logging.info(
@@ -3554,22 +3551,11 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         run in.
         """
         for market_price, implied_params in market_prices.items():
-            rate = utils.check_rate_name(market_price)
-            market_factor = utils.Factor(rate[0], rate[1:])
-            if market_factor.type != self.market_factor_type:
+            fit = self.fit_for(market_price, implied_params, sys_params, price_models,
+                               price_factors, factor_interp)
+            if fit is None:
                 continue
-            # the quote's own instrument wins on conflict; the Bootstrapper Configuration block
-            # supplies whatever hyperparameter it does not carry
-            instrument = dict(self.param, **implied_params['instrument'])
-            factors, spot = self.resolve_block(
-                market_price, instrument, price_factors, factor_interp, sys_params)
-            param_name = utils.check_tuple_name(
-                utils.Factor(self.__class__.__name__, market_factor.name))
-            fit = LVFit(self, market_price, instrument, factors,
-                        price_factors.get(param_name))
-            fit.history = self.slow_history(market_price, instrument, price_models)
-            if not self.prepare(fit, sys_params, factors, spot):
-                continue
+            param_name = self.factor_name(market_price)
 
             connect = fit.instrument['Quote_Sensitivity'] == 'Yes'
             if connect and fit.mode == 'Bootstrap':
@@ -3599,11 +3585,69 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             price_factors[param_name] = fit.written()
 
             if connect:
-                factor = utils.Factor(self.__class__.__name__, market_factor.name)
+                factor = utils.Factor(self.price_factor_type,
+                                      utils.check_rate_name(market_price)[1:])
                 self.calibrated.update({
                     utils.Factor(factor.type, factor.name + (name,)): value
                     for name, value in fit.connect().items()})
                 self.quote_leaves[market_price] = (fit.descriptors, fit.leaf)
+
+    def factor_name(self, market_price):
+        """The `Price Factors` key one block's fit reads its warm start off and writes back to."""
+        return utils.check_tuple_name(
+            utils.Factor(self.price_factor_type, utils.check_rate_name(market_price)[1:]))
+
+    def fit_for(self, market_price, implied_params, sys_params, price_models, price_factors,
+                factor_interp, declared=None):
+        """One block's prepared `LVFit`, warm started off the factor already written for it - the
+        quotes, the grid and the seed, with no stage run. None where the block belongs to another
+        family or carries nothing to fit.
+
+        The quote's own instrument wins over the `Bootstrapper Configuration` block, and
+        `declared` over both: a reading of a written factor says what it wants priced without
+        editing the document.
+        """
+        if utils.check_rate_name(market_price)[0] != self.market_factor_type:
+            return None
+        instrument = {**self.param, **implied_params['instrument'], **(declared or {})}
+        factors, spot = self.resolve_block(
+            market_price, instrument, price_factors, factor_interp, sys_params)
+        fit = LVFit(self, market_price, instrument, factors,
+                    price_factors.get(self.factor_name(market_price)))
+        fit.history = self.slow_history(market_price, instrument, price_models)
+        return fit if self.prepare(fit, sys_params, factors, spot) else None
+
+    def forward_smiles(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                       rows=None):
+        """`{market price: {(T1, Delta): {strike: vol}}}` - the forward-start implied vols the
+        factor `Price Factors` already carries gives, priced by the fit's own forward-start
+        machinery at that factor's parameters and no stage run.
+
+        `rows` are `Forward_Smiles` rows; without them the windows `Forward_Tenors` names are read
+        at `Psi_Strikes`, which is the smile a written factor is asked for. A window this ladder
+        cannot reach is dropped by name, exactly as a fitted one is. The block's own
+        `Forward_Smile_Source` picks the INSTRUMENT - a traded forward-start under `Quotes`, the
+        ratio expectation under `Reference`, which is what a block declaring neither is read as.
+        """
+        smiles = {}
+        for market_price, implied_params in market_prices.items():
+            instrument = dict(self.param, **implied_params['instrument'])
+            windows = [[utils.lv_tenor(x) for x in pair.split(':')]
+                       for pair in str(instrument['Forward_Tenors']).split(',')]
+            table = rows or [
+                {'T1': T1, 'Delta': delta, 'Strike': k, 'Target_Vol': 0.0}
+                for T1, delta in windows
+                for k in utils.lv_parse_floats(instrument['Psi_Strikes'], 'Psi_Strikes', 3)]
+            source = instrument['Forward_Smile_Source']
+            fit = self.fit_for(
+                market_price, implied_params, sys_params, price_models, price_factors,
+                factor_interp, {'Forward_Smiles': table, 'Forward_Smile_Source':
+                                'Reference' if source == 'None' else source})
+            if fit is not None:
+                smiles[market_price] = {
+                    window: {strike: model for strike, (model, _) in smile.items()}
+                    for window, smile in fit.forward_smile(fit.evaluate()[2]).items()}
+        return smiles
 
     def prepare(self, fit, sys_params, factors, spot):
         """The quotes, the buckets and the grid the whole fit is priced on - everything `LVFit`
