@@ -1084,7 +1084,6 @@ class LVFit(utils.Residual):
     def __init__(self, family, market_price, instrument, factors, previous):
         self.family, self.market_price, self.instrument = family, market_price, instrument
         self.prec, self.device = family.prec, family.device
-        self.tensor, self.vector = family.tensor, family.vector
         self.factors = factors
         utils.lv_retired('{} block'.format(market_price), instrument)
         #: the block COMPLETED by its own declarations, so every read is an index and the block
@@ -1114,6 +1113,10 @@ class LVFit(utils.Residual):
                 'does now, or price the vanillas on the Walk'.format(
                     market_price, utils.lv_declared(read['Cap_A'])))
         self.source = read['Forward_Smile_Source']
+        # a fit that walks nothing - quadrature vanillas and no forward block - runs on the HOST,
+        # where tensors this small dispatch faster than a card launches; the walk wants the card
+        if self.quadrature and self.source == 'None':
+            self.device = torch.device('cpu')
         if self.source == 'Prior':
             raise ValueError(
                 '{}: Forward_Smile_Source Prior is WITHDRAWN. The block exists with a market or a '
@@ -1214,6 +1217,13 @@ class LVFit(utils.Residual):
         """A comma-separated numeric field as a tuple - the list convention `Forward_Tenors`
         already writes, reused for every bound and strike grid."""
         return utils.lv_parse_floats(self.instrument[name], name)
+
+    def tensor(self, x):
+        """A scalar leaf on the fit's own device and precision; a None stays None."""
+        return None if x is None else torch.tensor(float(x), device=self.device, dtype=self.prec)
+
+    def vector(self, xs):
+        return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
 
     def draw(self, paths, steps, blocks, seed):
         """The walk's two normals per STEP and the mixer's uniform per BLOCK - fixed for the whole
@@ -3078,7 +3088,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'against its own DENSITY, so there is no root to find - inverting the '
                       'inverse-Gaussian CDF is what a DRAW needs, and it stays with the walk. The '
                       'FORWARD-START rows price on the walk either way, which is what the draws '
-                      'are still made for. '
+                      'are still made for. A fit that walks nothing - Quadrature and no forward '
+                      'block - runs on the HOST, where tensors this small dispatch faster than a '
+                      'card launches. '
                       'Available on ONE residual bucket: a mixer summed over two of them is not '
                       'inverse Gaussian, and the block refuses by name'),
         F('Quadrature_Nodes', 'Text', default='24,16',
@@ -3586,7 +3598,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         reads at that tenor of the curve written out, to the digit.
         """
         quotes = [LVQuote(
-            row=None, j=None, spot=spot, strike=strike, ratio=self.tensor(strike / spot),
+            row=None, j=None, spot=spot, strike=strike, ratio=fit.tensor(strike / spot),
             is_call=sign > 0, units=option['Units'], T=t, rate=r, carry=(r - q) * t,
             forward=forward, premium=premium, weight=float(option['Weight']), sigma=sigma,
             quoted=sigma if fit.is_vol else option['Quoted_Market_Value'],
@@ -3665,7 +3677,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                 weight=np.sqrt(target.weight * share / total)) for target in targets]
         fit.targets = targets
 
-        fit.deltas = self.vector(np.concatenate(
+        fit.deltas = fit.vector(np.concatenate(
             [np.append(np.full(n - 1, fit.delta), span - (n - 1) * fit.delta)
              for n, span in zip(counts, spans)]))
         fit.times = torch.cat([fit.deltas.new_zeros(1), fit.deltas.cumsum(0)])
@@ -3837,7 +3849,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       - (r1 - self.effective_yield(r1, funding, carry, t1)) * t1)
             targets.append(LVForward(
                 j1=None, j2=None, T1=t1, tenor=t2 - t1, strike=float(row['Strike']),
-                ratio=self.tensor(float(row['Strike'])), carry=window,
+                ratio=fit.tensor(float(row['Strike'])), carry=window,
                 weight=float(row.get('Weight', 1.0)), target=float(row['Target_Vol'])))
         return targets
 
@@ -3920,7 +3932,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         keep = sorted(t for t in marks
                       if t > 0.0 and np.min(np.abs(fit.knots - t)) > utils.BUCKET_TOL)
         fit.event_times = np.array(keep)
-        fit.event_log = self.vector([marks[t] for t in keep])
+        fit.event_log = fit.vector([marks[t] for t in keep])
         priced = len(days) - len(fit.identified_days)
         if priced:
             logging.info('  {} event day{} carrying {:g}x the diffusive variance of the day '
@@ -3963,14 +3975,14 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             fit.state.update({name: float(previous[name]) for name in utils.LV_PARAM_NAMES
                               if not name.startswith('Kappa')})
             fit.state.update({name: utils.TermStructure(
-                previous[name].array[:, 0], self.vector(previous[name].array[:, 1])).at(
-                self.vector(fit.buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
+                previous[name].array[:, 0], fit.vector(previous[name].array[:, 1])).at(
+                fit.vector(fit.buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
             levels = list(torch.log(utils.TermStructure(
                 previous['Xi_Curve'].array[:, 0],
-                self.vector(previous['Xi_Curve'].array[:, 1])).at(
-                self.vector(fit.knots[:-1]))))
+                fit.vector(previous['Xi_Curve'].array[:, 1])).at(
+                fit.vector(fit.knots[:-1]))))
         if levels is None:
-            levels = [self.tensor(np.log(x)) for x in fit.xi]
+            levels = [fit.tensor(np.log(x)) for x in fit.xi]
         fit.levels, fit.warm = list(levels), list(levels)
 
 

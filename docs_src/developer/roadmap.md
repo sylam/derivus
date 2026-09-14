@@ -316,10 +316,6 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
-- **The fit's ξ bootstrap minted once per sweep.** Under the quadrature pricer the price call is
-  3.5 ms and the fit still 27 s, because the ξ bootstrap's 855 pillar passes per fit each rebuild
-  three n×n matrices that depend on the parameters alone. A cache keyed on the parameter leaves
-  reduces a pass to three matrix-vector products, for both pricers.
 - **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
   The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
   its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
