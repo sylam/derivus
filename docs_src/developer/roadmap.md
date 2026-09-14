@@ -105,13 +105,13 @@ is recorded so a reader knows which readings rest on it.
   prior of −0.5. The historical estimator's own spread on an uncontaminated history would measure
   it, and no index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967
   against a fitted 0.2671.
-- **The Nikkei chain block's vanilla-only objective is bimodal under the walk** (2026-09-08):
-  thirteen fits over three seeds and four path counts land between 0.976 and 1.016 vol points of
-  residual but split into a tail parameter of 0.6 to 2.1 or 7.6 to 8.0, and the same seed lands in
-  one mode at one path count and the other at another. The quadrature pricer for the vanilla rows,
-  the default since 2026-09-14, takes the seed and the path count out of the objective and lands
-  the fixture ladder in one basin from every seed; whether the Nikkei block's two modes survive it
-  is unmeasured, and the forward block is still the identification it lacks.
+- **A ladder of vanillas alone does not pin the residual's tail parameter** (2026-09-15). The fit
+  reports, for each parameter, how hard its prior pushes compared with the quotes; on the desk's
+  Nikkei block the tail parameter `Alpha` reads about ten times one quote row, so its fitted value
+  is the prior's as much as the market's. Under the walk this showed as two fitted values from
+  different seeds; the quadrature pricer, the default since 2026-09-14, writes the same bytes on
+  every run of the same document, so what remains is identification, not the pricer. A block of
+  forward-starting options would identify it, and the vendor's chain does not quote one.
 - **The vendor's implied-volatility grid answers at 30, 60 and 90 days only**, so the long end of
   every equity fit comes from the file's own surface or the listed chain; the desk's Nikkei mark
   moves 4.6% between a chain-only fit and one carrying the file's 2.74-year at-the-money point.
