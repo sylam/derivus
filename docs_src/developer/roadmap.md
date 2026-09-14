@@ -91,11 +91,13 @@ is recorded so a reader knows which readings rest on it.
   one standard error on every index ladder (−0.29 to −0.49 against −0.5). The estimator's own
   `β^P/α^P` spread on an uncontaminated history would measure it, and no index history here is
   uncontaminated (NKY's `C_Eff` 0.9967 against `c` 0.2671).
-- **The NKY chain block's vanilla-only objective is bimodal** (2026-09-08): thirteen fits over three
-  seeds and four path counts land between RMSE 0.976 and 1.016 but split into `Alpha` 0.6–2.1 or
-  7.6–8.0, and `Pseudo` 8192 lands in one mode at seed 1 and the other at seeds 2 and 3. A
-  same-answer gate on that ladder proves determinism, not agreement; the forward block is the
-  identification it lacks.
+- **The NKY chain block's vanilla-only objective is bimodal under the walk** (2026-09-08): thirteen
+  fits over three seeds and four path counts land between RMSE 0.976 and 1.016 but split into
+  `Alpha` 0.6–2.1 or 7.6–8.0, and `Pseudo` 8192 lands in one mode at seed 1 and the other at seeds 2
+  and 3. The quadrature pricer for the vanilla rows (`Vanilla_Pricer: Quadrature`, off by default)
+  takes the seed and the path count out of the objective and lands the fixture ladder in one
+  basin from every seed (2026-09-14); whether the NKY block's two `Alpha` modes survive it is
+  unmeasured, and the forward block is still the identification it lacks.
 - **The vendor's implied-vol grid answers at 30, 60 and 90 days only**, so the long end of every
   equity fit is the file's own surface or the listed chain; the desk's NKY mark moves 4.6% between
   a chain-only fit and one carrying the file's 2.74y ATM. Whether the workstation is entitled to a
@@ -314,6 +316,15 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
+- **The fit's ξ bootstrap minted once per sweep.** Under the quadrature pricer the price call is
+  3.5 ms and the fit still 27 s, because the ξ bootstrap's 855 pillar passes per fit each rebuild
+  three n×n matrices that depend on the parameters alone. A cache keyed on the parameter leaves
+  reduces a pass to three matrix-vector products, for both pricers.
+- **Whether a LogVar2FJ fit prices its vanilla rows by quadrature by default** (2026-09-14). The
+  quadrature is within 0.085 vol points of a 32,768-path walk on the worst quote of the fixture
+  ladder, deterministic, and 35% faster there. Flipping the default re-marks every LogVar2FJ fit
+  by the difference between the surrogate's law and the walk's, a few hundredths of a vol point
+  in the wings, and re-banks the priors-off reading. Until then it is declared per block.
 - **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
   The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
   its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
