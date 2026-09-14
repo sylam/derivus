@@ -877,7 +877,8 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
 
       Object              named in `DealType` instead, on the top-level deal - the child legs DO
                           carry it, being deal-tree nodes rather than Points rows
-      Tags, MtM           the ADMIN group: a position's bookkeeping, not a benchmark's
+      Tags, MtM, Sales_Margin, Sales_Margin_Currency
+                          the ADMIN group: a position's bookkeeping, not a benchmark's
       Discount_Rate       stamped by `author_quote`. What an instrument PROJECTS off is its own
                           business; what the quote set DISCOUNTS on is the curve set's
 
@@ -894,7 +895,7 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
                 assert sorted(extra) == (['Children'] if deal_type == 'StructuredDeal' else []), \
                     (currency, deal_type, sorted(extra))
                 missing = declared - set(node)
-                assert missing == ({'MtM', 'Tags'}
+                assert missing == ({'MtM', 'Tags', 'Sales_Margin', 'Sales_Margin_Currency'}
                                    | (set() if is_child else {'Object'})
                                    | ({'Discount_Rate'} if 'Discount_Rate' in declared else set())), \
                     (currency, deal_type, sorted(missing))
