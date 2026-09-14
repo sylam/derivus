@@ -4,7 +4,7 @@ The live status of the library, written for a model-validation reader: what is k
 limited and how big it is, what is waiting on a desk decision, and what is designed but not built.
 What was built, and every number it was measured to, is in the commit messages — `git log` reads
 as the ledger, one landing per commit — and the long-form record that stood on this page until
-2026-09-10 is in the tree at 978861f. The model pages carry the numbers a validator prices
+2026-09-10 is in the repository's history before that date. The model pages carry the numbers a validator prices
 against: [Market Prices](market_prices.md#logvar2fj) for the LogVar2FJ calibration,
 [Structures](structures.md#model-worth) for what the model is worth on a book and how the xVA
 outer is chosen, [Calc Lifecycle](calc_lifecycle.md) for the engine.
@@ -19,14 +19,18 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 These are defects in the engine: each has a change to this library that closes it.
 
-- **The index class defaults are a shape this model cannot carry on NKY** (2026-09-10). At the
-  class leverage (`ρ_s` −0.7, product −1.9, SPX's numbers) NKY lands `σ_s` on its 5.0 box with
-  `ρ_s` −0.397; under the cap the fit carried by default until 2026-09-14 it refused on cap
-  headroom before getting there. NKY's own implied pair (−0.529 / −1.62) lands clean, so the
-  emitter has to write per-name numbers.
-- **`Alpha`'s prior row is on bucket 0** while the share's and the leverage's are per bucket
-  (2026-09-10). Nothing moves today — every book ladder is one bucket — and a multi-bucket
-  `Bootstrap` fit with priors on is unexercised.
+- **The index defaults cannot fit the Nikkei** (2026-09-10). A fit starts every index from one set
+  of class defaults for the leverage, the correlation between an index's return and its own
+  volatility, sized on the S&P 500. On the Nikkei those defaults land the fast vol-of-vol on the
+  top of its box with the leverage at −0.40, a fit stopped at a wall rather than at a minimum,
+  while the Nikkei's own implied pair, −0.53 for the leverage and −1.62 for its product with the
+  vol-of-vol, lands clean. The Bloomberg emitter should write per-name numbers from each index's
+  own volatility index; a wider box is not the fix.
+- **One prior is applied to the first bucket only** (2026-09-10). A ladder may fit its residual
+  tail per calendar bucket, and the priors on the skew share and the leverage follow the buckets,
+  but the prior on the tail parameter `Alpha` sits on the first bucket alone. Nothing moves today,
+  because every book ladder fits one bucket, and a multi-bucket fit with priors on has never been
+  run.
 - **A fit warns with a meaningless number when the quotes say nothing about a parameter**
   (2026-09-11). The calibration reports, for each fitted parameter, how hard a declared prior
   belief pushes it compared with the market quotes, and warns when the prior is doing most of the
@@ -40,42 +44,50 @@ These are defects in the engine: each has a change to this library that closes i
   quotes, which is worth investigating, from quotes that are silent, which is a different
   situation with a different remedy. Either floor the divisor or detect the silent case and say so
   in words.
-- **`LogVar2FJModelParameters` lost `fx_minimum_contracts = 8` in the Heston-Nandi retirement**
-  (2026-09-11): 9d4b91e deleted the parent class and carried three of its four ladder declarations
-  onto the re-hoisted one; the family now reads `OptionQuoteFamily`'s 6, sized for the plain family's
-  five parameters, while the Bloomberg equity emitter still refuses under 8 and its gate pins that
-  wording. A ladder collapsing onto 6 or 7 distinct contracts is accepted where it was declared
-  refused; no document in the repo changes side. One line restores it; whether a thin desk surface
-  that passes at 6 should refuse at 8 is the call before it lands.
-- **`prepare_quotes` no longer writes a blank `Strike` back** (2026-09-11): e475bee's hoist made
-  `strike = forward if not option['Strike'] else option['Strike']` a local, so a block quoting
-  `Strike: 0.0` reads 0.0 after the fit and a book cannot be read back to see what its fit was
-  struck at; one line writes it back, and it mutates every round-tripped block, so the reach comes
-  first.
-- **`Skew_Reserve` is one number per calculation**, composed from the one gradient
-  `Base_Revaluation` takes, and read at the two block ends nearest the declared `Forward_Tenors`
-  (NKY: 0.51y into 2.23y for a declared 6m-into-6m) — honest, and not the tenor a 2y autocall is
-  exposed to. A per-deal reserve needs a per-deal gradient; the declared tenor needs a post-fit
-  reading on its own grid.
-- **`Forward_Smile_Source: Reference` is declared and unexercised** — no reference model is wired
-  and the report line says so.
-- **`Residual_Law: Gaussian` reports a greek at leaves the model never reads** (`Alpha`, `Beta`
-  filled with their defaults, an identically-zero row each). Dropping them would make the leaf set
-  mode-dependent, which is why it is not done.
-- **`LV_CHECKPOINT_STEPS` 21 was measured for the walk alone**; the mixer's per-draw checkpoint
-  beside it took peak memory 8,392 → 9,990 MiB at 2,048 × 2,048. The residual's granularity is the
-  dial if that headroom is wanted.
-- **Three dials stayed module constants**: `bootstrappers.ALPHA_SEED` `(0.5, 0.05)`, `xtol=1e-12`
-  in `LVFit.solve`, and `Sigma_Knots`' ten-knot default grid.
-- **Under `Sampling: Pseudo` the mixer uniform is 24 bits at float32** (2026-09-10):
-  `torch.rand` at float32 is the draw, and widening it changes the generator's consumption and so
-  the stream a float64 document reproduces; `1 − u` at the clamp margin carries 2.98% there.
-  Production takes Sobol above 16 scenarios, where the uniform is drawn in double.
-- **`lv_ou_path`'s integrating factor is range-limited at float32** past κT = 88 (2026-09-10):
-  every caller keeps it safe — the walk's 21-step segments, the state variance in double — but the
-  primitive would overflow a float32 caller. The fix is a chunked rescale, not a cast. Beside it
-  the clock `A` is still summed across blocks in the job's dtype; widening it cascades into `G`
-  and every pricer reading the law, a design change.
+- **The LogVar2FJ family accepts an FX ladder the equity emitter would refuse** (2026-09-11). A
+  ladder that collapses onto too few distinct contracts cannot identify the model, so a floor on
+  their count refuses it by name. The family lost its own floor of eight when its former parent
+  class was retired and now inherits the plain option family's six, sized for a five-parameter
+  model, while the Bloomberg equity emitter still refuses under eight. A ladder collapsing onto six
+  or seven contracts is accepted where it was declared refused; no document in the repository
+  changes side. One line restores the eight, and whether a thin desk surface that passes at six
+  should refuse at eight is the call to make first.
+- **A fitted block cannot be read back to see what it was struck at** (2026-09-11). A quote row may
+  leave its strike at zero to mean the forward. The quote preparation resolves that to the forward
+  for the fit but no longer writes it back onto the row, so the block reads zero after the fit. One
+  line writes it back; because that mutates every block that round-trips through a file, the
+  blast radius comes before the line.
+- **The skew reserve is one number per calculation** rather than per deal. It is composed from the
+  single gradient the base valuation takes and read at the two block ends nearest the declared
+  forward tenors, for the Nikkei 0.51 years into 2.23 for a declared six months into six, which
+  is honest but is not the tenor a two-year autocall is exposed to. A per-deal reserve needs a
+  per-deal gradient, and the declared tenor needs a post-fit reading on its own grid.
+- **A reference-model source for the forward smile is declared and unwired.** The schema accepts
+  `Forward_Smile_Source: Reference`; a fit that declares it says at INFO that no reference model is
+  wired and prices its forward rows as if none were declared.
+- **A Gaussian residual reports two sensitivities the model never reads.** Under `Residual_Law:
+  Gaussian` the tail parameters `Alpha` and `Beta` are filled with defaults and reported as
+  sensitivities with identically zero rows. Dropping them would make the set of reported
+  sensitivities depend on the mode, which is why they are left.
+- **The recompute segment length was measured for the walk alone.** The walk is checkpointed every
+  21 internal steps to trade memory for a second forward pass; the mixer's per-draw checkpoint
+  beside it took peak memory from 8,392 to 9,990 MiB at 2,048 scenarios by 2,048 paths. The
+  residual's granularity is the dial if that headroom is wanted.
+- **Three calibration dials are module constants rather than declared fields**: the tail
+  parameter's seed pair (0.5, 0.05), the solver's step tolerance of 1e-12, and the ten-knot default
+  grid of the Hull-White sigma term structure. A desk cannot change them from a document.
+- **Under pseudo-random sampling the mixer's uniform has 24 bits** (2026-09-10). The uniform behind
+  the inverse-Gaussian mixer is drawn in single precision under `Sampling: Pseudo`, and one minus
+  it at the clamp's margin carries 3% error; widening the draw changes how much of the stream each
+  step consumes, and so what a double-precision document reproduces. Production takes the
+  low-discrepancy sequence above 16 scenarios, where the uniform is drawn in double.
+- **One primitive of the walk overflows single precision past κT = 88** (2026-09-10). The
+  Ornstein-Uhlenbeck path is spelled with an integrating factor that grows as the exponential of
+  the reversion speed times elapsed time. Every caller keeps it in range, the walk through its
+  21-step segments and the state variance in double, but the primitive would overflow a
+  single-precision caller. The fix is a chunked rescale rather than a cast. Beside it, the clock
+  is still summed across blocks in the job's precision, and widening it cascades into the mixer
+  and every pricer that reads the law.
 
 #### What the quotes cannot say
 
@@ -83,39 +95,42 @@ These are properties of the market data available, not of the engine. No change 
 library closes one; each is a limit on what a fit of that data can be asked to identify, and
 is recorded so a reader knows which readings rest on it.
 
-- **A declared standard error tight enough is a pin, and the guard says so** (2026-09-10). NDX at
-  the regression's own 0.015 reads 138 quote rows on `ρ_s` and is flagged; NKY at 0.025 reads 38.5x
-  and is not. Whether a 1,149-day regression's sampling error is the right spread for a Q-measure
-  prior is a modelling question; `Leverage_Prior_SE` is where a desk states its own.
-- **`Residual_Skew_Share_Sd` 0.2 is asserted, not measured** (2026-09-10). The wings win by about
-  one standard error on every index ladder (−0.29 to −0.49 against −0.5). The estimator's own
-  `β^P/α^P` spread on an uncontaminated history would measure it, and no index history here is
-  uncontaminated (NKY's `C_Eff` 0.9967 against `c` 0.2671).
-- **The NKY chain block's vanilla-only objective is bimodal under the walk** (2026-09-08): thirteen
-  fits over three seeds and four path counts land between RMSE 0.976 and 1.016 but split into
-  `Alpha` 0.6–2.1 or 7.6–8.0, and `Pseudo` 8192 lands in one mode at seed 1 and the other at seeds 2
-  and 3. The quadrature pricer for the vanilla rows, the default since 2026-09-14, takes the seed
-  and the path count out of the objective and lands the fixture ladder in one basin from every
-  seed; whether the NKY block's two `Alpha` modes survive it is unmeasured, and the forward block
-  is still the identification it lacks.
-- **The vendor's implied-vol grid answers at 30, 60 and 90 days only**, so the long end of every
-  equity fit is the file's own surface or the listed chain; the desk's NKY mark moves 4.6% between
-  a chain-only fit and one carrying the file's 2.74y ATM. Whether the workstation is entitled to a
-  longer grid is one question to Bloomberg support, the owner's.
-- **On a closes-only archive the historical estimator's shock rows come back attenuated**
-  (2026-09-11): two names drawn from the four-sub-factor outer with every row at 0.60
-  and re-estimated through `Config.calibrate_factors` read return 0.5468 ± 0.012, fast shock
-  0.3177 ± 0.015, slow shock 0.5281 ± 0.012, mixer 0.3549 ± 0.015. The smoothed shock is a linear
-  functional of that name's own noisy observations, so its cross-name correlation is the state's
-  share of that functional's variance, driven down by the measurement noise (`Sigma_U` 2.22 on the
-  `log r²` fallback); the mixer column is further compressed by a fit whose `α^P` reads 258–380
-  against a truth of 44. The estimator now logs both shock sds by name. A range-bar archive is the
-  measurement that would close it (`artifacts/lv_four_factor_20260911/bars.py`, written, not run).
-- **A ladder shorter than `Slow_Horizon` cannot reach the model's own flat limit** (2026-09-10): with no wing at 1.5 years the slow pair is pinned at the class default (−0.4, 1.0),
-  which injects skew and convexity a flat surface does not want, so a flat 20% ladder fitted with
-  `Model_Priors: Off` lands at 0.21 vol points RMSE on one rung and 0.44 on two rather than at
-  zero, at a fitted `ρ_s σ_s` of −0.001 beside the pinned −0.400. Every ladder a short-dated FX
-  desk quotes is such a ladder; the flat-limit gate needs one reaching 1.5 years.
+- **A declared standard error tight enough is a pin, and the guard says so** (2026-09-10). The
+  Nasdaq at its regression's own 0.015 reads 138 quote rows on the leverage and is flagged; the
+  Nikkei at 0.025 reads 38.5 and is not. Whether a 1,149-day regression's sampling error is the
+  right spread for a risk-neutral prior is a modelling question; `Leverage_Prior_SE` is where a
+  desk states its own.
+- **The width of the residual's skew prior is asserted, not measured** (2026-09-10). At 0.2 the
+  wings outvote it by about one standard error on every index ladder, −0.29 to −0.49 against a
+  prior of −0.5. The historical estimator's own spread on an uncontaminated history would measure
+  it, and no index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967
+  against a fitted 0.2671.
+- **The Nikkei chain block's vanilla-only objective is bimodal under the walk** (2026-09-08):
+  thirteen fits over three seeds and four path counts land between 0.976 and 1.016 vol points of
+  residual but split into a tail parameter of 0.6 to 2.1 or 7.6 to 8.0, and the same seed lands in
+  one mode at one path count and the other at another. The quadrature pricer for the vanilla rows,
+  the default since 2026-09-14, takes the seed and the path count out of the objective and lands
+  the fixture ladder in one basin from every seed; whether the Nikkei block's two modes survive it
+  is unmeasured, and the forward block is still the identification it lacks.
+- **The vendor's implied-volatility grid answers at 30, 60 and 90 days only**, so the long end of
+  every equity fit comes from the file's own surface or the listed chain; the desk's Nikkei mark
+  moves 4.6% between a chain-only fit and one carrying the file's 2.74-year at-the-money point.
+  Whether the workstation is entitled to a longer grid is a question for Bloomberg support.
+- **A closes-only price archive attenuates the historical estimator's shock rows** (2026-09-11).
+  Two names simulated from the four-factor process with every correlation row at 0.60 and
+  re-estimated from daily closes read 0.55 on the return row, 0.32 and 0.53 on the two
+  volatility-shock rows and 0.35 on the mixer, each to about ±0.015. A smoothed shock is a linear
+  functional of one name's noisy observations, so its cross-name correlation is the state's share
+  of that functional's variance, driven down by the measurement noise; the mixer column is further
+  compressed by a fit whose tail parameter reads 258 to 380 against a truth of 44. The estimator
+  logs both shock standard deviations by name. A range-bar archive is the measurement that would
+  close it; the script for it is written and has not been run.
+- **A ladder shorter than the slow horizon cannot reach the model's flat limit** (2026-09-10). The
+  slow factor's horizon is 1.5 years, and a ladder with no wing that far injects skew and convexity
+  a flat surface does not want, so a flat 20% ladder fitted with priors off lands at 0.21 vol
+  points on one rung and 0.44 on two rather than at zero, with a fitted leverage product of −0.001
+  beside the pinned −0.400. Every ladder a short-dated FX desk quotes is such a ladder, and a
+  flat-limit gate needs one reaching 1.5 years.
 
 ### The xVA outer and the correlation
 
