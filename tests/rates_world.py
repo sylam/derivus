@@ -128,8 +128,8 @@ def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
     for start, end in zip(coupons[:-1], coupons[1:]):
         fixings = pd.bdate_range(start, end, inclusive='left')
         for fixing, nxt in zip(fixings, list(fixings[1:]) + [end]):
-            accrual = utils.get_day_count_accrual(
-                fixing, (nxt - fixing).days, utils.get_day_count(day_count))
+            accrual = utils.DayCount.accrual(
+                fixing, (nxt - fixing).days, utils.DayCount.code(day_count))
             float_items.append({
                 'Payment_Date': end, 'Notional': 1e6,
                 'Accrual_Start_Date': fixing, 'Accrual_End_Date': nxt,
@@ -141,8 +141,8 @@ def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
         fixed_items.append({
             'Payment_Date': end, 'Notional': 1e6, 'Rate': utils.Percent(quote),
             'Accrual_Start_Date': start, 'Accrual_End_Date': end, 'Accrual_Day_Count': day_count,
-            'Accrual_Year_Fraction': utils.get_day_count_accrual(
-                start, (end - start).days, utils.get_day_count(day_count)),
+            'Accrual_Year_Fraction': utils.DayCount.accrual(
+                start, (end - start).days, utils.DayCount.code(day_count)),
             'Fixed_Amount': 0.0, 'Discounted': 'No',
             'FX_Reset_Date': None, 'Known_FX_Rate': 0.0})
 

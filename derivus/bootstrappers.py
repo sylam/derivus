@@ -4686,7 +4686,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
                 time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
                 # add a delta of 10 days to the time_grid_years (without changing the scenario grid
                 # this is needed for stochastically deflating the exposure later on
-                time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
+                time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
 
                 # calculate the error
                 objective, optimizers, implied_var, market_swaptions = self.calc_loss(
@@ -5502,14 +5502,14 @@ def quote_knots(nodes, base_date, day_count, calendars):
     Returned in NODE order and in the curve's own day count, so a caller can pair each knot with the
     quote that identifies it; the curve itself is sorted.
     """
-    code = utils.get_day_count(day_count)
+    code = utils.DayCount.code(day_count)
     maturities = []
     for node in nodes:
         leaves = leaf_deals(node)
         for leaf in leaves:
             leaf.reset(calendars)
         maturities.append(max(max(leaf.get_reval_dates()) for leaf in leaves))
-    return np.array([utils.get_day_count_accrual(
+    return np.array([utils.DayCount.accrual(
         base_date, (maturity - base_date).days, code) for maturity in maturities])
 
 

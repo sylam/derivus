@@ -499,9 +499,9 @@ def test_the_forward_knots_land_on_the_settlement_dates():
     market_prices = fx_world()
     solved = fx_bootstrapped(market_prices)
     knots = solved['InterestRate.' + ZAR_CURVE]['Curve'].array[:, 0]
-    settlement = np.array([utils.get_day_count_accrual(
+    settlement = np.array([utils.DayCount.accrual(
         BASE, ((BASE + pd.DateOffset(months=months)) - BASE).days,
-        utils.get_day_count('ACT_365')) for months, _ in FX_OUTRIGHTS])
+        utils.DayCount.code('ACT_365')) for months, _ in FX_OUTRIGHTS])
     assert (np.diff(knots) > 0).all(), 'the forward knots are not increasing: {}'.format(knots)
     assert np.abs(knots - settlement).max() == 0.0, '{} against {}'.format(knots, settlement)
 

@@ -308,7 +308,7 @@ def calibration():
                   'Objective': 'Monte_Carlo', 'Simulations': 1024}
     mtm_dates = set([BASE + x['Start'] for x in instrument['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
-    time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
+    time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
 
     implied_var, objective, market_swaps = model.calc_loss_on_ir_curve(
         {'instrument': instrument}, BASE, time_grid, process, implied_obj, ir_factor, vol_surface)
@@ -493,7 +493,7 @@ def hw1f_at(alpha, sigma='sloped'):
         'Sigma': utils.Curve([], list(zip(VOL_TENOR, SIGMA[sigma])))})
     mtm = set([BASE + pd.DateOffset(years=y) for y in (1, 2, 5, 10)])
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
-    time_grid.set_base_date(BASE, delta=(365, VOL_TENOR * utils.DAYS_IN_YEAR))
+    time_grid.set_base_date(BASE, delta=(365, VOL_TENOR * utils.DayCount.DAYS_IN_YEAR))
     process.precalculate(
         BASE, time_grid, torch.tensor(ir_curve.current_value(), device=DEVICE, dtype=DTYPE),
         RiskNeutralInterestRate_State({'full': None, 'reduced': None}, 8, DEVICE, DTYPE), 0)
@@ -1081,7 +1081,7 @@ def identified_closure(benchmarks=CHECKER_BENCHMARKS, zero=ID_ZERO, batch_size=8
     block = {k: v for k, v in block.items() if v is not ABSENT}
     mtm = set([BASE + x['Start'] for x in block['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
-    time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
+    time_grid.set_base_date(BASE, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
     optimizers = None
     if chain:
         objective, optimizers, implied_var, swaps = boot.calc_loss(
@@ -1105,7 +1105,7 @@ def checker_legs(world):
     fixed schedule, so this rebuilds it with the same two generators and holds the rebuild against
     that column - an analytic leg that is not the simulated leg fails here rather than downstream.
 
-    The clock is the CURVE's ACT_365 and not `utils.DAYS_IN_YEAR`: `read_cache` builds
+    The clock is the CURVE's ACT_365 and not `utils.DayCount.DAYS_IN_YEAR`: `read_cache` builds
     `time_grid_years` with the day count, so a 365.25ths expiry would miss its node by 7e-4 years.
     """
     out, curve = {}, world['curve']
@@ -1115,8 +1115,8 @@ def checker_legs(world):
         effective = BASE + instrument['Start']
         dates = utils.generate_dates_backward(
             effective + instrument['Tenor'], effective, instrument['Fixed_Frequency'])
-        cash = utils.generate_fixed_cashflows(
-            BASE, dates, 1.0, None, utils.get_day_count(instrument['Fixed_Day_Count']), 0.0)
+        cash = utils.TensorCashFlows.generate_fixed(
+            BASE, dates, 1.0, None, utils.DayCount.code(instrument['Fixed_Day_Count']), 0.0)
         pay_days = cash.schedule[:, utils.CASHFLOW_INDEX_Pay_Day]
         tau = cash.schedule[:, utils.CASHFLOW_INDEX_Year_Frac]
         exp_days = (effective - BASE).days
@@ -3099,7 +3099,7 @@ def test_a_normal_surface_calibrates_and_the_market_side_round_trips():
         assert abs(recovered / sigma - OLD_CLOCK) > 1e-4, (
             '{}: the round trip is still carrying sqrt(T_365.25/T_curve)'.format(name))
         # the two clocks are still two numbers, or the identity above passes for no reason
-        expiry_365_25 = (BASE + pd.DateOffset(years=int(row[0])) - BASE).days / utils.DAYS_IN_YEAR
+        expiry_365_25 = (BASE + pd.DateOffset(years=int(row[0])) - BASE).days / utils.DayCount.DAYS_IN_YEAR
         assert abs(swap.schedule.expiry / expiry_365_25 - 365.25 / 365.0) < 1e-15, (
             '{}: the fixture no longer has two clocks in it, so this gate reaches nothing'.format(
                 name))

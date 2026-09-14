@@ -51,7 +51,7 @@ The two trailing args tell you the axis:
 `get_spot_model_params_factor(spot_model, name, all_factors, …)`: `spot_model=='None'` → `None` (GBM); switch-on-but-absent → `KeyError`. An unknown model never reaches here — `Deal.__init__` refuses it against the type's `spot_models` declaration. Otherwise it returns a single-element code whose **index 1 is a *list* of per-parameter sub-factors** and whose **index 2 (subtype slot) is the model name** — the same shape as the SVI/Skew vol code in `get_equity_price_vol_factor`.
 
 !!! warning "Invariant — `t_Buffer` cache-key discipline"
-    Cache keys slice `x[:2] = (stoch, Factor)` and exclude indices `3+`, which requires index 1 be a single `Factor`. SVI/HN codes carry a **list** there and are consumed only by dedicated vol/HN paths that tuple-flatten it (`calc_time_grid_vol_rate`) or read `t_Static_Buffer` directly. Do not route a list-shaped code through the generic `(stoch, Factor)` key path.
+    Cache keys slice `x[:2] = (stoch, Factor)` and exclude indices `3+`, which requires index 1 be a single `Factor`. SVI/HN codes carry a **list** there and are consumed only by dedicated vol/HN paths that tuple-flatten it (`VolSurface.rate`) or read `t_Static_Buffer` directly. Do not route a list-shaped code through the generic `(stoch, Factor)` key path.
 
 ## `field_index` == `Factor_dep`
 

@@ -95,8 +95,8 @@ class Factor1D(object):
             near_interp = factor_interp_map.get(near_interp, 'Linear')
             near_date = self.param['Near_Date']  # implement parse
             near_tenor = np.clip(
-                utils.get_day_count_accrual(
-                self.base_date, (near_date - self.base_date).days, utils.get_day_count(self.param['Day_Count'])),
+                utils.DayCount.accrual(
+                self.base_date, (near_date - self.base_date).days, utils.DayCount.code(self.param['Day_Count'])),
                 self.tenors.min(), self.tenors.max()
             )
             near_idx_end = self.tenors.searchsorted(near_tenor, side='right') - 1
@@ -225,7 +225,7 @@ class Factor2D(object):
     @staticmethod
     def get_day_count():
         """hardcode the daycount for dividend rates to act/365"""
-        return utils.DAYCOUNT_ACT365
+        return utils.DayCount.ACT365
 
     def get_subtype(self):
         return (self.param.get('Surface_Type', 'Explicit'),
@@ -855,7 +855,7 @@ class DividendRate(Factor1D):
     @staticmethod
     def get_day_count():
         """hardcode the daycount for dividend rates to act/365"""
-        return utils.DAYCOUNT_ACT365
+        return utils.DayCount.ACT365
 
     def current_value(self, tenor_index=None, offset=0):
         """Returns the value of the rate at each tenor point (if set) else returns what's
@@ -892,7 +892,7 @@ class SurvivalProb(Factor1D):
 
     def get_day_count(self):
         """hardcode the daycount for Survival Probability rates to act/365"""
-        return utils.DAYCOUNT_ACT365
+        return utils.DayCount.ACT365
 
     def check_interpolation(self, interpolation, tenors, rates):
         if interpolation == 'Linear':
@@ -901,7 +901,7 @@ class SurvivalProb(Factor1D):
             return ('LinearExtrapolate',)
 
     def get_day_count_accrual(self, ref_date, time_in_days):
-        return utils.get_day_count_accrual(ref_date, time_in_days, self.get_day_count())
+        return utils.DayCount.accrual(ref_date, time_in_days, self.get_day_count())
 
     def recovery_rate(self):
         return self.param.get('Recovery_Rate')
@@ -959,13 +959,13 @@ class InterestRate(Factor1D):
         return utils.check_rate_name(self.param['Currency'])
 
     def get_day_count(self):
-        return utils.get_day_count(self.param['Day_Count'])
+        return utils.DayCount.code(self.param['Day_Count'])
 
     def get_subtype(self):
         return 'InterestRate' + (self.param['Sub_Type'] if self.param['Sub_Type'] else '')
 
     def get_day_count_accrual(self, ref_date, time_in_days):
-        return utils.get_day_count_accrual(ref_date, time_in_days, self.get_day_count())
+        return utils.DayCount.accrual(ref_date, time_in_days, self.get_day_count())
 
 
 class InflationRate(Factor1D):
@@ -995,10 +995,10 @@ class InflationRate(Factor1D):
         return self.param['Reference_Name']
 
     def get_day_count(self):
-        return utils.get_day_count(self.param['Day_Count'])
+        return utils.DayCount.code(self.param['Day_Count'])
 
     def get_day_count_accrual(self, ref_date, time_in_days):
-        return utils.get_day_count_accrual(ref_date, time_in_days, self.get_day_count())
+        return utils.DayCount.accrual(ref_date, time_in_days, self.get_day_count())
 
 
 class ForwardPrice(Factor1D):
@@ -1019,7 +1019,7 @@ class ForwardPrice(Factor1D):
         return utils.check_rate_name(self.param['Currency'])
 
     def get_day_count(self):
-        return utils.DAYCOUNT_None
+        return utils.DayCount.NONE
 
 
 class ForwardRate(ForwardPrice):

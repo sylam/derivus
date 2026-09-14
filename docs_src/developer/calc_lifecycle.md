@@ -122,8 +122,9 @@ before — which is why every document that does not name the process is bit-ide
 
     - `CurveTensor` — query coordinates: scenario ROWS (`index`, `index_next`, `alpha`), never a flattened `row * n_tenors` offset, because a tenor segment's stride is its own.
     - `ScenarioBlock` / `ScenarioSource` — logical storage: one physical tensor plus `first_row` (where it starts in the logical grid) and `batch_index` (which of ITS columns supplies each logical column). A fork publishes two blocks; ordinary generation publishes a bare tensor and no source.
+    - `UnroutedInterpolation` — the base under both leaves: one physical grid answers every row, so there is nothing to route, and a read is blended in time and scaled once.
     - `Interpolation` — one physical tensor and what its kind derives from it. Knows nothing about blocks or logical rows, and flattens rows against its OWN stride. Base valuation, credit MC and the outer hedge loop build only this.
-    - `SegmentedInterpolation` — a SIBLING, not a subclass: composes leaves over the TENOR axis for a `Near_Interpolation` curve.
+    - `SegmentedInterpolation` — a SIBLING of it, not a subclass: composes leaves over the TENOR axis for a `Near_Interpolation` curve.
     - `RoutedInterpolation` — composes strategies over the SCENARIO axis for a fork.
 
     `build_interpolation` is the single recursive constructor: bare tensor + kind → leaf; bare tensor + segment list → segmented; `ScenarioSource` + either → routed, whose per-block children it builds by calling itself. A segmented curve inside a fork needs no special case — the two compositions are orthogonal.

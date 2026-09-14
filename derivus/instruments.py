@@ -1198,7 +1198,7 @@ class NettingCollateralSet(Deal):
                                 base_date + col_bond['Maturity'], base_date, col_bond['Coupon_Interval'])
                         else:
                             reset_dates = np.array([base_date, base_date + col_bond['Maturity']])
-                        fixed_cash = utils.generate_fixed_cashflows(
+                        fixed_cash = utils.TensorCashFlows.generate_fixed(
                             base_date, reset_dates, col_bond['Principal'], None, 0, float(col_bond['Coupon_Rate']))
                         # make sure there's a nominal repayment at maturity
                         fixed_cash.add_fixed_payments(base_date, 'Maturity', base_date, 0, col_bond['Principal'])
@@ -2261,11 +2261,11 @@ class DepositDeal(Deal):
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors)}
 
-        daycount = utils.get_day_count(self.field['Accrual_Day_Count'])
+        daycount = utils.DayCount.code(self.field['Accrual_Day_Count'])
         schedule = self.field['Interest_Rate_Schedule']
 
         if self.is_fixed:
-            cashflows = utils.generate_fixed_cashflows(
+            cashflows = utils.TensorCashFlows.generate_fixed(
                 base_date, self.paydates, self.field['Amount'], self.field['Amortisation'], daycount, 0.0)
             for row, start in zip(cashflows.schedule, self.paydates[:-1]):
                 row[utils.CASHFLOW_INDEX_FixedRate] = schedule.data[start] / 100.0
@@ -2274,7 +2274,7 @@ class DepositDeal(Deal):
                 self.field['Interest_Rate']) if self.field['Interest_Rate'] else field['Discount_Rate']
             field_index['Forward'] = get_interest_factor(
                 field['Interest_Rate'], static_offsets, stochastic_offsets, all_tenors)
-            cashflows = utils.generate_float_cashflows(
+            cashflows = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.paydates, self.field['Amount'], self.field['Amortisation'],
                 schedule, self.field['Interest_Frequency'], self.field['Payment_Frequency'], daycount, 0.0)
             field_index['Model'] = pricing.pricer_float_cashflows
@@ -2388,21 +2388,21 @@ class SwapInterestDeal(Deal):
                 field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
 
         if self.field['Pay_Rate_Type'] == 'Fixed':
-            field_index['FixedCashflows'] = utils.generate_fixed_cashflows(
+            field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
                 base_date, self.paydates, -self.field['Principal'], self.field['Amortisation'],
-                utils.get_day_count(self.field['Pay_Day_Count']), self.field['Swap_Rate'] / 100.0)
-            field_index['FloatCashflows'] = utils.generate_float_cashflows(
+                utils.DayCount.code(self.field['Pay_Day_Count']), self.field['Swap_Rate'] / 100.0)
+            field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.recdates, self.field['Principal'], self.field['Amortisation'],
                 self.field['Known_Rates'], self.field['Receive_Interest_Frequency'], self.field['Index_Tenor'],
-                utils.get_day_count(self.field['Receive_Day_Count']), self.field['Floating_Margin'] / 10000.0)
+                utils.DayCount.code(self.field['Receive_Day_Count']), self.field['Floating_Margin'] / 10000.0)
         else:
-            field_index['FixedCashflows'] = utils.generate_fixed_cashflows(
+            field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
                 base_date, self.recdates, self.field['Principal'], self.field['Amortisation'],
-                utils.get_day_count(self.field['Receive_Day_Count']), self.field['Swap_Rate'] / 100.0)
-            field_index['FloatCashflows'] = utils.generate_float_cashflows(
+                utils.DayCount.code(self.field['Receive_Day_Count']), self.field['Swap_Rate'] / 100.0)
+            field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.paydates, -self.field['Principal'], self.field['Amortisation'],
                 self.field['Known_Rates'], self.field['Pay_Interest_Frequency'], self.field['Index_Tenor'],
-                utils.get_day_count(self.field['Pay_Day_Count']), self.field['Floating_Margin'] / 10000.0)
+                utils.DayCount.code(self.field['Pay_Day_Count']), self.field['Floating_Margin'] / 10000.0)
 
         field_index['CompoundingMethod'] = self.field.get('Compounding_Method', 'None')
         field_index['InterestYieldVol'] = np.zeros(1, dtype=np.int32)
@@ -2492,7 +2492,7 @@ class CFFixedInterestListDeal(Deal):
             field['Repo_Rate'], static_offsets, stochastic_offsets, all_tenors)
         field_index['Settlement_Rate'] = get_interest_factor(
             field['Settlement_Rate'], static_offsets, stochastic_offsets, all_tenors)
-        field_index['Cashflows'] = utils.make_fixed_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.fixed(
             base_date, buy_sell, self.field['Cashflows'], self.field.get('Settlement_Date'))
 
         field_index['Compounding'] = self.field['Cashflows'].get('Compounding', 'No') == 'Yes'
@@ -2547,8 +2547,9 @@ class CFFixedListDeal(Deal):
                 field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Cashflows': utils.make_simple_fixed_cashflows(
-                base_date, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'])
+            'Cashflows': utils.TensorCashFlows.simple_fixed(
+                base_date, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'],
+                lambda cashflow: cashflow['Fixed_Amount'], aggregate=True)
         }
 
         return field_index
@@ -2693,7 +2694,7 @@ class CFFloatingInterestListDeal(Deal):
                 field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
         }
 
-        float_cashflows = utils.make_float_cashflows(
+        float_cashflows = utils.TensorCashFlows.float(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
             self.field['Cashflows'], self.field.get('Reference'))
 
@@ -2705,12 +2706,12 @@ class CFFloatingInterestListDeal(Deal):
 
         # potentially compress the cashflow list for faster computation
         if field_index['CompoundingMethod'] == 'None' and self.options.get('OIS_Cashflow_Group_Size', 0) > 0:
-            field_index['Cashflows'] = utils.compress_no_compounding(
-                float_cashflows, self.options['OIS_Cashflow_Group_Size'])
+            field_index['Cashflows'] = float_cashflows.compress_no_compounding(
+                self.options['OIS_Cashflow_Group_Size'])
         elif field_index['CompoundingMethod'] == 'OIS':
             # (groupsize -1 means group resets per cashflow - not 1 cashflow 1 reset)
-            field_index['Cashflows'] = utils.compress_no_compounding(
-                float_cashflows, groupsize=-1, check_resets=False)
+            field_index['Cashflows'] = float_cashflows.compress_no_compounding(
+                groupsize=-1, check_resets=False)
         else:
             field_index['Cashflows'] = float_cashflows
 
@@ -2788,7 +2789,7 @@ class YieldInflationCashflowListDeal(Deal):
     def validate(self):
         """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at.
 
-        make_index_cashflows stores the value when there is one and a negative day offset when
+        TensorCashFlows.index stores the value when there is one and a negative day offset when
         there is not, measured from base_date if no reference date was given - so supplying
         neither prices against the wrong index level rather than failing.
         """
@@ -2834,7 +2835,7 @@ class YieldInflationCashflowListDeal(Deal):
         months_lag = int(self.field['Index_Reference']['Months_Lag'])
         field_index['Resets_Per_Cashflow'] = 2 if interpolated else 1
 
-        field_index['Cashflows'], field_index['Base_Resets'], field_index['Final_Resets'] = utils.make_index_cashflows(
+        field_index['Cashflows'], field_index['Base_Resets'], field_index['Final_Resets'] = utils.TensorCashFlows.index(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'],
             inflation_factor, index_factor, self.field.get('Settlement_Date'), months_lag, interpolated)
 
@@ -2950,11 +2951,11 @@ class CapDeal(Deal):
             field_index['VolSurface'] = get_interest_vol_factor(
                 field['Forecast_Rate_Volatility'], self.field['Payment_Interval'],
                 static_offsets, stochastic_offsets, all_tenors)
-            field_index['Cashflows'] = utils.generate_float_cashflows(
+            field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.resetdates,
                 (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                 Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
-                utils.get_day_count(self.field['Accrual_Day_Count']), self.field['Cap_Rate'] / 100.0)
+                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Cap_Rate'] / 100.0)
 
         return field_index
 
@@ -3061,11 +3062,11 @@ class FloorDeal(Deal):
             field_index['VolSurface'] = get_interest_vol_factor(
                 field['Forecast_Rate_Volatility'], self.field['Payment_Interval'],
                 static_offsets, stochastic_offsets, all_tenors)
-            field_index['Cashflows'] = utils.generate_float_cashflows(
+            field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.resetdates,
                 (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                 Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
-                utils.get_day_count(self.field['Accrual_Day_Count']), self.field['Floor_Rate'] / 100.0)
+                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Floor_Rate'] / 100.0)
 
         return field_index
 
@@ -3238,21 +3239,21 @@ class SwaptionDeal(Deal):
         Index_Day_Count = self.field.get('Index_Day_Count', 'ACT_365')
 
         if self.field['Payer_Receiver'] == 'Payer':
-            field_index['FixedCashflows'] = utils.generate_fixed_cashflows(
+            field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
                 base_date, self.paydates, -Principal, Pay_Amortisation,
-                utils.get_day_count(Pay_Day_Count), self.field['Swap_Rate'] / 100.0)
-            field_index['FloatCashflows'] = utils.generate_float_cashflows(
+                utils.DayCount.code(Pay_Day_Count), self.field['Swap_Rate'] / 100.0)
+            field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.recdates, Principal, Receive_Amortisation,
                 None, self.field['Receive_Frequency'], self.field['Index_Tenor'],
-                utils.get_day_count(Receive_Day_Count), Floating_Margin / 10000.0)
+                utils.DayCount.code(Receive_Day_Count), Floating_Margin / 10000.0)
         else:
-            field_index['FixedCashflows'] = utils.generate_fixed_cashflows(
+            field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
                 base_date, self.recdates, Principal, Receive_Amortisation,
-                utils.get_day_count(Receive_Day_Count), self.field['Swap_Rate'] / 100.0)
-            field_index['FloatCashflows'] = utils.generate_float_cashflows(
+                utils.DayCount.code(Receive_Day_Count), self.field['Swap_Rate'] / 100.0)
+            field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.paydates, -Principal, Pay_Amortisation, None,
                 self.field['Pay_Frequency'], self.field['Index_Tenor'],
-                utils.get_day_count(Pay_Day_Count), Floating_Margin / 10000.0)
+                utils.DayCount.code(Pay_Day_Count), Floating_Margin / 10000.0)
 
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
 
@@ -3264,9 +3265,9 @@ class SwaptionDeal(Deal):
             field_index['FixedStartIndex'] = np.zeros(1, dtype=np.int32)
             field_index['FloatStartIndex'] = np.zeros(1, dtype=np.int32)
 
-        field_index['Underlying_Swap_maturity'] = utils.get_day_count_accrual(
+        field_index['Underlying_Swap_maturity'] = utils.DayCount.accrual(
             base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
-            utils.get_day_count(Index_Day_Count))
+            utils.DayCount.code(Index_Day_Count))
 
         return field_index
 
@@ -3312,7 +3313,7 @@ class SwaptionDeal(Deal):
         tenor = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
 
         if factor_dep['Cash_Settled']:
-            vols = utils.calc_tenor_time_grid_vol_rate(
+            vols = utils.VolSurface.tenor_rate(
                 factor_dep['VolSurface'], mn, tenor,
                 factor_dep['Underlying_Swap_maturity'], shared)
 
@@ -3328,7 +3329,7 @@ class SwaptionDeal(Deal):
             spot_option, spot_swap = torch.split(st, counts)
             mn_option, mn_swap = torch.split(mn, counts)
 
-            vols = utils.calc_tenor_time_grid_vol_rate(
+            vols = utils.VolSurface.tenor_rate(
                 factor_dep['VolSurface'], mn_option, expiry,
                 factor_dep['Underlying_Swap_maturity'], shared)
 
@@ -3443,7 +3444,8 @@ class FXDiscreteExplicitAsianOption(Deal):
             'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Samples': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data']),
+            'Samples': utils.TensorResets.from_observations(
+                base_date, time_grid, self.field['Sampling_Data'], weighted=True),
             'Strike': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
@@ -3531,8 +3533,10 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
             'Alpha_0': self.field.get('Strike_Multiplier', 1.0),
             'Alpha_1': self.field.get('Sampling_Multiplier_1', 1.0),
             'Alpha_2': self.field.get('Sampling_Multiplier_2', 1.0),
-            'Samples_1': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data_1']),
-            'Samples_2': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data_2']),
+            'Samples_1': utils.TensorResets.from_observations(
+                base_date, time_grid, self.field['Sampling_Data_1'], weighted=True),
+            'Samples_2': utils.TensorResets.from_observations(
+                base_date, time_grid, self.field['Sampling_Data_2'], weighted=True),
             'Strike': self.field.get('Strike_Price', 0.0),
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
@@ -3613,7 +3617,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
             'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
             'Volatility': get_equity_price_vol_factor(
                 field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
-            'Samples': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data']),
+            'Samples': utils.TensorResets.from_observations(
+                base_date, time_grid, self.field['Sampling_Data'], weighted=True),
             'Strike': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0
@@ -3718,7 +3723,7 @@ class EquityBarrierBinaryOption(Deal):
                 field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_equity_price_vol_factor(
                 field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
-            'Observation_Dates': utils.make_fixing_data(
+            'Observation_Dates': utils.TensorResets.from_observations(
                 base_date, time_grid, [[x, 0] for x in all_dates]),
             'Barrier_Dates': [1 if x in ab else -1 for x in all_dates],
             'Strike_Price': self.field['Strike_Price'],
@@ -4210,10 +4215,10 @@ class QEDI_CustomAutoCallSwap(Deal):
                 tl = {k:v if v else 1.0 for k,v in tl.items()}
 
             field_index.update({
-                'Fixings': utils.make_fixing_data(
+                'Fixings': utils.TensorResets.from_observations(
                     base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
-                'Price_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
-                'Coupon_Fixing': utils.make_fixing_data(base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
+                'Price_Fixing': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
+                'Coupon_Fixing': utils.TensorResets.from_observations(base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
                 'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
                 'Coupon_Windows': ends,
                 # every fixing carries the trigger level of the coupon whose window it is in, which
@@ -4224,7 +4229,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         else:
             all_dates = sorted(all_dates.union(fixing_dates))
             field_index.update({
-                'Fixings': utils.make_fixing_data(
+                'Fixings': utils.TensorResets.from_observations(
                     base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
                 'Price_Fixing': [pf.get(x, -1) for x in all_dates],
                 'Autocall_Thresholds': [at.get(x, -1) for x in all_dates],
@@ -4359,7 +4364,7 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
                              floating_pay_dates[:-1], floating_pay_dates[1:], self.field['Autocall_Floating'])]
                      }
 
-        field_index['Cashflows'] = utils.make_float_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.float(
             base_date, time_grid, 1.0, cashflows, self.field.get('Reference'))
 
         return field_index
@@ -4680,7 +4685,7 @@ class EquityBarrierOption(Deal):
         if self.field.get('Barrier_Dates', []):
             ab = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
             all_dates = sorted(ab.union([self.field['Expiry_Date']]))
-            field_index['Observation_Dates'] = utils.make_fixing_data(
+            field_index['Observation_Dates'] = utils.TensorResets.from_observations(
                 base_date, time_grid, [[x, 0] for x in all_dates])
             field_index['Barrier_Dates'] = [1 if x in ab else -1 for x in all_dates]
         else:
@@ -4907,7 +4912,7 @@ class CommodityFutureDeal(Deal):
         # remaining tenor in years to integrate the rate
         expiry_date_index = np.full_like(T_t, factor_dep['base_index'] + factor_dep['Expiry'])
         carry_rate = carry.gather_weighted_curve(shared, expiry_date_index, multiply_by_time=False)
-        T_t_years = shared.one.new_tensor(T_t / utils.DAYS_IN_YEAR).unsqueeze(-1)
+        T_t_years = shared.one.new_tensor(T_t / utils.DayCount.DAYS_IN_YEAR).unsqueeze(-1)
 
         fx_rep = utils.calc_fx_cross(
             factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
@@ -5014,7 +5019,8 @@ class CommodityAveragePriceSwapDeal(Deal):
                 field['Carry'], static_offsets, stochastic_offsets, all_tenors),
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Samples': utils.make_sampling_data(base_date, time_grid, self.field['Sampling_Data']),
+            'Samples': utils.TensorResets.from_observations(
+                base_date, time_grid, self.field['Sampling_Data'], weighted=True),
             'base_index': (base_date - utils.excel_offset).days,
             'Settlement': (self.field['Settlement_Date'] - base_date).days,
             'Strike': self.field['Fixed_Price'],
@@ -5260,7 +5266,7 @@ class EquitySwapletListDeal(Deal):
             field['Equity'], static_offsets, stochastic_offsets, all_tenors)
         field_index['Equity_Zero'] = get_equity_zero_rate_factor(
             field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors)
-        field_index['Flows'], field_index['Bus_Ofs'] = utils.make_equity_swaplet_cashflows(
+        field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
             self.field['Cashflows'], current_spot, self.field.get('Settlement_Days',0) * bus_day_offset)
 
@@ -5399,7 +5405,7 @@ class EquitySwapLeg(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors)
             field_index['Equity_Zero'] = get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors)
-            field_index['Flows'], field_index['Bus_Ofs'] = utils.make_equity_swaplet_cashflows(
+            field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
                 base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
                 field['cashflow'], current_price, self.field.get('Settlement_Days',0) * bus_day)
 
@@ -5885,8 +5891,8 @@ class FXTARFOptionDeal(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
-            'Fixings': utils.make_fixing_data(base_date, time_grid, [[x, pf.get(x,-1)] for x in all_dates]),
-            'Price_Fixings': utils.make_fixing_data(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
+            'Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf.get(x,-1)] for x in all_dates]),
+            'Price_Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
             'Settlement': np.array([(x-base_date).days for x in sd_dates]),
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
@@ -6066,9 +6072,9 @@ class FXAccumulatorOptionDeal(Deal):
             'Expiry': (settlement_dates[-1] - base_date).days,
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
-            'Fixings': utils.make_fixing_data(
+            'Fixings': utils.TensorResets.from_observations(
                 base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
-            'Price_Fixings': utils.make_fixing_data(
+            'Price_Fixings': utils.TensorResets.from_observations(
                 base_date, time_grid, [[x, pf[x]] for x in fixing_dates]),
             'Settlement': np.array([(x - base_date).days for x in settlement_dates]),
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
@@ -6292,7 +6298,7 @@ class FXExtendableForwardDeal(Deal):
             'Strike_Price': float(self.field['Strike_Price']),
             'Extension_Strike': float(self.field['Extension_Strike']),
             'Fixing_Days': np.array([(x - base_date).days for x in fixing_dates], dtype=np.int64),
-            'Price_Fixings': utils.make_fixing_data(
+            'Price_Fixings': utils.TensorResets.from_observations(
                 base_date, time_grid, [[d, v] for d, v in zip(fixing_dates, fixing_values)]),
             'Settlement': np.array([(x - base_date).days for x in settlement_dates], dtype=np.int64),
             'Decision_Codes': decision_codes,
@@ -6547,7 +6553,7 @@ class CreditNthToDefault(Deal):
 
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
-        accrual_daycount = utils.get_day_count(self.field['Accrual_Day_Count'])
+        accrual_daycount = utils.DayCount.code(self.field['Accrual_Day_Count'])
 
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -6564,10 +6570,10 @@ class CreditNthToDefault(Deal):
             'Defaults_So_Far': self.field.get('Defaults_So_Far', 0),
             'Quadrature_Points': self.field.get('Quadrature_Points', 81),
             # the accrual measure the coupon is quoted against - NOT the discount curve's
-            'Accrual_Daycount': partial(utils.get_day_count_accrual, base_date, code=accrual_daycount)
+            'Accrual_Daycount': partial(utils.DayCount.accrual, base_date, code=accrual_daycount)
         }
 
-        field_index['Cashflows'] = utils.generate_fixed_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.generate_fixed(
             base_date, self.resetdates,
             (1 if self.field['Buy_Sell'] == 'Buy' else -1) * self.field['Principal'],
             self.field['Amortisation'], accrual_daycount, pay_rate)
@@ -6699,12 +6705,12 @@ class DealDefaultSwap(Deal):
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
 
-        field_index['Cashflows'] = utils.generate_fixed_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.generate_fixed(
             base_date, self.resetdates, (1 if self.field['Buy_Sell'] == 'Buy' else -1) * self.field['Principal'],
-            self.field['Amortisation'], utils.get_day_count(self.field['Accrual_Day_Count']), pay_rate)
+            self.field['Amortisation'], utils.DayCount.code(self.field['Accrual_Day_Count']), pay_rate)
 
         # include the maturity date in the daycount
-        field_index['Cashflows'].add_maturity_accrual(base_date, utils.get_day_count(self.field['Accrual_Day_Count']))
+        field_index['Cashflows'].add_maturity_accrual(base_date, utils.DayCount.code(self.field['Accrual_Day_Count']))
 
         return field_index
 
@@ -6771,12 +6777,12 @@ class FRADeal(Deal):
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Forward': get_interest_factor(
                 field['Interest_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Daycount': utils.get_day_count(self.field['Day_Count']),
+            'Daycount': utils.DayCount.code(self.field['Day_Count']),
             'CompoundingMethod': 'None',
             'SettleCurrency': self.field['Currency']
         }
 
-        Accrual_fraction = utils.get_day_count_accrual(
+        Accrual_fraction = utils.DayCount.accrual(
             base_date, (self.field['Maturity_Date'] - self.field['Effective_Date']).days, field_index['Daycount'])
 
         # the PV date, NOT the settlement date: only Begin values from the start of the rate
@@ -6802,7 +6808,7 @@ class FRADeal(Deal):
         }
 
         field_index['VolSurface'] = np.zeros(1, dtype=np.int32)
-        field_index['Cashflows'] = utils.make_float_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.float(
             base_date, time_grid, 1 if self.field['Borrower_Lender'] == 'Borrower' else -1,
             cashflows, self.field.get('Reference'))
 
@@ -6911,7 +6917,7 @@ class FloatingEnergyDeal(Deal):
         forward_sample = get_forwardprice_sampling(field["Sampling_Type"], all_factors)
         field_index['Discount'] = get_interest_factor(
             field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors)
-        field_index['Cashflows'] = utils.make_energy_cashflows(
+        field_index['Cashflows'] = utils.TensorCashFlows.energy(
             base_date, time_grid, -1.0 if self.field['Payer_Receiver'] == 'Payer' else 1.0,
             self.field['Payments'], reference_factor, forward_sample, fx_sample, calendars)
         field_index['Currency'] = get_fx_and_zero_rate_factor(
@@ -6966,8 +6972,10 @@ class FixedEnergyDeal(Deal):
                            field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
                        'Currency': get_fx_and_zero_rate_factor(
                            field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-                       'Cashflows': utils.make_energy_fixed_cashflows(
-                           base_date, -1.0 if self.field['Payer_Receiver'] == 'Payer' else 1.0, self.field['Payments'])}
+                       'Cashflows': utils.TensorCashFlows.simple_fixed(
+                           base_date, -1.0 if self.field['Payer_Receiver'] == 'Payer' else 1.0,
+                           self.field['Payments'],
+                           lambda cashflow: cashflow['Volume'] * cashflow['Fixed_Price'])}
 
         if field['Payoff_Currency'] != field['Currency']:
             field_index['SettleFX'] = get_fx_and_zero_rate_factor(
@@ -7071,7 +7079,7 @@ class EnergySingleOption(Deal):
             field_index['ImpliedCorrelation'] = get_implied_correlation(
                 ('FxRate',) + fx_lookup, ('ReferencePrice',) + forward_price_vol, all_factors)
 
-        cashflow = utils.make_energy_cashflows(
+        cashflow = utils.TensorCashFlows.energy(
             base_date, time_grid, 1, {'Items': [field['cashflow']]},
             reference_factor, forward_sample, fx_sample, calendars)
         field_index['Cashflow'] = cashflow

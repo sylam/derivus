@@ -47,6 +47,77 @@ def piecewise_linear(t, tenor, values, shared):
     return shared.t_PreCalc[key_code]
 
 
+def PCA(matrix, num_redim=0):
+    # Compute eigenvalues and sort into descending order
+    evals, evecs = np.linalg.eig(matrix)
+    indices = np.argsort(evals)[::-1]
+    evecs = evecs[:, indices]
+    evals = evals[indices]
+
+    if num_redim > 0:
+        evecs = evecs[:, :num_redim]
+        evals = evals[:num_redim]
+
+    var = np.diag(matrix)
+    aki = evecs * np.sqrt(var.reshape(-1, 1).dot(1.0 / evals.reshape(1, -1)))
+    # correlation = (np.identity(var.size)/np.sqrt(var)).dot(evecs).dot(np.identity(evals.size)*np.sqrt(evals))
+
+    return aki, evecs, evals
+
+
+def calc_statistics(data_frame, method='Log', num_business_days=252.0, frequency=1, max_alpha=4.0):
+    """Currently only frequency==1 is supported"""
+
+    def calc_alpha(x, y):
+        return (-num_business_days * np.log(
+            1.0 + ((x - x.mean(axis=0)) * (y - y.mean(axis=0))).mean(axis=0) / ((y - y.mean(axis=0)) ** 2.0).mean(
+                axis=0))).clip(0.001, max_alpha)
+
+    def calc_sigma2(x, y, alpha):
+        return (x.var(axis=0) - ((1 - np.exp(-alpha / num_business_days)) ** 2) * y.var(axis=0)) * (
+                (2.0 * alpha) / (1 - np.exp(-2.0 * alpha / num_business_days)))
+
+    def calc_theta(x, y, alpha):
+        return y.mean(axis=0) + x.mean(axis=0) / (1.0 - np.exp(-alpha / num_business_days))
+
+    def calc_log_theta(theta, sigma2, alpha):
+        return np.exp(theta + sigma2 / (4.0 * alpha))
+
+    # TODO - implement weighting
+    # delta = frequency / num_business_days
+
+    transform = {'Diff': lambda x: x, 'Log': lambda x: np.log(x.clip(0.0001, np.inf))}[method]
+    transformed_df = transform(data_frame)
+
+    # can implement decay weights here if needed
+
+    data = transformed_df.diff(frequency).shift(-frequency)
+    y = transformed_df  #
+    alpha = calc_alpha(data, y)
+    theta = calc_theta(data, y, alpha)
+    sigma2 = calc_sigma2(data, y, alpha)
+
+    if method == 'Log':
+        theta = calc_log_theta(theta, sigma2, alpha)
+        # get rid of any infs
+        theta.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        # ignore any outlier greater than 2 std deviations from the median
+        median = theta.median()
+        theta[np.abs(theta - median) > (2 * theta.std())] = np.nan
+
+    stats = pd.DataFrame({
+        'Volatility': data.std(axis=0) * np.sqrt(num_business_days),
+        'Drift': data.mean(axis=0) * num_business_days,
+        'Mean Reversion Speed': alpha,
+        'Long Run Mean': theta,
+        'Reversion Volatility': np.sqrt(sigma2)
+    })
+
+    correlation = data.corr()
+    return stats, correlation, data
+
+
 def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=None, val2=None):
     def final_integration_points(only_np, int_points, interp_value):
         # return all but last point and make a tensor if necessary
@@ -633,7 +704,7 @@ class GBMAssetPriceModel(StochasticProcess):
 
 
 class GBMAssetPriceCalibration(object):
-    """Lognormal drift and volatility from `utils.calc_statistics`. Takes no tuning."""
+    """Lognormal drift and volatility from `calc_statistics`. Takes no tuning."""
     model_type = 'GBMAssetPriceModel'
     fields = []
 
@@ -643,7 +714,7 @@ class GBMAssetPriceCalibration(object):
         self.num_factors = 1
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0, vol_cuttoff=0.5, drift_cuttoff=0.1):
-        stats, correlation, delta = utils.calc_statistics(
+        stats, correlation, delta = calc_statistics(
             data_frame, method='Log', num_business_days=num_business_days)
         mu = (stats['Drift'] + 0.5 * (stats['Volatility'] ** 2)).values[0]
         sigma = stats['Volatility'].values[0]
@@ -841,7 +912,7 @@ class GBMPriceIndexModel(StochasticProcess):
             dtype=np.float64)
         self.scenario_horizon = scenario_time_grid.size
 
-        dt = np.diff(np.hstack(([0], scenario_time_grid / utils.DAYS_IN_YEAR)))
+        dt = np.diff(np.hstack(([0], scenario_time_grid / utils.DayCount.DAYS_IN_YEAR)))
         var = self.param['Vol'] * self.param['Vol'] * dt
         self.drift = tensor.new(self.param['Drift'] * dt - 0.5 * var).reshape(-1, 1)
         self.vol = tensor.new(np.sqrt(var)).reshape(-1, 1)
@@ -874,7 +945,7 @@ class GBMPriceIndexCalibration(object):
         self.num_factors = 1
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
-        stats, correlation, delta = utils.calc_statistics(data_frame, method='Log', num_business_days=num_business_days)
+        stats, correlation, delta = calc_statistics(data_frame, method='Log', num_business_days=num_business_days)
         mu = (stats['Drift'] + 0.5 * (stats['Volatility'] ** 2)).values[0]
         sigma = stats['Volatility'].values[0]
 
@@ -1113,7 +1184,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
 
         THE CLOCK IS THE CURVE'S OWN DAY COUNT: `expiry`, `pay_times` and `accruals` are year
         fractions under `factor.get_day_count_accrual`, the clock `time_grid_years` and hence $J$
-        are built on. `utils.DAYS_IN_YEAR` is 365.25, so pairing the two is 7e-4 years out at a
+        are built on. `utils.DayCount.DAYS_IN_YEAR` is 365.25, so pairing the two is 7e-4 years out at a
         1Y expiry; converting is the caller's job.
 
         $J$ is read AT THE EXPIRY, linearly between grid nodes and bit-exact at one. A `TimeGrid`
@@ -1395,7 +1466,7 @@ class HWInterestRateCalibration(object):
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
         tenor = np.array([(x.split(',')[1]) for x in data_frame.columns], dtype=np.float64)
-        stats, correlation, delta = utils.calc_statistics(data_frame, method='Diff',
+        stats, correlation, delta = calc_statistics(data_frame, method='Diff',
                                                           num_business_days=num_business_days, max_alpha=4.0)
         alpha = stats['Mean Reversion Speed'].mean()
         sigma = stats['Reversion Volatility'].mean()
@@ -1504,7 +1575,7 @@ class HWHazardRateCalibration(object):
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
         tenor = np.array([(x.split(',')[1]) for x in data_frame.columns], dtype=np.float64)
-        stats, correlation, delta = utils.calc_statistics(data_frame, method='Diff',
+        stats, correlation, delta = calc_statistics(data_frame, method='Diff',
                                                           num_business_days=num_business_days, max_alpha=4.0)
         alpha = stats['Mean Reversion Speed'].mean()
         sigma = stats['Reversion Volatility'].values[0] / tenor[0]
@@ -1576,13 +1647,13 @@ class CSForwardPriceModel(StochasticProcess):
         excel_offset = (ref_date - utils.excel_offset).days
         excel_date_time_grid = time_grid.scen_time_grid + excel_offset
         tenors = (self.factor.get_tenor().reshape(1, -1) -
-                  excel_date_time_grid.reshape(-1, 1)).clip(0.0, np.inf) / utils.DAYS_IN_YEAR
+                  excel_date_time_grid.reshape(-1, 1)).clip(0.0, np.inf) / utils.DayCount.DAYS_IN_YEAR
         tenor_rel = self.factor.get_tenor() - excel_offset
         delta = tenor_rel.reshape(1, -1).clip(
             time_grid.scen_time_grid[:-1].reshape(-1, 1),
             time_grid.scen_time_grid[1:].reshape(-1, 1)
         ) - time_grid.scen_time_grid[:-1].reshape(-1, 1)
-        dt = np.insert(delta, 0, 0, axis=0) / utils.DAYS_IN_YEAR
+        dt = np.insert(delta, 0, 0, axis=0) / utils.DayCount.DAYS_IN_YEAR
 
         if implied_tensor is None:
             # need to scale the vol (as the variance is modelled using an OU Process)
@@ -1680,7 +1751,7 @@ class CSForwardPriceCalibration(object):
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
         tenor = np.array([(x.split(',')[1]) for x in data_frame.columns], dtype=np.float64)
-        stats, correlation, delta = utils.calc_statistics(
+        stats, correlation, delta = calc_statistics(
             data_frame, method='Log', num_business_days=num_business_days, max_alpha=5.0)
         alpha = stats['Mean Reversion Speed'].values[0]
         sigma = stats['Reversion Volatility'].values[0]
@@ -1905,13 +1976,13 @@ class PCAInterestRateCalibration(object):
         min_rate = data_frame.min().min()
         force_positive = 0.0 #if min_rate > 0.0 else -5.0 * min_rate
         tenor = np.array([(x.split(',')[1]) for x in data_frame.columns], dtype=np.float64)
-        stats, correlation, delta = utils.calc_statistics(data_frame + force_positive, method='Log',
+        stats, correlation, delta = calc_statistics(data_frame + force_positive, method='Log',
                                                           num_business_days=num_business_days, max_alpha=4.0)
 
         standard_deviation = stats['Reversion Volatility'].interpolate()
         covariance = np.dot(standard_deviation.values.reshape(-1, 1),
                             standard_deviation.values.reshape(1, -1)) * correlation
-        aki, evecs, evals = utils.PCA(covariance, self.num_factors)
+        aki, evecs, evals = PCA(covariance, self.num_factors)
         meanReversionSpeed = stats['Mean Reversion Speed'].mean()
         volCurve = standard_deviation
         reversionLevel = stats['Long Run Mean'].interpolate().bfill().ffill()
@@ -2059,7 +2130,7 @@ class LogOUSpotModel(StochasticProcess):
 
 
 class LogOUSpotCalibration(object):
-    """LogOUSpotModel parameters from historical spot, via `utils.calc_statistics` in log space.
+    """LogOUSpotModel parameters from historical spot, via `calc_statistics` in log space.
 
     Kappa and Sigma are its `Mean Reversion Speed` and `Reversion Volatility`; Theta inverts the
     lognormal expectation, `Theta = log(Long Run Mean) - sigma^2 / (4*kappa)`. `Spot` is the
@@ -2075,7 +2146,7 @@ class LogOUSpotCalibration(object):
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0,
                   kappa_max=10.0, sigma_max=2.0):
-        stats, correlation, delta = utils.calc_statistics(
+        stats, correlation, delta = calc_statistics(
             data_frame, method='Log', num_business_days=num_business_days)
 
         kappa = stats['Mean Reversion Speed'].values[0]
@@ -3308,7 +3379,7 @@ class QuadraticCarryCurveModel(StochasticProcess):
         tau_a, tau_b = (float(x) for x in self.param['Reference_Tenors'])
         excel_offset = (ref_date - utils.excel_offset).days
         tau = (knots.reshape(1, -1) - (time_grid.scen_time_grid + excel_offset).reshape(-1, 1)
-               ) / utils.DAYS_IN_YEAR                                        # (T, 2) ageing knots
+               ) / utils.DayCount.DAYS_IN_YEAR                                        # (T, 2) ageing knots
         k = (tau - 0.5 * (tau_a + tau_b)) / (tau_b - tau_a)                  # (T, 2) shape coords
         self.k = shared.one.new_tensor(k)
         # z(0) = L + D*(0 - taubar)/dtau: the FRONT carry. Published per (step, path) as
@@ -3741,7 +3812,7 @@ class FixingBridgeModel(StochasticProcess):
         # step on the parent's grid, held at the last own step (the carry pad's convention)
         f = dt_arr / dt_c
         self.f = shared.one.new_tensor(np.hstack([f, f[-1:]]))
-        self.f_bd = (1.0 / utils.DAYS_IN_YEAR) / dt_c
+        self.f_bd = (1.0 / utils.DayCount.DAYS_IN_YEAR) / dt_c
         self.b0 = tensor
 
     def generate(self, shared_mem):

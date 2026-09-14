@@ -32,20 +32,85 @@ import torch
 excel_offset = pd.Timestamp('1899-12-30 00:00:00')
 
 
-def array_type(x): return np.array(x)
+class DayCount:
+    """The day-count conventions a schedule is authored in: the code each name maps to, and the
+    year fraction each code accrues."""
 
+    # Days in year - could set this to 365.0 or 365.25 if you want that bit extra time
+    DAYS_IN_YEAR = 365.25
 
-# Days in year - could set this to 365.0 or 365.25 if you want that bit extra time
-DAYS_IN_YEAR = 365.25
+    NONE = -1
+    ACT365 = 0
+    ACT360 = 1
+    ACT365IDSA = 2
+    ACT30_360 = 3
+    ACT30_E360 = 4
+    ACTACTICMA = 5
 
-# daycount codes
-DAYCOUNT_None = -1
-DAYCOUNT_ACT365 = 0
-DAYCOUNT_ACT360 = 1
-DAYCOUNT_ACT365IDSA = 2
-DAYCOUNT_ACT30_360 = 3
-DAYCOUNT_ACT30_E360 = 4
-DAYCOUNT_ACTACTICMA = 5
+    @staticmethod
+    def code(name):
+        if name == 'ACT_365':
+            return DayCount.ACT365
+        elif name == 'ACT_360':
+            return DayCount.ACT360
+        elif name == '_30_360':
+            return DayCount.ACT30_360
+        elif name == '_30E_360':
+            return DayCount.ACT30_E360
+        elif name == 'ACT_365_ISDA':
+            return DayCount.ACT365IDSA
+        elif name == 'ACT_ACT_ICMA':
+            return DayCount.ACTACTICMA
+        else:
+            raise Exception('Daycount {} Not implemented'.format(name))
+
+    @staticmethod
+    def accrual(reference_date, time_in_days, code):
+        """Need to complete this implementation. time_in_days is incremental"""
+
+        if code == DayCount.ACT360:
+            return time_in_days / 360.0
+        elif code == DayCount.ACT365:
+            return time_in_days / 365.0
+        elif code in (DayCount.ACT365IDSA, DayCount.ACTACTICMA):
+            # TODO
+            return time_in_days / 365.0
+        elif code == DayCount.ACT30_360:
+            e1 = min(reference_date.day, 30)
+            new_date = end_date = reference_date
+            if isinstance(time_in_days, np.ndarray):
+                ret = []
+                for ed in time_in_days.tolist():
+                    end_date += pd.DateOffset(days=ed)
+                    e2 = 30 if end_date.day >= 30 and new_date.day >= 30 else end_date.day
+                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
+                                360 * (end_date.year - new_date.year)) / 360.0)
+                    new_date = end_date
+                return ret
+            else:
+                end_date = reference_date + pd.DateOffset(days=time_in_days)
+                e2 = 30 if end_date.day >= 30 and reference_date.day >= 30 else end_date.day
+                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
+                        360 * (end_date.year - reference_date.year)) / 360.0
+        elif code == DayCount.ACT30_E360:
+            e1 = min(reference_date.day, 30)
+            new_date = end_date = reference_date
+            if isinstance(time_in_days, np.ndarray):
+                ret = []
+                for ed in time_in_days.tolist():
+                    end_date += pd.DateOffset(days=ed)
+                    e2 = min(end_date.day, 30)
+                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
+                                360 * (end_date.year - new_date.year)) / 360.0)
+                    new_date = end_date
+                return ret
+            else:
+                end_date = reference_date + pd.DateOffset(days=time_in_days)
+                e2 = min(end_date.day, 30)
+                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
+                        360 * (end_date.year - reference_date.year)) / 360.0
+        elif code == DayCount.NONE:
+            return time_in_days
 
 # factor codes
 FACTOR_INDEX_Stoch = 0  # either True for stochastic or False for static
@@ -149,10 +214,6 @@ TIME_GRID_ScenarioPriorIndex = 2
 CASH_SETTLEMENT_Received_Only = 0
 CASH_SETTLEMENT_Paid_Only = 1
 CASH_SETTLEMENT_All = 2
-
-# Factor sizes
-FACTOR_SIZE_CURVE = 4
-FACTOR_SIZE_RATE = 2
 
 # Named tuples to make life easier
 Factor = namedtuple('Factor', 'type name')
@@ -300,10 +361,41 @@ class BoundarySet:
     # What the chain returns at a zero delta - this set's own level, the baseline a change is
     # measured from. Cached on first use: it costs one balance scan per registration.
     net_at_zero = None
-    # Who registered it, stamped by `stamp_boundary_sets` off the structure walk. A slot rather than
+    # Who registered it, stamped by `BoundarySet.stamp` off the structure walk. A slot rather than
     # a field because the subclasses declare non-default fields of their own, which cannot follow a
     # defaulted one. Read by the second-derivative refusal, which names the deals it refuses over.
     deal = None
+
+    @staticmethod
+    def claim(shared, mark):
+        """Hand a netting set's gross-to-net chain to the registrations made beneath it.
+
+        `post_process` runs only after its children are priced, so everything the set is answerable for
+        is the TAIL of `boundary_sets` added since its structure was entered - hence the mark is taken
+        there rather than here.
+
+        Only a set that PUBLISHES a chain claims: an uncollateralised netting set passes a deal's value
+        through additively, and a swaption's post_process is not a netting set at all, so both leave the
+        registration for whatever sits above. An inner collateralised set that already stamped one is
+        the closer of the two and keeps it.
+        """
+        chain = shared.__dict__.pop('gross_to_net', None)
+        if chain is not None:
+            for bset in shared.boundary_sets[mark:]:
+                if isinstance(bset, BoundarySet) and bset.net_from_gross is None:
+                    bset.net_from_gross = chain
+
+    @staticmethod
+    def stamp(shared, mark, name):
+        """Name the registrations made since `mark`, the same tail-since-a-mark idiom as the claim.
+
+        A pricer knows nothing about the tree it is in, so the WALK names it: the deal loop stamps each
+        deal as it prices, and the structure stamps whatever its own `post_process` added. Innermost
+        wins - already-named sets are left alone.
+        """
+        for bset in shared.boundary_sets[mark:]:
+            if bset.deal is None:
+                bset.deal = name
 
     def portfolio_delta(self, delta, cash=None):
         """This registration's deal-mtm delta as a change to the reported PORTFOLIO.
@@ -548,37 +640,6 @@ class InnerBoundarySet(BoundarySet):
             yield gap, (sensitivity * weight).sum(dim=0).unsqueeze(1) * jump
 
 
-def claim_boundary_sets(shared, mark):
-    """Hand a netting set's gross-to-net chain to the registrations made beneath it.
-
-    `post_process` runs only after its children are priced, so everything the set is answerable for
-    is the TAIL of `boundary_sets` added since its structure was entered - hence the mark is taken
-    there rather than here.
-
-    Only a set that PUBLISHES a chain claims: an uncollateralised netting set passes a deal's value
-    through additively, and a swaption's post_process is not a netting set at all, so both leave the
-    registration for whatever sits above. An inner collateralised set that already stamped one is
-    the closer of the two and keeps it.
-    """
-    chain = shared.__dict__.pop('gross_to_net', None)
-    if chain is not None:
-        for bset in shared.boundary_sets[mark:]:
-            if isinstance(bset, BoundarySet) and bset.net_from_gross is None:
-                bset.net_from_gross = chain
-
-
-def stamp_boundary_sets(shared, mark, name):
-    """Name the registrations made since `mark`, the same tail-since-a-mark idiom as the claim.
-
-    A pricer knows nothing about the tree it is in, so the WALK names it: the deal loop stamps each
-    deal as it prices, and the structure stamps whatever its own `post_process` added. Innermost
-    wins - already-named sets are left alone.
-    """
-    for bset in shared.boundary_sets[mark:]:
-        if bset.deal is None:
-            bset.deal = name
-
-
 @dataclass
 class MTABoundaryEvent:
     """One margin call's transfer decision, recorded so its derivative can be recovered.
@@ -659,7 +720,7 @@ class UnpriceableSchedule(Exception):
 
     The deal loads and its fields are the fields the schema declares; what is missing is a quantity
     the AUTHOR did not state and no rule recovers, so the answer is the name of the thing and the
-    remedy, never a guess. `make_float_cashflows`' zero-length rate window is the first: a reset
+    remedy, never a guess. `TensorCashFlows.float`' zero-length rate window is the first: a reset
     whose rate start equals its rate end has no forward rate to read, and no `Row` declares the
     tenor that would define one. A schedule saying too MUCH is refused here too: a consequence
     field beside the observations that already fold to it (`refuse_consequence_field`).
@@ -796,7 +857,7 @@ class Basis(Scaled):
 class Curve:
     def __init__(self, meta, data):
         self.meta = meta
-        self.array = array_type(sorted(data)) if isinstance(data, list) else data
+        self.array = np.array(sorted(data)) if isinstance(data, list) else data
 
     def __str__(self):
         def format1darray(data):
@@ -836,8 +897,10 @@ class DateList:
             ['%s=%.12g' % ('%02d%s%04d' % (x[0].day, calendar.month_abbr[x[0].month], x[0].year), x[1]) for x in
              self.data.items()]) + '\\'
 
-    def sum_range(self, run_date, cuttoff_date):
-        return sum([val for date, val in self.data.items() if run_date > date > cuttoff_date], 0.0)
+    def sum_range(self, run_date, cuttoff_date, read=lambda val: val):
+        """The values dated strictly between the two dates, each read by `read`."""
+        return sum([read(val) for date, val in self.data.items()
+                    if run_date > date > cuttoff_date], 0.0)
 
     def prepare_dates(self):
         self.dates = set(self.data.keys())
@@ -875,19 +938,12 @@ class DateEqualList:
         return self.data.get(field)
 
     def sum_range(self, run_date, cuttoff_date, index):
-        return sum([val[index] for date, val in self.data.items() if run_date > date > cuttoff_date], 0.0)
+        return DateList.sum_range(self, run_date, cuttoff_date, lambda val: val[index])
 
     def __str__(self):
         return '[' + ','.join(['%s=%s' % (
             '%02d%s%04d' % (date.day, calendar.month_abbr[date.month], date.year), '='.join([str(y) for y in value]))
                                for date, value in self.data.items()]) + ']'
-
-
-def select_rows(operand, pos):
-    """Row subset of a per-time-row operand (indices, interp weights, tenors, alpha) for a routed
-    group. A leading dim of 1 is broadcasting against the time axis and must be left alone."""
-    return operand if pos is None or not torch.is_tensor(operand) or operand.shape[0] == 1 \
-        else operand[pos]
 
 
 class ScenarioBlock(object):
@@ -946,7 +1002,31 @@ class ScenarioSource(object):
         return ScenarioSource(*[b * other for b in self.blocks])
 
 
-class Interpolation(object):
+class UnroutedInterpolation(object):
+    """What a curve over ONE physical scenario grid does the same way however its tenor axis is
+    built: there is no block to route to, a read is blended in time and scaled once, and the 0D
+    spot path gathers whole rows. `Interpolation` and `SegmentedInterpolation` specialise the rest.
+    """
+
+    def route(self, index, has_alpha):
+        """One physical grid answers every row — there is nothing to route."""
+        return None
+
+    def eval(self, tenor_data, index, index_next, alpha, i1, i2, w2, tnr, time_factor, route=None):
+        raw = self.read_at(tenor_data, index, i1, i2, w2)
+        if alpha is not None:
+            # the t+1 read is taken BEFORE either weighting, so no full-width term is held across it
+            raw = self.blend(raw, self.read_at(tenor_data, index_next, i1, i2, w2), alpha)
+        return self.combine(raw, tenor_data, i2, tnr, time_factor)
+
+    def gather_rows(self, index, index_next, alpha, route=None):
+        """Whole rows at `index` — the 0D spot path."""
+        if alpha is None:
+            return self.tensor[index]
+        return self.tensor[index] * (1 - alpha) + self.tensor[index_next] * alpha
+
+
+class Interpolation(UnroutedInterpolation):
     """Tenor and time interpolation over ONE physical scenario tensor.
 
     A leaf, and the only class base valuation / credit Monte Carlo / the outer hedge loop ever
@@ -979,9 +1059,10 @@ class Interpolation(object):
             return cls(tensor * t, [])
         return cls(tensor, [])
 
-    def route(self, index, has_alpha):
-        """A leaf IS the whole grid — there is nothing to route."""
-        return None
+    @staticmethod
+    def calc_hermite_curve(t_a, g, c, curve_t0, curve_t1):
+        one_minus_ta = (1.0 - t_a)
+        return curve_t0 * one_minus_ta + t_a * (curve_t1 + one_minus_ta * (g + t_a * c))
 
     def read_at(self, tenor_data, rows, i1, i2, w2):
         """The RAW value at one time point — before the rate*time scaling, which `combine` applies
@@ -995,7 +1076,7 @@ class Interpolation(object):
         i0, i1x = (i1, i2) if base is None else (base + i1, base + i2)
         if tenor_data[0].startswith('Hermite'):
             g, c = self.interp_params
-            return calc_hermite_curve(
+            return self.calc_hermite_curve(
                 w2, g[i0,], c[i0,], self.indexed_tensor[i0,], self.indexed_tensor[i1x,])
         # default to linear
         return self.indexed_tensor[i0,] * (1.0 - w2) + self.indexed_tensor[i1x,] * w2
@@ -1019,21 +1100,8 @@ class Interpolation(object):
             mult = mult / tenors.clamp(tnr_min, tnr_max)
         return raw * mult
 
-    def eval(self, tenor_data, index, index_next, alpha, i1, i2, w2, tnr, time_factor, route=None):
-        raw = self.read_at(tenor_data, index, i1, i2, w2)
-        if alpha is not None:
-            # the t+1 read is taken BEFORE either weighting, so no full-width term is held across it
-            raw = self.blend(raw, self.read_at(tenor_data, index_next, i1, i2, w2), alpha)
-        return self.combine(raw, tenor_data, i2, tnr, time_factor)
 
-    def gather_rows(self, index, index_next, alpha, route=None):
-        """Whole rows at `index` — the 0D spot path."""
-        if alpha is None:
-            return self.tensor[index]
-        return self.tensor[index] * (1 - alpha) + self.tensor[index_next] * alpha
-
-
-class SegmentedInterpolation(object):
+class SegmentedInterpolation(UnroutedInterpolation):
     """A curve whose tenor axis is split at a near index, each side interpolated its own way
     (`Near_Interpolation`). A SIBLING of `Interpolation`, not a subclass: it composes leaves over
     TENOR as `RoutedInterpolation` composes strategies over SCENARIO ROWS, and the two compositions
@@ -1052,10 +1120,6 @@ class SegmentedInterpolation(object):
         self.cutoff = spec[0][1]
         self.segments = [Interpolation.build(tensor[:, s:e + 1, :], kind, tenor[s:e + 1])
                          for s, e, kind in spec]
-
-
-    def route(self, index, has_alpha):
-        return None
 
     def seg_tenors(self, seg_i, i1, i2):
         """`i1, i2` in segment `seg_i`'s own tenor frame."""
@@ -1088,17 +1152,6 @@ class SegmentedInterpolation(object):
                 in enumerate(zip(self.segments, raw, zip(*tenor_data)))]
         return torch.where((i2 <= self.cutoff).unsqueeze(-1), vals[0], vals[1])
 
-    def eval(self, tenor_data, index, index_next, alpha, i1, i2, w2, tnr, time_factor, route=None):
-        raw = self.read_at(tenor_data, index, i1, i2, w2)
-        if alpha is not None:
-            raw = self.blend(raw, self.read_at(tenor_data, index_next, i1, i2, w2), alpha)
-        return self.combine(raw, tenor_data, i2, tnr, time_factor)
-
-    def gather_rows(self, index, index_next, alpha, route=None):
-        if alpha is None:
-            return self.tensor[index]
-        return self.tensor[index] * (1 - alpha) + self.tensor[index_next] * alpha
-
 
 class RoutedInterpolation(object):
     """One logical scenario grid over several physical blocks — an inner-MC fork's realized past and
@@ -1110,6 +1163,13 @@ class RoutedInterpolation(object):
     that block's frame, projecting a narrow block's read up to the logical batch width, and
     reassembling the groups in the caller's row order. The interpolations stay unaware of it.
     """
+
+    @staticmethod
+    def select_rows(operand, pos):
+        """Row subset of a per-time-row operand (indices, interp weights, tenors, alpha) for a routed
+        group. A leading dim of 1 is broadcasting against the time axis and must be left alone."""
+        return operand if pos is None or not torch.is_tensor(operand) or operand.shape[0] == 1 \
+            else operand[pos]
 
     def __init__(self, source, curve_tenor):
         self.blocks = source.blocks
@@ -1157,17 +1217,17 @@ class RoutedInterpolation(object):
         def group(pos, at_t, at_t1):
             b0, b1 = self.blocks[at_t], self.blocks[at_t1]
             s0, s1 = self.strategies[at_t], self.strategies[at_t1]
-            rows = self.local(select_rows(index, pos), b0)
-            weight, t1, t2 = (select_rows(x, pos) for x in (w2, i1, i2))
-            nxt = None if index_next is None else self.local(select_rows(index_next, pos), b1)
+            rows = self.local(self.select_rows(index, pos), b0)
+            weight, t1, t2 = (self.select_rows(x, pos) for x in (w2, i1, i2))
+            nxt = None if index_next is None else self.local(self.select_rows(index_next, pos), b1)
             # the read is per block, but the SPEC is the curve's
             raw = s0.project(b0, s0.read_at(tenor_data, rows, t1, t2, weight))
             if alpha is not None:
                 # projection and the time blend are both linear and `combine` runs after both, so
                 # the routed path is the same arithmetic in the same order as an unrouted one
                 raw = s0.blend(raw, s1.project(b1, s1.read_at(tenor_data, nxt, t1, t2, weight)),
-                               select_rows(alpha, pos))
-            return s0.combine(raw, tenor_data, t2, select_rows(tnr, pos), time_factor)
+                               self.select_rows(alpha, pos))
+            return s0.combine(raw, tenor_data, t2, self.select_rows(tnr, pos), time_factor)
 
         return self.routed(route, (i1 if index is None else index).shape[0], group)
 
@@ -1178,13 +1238,13 @@ class RoutedInterpolation(object):
             b0, b1 = self.blocks[at_t], self.blocks[at_t1]
             if alpha is None:
                 return b0.project(
-                    self.strategies[at_t].tensor[self.local(select_rows(index, pos), b0)])
-            a = select_rows(alpha, pos)
+                    self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)])
+            a = self.select_rows(alpha, pos)
             return b0.project(
-                self.strategies[at_t].tensor[self.local(select_rows(index, pos), b0)]) * (1 - a) + \
+                self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)]) * (1 - a) + \
                 b1.project(
                     self.strategies[at_t1].tensor[
-                        self.local(select_rows(index_next, pos), b1)]) * a
+                        self.local(self.select_rows(index_next, pos), b1)]) * a
 
         return self.routed(route, index.shape[0], group)
 
@@ -1206,7 +1266,7 @@ def build_interpolation(value, curve_tenor):
 
 
 class CurveTenor(object):
-    def __init__(self, tenor_points, interp):
+    def __init__(self, tenor_points, interp='Linear'):
         # linear interpolation by default
         points = np.array(tenor_points)
         min_tenor = points.min()
@@ -1556,11 +1616,17 @@ class TimeGrid(object):
         self.report_index = (self.mtm_time_grid.searchsorted(
             report_days, side='right') - 1).clip(0, self.mtm_time_grid.size - 1)
 
+    @staticmethod
+    def _index_alpha(grid, x):
+        """Prior index, next index and the clipped fractional weight of `x` on a monotone grid."""
+        next_index = grid.searchsorted(x, side='right')
+        index = (next_index - 1).clip(0, grid.size - 1)
+        dvt = np.concatenate(([1], np.diff(grid), [1]))
+        return index, next_index.clip(0, grid.size - 1), (
+                (x - grid[index]) / dvt[next_index]).clip(0, 1)
+
     def calc_time_grid(self, time_in_days):
-        dvt = np.concatenate(([1], np.diff(self.scen_time_grid), [1]))
-        scen_index = self.scen_time_grid.searchsorted(time_in_days, side='right')
-        index = (scen_index - 1).clip(0, self.scen_time_grid.size - 1)
-        alpha = ((time_in_days - self.scen_time_grid[index]) / dvt[scen_index]).clip(0, 1)
+        index, _, alpha = TimeGrid._index_alpha(self.scen_time_grid, time_in_days)
         return np.dstack([alpha, time_in_days, index])[0]
 
     def set_base_date(self, base_date, delta=None):
@@ -1584,10 +1650,10 @@ class TimeGrid(object):
             delta_grid = np.union1d(np.arange(0, self.scen_time_grid.max(), delta_days), delta_tenors.round())
             self.scen_time_grid = np.union1d(self.scen_time_grid, delta_grid)
 
-        self.time_grid_years = self.scen_time_grid / DAYS_IN_YEAR
+        self.time_grid_years = self.scen_time_grid / DayCount.DAYS_IN_YEAR
 
     def get_scenario_offset(self, days_from_base):
-        prev_scen_index = self.scen_time_grid[self.scen_time_grid <= days_from_base].size - 1
+        prev_scen_index = self.scen_time_grid.searchsorted(days_from_base, side='right') - 1
         scenario_grid_delta = np.float64(
             (self.scen_time_grid[prev_scen_index + 1] - self.scen_time_grid[prev_scen_index]) if (
                     self.scen_time_grid.size > 1 and self.scen_time_grid.size > prev_scen_index + 1) else 1.0)
@@ -1661,6 +1727,30 @@ class TensorResets(TensorSchedule):
         # Assign the offsets directly to the resets
         self.schedule[:, RESET_INDEX_Scenario] = self.offsets
 
+    @classmethod
+    def from_observations(cls, reference_date, time_grid, observations, weighted=False):
+        """The reset tensor a list of observations builds, each row `(date, ..., value)`.
+
+        `weighted` reads a trailing weight column instead, normalised over the list, and takes
+        the value one column back; unweighted, every weight is one.
+        """
+        total = float(sum([x[-1] for x in observations])) if weighted else 1.0
+
+        all_resets = []
+        reset_scenario_offsets = []
+        for observation in sorted(observations):
+            Reset_Day = (observation[0] - reference_date).days
+            Weight = observation[-1] / total if weighted else 1.0
+            Value = observation[-2] if weighted else observation[-1]
+            Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
+            # only add a reset if it's in the past
+            all_resets.append(
+                [Time_Grid, Reset_Day, -1, Reset_Day, Reset_Day, Weight,
+                 Value if observation[0] < reference_date else 0.0, 0.0])
+            reset_scenario_offsets.append(Scenario)
+
+        return cls(all_resets, reset_scenario_offsets)
+
     def _bound_array(self):
         """A reset's offset IS its scenario column, written there at construction, so the schedule
         already carries it and there is nothing to splice in."""
@@ -1732,6 +1822,455 @@ class TensorCashFlows(TensorSchedule):
         # call superclass
         super(TensorCashFlows, self).__init__(schedule, offsets)
 
+    @staticmethod
+    def make_cashflow(reference_date, start_date, end_date, pay_date, nominal, daycount_code,
+                      fixed_amount, spread_or_rate):
+        """One cashflow vector - for manually constructing a nominal or fixed payment."""
+        cashflow_days = [(x - reference_date).days for x in [start_date, end_date, pay_date]]
+        return np.array(
+            cashflow_days + [DayCount.accrual(reference_date, cashflow_days[1] - cashflow_days[0],
+                                              daycount_code),
+                             nominal, fixed_amount, spread_or_rate, 0, 0])
+
+    @staticmethod
+    def periods(reference_date, reset_dates, nominal, amort, daycount_code, spread_or_rate):
+        """Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0) and rate/spread, as
+        days and nominals relative to the reference date. The nominal array must be one shorter
+        than `reset_dates` (there is no nominal on the effective date), or a single number for a
+        constant profile.
+        """
+
+        amort_offsets = np.array([((k - reference_date).days, v) for k, v in amort.data.items()] if amort else [])
+        day_offsets = np.array([(x - reference_date).days for x in reset_dates])
+
+        nominal_amount, nominal_sign = [np.abs(nominal)], 1 if nominal > 0 else -1
+        amort_index = 0
+        for offset in day_offsets[1:]:
+            amort_to_add = 0.0
+            while amort_index < amort_offsets.shape[0] and amort_offsets[amort_index][0] <= offset:
+                amort_to_add += amort_offsets[amort_index][1]
+                amort_index += 1
+            nominal_amount.append(nominal_amount[-1] - amort_to_add)
+        nominal_amount = nominal_sign * np.array(nominal_amount)
+
+        # we want the earliest negative number
+        last_payment = np.where(day_offsets >= 0)[0]
+
+        # calculate the index of the earliest cashflow
+        previous_index = max(last_payment[0] - 1 if last_payment.size else day_offsets.size, 0)
+        cashflows_left = day_offsets[previous_index:]
+        rates = spread_or_rate if isinstance(nominal, np.ndarray) else [spread_or_rate] * (reset_dates.size - 1)
+        ref_date = (reference_date + pd.offsets.Day(cashflows_left[0])) \
+            if cashflows_left.any() else reference_date
+
+        # order is start_day, end_day, pay_day, daycount_accrual, nominal, fixed amount, FxResetDate, FXResetValue
+
+        return zip(cashflows_left[:-1], cashflows_left[1:], cashflows_left[1:],
+                   DayCount.accrual(ref_date, np.diff(cashflows_left), daycount_code),
+                   nominal_amount[previous_index:], np.zeros(cashflows_left.size - 1), rates[previous_index:],
+                   np.zeros(cashflows_left.size - 1), np.zeros(cashflows_left.size - 1))
+
+    @classmethod
+    def from_items(cls, items, key, row, resets=None, offsets=None, settled=0):
+        """The cashflow tensor one family's reading of a schedule builds.
+
+        `key` sorts the items (`None` keeps them in the order given) and `row` returns an item's
+        nine columns, or `None` to drop it. A family with resets hands each cashflow's
+        `(reset row, scenario offset)` pairs through `resets`; one without writes its own
+        reset-offsets row through `offsets`.
+        """
+        cash = []
+        cashflow_reset_offsets = []
+        all_resets = []
+        reset_scenario_offsets = []
+
+        for item in (items if key is None else sorted(items, key=key)):
+            values = row(item)
+            if values is None:
+                continue
+            cash.append(values)
+            if resets is None:
+                cashflow_reset_offsets.append(offsets(item))
+                continue
+            r = resets(item)
+            # attach the reset_offsets to the cashflow
+            cashflow_reset_offsets.append([len(r), len(all_resets), settled])
+            # store resets
+            all_resets.extend([reset for reset, _ in r])
+            reset_scenario_offsets.extend([scenario for _, scenario in r])
+
+        cashflows = cls(cash, cashflow_reset_offsets)
+        if resets is not None:
+            cashflows.set_resets(all_resets, reset_scenario_offsets)
+        return cashflows
+
+    @classmethod
+    def generate_float(cls, reference_date, time_grid, reset_dates, nominal, amort, known_rate_list,
+                       reset_tenor, reset_frequency, daycount_code, spread):
+        """`periods`' schedule plus the reset structure. The nominal array must be one shorter
+        than `reset_dates`, or a single number for a constant profile.
+        """
+        # prepare to consume reset dates
+        known_rates = known_rate_list if known_rate_list is not None else DateList({})
+        known_rates.prepare_dates()
+        min_date = None
+
+        def resets(cashflow):
+            nonlocal min_date, reset_tenor
+            r = []
+            if next(iter(reset_frequency.kwds.values())) == 0.0:
+                reset_days = np.array([reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day]))])
+                reset_tenor = pd.offsets.Day(cashflow[CASHFLOW_INDEX_End_Day] - cashflow[CASHFLOW_INDEX_Start_Day])
+            else:
+                reset_days = pd.date_range(reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day])),
+                                           reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_End_Day])),
+                                           freq=reset_frequency, inclusive='left')
+                reset_tenor = reset_frequency if next(iter(reset_tenor.kwds.values())) == 0.0 else reset_tenor
+
+            for reset_day in reset_days:
+                Reset_Day = (reset_day - reference_date).days
+                Start_Day = (reset_day - reference_date).days
+                End_Day = (reset_day + reset_tenor - reference_date).days
+                Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, daycount_code)
+                Weight = 1.0 / reset_days.size
+                Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
+
+                # match the closest reset
+                closest_date, Value = known_rates.consume(min_date, reset_day)
+                if closest_date is not None:
+                    min_date = closest_date if min_date is None else max(min_date, closest_date)
+
+                # only add a reset if it's in the past
+                r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
+                           Value / 100.0 if reset_day < reference_date else 0.0, Accrual], Scenario))
+
+                if Start_Day == End_Day:
+                    raise Exception("Reset Start and End Days coincide")
+            return r
+
+        # assume each cashflow is a settled one (not accumulated)
+        return cls.from_items(
+            list(cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, spread)),
+            None, lambda cashflow: cashflow, resets=resets, settled=1)
+
+    @classmethod
+    def generate_fixed(cls, reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate):
+        """`periods`' schedule with null resets. The nominal array must be one shorter than
+        `reset_dates`, or a single number for a constant profile.
+        """
+        cashflow_schedule = list(
+            cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate))
+        # Add the null resets to the end
+        return cls(cashflow_schedule, np.zeros((len(cashflow_schedule), 3)))
+
+    @classmethod
+    def fixed(cls, reference_date, position, cashflows, settlement_date):
+        """Fixed cashflows from a data source, taking nominal amounts into account."""
+
+        def row(cashflow):
+            rate = cashflow['Rate'] if isinstance(cashflow['Rate'], float) else cashflow['Rate'].amount
+            if cashflow['Payment_Date'] < reference_date or (
+                    settlement_date and cashflow['Payment_Date'] < settlement_date):
+                return None
+            # check the accrual dates - if none set it to the payment date
+            Accrual_Start_Date = cashflow['Accrual_Start_Date'] if cashflow[
+                'Accrual_Start_Date'] else cashflow['Payment_Date']
+            Accrual_End_Date = cashflow['Accrual_End_Date'] if cashflow[
+                'Accrual_End_Date'] else cashflow['Payment_Date']
+            return [(Accrual_Start_Date - reference_date).days, (Accrual_End_Date - reference_date).days,
+                    (cashflow['Payment_Date'] - reference_date).days,
+                    cashflow['Accrual_Year_Fraction'], position * cashflow['Notional'],
+                    position * cashflow.get('Fixed_Amount', 0.0), rate, 0.0, 0.0]
+
+        # needed to deal with forward settlement
+        return cls.from_items(
+            cashflows['Items'],
+            lambda x: (x['Payment_Date'], x.get('Accrual_Start_Date', x['Payment_Date'])), row,
+            offsets=lambda cashflow: [
+                0, 0, 0 if settlement_date is None else -(settlement_date - reference_date).days])
+
+    @classmethod
+    def simple_fixed(cls, reference_date, position, cashflows, amount, aggregate=False):
+        """Fixed cashflows from a data source, reading the fixed value `amount` alone against a
+        payment day that is also its accrual window. `aggregate` sums a day's amounts into one
+        row rather than writing one row per item."""
+        cash, row_of_day = [], {}
+        for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
+            if cashflow['Payment_Date'] >= reference_date:
+                tenor = (cashflow['Payment_Date'] - reference_date).days
+                value = position * amount(cashflow)
+                if aggregate and tenor in row_of_day:
+                    cash[row_of_day[tenor]][5] += value
+                else:
+                    row_of_day[tenor] = len(cash)
+                    cash.append([tenor, tenor, tenor, 1.0, 0.0, value, 0.0, 0.0, 0.0])
+
+        # Add the null resets to the end
+        return cls(cash, np.zeros((len(cash), 3)))
+
+    @classmethod
+    def equity_swaplet(cls, base_date, time_grid, position, cashflows, current_spot, busday):
+        """Equity cashflows from a data source."""
+
+        def row(cashflow):
+            if cashflow['Payment_Date'] < base_date:
+                return None
+            return [(cashflow['Start_Date'] - base_date).days, (cashflow['End_Date'] - base_date).days,
+                    (cashflow['Payment_Date'] - base_date).days, cashflow.get('Start_Multiplier', 1.0),
+                    cashflow.get('End_Multiplier', 1.0), position * cashflow['Amount'],
+                    cashflow.get('Dividend_Multiplier', 1.0),
+                    (cashflow['Start_Date'] + busday - base_date).days,
+                    (cashflow['End_Date'] + busday - base_date).days]
+
+        def resets(cashflow):
+            r = []
+            for reset in ['Start', 'End']:
+                Reset_Day = (cashflow[reset + '_Date'] - base_date).days
+                Start_Day = Reset_Day
+                # we map the weight of the reset with the prior dividends
+                Weight = cashflow.get('Known_Dividend_Sum', 0.0)
+
+                # Need to use this reset to estimate future dividends
+                Time_Grid, Scenario = time_grid.get_scenario_offset(max(Reset_Day, 0))
+
+                # only add a reset if it's in the past - if its 0, then replace it with the current spot
+                if Start_Day <= 0:
+                    known_price = cashflow.get('Known_' + reset + '_Price', 0.0)
+                    if Start_Day == 0 and not known_price:
+                        logging.warning(
+                            'Known_{}_Price not set at base_date - setting to current spot'.format(reset))
+                        reset_price = current_spot
+                    else:
+                        reset_price = known_price
+                else:
+                    reset_price = 0.0
+
+                r.append(([Time_Grid, Reset_Day, -1, Start_Day, Start_Day, Weight, reset_price,
+                           cashflow.get('Known_' + reset + '_FX_Rate', 0.0) if Start_Day <= 0 else 0.0],
+                          Scenario))
+            return r
+
+        swaplets = cls.from_items(
+            cashflows['Items'],
+            lambda x: (x['Payment_Date'], x['End_Date'], x['Start_Date']), row, resets=resets)
+        # calculate the business day ajustment on the mtm time grid
+        bus_offset = np.array([((x + busday) - x).days for x in sorted(time_grid.mtm_dates)])
+        return swaplets, bus_offset
+
+    @staticmethod
+    def index_reference_samples(pricing_date, months_lag, interpolated):
+        """The (date, weight) index observations an inflation reference reads.
+
+        A non-interpolated reference reads one month-start, `months_lag` months back; an
+        interpolated one straddles two, weighted by how far into its own month the pricing date
+        sits. Keeping the rule and the lag separate admits any lag, which is what the schema
+        always declared.
+        """
+        if not interpolated:
+            return [((pricing_date - pd.DateOffset(months=months_lag)).to_period('M').to_timestamp('D'), 1.0)]
+
+        month_start = pricing_date.to_period('M').to_timestamp('D')
+        w = (pricing_date - month_start).days / float(
+            ((month_start + pd.DateOffset(months=1)) - month_start).days)
+        return [((pricing_date - pd.DateOffset(months=lag)).to_period('M').to_timestamp('D'), weight)
+                for lag, weight in ((months_lag, 1.0 - w), (months_lag - 1, w))]
+
+    @classmethod
+    def index(cls, base_date, time_grid, position, cashflows, price_index, index_rate,
+              settlement_date, months_lag, interpolated, isBond=True):
+        """Index-linked cashflows from a data source, against the price_index and index_rate factors."""
+
+        def index_reference(pricing_date, lagged_date, resets, offsets):
+            for Day, Weight in cls.index_reference_samples(pricing_date, months_lag, interpolated):
+                Rel_Day = (Day - lagged_date).days
+                Value = index_rate.get_reference_value(Day) if Day <= lagged_date else 0.0
+                Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
+                resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
+                offsets.append(Scenario)
+
+        cash = []
+        cashflow_reset_offsets = []
+        # resets at different points in time
+        time_resets = []
+        time_scenario_offsets = []
+        # resets per cashflow
+        base_resets = []
+        base_scenario_offsets = []
+        final_resets = []
+        final_scenario_offsets = []
+
+        for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
+            if cashflow['Payment_Date'] >= base_date and (
+                    (cashflow['Payment_Date'] >= settlement_date) if settlement_date else True):
+                Pay_Date = (cashflow['Payment_Date'] - base_date).days
+                Accrual_Start_Date = (cashflow['Accrual_Start_Date'] - base_date).days \
+                    if cashflow.get('Accrual_Start_Date') else Pay_Date
+                Accrual_End_Date = (cashflow['Accrual_End_Date'] - base_date).days \
+                    if cashflow.get('Accrual_End_Date') else Pay_Date
+                base_reference_date = cashflow.get('Base_Reference_Date') \
+                    if cashflow.get('Base_Reference_Date') else base_date
+                final_reference_date = cashflow.get('Final_Reference_Date') \
+                    if cashflow.get('Final_Reference_Date') else base_date
+
+                cash.append([Accrual_Start_Date, Accrual_End_Date, Pay_Date, cashflow['Accrual_Year_Fraction'],
+                             position * cashflow['Notional'], cashflow['Rate_Multiplier'], cashflow['Yield'].amount, 0.0,
+                             0.0])
+
+                # attach the base and final reference dates to the cashflow
+                cashflow_reset_offsets.append(
+                    [cashflow['Base_Reference_Value'] if cashflow['Base_Reference_Value'] else -(
+                            base_reference_date - base_date).days,
+                     cashflow['Final_Reference_Value'] if cashflow['Final_Reference_Value'] else -(
+                             final_reference_date - base_date).days,
+                     Pay_Date if settlement_date is None else -(settlement_date - base_date).days])
+
+                if isBond:
+                    index_reference(
+                        base_reference_date, base_date, base_resets, base_scenario_offsets)
+                    index_reference(
+                        final_reference_date, base_date, final_resets, final_scenario_offsets)
+
+        # set the cashflows
+        indexed = cls(sorted(cash), cashflow_reset_offsets)
+        # check if the paydays are still sorted
+        if (indexed.schedule[:, CASHFLOW_INDEX_Pay_Day] != sorted(indexed.schedule[:, CASHFLOW_INDEX_Pay_Day])).any():
+            logging.error("Cashflow Pay Day not in sorted order - check accrual dates")
+
+        if isBond:
+            mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
+
+            for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
+                # calc the number of days since last published date to the base date
+                Rel_Day = (last_published_date - base_date).days
+                Value = index_rate.get_reference_value(last_published_date) if last_published_date <= index_rate.param[
+                    'Last_Period_Start'] else 0.0
+
+                time_resets.append([0.0, Rel_Day, Rel_Day, Rel_Day, -1, 1.0, Value, 0.0])
+                time_scenario_offsets.append(0)
+
+            indexed.set_resets(time_resets, time_scenario_offsets)
+
+            return indexed, TensorResets(base_resets, base_scenario_offsets), TensorResets(
+                final_resets, final_scenario_offsets)
+
+        else:
+            for eval_time in time_grid.time_grid[:, TIME_GRID_MTM]:
+                actual_time = base_date + pd.DateOffset(days=eval_time)
+
+                index_reference(
+                    actual_time, index_rate.param['Last_Period_Start'], time_resets, time_scenario_offsets)
+
+            indexed.set_resets(time_resets, time_scenario_offsets)
+
+            return indexed
+
+    @classmethod
+    def float(cls, reference_date, time_grid, position, cashflows, reference=None):
+        """Floating cashflows from a data source.
+
+        `reference` is the deal's own, here for the refusal below: a reset with a zero-length rate
+        window is refused BY NAME, and a refusal that cannot say which deal it is about is one a desk
+        cannot act on.
+        """
+
+        def row(cashflow):
+            if cashflow['Payment_Date'] < reference_date:
+                return None
+            # potential FX resets
+            fx_reset_date = (cashflow.get('FX_Reset_Date') - reference_date).days \
+                if cashflow.get('FX_Reset_Date') else 0.0
+            fx_reset_val = cashflow.get('Known_FX_Rate', 0.0)
+            return [(cashflow['Accrual_Start_Date'] - reference_date).days,
+                    (cashflow['Accrual_End_Date'] - reference_date).days,
+                    (cashflow['Payment_Date'] - reference_date).days,
+                    cashflow['Accrual_Year_Fraction'], position * cashflow['Notional'],
+                    position * cashflow.get('Fixed_Amount', 0.0), cashflow['Margin'].amount,
+                    fx_reset_date, fx_reset_val]
+
+        def resets(cashflow):
+            r = []
+            for reset in cashflow['Resets']:
+                # A DEGENERATE RATE WINDOW IS REFUSED, not derived: the rate tenor is a quantity the
+                # author did not state and no rule recovers - the accrual window is the period's,
+                # not the rate's - so widening one would be a number nobody quoted
+                if reset[2] == reset[1]:
+                    raise UnpriceableSchedule(
+                        '{}: the reset fixing {:%Y-%m-%d} on the cashflow paying {:%Y-%m-%d} has a '
+                        'rate window that starts and ends on {:%Y-%m-%d}. A zero-length window has '
+                        'no forward rate to read and the schedule states no tenor to widen it to. '
+                        'Author the reset\'s rate end date after its rate start (the accrual end '
+                        'is the usual one), or drop the reset.'.format(
+                            reference or 'this CashflowListDeal', reset[0],
+                            cashflow['Payment_Date'], reset[1]))
+
+                # create the reset vector
+                Reset_Day = (reset[0] - reference_date).days
+                Start_Day = (reset[1] - reference_date).days
+                End_Day = (reset[2] - reference_date).days
+                Accrual = reset[3]
+                Weight = 1.0 / len(cashflow['Resets'])
+                Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
+                # only add a reset if it's in the past
+                r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
+                           reset[-1].amount if reset[0] < reference_date else 0.0, Accrual], Scenario))
+            return r
+
+        return cls.from_items(
+            cashflows['Items'],
+            lambda x: (x['Payment_Date'], x['Accrual_End_Date'], x['Accrual_Start_Date']),
+            row, resets=resets)
+
+    @classmethod
+    def energy(cls, reference_date, time_grid, position, cashflows, reference, forwardsample,
+               fxsample, calendars):
+        """Floating/fixed cashflows from a data source under the energy model.
+        TODO: allow an fxSample different from the forwardsample.
+        """
+        forward_calendar_bday = calendars.get(forwardsample.get_holiday_calendar(), {'businessday': 'B'})['businessday']
+
+        def row(cashflow):
+            if cashflow['Payment_Date'] < reference_date:
+                return None
+            return [(cashflow['Period_Start'] - reference_date).days,
+                    (cashflow['Period_End'] - reference_date).days,
+                    (cashflow['Payment_Date'] - reference_date).days, cashflow.get('Price_Multiplier', 1.0),
+                    position * cashflow['Volume'], 0.0, cashflow.get('Fixed_Basis', 0.0), 0.0, 0.0]
+
+        def resets(cashflow):
+            r = []
+            bunsiness_dates = pd.date_range(
+                cashflow['Period_Start'], cashflow['Period_End'], freq=forward_calendar_bday)
+
+            if forwardsample.get_sampling_convention() == 'ForwardPriceSampleDaily':
+                # create daily samples
+                reset_dates = bunsiness_dates
+
+            elif forwardsample.get_sampling_convention() == 'ForwardPriceSampleBullet':
+                # create one sample
+                reset_dates = [bunsiness_dates[-1]]
+
+            resets_in_excel_format = np.array([(x - reference.start_date).days for x in reset_dates])
+            reference_date_excel = (reference_date - reference.start_date).days
+
+            # retrieve the fixing dates from the reference curve and adding an offset
+            fixing_dates = reference.get_fixings(resets_in_excel_format + forwardsample.param.get('Offset', 0))
+
+            for reset_day, fixing_day in zip(resets_in_excel_format, fixing_dates):
+                Reset_Day = reset_day - reference_date_excel
+                Start_Day = reset_day
+                End_Day = fixing_day
+                Weight = 1.0 / len(reset_dates)
+                Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
+                # only add a reset if its in the past
+                r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
+                           cashflow['Realized_Average'] or 0.0,
+                           cashflow['FX_Realized_Average'] or 0.0], Scenario))
+            return r
+
+        return cls.from_items(
+            cashflows['Items'],
+            lambda x: (x['Payment_Date'], x['Period_End'], x['Period_Start']), row, resets=resets)
+
     def bind(self, unit):
         """A cashflow's resets are part of it, so they bind with it."""
         if self.Resets is not None:
@@ -1776,7 +2315,7 @@ class TensorCashFlows(TensorSchedule):
         """Adjusts the last cashflow's daycount accrual fraction to include the maturity date"""
         self._compiling()
         last_cashflow = self.schedule[-1]
-        last_cashflow[CASHFLOW_INDEX_Year_Frac] = get_day_count_accrual(
+        last_cashflow[CASHFLOW_INDEX_Year_Frac] = DayCount.accrual(
             reference_date + pd.offsets.Day(last_cashflow[CASHFLOW_INDEX_End_Day]),
             last_cashflow[CASHFLOW_INDEX_End_Day] - last_cashflow[CASHFLOW_INDEX_Start_Day] + 1, daycount_code)
 
@@ -1805,17 +2344,17 @@ class TensorCashFlows(TensorSchedule):
     def add_mtm_payments(self, base_date, principal_exchange, effective_date, day_count):
         ''' MTM CCIRS's only need a zero marker for the nominal should the effective date be in the future '''
         if (principal_exchange in ['Start_Maturity', 'Start']) and base_date <= effective_date:
-            dummy_cashflow = make_cashflow(
+            dummy_cashflow = self.make_cashflow(
                 base_date, base_date - pd.offsets.Day(1), effective_date,
-                effective_date, 0.0, get_day_count(day_count), 0.0, 0.0)
+                effective_date, 0.0, DayCount.code(day_count), 0.0, 0.0)
             self.insert_cashflow(dummy_cashflow)
 
     def add_fixed_payments(self, base_date, principal_exchange, effective_date, day_count, principal):
         ''' Regular CCIRS's might need to exchange principle at the start and end '''
         if (principal_exchange in ['Start_Maturity', 'Start']) and base_date <= effective_date:
             self.insert_cashflow(
-                make_cashflow(base_date, effective_date, effective_date, effective_date, 0.0, get_day_count(day_count),
-                              -principal, 0.0))
+                self.make_cashflow(base_date, effective_date, effective_date, effective_date,
+                                   0.0, DayCount.code(day_count), -principal, 0.0))
 
         if principal_exchange in ['Start_Maturity', 'Maturity']:
             self._compiling()
@@ -1829,22 +2368,85 @@ class TensorCashFlows(TensorSchedule):
             t_grid[t_grid > last_payment] = self.schedule[:, CASHFLOW_INDEX_Pay_Day].max() + 1
         return np.searchsorted(self.schedule[:, field_index], t_grid).astype(np.int64)
 
+    def compress_no_compounding(self, groupsize, check_resets=True):
+        '''Approximate many resets by fewer groups, or return the cashflows unchanged.
 
-def split_tensor(tensor, counts):
-    return torch.split(tensor, tuple(counts)) if tensor.shape[0] == counts.sum() else [tensor] * counts.size
+        :param groupsize: -1 keeps every reset and only regroups them; otherwise sample this many
+            groups per cashflow
+        :param check_resets: require every reset to be in the future
+        '''
+        cash_pmts, cash_index, cash_counts = np.unique(
+            self.schedule[:, CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
 
+        if (self.offsets[:, 0] == 1).all():
+            if (cash_counts > abs(groupsize)).any():
+                # can compress
+                cash, cashflow_reset_offsets = [], []
+                all_resets, reset_scenario_offsets = [], []
+                for pay_day, index, num_cf in zip(*[cash_pmts, cash_index, cash_counts]):
+                    cashflow_schedule = self.schedule[index:index + num_cf]
+                    cashflow_offsets = self.offsets[index:index + num_cf]
+                    reset_offset = self.offsets[index:index + num_cf, 1]
+                    nominals = np.unique(cashflow_schedule[:, CASHFLOW_INDEX_Nominal])
+                    margins = np.unique(cashflow_schedule[:, CASHFLOW_INDEX_FloatMargin])
 
-def split_array(array, counts):
-    """`split_tensor` on the numpy side — keeps a CurveTensor's CPU scenario indices in step with its
-    device ones, so a per-deal slice re-derives its row routing without a device sync."""
-    return np.split(array, counts.cumsum()[:-1]) if array.shape[0] == counts.sum() \
-        else [array] * counts.size
+                    if groupsize == -1 and nominals.size == 1 and margins.size == 1:
+                        # we can compress this
+                        cash.append(
+                            [cashflow_schedule[0, CASHFLOW_INDEX_Start_Day],
+                             cashflow_schedule[-1, CASHFLOW_INDEX_End_Day],
+                             pay_day,
+                             cashflow_schedule[:, CASHFLOW_INDEX_Year_Frac].sum(),
+                             cashflow_schedule[:, CASHFLOW_INDEX_Nominal].mean(),
+                             cashflow_schedule[:, CASHFLOW_INDEX_FixedAmt].sum(),
+                             cashflow_schedule[:, CASHFLOW_INDEX_FloatMargin].mean(),
+                             cashflow_schedule[0, CASHFLOW_INDEX_FXResetDate],
+                             cashflow_schedule[0, CASHFLOW_INDEX_FXResetValue]])
 
+                        cashflow_reset_offsets.append([num_cf, index, 1])
+                        all_resets.extend(self.Resets[reset_offset].tolist())
+                        reset_scenario_offsets.extend(self.Resets.offsets[reset_offset].tolist())
 
-# @torch.jit.script
-def calc_hermite_curve(t_a, g, c, curve_t0, curve_t1):
-    one_minus_ta = (1.0 - t_a)
-    return curve_t0 * one_minus_ta + t_a * (curve_t1 + one_minus_ta * (g + t_a * c))
+                    elif nominals.size <= groupsize and margins.size <= groupsize and (check_resets and not (
+                            self.Resets[reset_offset, RESET_INDEX_Reset_Day] < 0).any() or not check_resets):
+                        # we can compress this
+                        for cash_group, ofs_group in zip(*map(
+                                lambda x: np.array_split(x, groupsize), [cashflow_schedule, cashflow_offsets])):
+                            cash.append(
+                                [cash_group[0, CASHFLOW_INDEX_Start_Day],
+                                 cash_group[-1, CASHFLOW_INDEX_End_Day],
+                                 pay_day,
+                                 cash_group[:, CASHFLOW_INDEX_Year_Frac].sum(),
+                                 # not strictly correct - need to break this up - TODO
+                                 cash_group[:, CASHFLOW_INDEX_Nominal].mean(),
+                                 cash_group[:, CASHFLOW_INDEX_FixedAmt].sum(),
+                                 # not strictly correct - need to break this up - TODO
+                                 cash_group[:, CASHFLOW_INDEX_FloatMargin].mean(),
+                                 cash_group[0, CASHFLOW_INDEX_FXResetDate],
+                                 cash_group[0, CASHFLOW_INDEX_FXResetValue]])
+
+                            reset_index = ofs_group[ofs_group[:, 1].size // 2, 1]
+                            cashflow_reset_offsets.append([1, len(all_resets), 0])
+                            reset_scenario_offsets.append(self.Resets.offsets[reset_index])
+                            all_resets.append(self.Resets[reset_index].tolist())
+
+                    else:
+                        # copy as is
+                        cash.extend(cashflow_schedule.tolist())
+                        all_resets.extend(self.Resets[reset_offset].tolist())
+                        reset_scenario_offsets.extend(self.Resets.offsets[reset_offset].tolist())
+                        cashflow_reset_offsets.extend(self.offsets[index:index + num_cf].tolist())
+
+                approx_cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
+                approx_cashflows.set_resets(all_resets, reset_scenario_offsets)
+                if len(self.Resets) == len(approx_cashflows.Resets):
+                    logging.warning('Cashflows rebased from {} resets'.format(len(self.Resets)))
+                else:
+                    logging.warning('Cashflows reduced from {} resets to {} resets'.format(
+                        len(self.Resets), len(approx_cashflows.Resets)))
+                return approx_cashflows
+
+        return self
 
 
 class CurveTensor(object):
@@ -1852,6 +2454,17 @@ class CurveTensor(object):
     this indexes that grid while keeping track of the indices and any non-linear interpolation.
     Used directly by TensorBlock.
     '''
+
+    @staticmethod
+    def split_tensor(tensor, counts):
+        return torch.split(tensor, tuple(counts)) if tensor.shape[0] == counts.sum() else [tensor] * counts.size
+
+    @staticmethod
+    def split_array(array, counts):
+        """`split_tensor` on the numpy side — keeps a CurveTensor's CPU scenario indices in step with its
+        device ones, so a per-deal slice re-derives its row routing without a device sync."""
+        return np.split(array, counts.cumsum()[:-1]) if array.shape[0] == counts.sum() \
+            else [array] * counts.size
 
     def __init__(self, interp_obj, index, alpha, np_index=None):
         self.interp_obj = interp_obj
@@ -1877,11 +2490,11 @@ class CurveTensor(object):
         return self.interp_obj.gather_rows(self.index, self.index_next, self.alpha, self.route)
 
     def split(self, counts):
-        sub_alpha = split_tensor(self.alpha, counts) if self.alpha is not None else [None] * counts.size
-        sub_index = split_tensor(self.index, counts)
+        sub_alpha = CurveTensor.split_tensor(self.alpha, counts) if self.alpha is not None else [None] * counts.size
+        sub_index = CurveTensor.split_tensor(self.index, counts)
         return [CurveTensor(self.interp_obj, sub_index, sub_alpha, np_index=sub_np)
                 for sub_index, sub_alpha, sub_np in
-                zip(sub_index, sub_alpha, split_array(self.np_index, counts))]
+                zip(sub_index, sub_alpha, CurveTensor.split_array(self.np_index, counts))]
 
     def interpolate_risk_neutral(self, curve_component, points, time_grid, time_multiplier):
         t = time_grid[:, 1].reshape(-1, 1)
@@ -2006,7 +2619,8 @@ class DerivedForwardCurve(object):
         tenor_in_days = end_points - self.t_excel.reshape(-1, 1)
         cost_of_carry = self.carry.gather_weighted_curve(
             shared, end_points, multiply_by_time=False) * self.spot.new_tensor(
-            tenor_in_days / DAYS_IN_YEAR).unsqueeze(-1) + self.repo.gather_weighted_curve(shared, tenor_in_days)
+            tenor_in_days / DayCount.DAYS_IN_YEAR).unsqueeze(-1) + \
+            self.repo.gather_weighted_curve(shared, tenor_in_days)
         return self.spot.unsqueeze(1) * torch.exp(cost_of_carry)
 
 
@@ -2128,36 +2742,6 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
         return {k: v[0] for k, v in CDS_rates.items()}
 
 
-def calc_par_cds(R, D, f, S_ti, S_j, tau, delta=0.0, start_time=None, end_time=None):
-    if delta:
-        S_vals = S_j.copy()
-        S_vals[start_time: end_time] += delta * S_ti[start_time: end_time]
-    else:
-        S_vals = S_j
-
-    h = (S_vals[1:] - S_vals[:-1]) / (S_ti[1:] - S_ti[:-1])
-    S = np.exp(-S_vals)
-    F = D * S
-    V_prot = ((F[:-1] - F[1:]) * h) / (h + f)
-
-    alpha = tau[1:] - tau[:-1]
-    n = S_ti.searchsorted(tau[1:])
-    v_fee = -tau[0]
-    prev_n = 0
-
-    for alpha_j, prev_tau, n_j in zip(alpha, tau[:-1], n):
-        sub_i = slice(prev_n, n_j)
-        sub_i_p1 = slice(prev_n + 1, n_j + 1)
-        h_plus_f = h[sub_i] + f[sub_i]
-        A_j = ((1 + h_plus_f * (S_ti[sub_i] - prev_tau)) * F[sub_i] - (
-                1 + h_plus_f * (S_ti[sub_i_p1] - prev_tau)) * F[sub_i_p1]) * h[sub_i] / h_plus_f ** 2
-        v_fee += alpha_j * D[n_j] * S[n_j] + A_j.sum()
-        prev_n = n_j
-
-    v_prot = (1.0 - R) * V_prot[:n_j].sum()
-    return v_prot / v_fee
-
-
 def index_cds_par_spread(
     H0_names, tau, D, R, f, S_ti, hazard_scale, eps=1e-14
 ):
@@ -2205,13 +2789,6 @@ def index_cds_par_spread(
     v_prot_total = (1.0 - R) * np.sum(V_prot[:, :n_last])
 
     return v_prot_total / v_fee
-
-
-def filter_data_frame(df, from_date, to_date, rate=None):
-    index1 = (pd.Timestamp(from_date) - excel_offset).days
-    index2 = (pd.Timestamp(to_date) - excel_offset).days
-    return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
-        [col for col in df.columns if col.startswith(rate)]]
 
 
 def bars_touched(bars, level, barrier_up):
@@ -2330,37 +2907,6 @@ def ApproxBivN(P, Q, rho):
     return final
 
 
-def black_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
-    stddev = vol * np.sqrt(tenor)
-    sign = 1.0 if (F > 0.0 and X > 0.0) else -1.0
-    d1 = (np.log(F / X) + 0.5 * stddev * stddev) / stddev
-    d2 = d1 - stddev
-    return buyOrSell * callOrPut * (F * scipy.stats.norm.cdf(callOrPut * sign * d1) -
-                                    X * scipy.stats.norm.cdf(callOrPut * sign * d2)) * np.exp(-r * tenor)
-
-
-def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
-    """The numpy twin of `bachelier_european_option`, and the same signature as the numpy Black.
-
-    A vol quoted NORMAL is an absolute rate move, so the premium is
-    ``P = e^{-rT}[mu*Phi(mu/s) + s*phi(mu/s)]`` with ``mu = omega(F-X)`` and ``s = sigma_N sqrt(T)``.
-
-    THE GENERAL FORM, not the at-the-money one: `create_market_swaps` strikes its benchmarks at par
-    and so always calls this at ``F = X``, where it collapses to ``A sigma_N sqrt(T/2 pi)`` - but
-    baking that collapse in would price an off-market strike as an ATM one in silence.
-
-    ``mu = omega(F-X)`` carries both directions in one expression because ``phi`` is even, and it is
-    the SAME expression `bachelier_european_option` evaluates in tensors - one formula in two
-    precisions, as the Black pair is. Measured at the money, the two are BIT-IDENTICAL and both sit
-    2.2e-16 relative from the closed form. Gate: `tests/test_hw2f_analytic.py`'s
-    `test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium`.
-    """
-    stddev = vol * np.sqrt(tenor)
-    mu = callOrPut * (F - X)
-    return buyOrSell * (mu * scipy.stats.norm.cdf(mu / stddev) +
-                        stddev * scipy.stats.norm.pdf(mu / stddev)) * np.exp(-r * tenor)
-
-
 def declared_spot(code, name):
     """Pass a resolved spot code through, saying ONCE whether it is simulated.
 
@@ -2394,7 +2940,7 @@ def bridge_interval_variance(shared, factor_dep, deal_time):
     """
     rate = getattr(shared, 't_Bridge_Variance_Rate', {}).get(factor_dep.get('Barrier_Underlying'))
     days = deal_time[:, TIME_GRID_MTM]
-    return (rate or 0.0) / DAYS_IN_YEAR * np.diff(days, prepend=days[0])
+    return (rate or 0.0) / DayCount.DAYS_IN_YEAR * np.diff(days, prepend=days[0])
 
 
 def barrier_touched(prev_touched, prev_spot, s_t, barrier, variance, up):
@@ -2459,7 +3005,11 @@ class TermStructure:
         return (self.values if values is None else values)[self.index(t)]
 
     def index_at(self, t):
-        return bucket_index(self.knots.np, t)
+        """Which bucket each time in ``t`` falls in - `index`'s choice, on the HOST. What cuts a
+        fixing interval into the residual draws its clock owes."""
+        return np.clip(np.searchsorted(self.knots.np - BUCKET_TOL,
+                                       np.asarray(t, dtype=float), side='right') - 1,
+                       0, len(self.knots.np) - 1)
 
 
 def sqrt_or_zero(v):
@@ -2469,14 +3019,6 @@ def sqrt_or_zero(v):
     positive = v > 0
     return torch.where(positive, torch.sqrt(torch.where(positive, v, torch.ones_like(v))),
                        torch.zeros_like(v))
-
-
-def bucket_index(knots, t):
-    """Which bucket of ``knots`` each time in ``t`` falls in - `TermStructure.index`'s choice, on the
-    HOST. What cuts a fixing interval into the residual draws its clock owes."""
-    return np.clip(np.searchsorted(np.asarray(knots, dtype=float) - BUCKET_TOL,
-                                   np.asarray(t, dtype=float), side='right') - 1,
-                   0, len(knots) - 1)
 
 
 class LogVar2FJ:
@@ -3165,6 +3707,37 @@ def Bjerksund_Stensland(A1, A2, B, x1, x2, K, sigma1, sigma2, rho, callOrPut):
     return A1 * x1 * norm_cdf(callOrPut * d1) + A2 * x2 * norm_cdf(callOrPut * d2) + B * norm_cdf(callOrPut * d3)
 
 
+def black_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
+    stddev = vol * np.sqrt(tenor)
+    sign = 1.0 if (F > 0.0 and X > 0.0) else -1.0
+    d1 = (np.log(F / X) + 0.5 * stddev * stddev) / stddev
+    d2 = d1 - stddev
+    return buyOrSell * callOrPut * (F * scipy.stats.norm.cdf(callOrPut * sign * d1) -
+                                    X * scipy.stats.norm.cdf(callOrPut * sign * d2)) * np.exp(-r * tenor)
+
+
+def bachelier_european_option_price(F, X, r, vol, tenor, buyOrSell, callOrPut):
+    """The numpy twin of `bachelier_european_option`, and the same signature as the numpy Black.
+
+    A vol quoted NORMAL is an absolute rate move, so the premium is
+    ``P = e^{-rT}[mu*Phi(mu/s) + s*phi(mu/s)]`` with ``mu = omega(F-X)`` and ``s = sigma_N sqrt(T)``.
+
+    THE GENERAL FORM, not the at-the-money one: `create_market_swaps` strikes its benchmarks at par
+    and so always calls this at ``F = X``, where it collapses to ``A sigma_N sqrt(T/2 pi)`` - but
+    baking that collapse in would price an off-market strike as an ATM one in silence.
+
+    ``mu = omega(F-X)`` carries both directions in one expression because ``phi`` is even, and it is
+    the SAME expression `bachelier_european_option` evaluates in tensors - one formula in two
+    precisions, as the Black pair is. Measured at the money, the two are BIT-IDENTICAL and both sit
+    2.2e-16 relative from the closed form. Gate: `tests/test_hw2f_analytic.py`'s
+    `test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_premium`.
+    """
+    stddev = vol * np.sqrt(tenor)
+    mu = callOrPut * (F - X)
+    return buyOrSell * (mu * scipy.stats.norm.cdf(mu / stddev) +
+                        stddev * scipy.stats.norm.pdf(mu / stddev)) * np.exp(-r * tenor)
+
+
 def bachelier_european_option(F, X, vol, tenor, buyorsell, callorput, shared, cash_payoff=0.0, shift=0.0):
     # calculates the bachelier function WITHOUT discounting
     # shift is not used but needed to have the same sig as black_european_option
@@ -3271,7 +3844,7 @@ def implied_vol(premium, forward, strike, rate, steps, T, units, parity):
 class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
     """One benchmark swaption's FIXED leg, in the curve's own year fractions.
 
-    The clock is the interest rate factor's `get_day_count_accrual` and not `DAYS_IN_YEAR`:
+    The clock is the interest rate factor's `get_day_count_accrual` and not `DayCount.DAYS_IN_YEAR`:
     that is what `read_cache` builds `time_grid_years` with, hence the grid every `J` integral is
     taken on. The two are 7e-4 years apart at a 1Y expiry, enough to miss a grid node.
 
@@ -3461,18 +4034,18 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         float_pay_dates = generate_dates_backward(
             maturity, effective, instrument['Floating_Frequency'])
 
-        float_cash = generate_float_cashflows(
+        float_cash = TensorCashFlows.generate_float(
             base_date, time_grid, float_pay_dates, 1.0, None, None,
             instrument['Floating_Frequency'], pd.DateOffset(month=0),
-            get_day_count(instrument['Floating_Day_Count']), 0.0)
+            DayCount.code(instrument['Floating_Day_Count']), 0.0)
 
         K, pvbp = float_cash.get_par_swap_rate(base_date, curve_factor)
 
         if instrument['Fixed_Frequency'] != instrument['Floating_Frequency']:
             fixed_pay_dates = generate_dates_backward(
                 maturity, effective, instrument['Fixed_Frequency'])
-            fixed_cash = generate_fixed_cashflows(
-                base_date, fixed_pay_dates, 1.0, None, get_day_count(instrument['Fixed_Day_Count']), 0.0)
+            fixed_cash = TensorCashFlows.generate_fixed(
+                base_date, fixed_pay_dates, 1.0, None, DayCount.code(instrument['Fixed_Day_Count']), 0.0)
             pv_float = K * pvbp
             pvbp = fixed_cash.get_par_swap_rate(base_date, curve_factor)
             K = pv_float / pvbp
@@ -3577,14 +4150,10 @@ def get_tenors(factor_dict):
     return all_tenor
 
 
-def tenor_diff(tenor_points, interp='Linear'):
-    return CurveTenor(tenor_points, interp)
-
-
 def update_tenors(base_date, all_factors):
     def daycount_fn(base_date, daycount):
         def calc_daycount(time_in_days):
-            return get_day_count_accrual(base_date, time_in_days, daycount)
+            return DayCount.accrual(base_date, time_in_days, daycount)
 
         return calc_daycount
 
@@ -3597,15 +4166,15 @@ def update_tenors(base_date, all_factors):
             tenor_points = risk_factor.get_tenor()
 
             if factor.type == 'DividendRate':
-                tenor_data = tenor_diff(tenor_points, 'Dividend')
+                tenor_data = CurveTenor(tenor_points, 'Dividend')
             elif factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
                 if len(risk_factor.interpolation)>1:
                     interpolation_type = tuple([(x[0], x[1], x[2][0]) for x in risk_factor.interpolation])
                 else:
                     interpolation_type = risk_factor.interpolation[0][0]
-                tenor_data = tenor_diff(tenor_points, interpolation_type)
+                tenor_data = CurveTenor(tenor_points, interpolation_type)
             else:
-                tenor_data = tenor_diff(tenor_points)
+                tenor_data = CurveTenor(tenor_points)
 
             daycount = risk_factor.get_day_count()
             all_tenors[factor] = [tenor_data, daycount_fn(base_date, daycount)]
@@ -3615,39 +4184,36 @@ def update_tenors(base_date, all_factors):
             # we're going to dynamically interpolate when needed
             expiry_map = []
             for moneyness_points in risk_factor.index_map.values():
-                expiry_map.append(tenor_diff(moneyness_points))
+                expiry_map.append(CurveTenor(moneyness_points))
             # store the moneyness and expiry first
-            all_tenors[factor] = [tenor_diff(risk_factor.get_moneyness()),
-                                  tenor_diff(risk_factor.get_expiry()), expiry_map]
+            all_tenors[factor] = [CurveTenor(risk_factor.get_moneyness()),
+                                  CurveTenor(risk_factor.get_expiry()), expiry_map]
 
         elif factor.type in ThreeDimensionalFactors:
             if factor.type == 'ForwardPriceVol':
                 # can interpolate dynamically when needed
                 expiry_map = []
                 for expiry_points in risk_factor.index_map[risk_factor.EXPIRY_INDEX]:
-                    expiry_map.append(tenor_diff(expiry_points[0]))
+                    expiry_map.append(CurveTenor(expiry_points[0]))
                 moneyness_map = []
                 for moneyness_points in risk_factor.index_map[risk_factor.MONEYNESS_INDEX]:
-                    moneyness_map.append(tenor_diff(moneyness_points[0]))
+                    moneyness_map.append(CurveTenor(moneyness_points[0]))
                 # store the moneyness, expiry and tenor points
                 all_tenors[factor] = [moneyness_map, expiry_map,
-                                      tenor_diff(risk_factor.get_tenor()), risk_factor.index_map]
+                                      CurveTenor(risk_factor.get_tenor()), risk_factor.index_map]
             else:
                 # full surface defined - do not interpolate dynamically
                 for dim_index, data in enumerate(
                         [risk_factor.get_moneyness(), risk_factor.get_expiry(), risk_factor.get_tenor()]):
-                    all_tenors.setdefault(factor, [0, 0, 0])[dim_index] = tenor_diff(data)
+                    all_tenors.setdefault(factor, [0, 0, 0])[dim_index] = CurveTenor(data)
 
     return all_tenors
 
 
 # indexing ops manipulating large tensors
 def interpolate_tensor(t, tenor, rate_tensor):
-    dvt = np.concatenate(([1], np.diff(tenor), [1]))
-    tenor_index = tenor.searchsorted(t, side='right')
-    index = (tenor_index - 1).clip(0, tenor.size - 1)
-    index_next = tenor_index.clip(0, tenor.size - 1)
-    alpha = rate_tensor.new(((t - tenor[index]) / dvt[tenor_index]).clip(0, 1))
+    index, index_next, alpha = TimeGrid._index_alpha(tenor, t)
+    alpha = rate_tensor.new(alpha)
     return rate_tensor[index] * (1 - alpha) + rate_tensor[index_next] * alpha
 
 
@@ -3675,7 +4241,7 @@ def split_counts(rates, counts, shared):
     splits = []
     for rate in rates:
         if isinstance(rate, torch.Tensor):
-            splits.append(split_tensor(rate, counts))
+            splits.append(CurveTensor.split_tensor(rate, counts))
         else:
             splits.append(rate.split_counts(counts, shared))
 
@@ -3743,11 +4309,13 @@ def calc_realized_dividends(s_t0, repo, div_yield, div_reset_stack, shared):
     return s_t0 * sr_minus_sq
 
 
-def calc_eq_drift(repo, div_yield, weights, time_grid, shared, multiply_by_time=True):
-    repo_curve_grid = calc_time_grid_curve_rate(repo, time_grid, shared)
-    div_curve_grid = calc_time_grid_curve_rate(div_yield, time_grid, shared)
-    return repo_curve_grid.gather_weighted_curve(
-        shared, weights, multiply_by_time=multiply_by_time) - div_curve_grid.gather_weighted_curve(
+def curve_spread(plus, minus, weights, time_grid, shared, multiply_by_time=True):
+    """The weighted difference of two curves over the time grid: an equity drift takes the repo
+    curve less the dividend one, an FX carry the other leg's curve less the local one."""
+    plus_grid = calc_time_grid_curve_rate(plus, time_grid, shared)
+    minus_grid = calc_time_grid_curve_rate(minus, time_grid, shared)
+    return plus_grid.gather_weighted_curve(
+        shared, weights, multiply_by_time=multiply_by_time) - minus_grid.gather_weighted_curve(
         shared, weights, multiply_by_time=multiply_by_time)
 
 
@@ -3775,14 +4343,6 @@ def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=Fal
     return shared.t_Buffer[key_code]
 
 
-def calc_fx_drift(local, other, weights, time_grid, shared, multiply_by_time=True):
-    repo_local = calc_time_grid_curve_rate(local[1], time_grid, shared)
-    repo_other = calc_time_grid_curve_rate(other[1], time_grid, shared)
-    return repo_other.gather_weighted_curve(
-        shared, weights, multiply_by_time=multiply_by_time) - repo_local.gather_weighted_curve(
-        shared, weights, multiply_by_time=multiply_by_time)
-
-
 def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False):
     T_scalar = isinstance(T, int)
     key_code = ('fxforward', local[0][0], other[0][0], only_diag,
@@ -3795,7 +4355,7 @@ def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False):
 
             if T_t.any():
                 weights = np.diag(T_t).reshape(-1, 1) if only_diag else T_t
-                drift = torch.exp(calc_fx_drift(local, other, weights, time_grid, shared))
+                drift = torch.exp(curve_spread(other[1], local[1], weights, time_grid, shared))
             else:
                 drift = fx_spot.new_ones([time_grid.shape[0], 1 if only_diag else T_t.size, 1])
 
@@ -3805,364 +4365,6 @@ def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False):
             shared.t_Buffer[key_code] = shared.one
 
     return shared.t_Buffer[key_code]
-
-
-def gather_flat_surface(flat_surface, code, expiry, shared, calc_std):
-    # cache the time surface interpolation matrix
-    time_code = ('surface_flat', code[:2], tuple(expiry), calc_std)
-
-    if time_code not in shared.t_Buffer:
-        expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
-        moneyness_max_index = np.array([x.tenor.shape[0] for x in code[FACTOR_INDEX_Flat_Index]])
-        exp_index = np.cumsum(np.append(0, moneyness_max_index[:-1]))
-        time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
-        index, index_next, alpha = expiry_tenor.get_index(expiry)
-        alpha = flat_surface.new(alpha.reshape(-1, 1, 1))
-        subset = np.union1d(index, index_next)
-
-        block_indices, block_alphas = [], []
-        new_moneyness_tenor = reduce(np.union1d, [code[FACTOR_INDEX_Flat_Index][x].tenor for x in subset])
-
-        for tenor_index in subset:
-            moneyness_tenor = code[FACTOR_INDEX_Flat_Index][tenor_index]
-            moneyness_index, moneyness_index_next, moneyness_alpha = moneyness_tenor.get_index(
-                new_moneyness_tenor)
-
-            block_indices.append(exp_index[tenor_index] + np.stack([moneyness_index, moneyness_index_next]))
-            block_alphas.append(np.stack([1.0 - moneyness_alpha, moneyness_alpha]))
-
-        # need to interpolate back to the tenor level
-        money_indices, money_alpha = np.array(block_indices), np.array(block_alphas)
-        subset_index = subset.searchsorted(index)
-        tenor_money_indices = flat_surface.new_tensor(money_indices[subset_index], dtype=torch.int64)
-        tenor_money_alpha = flat_surface.new(money_alpha[subset_index])
-        subset_index_next = subset.searchsorted(index_next)
-        tenor_money_alpha_next = flat_surface.new(money_alpha[subset_index_next])
-        tenor_money_indices_next = flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64)
-
-        if code[FACTOR_INDEX_SubType][0] == 'Malz':
-            # interpolate along variance for term
-            term_prior = flat_surface.new(expiry_tenor.tenor[index].reshape(-1, 1, 1))
-            term_post = flat_surface.new(expiry_tenor.tenor[index_next].reshape(-1, 1, 1))
-            t_expiry = flat_surface.new(expiry.clip(min=expiry_tenor.min).reshape(-1, 1))
-            var_prior = term_prior * flat_surface.take(tenor_money_indices)**2
-            var_post = term_post * flat_surface.take(tenor_money_indices_next)**2
-            var_surface = time_modifier * torch.sum(
-                var_prior * tenor_money_alpha * (1.0 - alpha) +
-                var_post * tenor_money_alpha_next * alpha, dim=1)
-            surface = torch.sqrt(var_surface/t_expiry)
-        else:
-            # interpolate along volatility
-            surface = time_modifier * torch.sum(
-                flat_surface.take(tenor_money_indices) * tenor_money_alpha * (1.0 - alpha) +
-                flat_surface.take(tenor_money_indices_next) * tenor_money_alpha_next * alpha, dim=1)
-
-        shared.t_Buffer[time_code] = (surface.reshape(-1), code, tenor_diff(new_moneyness_tenor))
-
-    return shared.t_Buffer[time_code]
-
-
-def gather_surface_interp(surface, code, expiry, shared, calc_std):
-    # cache the time surface interpolation matrix
-    time_code = ('surface_interp', code[:2], tuple(expiry), calc_std)
-
-    if time_code not in shared.t_Buffer:
-        expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
-        index, index_next, alpha = expiry_tenor.get_index(expiry)
-        time_modifier = np.sqrt(expiry) if calc_std else 1.0
-        alpha = surface.new(alpha).reshape(-1, 1)
-
-        shared.t_Buffer[time_code] = (surface[index] * (1 - alpha) + surface[index_next] * alpha) * time_modifier
-
-    return shared.t_Buffer[time_code]
-
-
-def calc_moneyness_vol_rate(moneyness, expiry, key_code, shared):
-    def calc_skew(x, t, atm_vol, s, L, R, C, D, lam, rho):
-        skew_key = ('skew_params', t) + key_code[FACTOR_INDEX_Offset][0]
-
-        if skew_key not in shared.t_Buffer:
-            s2LC = s + 2.0 * L * C
-            gamma = s2LC / (-2.0 * C * lam)
-            beta = s2LC * (1.0 + 1.0 / lam)
-            alpha = atm_vol + C * ((s - beta) + C * (L - gamma))
-
-            # Right wing
-            s2RD = s + 2.0 * R * D
-            gamma_r = s2RD / (-2.0 * D * rho)
-            beta_r = s2RD * (1.0 + 1.0 / rho)
-            alpha_r = atm_vol + D * ((s - beta_r) + D * (R - gamma_r))
-
-            shared.t_Buffer[skew_key] = (gamma, beta, alpha, gamma_r, beta_r, alpha_r)
-
-        gamma, beta, alpha, gamma_r, beta_r, alpha_r = shared.t_Buffer[skew_key]
-        lam_ok = lam.all()
-        rho_ok = rho.all()
-
-        # the 6 regions of the skew - check for 0 lam and rho - hold flat
-        r1 = torch.ones_like(x) * (
-            (alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C)) if lam_ok else (atm_vol + C * (s + L * C)))
-        r2 = alpha + x * (beta + gamma * x) if lam_ok else atm_vol + C * (s + L * C)
-        r3 = atm_vol + x * (s + L * x)
-        r4 = atm_vol + x * (s + R * x)
-        r5 = alpha_r + x * (beta_r + gamma_r * x) if rho_ok else atm_vol + D * (s + R * D)
-        r6 = torch.ones_like(x) * (
-            (alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D)) if rho_ok else (atm_vol + D * (s + R * D)))
-
-        return torch.where(
-            x <= (1 + lam) * C, r1,
-                torch.where(x <= C, r2,
-                            torch.where(x<=0, r3,
-                                        torch.where(x<=D, r4,
-                                                    torch.where(x<(1+rho)*D, r5, r6)
-                                                    )
-                                        )
-                            )
-                )
-
-    if key_code[0] == 'vol_time_grid' and key_code[FACTOR_INDEX_Offset][0][0] in ['SVI', 'Skew']:
-        surface, rate_code, calc_std = shared.t_Buffer[key_code]
-        expiry_tenor = rate_code[FACTOR_INDEX_Tenor_Index]
-        time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
-        index, index_next, alpha = expiry_tenor.get_index(expiry)
-        alpha = shared.one.new(alpha.reshape(-1, 1))
-
-        # need to calculate the correct way to query the vol surface
-        if moneyness is None:
-            moneyness = 0.0 * shared.one
-        else:
-            if rate_code[FACTOR_INDEX_SubType][1] == 'Sticky_Strike':
-                atm_ref = surface['ATM_Ref'][index] * (1 - alpha) + surface['ATM_Ref'][index_next] * alpha
-                moneyness = torch.log(moneyness / atm_ref)
-
-        if rate_code[FACTOR_INDEX_SubType][0] == 'Skew':
-            vol_prior = calc_skew(moneyness, tuple(index), surface['ATM_Vol'][index], surface['s'][index],
-                                  surface['L'][index], surface['R'][index], surface['C'][index],
-                                  surface['D'][index], surface['lam'][index], surface['rho'][index])
-            vol_post = calc_skew(moneyness, tuple(index_next), surface['ATM_Vol'][index_next], surface['s'][index_next],
-                                  surface['L'][index_next], surface['R'][index_next], surface['C'][index_next],
-                                  surface['D'][index_next], surface['lam'][index_next], surface['rho'][index_next])
-            vol = vol_prior * (1 - alpha) + vol_post * alpha
-            return vol * time_modifier
-
-        elif rate_code[FACTOR_INDEX_SubType][0] == 'SVI':
-            k_m_prior = moneyness - surface['m'][index]
-            var_prior = surface['a'][index] + surface['b'][index] * (
-                    surface['rho'][index] * k_m_prior + torch.sqrt(k_m_prior ** 2 + surface['sigma'][index] ** 2))
-            k_m_post = moneyness - surface['m'][index_next]
-            var_post = surface['a'][index_next] + surface['b'][index_next] * (
-                    surface['rho'][index_next] * k_m_post + torch.sqrt(
-                k_m_post ** 2 + surface['sigma'][index_next] ** 2))
-            variance = var_prior * (1 - alpha) + var_post * alpha
-            return torch.sqrt(variance) * time_modifier
-    else:
-        surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
-        max_index = np.prod(surface.shape) - 1
-        if moneyness is None:
-            moneyness = shared.one * (0.0 if rate_code[FACTOR_INDEX_SubType][0]=='Malz' else 0.0)
-        index, _, alpha = moneyness_tenor.get_index(moneyness)
-        expiry_indices = np.arange(expiry.size).astype(np.int32)
-        expiry_index_key = ('expiry_tenor', tuple(expiry_indices), moneyness_tenor.tenor.size)
-
-        if expiry_index_key not in shared.t_Buffer:
-            shared.t_Buffer[expiry_index_key] = shared.one.new_tensor(
-                np.array([expiry_indices * moneyness_tenor.tenor.size]),
-                dtype=torch.int32).T
-
-        expiry_offsets = shared.t_Buffer[expiry_index_key]
-        vol_index = index + expiry_offsets
-
-        vol_index_next = torch.clamp(vol_index + 1, 0, max_index)
-        vols = surface[vol_index] * (1.0 - alpha) + surface[vol_index_next] * alpha
-        return vols
-
-
-def calc_time_grid_vol_rate(code, moneyness, expiry, shared, calc_std=False):
-    keys = []
-    for rate in code:
-        if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-            keys.append((rate[FACTOR_INDEX_SubType][0], tuple(rate[:1] + tuple(rate[1]))))
-        else:
-            keys.append(('vol2d', rate[:2]))
-
-    key_code = ('vol_time_grid', tuple(keys), tuple(expiry), calc_std)
-
-    if key_code not in shared.t_Buffer:
-        spread = None
-        # We only support one vol stack at the moment - but can extend this to 2 or more
-        for rate in code:
-            # Only static moneyness/expiry vol surfaces are supported for now
-            if rate[FACTOR_INDEX_Stoch]:
-                raise Exception("Stochastic vol surfaces not yet implemented")
-            else:
-                if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-                    spread = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1) for x in rate[FACTOR_INDEX_Offset]}
-                else:
-                    spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                break
-
-        # either interpolate a flat vol surface or a svi/skew vol param
-        if code[0][FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-            shared.t_Buffer[key_code] = (spread, code[0], calc_std)
-        else:
-            shared.t_Buffer[key_code] = gather_flat_surface(
-                spread, code[0], expiry, shared, calc_std)
-
-    return calc_moneyness_vol_rate(moneyness, expiry, key_code, shared)
-
-
-def calc_tenor_time_grid_vol_rate(code, moneyness, expiry, tenor, shared, calc_std=False):
-    key_code = ('vol3d', tuple([x[:2] for x in code]),
-                tuple(expiry.flatten()), tenor, calc_std)
-
-    if key_code not in shared.t_Buffer:
-        vol_spread = None
-
-        for rate in code:
-            # Only static moneyness/expiry vol surfaces are supported for now
-            if rate[FACTOR_INDEX_Stoch]:
-                raise Exception("Stochastic vol surfaces not yet implemented")
-            else:
-                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                break
-
-        tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
-        space = vol_spread.reshape(tenor_index.tenor.size, -1)
-        index, index_next, alpha = tenor_index.get_index(tenor)
-
-        spread = (1.0 - alpha) * space[index] + alpha * space[index_next]
-
-        surface = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
-        flat_vol_time = gather_surface_interp(surface, code[0], expiry, shared, calc_std).reshape(-1, )
-
-        shared.t_Buffer[key_code] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
-
-    return calc_moneyness_vol_rate(moneyness, expiry, key_code, shared)
-
-
-def calc_tenor_cap_time_grid_vol_rate(code, moneyness, expiry, tenor, shared, calc_std=False):
-    key_code = ('vol3d_cap', tuple([x[:2] for x in code]), tenor, calc_std, tuple(expiry.flatten()))
-
-    if key_code not in shared.t_Buffer:
-        vol_spread = None
-
-        for rate in code:
-            # Only static moneyness/expiry vol surfaces are supported for now
-            if rate[FACTOR_INDEX_Stoch]:
-                raise Exception("Stochastic vol surfaces not yet implemented")
-            else:
-                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                break
-
-        tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
-        space = vol_spread.reshape(tenor_index.tenor.size, -1)
-        index, index_next, alpha = tenor_index.get_index(tenor)
-
-        spread = space[index] * (1.0 - alpha) + space[index_next] * alpha
-        shared.t_Buffer[key_code] = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
-
-    surface = shared.t_Buffer[key_code]
-    result = []
-    for exp, mon in zip(expiry, moneyness):
-        time_exp = key_code[:-1] + tuple(exp)
-        if time_exp not in shared.t_Buffer:
-            flat_vol_time = gather_surface_interp(
-                surface, code[0], exp, shared, calc_std).reshape(-1)
-            shared.t_Buffer[time_exp] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
-        result.append(calc_moneyness_vol_rate(mon, exp, time_exp, shared))
-
-    return torch.stack(result)
-
-
-def calc_delivery_time_grid_vol_rate(code, moneyness, expiry, delivery, time_grid, shared):
-    # can't cache this function as moneyness is generally stochastic
-    vol_spread = None
-
-    for rate in code:
-        # Only static moneyness/expiry vol surfaces are supported for now
-        if rate[FACTOR_INDEX_Stoch]:
-            raise Exception("Stochastic vol surfaces not yet implemented")
-        else:
-            vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-            break
-
-    index_map = code[0][FACTOR_INDEX_Surface_Flat_Index]
-    tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
-    expiry_index = code[0][FACTOR_INDEX_Expiry_Index]
-    money_index = code[0][FACTOR_INDEX_Moneyness_Index]
-
-    # need to know the moneyness offset for a particular expiry offset
-    expiry_offset = np.cumsum([0] + [x.tenor.size for x in expiry_index])
-    t_index, t_index_next, alpha = tenor_index.get_index(delivery)
-    alpha_tensor = vol_spread.new(alpha).unsqueeze(2)
-
-    space = []
-    tenor_cache = {}
-    for current_tenor_index in [t_index, t_index_next]:
-        result = []
-        for tenor_sub_index, exp, mon in zip(current_tenor_index, expiry, moneyness):
-            expiry_tenor_map = [expiry_index[to].get_index(e) for to, e in zip(tenor_sub_index, exp)]
-            time_slice = []
-            for tenor_offset, (e_index, e_index_next, e_alpha) in zip(tenor_sub_index, expiry_tenor_map):
-                tenor_exp_key = (tenor_offset, e_index, e_index_next)
-                if tenor_exp_key not in tenor_cache:
-                    if expiry_index[tenor_offset].tenor.size > 1:
-                        # need to interpolate the expiry
-                        moneyness_00 = expiry_offset[tenor_offset] + e_index
-                        moneyness_01 = expiry_offset[tenor_offset] + e_index_next
-
-                        m_prior = vol_spread[slice(*index_map[2][moneyness_00][1:])]
-                        m_next = vol_spread[slice(*index_map[2][moneyness_01][1:])]
-
-                        # grab 2 moneyness layers
-                        m_index_1, m_index_next_1, m_alpha_1 = money_index[moneyness_00].get_index(mon)
-                        m_index_2, m_index_next_2, m_alpha_2 = money_index[moneyness_01].get_index(mon)
-
-                        exp_prior = m_prior[m_index_1] * (1 - m_alpha_1) + m_prior[m_index_next_1] * m_alpha_1
-                        exp_next = m_next[m_index_2] * (1 - m_alpha_2) + m_next[m_index_next_2] * m_alpha_2
-                        tenor_cache[tenor_exp_key] = exp_prior * (1 - e_alpha) + exp_next * e_alpha
-
-                    else:
-                        # go straight to moneyness
-                        moneyness_0 = expiry_offset[tenor_offset]
-                        m_slice = vol_spread[slice(*index_map[2][moneyness_0][1:])]
-                        m_index, m_index_next, m_alpha = money_index[moneyness_0].get_index(mon)
-                        tenor_cache[tenor_exp_key] = m_slice[m_index] * (1 - m_alpha) + m_slice[m_index_next] * m_alpha
-
-                time_slice.append(tenor_cache[tenor_exp_key])
-            result.append(torch.stack(time_slice))
-        space.append(result)
-
-    interpolated_vols = [prior * (1 - a) + next * a for prior, next, a in zip(space[0], space[1], alpha_tensor)]
-
-    return torch.stack(interpolated_vols)
-
-
-def hermite_interpolation_tensor(t, rate_tensor):
-    rate_diff = (rate_tensor[:, 1:, :] - rate_tensor[:, :-1, :])
-    time_diff = t[:, 1:, :] - t[:, :-1, :]
-
-    # calc r_i
-    r_i = ((rate_diff[:, :-1, :] * time_diff[:, 1:, :]) / time_diff[:, :-1, :] +
-           (rate_diff[:, 1:, :] * time_diff[:, :-1, :]) / time_diff[:, 1:, :]) / (
-                  t[:, 2:, :] - t[:, :-2, :])
-    r_1 = ((rate_diff[:, 0] * (t[:, 2, :] + t[:, 1, :] - 2.0 * t[:, 0, :])) / time_diff[:, 0, :] -
-           (rate_diff[:, 1] * time_diff[:, 0, :]) / time_diff[:, 1, :]) / (t[:, 2, :] - t[:, 0, :])
-
-    r_n = (-1.0 / (t[:, -1, :] - t[:, -3, :])) * (
-            (rate_diff[:, -2] * time_diff[:, -1, :]) / time_diff[:, -2, :] -
-            (rate_diff[:, -1] * (2.0 * t[:, -1, :] - t[:, -2, :] - t[:, -3, :])) / time_diff[:, -1, :])
-
-    ri = torch.cat([torch.unsqueeze(r_1, dim=1), r_i, torch.unsqueeze(r_n, dim=1)], dim=1)
-
-    # zero
-    zero = torch.unsqueeze(torch.zeros_like(r_1), dim=1)
-    # calc g_i
-    gi = torch.cat([time_diff * ri[:, :-1, :] - rate_diff, zero], dim=1)
-    # calc c_i
-    ci = torch.cat([2.0 * rate_diff - time_diff * (ri[:, :-1, :] + ri[:, 1:, :]), zero], dim=1)
-
-    return gi, ci
 
 
 def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1):
@@ -4250,7 +4452,7 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
             if r[FACTOR_INDEX_Stoch]:
                 tensor = shared.t_Scenario_Buffer[r[FACTOR_INDEX_Offset]]
                 component = gather_scenario_interp(
-                    build_interpolation(tensor, tenor_diff(np.zeros(1))),
+                    build_interpolation(tensor, CurveTenor(np.zeros(1))),
                     time_grid, shared, as_curve_tensor=False)
             else:
                 tensor = shared.t_Static_Buffer[r[FACTOR_INDEX_Offset]]
@@ -4323,7 +4525,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
             alpha, ten_t, ten_t_next = indices_t
             if is_rt:
                 norm = norm / _bcast(values.clamp(full_tnr.min(), full_tnr.max()))
-            return calc_hermite_curve(
+            return Interpolation.calc_hermite_curve(
                 _bcast(alpha), g[ten_t], c[ten_t], tensor[ten_t], tensor[ten_t_next]) * norm
 
         """Handle Hermite interpolation variants."""
@@ -4425,90 +4627,367 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
         raise ValueError("More than 2 Interpolation Segments not supported")
 
 
-def PCA(matrix, num_redim=0):
-    # Compute eigenvalues and sort into descending order
-    evals, evecs = np.linalg.eig(matrix)
-    indices = np.argsort(evals)[::-1]
-    evecs = evecs[:, indices]
-    evals = evals[indices]
+class VolSurface:
+    """The volatility a pricer reads off a moneyness/expiry surface.
 
-    if num_redim > 0:
-        evecs = evecs[:, :num_redim]
-        evals = evals[:num_redim]
+    `rate` reads a 2-D surface, `tenor_rate` and `cap_rate` a 3-D one at a vol tenor - a swaption's
+    or a cap's. The private three are the gathers they share: the flat-surface build, the expiry
+    blend, the vol-tenor blend and the moneyness read every one of them ends in.
+    """
 
-    var = np.diag(matrix)
-    aki = evecs * np.sqrt(var.reshape(-1, 1).dot(1.0 / evals.reshape(1, -1)))
-    # correlation = (np.identity(var.size)/np.sqrt(var)).dot(evecs).dot(np.identity(evals.size)*np.sqrt(evals))
+    @staticmethod
+    def _tenor_blend(code, tenor, shared):
+        """The static vol stack blended along its vol-tenor axis at `tenor`."""
+        vol_spread = None
 
-    return aki, evecs, evals
+        for rate in code:
+            # Only static moneyness/expiry vol surfaces are supported for now
+            if rate[FACTOR_INDEX_Stoch]:
+                raise Exception("Stochastic vol surfaces not yet implemented")
+            else:
+                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
+                break
+
+        tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
+        space = vol_spread.reshape(tenor_index.tenor.size, -1)
+        index, index_next, alpha = tenor_index.get_index(tenor)
+
+        return space[index] * (1.0 - alpha) + space[index_next] * alpha
+
+    @staticmethod
+    def _flat(flat_surface, code, expiry, shared, calc_std):
+        # cache the time surface interpolation matrix
+        time_code = ('surface_flat', code[:2], tuple(expiry), calc_std)
+
+        if time_code not in shared.t_Buffer:
+            expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
+            moneyness_max_index = np.array([x.tenor.shape[0] for x in code[FACTOR_INDEX_Flat_Index]])
+            exp_index = np.cumsum(np.append(0, moneyness_max_index[:-1]))
+            time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
+            index, index_next, alpha = expiry_tenor.get_index(expiry)
+            alpha = flat_surface.new(alpha.reshape(-1, 1, 1))
+            subset = np.union1d(index, index_next)
+
+            block_indices, block_alphas = [], []
+            new_moneyness_tenor = reduce(np.union1d, [code[FACTOR_INDEX_Flat_Index][x].tenor for x in subset])
+
+            for tenor_index in subset:
+                moneyness_tenor = code[FACTOR_INDEX_Flat_Index][tenor_index]
+                moneyness_index, moneyness_index_next, moneyness_alpha = moneyness_tenor.get_index(
+                    new_moneyness_tenor)
+
+                block_indices.append(exp_index[tenor_index] + np.stack([moneyness_index, moneyness_index_next]))
+                block_alphas.append(np.stack([1.0 - moneyness_alpha, moneyness_alpha]))
+
+            # need to interpolate back to the tenor level
+            money_indices, money_alpha = np.array(block_indices), np.array(block_alphas)
+            subset_index = subset.searchsorted(index)
+            tenor_money_indices = flat_surface.new_tensor(money_indices[subset_index], dtype=torch.int64)
+            tenor_money_alpha = flat_surface.new(money_alpha[subset_index])
+            subset_index_next = subset.searchsorted(index_next)
+            tenor_money_alpha_next = flat_surface.new(money_alpha[subset_index_next])
+            tenor_money_indices_next = flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64)
+
+            if code[FACTOR_INDEX_SubType][0] == 'Malz':
+                # interpolate along variance for term
+                term_prior = flat_surface.new(expiry_tenor.tenor[index].reshape(-1, 1, 1))
+                term_post = flat_surface.new(expiry_tenor.tenor[index_next].reshape(-1, 1, 1))
+                t_expiry = flat_surface.new(expiry.clip(min=expiry_tenor.min).reshape(-1, 1))
+                var_prior = term_prior * flat_surface.take(tenor_money_indices)**2
+                var_post = term_post * flat_surface.take(tenor_money_indices_next)**2
+                var_surface = time_modifier * torch.sum(
+                    var_prior * tenor_money_alpha * (1.0 - alpha) +
+                    var_post * tenor_money_alpha_next * alpha, dim=1)
+                surface = torch.sqrt(var_surface/t_expiry)
+            else:
+                # interpolate along volatility
+                surface = time_modifier * torch.sum(
+                    flat_surface.take(tenor_money_indices) * tenor_money_alpha * (1.0 - alpha) +
+                    flat_surface.take(tenor_money_indices_next) * tenor_money_alpha_next * alpha, dim=1)
+
+            shared.t_Buffer[time_code] = (surface.reshape(-1), code, CurveTenor(new_moneyness_tenor))
+
+        return shared.t_Buffer[time_code]
+
+    @staticmethod
+    def _interp(surface, code, expiry, shared, calc_std):
+        # cache the time surface interpolation matrix
+        time_code = ('surface_interp', code[:2], tuple(expiry), calc_std)
+
+        if time_code not in shared.t_Buffer:
+            expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
+            index, index_next, alpha = expiry_tenor.get_index(expiry)
+            time_modifier = np.sqrt(expiry) if calc_std else 1.0
+            alpha = surface.new(alpha).reshape(-1, 1)
+
+            shared.t_Buffer[time_code] = (surface[index] * (1 - alpha) + surface[index_next] * alpha) * time_modifier
+
+        return shared.t_Buffer[time_code]
+
+    @staticmethod
+    def _moneyness(moneyness, expiry, key_code, shared):
+        def calc_skew(x, t, atm_vol, s, L, R, C, D, lam, rho):
+            skew_key = ('skew_params', t) + key_code[FACTOR_INDEX_Offset][0]
+
+            if skew_key not in shared.t_Buffer:
+                s2LC = s + 2.0 * L * C
+                gamma = s2LC / (-2.0 * C * lam)
+                beta = s2LC * (1.0 + 1.0 / lam)
+                alpha = atm_vol + C * ((s - beta) + C * (L - gamma))
+
+                # Right wing
+                s2RD = s + 2.0 * R * D
+                gamma_r = s2RD / (-2.0 * D * rho)
+                beta_r = s2RD * (1.0 + 1.0 / rho)
+                alpha_r = atm_vol + D * ((s - beta_r) + D * (R - gamma_r))
+
+                shared.t_Buffer[skew_key] = (gamma, beta, alpha, gamma_r, beta_r, alpha_r)
+
+            gamma, beta, alpha, gamma_r, beta_r, alpha_r = shared.t_Buffer[skew_key]
+            lam_ok = lam.all()
+            rho_ok = rho.all()
+
+            # the 6 regions of the skew - check for 0 lam and rho - hold flat
+            r1 = torch.ones_like(x) * (
+                (alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C)) if lam_ok else (atm_vol + C * (s + L * C)))
+            r2 = alpha + x * (beta + gamma * x) if lam_ok else atm_vol + C * (s + L * C)
+            r3 = atm_vol + x * (s + L * x)
+            r4 = atm_vol + x * (s + R * x)
+            r5 = alpha_r + x * (beta_r + gamma_r * x) if rho_ok else atm_vol + D * (s + R * D)
+            r6 = torch.ones_like(x) * (
+                (alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D)) if rho_ok else (atm_vol + D * (s + R * D)))
+
+            return torch.where(
+                x <= (1 + lam) * C, r1,
+                    torch.where(x <= C, r2,
+                                torch.where(x<=0, r3,
+                                            torch.where(x<=D, r4,
+                                                        torch.where(x<(1+rho)*D, r5, r6)
+                                                        )
+                                            )
+                                )
+                    )
+
+        if key_code[0] == 'vol_time_grid' and key_code[FACTOR_INDEX_Offset][0][0] in ['SVI', 'Skew']:
+            surface, rate_code, calc_std = shared.t_Buffer[key_code]
+            expiry_tenor = rate_code[FACTOR_INDEX_Tenor_Index]
+            time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
+            index, index_next, alpha = expiry_tenor.get_index(expiry)
+            alpha = shared.one.new(alpha.reshape(-1, 1))
+
+            # need to calculate the correct way to query the vol surface
+            if moneyness is None:
+                moneyness = 0.0 * shared.one
+            else:
+                if rate_code[FACTOR_INDEX_SubType][1] == 'Sticky_Strike':
+                    atm_ref = surface['ATM_Ref'][index] * (1 - alpha) + surface['ATM_Ref'][index_next] * alpha
+                    moneyness = torch.log(moneyness / atm_ref)
+
+            if rate_code[FACTOR_INDEX_SubType][0] == 'Skew':
+                vol_prior = calc_skew(moneyness, tuple(index), surface['ATM_Vol'][index], surface['s'][index],
+                                      surface['L'][index], surface['R'][index], surface['C'][index],
+                                      surface['D'][index], surface['lam'][index], surface['rho'][index])
+                vol_post = calc_skew(moneyness, tuple(index_next), surface['ATM_Vol'][index_next], surface['s'][index_next],
+                                      surface['L'][index_next], surface['R'][index_next], surface['C'][index_next],
+                                      surface['D'][index_next], surface['lam'][index_next], surface['rho'][index_next])
+                vol = vol_prior * (1 - alpha) + vol_post * alpha
+                return vol * time_modifier
+
+            elif rate_code[FACTOR_INDEX_SubType][0] == 'SVI':
+                k_m_prior = moneyness - surface['m'][index]
+                var_prior = surface['a'][index] + surface['b'][index] * (
+                        surface['rho'][index] * k_m_prior + torch.sqrt(k_m_prior ** 2 + surface['sigma'][index] ** 2))
+                k_m_post = moneyness - surface['m'][index_next]
+                var_post = surface['a'][index_next] + surface['b'][index_next] * (
+                        surface['rho'][index_next] * k_m_post + torch.sqrt(
+                    k_m_post ** 2 + surface['sigma'][index_next] ** 2))
+                variance = var_prior * (1 - alpha) + var_post * alpha
+                return torch.sqrt(variance) * time_modifier
+        else:
+            surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
+            max_index = np.prod(surface.shape) - 1
+            if moneyness is None:
+                moneyness = shared.one * (0.0 if rate_code[FACTOR_INDEX_SubType][0]=='Malz' else 0.0)
+            index, _, alpha = moneyness_tenor.get_index(moneyness)
+            expiry_indices = np.arange(expiry.size).astype(np.int32)
+            expiry_index_key = ('expiry_tenor', tuple(expiry_indices), moneyness_tenor.tenor.size)
+
+            if expiry_index_key not in shared.t_Buffer:
+                shared.t_Buffer[expiry_index_key] = shared.one.new_tensor(
+                    np.array([expiry_indices * moneyness_tenor.tenor.size]),
+                    dtype=torch.int32).T
+
+            expiry_offsets = shared.t_Buffer[expiry_index_key]
+            vol_index = index + expiry_offsets
+
+            vol_index_next = torch.clamp(vol_index + 1, 0, max_index)
+            vols = surface[vol_index] * (1.0 - alpha) + surface[vol_index_next] * alpha
+            return vols
+
+    @staticmethod
+    def rate(code, moneyness, expiry, shared, calc_std=False):
+        keys = []
+        for rate in code:
+            if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
+                keys.append((rate[FACTOR_INDEX_SubType][0], tuple(rate[:1] + tuple(rate[1]))))
+            else:
+                keys.append(('vol2d', rate[:2]))
+
+        key_code = ('vol_time_grid', tuple(keys), tuple(expiry), calc_std)
+
+        if key_code not in shared.t_Buffer:
+            spread = None
+            # We only support one vol stack at the moment - but can extend this to 2 or more
+            for rate in code:
+                # Only static moneyness/expiry vol surfaces are supported for now
+                if rate[FACTOR_INDEX_Stoch]:
+                    raise Exception("Stochastic vol surfaces not yet implemented")
+                else:
+                    if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
+                        spread = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1) for x in rate[FACTOR_INDEX_Offset]}
+                    else:
+                        spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
+                    break
+
+            # either interpolate a flat vol surface or a svi/skew vol param
+            if code[0][FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
+                shared.t_Buffer[key_code] = (spread, code[0], calc_std)
+            else:
+                shared.t_Buffer[key_code] = VolSurface._flat(
+                    spread, code[0], expiry, shared, calc_std)
+
+        return VolSurface._moneyness(moneyness, expiry, key_code, shared)
+
+    @staticmethod
+    def tenor_rate(code, moneyness, expiry, tenor, shared, calc_std=False):
+        key_code = ('vol3d', tuple([x[:2] for x in code]),
+                    tuple(expiry.flatten()), tenor, calc_std)
+
+        if key_code not in shared.t_Buffer:
+            spread = VolSurface._tenor_blend(code, tenor, shared)
+
+            surface = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
+            flat_vol_time = VolSurface._interp(surface, code[0], expiry, shared, calc_std).reshape(-1, )
+
+            shared.t_Buffer[key_code] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
+
+        return VolSurface._moneyness(moneyness, expiry, key_code, shared)
+
+    @staticmethod
+    def cap_rate(code, moneyness, expiry, tenor, shared, calc_std=False):
+        key_code = ('vol3d_cap', tuple([x[:2] for x in code]), tenor, calc_std, tuple(expiry.flatten()))
+
+        if key_code not in shared.t_Buffer:
+            shared.t_Buffer[key_code] = VolSurface._tenor_blend(code, tenor, shared).reshape(
+                -1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
+
+        surface = shared.t_Buffer[key_code]
+        result = []
+        for exp, mon in zip(expiry, moneyness):
+            time_exp = key_code[:-1] + tuple(exp)
+            if time_exp not in shared.t_Buffer:
+                flat_vol_time = VolSurface._interp(
+                    surface, code[0], exp, shared, calc_std).reshape(-1)
+                shared.t_Buffer[time_exp] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
+            result.append(VolSurface._moneyness(mon, exp, time_exp, shared))
+
+        return torch.stack(result)
+
+    @staticmethod
+    def delivery_rate(code, moneyness, expiry, delivery, time_grid, shared):
+        """A 3-D delivery/expiry/moneyness read: no reader today, kept for a delivery-axis
+        forward-price surface and marked for removal."""
+        # can't cache this function as moneyness is generally stochastic
+        vol_spread = None
+
+        for rate in code:
+            # Only static moneyness/expiry vol surfaces are supported for now
+            if rate[FACTOR_INDEX_Stoch]:
+                raise Exception("Stochastic vol surfaces not yet implemented")
+            else:
+                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
+                break
+
+        index_map = code[0][FACTOR_INDEX_Surface_Flat_Index]
+        tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
+        expiry_index = code[0][FACTOR_INDEX_Expiry_Index]
+        money_index = code[0][FACTOR_INDEX_Moneyness_Index]
+
+        # need to know the moneyness offset for a particular expiry offset
+        expiry_offset = np.cumsum([0] + [x.tenor.size for x in expiry_index])
+        t_index, t_index_next, alpha = tenor_index.get_index(delivery)
+        alpha_tensor = vol_spread.new(alpha).unsqueeze(2)
+
+        space = []
+        tenor_cache = {}
+        for current_tenor_index in [t_index, t_index_next]:
+            result = []
+            for tenor_sub_index, exp, mon in zip(current_tenor_index, expiry, moneyness):
+                expiry_tenor_map = [expiry_index[to].get_index(e) for to, e in zip(tenor_sub_index, exp)]
+                time_slice = []
+                for tenor_offset, (e_index, e_index_next, e_alpha) in zip(tenor_sub_index, expiry_tenor_map):
+                    tenor_exp_key = (tenor_offset, e_index, e_index_next)
+                    if tenor_exp_key not in tenor_cache:
+                        if expiry_index[tenor_offset].tenor.size > 1:
+                            # need to interpolate the expiry
+                            moneyness_00 = expiry_offset[tenor_offset] + e_index
+                            moneyness_01 = expiry_offset[tenor_offset] + e_index_next
+
+                            m_prior = vol_spread[slice(*index_map[2][moneyness_00][1:])]
+                            m_next = vol_spread[slice(*index_map[2][moneyness_01][1:])]
+
+                            # grab 2 moneyness layers
+                            m_index_1, m_index_next_1, m_alpha_1 = money_index[moneyness_00].get_index(mon)
+                            m_index_2, m_index_next_2, m_alpha_2 = money_index[moneyness_01].get_index(mon)
+
+                            exp_prior = m_prior[m_index_1] * (1 - m_alpha_1) + m_prior[m_index_next_1] * m_alpha_1
+                            exp_next = m_next[m_index_2] * (1 - m_alpha_2) + m_next[m_index_next_2] * m_alpha_2
+                            tenor_cache[tenor_exp_key] = exp_prior * (1 - e_alpha) + exp_next * e_alpha
+
+                        else:
+                            # go straight to moneyness
+                            moneyness_0 = expiry_offset[tenor_offset]
+                            m_slice = vol_spread[slice(*index_map[2][moneyness_0][1:])]
+                            m_index, m_index_next, m_alpha = money_index[moneyness_0].get_index(mon)
+                            tenor_cache[tenor_exp_key] = m_slice[m_index] * (1 - m_alpha) + m_slice[m_index_next] * m_alpha
+
+                    time_slice.append(tenor_cache[tenor_exp_key])
+                result.append(torch.stack(time_slice))
+            space.append(result)
+
+        interpolated_vols = [prior * (1 - a) + next * a for prior, next, a in zip(space[0], space[1], alpha_tensor)]
+
+        return torch.stack(interpolated_vols)
 
 
-def calc_statistics(data_frame, method='Log', num_business_days=252.0, frequency=1, max_alpha=4.0):
-    """Currently only frequency==1 is supported"""
+def hermite_interpolation_tensor(t, rate_tensor):
+    rate_diff = (rate_tensor[:, 1:, :] - rate_tensor[:, :-1, :])
+    time_diff = t[:, 1:, :] - t[:, :-1, :]
 
-    def calc_alpha(x, y):
-        return (-num_business_days * np.log(
-            1.0 + ((x - x.mean(axis=0)) * (y - y.mean(axis=0))).mean(axis=0) / ((y - y.mean(axis=0)) ** 2.0).mean(
-                axis=0))).clip(0.001, max_alpha)
+    # calc r_i
+    r_i = ((rate_diff[:, :-1, :] * time_diff[:, 1:, :]) / time_diff[:, :-1, :] +
+           (rate_diff[:, 1:, :] * time_diff[:, :-1, :]) / time_diff[:, 1:, :]) / (
+                  t[:, 2:, :] - t[:, :-2, :])
+    r_1 = ((rate_diff[:, 0] * (t[:, 2, :] + t[:, 1, :] - 2.0 * t[:, 0, :])) / time_diff[:, 0, :] -
+           (rate_diff[:, 1] * time_diff[:, 0, :]) / time_diff[:, 1, :]) / (t[:, 2, :] - t[:, 0, :])
 
-    def calc_sigma2(x, y, alpha):
-        return (x.var(axis=0) - ((1 - np.exp(-alpha / num_business_days)) ** 2) * y.var(axis=0)) * (
-                (2.0 * alpha) / (1 - np.exp(-2.0 * alpha / num_business_days)))
+    r_n = (-1.0 / (t[:, -1, :] - t[:, -3, :])) * (
+            (rate_diff[:, -2] * time_diff[:, -1, :]) / time_diff[:, -2, :] -
+            (rate_diff[:, -1] * (2.0 * t[:, -1, :] - t[:, -2, :] - t[:, -3, :])) / time_diff[:, -1, :])
 
-    def calc_theta(x, y, alpha):
-        return y.mean(axis=0) + x.mean(axis=0) / (1.0 - np.exp(-alpha / num_business_days))
+    ri = torch.cat([torch.unsqueeze(r_1, dim=1), r_i, torch.unsqueeze(r_n, dim=1)], dim=1)
 
-    def calc_log_theta(theta, sigma2, alpha):
-        return np.exp(theta + sigma2 / (4.0 * alpha))
+    # zero
+    zero = torch.unsqueeze(torch.zeros_like(r_1), dim=1)
+    # calc g_i
+    gi = torch.cat([time_diff * ri[:, :-1, :] - rate_diff, zero], dim=1)
+    # calc c_i
+    ci = torch.cat([2.0 * rate_diff - time_diff * (ri[:, :-1, :] + ri[:, 1:, :]), zero], dim=1)
 
-    # TODO - implement weighting
-    # delta = frequency / num_business_days
-
-    transform = {'Diff': lambda x: x, 'Log': lambda x: np.log(x.clip(0.0001, np.inf))}[method]
-    transformed_df = transform(data_frame)
-
-    # can implement decay weights here if needed
-
-    data = transformed_df.diff(frequency).shift(-frequency)
-    y = transformed_df  #
-    alpha = calc_alpha(data, y)
-    theta = calc_theta(data, y, alpha)
-    sigma2 = calc_sigma2(data, y, alpha)
-
-    if method == 'Log':
-        theta = calc_log_theta(theta, sigma2, alpha)
-        # get rid of any infs
-        theta.replace([np.inf, -np.inf], np.nan, inplace=True)
-
-        # ignore any outlier greater than 2 std deviations from the median
-        median = theta.median()
-        theta[np.abs(theta - median) > (2 * theta.std())] = np.nan
-
-    stats = pd.DataFrame({
-        'Volatility': data.std(axis=0) * np.sqrt(num_business_days),
-        'Drift': data.mean(axis=0) * num_business_days,
-        'Mean Reversion Speed': alpha,
-        'Long Run Mean': theta,
-        'Reversion Volatility': np.sqrt(sigma2)
-    })
-
-    correlation = data.corr()
-    return stats, correlation, data
+    return gi, ci
 
 
 # Graph operations - needed for dependency solving
-
-def traverse_dependents(x, adj):
-    seen = set(adj[x])
-    queue = deque(adj[x])
-    while queue:
-        i = queue.popleft()
-        yield i
-        for t in adj[i]:
-            if t not in seen:
-                seen.add(t)
-                queue.append(t)
-
 
 def topological_sort(graph_unsorted):
     """Move each node whose edges are all resolved onto the sorted sequence, repeatedly. DESTROYS
@@ -4537,71 +5016,6 @@ def topological_sort(graph_unsorted):
 
 
 # Data transformation utilities for constructing cashflows, calculating accruals etc.
-
-def get_day_count(code):
-    if code == 'ACT_365':
-        return DAYCOUNT_ACT365
-    elif code == 'ACT_360':
-        return DAYCOUNT_ACT360
-    elif code == '_30_360':
-        return DAYCOUNT_ACT30_360
-    elif code == '_30E_360':
-        return DAYCOUNT_ACT30_E360
-    elif code == 'ACT_365_ISDA':
-        return DAYCOUNT_ACT365IDSA
-    elif code == 'ACT_ACT_ICMA':
-        return DAYCOUNT_ACTACTICMA
-    else:
-        raise Exception('Daycount {} Not implemented'.format(code))
-
-
-def get_day_count_accrual(reference_date, time_in_days, code):
-    """Need to complete this implementation. time_in_days is incremental"""
-
-    if code == DAYCOUNT_ACT360:
-        return time_in_days / 360.0
-    elif code == DAYCOUNT_ACT365:
-        return time_in_days / 365.0
-    elif code in (DAYCOUNT_ACT365IDSA, DAYCOUNT_ACTACTICMA):
-        # TODO
-        return time_in_days / 365.0
-    elif code == DAYCOUNT_ACT30_360:
-        e1 = min(reference_date.day, 30)
-        new_date = end_date = reference_date
-        if isinstance(time_in_days, np.ndarray):
-            ret = []
-            for ed in time_in_days.tolist():
-                end_date += pd.DateOffset(days=ed)
-                e2 = 30 if end_date.day >= 30 and new_date.day >= 30 else end_date.day
-                ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                            360 * (end_date.year - new_date.year)) / 360.0)
-                new_date = end_date
-            return ret
-        else:
-            end_date = reference_date + pd.DateOffset(days=time_in_days)
-            e2 = 30 if end_date.day >= 30 and reference_date.day >= 30 else end_date.day
-            return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                    360 * (end_date.year - reference_date.year)) / 360.0
-    elif code == DAYCOUNT_ACT30_E360:
-        e1 = min(reference_date.day, 30)
-        new_date = end_date = reference_date
-        if isinstance(time_in_days, np.ndarray):
-            ret = []
-            for ed in time_in_days.tolist():
-                end_date += pd.DateOffset(days=ed)
-                e2 = min(end_date.day, 30)
-                ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                            360 * (end_date.year - new_date.year)) / 360.0)
-                new_date = end_date
-            return ret
-        else:
-            end_date = reference_date + pd.DateOffset(days=time_in_days)
-            e2 = min(end_date.day, 30)
-            return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                    360 * (end_date.year - reference_date.year)) / 360.0
-    elif code == DAYCOUNT_None:
-        return time_in_days
-
 
 def get_fieldname(field, obj):
     """Needed to evaluate nested fields - e.g. collateral fields"""
@@ -4710,742 +5124,11 @@ def implied_correlation(factor, sign=1.0):
     return sign * factor.current_value()[0] if factor is not None else 0.0
 
 
-def make_cashflow(reference_date, start_date, end_date, pay_date, nominal, daycount_code, fixed_amount, spread_or_rate):
-    """One cashflow vector - for manually constructing a nominal or fixed payment."""
-    cashflow_days = [(x - reference_date).days for x in [start_date, end_date, pay_date]]
-    return np.array(
-        cashflow_days + [get_day_count_accrual(reference_date, cashflow_days[1] - cashflow_days[0], daycount_code),
-                         nominal, fixed_amount, spread_or_rate, 0, 0])
-
-
-def get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, spread_or_rate):
-    """Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0) and rate/spread, as days
-    and nominals relative to the reference date. The nominal array must be one shorter than
-    `reset_dates` (there is no nominal on the effective date), or a single number for a constant
-    profile.
-    """
-
-    amort_offsets = np.array([((k - reference_date).days, v) for k, v in amort.data.items()] if amort else [])
-    day_offsets = np.array([(x - reference_date).days for x in reset_dates])
-
-    nominal_amount, nominal_sign = [np.abs(nominal)], 1 if nominal > 0 else -1
-    amort_index = 0
-    for offset in day_offsets[1:]:
-        amort_to_add = 0.0
-        while amort_index < amort_offsets.shape[0] and amort_offsets[amort_index][0] <= offset:
-            amort_to_add += amort_offsets[amort_index][1]
-            amort_index += 1
-        nominal_amount.append(nominal_amount[-1] - amort_to_add)
-    nominal_amount = nominal_sign * np.array(nominal_amount)
-
-    # we want the earliest negative number
-    last_payment = np.where(day_offsets >= 0)[0]
-
-    # calculate the index of the earliest cashflow
-    previous_index = max(last_payment[0] - 1 if last_payment.size else day_offsets.size, 0)
-    cashflows_left = day_offsets[previous_index:]
-    rates = spread_or_rate if isinstance(nominal, np.ndarray) else [spread_or_rate] * (reset_dates.size - 1)
-    ref_date = (reference_date + pd.offsets.Day(cashflows_left[0])) \
-        if cashflows_left.any() else reference_date
-
-    # order is start_day, end_day, pay_day, daycount_accrual, nominal, fixed amount, FxResetDate, FXResetValue
-
-    return zip(cashflows_left[:-1], cashflows_left[1:], cashflows_left[1:],
-               get_day_count_accrual(ref_date, np.diff(cashflows_left), daycount_code),
-               nominal_amount[previous_index:], np.zeros(cashflows_left.size - 1), rates[previous_index:],
-               np.zeros(cashflows_left.size - 1), np.zeros(cashflows_left.size - 1))
-
-
-def generate_float_cashflows(reference_date, time_grid, reset_dates, nominal, amort, known_rate_list, reset_tenor,
-                             reset_frequency, daycount_code, spread):
-    """`get_cashflows`' schedule plus the reset structure. The nominal array must be one shorter
-    than `reset_dates`, or a single number for a constant profile.
-    """
-
-    cashflow_schedule = list(get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, spread))
-    cashflow_reset_offsets = []
-    all_resets = []
-    reset_scenario_offsets = []
-
-    # prepare to consume reset dates
-    known_rates = known_rate_list if known_rate_list is not None else DateList({})
-    known_rates.prepare_dates()
-
-    min_date = None
-    for cashflow in cashflow_schedule:
-        r = []
-        if next(iter(reset_frequency.kwds.values())) == 0.0:
-            reset_days = np.array([reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day]))])
-            reset_tenor = pd.offsets.Day(cashflow[CASHFLOW_INDEX_End_Day] - cashflow[CASHFLOW_INDEX_Start_Day])
-        else:
-            reset_days = pd.date_range(reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day])),
-                                       reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_End_Day])),
-                                       freq=reset_frequency, inclusive='left')
-            reset_tenor = reset_frequency if next(iter(reset_tenor.kwds.values())) == 0.0 else reset_tenor
-
-        for reset_day in reset_days:
-            Reset_Day = (reset_day - reference_date).days
-            Start_Day = (reset_day - reference_date).days
-            End_Day = (reset_day + reset_tenor - reference_date).days
-            Accrual = get_day_count_accrual(reference_date, End_Day - Start_Day, daycount_code)
-            Weight = 1.0 / reset_days.size
-            Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-
-            # match the closest reset
-            closest_date, Value = known_rates.consume(min_date, reset_day)
-            if closest_date is not None:
-                min_date = closest_date if min_date is None else max(min_date, closest_date)
-
-            # only add a reset if it's in the past
-            r.append([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                      Value / 100.0 if reset_day < reference_date else 0.0, Accrual])
-            reset_scenario_offsets.append(Scenario)
-
-            if Start_Day == End_Day:
-                raise Exception("Reset Start and End Days coincide")
-
-        # attach the reset_offsets to the cashflow - assume each cashflow is a settled one (not accumulated)
-        cashflow_reset_offsets.append([len(r), len(all_resets), 1])
-        # store resets
-        all_resets.extend(r)
-
-    cashflows = TensorCashFlows(cashflow_schedule, cashflow_reset_offsets)
-    cashflows.set_resets(all_resets, reset_scenario_offsets)
-
-    return cashflows
-
-
-def generate_fixed_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate):
-    """`get_cashflows`' schedule with null resets. The nominal array must be one shorter than
-    `reset_dates`, or a single number for a constant profile.
-    """
-    cashflow_schedule = list(get_cashflows(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate))
-    # Add the null resets to the end
-    dummy_resets = np.zeros((len(cashflow_schedule), 3))
-
-    return TensorCashFlows(cashflow_schedule, dummy_resets)
-
-
-def make_fixed_cashflows(reference_date, position, cashflows, settlement_date):
-    """Fixed cashflows from a data source, taking nominal amounts into account."""
-    cash = []
-    reset_offsets = []
-
-    for cashflow in sorted(
-            cashflows['Items'], key=lambda x: (x['Payment_Date'], x.get('Accrual_Start_Date', x['Payment_Date']))):
-        rate = cashflow['Rate'] if isinstance(cashflow['Rate'], float) else cashflow['Rate'].amount
-        if cashflow['Payment_Date'] >= reference_date and (
-                (cashflow['Payment_Date'] >= settlement_date) if settlement_date else True):
-            # check the accrual dates - if none set it to the payment date
-            Accrual_Start_Date = cashflow['Accrual_Start_Date'] if cashflow[
-                'Accrual_Start_Date'] else cashflow['Payment_Date']
-            Accrual_End_Date = cashflow['Accrual_End_Date'] if cashflow[
-                'Accrual_End_Date'] else cashflow['Payment_Date']
-
-            cash.append([(Accrual_Start_Date - reference_date).days, (Accrual_End_Date - reference_date).days,
-                         (cashflow['Payment_Date'] - reference_date).days,
-                         cashflow['Accrual_Year_Fraction'], position * cashflow['Notional'],
-                         position * cashflow.get('Fixed_Amount', 0.0), rate, 0.0, 0.0])
-
-            # needed to deal with forward settlement
-            reset_offsets.append([0, 0, 0 if settlement_date is None else -(settlement_date - reference_date).days])
-
-    return TensorCashFlows(cash, reset_offsets)
-
-
-def make_sampling_data(reference_date, time_grid, samples):
-    all_resets = []
-    reset_scenario_offsets = []
-    D = float(sum([x[-1] for x in samples]))
-
-    for sample in sorted(samples):
-        Reset_Day = (sample[0] - reference_date).days
-        Start_Day = Reset_Day
-        End_Day = Reset_Day
-        Weight = sample[-1] / D
-        Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-        # only add a reset if its in the past
-        all_resets.append(
-            [Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-             sample[-2] if sample[0] < reference_date else 0.0, 0.0])
-        reset_scenario_offsets.append(Scenario)
-
-    return TensorResets(all_resets, reset_scenario_offsets)
-
-
-def make_fixing_data(reference_date, time_grid, fixings):
-    all_resets = []
-    reset_scenario_offsets = []
-
-    for fixing in sorted(fixings):
-        Reset_Day = (fixing[0] - reference_date).days
-        Start_Day = Reset_Day
-        End_Day = Reset_Day
-        Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-        # only add a reset if it's in the past
-        all_resets.append(
-            [Time_Grid, Reset_Day, -1, Start_Day, End_Day, 1.0,
-             fixing[-1] if fixing[0] < reference_date else 0.0, 0.0])
-        reset_scenario_offsets.append(Scenario)
-
-    return TensorResets(all_resets, reset_scenario_offsets)
-
-
-def make_simple_fixed_cashflows(reference_date, position, cashflows):
-    """Fixed cashflows from a data source, reading the fixed value alone."""
-    cash = {}
-    for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
-        if cashflow['Payment_Date'] >= reference_date:
-            tenor = (cashflow['Payment_Date'] - reference_date).days
-            if tenor in cash:
-                cash[tenor][5] += position * cashflow['Fixed_Amount']
-            else:
-                cash.setdefault(tenor, [tenor, tenor, tenor, 1.0, 0.0,
-                                        position * cashflow['Fixed_Amount'], 0.0, 0.0, 0.0])
-
-    # Add the null resets to the end
-    dummy_resets = np.zeros((len(cash), 3))
-
-    return TensorCashFlows(list(cash.values()), dummy_resets)
-
-
-def make_energy_fixed_cashflows(reference_date, position, cashflows):
-    """Energy fixed cashflows from a data source, reading the fixed value alone."""
-    cash = []
-    for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
-        if cashflow['Payment_Date'] >= reference_date:
-            cash.append(
-                [(cashflow['Payment_Date'] - reference_date).days, (cashflow['Payment_Date'] - reference_date).days,
-                 (cashflow['Payment_Date'] - reference_date).days,
-                 1.0, 0.0, position * cashflow['Volume'] * cashflow['Fixed_Price'], 0.0, 0.0, 0.0])
-
-    # Add the null resets to the end
-    dummy_resets = np.zeros((len(cash), 3))
-
-    return TensorCashFlows(cash, dummy_resets)
-
-
-def make_equity_swaplet_cashflows(base_date, time_grid, position, cashflows, current_spot, busday):
-    """Equity cashflows from a data source."""
-    cash = []
-    all_resets = []
-    cashflow_reset_offsets = []
-    reset_scenario_offsets = []
-
-    for cashflow in sorted(cashflows['Items'], key=lambda x: (x['Payment_Date'], x['End_Date'], x['Start_Date'])):
-        if cashflow['Payment_Date'] >= base_date:
-            cash.append([(cashflow['Start_Date'] - base_date).days, (cashflow['End_Date'] - base_date).days,
-                         (cashflow['Payment_Date'] - base_date).days, cashflow.get('Start_Multiplier', 1.0),
-                         cashflow.get('End_Multiplier', 1.0), position * cashflow['Amount'],
-                         cashflow.get('Dividend_Multiplier', 1.0),
-                         (cashflow['Start_Date'] + busday - base_date).days,
-                         (cashflow['End_Date'] + busday - base_date).days])
-
-            r = []
-            for reset in ['Start', 'End']:
-                Reset_Day = (cashflow[reset + '_Date'] - base_date).days
-                Start_Day = Reset_Day
-                # we map the weight of the reset with the prior dividends
-                Weight = cashflow.get('Known_Dividend_Sum', 0.0)
-
-                # Need to use this reset to estimate future dividends
-                Time_Grid, Scenario = time_grid.get_scenario_offset(max(Reset_Day, 0))
-
-                # only add a reset if it's in the past - if its 0, then replace it with the current spot
-                if Start_Day <= 0:
-                    known_price = cashflow.get('Known_' + reset + '_Price', 0.0)
-                    if Start_Day == 0 and not known_price:
-                        logging.warning(
-                            'Known_{}_Price not set at base_date - setting to current spot'.format(reset))
-                        reset_price = current_spot
-                    else:
-                        reset_price = known_price
-                else:
-                    reset_price = 0.0
-
-                r.append([Time_Grid, Reset_Day, -1, Start_Day, Start_Day, Weight,
-                          reset_price,
-                          cashflow.get('Known_' + reset + '_FX_Rate', 0.0) if Start_Day <= 0 else 0.0])
-                reset_scenario_offsets.append(Scenario)
-
-            # attach the reset_offsets to the cashflow
-            cashflow_reset_offsets.append([len(r), len(all_resets), 0])
-            # store resets
-            all_resets.extend(r)
-
-    cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
-    cashflows.set_resets(all_resets, reset_scenario_offsets)
-    # calculate the business day ajustment on the mtm time grid
-    bus_offset = np.array([((x + busday) - x).days for x in sorted(time_grid.mtm_dates)])
-    return cashflows, bus_offset
-
-
-def index_reference_samples(pricing_date, months_lag, interpolated):
-    """The (date, weight) index observations an inflation reference reads.
-
-    A non-interpolated reference reads one month-start, `months_lag` months back; an interpolated
-    one straddles two, weighted by how far into its own month the pricing date sits. Keeping the
-    rule and the lag separate admits any lag, which is what the schema always declared.
-    """
-    if not interpolated:
-        return [((pricing_date - pd.DateOffset(months=months_lag)).to_period('M').to_timestamp('D'), 1.0)]
-
-    month_start = pricing_date.to_period('M').to_timestamp('D')
-    w = (pricing_date - month_start).days / float(
-        ((month_start + pd.DateOffset(months=1)) - month_start).days)
-    return [((pricing_date - pd.DateOffset(months=lag)).to_period('M').to_timestamp('D'), weight)
-            for lag, weight in ((months_lag, 1.0 - w), (months_lag - 1, w))]
-
-
-def make_index_cashflows(base_date, time_grid, position, cashflows, price_index, index_rate,
-                         settlement_date, months_lag, interpolated, isBond=True):
-    """Index-linked cashflows from a data source, against the price_index and index_rate factors."""
-
-    def index_reference(pricing_date, lagged_date, resets, offsets):
-        for Day, Weight in index_reference_samples(pricing_date, months_lag, interpolated):
-            Rel_Day = (Day - lagged_date).days
-            Value = index_rate.get_reference_value(Day) if Day <= lagged_date else 0.0
-            Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
-            resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
-            offsets.append(Scenario)
-
-
-    cash = []
-    cashflow_reset_offsets = []
-    # resets at different points in time
-    time_resets = []
-    time_scenario_offsets = []
-    # resets per cashflow
-    base_resets = []
-    base_scenario_offsets = []
-    final_resets = []
-    final_scenario_offsets = []
-
-    for cashflow in sorted(cashflows['Items'], key=lambda x: x['Payment_Date']):
-        if cashflow['Payment_Date'] >= base_date and (
-                (cashflow['Payment_Date'] >= settlement_date) if settlement_date else True):
-            Pay_Date = (cashflow['Payment_Date'] - base_date).days
-            Accrual_Start_Date = (cashflow['Accrual_Start_Date'] - base_date).days \
-                if cashflow.get('Accrual_Start_Date') else Pay_Date
-            Accrual_End_Date = (cashflow['Accrual_End_Date'] - base_date).days \
-                if cashflow.get('Accrual_End_Date') else Pay_Date
-            base_reference_date = cashflow.get('Base_Reference_Date') \
-                if cashflow.get('Base_Reference_Date') else base_date
-            final_reference_date = cashflow.get('Final_Reference_Date') \
-                if cashflow.get('Final_Reference_Date') else base_date
-
-            cash.append([Accrual_Start_Date, Accrual_End_Date, Pay_Date, cashflow['Accrual_Year_Fraction'],
-                         position * cashflow['Notional'], cashflow['Rate_Multiplier'], cashflow['Yield'].amount, 0.0,
-                         0.0])
-
-            # attach the base and final reference dates to the cashflow
-            cashflow_reset_offsets.append(
-                [cashflow['Base_Reference_Value'] if cashflow['Base_Reference_Value'] else -(
-                        base_reference_date - base_date).days,
-                 cashflow['Final_Reference_Value'] if cashflow['Final_Reference_Value'] else -(
-                         final_reference_date - base_date).days,
-                 Pay_Date if settlement_date is None else -(settlement_date - base_date).days])
-
-            if isBond:
-                index_reference(
-                    base_reference_date, base_date, base_resets, base_scenario_offsets)
-                index_reference(
-                    final_reference_date, base_date, final_resets, final_scenario_offsets)
-
-    # set the cashflows
-    cashflows = TensorCashFlows(sorted(cash), cashflow_reset_offsets)
-    # check if the paydays are still sorted
-    if (cashflows.schedule[:, CASHFLOW_INDEX_Pay_Day] != sorted(cashflows.schedule[:, CASHFLOW_INDEX_Pay_Day])).any():
-        logging.error("Cashflow Pay Day not in sorted order - check accrual dates")
-
-    if isBond:
-        mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
-
-        for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
-            # calc the number of days since last published date to the base date
-            Rel_Day = (last_published_date - base_date).days
-            Value = index_rate.get_reference_value(last_published_date) if last_published_date <= index_rate.param[
-                'Last_Period_Start'] else 0.0
-
-            time_resets.append([0.0, Rel_Day, Rel_Day, Rel_Day, -1, 1.0, Value, 0.0])
-            time_scenario_offsets.append(0)
-
-        cashflows.set_resets(time_resets, time_scenario_offsets)
-
-        return cashflows, TensorResets(base_resets, base_scenario_offsets), TensorResets(
-            final_resets, final_scenario_offsets)
-
-    else:
-        for eval_time in time_grid.time_grid[:, TIME_GRID_MTM]:
-            actual_time = base_date + pd.DateOffset(days=eval_time)
-
-            index_reference(
-                actual_time, index_rate.param['Last_Period_Start'], time_resets, time_scenario_offsets)
-
-        cashflows.set_resets(time_resets, time_scenario_offsets)
-
-        return cashflows
-
-
-def make_float_cashflows(reference_date, time_grid, position, cashflows, reference=None):
-    """Floating cashflows from a data source.
-
-    `reference` is the deal's own, here for the refusal below: a reset with a zero-length rate
-    window is refused BY NAME, and a refusal that cannot say which deal it is about is one a desk
-    cannot act on.
-    """
-    cash = []
-    all_resets = []
-    cashflow_reset_offsets = []
-    reset_scenario_offsets = []
-
-    for cashflow in sorted(
-            cashflows['Items'], key=lambda x: (x['Payment_Date'], x['Accrual_End_Date'], x['Accrual_Start_Date'])):
-
-        if cashflow['Payment_Date'] >= reference_date:
-            # potential FX resets
-            fx_reset_date = (cashflow.get('FX_Reset_Date') - reference_date).days \
-                if cashflow.get('FX_Reset_Date') else 0.0
-            fx_reset_val = cashflow.get('Known_FX_Rate', 0.0)
-
-            cash.append([(cashflow['Accrual_Start_Date'] - reference_date).days,
-                         (cashflow['Accrual_End_Date'] - reference_date).days,
-                         (cashflow['Payment_Date'] - reference_date).days,
-                         cashflow['Accrual_Year_Fraction'], position * cashflow['Notional'],
-                         position * cashflow.get('Fixed_Amount', 0.0), cashflow['Margin'].amount,
-                         fx_reset_date, fx_reset_val])
-
-            r = []
-            for reset in cashflow['Resets']:
-                # A DEGENERATE RATE WINDOW IS REFUSED, not derived: the rate tenor is a quantity the
-                # author did not state and no rule recovers - the accrual window is the period's,
-                # not the rate's - so widening one would be a number nobody quoted
-                if reset[2] == reset[1]:
-                    raise UnpriceableSchedule(
-                        '{}: the reset fixing {:%Y-%m-%d} on the cashflow paying {:%Y-%m-%d} has a '
-                        'rate window that starts and ends on {:%Y-%m-%d}. A zero-length window has '
-                        'no forward rate to read and the schedule states no tenor to widen it to. '
-                        'Author the reset\'s rate end date after its rate start (the accrual end '
-                        'is the usual one), or drop the reset.'.format(
-                            reference or 'this CashflowListDeal', reset[0],
-                            cashflow['Payment_Date'], reset[1]))
-
-                # create the reset vector
-                Reset_Day = (reset[0] - reference_date).days
-                Start_Day = (reset[1] - reference_date).days
-                End_Day = (reset[2] - reference_date).days
-                Accrual = reset[3]
-                Weight = 1.0 / len(cashflow['Resets'])
-                Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-                # only add a reset if it's in the past
-                r.append([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                          reset[-1].amount if reset[0] < reference_date else 0.0, Accrual])
-                reset_scenario_offsets.append(Scenario)
-
-            # attach the reset_offsets to the cashflow
-            cashflow_reset_offsets.append([len(r), len(all_resets), 0])
-            # store resets
-            all_resets.extend(r)
-
-    cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
-    cashflows.set_resets(all_resets, reset_scenario_offsets)
-
-    return cashflows
-
-
-def make_energy_cashflows(reference_date, time_grid, position, cashflows, reference, forwardsample, fxsample,
-                          calendars):
-    """Floating/fixed cashflows from a data source under the energy model.
-    TODO: allow an fxSample different from the forwardsample.
-    """
-    cash = []
-    all_resets = []
-    cashflow_reset_offsets = []
-    reset_scenario_offsets = []
-    forward_calendar_bday = calendars.get(forwardsample.get_holiday_calendar(), {'businessday': 'B'})['businessday']
-
-    for cashflow in sorted(cashflows['Items'], key=lambda x: (x['Payment_Date'], x['Period_End'], x['Period_Start'])):
-        if cashflow['Payment_Date'] >= reference_date:
-            cash.append(
-                [(cashflow['Period_Start'] - reference_date).days, (cashflow['Period_End'] - reference_date).days,
-                 (cashflow['Payment_Date'] - reference_date).days, cashflow.get('Price_Multiplier', 1.0),
-                 position * cashflow['Volume'], 0.0, cashflow.get('Fixed_Basis', 0.0), 0.0, 0.0])
-
-            r = []
-            bunsiness_dates = pd.date_range(
-                cashflow['Period_Start'], cashflow['Period_End'], freq=forward_calendar_bday)
-
-            if forwardsample.get_sampling_convention() == 'ForwardPriceSampleDaily':
-                # create daily samples
-                reset_dates = bunsiness_dates
-
-            elif forwardsample.get_sampling_convention() == 'ForwardPriceSampleBullet':
-                # create one sample
-                reset_dates = [bunsiness_dates[-1]]
-
-            resets_in_excel_format = np.array([(x - reference.start_date).days for x in reset_dates])
-            reference_date_excel = (reference_date - reference.start_date).days
-
-            # retrieve the fixing dates from the reference curve and adding an offset
-            fixing_dates = reference.get_fixings(resets_in_excel_format + forwardsample.param.get('Offset', 0))
-
-            for reset_day, fixing_day in zip(resets_in_excel_format, fixing_dates):
-                Reset_Day = reset_day - reference_date_excel
-                # Start_Day = reset_day - reference_date_excel
-                Start_Day = reset_day
-                End_Day = fixing_day
-                Weight = 1.0 / len(reset_dates)
-                Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-                # only add a reset if its in the past
-                r.append([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                          cashflow['Realized_Average'] or 0.0, cashflow['FX_Realized_Average'] or 0.0])
-                reset_scenario_offsets.append(Scenario)
-
-            # attach the reset_offsets to the cashflow
-            cashflow_reset_offsets.append([len(r), len(all_resets), 0])
-            # store resets
-            all_resets.extend(r)
-
-    cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
-    cashflows.set_resets(all_resets, reset_scenario_offsets)
-
-    return cashflows
-
-
-def compress_deal_data(deals):
-    def filter_deals(deals, values):
-        filtered = []
-        unfiltered = []
-        for deal in deals:
-            (filtered if deal['Instrument'].field['Reference'] in values else unfiltered).append(deal)
-        return filtered, unfiltered
-
-    def compress_CFFloatingInterestListDeal(unders, ref, use_ref_as_tag=False):
-        compressed = []
-        all_margin = {}
-        all_notional = {}
-        for deal in unders:
-            buy_sell = 1.0 if deal['Instrument'].field['Buy_Sell'] == 'Buy' else -1.0
-            prop_key = tuple(sorted(
-                [(k, v) for k, v in deal['Instrument'].field['Cashflows'].items() if k != 'Items']))
-            margin_list = all_margin.setdefault(prop_key, {})
-            notional_list = all_notional.setdefault(prop_key, {})
-            for cf in deal['Instrument'].field['Cashflows']['Items']:
-                cf_key = tuple(sorted(
-                    [(k, v) for k, v in cf.items() if k not in ['Notional', 'Resets', 'Margin']]))
-                reset_key = tuple(sorted([tuple(x) for x in cf['Resets']]))
-                key = (cf_key, reset_key)
-                notional = buy_sell * cf['Notional']
-                margin_list[key] = margin_list.setdefault(key, 0.0) + cf['Margin'] * notional
-                notional_list[key] = notional_list.setdefault(key, 0.0) + notional
-
-        # finish this off
-        prop_index = 0
-        for cf_prop, margin_list in all_margin.items():
-            leg = []
-            existing_deals = unders[prop_index:]
-            notional_list = all_notional[cf_prop]
-            for key, val in margin_list.items():
-                notional = notional_list[key]
-                cashflow = dict(key[0])
-                cashflow['Resets'] = [list(x) for x in list(key[1])]
-                if notional:
-                    cashflow['Notional'] = notional
-                    cashflow['Margin'] = Basis(10000.0 * val / notional)
-                    leg.append(cashflow)
-                elif val:
-                    cashflow['Notional'] = val
-                    cashflow['Margin'] = Basis(10000.0)
-                    leg.append(cashflow)
-                    logging.warning('Float Cashflow Nominal compressed to 0.0 and margin is not 0 - TEST')
-                else:
-                    logging.info('Float Cashflow Nominal compressed to 0.0 and margin is 0 - will be skipped')
-
-            # check that there are no overlapping resets (if so - create a new leg)
-            final = sorted(leg, key=lambda x: (x['Payment_Date'], x['Accrual_Start_Date'], x['Accrual_End_Date']))
-            # can just check the first reset because we sorted them earlier
-            splits = [i + 1 for i, (x, y) in enumerate(
-                zip(final[:-1], final[1:])) if x['Resets'][0][0] > y['Resets'][0][0]]
-
-            if len(splits) >= len(existing_deals):
-                # can happen with e.g. prime linked swaps (many resets per day)
-                # check to see if we must edit the tag
-                for deal in existing_deals:
-                    if use_ref_as_tag:
-                        deal['Instrument'].field['Tags'] = list(ref)
-                    # add the deal uncompressed
-                    compressed.append(deal)
-            else:
-                for i, (deal, m, n) in enumerate(zip(existing_deals, [0] + splits, splits + [None])):
-                    legnum = '_Leg{}'.format(i) if splits else ''
-                    deal['Instrument'].field['Buy_Sell'] = 'Buy'
-                    deal['Instrument'].field['Cashflows'] = dict(cf_prop)
-                    deal['Instrument'].field['Cashflows']['Items'] = final[m:n]
-                    if use_ref_as_tag:
-                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format(
-                            'Buy', deal['Instrument'].field['Currency'], legnum)
-                        deal['Instrument'].field['Tags'] = list(ref)
-                    else:
-                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format('Buy', ref, legnum)
-
-                    compressed.append(deal)
-
-                # move the existing deal index forward
-                prop_index += i + 1
-
-        return compressed
-
-    # return this as our compressed portfolio
-    reduced_deals = deals
-    # first try and compress equity_swaps
-    equity_swaps = [x for x in reduced_deals if x['Instrument'].field['Object'] == 'EquitySwapletListDeal']
-    # don't bother if there are less than 400 swaps
-    if equity_swaps and len(equity_swaps) > 400:
-        logging.info('Compressing {} EquitySwaplets'.format(len(equity_swaps)))
-        eq_unders = {}
-        ir_unders = {}
-        eq_swap_ref = {x['Instrument'].field['Reference']: x['Instrument'].field['Equity'] for x in equity_swaps}
-        all_eq_swap, all_other = filter_deals(reduced_deals, eq_swap_ref.keys())
-
-        # first load all compressible deals
-        for k in all_eq_swap:
-            key = tuple(
-                sorted([(field, tuple(value) if isinstance(value, list) else value)
-                        for field, value in k['Instrument'].field.items()
-                        if field not in ['Reference', 'Buy_Sell', 'Cashflows']]))
-
-            if k['Instrument'].field['Object'] == 'EquitySwapletListDeal':
-                # need to split buys and sells because there could be at different prices for the same day
-                buy_sell = (('Buy_Sell', k['Instrument'].field['Buy_Sell']),)
-                eq_unders.setdefault(key + buy_sell, []).append(k)
-            else:
-                # pair up with the equity leg so that it's easy to track funding per stock
-                under_eq = eq_swap_ref[k['Instrument'].field['Reference']]
-                ir_unders.setdefault(key + (under_eq,), []).append(k)
-
-        # now compress
-        eq_compressed = {}
-        for k, unders in eq_unders.items():
-            cf_list = {}
-            for deal in unders:
-                for cf in deal['Instrument'].field['Cashflows']['Items']:
-                    key = tuple([(k, v) for k, v in cf.items() if k != 'Amount'])
-                    cf_list[key] = cf_list.setdefault(key, 0.0) + cf['Amount']
-
-            # edit the last deal
-            deal['Instrument'].field['Cashflows']['Items'] = [dict(k + (('Amount', v),)) for k, v in cf_list.items()]
-            deal['Instrument'].field['Reference'] = 'Compressed_EQSwaplet_{}_{}'.format(
-                deal['Instrument'].field['Buy_Sell'], deal['Instrument'].field['Equity'])
-            eq_compressed.setdefault(deal['Instrument'].field['Equity'], []).append(deal)
-
-        ir_compressed = {}
-        for k, unders in ir_unders.items():
-            ir_compressed.setdefault(k[-1], []).extend(compress_CFFloatingInterestListDeal(unders, k[-1]))
-
-        for k, v in eq_compressed.items():
-            all_other.extend(v)
-            all_other.extend(ir_compressed[k])
-
-        reduced_deals = all_other
-
-    return reduced_deals
-
-
-def compress_no_compounding(cashflows, groupsize, check_resets=True):
-    '''Approximate many resets by fewer groups, or return the cashflows unchanged.
-
-    :param groupsize: -1 keeps every reset and only regroups them; otherwise sample this many
-        groups per cashflow
-    :param check_resets: require every reset to be in the future
-    '''
-    cash_pmts, cash_index, cash_counts = np.unique(
-        cashflows.schedule[:, CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
-
-    if (cashflows.offsets[:, 0] == 1).all():
-        if (cash_counts > abs(groupsize)).any():
-            # can compress
-            cash, cashflow_reset_offsets = [], []
-            all_resets, reset_scenario_offsets = [], []
-            for pay_day, index, num_cf in zip(*[cash_pmts, cash_index, cash_counts]):
-                cashflow_schedule = cashflows.schedule[index:index + num_cf]
-                cashflow_offsets = cashflows.offsets[index:index + num_cf]
-                reset_offset = cashflows.offsets[index:index + num_cf, 1]
-                nominals = np.unique(cashflow_schedule[:, CASHFLOW_INDEX_Nominal])
-                margins = np.unique(cashflow_schedule[:, CASHFLOW_INDEX_FloatMargin])
-
-                if groupsize == -1 and nominals.size == 1 and margins.size == 1:
-                    # we can compress this
-                    cash.append(
-                        [cashflow_schedule[0, CASHFLOW_INDEX_Start_Day],
-                         cashflow_schedule[-1, CASHFLOW_INDEX_End_Day],
-                         pay_day,
-                         cashflow_schedule[:, CASHFLOW_INDEX_Year_Frac].sum(),
-                         cashflow_schedule[:, CASHFLOW_INDEX_Nominal].mean(),
-                         cashflow_schedule[:, CASHFLOW_INDEX_FixedAmt].sum(),
-                         cashflow_schedule[:, CASHFLOW_INDEX_FloatMargin].mean(),
-                         cashflow_schedule[0, CASHFLOW_INDEX_FXResetDate],
-                         cashflow_schedule[0, CASHFLOW_INDEX_FXResetValue]])
-
-                    cashflow_reset_offsets.append([num_cf, index, 1])
-                    all_resets.extend(cashflows.Resets[reset_offset].tolist())
-                    reset_scenario_offsets.extend(cashflows.Resets.offsets[reset_offset].tolist())
-
-                elif nominals.size <= groupsize and margins.size <= groupsize and (check_resets and not (
-                        cashflows.Resets[reset_offset, RESET_INDEX_Reset_Day] < 0).any() or not check_resets):
-                    # we can compress this
-                    for cash_group, ofs_group in zip(*map(
-                            lambda x: np.array_split(x, groupsize), [cashflow_schedule, cashflow_offsets])):
-                        cash.append(
-                            [cash_group[0, CASHFLOW_INDEX_Start_Day],
-                             cash_group[-1, CASHFLOW_INDEX_End_Day],
-                             pay_day,
-                             cash_group[:, CASHFLOW_INDEX_Year_Frac].sum(),
-                             # not strictly correct - need to break this up - TODO
-                             cash_group[:, CASHFLOW_INDEX_Nominal].mean(),
-                             cash_group[:, CASHFLOW_INDEX_FixedAmt].sum(),
-                             # not strictly correct - need to break this up - TODO
-                             cash_group[:, CASHFLOW_INDEX_FloatMargin].mean(),
-                             cash_group[0, CASHFLOW_INDEX_FXResetDate],
-                             cash_group[0, CASHFLOW_INDEX_FXResetValue]])
-
-                        reset_index = ofs_group[ofs_group[:, 1].size // 2, 1]
-                        cashflow_reset_offsets.append([1, len(all_resets), 0])
-                        reset_scenario_offsets.append(cashflows.Resets.offsets[reset_index])
-                        all_resets.append(cashflows.Resets[reset_index].tolist())
-
-                else:
-                    # copy as is
-                    cash.extend(cashflow_schedule.tolist())
-                    all_resets.extend(cashflows.Resets[reset_offset].tolist())
-                    reset_scenario_offsets.extend(cashflows.Resets.offsets[reset_offset].tolist())
-                    cashflow_reset_offsets.extend(cashflows.offsets[index:index + num_cf].tolist())
-
-            approx_cashflows = TensorCashFlows(cash, cashflow_reset_offsets)
-            approx_cashflows.set_resets(all_resets, reset_scenario_offsets)
-            if len(cashflows.Resets) == len(approx_cashflows.Resets):
-                logging.warning('Cashflows rebased from {} resets'.format(len(cashflows.Resets)))
-            else:
-                logging.warning('Cashflows reduced from {} resets to {} resets'.format(
-                    len(cashflows.Resets), len(approx_cashflows.Resets)))
-            return approx_cashflows
-
-    return cashflows
-
-
 if __name__ == '__main__':
     pass
 
 
 # The least-squares calibration node: the box algebra, the damped Newton, the implicit-function backward and the artifact
-def column_scale(jacobian):
-    """`(J/||J_:,j||, ||J_:,j||)` - the `x_scale='jac'` matrix `least_squares` itself steps on,
-    which is what both the identification table and the quote contraction read. An all-zero column
-    keeps unit scale rather than dividing by nothing."""
-    norms = jacobian.norm(dim=0)
-    norms = torch.where(norms > 0.0, norms, torch.ones_like(norms))
-    return jacobian / norms, norms
-
-
 def on_box(x, lower, upper, tol=1e-4):
     """`(on the lower edge, on the upper edge)` as two masks: within `tol` of a bound relative to
     the box's width, an infinite half-width taking the finite side's and `max(1, |x|)` where both
@@ -5478,20 +5161,6 @@ def active_bounds(labels, x, lower, upper, g):
     return ['{} HELD at {:.6g} on its {} bound {:.6g}, gradient {:+.3e} pushing into it'.format(
         labels[i], x[i], 'lower' if g[i] > 0.0 else 'upper',
         lower[i] if g[i] > 0.0 else upper[i], g[i]) for i in np.flatnonzero(held)]
-
-
-def null_basis(scaled, norms, rcond):
-    """An orthonormal basis of the null space of the UNSCALED Jacobian at the declared cutoff - the
-    right singular vectors the cutoff DISCARDS, mapped back by `D^-1` and re-orthonormalised.
-
-    The pseudo-inverse is minimum-norm in the metric the solve steps in, so the part of a quote
-    delta lying here is that CONVENTION and not anything the quotes identify.
-    """
-    _, values, right = torch.linalg.svd(scaled, full_matrices=True)
-    dropped = torch.ones(right.shape[0], dtype=torch.bool, device=right.device)
-    dropped[:values.numel()] = values <= rcond * values.max()
-    basis = (right[dropped] / norms).t()
-    return torch.linalg.qr(basis)[0] if basis.shape[1] else basis
 
 
 def damped_newton(residual, theta, n_iter, tol, halvings):
@@ -5829,6 +5498,29 @@ class LeastSquaresSolve(torch.autograd.Function):
     """
 
     @staticmethod
+    def column_scale(jacobian):
+        """`(J/||J_:,j||, ||J_:,j||)` - the `x_scale='jac'` matrix `least_squares` itself steps on,
+        which is what both the identification table and the quote contraction read. An all-zero column
+        keeps unit scale rather than dividing by nothing."""
+        norms = jacobian.norm(dim=0)
+        norms = torch.where(norms > 0.0, norms, torch.ones_like(norms))
+        return jacobian / norms, norms
+
+    @staticmethod
+    def null_basis(scaled, norms, rcond):
+        """An orthonormal basis of the null space of the UNSCALED Jacobian at the declared cutoff - the
+        right singular vectors the cutoff DISCARDS, mapped back by `D^-1` and re-orthonormalised.
+
+        The pseudo-inverse is minimum-norm in the metric the solve steps in, so the part of a quote
+        delta lying here is that CONVENTION and not anything the quotes identify.
+        """
+        _, values, right = torch.linalg.svd(scaled, full_matrices=True)
+        dropped = torch.ones(right.shape[0], dtype=torch.bool, device=right.device)
+        dropped[:values.numel()] = values <= rcond * values.max()
+        basis = (right[dropped] / norms).t()
+        return torch.linalg.qr(basis)[0] if basis.shape[1] else basis
+
+    @staticmethod
     def forward(ctx, calibration, rcond, stationarity, *quotes):
         with torch.enable_grad():
             theta = calibration.solve()
@@ -5866,7 +5558,7 @@ class LeastSquaresSolve(torch.autograd.Function):
                         'Calibration: theta* is not stationary - ||J^T r|| is {:.6g} against a '
                         'Stationarity_Tol of {:.6g}, so the implicit function theorem does not '
                         'hold there'.format(gradient, ctx.stationarity))
-                scaled, norms = column_scale(inner)
+                scaled, norms = LeastSquaresSolve.column_scale(inner)
                 columns = torch.cat([column.reshape(residual.numel(), -1)
                                      for column in torch.autograd.grad(
                                          residual, ctx.quotes, eye, is_grads_batched=True,
@@ -5874,7 +5566,7 @@ class LeastSquaresSolve(torch.autograd.Function):
                 pseudo = torch.linalg.pinv(scaled, rtol=ctx.rcond)
                 ctx.memo = (residual, free, norms, pseudo.t(),
                             -(pseudo @ columns) / norms[:, None],
-                            null_basis(scaled, norms, ctx.rcond))
+                            LeastSquaresSolve.null_basis(scaled, norms, ctx.rcond))
             residual, free, norms, contraction, delta, null = ctx.memo
             v = cotangent.double()[free]
             projected = null @ (null.t() @ delta)

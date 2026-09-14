@@ -18,7 +18,7 @@ import json
 import logging
 import operator
 
-from collections import Counter
+from collections import Counter, deque
 from functools import reduce
 
 from xml.etree.ElementTree import ElementTree, SubElement, Element, tostring
@@ -37,6 +37,164 @@ from .stochasticprocess import construct_calibration_config, construct_process, 
 
 Timestamp = pd.Timestamp
 DateOffset = pd.DateOffset
+
+
+def traverse_dependents(x, adj):
+    seen = set(adj[x])
+    queue = deque(adj[x])
+    while queue:
+        i = queue.popleft()
+        yield i
+        for t in adj[i]:
+            if t not in seen:
+                seen.add(t)
+                queue.append(t)
+
+
+def filter_data_frame(df, from_date, to_date, rate=None):
+    index1 = (pd.Timestamp(from_date) - utils.excel_offset).days
+    index2 = (pd.Timestamp(to_date) - utils.excel_offset).days
+    return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
+        [col for col in df.columns if col.startswith(rate)]]
+
+
+def compress_deal_data(deals):
+    def filter_deals(deals, values):
+        filtered = []
+        unfiltered = []
+        for deal in deals:
+            (filtered if deal['Instrument'].field['Reference'] in values else unfiltered).append(deal)
+        return filtered, unfiltered
+
+    def compress_CFFloatingInterestListDeal(unders, ref, use_ref_as_tag=False):
+        compressed = []
+        all_margin = {}
+        all_notional = {}
+        for deal in unders:
+            buy_sell = 1.0 if deal['Instrument'].field['Buy_Sell'] == 'Buy' else -1.0
+            prop_key = tuple(sorted(
+                [(k, v) for k, v in deal['Instrument'].field['Cashflows'].items() if k != 'Items']))
+            margin_list = all_margin.setdefault(prop_key, {})
+            notional_list = all_notional.setdefault(prop_key, {})
+            for cf in deal['Instrument'].field['Cashflows']['Items']:
+                cf_key = tuple(sorted(
+                    [(k, v) for k, v in cf.items() if k not in ['Notional', 'Resets', 'Margin']]))
+                reset_key = tuple(sorted([tuple(x) for x in cf['Resets']]))
+                key = (cf_key, reset_key)
+                notional = buy_sell * cf['Notional']
+                margin_list[key] = margin_list.setdefault(key, 0.0) + cf['Margin'] * notional
+                notional_list[key] = notional_list.setdefault(key, 0.0) + notional
+
+        # finish this off
+        prop_index = 0
+        for cf_prop, margin_list in all_margin.items():
+            leg = []
+            existing_deals = unders[prop_index:]
+            notional_list = all_notional[cf_prop]
+            for key, val in margin_list.items():
+                notional = notional_list[key]
+                cashflow = dict(key[0])
+                cashflow['Resets'] = [list(x) for x in list(key[1])]
+                if notional:
+                    cashflow['Notional'] = notional
+                    cashflow['Margin'] = Basis(10000.0 * val / notional)
+                    leg.append(cashflow)
+                elif val:
+                    cashflow['Notional'] = val
+                    cashflow['Margin'] = Basis(10000.0)
+                    leg.append(cashflow)
+                    logging.warning('Float Cashflow Nominal compressed to 0.0 and margin is not 0 - TEST')
+                else:
+                    logging.info('Float Cashflow Nominal compressed to 0.0 and margin is 0 - will be skipped')
+
+            # check that there are no overlapping resets (if so - create a new leg)
+            final = sorted(leg, key=lambda x: (x['Payment_Date'], x['Accrual_Start_Date'], x['Accrual_End_Date']))
+            # can just check the first reset because we sorted them earlier
+            splits = [i + 1 for i, (x, y) in enumerate(
+                zip(final[:-1], final[1:])) if x['Resets'][0][0] > y['Resets'][0][0]]
+
+            if len(splits) >= len(existing_deals):
+                # can happen with e.g. prime linked swaps (many resets per day)
+                # check to see if we must edit the tag
+                for deal in existing_deals:
+                    if use_ref_as_tag:
+                        deal['Instrument'].field['Tags'] = list(ref)
+                    # add the deal uncompressed
+                    compressed.append(deal)
+            else:
+                for i, (deal, m, n) in enumerate(zip(existing_deals, [0] + splits, splits + [None])):
+                    legnum = '_Leg{}'.format(i) if splits else ''
+                    deal['Instrument'].field['Buy_Sell'] = 'Buy'
+                    deal['Instrument'].field['Cashflows'] = dict(cf_prop)
+                    deal['Instrument'].field['Cashflows']['Items'] = final[m:n]
+                    if use_ref_as_tag:
+                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format(
+                            'Buy', deal['Instrument'].field['Currency'], legnum)
+                        deal['Instrument'].field['Tags'] = list(ref)
+                    else:
+                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format('Buy', ref, legnum)
+
+                    compressed.append(deal)
+
+                # move the existing deal index forward
+                prop_index += i + 1
+
+        return compressed
+
+    # return this as our compressed portfolio
+    reduced_deals = deals
+    # first try and compress equity_swaps
+    equity_swaps = [x for x in reduced_deals if x['Instrument'].field['Object'] == 'EquitySwapletListDeal']
+    # don't bother if there are less than 400 swaps
+    if equity_swaps and len(equity_swaps) > 400:
+        logging.info('Compressing {} EquitySwaplets'.format(len(equity_swaps)))
+        eq_unders = {}
+        ir_unders = {}
+        eq_swap_ref = {x['Instrument'].field['Reference']: x['Instrument'].field['Equity'] for x in equity_swaps}
+        all_eq_swap, all_other = filter_deals(reduced_deals, eq_swap_ref.keys())
+
+        # first load all compressible deals
+        for k in all_eq_swap:
+            key = tuple(
+                sorted([(field, tuple(value) if isinstance(value, list) else value)
+                        for field, value in k['Instrument'].field.items()
+                        if field not in ['Reference', 'Buy_Sell', 'Cashflows']]))
+
+            if k['Instrument'].field['Object'] == 'EquitySwapletListDeal':
+                # need to split buys and sells because there could be at different prices for the same day
+                buy_sell = (('Buy_Sell', k['Instrument'].field['Buy_Sell']),)
+                eq_unders.setdefault(key + buy_sell, []).append(k)
+            else:
+                # pair up with the equity leg so that it's easy to track funding per stock
+                under_eq = eq_swap_ref[k['Instrument'].field['Reference']]
+                ir_unders.setdefault(key + (under_eq,), []).append(k)
+
+        # now compress
+        eq_compressed = {}
+        for k, unders in eq_unders.items():
+            cf_list = {}
+            for deal in unders:
+                for cf in deal['Instrument'].field['Cashflows']['Items']:
+                    key = tuple([(k, v) for k, v in cf.items() if k != 'Amount'])
+                    cf_list[key] = cf_list.setdefault(key, 0.0) + cf['Amount']
+
+            # edit the last deal
+            deal['Instrument'].field['Cashflows']['Items'] = [dict(k + (('Amount', v),)) for k, v in cf_list.items()]
+            deal['Instrument'].field['Reference'] = 'Compressed_EQSwaplet_{}_{}'.format(
+                deal['Instrument'].field['Buy_Sell'], deal['Instrument'].field['Equity'])
+            eq_compressed.setdefault(deal['Instrument'].field['Equity'], []).append(deal)
+
+        ir_compressed = {}
+        for k, unders in ir_unders.items():
+            ir_compressed.setdefault(k[-1], []).extend(compress_CFFloatingInterestListDeal(unders, k[-1]))
+
+        for k, v in eq_compressed.items():
+            all_other.extend(v)
+            all_other.extend(ir_compressed[k])
+
+        reduced_deals = all_other
+
+    return reduced_deals
 
 
 def get_grid_grammar():
@@ -726,7 +884,7 @@ class Config(object):
                              [self.archive_columns[rate.archive_name] + _related_archive_cols(rate.archive_name)
                               for rate in factors.values()], [])
         total_rates = list(dict.fromkeys(total_rates))
-        factor_data = utils.filter_data_frame(self.archive, from_date, to_date)[total_rates]
+        factor_data = filter_data_frame(self.archive, from_date, to_date)[total_rates]
 
         for rate_name, rate_value in sorted(factors.items()):
             primary_cols = [col for col in factor_data.columns if col.split(',')[0] == rate_value.archive_name]
@@ -1075,7 +1233,7 @@ class Config(object):
             # make sure to add the reset dates to this interest rate (and dependents)
             dependent_factor_tenors[interest_rate_factor] = reset_dates
             dependent_factors.update(get_rates(interest_rate_factor, {}))
-            for sub_factor in utils.traverse_dependents(interest_rate_factor, dependent_factors):
+            for sub_factor in traverse_dependents(interest_rate_factor, dependent_factors):
                 dependent_factor_tenors[sub_factor] = reset_dates
 
         # derived fields are fields that embed other risk factors
@@ -1168,7 +1326,7 @@ class Config(object):
             dependent_factors.update(report_currency_dependencies)
             # make sure the reporting currency is around till the end
             dependent_factor_tenors[report_factor] = reset_dates
-            for reporting_factor in utils.traverse_dependents(report_factor, dependent_factors):
+            for reporting_factor in traverse_dependents(report_factor, dependent_factors):
                 dependent_factor_tenors[reporting_factor] = reset_dates
 
             if options.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
@@ -1198,7 +1356,7 @@ class Config(object):
             # update the linked factor max tenors
             missing_tenors = {}
             for k, v in dependent_factor_tenors.items():
-                for linked_factor in utils.traverse_dependents(k, dependent_factors):
+                for linked_factor in traverse_dependents(k, dependent_factors):
                     missing_tenors.setdefault(linked_factor, set()).update(v)
 
             # make sure the base currency is always first

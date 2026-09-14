@@ -181,7 +181,7 @@ class DealStructure(object):
                 deal_mark = len(shared.boundary_sets) if mark is not None else None
                 mtm = deal_data.Instrument.calculate(shared, time_grid, deal_data)
                 if deal_mark is not None:
-                    utils.stamp_boundary_sets(shared, deal_mark, logging.root.name)
+                    utils.BoundarySet.stamp(shared, deal_mark, logging.root.name)
                 deal_tensors = deal_tensors + mtm
 
             accum = accum + deal_tensors
@@ -197,10 +197,10 @@ class DealStructure(object):
                 logging.critical('Deal skipped - {}'.format(e.args))
             finally:
                 if mark is not None:
-                    utils.claim_boundary_sets(shared, mark)
+                    utils.BoundarySet.claim(shared, mark)
                     # whatever post_process itself registered (a margin call) has no deal to
                     # name it, so the structure does
-                    utils.stamp_boundary_sets(shared, mark, logging.root.name)
+                    utils.BoundarySet.stamp(shared, mark, logging.root.name)
 
         return accum
 
@@ -277,7 +277,7 @@ class ScenarioTimeGrid(object):
         scen_grid = global_time_grid.scen_time_grid
         offset = scen_grid.searchsorted((cutoff_date - base_date).days) + 1
         self.scen_time_grid = scen_grid[:offset]
-        self.time_grid_years = self.scen_time_grid / utils.DAYS_IN_YEAR
+        self.time_grid_years = self.scen_time_grid / utils.DayCount.DAYS_IN_YEAR
         self.scenario_grid = global_time_grid.scenario_grid[:offset]
 
 
@@ -1086,9 +1086,9 @@ class Credit_Monte_Carlo(Calculation):
                     self.implied_var[key] = vars
 
                 if tenor_offset:
-                    factor_tenor_offset = utils.get_day_count_accrual(
+                    factor_tenor_offset = utils.DayCount.accrual(
                         base_date, tenor_offset, value.factor.get_day_count() if hasattr(
-                            value.factor, 'get_day_count') else utils.DAYCOUNT_ACT365)
+                            value.factor, 'get_day_count') else utils.DayCount.ACT365)
                 else:
                     factor_tenor_offset = 0.0
 
@@ -1103,9 +1103,9 @@ class Credit_Monte_Carlo(Calculation):
         for key, value in self.static_factors.items():
             if key.type not in utils.DimensionLessFactors:
                 if tenor_offset:
-                    factor_tenor_offset = utils.get_day_count_accrual(
+                    factor_tenor_offset = utils.DayCount.accrual(
                         base_date, tenor_offset, value.get_day_count() if hasattr(
-                            value, 'get_day_count') else utils.DAYCOUNT_ACT365)
+                            value, 'get_day_count') else utils.DayCount.ACT365)
                 else:
                     factor_tenor_offset = 0.0
                 current_val = value.current_value(offset=factor_tenor_offset)
@@ -1558,7 +1558,7 @@ class Credit_Monte_Carlo(Calculation):
 
                 liquidity_charge = {}
                 for tenor, values in liquidity_deltas.items():
-                    curve_tenor = utils.tenor_diff(irs[tenor].dropna().index.astype(np.float64).values)
+                    curve_tenor = utils.CurveTenor(irs[tenor].dropna().index.astype(np.float64).values)
                     curve_weights = shared_mem.one.new_tensor(irs[tenor].dropna().values)
                     index, index_next, alpha = curve_tenor.get_index(values)
                     liquidity_charge[tenor] = values * (

@@ -157,10 +157,10 @@ def _value(tmp_path, interpolation=None, tag='job'):
 
 def _hand(z):
     """The deal's own algebra written out: one fixing, weight one, `D = 1` on the zero curve. The
-    carry runs on the 365.25 clock (`utils.DAYS_IN_YEAR`) and the repo on its ACT_365 day count -
+    carry runs on the 365.25 clock (`utils.DayCount.DAYS_IN_YEAR`) and the repo on its ACT_365 day count -
     two clocks, both live in the pinned number."""
     return UNITS * (SPOT * math.exp(
-        z * FIX_DAYS / utils.DAYS_IN_YEAR + REPO * FIX_DAYS / 365.0) - STRIKE)
+        z * FIX_DAYS / utils.DayCount.DAYS_IN_YEAR + REPO * FIX_DAYS / 365.0) - STRIKE)
 
 
 def test_the_routed_carry_reads_the_line_and_the_unrouted_one_clips(tmp_path):

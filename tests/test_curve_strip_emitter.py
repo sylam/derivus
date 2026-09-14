@@ -345,7 +345,7 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
     rather than inside a cashflow generator.
 
     The day-count refusal is the sharpest: an authored `Accrual_Year_Fraction` is used VERBATIM by
-    `make_float_cashflows`, so a day count this module cannot compute must never be approximated.
+    `TensorCashFlows.float`, so a day count this module cannot compute must never be approximated.
     `ACT_365_ISDA` and `ACT_ACT_ICMA` are days/365 in the engine behind a `# TODO`.
     """
     for field, value, expected in (

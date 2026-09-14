@@ -34,7 +34,8 @@ from . import schema
 from . import fields
 from . import utils
 from .instruments import construct_instrument
-from .config import CustomJsonEncoder, Config, correlation_names, correlation_pairs, deal_at
+from .config import (CustomJsonEncoder, Config, compress_deal_data, correlation_names,
+                     correlation_pairs, deal_at)
 
 
 def update_dict(d, u):
@@ -274,8 +275,8 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         if cva_sect.get('CDS_Tenors'):
             # add extra tenors to the survival probability curve and interpolate it to calculate CDS rates
             survivalprob = context.params['Price Factors']['SurvivalProb.{}'.format(cva_sect['Counterparty'])]
-            daycount = lambda time_in_days: utils.get_day_count_accrual(
-                params_mc['Base_Date'], time_in_days, utils.DAYCOUNT_ACT365)
+            daycount = lambda time_in_days: utils.DayCount.accrual(
+                params_mc['Base_Date'], time_in_days, utils.DayCount.ACT365)
             to_add = [daycount((x - params_mc['Base_Date']).days) for x in
                       utils.cds_dates(params_mc['Base_Date'], max(cva_sect.get('CDS_Tenors')) * 12)]
             new_terms = np.union1d(to_add, survivalprob['Curve'].array[:, 0])
@@ -484,7 +485,7 @@ class Context:
             if compress:
                 for i in deals['Children']:
                     if 'Children' in i:
-                        i['Children'] = utils.compress_deal_data(i['Children'])
+                        i['Children'] = compress_deal_data(i['Children'])
         else :
             # a job that carries no deal tree (a hedging problem builds its own at execute time)
             # still loads an empty BOOK, which is the shape every walk of it reads

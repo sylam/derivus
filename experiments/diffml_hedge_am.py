@@ -167,7 +167,7 @@ DATA = {
 # --------------------------------------------------------------------------- #
 BASE_DATE   = pd.Timestamp('2026-07-27')
 EXCEL_EPOCH = pd.Timestamp('1899-12-30')        # utils.excel_offset
-DAYS_IN_YEAR = 365.25                           # utils.DAYS_IN_YEAR
+DAYS_IN_YEAR = 365.25                           # utils.DayCount.DAYS_IN_YEAR
 SETTLE_DATE = pd.Timestamp('2026-11-05')
 EXPIRIES    = [pd.Timestamp(d) for d in ('2026-10-28', '2027-01-27', '2027-04-28')]
 FIX_DATES   = pd.bdate_range('2026-10-01', '2026-10-30')      # 22 Oct-2026 AM fixings

@@ -57,7 +57,7 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass Kahn variant that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
 
-`traverse_dependents` (`utils.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
+`traverse_dependents` (`config.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
 
 !!! warning "Invariant — throwaway graph, cycle behavior"
     `topological_sort` rejects cycles with `RuntimeError` and **destroys its input dict** — pass a rebuilt/throwaway graph. `traverse_dependents` yields transitive dependents **excluding** the start node; do not rely on the node appearing in its own output.

@@ -411,7 +411,7 @@ def _priced(deal, name):
 
 
 def test_a_degenerate_reset_window_refuses_by_name_and_the_run_fails_loud():
-    """`make_float_cashflows` read `cashflow['Rate_Tenor']` whenever a reset's rate window had zero
+    """`TensorCashFlows.float` read `cashflow['Rate_Tenor']` whenever a reset's rate window had zero
     length - a key no `Row` declares and nothing writes - so the one document that reached it died
     `KeyError: 'Rate_Tenor'`, which `add_deal_to_structure` caught.
 

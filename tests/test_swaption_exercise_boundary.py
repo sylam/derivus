@@ -115,8 +115,8 @@ def fixed_leg(reference, buy_sell):
     items = [{'Payment_Date': end, 'Notional': NOTIONAL, 'Rate': utils.Percent(STRIKE),
               'Accrual_Start_Date': start, 'Accrual_End_Date': end,
               'Accrual_Day_Count': DAY_COUNT,
-              'Accrual_Year_Fraction': utils.get_day_count_accrual(
-                  start, (end - start).days, utils.get_day_count(DAY_COUNT)),
+              'Accrual_Year_Fraction': utils.DayCount.accrual(
+                  start, (end - start).days, utils.DayCount.code(DAY_COUNT)),
               'Fixed_Amount': 0.0, 'Discounted': 'No',
               'FX_Reset_Date': None, 'Known_FX_Rate': 0.0}
              for start, end in zip(dates[:-1], dates[1:])]
@@ -130,8 +130,8 @@ def floating_leg(reference, buy_sell):
     dates = schedule(3)
     items = []
     for start, end in zip(dates[:-1], dates[1:]):
-        accrual = utils.get_day_count_accrual(
-            start, (end - start).days, utils.get_day_count(DAY_COUNT))
+        accrual = utils.DayCount.accrual(
+            start, (end - start).days, utils.DayCount.code(DAY_COUNT))
         items.append({
             'Payment_Date': end, 'Notional': NOTIONAL,
             'Accrual_Start_Date': start, 'Accrual_End_Date': end,

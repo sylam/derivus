@@ -66,7 +66,7 @@ QUOTE_TYPE = 'Par_Rate'
 AUTHORING = {'OIS': 'StructuredDeal', 'Swap': 'SwapInterestDeal'}
 
 #: The day counts this emitter computes an accrual in - ACT/365 and ACT/360 and no more, because an
-#: authored `Accrual_Year_Fraction` is used verbatim by `make_float_cashflows`. ACT_365_ISDA and
+#: authored `Accrual_Year_Fraction` is used verbatim by `TensorCashFlows.float`. ACT_365_ISDA and
 #: ACT_ACT_ICMA (which the engine answers as days/365 behind a TODO) and the two 30/360 conventions
 #: refuse by name rather than being reproduced on trust.
 DAY_COUNTS = {'ACT_365': 365.0, 'ACT_360': 360.0}
@@ -591,7 +591,7 @@ def _day_count_factor(day_count, what='day count'):
 
 
 def _accrual(start, end, day_count):
-    """`(end - start).days / N` - `utils.get_day_count_accrual`'s ACT/N branch, the only one this
+    """`(end - start).days / N` - `utils.DayCount.accrual`'s ACT/N branch, the only one this
     module authors into a cashflow."""
     return (end - start).days / _day_count_factor(day_count)
 

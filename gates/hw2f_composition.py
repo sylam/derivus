@@ -461,7 +461,7 @@ def fit_closure(config, market_price, device=torch.device('cpu'), dtype=DTYPE):
         base_currency, factors, {}, ir_curve, rate)
     mtm = set([base_date + x['Start'] for x in block['Instrument_Definitions']])
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
-    time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DAYS_IN_YEAR))
+    time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
     implied_var, objective, swaps = boot.calc_loss_on_ir_curve(
         {'instrument': block}, base_date, time_grid, process, implied_obj, ir_factor, surface)
     # THE CLOSURE IS RETURNED READY, and that is not a convenience. `schrager_pelsser_swaption`
@@ -581,7 +581,7 @@ def quanto_correlations(param):
 def par_forward_swap_leg(curve, base_date, start, tenor, frequency, day_count):
     """The forward-starting swap's own fixed leg and its par rate, off the SOLVED t=0 curve.
 
-    THE CLOCK IS THE CURVE'S OWN DAY COUNT, not `utils.DAYS_IN_YEAR`: `read_cache` builds the grid
+    THE CLOCK IS THE CURVE'S OWN DAY COUNT, not `utils.DayCount.DAYS_IN_YEAR`: `read_cache` builds the grid
     `J` is integrated on with `factor.get_day_count_accrual`, and `schrager_pelsser_swaption` reads
     its expiry against that grid. The two differ by 7e-4 years at a 1Y expiry, which is enough to
     miss the node the benchmark put there.
@@ -591,8 +591,8 @@ def par_forward_swap_leg(curve, base_date, start, tenor, frequency, day_count):
     """
     effective = base_date + start
     dates = generate_dates_backward(effective + tenor, effective, frequency)
-    cash = utils.generate_fixed_cashflows(
-        base_date, dates, 1.0, None, utils.get_day_count(day_count), 0.0)
+    cash = utils.TensorCashFlows.generate_fixed(
+        base_date, dates, 1.0, None, utils.DayCount.code(day_count), 0.0)
     pay_days = cash.schedule[:, utils.CASHFLOW_INDEX_Pay_Day]
     tau = cash.schedule[:, utils.CASHFLOW_INDEX_Year_Frac]
     exp_days = (effective - base_date).days
