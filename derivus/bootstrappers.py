@@ -972,6 +972,11 @@ LVQuote = namedtuple(
     'row j spot strike ratio is_call units T rate carry forward premium vega weight '
     'sigma quoted')
 
+#: What a vanilla is priced off, whichever estimator made it: the conditional drift and variance
+#: per row per block, the row weights per block (`None` where the rows are equally weighted paths)
+#: and the mixer's own clock, which the residual's shape is read off.
+LVPriced = namedtuple('lv_priced', 'M var weight mixer')
+
 #: One forward-start target: a window `[j1, j2]` of the same walk, a strike as a fraction of
 #: S_T1, and the vol it is aimed at - the objective is in vol points, so this block carries
 #: no premium, and a REPORTED row (the reserve line's) carries no target vol either.
@@ -1094,6 +1099,20 @@ class LVFit(utils.Residual):
             read['Bucket_Smoothness'])
         self.is_vol = read['Quote_Type'] == 'Implied_Volatility'
         self.sampling = read['Sampling']
+        #: the vanilla estimator and, where it is the quadrature, its node counts and the walk the
+        #: forward-start rows still read - banked per evaluation by `evaluate`
+        self.quadrature = read['Vanilla_Pricer'] == 'Quadrature'
+        self.nodes = [int(x) for x in utils.lv_parse_floats(
+            read['Quadrature_Nodes'], 'Quadrature_Nodes', 2)]
+        self.sampled = None
+        if self.quadrature and utils.lv_declared(read.get('Cap_A')) is not None:
+            raise ValueError(
+                '{}: Vanilla_Pricer Quadrature prices the instantaneous variance as the EXPONENTIAL '
+                'of a Gaussian, which is what makes the clock\'s moments closed form, and this '
+                'block declares Cap_A {:g} - a corner the walk would take and the moments cannot. '
+                'Omit Cap_A and the fit runs unbounded, writing the corner onto the factor as it '
+                'does now, or price the vanillas on the Walk'.format(
+                    market_price, utils.lv_declared(read['Cap_A'])))
         self.source = read['Forward_Smile_Source']
         if self.source == 'Prior':
             raise ValueError(
@@ -1272,21 +1291,54 @@ class LVFit(utils.Residual):
         beta = torch.stack([params['Beta'][i] for i in starts])
         delta, mu, gamma = utils.lv_nig_budget(torch.stack(clocks, -1), alpha, beta)
         G = utils.ig_quantile(uG[:, :len(starts)], delta / gamma, delta * delta)
-        return (torch.stack(M, -1) + mu + beta * G).cumsum(-1), G.cumsum(-1)
+        clock = G.cumsum(-1)
+        return LVPriced((torch.stack(M, -1) + mu + beta * G).cumsum(-1), clock, None, clock)
+
+    def priced(self, scalars, levers, curve, n):
+        """What a vanilla to step `n` is priced off: `walk`'s own cumulated sums, or the
+        quadrature's nodes where the block declares them (`utils.lv_quadrature`).
+
+        ONE LAW, TWO ESTIMATORS. A node carries the same conditional Black a path does, so every
+        reader below is the reading it was, weighted rather than averaged.
+        """
+        if not self.quadrature:
+            return self.walk(scalars, levers, curve, n)
+        return LVPriced(*utils.lv_quadrature(
+            dict(scalars, **{name: levers[name][self.step_bucket[:n]]
+                             for name in utils.LV_BUCKET_NAMES}),
+            curve, self.deltas[:n], self.times[:n + 1],
+            [int(x) for x in self.upto if x <= n], self.nodes))
+
+    def walked(self, priced):
+        """The per-path blocks the FORWARD-START rows read - the walk's own sums, whatever priced
+        the vanillas. A quadrature column carries no window difference and no share measure."""
+        return priced if self.sampled is None else self.sampled
 
     @staticmethod
-    def conditional_black(M, var, carry, strike):
-        """`(S_T/S - k)^+` PER PATH - the vanilla, which IS `pricing.lognormal_fired_gain`
-        at this block's own Gaussian law; the caller averages, or weighs by the share measure.
+    def mix(gain, weight):
+        """One node set's price: the paths' own mean, or the quadrature's weights."""
+        return gain.mean() if weight is None else (weight * gain).sum()
 
-        Priced off the SAMPLE forward: at the default paths the fixed draws leave
-        `E[exp(M + var/2)]` up to 15 basis points off the analytic `exp(carry)`, which the L
-        bootstrap would otherwise absorb into `L` as a fifth of a vol point of calibration noise.
-        Dividing it out is a martingale control variate - one `logsumexp`, and it takes the level
-        bias out of every strike of the block at once.
+    @staticmethod
+    def conditional_black(M, var, carry, strike, weight=None):
+        """`(S_T/S - k)^+` PER PATH OR PER NODE - the vanilla, which IS
+        `pricing.lognormal_fired_gain` at this block's own Gaussian law; the caller averages with
+        `mix`, or weighs by the share measure.
+
+        Priced off the ESTIMATOR'S OWN forward: at the default paths the fixed draws leave
+        `E[exp(M + var/2)]` up to 15 basis points off the analytic `exp(carry)`, and a surrogate
+        leaves its own defect there, which the L bootstrap would otherwise absorb into `L` as a
+        fifth of a vol point of calibration noise. Dividing it out is a martingale control
+        variate - one `logsumexp`, and it takes the level bias out of every strike at once.
         """
         sigma = utils.sqrt_or_zero(var)
-        drift = M + carry - torch.logsumexp(M + 0.5 * var, 0) + np.log(M.shape[0])
+        total = M + 0.5 * var
+        # a node the mixer's density leaves at an exact zero has no mass and no derivative either;
+        # its log is floored rather than taken, `inf * 0` being a NaN on every leaf behind it
+        drift = M + carry - torch.logsumexp(
+            total if weight is None else total + torch.log(
+                weight.clamp(min=torch.finfo(weight.dtype).tiny)), 0) + (
+            np.log(M.shape[0]) if weight is None else 0.0)
         return pricing.lognormal_fired_gain(
             1.0, drift, sigma, (torch.log(strike) - drift) / sigma, strike, True)
 
@@ -1304,7 +1356,7 @@ class LVFit(utils.Residual):
         """The model's own smile at block `j`, as vols at `strikes` given as fractions of that
         block's forward - the reading both the forward rows and the stickiness ratios are taken
         on, so neither can drift from the other."""
-        forward = np.exp(carry)
+        cum, forward = self.walked(cum), np.exp(carry)
         return [self.implied(self.conditional_black(
             cum[0][..., j], cum[1][..., j], carry, self.tensor(k * forward)).mean(),
             forward, k * forward, T) for k in strikes]
@@ -1363,16 +1415,17 @@ class LVFit(utils.Residual):
         """One quote's model premium: the conditional Black over the paths, the discount and the
         yield rescale as the component family applies them, and a put by parity off the ANALYTIC
         forward - so a put and a call at one strike cannot disagree by the sample."""
-        gain = quote.spot * self.conditional_black(
-            cum[0][..., quote.j], cum[1][..., quote.j], quote.carry, quote.ratio).mean()
+        weight = None if cum.weight is None else cum.weight[..., quote.j]
+        gain = quote.spot * self.mix(self.conditional_black(
+            cum[0][..., quote.j], cum[1][..., quote.j], quote.carry, quote.ratio, weight), weight)
         return quote.units * np.exp(-quote.rate * quote.T) * (
             gain if quote.is_call else gain - (quote.forward - quote.strike))
 
     def forward_vol(self, cum, target):
         """One forward-start row's model vol - `forward_value` inverted by the same splice the
         spot smile uses, the objective being in vol points."""
-        return self.implied(self.forward_value(cum, target), np.exp(target.carry), target.strike,
-                            target.tenor)
+        return self.implied(self.forward_value(self.walked(cum), target), np.exp(target.carry),
+                            target.strike, target.tenor)
 
     def forward_value(self, cum, target):
         """One forward-start target's model premium in units of `S_T1`: the block over `[T1, T2]`
@@ -1515,16 +1568,16 @@ class LVFit(utils.Residual):
         levels, misses = [], []
         for k, quote in enumerate(self.atm):
 
-            def priced(at):
+            def repriced(at):
                 self.calls['l'] += 1
-                return self.value(self.walk(scalars, levers,
-                                            self.lstar(scalars, levers, levels + [at]),
-                                            int(self.upto[quote.j])), quote) - targets[k]
+                return self.value(self.priced(scalars, levers,
+                                              self.lstar(scalars, levers, levels + [at]),
+                                              int(self.upto[quote.j])), quote) - targets[k]
 
             at = self.warm[k]
             for _ in range(self.l_iterations):
                 pillar = at.detach().requires_grad_(True)
-                shift = priced(pillar)
+                shift = repriced(pillar)
                 slope = torch.autograd.grad(shift, pillar, retain_graph=True)[0].detach()
                 miss = float(shift.detach()) / quote.premium
                 if abs(miss) < self.pillar_tol:
@@ -1570,12 +1623,15 @@ class LVFit(utils.Residual):
                          self.state['Beta'][bucket])[LV_RAW.index(name)]
 
     def evaluate(self, x=None, coords=()):
-        """One outer iterate: the parameters, the xi strip re-bootstrapped at them, and the walk.
-        The strip is BANKED, so `written` and `connect` read the one solve `finish` took."""
+        """One outer iterate: the parameters, the xi strip re-bootstrapped at them, and the price
+        state. The strip is BANKED, so `written` and `connect` read the one solve `finish` took,
+        and so is the WALK where a quadrature block also carries forward-start rows."""
         scalars, levers = self.build(x, coords)
         self.levels = self.solve_l(scalars, levers)
-        return scalars, levers, self.walk(
-            scalars, levers, self.lstar(scalars, levers, self.levels), self.n)
+        curve = self.lstar(scalars, levers, self.levels)
+        self.sampled = (self.walk(scalars, levers, curve, self.n)
+                        if self.quadrature and (self.targets or self.reported) else None)
+        return scalars, levers, self.priced(scalars, levers, curve, self.n)
 
     def rows(self, cum, judged, forwards):
         """Every row's residual, weighted: a vanilla's premium miss over its own market vega, and
@@ -1598,7 +1654,7 @@ class LVFit(utils.Residual):
         """
         alpha, beta = levers['Alpha'][bucket], levers['Beta'][bucket]
         j = self.atm[0].j if j is None else j
-        return cum[1][..., j].mean() * alpha * torch.sqrt(alpha * alpha - beta * beta)
+        return cum.mixer[..., j].mean() * alpha * torch.sqrt(alpha * alpha - beta * beta)
 
     def residual(self, x, coords, judged, forwards=(), smooth=None):
         """The stage's residual VECTOR: its own rows FIRST, which is what the identification table
@@ -1725,6 +1781,9 @@ class LVFit(utils.Residual):
         """The staged fit. Returns theta* over the last stage's coordinates - the flat vector
         `utils.LeastSquaresSolve` hangs the quote derivative on."""
         started = time.time()
+        if self.quadrature:
+            logging.info('  {}: the vanilla rows price by QUADRATURE, {} clock nodes x {} mixer '
+                         'nodes and no draws'.format(self.market_price, *self.nodes))
         self.soft_priors()
         self.settle()
         (self.bootstrap_stages if self.mode == 'Bootstrap' else self.global_stages)()
@@ -2147,7 +2206,7 @@ class LVFit(utils.Residual):
         for (rho_l, sigma_l), names in priors.items():
             scalars, levers = self.build(None, ())
             scalars['Rho_L'], scalars['Sigma_L'] = self.tensor(rho_l), self.tensor(sigma_l)
-            cum = self.walk(scalars, levers, self.l_at(self.solve_l(scalars, levers)), self.n)
+            cum = self.priced(scalars, levers, self.l_at(self.solve_l(scalars, levers)), self.n)
             rows.append((' = '.join(names), rho_l, sigma_l, self.wing_rmse(cum),
                          max(self.spreads(self.exposure_horizon, sigma_l))))
         return rows
@@ -2605,6 +2664,9 @@ class LVFit(utils.Residual):
                          np.sqrt(np.mean([x ** 2 for x in misses])), len(quotes),
                          np.sqrt(np.dot(weights, np.square(misses)) / weights.sum()),
                          ', '.join('{:+.1e}'.format(x) for x in self.atm_misses)))
+        logging.debug('  every quote, model minus market in vol points: {}'.format(', '.join(
+            '{} {:+.6f}'.format(name, miss)
+            for name, miss in zip(self.descriptors, misses))))
         for tag, lo, hi in (('wing 70-80%', 0.65, 0.85), ('convexity 110-120%', 1.05, 1.25)):
             found = self.band(lo, hi)
             logging.info('  {} residual: {}'.format(
@@ -2971,6 +3033,35 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                       'is what an autocall wants; Bootstrap makes the ladder\'s WING EXPIRIES the '
                       'calendar buckets and fits each given the ones before it, which is what a '
                       'TARF read at many fixings wants'),
+        F('Vanilla_Pricer', 'Text', default='Walk', values=['Walk', 'Quadrature'],
+          description='How a VANILLA quote is priced inside the fit. Walk takes the block\'s '
+                      'conditional Black on the fixed draws, path by path - what Paths, '
+                      'Random_Seed and Sampling set the noise floor of. Quadrature prices the same '
+                      'law on a deterministic grid instead: with no cap the instantaneous variance '
+                      'is exactly the exponential of a Gaussian, so the clock\'s first two '
+                      'moments, the leverage functional\'s variance and their covariance are '
+                      'closed form on the step grid; the clock is then matched LOGNORMAL, the '
+                      'leverage functional GAUSSIAN given it with that covariance, the residual\'s '
+                      'mixer is the walk\'s own inverse Gaussian exactly, and Gauss-Hermite over '
+                      'the two carries the conditional Black. No seed, no path count and no '
+                      'sampling noise in the objective, and it is smooth in every parameter; what '
+                      'is priced is the SURROGATE\'s law rather than the walk\'s, and the moments '
+                      'cost an n x n matrix over the internal steps. The mixer is integrated '
+                      'against its own DENSITY, so there is no root to find - inverting the '
+                      'inverse-Gaussian CDF is what a DRAW needs, and it stays with the walk. The '
+                      'FORWARD-START rows price on the walk either way, which is what the draws '
+                      'are still made for. '
+                      'Available on ONE residual bucket: a mixer summed over two of them is not '
+                      'inverse Gaussian, and the block refuses by name'),
+        F('Quadrature_Nodes', 'Text', default='24,16',
+          description='Gauss-Hermite nodes Vanilla_Pricer Quadrature spends on the CLOCK and on '
+                      'the mixer, comma separated. The default prices every rung of a five-expiry '
+                      'equity ladder to 2e-5 vol points of the 64,48 answer, 16,12 to 1.5e-4 and '
+                      '8,6 to 0.013, all of them under the surrogate\'s own tenth of a vol point, '
+                      'and the cost is FLAT in them - the node tensor is too small to fill the '
+                      'card either way - so the default is the converged one. Raise the first '
+                      'where the vol-of-vol is large and the second where a fitted Alpha is '
+                      'small, which is where the mixer is skewed'),
         F('Paths', 'Integer', default=8192,
           description='Paths the fixed antithetic draws carry. The objective is deterministic in '
                       'them, so this sets the noise floor under every fitted number rather than a '
@@ -3497,6 +3588,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         wings = OrderedDict((T, [i for i in by_expiry[T] if i not in set(atm)])
                             for T in sorted(by_expiry) if len(by_expiry[T]) > 1)
         fit.buckets = self.param_buckets(fit, wings)
+        if fit.quadrature and fit.buckets.size > 1:
+            raise ValueError(
+                '{}: Vanilla_Pricer Quadrature prices the residual on ONE inverse-Gaussian mixer '
+                'over the whole clock to a maturity, and this block carries {} residual buckets '
+                '({}) - a sum of mixers at different Alpha and Beta is not inverse Gaussian and '
+                'has no quantile to integrate against. Declare one Param_Buckets row, or price '
+                'the vanillas on the Walk'.format(
+                    fit.market_price, fit.buckets.size,
+                    ', '.join('{:g}y'.format(t) for t in fit.buckets)))
         fit.free = {}
 
         quotes = self.emphasis(fit, quotes, set(atm))

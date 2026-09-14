@@ -14,7 +14,7 @@
 import calendar
 import math
 import os
-from functools import partial, reduce, wraps
+from functools import lru_cache, partial, reduce, wraps
 import threading
 from collections import namedtuple, deque, OrderedDict
 from typing import Tuple, List
@@ -2496,6 +2496,12 @@ LV_AB_EPS = 1.0e-6
 #: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
 LV_IG_EXPAND, LV_IG_STEPS, LV_IG_TOL = 3, 34, 1.0e-11
 
+#: The quadrature's two guards: the clock/leverage correlation, kept inside the unit disc its own
+#: conditional variance needs, and the LOG span the mixer's own node may sit at from its mean -
+#: seventeen decades either way, past every node that carries mass, and what keeps a clock the
+#: lognormal surrogate has underflowed from dividing by its own zero in the density's exponent.
+LV_QUAD_RHO, LV_QUAD_SPAN = 1.0 - 1.0e-9, 40.0
+
 #: Slack in years matching a walk time to a bucket knot. A grid's ACCUMULATED cumsum lands a
 #: boundary a few ulps low - 252 daily steps reach 1 - 3.1e-15 - and would start its bucket a step
 #: late; buckets are calendar dates and never sit within the 30 ms this allows.
@@ -2796,6 +2802,129 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     if quanto is not None:
         M = M - quanto * sq
     return total(M), total(idio * V), l, s
+
+
+def lv_quad_moments(params, curve, deltas, times):
+    """``(E[A], Var A, Var Lev, Cov(A, Lev))`` CUMULATED to every step end of the walk's own grid.
+
+    ``y_k = l_k + s_k`` is Gaussian - mean ``curve[k]``, the OU recursion's own variance and the
+    pairwise covariance ``exp(-kappa (t_k - t_j)) Var_j`` per factor - so ``V_k = delta_k exp(y_k)``
+    is lognormal and every moment is closed form. ``E[A] = sum_k c_k delta_k xi(t_k)`` is the xi
+    curve's own grid integral; ``Var A`` is a double sum over `expm1` of that covariance, which is
+    where the near-equal difference would otherwise be; ``Var Lev = E[sum_k (rho_s^2 + rho_l^2)
+    V_k]`` is exact, each shock being independent of the variance it multiplies; and
+    ``Cov(A, Lev)`` is the same double sum weighted by the loading a shock carries into the later
+    step, by Gaussian integration by parts.
+
+    WHOLLY IN DOUBLE over an n x n step matrix, which is what the closed form costs.
+    """
+    wide = lv_wide(deltas)
+    n = wide.shape[0]
+    ks, kl, rl = (lv_wide(params[x]) for x in ('Kappa_S', 'Kappa_L', 'Rho_L'))
+    rs = lv_wide(params['Rho_S']) * torch.ones_like(wide)
+    w_s = lv_ou_step_weights(ks, lv_wide(params['Sigma_S']), wide)[1]
+    w_l = lv_ou_step_weights(kl, lv_wide(params['Sigma_L']), wide)[1]
+    zero = wide.new_zeros(())
+    v_s = lv_ou_path(2.0 * ks, w_s, w_s, zero, wide)[:-1]
+    v_l = lv_ou_path(2.0 * kl, w_l, w_l, zero, wide)[:-1]
+    mu, var, t = lv_wide(curve)[:n], v_s + v_l, lv_wide(times)[:n]
+    early = torch.arange(n, device=wide.device)
+    early = torch.minimum(early[:, None], early[None, :])
+    gap = (t[None, :] - t[:, None]).abs()
+    fast, slow = torch.exp(-ks * gap), torch.exp(-kl * gap)
+    grown = torch.expm1(fast * v_s[early] + slow * v_l[early])
+    log_v = torch.log(wide) + mu + 0.5 * var
+    c, b = 1.0 - rs * rs - rl * rl, rs * rs + rl * rl
+    # THE CURVE ENTERS BOTH DOUBLE SUMS AS A RANK-ONE OUTER PRODUCT on a matrix that is the grid's
+    # and the parameters' alone - `expm1` of the pairwise covariance for the clock's own second
+    # moment, its square root for the leverage's, beside the loading each shock carries into a
+    # later step, which is the SAME decay scaled back by the step it starts in
+    mass = c * torch.exp(log_v)
+    pairs = (mass[:, None] * mass[None, :]) * grown
+    lead = torch.exp(0.5 * log_v - 0.125 * var) * torch.stack(
+        [rl * w_l * torch.exp(kl * wide), rs * w_s * torch.exp(ks * wide)])
+    return (torch.cumsum(mass, 0),
+            torch.cumsum(2.0 * torch.triu(pairs, 1).sum(0) + pairs.diagonal(), 0),
+            torch.cumsum(b * torch.exp(log_v), 0),
+            torch.cumsum(mass * torch.triu(
+                (lead[0, :, None] * slow + lead[1, :, None] * fast)
+                * torch.sqrt(grown + 1.0), 1).sum(0), 0))
+
+
+@lru_cache(maxsize=8)
+def lv_quad_nodes(clock_nodes, mixer_nodes, device):
+    """The quadrature's fixed abscissae and weights, MINTED ONCE per node pair and device: the
+    Hermite rule is an eigenproblem and the tensors are a host transfer, and a fit asks for them at
+    every pillar pass. The clock's index is the slow one, so a reshape splits the two axes."""
+    node, w_node = np.polynomial.hermite_e.hermegauss(clock_nodes)
+    mixer, w_mixer = np.polynomial.hermite_e.hermegauss(mixer_nodes)
+    host = lambda a: torch.as_tensor(a, dtype=torch.float64, device=device).reshape(-1, 1)
+    return (host(np.repeat(node, mixer_nodes)), host(np.tile(mixer, clock_nodes)),
+            host(np.repeat(w_node, mixer_nodes) / np.sqrt(2.0 * np.pi)),
+            host(np.log(np.tile(w_mixer, clock_nodes))))
+
+
+def lv_quadrature(params, curve, deltas, times, ends, nodes):
+    """``(drift, variance, weight, mixer)`` at every quadrature node of every block end in ``ends``
+    - the conditional Black the caller prices, and the weights it averages with.
+
+    THE SURROGATE, as the approximation it is: the clock ``A`` is LOGNORMAL matched on its first
+    two moments, and the leverage share ``B = sum_k (rho_s^2 + rho_l^2) V_k`` - both the
+    compensator the walk carries per step and the leverage functional's own conditional variance -
+    is tied to it by their ratio of means, which is exact where `Rho_S` holds one value. The
+    leverage functional is then GAUSSIAN given the clock, its mean the matched covariance and its
+    variance ``B`` less what that mean explains, so its unconditional variance is ``E[B]``
+    exactly and ``E[exp(return)]`` is exactly the forward. The mixer given the clock is the walk's
+    own inverse Gaussian, EXACTLY, so the tail the residual carries is not surrogated at all.
+
+    Gauss-Hermite over the clock's own normal, and over the mixer AGAINST ITS OWN DENSITY: the
+    abscissae are a lognormal matched to the inverse Gaussian's first two moments, which is the map
+    that makes the ratio smooth at any shape, and each node carries the IG density's weight at it -
+    a fixed rule with no root to find, where the walk inverts the CDF per draw because a draw has
+    to be a draw. The weights are formed in LOGS and normalised per clock node, so the mode's own
+    ``delta^2/G + gamma^2 G`` - thousands on a daily clock - never leaves the exponent.
+
+    ``Alpha`` and ``Beta`` are read at the FIRST bucket: a mixer summed over two of them is not
+    inverse Gaussian, which is the one thing this pricer refuses.
+    """
+    e_a, var_a, e_b, cross = lv_quad_moments(params, curve, deltas, times)
+    at = torch.as_tensor(np.asarray(ends) - 1, device=e_a.device)
+    e_a, var_a, e_b, cross = (x[at] for x in (e_a, var_a, e_b, cross))
+    width = (int(nodes[0]), int(nodes[1]))
+    clock, score, weight, log_mixer = lv_quad_nodes(width[0], width[1], e_a.device)
+    spread = sqrt_or_zero(torch.log1p(var_a / (e_a * e_a)))
+    # the leverage's correlation to the clock's own normal: the surrogate writes the functional as
+    # sqrt(B) times a standard normal correlated with it, and `roll`/`tilt` are that surrogate's
+    # own Cov(A, Lev) and Var(Lev) per unit, which invert to rho in closed form and rescale the
+    # clock's leverage share so the variance comes back to E[B] and the mean to zero
+    roll = e_a * sqrt_or_zero(e_b) * spread * (
+        1.5 * torch.exp(0.375 * spread * spread) - 0.5 * torch.exp(-0.125 * spread * spread))
+    tilt = spread * spread * (1.0 - 0.25 * torch.exp(-0.25 * spread * spread))
+    live = roll != 0.0
+    q = torch.where(live, cross / torch.where(live, roll, torch.ones_like(roll)),
+                    torch.zeros_like(roll))
+    share = (q * q / (1.0 - q * q * tilt)).clamp(0.0, LV_QUAD_RHO)
+    rho, scale = torch.sign(q) * sqrt_or_zero(share), 1.0 + share * tilt
+    alpha, beta = (lv_wide(params[name][0]) for name in ('Alpha', 'Beta'))
+    A = e_a * torch.exp(spread * clock - 0.5 * spread * spread)
+    B = (e_b / e_a) * A
+    nu = sqrt_or_zero(B / scale)
+    lever = rho * (nu * clock - sqrt_or_zero(e_b / scale) * 0.5 * spread * torch.exp(
+        -0.125 * spread * spread))
+    delta, mu, gamma = lv_nig_budget(A, alpha, beta)
+    # the mixer's own lognormal map and the IG density's log weight at it, whose whole shape in
+    # that coordinate is `-delta gamma cosh(step) - step/2`: everything else - the normaliser, the
+    # `exp(delta gamma)` that reaches the thousands - is constant along the axis the softmax
+    # normalises, so it never has to be carried against its own negative, and there is no division
+    budget = delta * gamma
+    tight = sqrt_or_zero(torch.log1p(1.0 / budget.clamp(min=np.exp(-LV_QUAD_SPAN))))
+    step = (tight * score - 0.5 * tight * tight).clamp(-LV_QUAD_SPAN, LV_QUAD_SPAN)
+    G = (delta / gamma) * torch.exp(step)
+    log_w = log_mixer - 0.5 * step + 0.5 * score * score - budget * torch.cosh(step)
+    weight = weight * torch.softmax(
+        log_w.reshape(width[0], width[1], -1), 1).reshape(log_w.shape)
+    return (-0.5 * B + lever + mu + beta * G, (1.0 - share) * nu * nu + G,
+            weight, (weight * G).sum(0, keepdim=True))
 
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse
