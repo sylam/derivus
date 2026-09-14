@@ -1231,8 +1231,7 @@ class LVFit(utils.Residual):
         `levels` is the segment strip in LOG xi, which is what the inner bootstrap solves and what
         `Event_Days` shifts; the Jensen term is measured from the base date, where the walk starts.
         """
-        params = dict(scalars, Sigma_S=utils.bucket_at(
-            self.buckets, levers['Sigma_S'], self.times[:-1]))
+        params = dict(scalars, Sigma_S=levers['Sigma_S'][self.step_bucket[:-1]])
         return self.l_at(levels) - 0.5 * utils.lv_state_variance(params, self.deltas)
 
     def walk(self, scalars, levers, curve, n):
@@ -1250,8 +1249,7 @@ class LVFit(utils.Residual):
         `ig_quantile` over `[paths, blocks]` rather than one per block. Elementwise either way, so
         the numbers are the per-block call's own.
         """
-        params = dict(scalars, **{name: utils.bucket_at(self.buckets, levers[name],
-                                                        self.times[:n])
+        params = dict(scalars, **{name: levers[name][self.step_bucket[:n]]
                                   for name in utils.LV_BUCKET_NAMES})
         eta_l, eta_s, uG = self.draws
         s = eta_l.new_zeros(eta_l.shape[0])
@@ -1448,7 +1446,7 @@ class LVFit(utils.Residual):
         """
         eta_l, eta_s, _ = self.draws
         a, beta = (float(scalars[x]) for x in ('Cap_A', 'Cap_Beta'))
-        sigma_s = utils.bucket_at(self.buckets, levers['Sigma_S'], self.times[:-1])
+        sigma_s = levers['Sigma_S'][self.step_bucket[:-1]]
         w_s = utils.lv_ou_step_weights(scalars['Kappa_S'], sigma_s, self.deltas)[1]
         w_l = utils.lv_ou_step_weights(scalars['Kappa_L'], scalars['Sigma_L'], self.deltas)[1]
         zero = eta_l.new_zeros(eta_l.shape[0])
@@ -1470,14 +1468,14 @@ class LVFit(utils.Residual):
         knots = self.knots[:pillars.numel()]
         if not self.event_times.size:
             return knots, pillars
-        extra = utils.bucket_at(knots, pillars, self.vector(self.event_times)) + self.event_log
+        extra = utils.TermStructure(knots, pillars).at(self.vector(self.event_times)) + self.event_log
         merged = np.concatenate([knots, self.event_times])
         order = np.argsort(merged, kind='stable')
         return merged[order], torch.cat([pillars, extra])[order.tolist()]
 
     def l_at(self, levels):
         """`log xi` at the walk's grid times."""
-        return utils.bucket_at(*self.l_knots(levels), t=self.times)
+        return utils.TermStructure(*self.l_knots(levels)).at(self.times)
 
     def solve_l(self, scalars, levers):
         """The inner triangular bootstrap, RE-RUN AT EVERY OUTER ITERATE: the xi SEGMENTS solved one
@@ -2471,7 +2469,7 @@ class LVFit(utils.Residual):
         rows, seen = [], set()
         for tenor in tenors:
             quote = min(self.atm, key=lambda q: abs(q.T - tenor))
-            bucket = int(utils.bucket_index(self.buckets, quote.T))
+            bucket = int(self.grid.index_at(quote.T))
             if quote.T not in seen:
                 seen.add(quote.T)
                 rows.append((quote.T, float(self.residual_shape(
@@ -3534,6 +3532,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             [np.append(np.full(n - 1, fit.delta), span - (n - 1) * fit.delta)
              for n, span in zip(counts, spans)]))
         fit.times = torch.cat([fit.deltas.new_zeros(1), fit.deltas.cumsum(0)])
+        #: the bucket grid and each grid time's segment, searched ONCE: every lever the walk
+        #: reads is a leaf indexed with it
+        fit.grid = utils.TermStructure(fit.buckets, device=fit.device)
+        fit.step_bucket = fit.grid.index(fit.times)
         fit.draws = fit.draw(int(fit.instrument['Paths']), fit.n, len(ends),
                              int(fit.instrument['Random_Seed']))
         fit.knots = np.array([0.0] + [quote.T for quote in fit.atm])
@@ -3823,12 +3825,12 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                     'drop the previous factor'.format(fit.market_price, law, fit.law))
             fit.state.update({name: float(previous[name]) for name in utils.LV_PARAM_NAMES
                               if not name.startswith('Kappa')})
-            fit.state.update({name: utils.bucket_at(
-                previous[name].array[:, 0], self.vector(previous[name].array[:, 1]),
+            fit.state.update({name: utils.TermStructure(
+                previous[name].array[:, 0], self.vector(previous[name].array[:, 1])).at(
                 self.vector(fit.buckets)).tolist() for name in utils.LV_BUCKET_NAMES})
-            levels = list(torch.log(utils.bucket_at(
+            levels = list(torch.log(utils.TermStructure(
                 previous['Xi_Curve'].array[:, 0],
-                self.vector(previous['Xi_Curve'].array[:, 1]),
+                self.vector(previous['Xi_Curve'].array[:, 1])).at(
                 self.vector(fit.knots[:-1]))))
         if levels is None:
             levels = [self.tensor(np.log(x)) for x in fit.xi]

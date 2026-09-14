@@ -5227,8 +5227,8 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         self.scenario_horizon = time_grid.scen_time_grid.size
         structural = self.implied.curve_tenors()
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
-        self.knots = {c: structural[c] for c in utils.LV_CURVE_NAMES}
-        self.values = {c: implied_tensor[c] for c in utils.LV_CURVE_NAMES}
+        self.curves = {c: utils.TermStructure(structural[c], implied_tensor[c])
+                       for c in utils.LV_CURVE_NAMES}
         self.params = dict({x: implied_tensor[x] for x in utils.LV_PARAM_NAMES},
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
         self.spot0 = tensor
@@ -5254,15 +5254,14 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         wide = shared.one.new_tensor(step, dtype=torch.float64)
         t = shared.one.new_tensor(at, dtype=torch.float64)
         self.deltas = wide.to(shared.one.dtype)
-        self.levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
+        self.levers = {x: self.curves[x].at(t[:-1])
                        for x in pricing.LogVar2FJKit.step_names}
-        self.curve = (torch.log(utils.lv_wide(utils.bucket_at(
-            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)))
+        self.curve = (torch.log(utils.lv_wide(self.curves['Xi_Curve'].at(t)))
             - 0.5 * utils.lv_state_variance(
                 dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)).to(shared.one.dtype)
         edge = np.cumsum([0] + [len(x) for x in sub]).tolist()
         self.spans = list(zip(edge[:-1], edge[1:]))
-        bucket, self.pieces = utils.bucket_index(self.knots['Alpha'], at[:-1]), []
+        bucket, self.pieces = self.curves['Alpha'].index_at(at[:-1]), []
         for first, last in self.spans:
             rows, a = [], first
             for b in range(first + 1, last + 1):
@@ -5404,8 +5403,8 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                         self.loadings[:, a:b], free, node[:, j])
                     m, clock, a = m + dm, clock + dA, b
                 mix = None if self.gaussian else (u[j] if not piece else extra[drawn])
-                drift, G = run(self.residual, clock, self.values['Alpha'][bucket],
-                               self.values['Beta'][bucket], mix)
+                drift, G = run(self.residual, clock, self.curves['Alpha'].values[bucket],
+                               self.curves['Beta'].values[bucket], mix)
                 m, v, drawn = m + drift, v + G, drawn + bool(piece)
             M.append(m)
             var.append(v)

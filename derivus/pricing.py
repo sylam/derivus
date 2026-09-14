@@ -93,12 +93,13 @@ class LogVar2FJKit(object):
     #: residual's own pair is read once per DRAW, at its piece's start
     step_names = ('Rho_S', 'Sigma_S')
 
-    def __init__(self, scalars, knots, factor_dep):
+    def __init__(self, scalars, factor_dep):
         n = len(self.param_names)
         structural = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Tenor_Index]
         self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: float(structural[x]) for x in utils.LV_STRUCTURAL_NAMES})
-        self.knots, self.values = knots, dict(zip(self.curve_names, scalars[n:]))
+        self.curves = {name: utils.TermStructure(structural[name], value)
+                       for name, value in zip(self.curve_names, scalars[n:])}
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.steps_per_year = float(structural['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
@@ -192,7 +193,7 @@ class LogVar2FJKit(object):
         fixing opens an interval of no length, and a residual on an empty clock is ``nan``.
         """
         steps, delta, t = self.grid(row_t, deltas)
-        index = utils.bucket_index(self.knots['Alpha'], t[:-1].detach().cpu().numpy())
+        index = self.curves['Alpha'].index_at(t[:-1].detach().cpu().numpy())
         cuts, k = [], 0
         for n in steps:
             rows, a = [], k
@@ -238,14 +239,12 @@ class LogVar2FJKit(object):
         the only things that change measure, and the law they hand back is already ``1/S``'s.
         """
         steps, delta, t = self.grid(row_t, deltas)
-        levers = {x: utils.bucket_at(self.knots[x], self.values[x], t[:-1])
-                  for x in self.step_names}
+        levers = {x: self.curves[x].at(t[:-1]) for x in self.step_names}
         # the level the walk reverts to is the GRID's and the parameters' - double, cast once
-        curve = (torch.log(utils.lv_wide(utils.bucket_at(
-            self.knots['Xi_Curve'], self.values['Xi_Curve'], t)))
-            - 0.5 * utils.lv_state_variance(
-                dict(self.params, Sigma_S=levers['Sigma_S']),
-                utils.lv_wide(delta))).to(delta.dtype)
+        curve = (torch.log(utils.lv_wide(self.curves['Xi_Curve'].at(t)))
+                 - 0.5 * utils.lv_state_variance(
+                     dict(self.params, Sigma_S=levers['Sigma_S']),
+                     utils.lv_wide(delta))).to(delta.dtype)
         shape = [shared.simulation_batch, num_sims]
         # the row's own stream key, off the plain generator so the position bookkeeping replays
         # it; shifted clear of the segment index, which counts up from it
@@ -270,8 +269,8 @@ class LogVar2FJKit(object):
                     m, clock, j = m + dm, clock + dA, j + 1
                 u = None if self.gaussian else mixers[drawn]
                 drift, G = torch.utils.checkpoint.checkpoint(
-                    self.residual, clock, self.values['Alpha'][bucket],
-                    self.values['Beta'][bucket], u,
+                    self.residual, clock, self.curves['Alpha'].values[bucket],
+                    self.curves['Beta'].values[bucket], u,
                     use_reentrant=False, preserve_rng_state=False)
                 m, v, drawn = m + drift, v + G, drawn + 1
             # the reciprocal's log-return is -R, and R is (M + Sigma^2, Sigma) under the walked
@@ -325,17 +324,15 @@ def oss_model_kit(factor_dep, scalars):
     """The declared spot model's kit, built from the tensors the pure inner function was handed.
 
     `scalars` cross the bound/theta split - `InnerMCRecompute` needs every tensor an explicit
-    argument - while the model name and every curve's knots are compile-time facts on `factor_dep`.
-    An empty `scalars` is a GBM deal and answers None. `Invert_Spot` carries the law to the deal's
-    own axis and is the KIT's own, and the compile has already refused any family that cannot go
-    there.
+    argument - while the model name and every curve's knots are compile-time facts read off
+    `factor_dep` itself. An empty `scalars` is a GBM deal and answers None. `Invert_Spot` carries
+    the law to the deal's own axis and is the KIT's own, and the compile has already refused any
+    family that cannot go there.
     """
     if not scalars:
         return None
-    code = factor_dep['Spot_Model'][0]
-    kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
-    knots = code[utils.FACTOR_INDEX_Tenor_Index]
-    return kit(scalars, {c: knots[c] for c in kit.curve_names}, factor_dep)
+    kit = OSS_SPOT_MODEL_KITS[factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_SubType]]
+    return kit(scalars, factor_dep)
 
 
 def oss_window_ends(fixings, coupons):

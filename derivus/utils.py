@@ -2486,15 +2486,35 @@ def lv_wide(x):
                                                                        dtype=torch.float64)
 
 
-def bucket_at(knots, values, t):
-    """A bucketed curve's value in force at times ``t`` in years: PIECEWISE CONSTANT, the last knot
-    at or before ``t`` (within ``BUCKET_TOL``) and the first value before the first knot.
-    ``knots`` is structural (numpy), ``values`` the differentiable leaf, and the answer carries
-    ``t``'s shape. The SEARCH is in double whatever the leaf is: a knot rounded to float32 moves by
-    5e-9, which is the tolerance itself."""
-    k = torch.as_tensor(np.ascontiguousarray(knots, dtype=float),
-                        dtype=torch.float64, device=values.device) - BUCKET_TOL
-    return values[torch.clamp(torch.searchsorted(k, lv_wide(t), right=True) - 1, min=0)]
+class TermStructure:
+    """A bucketed term structure: the knots as a `DualArray` - numpy for the host search, a float64
+    tensor minted once for the device search - and the calibration's leaf as the values, PIECEWISE
+    CONSTANT: the last knot at or before ``t`` (within ``BUCKET_TOL``) and the first value before
+    the first knot. `at` is the value in force at ``t``; `index_at` the segment, whose raw value
+    the walk reads once per piece. Built with no values, it is a grid: a fit keeps `index` of
+    its own times and indexes each leaf with it.
+
+    The search is in double whatever the leaf is: a knot rounded to float32 moves by 5e-9, which
+    is the tolerance itself.
+    """
+
+    def __init__(self, knots, values=None, device=None):
+        knots = np.ascontiguousarray(knots, dtype=float)
+        self.knots = DualArray(torch.as_tensor(
+            knots, dtype=torch.float64,
+            device=device if values is None else values.device) - BUCKET_TOL, knots)
+        self.values = values
+
+    def index(self, t):
+        """The segment each time in ``t`` falls in, on the device - taken ONCE by a fit whose
+        knots are fixed and whose leaves change every evaluation."""
+        return torch.clamp(torch.searchsorted(self.knots.tn, lv_wide(t), right=True) - 1, min=0)
+
+    def at(self, t, values=None):
+        return (self.values if values is None else values)[self.index(t)]
+
+    def index_at(self, t):
+        return bucket_index(self.knots.np, t)
 
 
 def sqrt_or_zero(v):
@@ -2507,7 +2527,7 @@ def sqrt_or_zero(v):
 
 
 def bucket_index(knots, t):
-    """Which bucket of ``knots`` each time in ``t`` falls in - `bucket_at`'s own choice, on the
+    """Which bucket of ``knots`` each time in ``t`` falls in - `TermStructure.index`'s choice, on the
     HOST. What cuts a fixing interval into the residual draws its clock owes."""
     return np.clip(np.searchsorted(np.asarray(knots, dtype=float) - BUCKET_TOL,
                                    np.asarray(t, dtype=float), side='right') - 1,
