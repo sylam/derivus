@@ -142,14 +142,6 @@ is recorded so a reader knows which readings rest on it.
   normal distribution function of the mixer normal saturates in double past 8.3 standard
   deviations, where the inverse-Gaussian root answers the top of its bracket: one draw in 1e16,
   named rather than guarded.
-- **A correlation declared under a process name no simulated factor answers to is silent**
-  (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
-  one filed under a stale key. Name it at INFO.
-- **`Correlations` cannot be authored in `ExplicitMarketData`** (2026-09-10): `Config`
-  keys the section by a `(name, name)` tuple and builds it only on the `MarketDataFile` path, while
-  `Context.load_json` merges an explicit section by `dict.update`, so a correlation written there
-  lands under a string key that `get_cholesky_decomp` never looks up — a silent zero. Every
-  correlated document needs a market-data file today.
 - **The newer historical estimators index an innovation one business day away from the incumbent**
   (2026-09-07): `calc_statistics`, which every ordinary factor is estimated with, places a return's
   innovation on the date the return STARTS; the GARCH, regime-switching, basis and LogVar2FJ
@@ -159,12 +151,6 @@ is recorded so a reader knows which readings rest on it.
   belongs to the four newer estimators, not to `calc_statistics` — every correlation a desk has
   banked was estimated under the incumbent's convention, and moving it would silently re-date all of
   them. Aligning the four leaves banked market data untouched and needs no re-read.
-- **`calibrate_factors` reports a calibration class's own refusal as "Data errors in factor"**, and
-  raises `AttributeError: 'NoneType' object has no attribute 'corr'` where every factor is skipped
-  (2026-09-07). The same swallow one layer up: a bootstrapper family that refuses at CONSTRUCTION
-  (the leverage tables' sign refusal) is caught by `Config.bootstrap`, logged, and the factor left
-  unwritten, so a caller that does not read the log sees a bootstrap that succeeded and a
-  `KeyError` at the first pricer that wants the factor (2026-09-10).
 - **A quanto correlation can be written in two bases, and nothing checks which.** The parameter
   writer emits a quanto correlation as the correlation between the FX Brownian and each rate
   factor's own, while the correlation section's rows are the independent normals the Cholesky
@@ -260,11 +246,9 @@ is recorded so a reader knows which readings rest on it.
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
   the base date, which dies on an empty random block or an empty maximum.
-- **`Hessian: 'Yes'` with `Gradient: 'No'` is a silent no-op**, and the Silverman bandwidth is per
-  batch, so `Simulation_Batches > 1` oversmooths against the run's true path count.
-- **`HullWhite2FactorImpliedInterestRateModel.precalculate` reads `Lambda_1` off a `Price Models`
-  block an implied model does not need**, so omitting it raises a `TypeError` naming neither field
-  nor factor; `FXVolSurfaceParameters` subscripts `point['Timestamp']` the same way.
+- **The kernel bandwidth is chosen per batch.** The Silverman rule sizes the boundary correction's
+  bandwidth from one batch's paths, so a run with more than one batch oversmooths against its true
+  path count.
 - **A swaption's quoting convention lives on the surface, which the Bloomberg emitter does not
   author.** A factor declared lognormal therefore gets a lognormal fit of normal quotes, and the
   two conventions are ten to eleven times apart in premium.
@@ -275,11 +259,6 @@ is recorded so a reader knows which readings rest on it.
   LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
   Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree
   is in no checkout any more, so the move cannot be pinned to a line.
-- **A `Market Prices` block with no quote table raises a `TypeError`** where it raised a `KeyError`
-  (the completed blank `'null'` iterated as a string); one shared `quote_table` refusing by name.
-- **`config.CustomJsonEncoder`'s `.DateOffset` string** takes its key order from a set iteration
-  for a multi-unit period (`'6M2D'` or `'2D6M'`, 4:1 over five processes). Both parse back; what is
-  not byte-stable is a written market-data file and any hash over it.
 - **Two plan-hash pins have hashed differently since 2026-09-01**, on the platinum hedge shipping
   fixture and the simulate-only policy fixture. Whether that is a declared plan change or a
   values-plane field leaking into the plan is unclassified.
