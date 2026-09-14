@@ -134,15 +134,14 @@ is recorded so a reader knows which readings rest on it.
 
 ### The xVA outer and the correlation
 
-- **The cut-interval second mixer is still a private die** (2026-09-11): the outer takes one
-  framework normal per scenario interval for its mixer, so where a calendar `Alpha` bucket knot
-  cuts an interval's clock into two residual draws the second piece's mixer comes from the
-  process's own stream, named at INFO; every factor in the book carries one `Alpha` bucket, so
-  nothing reaches it. Beside it, `Φ` of the mixer normal in double saturates past 8.3σ, where
-  `ig_root` answers its bracket's top — one draw in 1e16, named rather than guarded.
-- **Lane 4's banked `out_g23.json` no longer reproduces at float64** on any tree since
-  2026-09-08 (`M_lev` 4.163e-17 banked against 2.776e-17), the float32 half reproducing exactly;
-  a re-bank at the head.
+- **A calendar bucket knot inside one scenario interval gives the second piece a private mixer**
+  (2026-09-11). The outer process takes one framework normal per scenario interval for its mixer,
+  so where a bucket knot cuts an interval's clock into two residual draws, the second draw's mixer
+  comes from the process's own stream rather than the framework's, which the process names at
+  INFO. Every factor in the book carries one bucket, so nothing reaches it today. Beside it, the
+  normal distribution function of the mixer normal saturates in double past 8.3 standard
+  deviations, where the inverse-Gaussian root answers the top of its bracket: one draw in 1e16,
+  named rather than guarded.
 - **A correlation declared under a process name no simulated factor answers to is silent**
   (2026-09-09): the lookup reads 0.0 for a missing pair, right for an undeclared one and wrong for
   one filed under a stale key. Name it at INFO.
@@ -166,18 +165,23 @@ is recorded so a reader knows which readings rest on it.
   (the leverage tables' sign refusal) is caught by `Config.bootstrap`, logged, and the factor left
   unwritten, so a caller that does not read the log sees a bootstrap that succeeded and a
   `KeyError` at the first pricer that wants the factor (2026-09-10).
-- **`Correlations` vs `save_params` author a quanto in different bases, unchecked**: `save_params`
-  emits `ρ̄ᵢ = corr(dW, dWᵢ)` while the section's rows are the independent normals the Cholesky
-  consumes (`a = ρ̄₁`, `b = (ρ̄₂ − ρ·ρ̄₁)/√(1−ρ²)`); copying `ρ̄₂` in gives a world whose drift and
-  covariance disagree, silently.
+- **A quanto correlation can be written in two bases, and nothing checks which.** The parameter
+  writer emits a quanto correlation as the correlation between the FX Brownian and each rate
+  factor's own, while the correlation section's rows are the independent normals the Cholesky
+  consumes, a different basis related by the two-factor rotation. Copying the writer's second
+  number into the section gives a world whose rate covariance disagrees with its declaration,
+  silently.
 
 ### The autocall, TARF and barrier pricers
 
-- **The energy and commodity floating legs concatenate their resets the way the rate legs did**
-  (2026-09-10): `pricing.py`'s two `torch.cat`s of known against forecast resets off a
-  `ForwardPrice` curve refuse a static curve in the words the rate legs refused with until
-  `utils.concat_resets` — one call at each site, unmade because no document in the packs reaches
-  it and an unmeasured change is not a fix.
+- **An energy or commodity floating leg with fixings already set fails against a static forward
+  curve** (2026-09-10). Such a leg joins its known resets to the ones still to forecast, and a
+  curve that is not simulated answers with one scenario column where the known block carries the
+  full width; the join refuses the shape with a tensor error naming dimensions rather than the leg
+  or the curve. The rate legs had the same failure until their join was replaced by a broadcasting
+  one, which exists and is proven; the two energy and commodity sites still use the plain join.
+  One call at each, unmade because no document in the repository reaches it and an unmeasured
+  change is not a fix.
 - **`EquityPriceVol` under `Sticky_Strike` cannot reach a fixing strip** (2026-09-08):
   `calc_moneyness` returns the bare strike for a parametric (`Skew`/`SVI`) surface, one number with
   no fixing axis, and `forward_vol_strip` indexes it on a fixing axis it does not have — at one
@@ -187,50 +191,59 @@ is recorded so a reader knows which readings rest on it.
   skips ARE this row (reproduced on one leg, 2026-09-11): a book of skew-parameterised surfaces
   cannot price a discrete barrier, an accumulator, a TARF or an autocall. The fix is a broadcast
   of the moneyness onto the fixing axis at the one site that knows the strip's shape.
-- **A second consecutive coupon whose window is wholly observed reads the first one's last fixing**
-  under `'Spot'` on the OSS arm — the same staleness its prefix already carries; no document here
-  reaches it. And a lagged block's terminal rows price the final coupon crisply off a fixing the row
-  has not reached (the campaign book's 2028-06-03 and 2028-09-02 rows read the 2028-09-08 fixing).
-- **The OSS pricers' European leg still branches on the family in two places** (a step count and
-  a scalar carry against the walked block).
-- **The collateralised autocall CVA delta is the kernel flux estimator's own variance**: under a
-  zero-threshold CSA the correction supplies 2.5× the pathwise term, and it scatters with the path
-  count — 51.2% short at 256 outer paths, 18.2% over at 1,024, 10.2% at 2,048; GBM under the same
-  CSA reads 11.8% short at 2,048. The path count, not the deal. Beside it the float and the
-  terminal put reach no `cash_settle`, so `Results['cashflows']` carries the coupons alone.
-- **The TARF's target pin** fires on 27–61% of paths and is 27% short uncorrected; exact behind
-  `Branch_And_Weight: 'Yes'`, the crisp default keeps the declared blindness (estimator 13%
-  bandwidth spread, oracle 8.9% flatness — neither better than ~10%).
-- **Seasoned TARFs with pre-base settlements discard the settled fixing outright** (bit-identical
-  to deleting it, so the deal prices against its full original target), and **a TARF valued between
-  two settlements marks NaN** on every tree measured. No fixture reaches either.
-- **`pv_MC_ExtendableForward`**: the settled-cash channel under a CSA is not registered (+0.25% /
-  −0.02% / +0.26% / +0.03% across four amplifying documents, against ladders that resolve no finer),
-  and the rolling backward pass carries a one-signed Gauss–Hermite smoothing bias over the relu kink.
-- **`pv_partial_barrier_option` rebate settlement completeness** is audited off-gate and ungated,
-  for want of a collateralised partial-barrier document.
-- **`Boundary_AAD_Window_Touch`** decides the sign and its magnitude is unestablished (−2.2467692
-  registered against +0.5207422 unregistered, on an oracle that scatters 88% of its own median).
-- **The bandwidth plateau** holds at 16,384–20,480 paths over 0.005–0.08 (correction spread 2.41% /
-  3.87%, CVA delta 0.60% / 0.24%); at 2,048 paths the correction falls monotonically 23.76%.
-  Acceptance names 32,768 and that re-read is pending. The correction's *scoping* is not
-  mutation-gated — a mis-scoping mutant has no public seam.
-- **`pv_MC_Accumulator`'s boundary placement under the recompute node is unmeasured** — its latch
-  is assembled off a node output, which puts it on that side by construction, but the
-  dropped-cotangent reading has not been taken.
-- **`calc_vol_adjustment`'s analytic consumers** (`pv_barrier_option`, `pv_one_touch_option`,
-  `pv_discrete_asian_option`) adjust the vol only, so a compo barrier, one-touch or asian prices
-  half-adjusted without raising. The compo smile coordinate is decision 2.
-- **A sibling fallback in a deal's `calc_dependencies` may name a factor discovery never fetched**:
-  safe at 34 `Discount_Rate ← Currency` sites (the `InterestRate` comes transitively), the one
-  cross-leg instance fixed.
+- **Two stale-fixing reads in the autocall's observation arm.** A second consecutive coupon whose
+  observation window is already wholly in the past reads the first coupon's last fixing under spot
+  observation, the same staleness the window's prefix already carries; no document here reaches
+  it. And a block whose fixings lag its coupon dates prices the final coupon crisply off a fixing
+  the reporting row has not yet reached: on the campaign book two rows in mid 2028 read a fixing
+  dated a week later.
+- **The European leg of the observed-spot pricers still branches on the model family** in two
+  places, a step count and a scalar carry against the walked block, where one spelling should
+  serve both families.
+- **The collateralised autocall's CVA delta is the boundary estimator's own variance.** Under a
+  zero-threshold credit-support annex the boundary correction supplies two and a half times the
+  pathwise term and scatters with the path count: 51% short at 256 outer paths, 18% over at 1,024,
+  10% at 2,048; a lognormal autocall under the same annex reads 12% short at 2,048. The path
+  count, not the deal, is what the number depends on. Beside it, the autocall's floating leg and
+  its terminal put register no settled cash, so the reported cashflows carry the coupons alone.
+- **The target redemption forward's target pin is a kink the crisp default is blind to.** The pin
+  fires on 27% to 61% of paths and the delta is 27% short uncorrected. It is exact behind
+  `Branch_And_Weight: 'Yes'`; the default keeps the declared blindness, since neither the bandwidth
+  estimator at 13% spread nor the oracle at 9% flatness does better than about ten percent.
+- **Two seasoned target redemption forwards no fixture reaches.** One whose settlements began
+  before the base date discards the settled fixing outright, which is bit-identical to deleting
+  it, so the deal prices against its full original target. One valued between two settlements
+  marks not-a-number on every tree measured.
+- **The extendable forward under a credit-support annex does not register its settled cash**: a
+  quarter of a percent across four amplifying documents, against ladders that resolve no finer.
+  Its rolling backward pass also carries a one-signed smoothing bias over the payoff's kink from
+  the Gauss-Hermite rule it uses.
+- **The partial-time barrier's rebate settlement is audited but ungated**, for want of a
+  collateralised partial-barrier document.
+- **The window-touch switch decides the sign of a boundary term and its magnitude is
+  unestablished**: −2.25 with the window registered against +0.52 without, on an oracle that
+  scatters 88% of its own median. Decision 10.
+- **The boundary correction's bandwidth plateau holds at 16,384 to 20,480 paths** over bandwidths
+  of 0.005 to 0.08, the correction spreading 2.4% to 3.9% and the CVA delta 0.6% to 0.2%; at 2,048
+  paths the correction falls monotonically by 24%. Acceptance names 32,768 paths and that re-read
+  is pending. The correction's scoping has no public seam a mutation gate could reach.
+- **The accumulator's boundary placement under the recompute node is unmeasured.** Its latch is
+  assembled off a node output, which puts it on the right side by construction, but the reading
+  that would show a dropped cotangent has not been taken.
+- **Three analytic pricers adjust the volatility for a quanto and nothing else**: the barrier, the
+  one-touch and the discrete Asian. A composite-currency barrier, one-touch or Asian therefore
+  prices half-adjusted without raising. The composite smile coordinate is decision 2.
+- **A deal's fallback to a sibling's factor may name one discovery never fetched.** Safe at the 34
+  sites where a discount rate falls back to a currency, because the interest rate arrives
+  transitively; the one cross-leg instance is fixed.
 
 ### The engine
 
-- **The privileged surface's dtype differs across processes** (2026-09-10): the LogVar2FJ
-  outer publishes `(ell, s)` in the job's dtype while `LogOUSpotModel`, `MarkovHMMSpotModel` and
-  `GARCHSpotModel` cast theirs to float32 — inert while `HedgeMonteCarlo` runs at float32 whatever
-  the job says; a float64 `solve_hedge` would hand the critic one float64 block among float32.
+- **The volatility state a hedge critic reads differs in precision across processes**
+  (2026-09-10). The LogVar2FJ outer publishes its two log-variance factors in the job's precision
+  while three older spot models cast theirs to single. Inert while the hedge Monte Carlo runs in
+  single precision whatever the job says; a double-precision hedge solve would hand the critic one
+  double block among single ones.
 - **`NettingCollateralSet`'s backward is not bit-reproducible on the GPU**: one gradient entry can
   differ in its last bits between runs of bit-identical inputs. Isolated on this card
   (2026-09-12): the backward of `gather` and of `index_select` accumulates atomically wherever
@@ -244,41 +257,40 @@ is recorded so a reader knows which readings rest on it.
   that has to reproduce, and the document records which it was. It is set beside the cuBLAS pin so
   the dispatch workers inherit it, and it pins one machine and one build, not results across cards
   or versions. Unread: what the deterministic kernels cost on this workload.
-- **The exposure profile is reported undeflated**, `Deflation_Interest_Rate` applied only inside the
-  CVA/FVA scalars, so a deflated expiry-row EPE cannot be read from the tables; publish `Dt_T`
-  beside `mtm`.
-- **`Credit_Monte_Carlo.report` does not frame a book whose only deal folded to a static root**
-  (a `(1, 1)` root against the `(T, B)` grid); a lone SKIPPED deal meets the same failure. And **a
-  book whose deals reach no stochastic factor, or no date after the base date, dies unnamed**
-  (a zero-wide random block; an empty `max()`).
+- **The exposure profile is reported undeflated.** The deflation curve is applied only inside the
+  CVA and FVA scalars, so a deflated expected exposure at an expiry row cannot be read from the
+  tables. Publish the discount factor beside the mark.
+- **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
+  only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
+  whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
+  the base date, which dies on an empty random block or an empty maximum.
 - **`Hessian: 'Yes'` with `Gradient: 'No'` is a silent no-op**, and the Silverman bandwidth is per
   batch, so `Simulation_Batches > 1` oversmooths against the run's true path count.
 - **`HullWhite2FactorImpliedInterestRateModel.precalculate` reads `Lambda_1` off a `Price Models`
   block an implied model does not need**, so omitting it raises a `TypeError` naming neither field
   nor factor; `FXVolSurfaceParameters` subscripts `point['Timestamp']` the same way.
-- **`create_market_swaps`' `Distribution_Type` lives on the surface**, which the Bloomberg emitter
-  does not author, so a lognormally-declared factor gets a lognormal fit of normal quotes — the two
-  conventions are 9.7–11.4× apart in premium.
-- **36 of 148 declared `.field.get` sites disagree with their declaration, three fatally**
-  (decision 3); `StructuredDeal.post_process` reads `'Net Cashflows'` where `Net_Cashflows` is
-  declared, so the declared key reaches no read.
-- **Solved accrual strikes moved across a landing on documents carrying no LogVar2FJ** — the GBM
-  TARF's zero-cost strike 15.32196559 → 15.31624884 between 48f4779 and 7ed3faf, up to 3.7e-4 and
-  15× the runner's 2.5e-5 MC floor, while the same documents at a fixed strike are hex-identical.
-  48f4779 is in no checkout any more, so the move is unpinned.
+- **A swaption's quoting convention lives on the surface, which the Bloomberg emitter does not
+  author.** A factor declared lognormal therefore gets a lognormal fit of normal quotes, and the
+  two conventions are ten to eleven times apart in premium.
+- **36 of the 148 declared field reads disagree with their declaration, three fatally**, decision
+  3; one structured deal reads a key spelled with a space where the declaration spells it with an
+  underscore, so the declared key reaches no read.
+- **A solved zero-cost strike moved between two landings of 2026-09-06 on documents that carry no
+  LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
+  Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree
+  is in no checkout any more, so the move cannot be pinned to a line.
 - **A `Market Prices` block with no quote table raises a `TypeError`** where it raised a `KeyError`
   (the completed blank `'null'` iterated as a string); one shared `quote_table` refusing by name.
 - **`config.CustomJsonEncoder`'s `.DateOffset` string** takes its key order from a set iteration
   for a multi-unit period (`'6M2D'` or `'2D6M'`, 4:1 over five processes). Both parse back; what is
   not byte-stable is a written market-data file and any hash over it.
-- **Two plan-hash pins** (`platinum_hedge_shipping.json`, `policy_test_simulate_only.json`) have
-  hashed differently since 91c29de; whether that is a declared plan change or a values-plane field
-  leaking into the plan is unclassified.
-- **The Jupyter write path**: `set_value_from_widget`'s hardcoded whitelist raises on `Names`,
-  `Sampling_Data_*` and `Barrier_Dates`, and fourteen output-shaped descriptors have no widget.
-  Superseded for viewing by the web UI.
-- **`gates/pricer_branch_census.py`** reads 59 unexecuted arcs at 1ed927a, not re-taken since.
-- **Ungated since the 2026-08-21 purge** — five modules named on
+- **Two plan-hash pins have hashed differently since 2026-09-01**, on the platinum hedge shipping
+  fixture and the simulate-only policy fixture. Whether that is a declared plan change or a
+  values-plane field leaking into the plan is unclassified.
+- **The notebook write path** raises on three field names its hard-coded allowlist does not carry,
+  and fourteen output-shaped descriptors have no widget. Superseded for viewing by the web UI.
+- **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
+- **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
   already-hit barrier leg's value the expensive one.
 
@@ -290,55 +302,59 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 1. **The per-fixing smile read.** Sticky-forward moneyness or the deal's declared moneyness; both
    defensible, one can be the pricer's own quote. A switch, not a revert, with the six removed gates
    rebuilt.
-2. **The compo smile coordinate**, undeclared because every fixture is flat. Same class as 1.
-3. **The 36 disagreeing `.field.get` sites** (three fatal): hold a surviving fallback to its
-   declaration, or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
-5. **Two rates-emitter questions**: an OIS block is ~14 MB live (~26,000 authored floats on a 30Y
-   strip) — accept it or build a term-authored variant; and neither side rolls a business day (a 2Y
-   USD OIS pays on a Saturday).
-6. **The HW2F α-seed's worst benchmark**: the honesty reprice reads −6.25% against the retired
-   seed's −4.64% while rms improved 2.71% → 2.39% and the outside-3% count fell 10 → 3. One order
-   statistic, anti-correlated with the fit; owner's eye wanted.
-7. **PFE vs CVA measure policy.** CVA is a Q-expectation wanting the market-calibrated outer; PFE a
-   P-quantile wanting a historically-estimated one, the pricing kit staying market-implied. One run
+2. **The composite smile coordinate**, undeclared because every fixture is flat. Same class as 1.
+3. **The 36 disagreeing field reads** (three fatal): hold a surviving fallback to its declaration,
+   or leave the reads as they are. Enumerated in `tests/test_declared_defaults.py`.
+5. **Two rates-emitter questions**: an OIS block is about 14 MB live, some 26,000 authored floats
+   on a 30-year strip — accept it or build a term-authored variant; and neither side rolls a
+   business day, so a two-year USD OIS pays on a Saturday.
+6. **The Hull-White seed's worst benchmark**: the honesty reprice reads −6.25% against the retired
+   seed's −4.64% while the root-mean-square miss improved from 2.71% to 2.39% and the count outside
+   3% fell from ten to three. One order statistic, anti-correlated with the fit; a desk's eye
+   wanted.
+7. **Exposure versus credit-valuation measure policy.** A credit valuation is a risk-neutral
+   expectation wanting the market-calibrated outer; a potential future exposure is a real-world
+   quantile wanting a historically estimated one, the pricing kit staying market-implied. One run
    reports both off one outer measure, so a book wanting each in its own measure runs twice under
-   two `Model Configuration`s.
-8. **`get_implied_correlation`'s two single-caller wrappers**, held against the
-   no-abstraction-ahead-of-a-second-caller rule until a third correlation pair appears.
-9. **Flagged, not authorised**: `runtime`'s free functions over the hedge bundle (two clusters,
-   `_UTILITY_OBJECTS` duplicated) and `DealStructure`'s recursions — the shape Conventions calls a
-   class waiting to happen.
-10. **`Boundary_AAD_Window_Touch`'s magnitude.** The switch decides the sign; `add_grid_dates`
-    landed, so the enriched fixture and the re-measurement are now possible.
-11. **The `Branch_And_Weight` default.** The family question is closed (the surviving spot model
-    hands each fixing interval its own Gaussian block law); what remains is an
-    averaging-falls-back-to-crisp rule, since the averaging arms refuse under the switch. Values
-    re-mark within their own MC noise at 12–23× less variance; the greeks are the prize.
-12. **The correlation as a leaf.** `Correlation` is a `DimensionLessFactor` and mints no leaf, so a
-    quanto's correlation delta is reported as a CRN bump (`Correlation_Bump`, 0.025: −22.42m ZAR
-    per unit of ρ on the desk's NKY V2, flat to 0.003% between half-widths). The leaf is three edits
-    with a tree-wide blast radius — every document carrying a correlation gains a `Greeks_First`
-    row and a Hessian row and column, GBM ones included. The bump is the leaf's oracle.
+   two model configurations.
+8. **Two single-caller wrappers around the implied-correlation read**, held against the rule of no
+   abstraction ahead of a second caller until a third correlation pair appears.
+9. **Flagged, not authorised**: the hedge runtime's free functions over the bundle, two clusters
+   with a duplicated utility table, and the deal structure's recursions — the shape
+   [Conventions](conventions.md) calls a class waiting to happen.
+10. **The window-touch switch's magnitude.** The switch decides the sign; grid dates can now be
+    added, so the enriched fixture and the re-measurement are possible.
+11. **The `Branch_And_Weight` default.** The family question is closed, the surviving spot model
+    handing each fixing interval its own Gaussian block law; what remains is a rule for averaging
+    payoffs falling back to the crisp pricer, since the averaging arms refuse under the switch.
+    Values re-mark within their own Monte Carlo noise at twelve to twenty-three times less
+    variance; the greeks are the prize.
+12. **The correlation as a leaf.** A correlation mints no leaf today, so a quanto's correlation
+    delta is reported as a common-random-number bump of 0.025: −22.42m ZAR per unit of correlation
+    on the desk's Nikkei autocall, flat to 0.003% between half-widths. The leaf is three edits with
+    a tree-wide blast radius, every document carrying a correlation gaining a first-order row and a
+    Hessian row and column, lognormal ones included. The bump is the leaf's oracle.
 14. **`Prices` in process: warning or refusal.** Mandatory on the multiprocessing path; a refusal
-    costs an edit at about twenty test and gate sites that write `{'FXVolSurfaceParameters': {}}`.
+    costs an edit at about twenty test and gate sites that write an empty family entry.
 16. **The nominal leverage weight.** `Leverage_Prior_Weight` 0.02 reads three to four quote rows on
     these ladders, not one, because it assumes a 0.2 quote weight and a 0.1 standard error no
-    ladder states; a block's own `Leverage_Prior_SE` / `Leverage_Product_Prior_SE` supersede it
-    where declared. At a fitted `σ_s` of 5 it reads several quote rows, and at the class-default
-    tier it is what NKY cannot carry. A history's `ρ_s` −0.20 ± 0.09 and product −1.05 ± 0.67 move
-    the desk mark to −41.9m through those rows: the estimator's leverage is the single most
-    consequential number it produces, and its SE is a sampling error, not a desk's spread.
+    ladder states; a block's own `Leverage_Prior_SE` and `Leverage_Product_Prior_SE` supersede it
+    where declared. At a fitted vol-of-vol of 5 it reads several quote rows, and at the
+    class-default tier it is what the Nikkei cannot carry. A history's leverage of −0.20 ± 0.09
+    and product −1.05 ± 0.67 move the desk mark to −41.9m through those rows: the estimator's
+    leverage is the single most consequential number it produces, and its standard error is a
+    sampling error, not a desk's spread.
+17. **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
+    The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size
+    of its own Jacobian column, the better-conditioned solve; the Hull-White chain does not, and
+    its backward forms that scaled matrix for itself, so nothing is wrong today. Switching the
+    chain on to the same scaling changes where the solve stops, so every Hull-White fit in every
+    book moves by a small amount. A solver-tuning decision, not a defect, wanting its own reading
+    before it is taken: iterations, the stationarity norm at the stopping point, and what the
+    marks do, on the four-quote fixture and one desk ladder.
 
 ## Designed, not built
 
-- **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
-  The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
-  its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
-  and its backward forms that scaled matrix for itself, so nothing is wrong today. Switching the
-  chain on to the same scaling changes where the solve stops, so every Hull-White fit in every book
-  moves by a small amount. It is a solver-tuning decision, not a defect, and it wants its own
-  reading before it is taken: iterations, the stationarity norm at the stopping point, and what
-  the marks do, on the four-quote fixture and one desk ladder.
 - **The density recursion** — one FFT convolution per monitored date against the block Gaussian,
   as an alternative inner estimator. The daily walk's tape at 2,048 × 2,048 × 509 does not fit a
   24 GiB card in either direction (the draws alone are 3 × 7.95 GiB), which is what the per-block
@@ -349,8 +365,8 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
   gated; the SOURCE is spine increment 4's, so the one-touch and partial-time barriers still price
   from terms alone. The autocall's `Barrier_Dates` ride `Price_Fixing`'s observed value; a called
   autocall is its coupon at that fixing's settlement, folding the coupon and threshold ladders with
-  the put barrier, and the `BarrierIsHit` read at `pricing.py:4807` (it tests `is not None`, so it
-  fires on `'No'`) retires with it. The TARF's and accumulator's decisions-remain arm: folded
+  the put barrier, and the autocall pricer's barrier-hit read (it tests for presence, so it fires
+  on a declared `'No'`) retires with it. The TARF's and accumulator's decisions-remain arm: folded
   parameters, not a substituted deal.
 - **Spine increments 4–7** — projections and the diary, tier policy, the doorbell, the generated
   binding; the book file rehomed as an LSN-pinned projection and the plan compiler as a fold over
@@ -382,14 +398,14 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 `Objective: 'Analytic'` is the default (2026-08-31) on four readings: **accuracy** — the
 Schrager–Pelsser price is inside one MC evaluation's noise at 22 of 25 benchmarks on the identified
-fixture (SP's annuity-freezing bias −0.13 to +2.17 bp against the MC's own numeraire bias 0.6–3.0 bp,
-systematic); **stationarity** — `‖J'r‖` at θ\* is 8.63e-7 on the analytic residual inside
-`Stationarity_Tol`'s 1e-3 default, against 3.16e2 on the MC quartic; **determinism and cost** — two
-analytic solves at one seed agree to the bit and the four-quote chain is 13.4 s against 75.1 s; and
-**the quote side exists** ([the analytic quote side](quote_sensitivities.md#the-analytic-quote-side)).
-`Monte_Carlo` is unchanged to the bit and remains the oracle. The α→0 series branches, the
-declared `ALPHA_SEED = (0.5, 0.05)` and the domestic-measure correction are in
-`tests/test_hw2f_analytic.py`.
+fixture (the Schrager–Pelsser annuity-freezing bias −0.13 to +2.17 bp against the MC's own
+numeraire bias 0.6–3.0 bp, systematic); **stationarity** — `‖J'r‖` at θ\* is 8.63e-7 on the
+analytic residual inside `Stationarity_Tol`'s 1e-3 default, against 3.16e2 on the MC quartic;
+**determinism and cost** — two analytic solves at one seed agree to the bit and the four-quote
+chain is 13.4 s against 75.1 s; and **the quote side exists**
+([the analytic quote side](quote_sensitivities.md#the-analytic-quote-side)). `Monte_Carlo` is
+unchanged to the bit and remains the oracle. The α→0 series branches, the declared seed pair and
+the domestic-measure correction are in `tests/test_hw2f_analytic.py`.
 
 **Two standing re-marking events.** Every foreign-curve HW2F θ\* solved before the domestic-measure
 fix re-solves to a different θ\*, and every θ\* solved before 2026-09-02 re-marks on the seed and
@@ -405,35 +421,39 @@ every risk-neutral calibration inherits.
   consumer classes, the callers, the JSON documents that executed the symbol fastest-first and the
   HOLES no document reaches; `--from <Consumer>` is the inverse, `--dirty` diffs symbols by AST and
   greedy-covers them by document. The static half is an AST call graph over `derivus/` with every
-  registry read as data; the dynamic half is `artifacts/reach/document_map.json`, every job JSON
-  under `tests/fixtures/` and `artifacts/` run once under a tracer, keyed to the engine commit
-  (`STALE` otherwise; `--build-map --repo <clean checkout>`, ~16 min). What it cannot see:
-  string-keyed dispatch outside the registries, callables passed as values, virtual dispatch out of
-  an inherited body, a branch no data takes, a document over the 180 s cap, `derivus_bloomberg/`.
-  At e475bee: 852 of 2,133 symbols executed by some document; no document reaches 40 of 50 deals,
-  24 of 34 pricers and 3 of 8 bootstrapper families.
+  registry read as data; the dynamic half is a document map, every job JSON under `tests/fixtures/`
+  and in the maintainers' artifacts store run once under a tracer, keyed to the engine commit
+  (`STALE` otherwise; `--build-map --repo <clean checkout>`, about 16 minutes). What it cannot
+  see: string-keyed dispatch outside the registries, callables passed as values, virtual dispatch
+  out of an inherited body, a branch no data takes, a document over the 180 s cap,
+  `derivus_bloomberg/`. At the map's last build (2026-09-05): 852 of 2,133 symbols executed by
+  some document; no document reaches 40 of 50 deals, 24 of 34 pricers and 3 of 8 bootstrapper
+  families.
 - **Which tests a change reaches**: `gates/impacted.py --dirty --run` joins an execution-coverage
   map (built at a campaign boundary) with a static fixture map; file-granular, fails open loudly;
   `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
   The full suite runs at campaign boundaries with the tree held still.
-- **The standing hex gates every landing runs**: `artifacts/lv_nig_20260907/hexcheck.py` (4,180
-  floats over 16 GBM and Hull-White documents, diffed by `hexdiff.py`) and the crisp GBM TARF
-  `artifacts/autocall_model_validation_20260904/campaign/tarf_hex.py` (`-0x1.2c48f36318e38p+5`).
+- **The standing readings every landing runs**: sixteen banked documents of the autocall
+  validation campaign under the lognormal and Hull-White laws, 4,180 floats compared bit for bit
+  against their bank, and one crisp lognormal target redemption forward compared to the bit
+  (`-0x1.2c48f36318e38p+5`). The documents, their banks and the two scripts live in the
+  maintainers' artifacts store outside the repository; moving them under `gates/` waits on a check
+  that no banked document carries desk data.
 - **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 32 gates over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
   under 1e-10, wing RMSE 0.789 against a 1.0 bound), the retired declarations refusing by name,
   the on-guard flag on the factor and in `Stats`, `Model_Priors: Off` bit-identical to its banked
-  21 floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve
-  composed to 1e-9, the four sub-factor rows (a declared 0.3 on all four realises 0.2040 on returns against
-  0.1520 with the sibling on GBM, 6.6 path-level se apart), and 76 floats over six repo documents hex for hex. About five minutes on the card, 213 s
-  of it one shared five-expiry fit; every gate's killing mutation went red except the wing-RMSE
-  row, whose mutation stalls the fit and whose bound is set at 3.2× below the unfitted seed. Two
-  fixture facts: the banked floats are the CARD's (device reductions; a CPU-only box re-banks),
-  and the repo's only autocall fixture has ONE fixing at maturity, so a vol-strip term-structure
-  error is invisible to it (the cumulative variance × 1.000001 leaves both autocall hex rows
-  green).
+  floats, the quanto arm at 0 ULP against its single-currency twin at ρ = 0, the reserve composed
+  to 1e-9, the four sub-factor rows (a declared 0.3 on all four realises 0.2040 on returns against
+  0.1520 with the sibling on GBM, 6.6 path-level se apart), and 76 floats over six repo documents
+  hex for hex. Most of it is one shared five-expiry fit; every gate's killing mutation went red
+  except the wing-RMSE row, whose mutation stalls the fit and whose bound is set at 3.2× below the
+  unfitted seed. Two fixture facts: the banked floats are the device's (a CPU-only box re-banks
+  the walk's; the quadrature fit already runs on the host), and the repo's only autocall fixture
+  has ONE fixing at maturity, so a vol-strip term-structure error is invisible to it (the
+  cumulative variance × 1.000001 leaves both autocall hex rows green).
 - **A fixture must not zero the quantity its gate is sensitive to** — the checklist and the
   plugin are on [Conventions](conventions.md#fixture-degeneracy). A mutant that survives a gate
   means the fixture is wrong, not that the code is right.
@@ -443,21 +463,24 @@ every risk-neutral calibration inherits.
 - `gates/reach.py --dirty` died on the Windows box decoding `git`'s output as cp1252 (2026-09-08)
   and ran clean there on 2026-09-10; if it recurs, decode the diff as UTF-8.
 - `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
-  on a `.md` at the repo root, so a lane that adds a fixture cannot use the selector until the next
+  on a `.md` at the repo root, so a change that adds a fixture cannot use the selector until the next
   boundary run rebuilds the map.
 - `gates/reach.py`'s document map is stale in substance as well as in commit: of the 43 autocall
   documents it names, 31 no longer load on the head (16 carry the Poisson-era factor block, 14
   the retired component family, one is gone), so a bit-identity claim over "every document the
   map names" is over the 12 that price. Rebuild the map (`--build-map`) at the next campaign
   boundary.
+- One banked reading of a two-name correlation document from 2026-09-08 no longer reproduces at
+  double precision (one term reads 4.163e-17 against 2.776e-17 banked; the single-precision half
+  reproduces exactly). Re-bank it.
 - `derivus_jupyter.set_repr` raises on any multi-column Table outside a four-name allowlist, which
   now includes `EquityBarrierBinaryOption.Barrier_Dates` and `QEDI_CustomAutoCallSwap.Coupon_Observations`;
   loading, pricing, the generated docs and the MCP descriptors are unaffected.
-- `artifacts/logvar2fj/`'s second spelling no longer imports (it walks the Poisson residual); delete
-  the pack or re-spell its G-gate scripts against the NIG residual.
-- Inline comment density: ~12 blocks of 4–11 comment lines from the boundary-correction work
-  (`pv_discrete_barrier_option`'s hit-mask and rebate blocks, `sim_spot_oss`'s terminal digital,
-  `net_from_gross`); house style is 2–3 lines.
+- An early calibration pack in the artifacts store still walks the retired Poisson residual and no
+  longer imports; delete it or re-spell its scripts against the NIG residual.
+- Inline comment density: about twelve blocks of 4–11 comment lines from the boundary-correction
+  work (the discrete barrier's hit-mask and rebate blocks, the observed-spot walk's terminal
+  digital, the net-from-gross helper); house style is 2–3 lines.
 - `pv_float_cashflow_list` selects the compounded-in-arrears path by comparing reset count to
   cashflow count — a shape encoding of intent that an explicit signal on the compiled cashflow
   object would replace.
