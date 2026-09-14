@@ -97,11 +97,11 @@ def compress_deal_data(deals):
                 cashflow['Resets'] = [list(x) for x in list(key[1])]
                 if notional:
                     cashflow['Notional'] = notional
-                    cashflow['Margin'] = Basis(10000.0 * val / notional)
+                    cashflow['Margin'] = utils.Basis(10000.0 * val / notional)
                     leg.append(cashflow)
                 elif val:
                     cashflow['Notional'] = val
-                    cashflow['Margin'] = Basis(10000.0)
+                    cashflow['Margin'] = utils.Basis(10000.0)
                     leg.append(cashflow)
                     logging.warning('Float Cashflow Nominal compressed to 0.0 and margin is not 0 - TEST')
                 else:
