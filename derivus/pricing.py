@@ -422,11 +422,15 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
     open modelling question (roadmap.md).
 
     Rank-polymorphic as ``forward_carry_rate``; the fixing axis returns at ``-2`` so the strip drops
-    straight into ``forward_vol_rate``.
+    straight into ``forward_vol_rate``. The moneyness is broadcast onto that axis here, this being
+    the site that knows the strip's shape - ``Sticky_Strike`` on a parametric surface answers with
+    the bare strike, which carries no fixing axis and no batch.
     """
     forward = spot.unsqueeze(-2) * torch.exp(carry_rate * carry_rate.new(cum_t).unsqueeze(-1))
-    moneyness = calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
-                               use_forward=use_forwards, invert_moneyness=invert_moneyness)
+    moneyness = torch.as_tensor(
+        calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
+                       use_forward=use_forwards, invert_moneyness=invert_moneyness),
+        dtype=forward.dtype, device=forward.device).expand_as(forward)
     return torch.stack([utils.calc_time_grid_vol_rate(
         deal_data.Factor_dep['Volatility'], moneyness[..., j, :],
         np.atleast_1d(cum_t[..., j]), shared).reshape(moneyness[..., j, :].shape)
