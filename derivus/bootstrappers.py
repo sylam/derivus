@@ -1183,7 +1183,11 @@ class LVFit(utils.Residual):
                                             'Alpha_Prior_Defaults', 1),
                       float(read['Alpha_Prior_Sd'])),
             LV_SHARE: lv_share_priors(read)}
-        self.previous, self.tables, self.calls = previous, [], {'n': 0, 'j': 0, 'l': 0}
+        self.previous, self.tables = previous, []
+        #: what the fit SPENT, per kind: evaluations, Jacobians and pillar passes, and the
+        #: seconds the last two cost - both are measured at a point the graph has already
+        #: synchronised the card at, a `float` and a `.cpu()`, so no timer adds one
+        self.calls = {'n': 0, 'j': 0, 'l': 0, 'j_s': 0.0, 'l_s': 0.0}
         self.targets, self.guarded, self.base_rmse, self.ties = [], [], 0.0, {}
         #: the target DIFFERENCE pair per forward tenor, the spot rung each forward tenor's own
         #: smile is read at, the history's slow pair where the job carries one, and the report
@@ -1294,7 +1298,16 @@ class LVFit(utils.Residual):
         clock = G.cumsum(-1)
         return LVPriced((torch.stack(M, -1) + mu + beta * G).cumsum(-1), clock, None, clock)
 
-    def priced(self, scalars, levers, curve, n):
+    def kernel(self, scalars, levers):
+        """The quadrature's parameter-only matrices for ONE sweep (`utils.lv_quad_kernel`), or None
+        where the walk prices the vanillas. The xi bootstrap holds the parameters fixed and moves
+        the curve, so every pillar pass of that sweep reads these rather than rebuilding them."""
+        return utils.lv_quad_kernel(
+            dict(scalars, **{name: levers[name][self.step_bucket[:self.n]]
+                             for name in utils.LV_BUCKET_NAMES}),
+            self.deltas, self.times) if self.quadrature else None
+
+    def priced(self, scalars, levers, curve, n, kernel=None):
         """What a vanilla to step `n` is priced off: `walk`'s own cumulated sums, or the
         quadrature's nodes where the block declares them (`utils.lv_quadrature`).
 
@@ -1304,10 +1317,10 @@ class LVFit(utils.Residual):
         if not self.quadrature:
             return self.walk(scalars, levers, curve, n)
         return LVPriced(*utils.lv_quadrature(
+            kernel if kernel is not None else self.kernel(scalars, levers),
             dict(scalars, **{name: levers[name][self.step_bucket[:n]]
                              for name in utils.LV_BUCKET_NAMES}),
-            curve, self.deltas[:n], self.times[:n + 1],
-            [int(x) for x in self.upto if x <= n], self.nodes))
+            curve, [int(x) for x in self.upto if x <= n], self.nodes))
 
     def walked(self, priced):
         """The per-path blocks the FORWARD-START rows read - the walk's own sums, whatever priced
@@ -1539,7 +1552,7 @@ class LVFit(utils.Residual):
         """`log xi` at the walk's grid times."""
         return utils.TermStructure(*self.l_knots(levels)).at(self.times)
 
-    def solve_l(self, scalars, levers):
+    def solve_l(self, scalars, levers, kernel=None):
         """The inner triangular bootstrap, RE-RUN AT EVERY OUTER ITERATE: the xi SEGMENTS solved one
         at a time against their own ATM premium, so every candidate reprices the ATM term structure
         exactly and is judged on the smile alone.
@@ -1565,6 +1578,7 @@ class LVFit(utils.Residual):
         one that leaves a pillar at nan refuses in `verify` by name.
         """
         targets = self.market(self.atm)
+        kernel = self.kernel(scalars, levers) if kernel is None else kernel
         levels, misses = [], []
         for k, quote in enumerate(self.atm):
 
@@ -1572,14 +1586,16 @@ class LVFit(utils.Residual):
                 self.calls['l'] += 1
                 return self.value(self.priced(scalars, levers,
                                               self.lstar(scalars, levers, levels + [at]),
-                                              int(self.upto[quote.j])), quote) - targets[k]
+                                              int(self.upto[quote.j]), kernel), quote) - targets[k]
 
             at = self.warm[k]
             for _ in range(self.l_iterations):
+                started = time.time()
                 pillar = at.detach().requires_grad_(True)
                 shift = repriced(pillar)
                 slope = torch.autograd.grad(shift, pillar, retain_graph=True)[0].detach()
                 miss = float(shift.detach()) / quote.premium
+                self.calls['l_s'] += time.time() - started
                 if abs(miss) < self.pillar_tol:
                     break
                 at = pillar.detach() - (shift.detach() / slope).clamp(
@@ -1627,11 +1643,12 @@ class LVFit(utils.Residual):
         state. The strip is BANKED, so `written` and `connect` read the one solve `finish` took,
         and so is the WALK where a quadrature block also carries forward-start rows."""
         scalars, levers = self.build(x, coords)
-        self.levels = self.solve_l(scalars, levers)
+        kernel = self.kernel(scalars, levers)
+        self.levels = self.solve_l(scalars, levers, kernel)
         curve = self.lstar(scalars, levers, self.levels)
         self.sampled = (self.walk(scalars, levers, curve, self.n)
                         if self.quadrature and (self.targets or self.reported) else None)
-        return scalars, levers, self.priced(scalars, levers, curve, self.n)
+        return scalars, levers, self.priced(scalars, levers, curve, self.n, kernel)
 
     def rows(self, cum, judged, forwards):
         """Every row's residual, weighted: a vanilla's premium miss over its own market vega, and
@@ -1694,10 +1711,13 @@ class LVFit(utils.Residual):
         (`utils.vmapped_jacobian`), which reads the per-row loop's answer to the bit at a fifth of
         its cost on this graph."""
         self.calls['j'] += 1
+        started = time.time()
         leaf = torch.tensor(np.asarray(x, dtype=float), device=self.device,
                             dtype=self.prec, requires_grad=True)
         terms = self.residual(leaf, coords, judged, forwards, **kw)
-        return utils.vmapped_jacobian(terms, leaf).cpu().numpy()
+        jac = utils.vmapped_jacobian(terms, leaf).cpu().numpy()
+        self.calls['j_s'] += time.time() - started
+        return jac
 
     def label(self, coord):
         return coord[0] if coord[1] is None else '{}[{:g}y]'.format(
@@ -2207,7 +2227,9 @@ class LVFit(utils.Residual):
         for (rho_l, sigma_l), names in priors.items():
             scalars, levers = self.build(None, ())
             scalars['Rho_L'], scalars['Sigma_L'] = self.tensor(rho_l), self.tensor(sigma_l)
-            cum = self.priced(scalars, levers, self.l_at(self.solve_l(scalars, levers)), self.n)
+            kernel = self.kernel(scalars, levers)
+            cum = self.priced(scalars, levers,
+                              self.l_at(self.solve_l(scalars, levers, kernel)), self.n, kernel)
             rows.append((' = '.join(names), rho_l, sigma_l, self.wing_rmse(cum),
                          max(self.spreads(self.exposure_horizon, sigma_l))))
         return rows
@@ -2784,9 +2806,13 @@ class LVFit(utils.Residual):
         sweeps = max(self.calls['n'] + self.calls['j'], 1)
         logging.info('  {} evaluations and {} Jacobians in {:.1f}s; the inner bootstrap cost {} '
                      'pillar passes, each carrying the backward its Newton slope is - {:.1f} a '
-                     'sweep over {} pillars'.format(
+                     'sweep over {} pillars. The seconds go {:.1f} on those passes, {:.1f} on the '
+                     'Jacobians and {:.1f} on everything else'.format(
                          self.calls['n'], self.calls['j'], self.elapsed, self.calls['l'],
-                         self.calls['l'] / sweeps, len(self.atm)))
+                         self.calls['l'] / sweeps, len(self.atm), self.calls['l_s'],
+                         self.calls['j_s'] - self.calls['l_s'] * self.calls['j'] / sweeps,
+                         self.elapsed - self.calls['j_s']
+                         - self.calls['l_s'] * self.calls['n'] / sweeps))
         self.family.quote_trailer(self.instrument)
 
 

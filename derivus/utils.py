@@ -2804,19 +2804,22 @@ def lv_walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=
     return total(M), total(idio * V), l, s
 
 
-def lv_quad_moments(params, curve, deltas, times):
-    """``(E[A], Var A, Var Lev, Cov(A, Lev))`` CUMULATED to every step end of the walk's own grid.
+#: The parameter-only half of the quadrature's moments: the per-step pieces the curve is added to,
+#: and the three STRICTLY UPPER matrices each double sum is a matrix-vector product against - the
+#: clock's `expm1` of the pairwise covariance, and the two shock decays carrying its square root.
+LVKernel = namedtuple('lv_kernel', 'base var c b clock swing slow fast a_l a_s')
 
-    ``y_k = l_k + s_k`` is Gaussian - mean ``curve[k]``, the OU recursion's own variance and the
-    pairwise covariance ``exp(-kappa (t_k - t_j)) Var_j`` per factor - so ``V_k = delta_k exp(y_k)``
-    is lognormal and every moment is closed form. ``E[A] = sum_k c_k delta_k xi(t_k)`` is the xi
-    curve's own grid integral; ``Var A`` is a double sum over `expm1` of that covariance, which is
-    where the near-equal difference would otherwise be; ``Var Lev = E[sum_k (rho_s^2 + rho_l^2)
-    V_k]`` is exact, each shock being independent of the variance it multiplies; and
-    ``Cov(A, Lev)`` is the same double sum weighted by the loading a shock carries into the later
-    step, by Gaussian integration by parts.
 
-    WHOLLY IN DOUBLE over an n x n step matrix, which is what the closed form costs.
+def lv_quad_kernel(params, deltas, times):
+    """Everything in `lv_quad_moments` that the CURVE does not touch, minted once per sweep.
+
+    ``y_k = l_k + s_k`` is Gaussian - the OU recursion's own variance and the pairwise covariance
+    ``exp(-kappa (t_k - t_j)) Var_j`` per factor - and the curve enters only as the MEAN, so both
+    double sums are a rank-one outer product on matrices that are the grid's and the parameters'
+    alone. Those matrices are the n x n cost, and a sweep of the xi bootstrap prices ten prefixes
+    at one parameter set: built here, each of those is three matrix-vector products, forward and
+    backward alike. `swing` is the clock matrix's own diagonal, which is `expm1(Var)` and needs no
+    matrix at all. WHOLLY IN DOUBLE.
     """
     wide = lv_wide(deltas)
     n = wide.shape[0]
@@ -2827,28 +2830,42 @@ def lv_quad_moments(params, curve, deltas, times):
     zero = wide.new_zeros(())
     v_s = lv_ou_path(2.0 * ks, w_s, w_s, zero, wide)[:-1]
     v_l = lv_ou_path(2.0 * kl, w_l, w_l, zero, wide)[:-1]
-    mu, var, t = lv_wide(curve)[:n], v_s + v_l, lv_wide(times)[:n]
+    var, t = v_s + v_l, lv_wide(times)[:n]
     early = torch.arange(n, device=wide.device)
     early = torch.minimum(early[:, None], early[None, :])
     gap = (t[None, :] - t[:, None]).abs()
     fast, slow = torch.exp(-ks * gap), torch.exp(-kl * gap)
     grown = torch.expm1(fast * v_s[early] + slow * v_l[early])
-    log_v = torch.log(wide) + mu + 0.5 * var
-    c, b = 1.0 - rs * rs - rl * rl, rs * rs + rl * rl
-    # THE CURVE ENTERS BOTH DOUBLE SUMS AS A RANK-ONE OUTER PRODUCT on a matrix that is the grid's
-    # and the parameters' alone - `expm1` of the pairwise covariance for the clock's own second
-    # moment, its square root for the leverage's, beside the loading each shock carries into a
-    # later step, which is the SAME decay scaled back by the step it starts in
-    mass = c * torch.exp(log_v)
-    pairs = (mass[:, None] * mass[None, :]) * grown
-    lead = torch.exp(0.5 * log_v - 0.125 * var) * torch.stack(
-        [rl * w_l * torch.exp(kl * wide), rs * w_s * torch.exp(ks * wide)])
+    half = torch.sqrt(grown + 1.0)
+    return LVKernel(torch.log(wide) + 0.5 * var, var,
+                    1.0 - rs * rs - rl * rl, rs * rs + rl * rl,
+                    torch.triu(grown, 1), torch.expm1(var),
+                    torch.triu(slow * half, 1), torch.triu(fast * half, 1),
+                    rl * w_l * torch.exp(kl * wide), rs * w_s * torch.exp(ks * wide))
+
+
+def lv_quad_moments(kernel, curve, n):
+    """``(E[A], Var A, Var Lev, Cov(A, Lev))`` CUMULATED to every one of the first ``n`` step ends,
+    off `lv_quad_kernel`'s matrices and the curve.
+
+    ``V_k = delta_k exp(y_k)`` is lognormal, so every moment is closed form.
+    ``E[A] = sum_k c_k delta_k xi(t_k)`` is the xi curve's own grid integral; ``Var A`` is a double
+    sum over `expm1` of the pairwise covariance, which is where the near-equal difference would
+    otherwise be; ``Var Lev = E[sum_k (rho_s^2 + rho_l^2) V_k]`` is exact, each shock being
+    independent of the variance it multiplies; and ``Cov(A, Lev)`` is the same double sum weighted
+    by the loading a shock carries into the later step, by Gaussian integration by parts. Each is
+    the kernel's own matrix read from the LEFT by the curve's rank-one vector - a prefix being the
+    matrix's own leading block.
+    """
+    log_v = kernel.base[:n] + lv_wide(curve)[:n]
+    mass = kernel.c[:n] * torch.exp(log_v)
+    lead = torch.exp(0.5 * log_v - 0.125 * kernel.var[:n])
     return (torch.cumsum(mass, 0),
-            torch.cumsum(2.0 * torch.triu(pairs, 1).sum(0) + pairs.diagonal(), 0),
-            torch.cumsum(b * torch.exp(log_v), 0),
-            torch.cumsum(mass * torch.triu(
-                (lead[0, :, None] * slow + lead[1, :, None] * fast)
-                * torch.sqrt(grown + 1.0), 1).sum(0), 0))
+            torch.cumsum(mass * (2.0 * (mass @ kernel.clock[:n, :n])
+                                 + mass * kernel.swing[:n]), 0),
+            torch.cumsum(kernel.b[:n] * torch.exp(log_v), 0),
+            torch.cumsum(mass * ((lead * kernel.a_l[:n]) @ kernel.slow[:n, :n]
+                                 + (lead * kernel.a_s[:n]) @ kernel.fast[:n, :n]), 0))
 
 
 @lru_cache(maxsize=8)
@@ -2864,7 +2881,7 @@ def lv_quad_nodes(clock_nodes, mixer_nodes, device):
             host(np.log(np.tile(w_mixer, clock_nodes))))
 
 
-def lv_quadrature(params, curve, deltas, times, ends, nodes):
+def lv_quadrature(kernel, params, curve, ends, nodes):
     """``(drift, variance, weight, mixer)`` at every quadrature node of every block end in ``ends``
     - the conditional Black the caller prices, and the weights it averages with.
 
@@ -2887,7 +2904,7 @@ def lv_quadrature(params, curve, deltas, times, ends, nodes):
     ``Alpha`` and ``Beta`` are read at the FIRST bucket: a mixer summed over two of them is not
     inverse Gaussian, which is the one thing this pricer refuses.
     """
-    e_a, var_a, e_b, cross = lv_quad_moments(params, curve, deltas, times)
+    e_a, var_a, e_b, cross = lv_quad_moments(kernel, curve, int(ends[-1]))
     at = torch.as_tensor(np.asarray(ends) - 1, device=e_a.device)
     e_a, var_a, e_b, cross = (x[at] for x in (e_a, var_a, e_b, cross))
     width = (int(nodes[0]), int(nodes[1]))
