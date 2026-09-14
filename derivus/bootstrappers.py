@@ -1042,6 +1042,15 @@ def lv_parse_class_priors(text, name, count):
     return priors
 
 
+def lv_band(text, name, asset=None):
+    """`lower,upper` for every asset class, or `class:lower,upper; ...` per class: the band for
+    `asset`, or the whole table validated where no asset is asked for."""
+    if ':' not in str(text):
+        return utils.lv_parse_bounds(text, name)
+    table = lv_parse_class_priors(text, name, 2)
+    return table if asset is None else table[asset]
+
+
 def lv_share_priors(read):
     """`({asset class: (share,)}, spread)` for the residual's skew row, refusing BY NAME on a
     target outside the admissible `|beta|/alpha` or a spread that cannot weight a row.
@@ -1144,7 +1153,7 @@ class LVFit(utils.Residual):
         self.l_iterations = int(read['Xi_Solve_Iterations'])
         self.l_damping = float(read['Xi_Solve_Damping'])
         self.cap_headroom_max = float(read['Cap_Headroom_Max'])
-        self.log_vol_sd_band = utils.lv_parse_bounds(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
+        self.log_vol_sd_band = lv_band(read['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band', self.asset_class)
         self.atm_miss_max = float(read['Atm_Miss_Max'])
         self.psi_floor = float(read['Psi_Floor'])
         self.exposure_horizon = float(read['Exposure_Horizon'])
@@ -2351,9 +2360,9 @@ class LVFit(utils.Residual):
         if stuck:
             message = (
                 '{}: the stationary log-vol sd 0.5*sqrt(Sigma_S^2/2Kappa_S + Sigma_L^2/2Kappa_L) '
-                'sits outside the {:g}-{:g} VIX options imply in {} of {} bucket{} ({}), so this '
-                'surface wants vol dynamics the VIX market does not price'.format(
-                    self.market_price, lo, hi, len(stuck), len(spreads),
+                'sits outside the {:g}-{:g} band declared for {} in {} of {} bucket{} ({}), so this '
+                'surface wants vol dynamics its market is not declared to carry'.format(
+                    self.market_price, lo, hi, self.asset_class, len(stuck), len(spreads),
                     '' if len(spreads) == 1 else 's',
                     ', '.join('{:g}y sd {:.3f} at Sigma_S {:.4f}, Sigma_L {:.4f}'.format(
                         self.buckets[i], spreads[i], self.state['Sigma_S'][i],
@@ -3333,9 +3342,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         F('Cap_Headroom_Max', 'Float', default=1e-5,
           description='The mass of path-days at or above the corner the factor will carry that '
                       'REFUSES the fit; nothing where the walk is unbounded'),
-        F('Log_Vol_Sd_Band', 'Text', default='0.4,0.9',
-          description='The stationary log-vol sd band VIX options imply, lower,upper; outside it '
-                      'Stationary_Spread\'s guard fires'),
+        F('Log_Vol_Sd_Band', 'Text',
+          default='FxRate:0.2,0.9; EquityPrice:0.4,0.9; CommodityPrice:0.4,0.9; FuturesPrice:0.4,0.9',
+          description='The band the fitted stationary log-vol sd may sit in, per asset class as '
+                      'class:lower,upper entries separated by semicolons, or one lower,upper for '
+                      'every class. Index and commodity take the 0.4-0.9 that VIX options imply. '
+                      'No volatility-index market prices FX vol-of-vol, so the FX band is a '
+                      'declared view - 0.2 below the equity floor, bracketing the 0.376 a USDZAR '
+                      'ladder reads - and the identification line says whether the quotes or the '
+                      'band pinned the pair. Outside the band Stationary_Spread\'s guard fires'),
         F('Atm_Miss_Max', 'Float', default=1e-4,
           description='The relative ATM miss a pillar may still carry once the fit is done, after '
                       'Pillar_Tolerance; anything left is a miss the OTHER parameters put out of '
@@ -3497,8 +3512,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         utils.lv_retired('Bootstrapper Configuration LogVar2FJModelParameters', self.param)
         lv_share_priors(self.param)
         for name in ('Sigma_L_Bounds', 'Rho_L_Bounds', 'Sigma_S_Bounds', 'Alpha_Bounds',
-                    'Beta_Bounds', 'Log_Vol_Sd_Band', 'Stage_Horizons'):
+                    'Beta_Bounds', 'Stage_Horizons'):
             utils.lv_parse_bounds(self.param[name], name)
+        lv_band(self.param['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band')
         strikes = utils.lv_parse_floats(self.param['Psi_Strikes'], 'Psi_Strikes', 3)
         if not strikes[0] < strikes[2]:
             raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
