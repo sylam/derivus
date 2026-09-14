@@ -332,7 +332,7 @@ quote leaf. A CPU-sharded calculation on a CUDA box is therefore a CPU calculati
 fitted on the card, which is what that seam was always shaped for.
 
 **The clock moved with it, and the profile changed shape.** The capped NKY profile
-(`artifacts/lv_fast2_20260908/profile_fit.py 3 8192`) is **126.8 s on the CPU against 17.3 s on
+(three fits at 8,192 paths, profiled) is **126.8 s on the CPU against 17.3 s on
 the card**, and the item that was 61% of the CPU clock — the batched reverse Jacobian — is 4% of
 the card's: the 25-row backward over a 504-step block at 8192 paths costs **6.78 s on the CPU and
 0.104 s on an RTX 3090**. What is left is the inverse-Gaussian root at 30% and the pillars' own
@@ -424,7 +424,7 @@ multiplier of a segment integral that reads both ends, and flat segments took th
 difference from 20.4 vol points RMS to 5.1 on the CJOW surface and from 1.57 to 0.42 on a reduced
 USDZAR block at unchanged wing RMSEs.
 
-**Two modes on one banked surface** (`artifacts/lv_nig_20260907/fit.py fx`, the campaign's USDZAR
+**Two modes on one banked surface** (the campaign's USDZAR
 `FXVol` at `Paths` 8192, daily δ, CPU), against the SAME 22 contracts the Poisson residual was
 read on. Six of those rungs are the ATM one of each expiry, which any family carrying a curve
 solves to zero, so folding them into one RMSE reports the split rather than the fit: the table
@@ -437,7 +437,7 @@ separates them and the headline is the WING RMSE over the other 16.
 | *the Poisson residual's record, `Global`* | 6 at 0.0e+00 | *0.132* | *−0.252* | *0.174* | *213 s* |
 | *the Poisson residual's record, `Bootstrap`* | 6 at 0.0e+00 | *0.574* | *+1.291* | *0.043* | *222 s* |
 
-and on the banked SPX chain block (`artifacts/hnret/chain_block.py`, six rungs, `Max_Iterations`
+and on the banked SPX chain block (six rungs, `Max_Iterations`
 4): **0.158** vol points RMSE against the Poisson residual's **0.272**, in 26 s. The two retired
 Heston-Nandi families read 0.663 and 0.760 on the same 22 contracts, a record nothing reproduces.
 
@@ -478,8 +478,7 @@ declared error weights its row at one quote per standard error; a blank one take
 weight, `Leverage_Prior_Weight` on `ρ_s` and that over `Sigma_S_Reference` on the product. **The
 block's own numbers come from the IMPLIED REGRESSION** brief §2 sizes the reference by — the daily
 log change of the index's implied-vol index on the index's return, `σ_s` the annualised sd of the
-log-variance change, with Fisher, `σ/√2N` and delta-method errors
-(`artifacts/lv_corrtest_20260909/fetch_vi.py`): SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
+log-variance change, with Fisher, `σ/√2N` and delta-method errors: SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
 product −1.89 ± 0.05, the reference to the second decimal; NDX/VXN −0.712, 1.88, −1.34; NKY against
 the Nikkei VI **−0.529 ± 0.025, 3.07, −1.62 ± 0.09** — a weaker correlation and more vol-of-vol
 than SPX, which is why NKY's wings wanted a positive residual skew at SPX's −1.85: it is not NKY's
@@ -700,8 +699,7 @@ so `dξ/dq` needs no rule of its own; the residual and its Jacobian are taken on
 a whole `dθ/dq` matrix is one contraction per written parameter rather than one fit's worth of
 evaluations each. `Stationarity_Tol` refuses the lot where θ\* is not a stationary point — a stage
 that stopped at `Max_Iterations` has no quote derivative to report. Measured on the campaign's 2y SPX
-autocall priced off a factor the same `Context` calibrated (`artifacts/logvar2fj/quote_risk.py`,
-nine quotes, `Paths` 2048):
+autocall priced off a factor the same `Context` calibrated (nine quotes, `Paths` 2048):
 
 | gate | result |
 |---|---|
