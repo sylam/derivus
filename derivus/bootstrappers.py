@@ -6349,7 +6349,7 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     """One family built off its `Bootstrapper Configuration` entry: the entry's hyperparameters
     without the routing key, and `{}` for the legacy CSV string, whose positional tail declares
     none - every field it does not carry is the declaration's own default."""
-    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    device = utils.calculation_device()
     param = ({key: value for key, value in param.items() if key != PRICES_KEY}
              if isinstance(param, dict) else {})
     return family_class(btype)(param, device, dtype)

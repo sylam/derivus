@@ -184,13 +184,7 @@ def run_baseval(context, prec=torch.float64, overrides=None):
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    if torch.cuda.is_available():
-        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
-        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        device = torch.device("cuda:0")
-        torch.cuda.empty_cache()
-    else:
-        device = torch.device("cpu")
+    device = utils.calculation_device()
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
     # only the runtime-derived key is injected; every declared default comes from the schema
@@ -214,13 +208,7 @@ def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    if torch.cuda.is_available():
-        # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
-        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-        device = torch.device("cuda:0")
-        torch.cuda.empty_cache()
-    else:
-        device = torch.device("cpu")
+    device = utils.calculation_device()
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
     time_grid = str(declared_defaults(HedgeMonteCarlo, calc_params)['Time_Grid'])
@@ -268,23 +256,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         {'Base_Date': context.params['System Parameters']['Base_Date'],
          'Currency': context.params['System Parameters']['Base_Currency']})
 
-    # CUBLAS_WORKSPACE_CONFIG is what makes cuBLAS reductions deterministic run to run
-    if device is not None:
-        device = torch.device(device)
-    elif torch.cuda.device_count():
-        # the DEVICE COUNT, not `is_available()`: a box with the CUDA runtime but nothing visible
-        # (CUDA_VISIBLE_DEVICES empty) reports available with a count of zero, and cpu is the
-        # honest answer there rather than a modulo by zero.
-        # Workers are NOT capped by that count - a job may ask for more of them than the box has
-        # devices, and the surplus share. job_id still fixes WHICH device, so the assignment stays
-        # a function of the worker index and nothing else.
-        device = torch.device("cuda", job_id % torch.cuda.device_count())
-    else:
-        device = torch.device("cpu")
-
-    if device.type == 'cuda':
-        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-        torch.cuda.empty_cache()
+    device = utils.calculation_device(device, job_id)
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
     time_grid = str(declared_defaults(Credit_Monte_Carlo, calc_params)['Time_Grid'])

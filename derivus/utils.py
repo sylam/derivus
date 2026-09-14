@@ -13,6 +13,7 @@
 
 import calendar
 import math
+import os
 from functools import partial, reduce, wraps
 import threading
 from collections import namedtuple, deque, OrderedDict
@@ -1304,6 +1305,30 @@ class Calculation_State(object):
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams
         self.t_quasi_rng_batch = {}
+
+
+def calculation_device(requested=None, job_id=0):
+    """Which silicon a calculation runs on, and the cuBLAS pin its reductions need to reproduce.
+
+    THE DEVICE COUNT, NOT `torch.cuda.is_available()`, which answers True on a box whose devices
+    are hidden (CUDA_VISIBLE_DEVICES empty) where the count answers zero - and putting a tensor on
+    the device it then names INITIALISES CUDA, after which the count answers with the box's devices
+    rather than the visible ones. ONE spelling, here, or a document's device - and so the stream it
+    draws from - would depend on what ran before it in the process. `job_id` fixes WHICH device, so
+    a worker's assignment is a function of its index and nothing else; workers are not capped by
+    the count, and a surplus shares.
+    """
+    if requested is not None:
+        device = torch.device(requested)
+    elif torch.cuda.device_count():
+        device = torch.device('cuda', job_id % torch.cuda.device_count())
+    else:
+        device = torch.device('cpu')
+
+    if device.type == 'cuda':
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        torch.cuda.empty_cache()
+    return device
 
 
 def rng_position(shared, position=None):
