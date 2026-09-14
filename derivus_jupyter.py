@@ -278,7 +278,7 @@ class TreePanel(metaclass=ABCMeta):
                 else:
                     raise Exception('Unknown Array Field type {0}'.format(field_name))
             elif isinstance(obj, pd.DateOffset):
-                return_value = rf.config.offset_string(obj)
+                return_value = rf.utils.offset_string(obj)
             elif isinstance(obj, pd.Timestamp):
                 # leave datepickers unaltered but convert everything else to a string
                 return_value = obj if field_meta['widget'] == 'DatePicker' else obj.strftime('%Y-%m-%d')
@@ -1119,10 +1119,9 @@ class SetupPage(TreePanel):
                     if config and config[0] is not None:
                         factor, process = config[0].split('.')
                         if (config[1] is not None) and (config[2] is not None):
-                            filter_on, value = config[1], config[2]
-                            model_config.modelfilters.setdefault(factor, []).append(((filter_on, value), process))
-                            continue
-                        model_config.modeldefaults.setdefault(factor, process)
+                            model_config.set_state({}, {factor: [((config[1], config[2]), process)]})
+                        else:
+                            model_config.set_state({factor: process}, {})
 
             return handleEvent
 

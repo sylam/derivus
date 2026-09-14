@@ -24,6 +24,7 @@ import scipy.optimize
 import scipy.stats
 import pandas as pd
 import numpy as np
+from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group
 
 import torch
 
@@ -945,6 +946,63 @@ class DateEqualList:
         return '[' + ','.join(['%s=%s' % (
             '%02d%s%04d' % (date.day, calendar.month_abbr[date.month], date.year), '='.join([str(y) for y in value]))
                                for date, value in self.data.items()]) + ']'
+
+
+#: the wire code per `DateOffset` unit, and its inverse largest first: a period is WRITTEN in this
+#: order rather than `kwds`', which is a set's, or one process spells it `6M2D` and the next `2D6M`
+offset_lookup = {'M': 'months', 'D': 'days', 'Y': 'years', 'W': 'weeks'}
+reverse_offset = {'years': 'Y', 'months': 'M', 'weeks': 'W', 'days': 'D'}
+
+
+def get_grid_grammar():
+    """`(grid, period)` parsers for the date-grid grammar."""
+
+    def push_int(strg, loc, toks):
+        return int(toks[0])
+
+    def push_single_period(strg, loc, toks):
+        return offset_lookup[toks[1]], toks[0]
+
+    def push_period(strg, loc, toks):
+        ofs = dict(toks.asList())
+        return pd.DateOffset(**ofs)
+
+    def push_date_grid(strg, loc, toks):
+        return toks[0][0] if len(toks) == 1 else Offsets(toks.asList())
+
+    lpar = Literal("(").suppress()
+    rpar = Literal(")").suppress()
+    decimal = Literal(".")
+
+    integer = (Word("+-" + nums, nums) + ~decimal).setName('int').setParseAction(push_int)
+    single_period = (integer + oneOf(['D', 'M', 'Y', 'W'], caseless=True)).setName('single_period').setParseAction(
+        push_single_period)
+    period = OneOrMore(single_period).setName('period').setParseAction(push_period)
+    grid = delimitedList(Group(period + Optional(lpar + period + rpar)),
+                         delim=' ').leaveWhitespace().setParseAction(push_date_grid)
+
+    return grid, period
+
+
+#: the period parser, built once - a pyparsing grammar carries nothing across a parse
+_period_parser = get_grid_grammar()[1]
+
+
+def parse_period(period):
+    """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse: the encoder writes a
+    `.DateOffset` as this string, so every reader of one comes here."""
+    return _period_parser.parseString(period)[0]
+
+
+def offset_string(offset):
+    """A `DateOffset` as the `.DateOffset` string every decoder reads, units largest first.
+
+    The order is `reverse_offset`'s rather than `DateOffset.kwds`', which is a set's: a two-unit
+    period would otherwise be written `6M2D` by one process and `2D6M` by the next, and a written
+    file's bytes are what a hash is taken over.
+    """
+    return ''.join('{}{}'.format(offset.kwds[unit], code)
+                   for unit, code in reverse_offset.items() if unit in offset.kwds)
 
 
 class ScenarioBlock(object):

@@ -1117,14 +1117,14 @@ def value_tick(block, moves):
 
 
 def test_the_block_installs_and_updates_through_the_engines_own_guard():
-    """`config.update_market_quote` is the contract every quote source posts against: 'installed'
+    """`schema.update_market_quote` is the contract every quote source posts against: 'installed'
     the first time, 'updated' the second, and 'updated' on a VALUE-ONLY re-tick - which used to
     refuse with 'structure differs', because the guard's value plane was `Points` rows while these
     families quote in `European_Options`. A moved STRIKE still refuses, which makes that a line
     rather than a waiver, and so does a re-EMITTED chain, because `Weight` is a normalised vega and
     one moved print re-weighs the ladder. Both readings asserted.
     """
-    from derivus.config import update_market_quote
+    from derivus.schema import update_market_quote
 
     name, block = emitted()
     document = job_document()

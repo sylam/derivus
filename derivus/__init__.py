@@ -34,8 +34,8 @@ from . import schema
 from . import fields
 from . import utils
 from .instruments import construct_instrument
-from .config import (CustomJsonEncoder, Config, compress_deal_data, correlation_names,
-                     correlation_pairs, deal_at)
+from .schema import deal_at
+from .config import CustomJsonEncoder, Config, compress_deal_data, wire_sections
 
 
 def update_dict(d, u):
@@ -421,7 +421,6 @@ class Context:
             # of one job must hash the same, and Base_Date is a date everywhere it is read
             new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now().normalize()
 
-        new_cfg.version = ['JSONVersion', '22.05.30']
         return new_cfg
 
     def parse_path(self, file_path):
@@ -463,11 +462,8 @@ class Context:
                 cfg = self.config_cache[market_data['MarketDataFile']]
             else:
                 cfg = Config()
-            # `Correlations` is keyed by name PAIR wherever it is authored, file or job, or the
-            # cholesky looks up a tuple the section does not carry and reads a silent zero
             for section, section_data in market_data.get('ExplicitMarketData', {}).items():
-                cfg.params[section].update(
-                    correlation_pairs(section_data) if section == 'Correlations' else section_data)
+                cfg.merge_section(section, section_data)
 
         if data['Calc'].get('CalendDataFile'):
             if data['Calc']['CalendDataFile'] not in self.holiday_cfg_cache:
@@ -499,21 +495,15 @@ class Context:
 
     def save_json(self, json_filename):
         '''
-        Writes the loaded job back out as a job JSON - experimental, not fully implemented
+        Writes the loaded job back out as a SELF-CONTAINED job JSON: every section of the loaded
+        market data goes into ExplicitMarketData in the order that config keys them and no
+        MarketDataFile is named, so the saved document loads on its own. The calendar file, which
+        is not market data, is still named.
         :param json_filename: destination path, or None to return the JSON string instead
         :return: None when a filename is given, otherwise the JSON string
         '''
-
-        def write_final_json(out_json, cfg, section):
-            if cfg.params[section]:
-                out_json[section] = correlation_names(cfg.params[section]) \
-                    if section == 'Correlations' else cfg.params[section]
-
         cfg = self.current_cfg
-        try:
-            md, cal = list(self.config_cache.keys())[0], list(self.holiday_cfg_cache.keys())[0]
-        except:
-            md, cal = '', ''
+        cal = next(iter(self.holiday_cfg_cache), '')
 
         final_json = {
             "Calc":
@@ -525,7 +515,7 @@ class Context:
                         "Deals": cfg.deals['Deals']
                         },
                     "MergeMarketData": {
-                        "MarketDataFile": md,
+                        "MarketDataFile": "",
                         "ExplicitMarketData": {
                         }
                     },
@@ -533,17 +523,8 @@ class Context:
                 }
             }
 
-        out_json = final_json['Calc']['MergeMarketData']['ExplicitMarketData']
-        if md:
-            # only write out the price factors if the market data is defined
-            write_final_json(out_json, cfg, 'Price Factors')
-        else:
-            # write out everything
-            write_final_json(out_json, cfg, 'System Parameters')
-            write_final_json(out_json, cfg, 'Model Configuration')
-            write_final_json(out_json, cfg, 'Price Factors')
-            write_final_json(out_json, cfg, 'Price Models')
-            write_final_json(out_json, cfg, 'Correlations')
+        final_json['Calc']['MergeMarketData']['ExplicitMarketData'].update(
+            wire_sections(cfg.params, cfg.params))
 
         data = json.dumps(final_json, separators=(',', ':'), cls=CustomJsonEncoder)
         if json_filename is not None:

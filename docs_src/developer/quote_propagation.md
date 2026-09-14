@@ -349,7 +349,7 @@ reval with no re-bootstrap in it.
     table whatever — so their values half is **empty** and a tick on one of them is still a new plan.
     `tests/test_market_prices_partition.py` states it per family by name.
 
-    `config.update_market_quote`'s tick guard, `Config.plan_hash`, `market_patch`/`patch_market` and
+    `schema.update_market_quote`'s tick guard, `Config.plan_hash`, `market_patch`/`patch_market` and
     `InterestRateCurveParameters.plan_key` all read that one tuple. The projection **drops** the four
     keys where [`partition_factor`](market_prices.md) shadows a value to `None`, because a pillar that
     starts or stops being quoted two-sided is the same node of the same plan — so `Quoted_Bid`

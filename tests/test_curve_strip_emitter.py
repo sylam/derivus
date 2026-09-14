@@ -4,7 +4,7 @@ Only the last gate opens a socket, and it skips by name where this workstation h
 Everything else runs on ONE canned world - a seeded USD OIS strip and a seeded ZAR JIBAR strip,
 walked through the package's real discovery grammar into a real verified map with a poison table of
 dead prints - driven through the package's own reader and the real engine seams
-(`config.update_market_quote`, `bootstrappers.quote_nodes` / `quote_knots`), all imported READ-ONLY.
+(`schema.update_market_quote`, `bootstrappers.quote_nodes` / `quote_knots`), all imported READ-ONLY.
 
 WHAT IS HELD:
 
@@ -984,7 +984,7 @@ def test_the_block_installs_and_a_value_only_retick_updates():
     A moved RATE is a tick - mid, both sides and stamp on the value plane, `Deal` unmoved, which is
     what authoring the quote OUTSIDE the deal buys. A moved CONVENTION is a new plan and refuses.
     """
-    from derivus.config import update_market_quote
+    from derivus.schema import update_market_quote
 
     name, block = block_of('ZAR')
     document = job_document()
@@ -1026,7 +1026,7 @@ def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
     also serves a re-quoted swaption ladder: there the values half is EMPTY and no tick exists at
     all, here the values half works fine and the date is simply not in it.
     """
-    from derivus.config import update_market_quote
+    from derivus.schema import update_market_quote
 
     name, block = block_of('ZAR')
     document = job_document()

@@ -82,10 +82,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import Context, bootstrappers, content_hash, solve_deal_field, spine, structures
-from .schema import mapping
+from .schema import (mapping, deal_at, remove_deal, sniff_indent, splice_deal, tables_of,
+                      update_market_quote, walk_job_deals)
 from ._version import __version__
-from .config import (as_json, deal_at, remove_deal, sniff_indent, splice_deal, tables_of,
-                     update_market_quote, walk_job_deals)
+from .config import as_json
 from .spine import replay
 
 LOG = logging.getLogger(__name__)
@@ -645,18 +645,10 @@ def booked_node(deal):
     `Children` hanging off the node beside `Instrument`.
 
     A structure IS its legs, so `/book/quote` books a container and everything under it as one
-    trade. A composed deal arrives with the legs written INTO the container, the one placement
-    `Config` does not walk, so lifting them here is what makes it bookable as it stands. The deal
-    block is copied rather than edited: a quote file is the record of what was quoted.
+    trade. A composed deal keeps them written INTO the container here; `splice_deal` is what lifts
+    them onto the node it appends, which is where the engine walks them.
     """
-    if 'Instrument' in deal:
-        return deal
-    deal = dict(deal)
-    children = deal.pop('Children', None)
-    node = {'Instrument': {'.Deal': deal}}
-    if children:
-        node['Children'] = children
-    return node
+    return deal if 'Instrument' in deal else {'Instrument': {'.Deal': deal}}
 
 
 def deal_references(node):
@@ -692,16 +684,14 @@ def deal_edit(document, deal, parent_reference=None):
     closure `/book/deals` books through: baseline taken, node spliced in, verdict read off the
     whole document.
 
-    `splice_deal` gives a container an empty `Children`, a hand-booking filling it one deal at a
-    time; a quoted structure arrives with its legs composed, so they land with it as one booking,
-    one atomic write, one verdict. `/book/quote` books through this same function rather than a
-    second write path, so a structured deal is refused exactly as a hand-booked one is.
+    `splice_deal` gives a container an empty `Children` and lifts a composed deal's legs onto the
+    node, so a hand-booking fills it one deal at a time and a quoted structure lands whole - one
+    booking, one atomic write, one verdict. `/book/quote` books through this same function rather
+    than a second write path, so a structured deal is refused exactly as a hand-booked one is.
     """
     already_missing = set(load(document).validate()['factors'])
-    node = booked_node(deal)
-    deal_path = splice_deal(document, node['Instrument']['.Deal'], parent_reference)
-    if node.get('Children'):
-        deal_at(document, deal_path)['Children'] = node['Children']
+    deal_path = splice_deal(document, instrument_of(booked_node(deal)), parent_reference)
+    node = deal_at(document, deal_path)
     return deal_verdict(document, deal_references(node), deal_path, already_missing)
 
 

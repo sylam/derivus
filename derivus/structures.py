@@ -38,7 +38,7 @@ on the pair's BASE currency and refuses the other side by name. A LEVEL crosses 
 barrier does, and a leverage is a ratio that never converts. See `furnish_accrual`.
 
 PARAMETERS vs A DEAL. The runner fills the shared block from the parameters, then the leg's pinned
-block, then its slots. `expiry` is `<n><D|W|M|Y>` read through `Config.offset_lookup`, or an ISO
+block, then its slots. `expiry` is `<n><D|W|M|Y>` read through `utils.offset_lookup`, or an ISO
 date for a broken one; anything else refuses by name rather than landing on today. Every step
 prices ONE leg against a deep copy of the whole book document with the deal tree emptied. `Price`
 is a plain base valuation; `Solve` is `derivus.solve_deal_field`, bracketed.
@@ -71,6 +71,7 @@ import re
 import time
 
 from . import utils
+from . import schema
 from .schema import F, REQUIRED
 
 #: A tenor as the job grammar spells one: a count and a period letter. Anchored and whitespace
@@ -446,15 +447,14 @@ def timestamp(value):
 def expiry_date(base_date, expiry):
     """`Base_Date` plus a quoted tenor, as the wire form a deal's `Expiry_Date` carries.
 
-    A tenor is `<n><D|W|M|Y>` read through `Config.offset_lookup`, so the letters mean here what
+    A tenor is `<n><D|W|M|Y>` read through `utils.offset_lookup`, so the letters mean here what
     they mean in a job's date grid. An ISO date passes through for a broken date, and anything else
     refuses by name - an unparsed tenor landing on the base date is a zero-day option.
     """
     import pandas as pd
-    from .config import Config
     found = TENOR.match(str(expiry))
     if found:
-        offset = pd.DateOffset(**{Config.offset_lookup[found.group(2).upper()]: int(found.group(1))})
+        offset = pd.DateOffset(**{utils.offset_lookup[found.group(2).upper()]: int(found.group(1))})
         return {'.Timestamp': (base_date + offset).strftime('%Y-%m-%d')}
     try:
         return {'.Timestamp': pd.Timestamp(expiry).strftime('%Y-%m-%d')}
@@ -481,11 +481,10 @@ def fixing_grid(base_date, expiry, frequency):
     carrying a time would put the final fixing one comparison past a midnight last date.
     """
     import pandas as pd
-    from .config import Config
     found = TENOR.match(str(frequency))
     if not found:
         raise ValueError('{!r} is not a fixing frequency - 1M, 3M, 1W'.format(frequency))
-    period, count = Config.offset_lookup[found.group(2).upper()], int(found.group(1))
+    period, count = utils.offset_lookup[found.group(2).upper()], int(found.group(1))
     base_date = pd.Timestamp(base_date).normalize()
     last, rows, step = timestamp(expiry_date(base_date, expiry)), [], 1
     while True:
@@ -1070,11 +1069,10 @@ def alone(document, deal):
     does not. A deal's own base-valuation row does not depend on its siblings, and a lone deal
     compiles faster per iterate of a solve.
     """
-    from .config import splice_deal
     iterate = copy.deepcopy(document)
     iterate['Calc']['Deals']['Deals']['Children'] = []
     iterate['Calc']['Calculation']['Object'] = 'BaseValuation'
-    return iterate, splice_deal(iterate, deal)
+    return iterate, schema.splice_deal(iterate, deal)
 
 
 def own_value(out, reference):
@@ -1184,14 +1182,12 @@ def netting_set_references(document):
     """Every `NettingCollateralSet` Reference the book carries, sorted - the set names a quote may
     be booked under. A set nested inside another container is still a set, so the whole tree is
     walked rather than the top level."""
-    from .config import walk_job_deals
-
     try:
         children = document['Calc']['Deals']['Deals']['Children']
     except (KeyError, TypeError):
         return []
     return sorted(node['Instrument']['.Deal'].get('Reference')
-                  for _, node in walk_job_deals(children)
+                  for _, node in schema.walk_job_deals(children)
                   if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet')
 
 

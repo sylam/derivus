@@ -40,7 +40,8 @@ from fastapi.testclient import TestClient
 
 import derivus
 from derivus import service, structures, utils
-from derivus.config import CustomJsonEncoder, deal_at
+from derivus.config import CustomJsonEncoder
+from derivus.schema import deal_at
 
 BASE = pd.Timestamp('2024-06-28')
 RATE = 0.02

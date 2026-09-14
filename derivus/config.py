@@ -12,8 +12,6 @@
 ########################################################################
 
 import os
-import re
-import calendar
 import json
 import logging
 import operator
@@ -21,12 +19,12 @@ import operator
 from collections import Counter, deque
 from functools import reduce
 
-from xml.etree.ElementTree import ElementTree, SubElement, Element, tostring
+from xml.etree.ElementTree import ElementTree
 
 import numpy as np
 import pandas as pd
-from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group
 
+from ._version import __version__
 from . import utils
 from . import schema
 from .bootstrappers import (bootstrap_order, construct_bootstrapper, family_class,
@@ -39,23 +37,188 @@ Timestamp = pd.Timestamp
 DateOffset = pd.DateOffset
 
 
-def traverse_dependents(x, adj):
-    seen = set(adj[x])
-    queue = deque(adj[x])
-    while queue:
-        i = queue.popleft()
-        yield i
-        for t in adj[i]:
-            if t not in seen:
-                seen.add(t)
-                queue.append(t)
+class ModelParams(object):
+    def __init__(self, state=None):
+        # valid risk factor subtypes (only Interest rates at the moment)
+        self.valid_subtype = {'BasisSpread': 'BasisSpread'}
+        # these models need these additional price factors; process + pricer share ONE params
+        # factor (the duplicate AAD leaf is deduped in Calculation._build_factor_state)
+        self.implied_models = {
+            'CSImpliedForwardPriceModel': 'CSForwardPriceModelParameters',
+            'GBMAssetPriceTSModelImplied': 'GBMAssetPriceTSModelParameters',
+            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters',
+            'LogVar2FJImpliedSpotModel': 'LogVar2FJModelParameters'
+        }
+
+        self.modeldefaults = {}
+        self.modelfilters = {}
+        if state:
+            defaults, filters = state
+            self.set_state(defaults, filters)
+
+    def set_state(self, defaults, filters):
+        for factor, model in defaults.items():
+            self.append(factor, (), model)
+        for factor, mappings in filters.items():
+            for condition, model in mappings:
+                self.append(factor, tuple(condition), model)
+
+    def append(self, price_factor, price_filter, stoch_proc):
+        if price_filter == ():
+            self.modeldefaults.setdefault(price_factor, stoch_proc)
+        else:
+            self.modelfilters.setdefault(price_factor, []).append((price_filter, stoch_proc))
+
+    def update(self, modelparams):
+        # ExplicitMarketData merges are last-wins (overrides remap existing entries); file parsing stays first-wins
+        self.modeldefaults.update(modelparams.modeldefaults)
+        for factor, mappings in modelparams.modelfilters.items():
+            self.modelfilters[factor] = list(mappings)
+
+    def additional_factors(self, model, factor):
+        add_factor = self.implied_models.get(model)
+        return utils.Factor(add_factor, factor.name) if add_factor else None
+
+    def search(self, factor, actual_factor, ignore_subtype=False):
+        """The model for `factor` (a `utils.Factor`), filter rules first, then the default.
+
+        `actual_factor` is that factor's loaded `Price Factors` block; filter rules key off its
+        fields, plus a synthetic `id` holding the dotted factor name.
+        """
+        price_factor_type = factor.type + ('' if ignore_subtype else self.valid_subtype.get(
+            actual_factor.get('Sub_Type'), ''))
+
+        # look for a filter rule
+        rule = self.modelfilters.get(price_factor_type)
+        if rule:
+            factor_attribs = dict({k.lower(): v for k, v in actual_factor.items()}, **{'id': '.'.join(factor.name)})
+            for (attrib, value), model in rule:
+                if factor_attribs.get(attrib.strip().lower()) == value.strip():
+                    return model
+        return self.modeldefaults.get(price_factor_type)
 
 
-def filter_data_frame(df, from_date, to_date, rate=None):
-    index1 = (pd.Timestamp(from_date) - utils.excel_offset).days
-    index2 = (pd.Timestamp(to_date) - utils.excel_offset).days
-    return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
-        [col for col in df.columns if col.startswith(rate)]]
+def correlation_pairs(section):
+    """A `Correlations` section keyed by the `(name, name)` pair the cholesky looks it up under.
+
+    JSON has no tuple key, so the section travels nested by name (`{rate1: {rate2: rho}}`) whether
+    it arrives as a market-data file or inside a job's own explicit block. One read for both, or a
+    correlation lands under a key nothing looks up and reads as a silent zero.
+    """
+    pairs = {}
+    for rate1, rate_list in section.items():
+        for rate2, correlation in rate_list.items():
+            pairs.setdefault((rate1, rate2), correlation)
+    return pairs
+
+
+def correlation_names(pairs):
+    """`correlation_pairs` inverted - the section nested by name, which is the shape JSON holds."""
+    nested = {}
+    for (rate1, rate2), value in pairs.items():
+        nested.setdefault(rate1, {}).setdefault(rate2, value)
+    return nested
+
+
+class CustomJsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        return_value = {'.Unknown': str(type(obj))}
+        if isinstance(obj, utils.Curve):
+            return_value = {'.Curve': {'meta': obj.meta, 'data': obj.array.tolist()}}
+        elif isinstance(obj, Deal):
+            return_value = {'.Deal': obj.field}
+        elif isinstance(obj, ModelParams):
+            return_value = {'.ModelParams': {'modeldefaults': obj.modeldefaults, 'modelfilters': obj.modelfilters}}
+        elif isinstance(obj, utils.Descriptor):
+            return_value = {'.Descriptor': obj.data}
+        elif isinstance(obj, utils.Percent):
+            return_value = {'.Percent': 100.0 * obj.amount}
+        elif isinstance(obj, utils.Basis):
+            return_value = {'.Basis': 10000.0 * obj.amount}
+        elif isinstance(obj, utils.Offsets):
+            grid = []
+            for x in obj.data:
+                w = [utils.offset_string(obj) for obj in x]
+                grid.append({'.DateOffset': w[0]} if len(w) == 1 else {'.DateOffset': w[0], '.Offset': w[1]})
+            return {'.Grid': grid}
+        elif isinstance(obj, utils.CreditSupportList):
+            return_value = {'.CreditSupportList': [[rating, value] for rating, value in obj.data.items()]}
+        elif isinstance(obj, utils.DateEqualList):
+            return_value = {
+                '.DateEqualList': [[date.strftime('%Y-%m-%d')] + list(value) for date, value in obj.data.items()]}
+        elif isinstance(obj, utils.DateList):
+            return_value = {'.DateList': [[date.strftime('%Y-%m-%d'), value] for date, value in obj.data.items()]}
+        elif isinstance(obj, DateOffset):
+            return_value = {'.DateOffset': utils.offset_string(obj)}
+        elif isinstance(obj, Timestamp):
+            # a date stays a date (old files re-encode byte-stable); a non-midnight stamp keeps its
+            # time, or values_hash cannot tell the 09:15 snapshot from the 16:30 one
+            return_value = {'.Timestamp': obj.strftime('%Y-%m-%d')
+                            if obj == obj.normalize() else obj.isoformat()}
+        elif isinstance(obj, pd.DataFrame):
+            # `split` reconstructs through `pd.DataFrame(**data)`; the object cast is what makes a
+            # missing cell `null`, since a NaN in a float column is not JSON
+            return_value = {'.DataFrame': obj.astype(object).where(
+                obj.notna(), None).to_dict(orient='split')}
+        elif isinstance(obj, np.ndarray):
+            return_value = obj.tolist()
+        else:
+            logging.error('Error Saving file - Encoding object ' + str(obj) + ' failed')
+        return return_value
+
+
+def decode_wire(dct, deal):
+    """One wire tag as the object it names - the `object_hook` of both loaders.
+
+    `deal` is the `.Deal` adapter the caller supplies: a constructed instrument where the
+    `Valuation Configuration` is known, a `utils.DeferredDeal` where a job's merged market data is
+    not loaded yet. Every other tag reads the same on both paths.
+    """
+    if '.Curve' in dct:
+        return utils.Curve(dct['.Curve']['meta'], dct['.Curve']['data'])
+    elif '.Percent' in dct:
+        return utils.Percent(dct['.Percent'])
+    elif '.Deal' in dct:
+        return deal(dct['.Deal'])
+    elif '.Basis' in dct:
+        return utils.Basis(dct['.Basis'])
+    elif '.Descriptor' in dct:
+        return utils.Descriptor(dct['.Descriptor'])
+    elif '.DateList' in dct:
+        return utils.DateList({Timestamp(date): val for date, val in dct['.DateList']})
+    elif '.DateEqualList' in dct:
+        return utils.DateEqualList([[Timestamp(values[0])] + values[1:] for values in dct['.DateEqualList']])
+    elif '.CreditSupportList' in dct:
+        return utils.CreditSupportList(dct['.CreditSupportList'])
+    elif '.DateOffset' in dct and '.Offset' in dct:
+        return [utils.parse_period(dct['.DateOffset']), utils.parse_period(dct['.Offset'])]
+    elif '.DateOffset' in dct:
+        # ONE wire spelling read two ways: every producer writes the STRING ('3M'), the kwargs
+        # dict is what old bytes on disk carry - both read, only one written
+        period = dct['.DateOffset']
+        return utils.parse_period(period) if isinstance(period, str) else DateOffset(**period)
+    elif '.Grid' in dct:
+        return utils.Offsets([(x if isinstance(x, list) else [x]) for x in dct['.Grid']])
+    elif '.Timestamp' in dct:
+        return Timestamp(dct['.Timestamp'])
+    elif '.ModelParams' in dct:
+        return ModelParams((dct['.ModelParams']['modeldefaults'], dct['.ModelParams']['modelfilters']))
+    return dct
+
+
+def wire_sections(params, names):
+    """The named sections in the form JSON holds them - `Correlations` nested by name, JSON having
+    no tuple key. Both writers of a market-data block read it."""
+    return {name: correlation_names(params[name]) if name == 'Correlations' else params[name]
+            for name in names}
+
+
+def as_json(obj):
+    """Plain JSON, through the one encoder for what JSON has no form for - a Curve, a Timestamp, a
+    results table. The HTTP surface and `derivus.spine`'s run RESULT both go through it, so a replay
+    claim and the answer it is compared against are the same bytes.
+    """
+    return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
 
 
 def compress_deal_data(deals):
@@ -197,347 +360,90 @@ def compress_deal_data(deals):
     return reduced_deals
 
 
-def get_grid_grammar():
-    """`(grid, period)` parsers for the date-grid grammar."""
-
-    def push_int(strg, loc, toks):
-        return int(toks[0])
-
-    def push_single_period(strg, loc, toks):
-        return Config.offset_lookup[toks[1]], toks[0]
-
-    def push_period(strg, loc, toks):
-        ofs = dict(toks.asList())
-        return DateOffset(**ofs)
-
-    def push_date_grid(strg, loc, toks):
-        return toks[0][0] if len(toks) == 1 else utils.Offsets(toks.asList())
-
-    lpar = Literal("(").suppress()
-    rpar = Literal(")").suppress()
-    decimal = Literal(".")
-
-    integer = (Word("+-" + nums, nums) + ~decimal).setName('int').setParseAction(push_int)
-    single_period = (integer + oneOf(['D', 'M', 'Y', 'W'], caseless=True)).setName('single_period').setParseAction(
-        push_single_period)
-    period = OneOrMore(single_period).setName('period').setParseAction(push_period)
-    grid = delimitedList(Group(period + Optional(lpar + period + rpar)),
-                         delim=' ').leaveWhitespace().setParseAction(push_date_grid)
-
-    return grid, period
+def traverse_dependents(x, adj):
+    seen = set(adj[x])
+    queue = deque(adj[x])
+    while queue:
+        i = queue.popleft()
+        yield i
+        for t in adj[i]:
+            if t not in seen:
+                seen.add(t)
+                queue.append(t)
 
 
-class ModelParams(object):
-    def __init__(self, state=None):
-        # valid risk factor subtypes (only Interest rates at the moment)
-        self.valid_subtype = {'BasisSpread': 'BasisSpread'}
-        # these models need these additional price factors; process + pricer share ONE params
-        # factor (the duplicate AAD leaf is deduped in Calculation._build_factor_state)
-        self.implied_models = {
-            'CSImpliedForwardPriceModel': 'CSForwardPriceModelParameters',
-            'GBMAssetPriceTSModelImplied': 'GBMAssetPriceTSModelParameters',
-            'HullWhite2FactorImpliedInterestRateModel': 'HullWhite2FactorModelParameters',
-            'LogVar2FJImpliedSpotModel': 'LogVar2FJModelParameters'
-        }
+#: derived fields are fields that embed other risk factors
+dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
+                    'ForwardPrice': [('Currency', 'FxRate')],
+                    'ReferencePrice': [('ForwardPrice', 'ForwardPrice')],
+                    'ReferenceVol': [('ForwardPriceVol', 'ForwardPriceVol'),
+                                     ('ReferencePrice', 'ReferencePrice')],
+                    'InflationRate': [('Price_Index', 'PriceIndex')],
+                    'CommodityPrice': [('Interest_Rate', 'InterestRate'),
+                                       ('Forward_Rate', 'ForwardRate'), ('Currency', 'FxRate')],
+                    'EquityPrice': [('Interest_Rate', 'InterestRate'), ('Currency', 'FxRate')]}
 
-        self.modeldefaults = {}
-        self.modelfilters = {}
-        if state:
-            defaults, filters = state
-            self.set_state(defaults, filters)
+#: nested fields need to include all their children - name-prefix chains {head type: tail-period
+#: type}: identity for a curve, ObservedBasis for a 0D spot
+nested_fields = {'InterestRate': 'InterestRate', 'CommodityPrice': 'ObservedBasis',
+                 'EquityPrice': 'ObservedBasis', 'FxRate': 'ObservedBasis'}
 
-    def set_state(self, defaults, filters):
-        for factor, model in defaults.items():
-            self.append(factor, (), model)
-        for factor, mappings in filters.items():
-            for condition, model in mappings:
-                self.append(factor, tuple(condition), model)
-
-    def append(self, price_factor, price_filter, stoch_proc):
-        if price_filter == ():
-            self.modeldefaults.setdefault(price_factor, stoch_proc)
-        else:
-            self.modelfilters.setdefault(price_factor, []).append((price_filter, stoch_proc))
-
-    def update(self, modelparams):
-        # ExplicitMarketData merges are last-wins (overrides remap existing entries); file parsing stays first-wins
-        self.modeldefaults.update(modelparams.modeldefaults)
-        for factor, mappings in modelparams.modelfilters.items():
-            self.modelfilters[factor] = list(mappings)
-
-    def additional_factors(self, model, factor):
-        add_factor = self.implied_models.get(model)
-        return utils.Factor(add_factor, factor.name) if add_factor else None
-
-    def search(self, factor, actual_factor, ignore_subtype=False):
-        """The model for `factor` (a `utils.Factor`), filter rules first, then the default.
-
-        `actual_factor` is that factor's loaded `Price Factors` block; filter rules key off its
-        fields, plus a synthetic `id` holding the dotted factor name.
-        """
-        price_factor_type = factor.type + ('' if ignore_subtype else self.valid_subtype.get(
-            actual_factor.get('Sub_Type'), ''))
-
-        # look for a filter rule
-        rule = self.modelfilters.get(price_factor_type)
-        if rule:
-            factor_attribs = dict({k.lower(): v for k, v in actual_factor.items()}, **{'id': '.'.join(factor.name)})
-            for (attrib, value), model in rule:
-                if factor_attribs.get(attrib.strip().lower()) == value.strip():
-                    return model
-        return self.modeldefaults.get(price_factor_type)
-
-
-def offset_string(offset):
-    """A `DateOffset` as the `.DateOffset` string both decoders read, units largest first.
-
-    The order is `Config.reverse_offset`'s rather than `DateOffset.kwds`', which is a set's: a
-    two-unit period would otherwise be written `6M2D` by one process and `2D6M` by the next, and a
-    written file's bytes are what a hash is taken over.
-    """
-    return ''.join('{}{}'.format(offset.kwds[unit], code)
-                   for unit, code in Config.reverse_offset.items() if unit in offset.kwds)
+#: conditional fields need to potentially include correlation and fx vol surfaces (e.g. reference
+#: prices). Each reads the instrument, its own loaded block and the whole `params` the walk is over
+conditional_fields = {
+    'ReferenceVol': lambda instrument, factor_fields, params:
+    [utils.Factor('Correlation', tuple('FxRate.{0}.{1}/ReferencePrice.{2}.{0}'.format(
+        params['Price Factors'][utils.check_tuple_name(utils.Factor(
+            'ForwardPrice', (instrument.field['Reference_Type'],)))]
+        ['Currency'], instrument.field['Currency'], instrument.field['Reference_Type']).split('.')))] if
+    instrument.field['Currency'] != params['Price Factors'][utils.check_tuple_name(
+        utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]['Currency'] else [],
+    'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
+        sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
+    instrument.field['Currency'] != factor_fields['Currency'] else [],
+    # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the UNDERLYING
+    # like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so it is
+    # an FXVol whatever asset class the underlying belongs to.
+    'EquityPrice': lambda instrument, factor_fields, params:
+    ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
+                   utils.check_rate_name(instrument.field['Equity']))]
+     if instrument.options.get('SpotModel', 'None') != 'None'
+     and instrument.field.get('Equity') is not None else []) +
+    ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
+        instrument.field['Equity_Volatility'],
+        '.'.join(sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)]))
+    ).split('.'))),
+      utils.Factor('FXVol', tuple(
+          sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
+     if instrument.field.get('Equity_Volatility') is not None
+     and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
+    # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, by the
+    # same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery loads
+    # a block the compile will not ask for. getattr-guarded: FxRate is also visited with {}
+    'FxRate': lambda instrument, factor_fields, params:
+    [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
+                  utils.spot_model_currency(
+                      utils.check_rate_name(instrument.field['Underlying_Currency']),
+                      utils.check_rate_name(instrument.field['Currency']),
+                      utils.check_rate_name(
+                          params['System Parameters']['Base_Currency'])))]
+    if getattr(instrument, 'options', {}).get('SpotModel', 'None') != 'None'
+    and getattr(instrument, 'field', {}).get('Underlying_Currency') is not None
+    and getattr(instrument, 'field', {}).get('Currency') is not None else [],
+}
 
 
-def correlation_pairs(section):
-    """A `Correlations` section keyed by the `(name, name)` pair the cholesky looks it up under.
-
-    JSON has no tuple key, so the section travels nested by name (`{rate1: {rate2: rho}}`) whether
-    it arrives as a market-data file or inside a job's own explicit block. One read for both, or a
-    correlation lands under a key nothing looks up and reads as a silent zero.
-    """
-    pairs = {}
-    for rate1, rate_list in section.items():
-        for rate2, correlation in rate_list.items():
-            pairs.setdefault((rate1, rate2), correlation)
-    return pairs
-
-
-def correlation_names(pairs):
-    """`correlation_pairs` inverted - the section nested by name, which is the shape JSON holds."""
-    nested = {}
-    for (rate1, rate2), value in pairs.items():
-        nested.setdefault(rate1, {}).setdefault(rate2, value)
-    return nested
-
-
-class CustomJsonEncoder(json.JSONEncoder):
-    def default(self, obj):
-        return_value = {'.Unknown': str(type(obj))}
-        if isinstance(obj, utils.Curve):
-            return_value = {'.Curve': {'meta': obj.meta, 'data': obj.array.tolist()}}
-        elif isinstance(obj, Deal):
-            return_value = {'.Deal': obj.field}
-        elif isinstance(obj, ModelParams):
-            return_value = {'.ModelParams': {'modeldefaults': obj.modeldefaults, 'modelfilters': obj.modelfilters}}
-        elif isinstance(obj, utils.Descriptor):
-            return_value = {'.Descriptor': obj.data}
-        elif isinstance(obj, utils.Percent):
-            return_value = {'.Percent': 100.0 * obj.amount}
-        elif isinstance(obj, utils.Basis):
-            return_value = {'.Basis': 10000.0 * obj.amount}
-        elif isinstance(obj, utils.Offsets):
-            grid = []
-            for x in obj.data:
-                w = [offset_string(obj) for obj in x]
-                grid.append({'.DateOffset': w[0]} if len(w) == 1 else {'.DateOffset': w[0], '.Offset': w[1]})
-            return {'.Grid': grid}
-        elif isinstance(obj, utils.CreditSupportList):
-            return_value = {'.CreditSupportList': [[rating, value] for rating, value in obj.data.items()]}
-        elif isinstance(obj, utils.DateEqualList):
-            return_value = {
-                '.DateEqualList': [[date.strftime('%Y-%m-%d')] + list(value) for date, value in obj.data.items()]}
-        elif isinstance(obj, utils.DateList):
-            return_value = {'.DateList': [[date.strftime('%Y-%m-%d'), value] for date, value in obj.data.items()]}
-        elif isinstance(obj, DateOffset):
-            return_value = {'.DateOffset': offset_string(obj)}
-        elif isinstance(obj, Timestamp):
-            # a date stays a date (old files re-encode byte-stable); a non-midnight stamp keeps its
-            # time, or values_hash cannot tell the 09:15 snapshot from the 16:30 one
-            return_value = {'.Timestamp': obj.strftime('%Y-%m-%d')
-                            if obj == obj.normalize() else obj.isoformat()}
-        elif isinstance(obj, pd.DataFrame):
-            # `split` reconstructs through `pd.DataFrame(**data)`; the object cast is what makes a
-            # missing cell `null`, since a NaN in a float column is not JSON
-            return_value = {'.DataFrame': obj.astype(object).where(
-                obj.notna(), None).to_dict(orient='split')}
-        elif isinstance(obj, np.ndarray):
-            return_value = obj.tolist()
-        else:
-            logging.error('Error Saving file - Encoding object ' + str(obj) + ' failed')
-        return return_value
-
-
-def as_json(obj):
-    """Plain JSON, through the one encoder for what JSON has no form for - a Curve, a Timestamp, a
-    results table. The HTTP surface and `derivus.spine`'s run RESULT both go through it, so a replay
-    claim and the answer it is compared against are the same bytes.
-    """
-    return json.loads(json.dumps(obj, cls=CustomJsonEncoder))
-
-
-def tables_of(results):
-    """Every table in a `Results` tree, flat, under the path that names it.
-
-    `cashflows` and `scenarios` are dicts of tables, so they arrive as `cashflows/ZAR` and
-    `scenarios/FxRate.ZAR`. The flat form is what a per-RESULT-CLASS tolerance is declared against.
-    """
-    tables = {}
-    for name, value in results.items():
-        if isinstance(value, dict) and '.DataFrame' not in value:
-            tables.update({'{}/{}'.format(name, path): table
-                           for path, table in tables_of(value).items()})
-        else:
-            tables[name] = value
-    return tables
-
-
-def job_children(document):
-    """The root `Children` list of a job document in wire form, or None where it is not a job."""
-    try:
-        children = document['Calc']['Deals']['Deals']['Children']
-        return children if isinstance(children, list) else None
-    except (KeyError, TypeError):
-        return None
-
-
-def walk_job_deals(children, path=()):
-    """Every deal node of a wire-form job, as `(deal_path, node)`. The positional path ('0/2/1')
-    is the node's identity, because References are not unique in a book."""
-    for position, node in enumerate(children):
-        deal_path = path + (position,)
-        yield '/'.join(map(str, deal_path)), node
-        yield from walk_job_deals(node.get('Children', []), deal_path)
-
-
-def splice_deal(document, deal, parent_reference=None):
-    """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
-
-    The node is `{'Instrument': {'.Deal': deal}}`, gaining an empty `Children` when the booked type
-    is itself a container. A COMPOSED deal - one arriving with node-shaped legs under its own
-    `Children`, the way `structures.quote` hands a structure back - has them lifted onto the node,
-    because the engine walks `node['Children']` and never inside the deal block. The insertion point
-    is the root, or the single node whose Reference is `parent_reference`; an unknown, ambiguous or
-    non-container parent refuses by name.
-    """
-    children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
-    containers = schema.mapping['Instrument']['containers']
-    parent_path = ''
-    if parent_reference is not None:
-        found = [(deal_path, node) for deal_path, node in walk_job_deals(children)
-                 if node['Instrument']['.Deal'].get('Reference') == parent_reference]
-        if len(found) != 1:
-            raise ValueError('{} deals carry Reference {!r} - a parent must be unique'.format(
-                len(found) or 'no', parent_reference))
-        parent_path, parent = found[0]
-        parent_type = parent['Instrument']['.Deal'].get('Object')
-        if parent_type not in containers:
-            raise ValueError('{!r} is a {}, which takes no children'.format(
-                parent_reference, parent_type))
-        children = parent.setdefault('Children', [])
-    deal = dict(deal)
-    composed = deal.pop('Children', None)
-    node = {'Instrument': {'.Deal': deal}}
-    if composed:
-        node['Children'] = composed
-    elif deal.get('Object') in containers:
-        node['Children'] = []
-    children.append(node)
-    position = str(len(children) - 1)
-    return '{}/{}'.format(parent_path, position) if parent_path else position
-
-
-def _positions(deal_path):
-    """A `deal_path` as index steps. Negative positions refuse rather than silently resolving
-    from the end - a wrong path must never quietly name a different deal."""
-    positions = [int(p) for p in str(deal_path).split('/')]
-    if any(p < 0 for p in positions):
-        raise ValueError
-    return positions
-
-
-def deal_at(document, deal_path):
-    """The node at a positional `deal_path` - a live reference into the document, which is what
-    an amendment edits in place."""
-    children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
-    try:
-        node = None
-        for position in _positions(deal_path):
-            node = children[position]
-            children = node.get('Children', [])
-        return node
-    except (ValueError, IndexError):
-        raise ValueError('no deal at path {!r}'.format(deal_path))
-
-
-def remove_deal(document, deal_path):
-    """Remove and return the node at a positional `deal_path`, in place - the whole subtree goes
-    with it, which is what deleting a structure means."""
-    children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
-    try:
-        positions = _positions(deal_path)
-        for position in positions[:-1]:
-            children = children[position]['Children']
-        return children.pop(positions[-1])
-    except (ValueError, KeyError, IndexError):
-        raise ValueError('no deal at path {!r}'.format(deal_path))
-
-
-def sniff_indent(text, default=2):
-    """A JSON file's own indent, so a rewrite is a diff of the change and nothing else."""
-    found = re.search(r'\n( +)"', text)
-    return len(found.group(1)) if found else default
-
-
-def update_market_quote(document, name, block):
-    """Install or update one `Market Prices` block in a wire-form job document, in place.
-
-    An update is VALUE-ONLY, for every family at once: everything except each quote row's
-    `Quoted_Market_Value`, `Quoted_Bid`/`Quoted_Ask` and `Timestamp` must stand, because the pillar
-    set, the expiries, the strikes, the conventions and the tolerances are STRUCTURE - a plan and a
-    pinned grid hang off them, so a moved node is a re-authoring, never a tick. A two-way is
-    value-side for the reason the mid is. That line is `schema.MARKET_QUOTE_VALUES` and which table
-    carries it is `schema.quote_rows`, both read here rather than kept as a second copy of the split
-    `plan_hash` and `market_patch` take. Returns 'installed' or 'updated'.
-    """
-    if not isinstance(block, dict) or 'instrument' not in block:
-        raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
-    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
-        'Market Prices', {})
-    if name in prices:
-        def structure(b):
-            instrument = dict(b['instrument'])
-            container, points = schema.quote_rows(instrument)
-            if container is not None:
-                instrument[container] = [
-                    {key: value for key, value in point.items()
-                     if key not in schema.MARKET_QUOTE_VALUES}
-                    for point in points]
-            return instrument
-        if structure(prices[name]) != structure(block):
-            raise ValueError('{}: structure differs from the installed block - a moved node is a '
-                             'new plan; re-author it deliberately'.format(name))
-        prices[name] = block
-        return 'updated'
-    prices[name] = block
-    return 'installed'
+def filter_data_frame(df, from_date, to_date, rate=None):
+    index1 = (pd.Timestamp(from_date) - utils.excel_offset).days
+    index2 = (pd.Timestamp(to_date) - utils.excel_offset).days
+    return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
+        [col for col in df.columns if col.startswith(rate)]]
 
 
 class Config(object):
     """Reads and writes the JSON market data and deals file, and parses the date grids a portfolio's
     dynamic dates come from.
     """
-
-    month_lookup = dict((m, i) for i, m in enumerate(calendar.month_abbr) if m)
-    offset_lookup = {'M': 'months', 'D': 'days', 'Y': 'years', 'W': 'weeks'}
-    #: the wire spelling per unit, largest first - `offset_string` writes a period in this order
-    reverse_offset = {'years': 'Y', 'months': 'M', 'weeks': 'W', 'days': 'D'}
 
     def __init__(self, base_currency='USD'):
         """The default state of the system.
@@ -549,8 +455,9 @@ class Config(object):
         """
         self.file_ref = 'root'
         self.deals = {'Deals': {'Children': []}, 'Calculation':{}, 'Attributes':{}}
+        # the factor walk's last answer and the deal list it walked - see factor_universe
+        self._universe, self._universe_of = None, None
         self.calibrations = {'CalibrationConfig': {'MarketDataArchiveFile': {}, 'Calibrations': []}}
-        self.calendars = ElementTree(Element('Calendars'))
         self.holidays = {}
         self.archive = None
         self.archive_columns = {}
@@ -559,8 +466,9 @@ class Config(object):
         self.calibrated_factors = {}
         self.quote_leaves = {}
 
-        # the default state of the system
-        self.version = None
+        # the default state of the system; the version stamps the ENGINE that loaded the
+        # document - no document is read for one and none is kept
+        self.version = ['Derivus', __version__]
         self.params = {
             'System Parameters':
                 {'Base_Currency': base_currency,
@@ -579,7 +487,7 @@ class Config(object):
 
         # make sure that there are no default calibration mappings
         self.calibration_process_map = {}
-        self.gridparser, self.periodparser = get_grid_grammar()
+        self.gridparser, self.periodparser = utils.get_grid_grammar()
 
     def __getstate__(self):
         """A Config crosses a process boundary by leaving its parsers behind.
@@ -597,7 +505,7 @@ class Config(object):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.gridparser, self.periodparser = get_grid_grammar()
+        self.gridparser, self.periodparser = utils.get_grid_grammar()
 
     def deals_from_object_map(self, object_map):
         """A `{Object: {Reference: field}}` map (a Hedging_Problem's Tradable_Instruments or
@@ -614,9 +522,8 @@ class Config(object):
         self.deals['Deals']['Children'] = nodes
 
     def parse_period(self, period):
-        """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse. `CustomJsonEncoder` writes
-        a `.DateOffset` as this string, so both decoders read it here."""
-        return self.periodparser.parseString(period)[0]
+        """`'3M'` -> a `DateOffset`, through the one grammar the wire form is written by."""
+        return utils.parse_period(period)
 
     def parse_grid(self, run_date, max_date, grid, past_max_date=False):
         """The dates a grid spells, NOT adjusted to the next business day, capped at max_date (plus
@@ -654,39 +561,10 @@ class Config(object):
 
         return dates
 
-    def parse_output_results(self, data, ccy):
-        results = Element('Results')
-        header = SubElement(results, 'Header')
-        calc_type = SubElement(header, 'CalcType')
-        calc_type.text = 'Credit Monte Carlo'
-        series = SubElement(results, 'Series')
-
-        for index, (column, items) in enumerate(data.T.iterrows()):
-            if 'PFE' in column:
-                name = 'Bank Exposure ({}%)'.format(column[4:])
-            elif column == 'EE':
-                name = 'Bank Expected Exposure'
-            else:
-                continue
-            value = items.max()
-            series_item = SubElement(
-                series, 'SeriesItem', Name=name, Index=str(index), InitialState='On',
-                SeriesType='XYPlot', LineStyle='Solid', Value='{:.0f}'.format(value),
-                Description='Maximum value {:,.3f}'.format(value))
-            x_values = [str((x - utils.excel_offset).days) for x in items.index]
-            y_values = ['{:.2f}'.format(x) for x in items.values]
-            x = SubElement(series_item, 'X')
-            x.text = ','.join(x_values)
-            y = SubElement(series_item, 'Y')
-            y.text = ','.join(y_values)
-
-        return tostring(results, encoding='utf-8').decode('utf-8')
-
     def parse_calendar_file(self, filename):
         """Parses the xml calendar file in filename."""
         self.holidays = {}
-        self.calendars = ElementTree(file=filename)
-        for elem in self.calendars.iter():
+        for elem in ElementTree(file=filename).iter():
             if elem.attrib.get('Location'):
                 if elem.attrib['Holidays']:
                     holidays = dict(tuple(x.split("|")) for x in
@@ -701,34 +579,32 @@ class Config(object):
         `Model Configuration` routes to a model, and the archive columns not already covered that
         it also routes. Assumes `parse_json` loaded valid market data and calibration config.
         """
-        model_factor = {}
-        for factor in self.params.get('Price Factors', {}):
+        def _rate_info(factor, block, override):
+            """The `RateInfo` `Model Configuration` routes `factor` to, or None where it routes it
+            nowhere. `block` is its loaded Price Factors entry - `{}` for an archive column the book
+            carries no block for, whose archive stem therefore takes no Sub_Type suffix."""
             price_factor = utils.check_rate_name(factor)
-            model_config = self.params['Model Configuration'].search(utils.Factor(price_factor[0], price_factor[1:]),
-                                                                     self.params['Price Factors'][factor])
+            model_config = self.params['Model Configuration'].search(
+                utils.Factor(price_factor[0], price_factor[1:]), block)
             model = override.get(model_config, model_config)
-            if model:
-                subtype = self.params['Price Factors'][factor].get('Sub_Type')
-                model_name = utils.Factor(model, price_factor[1:])
-                archive_name = utils.Factor(price_factor[0] + (subtype if subtype and subtype != "None" else ''),
-                                            price_factor[1:])
-                model_factor[factor] = utils.RateInfo(utils.check_tuple_name(model_name),
-                                                      utils.check_tuple_name(archive_name),
-                                                      self.calibration_process_map.get(model))
+            if not model:
+                return None
+            subtype = block.get('Sub_Type')
+            archive_name = utils.Factor(price_factor[0] + (subtype if subtype and subtype != "None" else ''),
+                                        price_factor[1:])
+            return utils.RateInfo(utils.check_tuple_name(utils.Factor(model, price_factor[1:])),
+                                  utils.check_tuple_name(archive_name),
+                                  self.calibration_process_map.get(model))
 
-        remaining_factor = {}
+        price_factors = self.params.get('Price Factors', {})
+        model_factor = {factor: info for factor in price_factors
+                        if (info := _rate_info(factor, price_factors[factor], override)) is not None}
+
         # compare by archive_name — the JSON key lacks the subtype suffix
         covered_archives = {v.archive_name for v in model_factor.values()}
         remaining_rates = set([col.split(',')[0] for col in self.archive.columns]).difference(covered_archives)
-        for factor in remaining_rates:
-            price_factor = utils.check_rate_name(factor)
-            model = self.params['Model Configuration'].search(utils.Factor(price_factor[0], price_factor[1:]), {})
-            if model:
-                model_name = utils.Factor(model, price_factor[1:])
-                archive_name = utils.Factor(price_factor[0], price_factor[1:])
-                remaining_factor[factor] = utils.RateInfo(utils.check_tuple_name(model_name),
-                                                          utils.check_tuple_name(archive_name),
-                                                          self.calibration_process_map.get(model))
+        remaining_factor = {factor: info for factor in remaining_rates
+                            if (info := _rate_info(factor, {}, {})) is not None}
 
         return {'present': model_factor, 'absent': remaining_factor}
 
@@ -839,7 +715,7 @@ class Config(object):
         the archive between from_date and to_date. Overwrites the in-memory Price Models section;
         an explicit `write_marketdata_json` is what persists it.
         """
-        correlation_names = []
+        factor_correlation_names = []
         consolidated_df = None
         ak = []
         num_indexes = 0
@@ -920,12 +796,12 @@ class Config(object):
             process_name, addons = construct_process(model_factor.type, None, result.param).correlation_name
 
             for sub_factors in addons:
-                correlation_names.append(
+                factor_correlation_names.append(
                     utils.check_tuple_name(utils.Factor(process_name, model_factor.name + sub_factors)))
 
             consolidated_df = result.delta if consolidated_df is None else pd.concat(
                 [consolidated_df, result.delta], axis=1)
-            ak.append(result.correlation)
+            ak.append((result.correlation, result.delta.shape[1]))
 
             self.params['Price Models'][rate_value.model_name] = result.param
 
@@ -943,11 +819,13 @@ class Config(object):
         rho = consolidated_df.corr()
         offset = 0
         row_num = 0
-        for coeff in ak:
+        # each block advances the offset by its OWN delta width, carried with it: reading the
+        # inner loop's last variable mis-slices `a` where a block is empty
+        for coeff, width in ak:
             for factor_index, factor in enumerate(coeff):
                 a[row_num + factor_index, offset:offset + len(factor)] = factor
             row_num += len(coeff)
-            offset += len(factor)
+            offset += width
 
         # the projection is not guaranteed to land inside [-1, 1] - clipped rather than healed
         factor_correlations = a.dot(rho).dot(a.T).clip(-1.0, 1.0)
@@ -955,10 +833,11 @@ class Config(object):
         if overwrite_correlations:
             self.params['Correlations'] = {}
 
-        for index1 in range(len(correlation_names) - 1):
-            for index2 in range(index1 + 1, len(correlation_names)):
+        for index1 in range(len(factor_correlation_names) - 1):
+            for index2 in range(index1 + 1, len(factor_correlation_names)):
                 if np.fabs(factor_correlations[index1, index2]) > correlation_cuttoff:
-                    self.params['Correlations'][(correlation_names[index1], correlation_names[index2])] = \
+                    self.params['Correlations'][
+                        (factor_correlation_names[index1], factor_correlation_names[index2])] = \
                         factor_correlations[index1, index2]
 
     def walk_deals(self):
@@ -985,6 +864,11 @@ class Config(object):
         while every other type is discovered happily and fails later in `construct_factor` - so it
         is the set difference against `Price Factors`.
         """
+        # cached against the deal list it walked, because `validate` and `describe` both read it
+        # and the booking verbs load a fresh document rather than editing a loaded book in place
+        children = self.deals['Deals']['Children']
+        if self._universe_of is children:
+            return self._universe
         options = self.deals['Calculation']
         factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
         names = set(map(utils.check_tuple_name, factors))
@@ -993,8 +877,10 @@ class Config(object):
         present = {utils.check_tuple_name(f) for f in factors if utils.resolve_factor_key(
             f, self.params['Price Factors']) in self.params['Price Factors']}
 
-        return {'resolved': sorted(present),
-                'missing': sorted(skipped.union(names.difference(present)))}
+        self._universe_of = children
+        self._universe = {'resolved': sorted(present),
+                          'missing': sorted(skipped.union(names.difference(present)))}
+        return self._universe
 
     def validate(self):
         """What stops this job running, as data: the authoring messages of every deal in the book,
@@ -1149,7 +1035,7 @@ class Config(object):
 
             if factor.type in conditional_fields:
                 for conditional_factor in conditional_fields[factor.type](
-                        instrument, self.params['Price Factors'][factor_name], self.params['Price Factors']):
+                        instrument, self.params['Price Factors'][factor_name], self.params):
                     rates_to_add[factor].append(conditional_factor)
                     rates_to_add.update({conditional_factor: []})
 
@@ -1235,64 +1121,6 @@ class Config(object):
             dependent_factors.update(get_rates(interest_rate_factor, {}))
             for sub_factor in traverse_dependents(interest_rate_factor, dependent_factors):
                 dependent_factor_tenors[sub_factor] = reset_dates
-
-        # derived fields are fields that embed other risk factors
-        dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
-                            'ForwardPrice': [('Currency', 'FxRate')],
-                            'ReferencePrice': [('ForwardPrice', 'ForwardPrice')],
-                            'ReferenceVol': [('ForwardPriceVol', 'ForwardPriceVol'),
-                                             ('ReferencePrice', 'ReferencePrice')],
-                            'InflationRate': [('Price_Index', 'PriceIndex')],
-                            'CommodityPrice': [('Interest_Rate', 'InterestRate'),
-                                               ('Forward_Rate', 'ForwardRate'), ('Currency', 'FxRate')],
-                            'EquityPrice': [('Interest_Rate', 'InterestRate'), ('Currency', 'FxRate')]}
-
-        # nested fields need to include all their children
-        # name-prefix chains {head type: tail-period type}: identity for a curve, ObservedBasis for a 0D spot
-        nested_fields = {'InterestRate': 'InterestRate', 'CommodityPrice': 'ObservedBasis',
-                         'EquityPrice': 'ObservedBasis', 'FxRate': 'ObservedBasis'}
-
-        # conditional fields need to potentially include correlation and fx vol surfaces (e.g. reference prices)
-        conditional_fields = {
-            'ReferenceVol': lambda instrument, factor_fields, params:
-            [utils.Factor('Correlation', tuple('FxRate.{0}.{1}/ReferencePrice.{2}.{0}'.format(
-                params[utils.check_tuple_name(utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]
-                ['Currency'], instrument.field['Currency'], instrument.field['Reference_Type']).split('.')))] if
-            instrument.field['Currency'] != params[utils.check_tuple_name(
-                utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]['Currency'] else [],
-            'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
-                sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
-            instrument.field['Currency'] != factor_fields['Currency'] else [],
-            # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the UNDERLYING
-            # like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so it is
-            # an FXVol whatever asset class the underlying belongs to.
-            'EquityPrice': lambda instrument, factor_fields, params:
-            ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                           utils.check_rate_name(instrument.field['Equity']))]
-             if instrument.options.get('SpotModel', 'None') != 'None'
-             and instrument.field.get('Equity') is not None else []) +
-            ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
-                instrument.field['Equity_Volatility'],
-                '.'.join(sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)]))
-            ).split('.'))),
-              utils.Factor('FXVol', tuple(
-                  sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
-             if instrument.field.get('Equity_Volatility') is not None
-             and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
-            # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, by the
-            # same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery loads
-            # a block the compile will not ask for. getattr-guarded: FxRate is also visited with {}
-            'FxRate': lambda instrument, factor_fields, params:
-            [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                          utils.spot_model_currency(
-                              utils.check_rate_name(instrument.field['Underlying_Currency']),
-                              utils.check_rate_name(instrument.field['Currency']),
-                              utils.check_rate_name(
-                                  self.params['System Parameters']['Base_Currency'])))]
-            if getattr(instrument, 'options', {}).get('SpotModel', 'None') != 'None'
-            and getattr(instrument, 'field', {}).get('Underlying_Currency') is not None
-            and getattr(instrument, 'field', {}).get('Currency') is not None else [],
-        }
 
         # the list of returned factors
         dependent_factors = {}
@@ -1403,48 +1231,26 @@ class Config(object):
 
         return stochastic_factors, additional_factors
 
+    def merge_section(self, name, data):
+        """One loaded section merged onto the section of that name: `Correlations` re-keyed by the
+        `(name, name)` pair the cholesky looks it up under, a `ModelParams` by its own last-wins
+        verb. Both load sites read it, the market-data file and a job's explicit block."""
+        self.params[name].update(correlation_pairs(data) if name == 'Correlations' else data)
+
     def parse_json(self, filename):
 
         def as_internal(dct):
-            if '.Curve' in dct:
-                return utils.Curve(dct['.Curve']['meta'], dct['.Curve']['data'])
-            elif '.Percent' in dct:
-                return utils.Percent(dct['.Percent'])
-            elif '.Deal' in dct:
-                return construct_instrument(dct['.Deal'], self.params['Valuation Configuration'])
-            elif '.Basis' in dct:
-                return utils.Basis(dct['.Basis'])
-            elif '.Descriptor' in dct:
-                return utils.Descriptor(dct['.Descriptor'])
-            elif '.DateList' in dct:
-                return utils.DateList({Timestamp(date): val for date, val in dct['.DateList']})
-            elif '.DateEqualList' in dct:
-                return utils.DateEqualList([[Timestamp(values[0])] + values[1:] for values in dct['.DateEqualList']])
-            elif '.CreditSupportList' in dct:
-                return utils.CreditSupportList(dct['.CreditSupportList'])
-            elif '.DateOffset' in dct:
-                # ONE wire spelling read two ways: every producer writes the STRING ('3M'), the
-                # kwargs dict is what old bytes on disk carry - both read, only one written
-                period = dct['.DateOffset']
-                return self.parse_period(period) if isinstance(period, str) else DateOffset(**period)
-            elif '.Offsets' in dct:
-                return utils.Offsets(dct['.Offsets'])
-            elif '.Timestamp' in dct:
-                return Timestamp(dct['.Timestamp'])
-            elif '.ModelParams' in dct:
-                return ModelParams((dct['.ModelParams']['modeldefaults'], dct['.ModelParams']['modelfilters']))
-            return dct
+            return decode_wire(dct, lambda block: construct_instrument(
+                block, self.params['Valuation Configuration']))
 
         with open(filename, 'rt', encoding='utf-8') as f:
-            self.last_file_loaded = filename
-            self.file_ref = os.path.splitext(os.path.split(self.last_file_loaded)[-1])[0]
+            self.file_ref = os.path.splitext(os.path.split(filename)[-1])[0]
             data = json.load(f, object_hook=as_internal)
 
         if 'MarketData' in data:
             market_data = data['MarketData']
-            market_data['Correlations'] = correlation_pairs(market_data['Correlations'])
-            self.params = market_data
-            self.version = data['Version']
+            self.params = dict(market_data, Correlations={})
+            self.merge_section('Correlations', market_data['Correlations'])
 
         if 'Deals' in data:
             self.deals = data['Deals']
@@ -1474,57 +1280,24 @@ class Config(object):
     def read_json(self, filedata):
 
         def as_internal(dct):
-            if '.Curve' in dct:
-                return utils.Curve(dct['.Curve']['meta'], dct['.Curve']['data'])
-            elif '.Percent' in dct:
-                return utils.Percent(dct['.Percent'])
-            elif '.Deal' in dct:
-                # Don't construct the deal just yet wait till we load up the full JSON
-                return utils.DeferredDeal(dct['.Deal'])
-            elif '.Basis' in dct:
-                return utils.Basis(dct['.Basis'])
-            elif '.Descriptor' in dct:
-                return utils.Descriptor(dct['.Descriptor'])
-            elif '.DateList' in dct:
-                return utils.DateList({Timestamp(date): val for date, val in dct['.DateList']})
-            elif '.DateEqualList' in dct:
-                return utils.DateEqualList([[Timestamp(values[0])] + values[1:] for values in dct['.DateEqualList']])
-            elif '.CreditSupportList' in dct:
-                return utils.CreditSupportList(dct['.CreditSupportList'])
-            elif '.DateOffset' in dct and '.Offset' in dct:
-                return [self.parse_period(dct['.DateOffset']), self.parse_period(dct['.Offset'])]
-            elif '.DateOffset' in dct:
-                return self.parse_period(dct['.DateOffset'])
-            elif '.Grid' in dct:
-                return utils.Offsets([(x if isinstance(x, list) else [x]) for x in dct['.Grid']])
-            elif '.Timestamp' in dct:
-                return Timestamp(dct['.Timestamp'])
-            elif '.ModelParams' in dct:
-                return ModelParams((dct['.ModelParams']['modeldefaults'], dct['.ModelParams']['modelfilters']))
-            return dct
+            # a job's deals stay deferred: they cannot be constructed until the merged market
+            # data's Valuation Configuration is known
+            return decode_wire(dct, utils.DeferredDeal)
 
         if isinstance(filedata, tuple):
-            self.last_file_loaded = filedata[1]
             self.file_ref = filedata[1]
             data = json.loads(filedata[0], object_hook=as_internal)
         else:
             with open(filedata, 'rt', encoding='utf-8') as f:
-                self.last_file_loaded = filedata
-                self.file_ref = os.path.splitext(os.path.split(self.last_file_loaded)[-1])[0]
+                self.file_ref = os.path.splitext(os.path.split(filedata)[-1])[0]
                 data = json.load(f, object_hook=as_internal)
 
         return data
 
     def write_marketdata_json(self, json_filename):
-        old_correlations = self.params['Correlations']
-        # correlations go out nested by name pair (JSON has no tuple key) and are restored after
-        self.params['Correlations'] = correlation_names(old_correlations)
-
         with open(json_filename, 'wt', encoding='utf-8') as f:
-            f.write(json.dumps({'MarketData': self.params,
+            f.write(json.dumps({'MarketData': wire_sections(self.params, self.params),
                                 'Version': self.version}, separators=(',', ':'), cls=CustomJsonEncoder))
-
-        self.params['Correlations'] = old_correlations
 
 
 if __name__ == '__main__':

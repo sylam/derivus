@@ -49,7 +49,8 @@ import derivus
 from derivus import bootstrappers, schema, utils
 from derivus.bootstrappers import (FXVolSurfaceParameters, InterestRateCurveParameters,
                                    LogVar2FJModelParameters)
-from derivus.config import Config, CustomJsonEncoder, ModelParams, update_market_quote
+from derivus.config import Config, CustomJsonEncoder, ModelParams
+from derivus.schema import update_market_quote
 
 from rates_world import BASE as RATES_BASE
 from test_interest_rate_prices import authored_world

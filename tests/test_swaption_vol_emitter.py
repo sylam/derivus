@@ -4,7 +4,7 @@
 Only the last gate opens a socket, and it skips by name where this workstation has no terminal.
 Everything else runs on ONE canned ZAR grid - five expiries against three tenors, walked through the
 package's real discovery grammar into a real verified map with a poison table of dead cells - driven
-through the package's own reader and the real engine seams (`config.update_market_quote`,
+through the package's own reader and the real engine seams (`schema.update_market_quote`,
 `schema.partition_market_price`), imported READ-ONLY. The HW2F calibration is NOT run: the
 fit-through is the composition harness's reading.
 
@@ -491,7 +491,7 @@ def test_this_family_has_an_empty_values_half_so_a_retick_is_a_reauthoring():
     value at all and `update_market_quote` sees the whole block as structure and refuses.
     """
     from derivus import schema
-    from derivus.config import update_market_quote
+    from derivus.schema import update_market_quote
 
     name, block = block_of()
     structural, values = schema.partition_market_price(block)

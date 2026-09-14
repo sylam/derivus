@@ -52,7 +52,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import derivus
 from derivus import service, spine, utils
-from derivus.config import CustomJsonEncoder, deal_at
+from derivus.config import CustomJsonEncoder
+from derivus.schema import deal_at
 from derivus_spine import SpineLog, init_home, verify_home
 from derivus_spine import policy, verbs
 

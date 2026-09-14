@@ -29,6 +29,7 @@ recompiling - see `partition_factor`.
 
 import copy
 import logging
+import re
 
 import numpy as np
 
@@ -55,7 +56,7 @@ SHAPED = tuple(BLANK)
 FACTOR_FIELDS = {}
 
 #: The VALUE keys of a `Market Prices` quote row, for every family at once. Read by both
-#: `config.update_market_quote`'s tick guard and `partition_market_price`'s projection.
+#: `update_market_quote`'s tick guard and `partition_market_price`'s projection.
 MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
 
 #: Which of those a row cannot be without: a mid is MOVED and never removed, so a patch clearing it
@@ -216,10 +217,6 @@ BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
                'CreditSupportList': lambda: utils.CreditSupportList([]),
                'DateValueList': list, None: list}
 
-#: The period grammar, built on first use: `get_grid_grammar` needs `config`, which imports this
-#: module, so the import is deferred to call time.
-_PERIOD = []
-
 #: `{deal class: {key: engine-form default}}`, filled by `deal_defaults`.
 _DEAL_DEFAULTS = {}
 
@@ -229,14 +226,6 @@ _DEAL_DEFAULTS = {}
 #: So completion is an ALLOWLIST of fields whose declared value IS the engine's own fallback; every
 #: other omission keeps its `KeyError` and the named skip that makes it visible.
 COMPLETABLE = frozenset(['Barrier_Monitoring_Frequency', 'Barrier_Observation', 'Cash_Rebate'])
-
-
-def _period_offset(period):
-    """`'3M'` -> a `DateOffset`, through the grammar a job's own periods are parsed with."""
-    if not _PERIOD:
-        from .config import get_grid_grammar
-        _PERIOD.append(get_grid_grammar()[1])
-    return _PERIOD[0].parseString(period)[0]
 
 
 def engine_default(field):
@@ -249,7 +238,7 @@ def engine_default(field):
     if field.type == 'Table':
         return BLANK_TABLE[field.tag]() if field.default == 'null' else copy.deepcopy(field.default)
     if field.obj == 'Period':
-        return _period_offset(field.default)
+        return utils.parse_period(field.default)
     if field.obj == 'Percent':
         return utils.Percent(field.default)
     if field.obj == 'Basis':
@@ -692,6 +681,164 @@ QUOTE_TWO_WAY = [
       description='When this quote was seen - the contract\'s own last print, which is what says a '
                   'listed strike is still a market. Stored and reported, never read by the fit: '
                   'what counts as too old is the consumer\'s policy')]
+
+
+# ---------------------------------------------------------------------------------------
+# The wire-form document tree: the verbs that read and edit a JOB DOCUMENT as it sits on
+# disk, before any of it becomes an engine object. They read this module's own vocabulary
+# and nothing else, and every reader of them is outside config.
+
+def job_children(document):
+    """The root `Children` list of a job document in wire form, or None where it is not a job."""
+    try:
+        children = document['Calc']['Deals']['Deals']['Children']
+        return children if isinstance(children, list) else None
+    except (KeyError, TypeError):
+        return None
+
+
+def walk_job_deals(children, path=()):
+    """Every deal node of a wire-form job, as `(deal_path, node)`. The positional path ('0/2/1')
+    is the node's identity, because References are not unique in a book."""
+    for position, node in enumerate(children):
+        deal_path = path + (position,)
+        yield '/'.join(map(str, deal_path)), node
+        yield from walk_job_deals(node.get('Children', []), deal_path)
+
+
+def splice_deal(document, deal, parent_reference=None):
+    """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
+
+    The node is `{'Instrument': {'.Deal': deal}}`, gaining an empty `Children` when the booked type
+    is itself a container. A COMPOSED deal - one arriving with node-shaped legs under its own
+    `Children`, the way `structures.quote` hands a structure back - has them lifted onto the node,
+    because the engine walks `node['Children']` and never inside the deal block. The insertion point
+    is the root, or the single node whose Reference is `parent_reference`; an unknown, ambiguous or
+    non-container parent refuses by name.
+    """
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    containers = mapping['Instrument']['containers']
+    parent_path = ''
+    if parent_reference is not None:
+        found = [(deal_path, node) for deal_path, node in walk_job_deals(children)
+                 if node['Instrument']['.Deal'].get('Reference') == parent_reference]
+        if len(found) != 1:
+            raise ValueError('{} deals carry Reference {!r} - a parent must be unique'.format(
+                len(found) or 'no', parent_reference))
+        parent_path, parent = found[0]
+        parent_type = parent['Instrument']['.Deal'].get('Object')
+        if parent_type not in containers:
+            raise ValueError('{!r} is a {}, which takes no children'.format(
+                parent_reference, parent_type))
+        children = parent.setdefault('Children', [])
+    deal = dict(deal)
+    composed = deal.pop('Children', None)
+    node = {'Instrument': {'.Deal': deal}}
+    if composed:
+        node['Children'] = composed
+    elif deal.get('Object') in containers:
+        node['Children'] = []
+    children.append(node)
+    position = str(len(children) - 1)
+    return '{}/{}'.format(parent_path, position) if parent_path else position
+
+
+def _positions(deal_path):
+    """A `deal_path` as index steps. Negative positions refuse rather than silently resolving
+    from the end - a wrong path must never quietly name a different deal."""
+    positions = [int(p) for p in str(deal_path).split('/')]
+    if any(p < 0 for p in positions):
+        raise ValueError
+    return positions
+
+
+def deal_at(document, deal_path):
+    """The node at a positional `deal_path` - a live reference into the document, which is what
+    an amendment edits in place."""
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    try:
+        node = None
+        for position in _positions(deal_path):
+            node = children[position]
+            children = node.get('Children', [])
+        return node
+    except (ValueError, IndexError):
+        raise ValueError('no deal at path {!r}'.format(deal_path))
+
+
+def remove_deal(document, deal_path):
+    """Remove and return the node at a positional `deal_path`, in place - the whole subtree goes
+    with it, which is what deleting a structure means."""
+    children = job_children(document)
+    if children is None:
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    try:
+        positions = _positions(deal_path)
+        for position in positions[:-1]:
+            children = children[position]['Children']
+        return children.pop(positions[-1])
+    except (ValueError, KeyError, IndexError):
+        raise ValueError('no deal at path {!r}'.format(deal_path))
+
+
+def update_market_quote(document, name, block):
+    """Install or update one `Market Prices` block in a wire-form job document, in place.
+
+    An update is VALUE-ONLY, for every family at once: everything except each quote row's
+    `Quoted_Market_Value`, `Quoted_Bid`/`Quoted_Ask` and `Timestamp` must stand, because the pillar
+    set, the expiries, the strikes, the conventions and the tolerances are STRUCTURE - a plan and a
+    pinned grid hang off them, so a moved node is a re-authoring, never a tick. A two-way is
+    value-side for the reason the mid is. That line is `MARKET_QUOTE_VALUES` and which table
+    carries it is `quote_rows`, both read here rather than kept as a second copy of the split
+    `plan_hash` and `market_patch` take. Returns 'installed' or 'updated'.
+    """
+    if not isinstance(block, dict) or 'instrument' not in block:
+        raise ValueError('{}: a Market Prices block is {{"instrument": {{...}}}}'.format(name))
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'Market Prices', {})
+    if name in prices:
+        def structure(b):
+            instrument = dict(b['instrument'])
+            container, points = quote_rows(instrument)
+            if container is not None:
+                instrument[container] = [
+                    {key: value for key, value in point.items()
+                     if key not in MARKET_QUOTE_VALUES}
+                    for point in points]
+            return instrument
+        if structure(prices[name]) != structure(block):
+            raise ValueError('{}: structure differs from the installed block - a moved node is a '
+                             'new plan; re-author it deliberately'.format(name))
+        prices[name] = block
+        return 'updated'
+    prices[name] = block
+    return 'installed'
+
+
+def sniff_indent(text, default=2):
+    """A JSON file's own indent, so a rewrite is a diff of the change and nothing else."""
+    found = re.search(r'\n( +)"', text)
+    return len(found.group(1)) if found else default
+
+
+def tables_of(results):
+    """Every table in a `Results` tree, flat, under the path that names it.
+
+    `cashflows` and `scenarios` are dicts of tables, so they arrive as `cashflows/ZAR` and
+    `scenarios/FxRate.ZAR`. The flat form is what a per-RESULT-CLASS tolerance is declared against.
+    """
+    tables = {}
+    for name, value in results.items():
+        if isinstance(value, dict) and '.DataFrame' not in value:
+            tables.update({'{}/{}'.format(name, path): table
+                           for path, table in tables_of(value).items()})
+        else:
+            tables[name] = value
+    return tables
 
 
 # The declaring modules import `F` from here, so the assembly must come after the vocabulary above.

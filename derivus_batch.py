@@ -22,6 +22,40 @@ import numpy as np
 
 from collections import defaultdict
 from multiprocessing import Process, Queue, Lock
+from xml.etree.ElementTree import SubElement, Element, tostring
+
+
+def parse_output_results(data):
+    """A Credit Monte Carlo exposure profile as the legacy `<Results><Series>` XML an .aaj file
+    carries: the peak per series as its value, Excel-offset day numbers on X."""
+    from derivus.utils import excel_offset
+
+    results = Element('Results')
+    header = SubElement(results, 'Header')
+    calc_type = SubElement(header, 'CalcType')
+    calc_type.text = 'Credit Monte Carlo'
+    series = SubElement(results, 'Series')
+
+    for index, (column, items) in enumerate(data.T.iterrows()):
+        if 'PFE' in column:
+            name = 'Bank Exposure ({}%)'.format(column[4:])
+        elif column == 'EE':
+            name = 'Bank Expected Exposure'
+        else:
+            continue
+        value = items.max()
+        series_item = SubElement(
+            series, 'SeriesItem', Name=name, Index=str(index), InitialState='On',
+            SeriesType='XYPlot', LineStyle='Solid', Value='{:.0f}'.format(value),
+            Description='Maximum value {:,.3f}'.format(value))
+        x_values = [str((x - excel_offset).days) for x in items.index]
+        y_values = ['{:.2f}'.format(x) for x in items.values]
+        x = SubElement(series_item, 'X')
+        x.text = ','.join(x_values)
+        y = SubElement(series_item, 'Y')
+        y.text = ','.join(y_values)
+
+    return tostring(results, encoding='utf-8').decode('utf-8')
 
 
 def rename_factor(cx, old_name, new_name):
@@ -123,7 +157,7 @@ class PFE(JOB):
 
         calc, out = self.cx.run_job(overrides=self.params)
         profile = out['Results']['exposure_profile']
-        legacy_exposure_profile = self.cx.current_cfg.parse_output_results(profile, calc.params['Currency'])
+        legacy_exposure_profile = parse_output_results(profile)
         PFE_key = [x for x in profile.keys() if x.startswith('PFE')][0]
         out['Stats'].update({PFE_key: profile[PFE_key].max(), 'Currency': calc.params['Currency']})
         # set the currency in the profile

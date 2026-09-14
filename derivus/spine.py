@@ -46,7 +46,8 @@ import os
 import threading
 
 from ._version import __version__
-from .config import Config, CustomJsonEncoder, as_json, tables_of
+from .schema import tables_of
+from .config import Config, CustomJsonEncoder, as_json
 
 #: The whole switch, and the actor beside it. Read per call, like `DV_HOME` one module over.
 SPINE_HOME = 'DV_SPINE_HOME'

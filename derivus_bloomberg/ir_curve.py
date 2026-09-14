@@ -27,7 +27,7 @@ package and a strip the terminal never verified cannot enter a block on a seed's
 
 The quote is not authored into the deal: `QUOTE_WRITERS` is where a number lands, off
 `Quoted_Market_Value`, and every rate-carrying field is authored at a neutral zero, so a value-only
-re-tick passes `config.update_market_quote` as 'updated' rather than refusing as a moved plan.
+re-tick passes `schema.update_market_quote` as 'updated' rather than refusing as a moved plan.
 
 V1 SCOPE: a self-discounting single curve, the declared front point, the swap strip as seeded, and
 `Quote_Type` `Par_Rate`. No FRAs, no FX-forward outrights, no cross-currency, no projection curve.
@@ -817,7 +817,7 @@ def author_point(item, as_of, currency, curve, conventions):
     ticker the number came off, which is the only place in the block a security lands.
 
     `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered
-    them. They are `schema.MARKET_QUOTE_VALUES` - the value plane `config.update_market_quote` lets
+    them. They are `schema.MARKET_QUOTE_VALUES` - the value plane `schema.update_market_quote` lets
     a tick move - and `InterestRateCurveParameters.Points` declares all three among its nine
     sub-fields, so the two-way and the print's own clock land as declared evidence.
     """
