@@ -327,6 +327,14 @@ them — so closed decisions (4, 13, 15) keep their numbers and are not listed.
 
 ## Designed, not built
 
+- **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
+  The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size of
+  its own Jacobian column, which is the better-conditioned solve; the Hull-White chain does not,
+  and its backward forms that scaled matrix for itself, so nothing is wrong today. Switching the
+  chain on to the same scaling changes where the solve stops, so every Hull-White fit in every book
+  moves by a small amount. It is a solver-tuning decision, not a defect, and it wants its own
+  reading before it is taken: iterations, the stationarity norm at the stopping point, and what
+  the marks do, on the four-quote fixture and one desk ladder.
 - **The log-variance cap becomes a corner, and the calibration stops carrying one.** The smooth
   cap sits below the identity at every level, so it biases the variance under the ξ curve it is
   calibrated to and blocks the closed forms; a hard minimum does neither. The fit then runs
