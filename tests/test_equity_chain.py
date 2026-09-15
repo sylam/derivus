@@ -230,9 +230,11 @@ class Walked(BloombergSession):
             if asked == equity_chain.CHAIN_ALL:
                 yield security, None, dict(self.underlying)
             else:
+                side = (overrides or {}).get(equity_chain.CHAIN_TYPE_OVERRIDE, 'C')
                 yield security, None, {equity_chain.CHAIN_FIELD: [
                     {'Ticker': name} for name in self.members(
-                        datetime.datetime.strptime(asked, '%Y%m%d').date())]}
+                        datetime.datetime.strptime(asked, '%Y%m%d').date())
+                    if equity_chain.member_ticker(name)[1] == side]}
 
 
 def canned_chain(**kwargs):
@@ -482,14 +484,15 @@ def test_the_calendar_is_asked_once_and_every_claimed_expiry_once():
 
     assert head == {equity_chain.CHAIN_EXPIRY_OVERRIDE: equity_chain.CHAIN_ALL,
                     equity_chain.CHAIN_POINTS_OVERRIDE: str(equity_chain.CALENDAR_POINTS)}
-    # one per expiry a pillar claims, at that expiry's own date and the ladder's own count; the
-    # front listing no pillar claims is never asked for at all
-    assert [asked[equity_chain.CHAIN_EXPIRY_OVERRIDE] for asked in dated] == \
-        [expiry.strftime('%Y%m%d') for expiry in EXPIRIES[1:]]
+    # one per expiry a pillar claims AND per side, at that expiry's own date and the ladder's own
+    # count, calls then puts; the front listing no pillar claims is never asked for at all
+    assert [(asked[equity_chain.CHAIN_EXPIRY_OVERRIDE], asked[equity_chain.CHAIN_TYPE_OVERRIDE])
+            for asked in dated] == [(expiry.strftime('%Y%m%d'), side)
+                                    for expiry in EXPIRIES[1:] for side in ('C', 'P')]
     assert {asked[equity_chain.CHAIN_POINTS_OVERRIDE] for asked in dated} == \
         {str(EquityLadder().chain_points)}
-    # one calendar, five pillars, three batches of contracts
-    assert len(session.overrides) == 6 and len(session.batches) == 3
+    # one calendar, five pillars twice over, three batches of contracts
+    assert len(session.overrides) == 11 and len(session.batches) == 3
 
     # and the strikes the rungs are chosen from ARRIVE at the per-expiry request: the calendar,
     # listing a few points an expiry, never named them

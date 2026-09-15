@@ -71,6 +71,10 @@ CHAIN_FIELD = 'CHAIN_TICKERS'
 CHAIN_EXPIRY_OVERRIDE = 'CHAIN_EXP_DT_OVRD'
 CHAIN_POINTS_OVERRIDE = 'CHAIN_POINTS_OVRD'
 CHAIN_ALL = 'ALL'
+#: WHICH SIDE it lists: calls unless told puts, and no value lists both, so an expiry is asked
+#: once per side.
+CHAIN_TYPE_OVERRIDE = 'CHAIN_PUT_CALL_TYPE_OVRD'
+CHAIN_SIDES = ('C', 'P')
 
 #: What the CALENDAR request lists at each expiry. Small, because the calendar is read for its
 #: DATES - which expiries a pillar claims - and never for the strikes it will ask about.
@@ -810,12 +814,12 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
             'chain, or the ticker names something with no options on it. Ask for an index with a '
             'listed chain (SPX Index, SX5E Index)'.format(underlying, chain_field))
 
-    for expiry in sorted(assign_expiries(
-            chain_calendar(members, as_of, ladder), ladder)[0].values()):
+    claimed = sorted(assign_expiries(chain_calendar(members, as_of, ladder), ladder)[0].values())
+    for expiry, side in ((expiry, side) for expiry in claimed for side in CHAIN_SIDES):
         answer = source.bulk_reference_data_report(
             [underlying], [chain_field],
             {CHAIN_EXPIRY_OVERRIDE: expiry.strftime('%Y%m%d'),
-             CHAIN_POINTS_OVERRIDE: str(ladder.chain_points)})
+             CHAIN_POINTS_OVERRIDE: str(ladder.chain_points), CHAIN_TYPE_OVERRIDE: side})
         listed = answer.get(underlying, {'ok': False, 'error': 'no answer in the response'})
         if not listed.get('ok') and listed.get('error'):
             raise_response_error('{} at {}: {}'.format(
