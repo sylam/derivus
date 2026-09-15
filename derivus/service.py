@@ -1659,12 +1659,13 @@ def spot_model_edit(document, pair, family):
         raise ValueError(NO_BOOTSTRAPPER)
     calibrator = spot_model_family(family)
     params = load(document).current_cfg.params
-    name, block = calibrator.fx_surface_block(
-        pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], desk_leverage_prior(pair))
-    market.get('Market Prices', {}).pop(name, None)
     # the section is keyed by what a family writes, and its entry names the stem it routes on
     entry = calibrator.price_factor_type
+    name, block = calibrator.fx_surface_block(
+        pair, params['Price Factors'], params['System Parameters'],
+        params['Price Factor Interpolation'], desk_leverage_prior(pair),
+        market['Bootstrapper Configuration'].get(entry))
+    market.get('Market Prices', {}).pop(name, None)
     borrowed = entry not in market['Bootstrapper Configuration']
     market['Bootstrapper Configuration'].setdefault(
         entry, {'Prices': calibrator.market_factor_type[:-len('Prices')]})
@@ -1732,7 +1733,8 @@ def book_model(request: dict):
     Configuration` for this run and handed back. Call it after a re-tick, before quoting the
     accrual strips.
 
-    The quote ladder is stated once, on the family's own `fx_surface_block`.
+    The quote ladder is the book's: its `Bootstrapper Configuration` entry for the family, every
+    dial the entry leaves out standing at that family's own declared default.
 
     Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.SpotModel`.
     There is no GET side: the written factor IS the projection and `GET /book` serves it.
@@ -1754,9 +1756,11 @@ def book_model(request: dict):
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
         # names is a fact about the book a desk must hear now rather than poll for
         params = load(document).current_cfg.params
-        block_name, _ = spot_model_family(family).fx_surface_block(
+        calibrator = spot_model_family(family)
+        block_name, _ = calibrator.fx_surface_block(
             pair, params['Price Factors'], params['System Parameters'],
-            params['Price Factor Interpolation'])
+            params['Price Factor Interpolation'], None,
+            params['Bootstrapper Configuration'].get(calibrator.price_factor_type))
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     # content addressed on the book it fits: the same calibration over an unmoved book is one

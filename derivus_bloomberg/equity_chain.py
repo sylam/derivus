@@ -280,9 +280,9 @@ class EquityLadder:
     #: `discover.STALE_DAYS`, for its reason: a strike whose last update is three weeks old still
     #: answers a plausible price, and the date is the only thing that says otherwise.
     stale_days: int = 5
-    #: DISTINCT contracts the ladder must survive snapping with -
-    #: `LogVar2FJModelParameters.fx_minimum_contracts`: the ATM rungs are consumed by the L
-    #: bootstrap, so what identifies the globals is what is left.
+    #: DISTINCT contracts the ladder must survive snapping with - `LogVar2FJModelParameters`'
+    #: declared `Minimum_Contracts`: the ATM rungs are consumed by the L bootstrap, so what
+    #: identifies the globals is what is left.
     minimum_contracts: int = 8
     #: How far PAST the ladder's longest rung a listed expiry may still be snapped to. A month,
     #: because that is the width of the same quarterly listing rolled once - not a second expiry.

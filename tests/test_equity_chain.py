@@ -863,17 +863,14 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
 
 def test_the_floor_and_the_defaults_are_the_families_own_numbers():
     """The emitter cannot import the engine, so every number it hard-codes is held against the
-    engine's own DECLARATION here. A default that moves on either side has to move on both.
-
-    THE CONTRACT FLOOR IS THE ONE EXCEPTION: `LogVar2FJModelParameters` declares no
-    `fx_minimum_contracts` of its own and reads `OptionQuoteFamily`'s 6, which was sized for a
-    five-parameter family rather than for a ladder whose ATM rungs are spent on the L bootstrap.
-    So the emitter's 8 is its own number - pinned by the refusal-wording gate above - and what is
-    held here is that it is never LOOSER than the family it writes for.
+    engine's own DECLARATION here. A default that moves on either side has to move on both. The
+    contract floor is one of them: the family declares `Minimum_Contracts` 8 and the emitter, which
+    writes for it, refuses under the same eight.
     """
     from derivus.bootstrappers import LogVar2FJModelParameters as Family
 
-    assert EquityLadder().minimum_contracts == 8 >= Family.fx_minimum_contracts
+    ladder = Family.fx_ladder()
+    assert EquityLadder().minimum_contracts == ladder.minimum == 8
     declared = {field.name: field.default for field in Family.fields}
     assert equity_chain.STEPS_PER_YEAR == declared['Steps_Per_Year']
     assert equity_chain.REFERENCE_TYPES.keys() == Family.factor_types.keys()
@@ -882,8 +879,8 @@ def test_the_floor_and_the_defaults_are_the_families_own_numbers():
 
     # the declared ladder: the product horizon, and the family's widened wings
     assert EquityLadder().pillars == (0.25, 0.5, 1.0, 2.0, 3.0)
-    assert len(EquityLadder().wing_pillars) == len(Family.fx_wing_expiries) == 4
-    assert EquityLadder().wing_delta in Family.fx_wing_pillars
+    assert len(EquityLadder().wing_pillars) == len(ladder.wings) == 4
+    assert EquityLadder().wing_delta in ladder.pillars
 
 
 def test_a_ladder_that_contradicts_itself_refuses_at_construction():

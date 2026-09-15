@@ -114,13 +114,17 @@ knot at t = 0 in place of the ten-knot grid, on every Hull-White block that decl
 reads a LIST or nothing, which is `schema.quote_rows`' own reading, and the same blank is why the
 two prior tables promoted below are Text and not Tables: a Table cannot carry a default table.
 
-Two things are deliberately not declarable. `FXVolSurfaceParameters.grid_tolerance_bounds` is
+One thing is deliberately not declarable. `FXVolSurfaceParameters.grid_tolerance_bounds` is
 `Grid_Tolerance`'s own domain rather than a dial — below `1e-8` the refinement does not terminate —
 so it is the field's declared `bounds` and the engine's own refusal. `OptionQuoteFamily`'s FX
-ladder (`fx_atm_expiries`, `fx_wing_expiries`, `fx_wing_pillars`, `fx_days_per_year`,
-`fx_expiry_tolerance`, `fx_minimum_contracts`) stays class attributes: `fx_surface_block` authors
-quotes rather than fitting them, is a classmethod with no section in reach, and its ladder is a
-family's declaration the partition gate holds the emitted header to. What each family declares is
+ladder is declared like every other dial: `ATM_Expiries` and `Wing_Expiries` in MONTHS,
+`Wing_Pillars` as delta magnitudes, `Days_Per_Year`, `Expiry_Tolerance` in DAYS of that year and
+`Minimum_Contracts`. `fx_surface_block` is handed the family's completed section entry and reads
+every rung off it; handed none — which is what a caller with no book in hand gets — it reads the
+declarations alone, and that is what the partition gate holds the emitted header to.
+`LogVar2FJModelParameters` declares its own four wing expiries at two pillars and the floor of
+eight its chain emitter refuses under, so a thin surface collapsing onto six contracts is refused
+by name until the book states a `Minimum_Contracts` it will accept. What each family declares is
 on its generated page; the fields promoted out of the code on 2026-09-08 —
 `LogVar2FJModelParameters`' `Leverage_Prior_Weight`, `Shape_Penalty`, `Residual_Horizon`,
 `Spot_Rung_Tolerance`, `Slow_Factor_Prior_Defaults` and `Leverage_Prior_Defaults`;
@@ -217,8 +221,9 @@ stands in the roadmap; nothing in the engine reads them, and a book that names o
 structural constants, `Residual_Law`, the two declared guards, the weights, the calendar-time
 `Param_Buckets`, `Event_Days`, the forward block with its `Stickiness_Prior` DIFFERENCE pair,
 stage 4's `Slow_Factor_Prior` and `Quote_Sensitivity` — each documented where it is declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
-`fx_surface_block` authors the FX one, asked here for **two delta pillars** at four wing expiries,
-because a `Bootstrap` bucket frees one parameter per wing quote. What follows is what it MEASURED.
+`fx_surface_block` authors the FX one off the ladder this family declares — **two delta pillars**
+at four wing expiries, because a `Bootstrap` bucket frees one parameter per wing quote, and a floor
+of **eight** distinct contracts. What follows is what it MEASURED.
 
 **The stored curve is `ξ(t) = E₀[h_t]`, the expected forward variance, and the OU level is
 DERIVED from it.** `ℓ + s` is Gaussian, so `E[e^{ℓ+s}] = e^{L* + Var(ℓ+s)/2}`: storing the LEVEL

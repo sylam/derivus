@@ -19,6 +19,11 @@ off a surface: `fx_surface_block` is inherited, so a field one family declares a
 is a line the header must not carry unconditionally - which is how a `KeyError` on the panel count
 reached the family that inverts nothing.
 
+THE LADDER IS THE BOOK'S DIAL. Its rungs, delta pillars, clock and contract floor are declared
+fields read off the family's `Bootstrapper Configuration` entry, so a caller holding none emits the
+declared ladder and one holding an entry emits the entry's - both held here, on the thin fixture
+where the floor decides.
+
 The projection DROPS the four keys where `partition_factor` shadows a value to `None`, which is the
 tick guard's own ruling read back: a pillar that starts or stops being quoted two-sided is the same
 node of the same plan.
@@ -157,6 +162,39 @@ def test_an_authored_block_carries_only_the_fields_its_own_family_declares():
         assert ('Quadrature_Panels' in instrument) == ('Quadrature_Panels' in declared), (
             '{}: the panel count is written exactly where it is declared'.format(
                 family.market_factor_type))
+
+
+def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
+    """THE LADDER IS A DIAL A BOOK STATES. Handed no `Bootstrapper Configuration` entry
+    `fx_surface_block` authors the family's DECLARED ladder; handed one it authors the entry's,
+    the contract floor included.
+
+    Measured on the thin FX fixture - two expiries, where the rungs collapse. At one delta pillar
+    instead of the two LogVar2FJ declares, its fourteen rungs land on SIX distinct contracts: under
+    the eight this family declares, which refuses BY NAME with both numbers in the message, and
+    exactly the six the plain option family declares, which a book may state in the section and be
+    fitted at.
+
+    MUTANT: the floor read off the declaration rather than the entry leaves the second reading
+    refusing; the ladder read off the declaration leaves the first emitting twenty-two rungs.
+    """
+    surface = loaded(fx_vol_quotes()).current_cfg
+    surface.bootstrap()
+    author = lambda section: LogVar2FJModelParameters.fx_surface_block(
+        'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
+        surface.params['Price Factor Interpolation'], None, section)
+
+    full = author(None)[1]['instrument']['European_Options']
+    assert len(full) == 22, 'no entry is the declared ladder: 6 ATM plus 4 wings at 2 pillars'
+
+    thin = {'Wing_Pillars': '0.25'}
+    with pytest.raises(ValueError, match='collapses onto 6 distinct contracts') as refused:
+        author(thin)
+    assert 'at least 8 distinct contracts' in str(refused.value), 'the floor is not in the refusal'
+
+    rows = author(dict(thin, Minimum_Contracts=6))[1]['instrument']['European_Options']
+    assert len(rows) == 14, 'the entry\'s one pillar, not the declared two'
+    assert len({(row['Expiry_Date'], row['Strike']) for row in rows}) == 6
 
 
 # ---------------------------------------------------------------------------------------------

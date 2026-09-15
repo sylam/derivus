@@ -16,9 +16,7 @@
 import copy
 import time
 import logging
-import threading
 from collections import namedtuple, OrderedDict
-from functools import partial
 
 # third party stuff
 import numpy as np
@@ -341,6 +339,12 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
                     'Alpha': result.x[1]}
 
 
+#: The six ladder dials of one family's `Bootstrapper Configuration` entry, in the units
+#: `fx_surface_block` works in: `atm`, `wings` and `tolerance` in YEARS, `pillars` as delta
+#: magnitudes, `days` the year the emitted dates are counted in, `minimum` a contract count.
+FxLadder = namedtuple('ladder', 'atm wings pillars days tolerance minimum')
+
+
 class OptionQuoteFamily(ImpliedCalibration):
     documentation = (
         'Fx And Equity',
@@ -452,9 +456,77 @@ class OptionQuoteFamily(ImpliedCalibration):
                       '- where the surface does not carry an expiry the ladder asks for - the '
                       'nearest quoted one used instead. Logged beside the fitted parameters, so a '
                       'substituted pillar is in the record rather than interpolated silently'),
+        F('ATM_Expiries', 'Text', default='1,2,3,6,9,12',
+          description='The ATM term structure fx_surface_block quotes, in MONTHS, comma-separated '
+                      'and increasing - it identifies the level and its term structure. The '
+                      'longest rung is also the cap no quote is read past: a year here, TARFs and '
+                      'accumulators being sub-year products'),
+        F('Wing_Expiries', 'Text', default='3,6',
+          description='The expiries each delta pillar is quoted at on both wings, in MONTHS. They '
+                      'identify the skew and the wings\' width'),
+        F('Wing_Pillars', 'Text', default='0.25',
+          description='The delta magnitudes each wing expiry is quoted at, each in (0, 0.5] - 0.5 '
+                      'is the straddle. One frees one parameter per wing quote in a Bootstrap '
+                      'bucket, two free two'),
+        F('Days_Per_Year', 'Float', default=365.0,
+          description='Days a surface expiry in years is emitted as: a quote block carries DATES, '
+                      'so Expiry_Date is the nearest whole day and the residual is the rounding '
+                      'alone (a 1M pillar emits as 30)'),
+        F('Expiry_Tolerance', 'Float', default=7.0,
+          description='How far past the ladder\'s longest rung a surface pillar may still be '
+                      'snapped to, in DAYS of Days_Per_Year. Snapping is an argmin and has no '
+                      'ceiling, so without this a 2Y/5Y-only surface answers every rung with 2Y; '
+                      'a week is the width of the same pillar quoted from a different date'),
+        F('Minimum_Contracts', 'Integer', default=6,
+          description='Distinct (expiry, strike) contracts the ladder must survive snapping with. '
+                      'Ten rungs are not ten quotes: a two-pillar surface collapses them onto '
+                      'four, and four do not identify five parameters. A floor rather than a '
+                      'guarantee - the fit still reports parameters on a bound'),
         F('European_Options', 'Table', default='null', row=Row(OPTION_QUOTE + QUOTE_TWO_WAY),
           description='The option quotes the five parameters are fitted to, each with the two-way '
                       'it was dealt on and the print\'s own clock where the source printed them')]
+
+    def __init__(self, param, device, dtype):
+        super(OptionQuoteFamily, self).__init__(param, device, dtype)
+        #: This family's own ladder, typed once - so a malformed dial refuses at construction,
+        #: before a quote is read, as every other hyperparameter does.
+        self.ladder = self.fx_ladder(self.param)
+
+    @classmethod
+    def fx_ladder(cls, section=None):
+        """The ladder off a `Bootstrapper Configuration` entry completed by this family's own
+        declarations; `None` - or the legacy CSV string, which declares no dial - is those
+        declarations alone.
+
+        Months and days become YEARS here, which is the surface's own clock and the only one past
+        this point. Refuses BY NAME on a ladder out of order, a delta pillar outside (0, 0.5] and
+        a floor below one contract.
+        """
+        read = declared_defaults(cls, section if isinstance(section, dict) else {})
+        days = float(read['Days_Per_Year'])
+        months = lambda name: tuple(
+            x / 12.0 for x in utils.LogVar2FJ.parse_floats(read[name], name))
+        ladder = FxLadder(
+            atm=months('ATM_Expiries'), wings=months('Wing_Expiries'),
+            pillars=utils.LogVar2FJ.parse_floats(read['Wing_Pillars'], 'Wing_Pillars'),
+            days=days, tolerance=float(read['Expiry_Tolerance']) / days,
+            minimum=int(read['Minimum_Contracts']))
+        for name, rungs in (('ATM_Expiries', ladder.atm), ('Wing_Expiries', ladder.wings)):
+            if not all(before < rung for before, rung in zip((0.0,) + rungs, rungs)):
+                raise ValueError(
+                    '{}: the rungs are positive months in increasing order, read {!r}. An '
+                    'unordered ladder quotes one expiry twice and calls it a term '
+                    'structure'.format(name, read[name]))
+        if not all(0.0 < pillar <= 0.5 for pillar in ladder.pillars):
+            raise ValueError(
+                'Wing_Pillars: a delta pillar is a magnitude in (0, 0.5], read {!r}. 0.5 is the '
+                'straddle and past it the call pillar names the put wing'.format(
+                    read['Wing_Pillars']))
+        if ladder.minimum < 1:
+            raise ValueError(
+                'Minimum_Contracts: the floor on distinct contracts reads {}. A ladder that '
+                'survives snapping with nothing identifies nothing'.format(ladder.minimum))
+        return ladder
 
     @classmethod
     def resolve(cls, instrument, field, price_factors):
@@ -540,37 +612,17 @@ class OptionQuoteFamily(ImpliedCalibration):
             *[torch.tensor(float(x), dtype=cls.prec) for x in (strike, spot, forward)],
             deal_data, use_forward, invert_moneyness))
 
-    #: The FX ladder the desk deals: the ATM term structure identifies H0/Beta/Omega, the 25
-    #: delta wings identify Gamma_Star (the skew) and Alpha (the wings' width). Nothing past 1Y -
-    #: TARFs and accumulators are sub-year products.
-    fx_atm_expiries = (1.0 / 12.0, 2.0 / 12.0, 0.25, 0.5, 0.75, 1.0)
-    fx_wing_expiries = (0.25, 0.5)
-    #: The delta pillars each wing expiry is quoted at. One here; a family whose buckets are the
-    #: wing expiries wants two, a bucket freeing one parameter per wing quote.
-    fx_wing_pillars = (0.25,)
-    #: Days a surface expiry in years is emitted as: a quote block carries DATES, so `Expiry_Date`
-    #: is the nearest whole day and the residual is the rounding alone (a 1M pillar emits as 30).
-    fx_days_per_year = 365.0
-    #: How far past the ladder's longest rung a surface pillar may still be snapped to. Snapping is
-    #: an argmin and has no ceiling, so without this a 2Y/5Y-only surface answers every rung with
-    #: 2Y. A week is the width of the same pillar quoted from a different date.
-    fx_expiry_tolerance = 7.0 / 365.0
-    #: Distinct (expiry, strike) contracts the ladder must survive snapping with. Ten rungs are not
-    #: ten quotes: a two-pillar surface collapses them onto four, and four do not identify five
-    #: parameters. A floor rather than a guarantee - the fit still reports parameters on a bound.
-    fx_minimum_contracts = 6
-
-    @classmethod
-    def fx_surface_expiry(cls, surface, expiry, cap):
+    @staticmethod
+    def fx_surface_expiry(surface, expiry, cap, tolerance):
         """The surface's own expiry nearest `expiry` at or under `cap`, and whether it had to
         substitute. `(None, True)` where the surface carries no admissible pillar at all.
 
         The quote moves to the nearest pillar the surface was BUILT from and the block records it in
         `Quote_Source`; interpolating between two would put a number nobody quoted into the
-        objective. `cap` is the ladder's longest rung widened by `fx_expiry_tolerance`, and a rung
-        with nothing admissible under it is dropped and recorded.
+        objective. `cap` is the ladder's longest rung widened by `tolerance`, and a rung with
+        nothing admissible under it is dropped and recorded.
         """
-        admissible = surface.expiry[surface.expiry <= cap + cls.fx_expiry_tolerance]
+        admissible = surface.expiry[surface.expiry <= cap + tolerance]
         if not admissible.size:
             return None, True
         nearest = float(admissible[np.argmin(np.abs(admissible - expiry))])
@@ -647,19 +699,22 @@ class OptionQuoteFamily(ImpliedCalibration):
 
     @classmethod
     def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp,
-                         leverage_prior=None):
+                         leverage_prior=None, section=None):
         """`(Market Prices name, block)` - this family's quote block, authored off a pair's built
         `FXVol` surface.
 
-        THE LADDER: vega-weighted implied vols read off the surface - ATM at `fx_atm_expiries`,
-        plus each of `fx_wing_pillars` on both wings at `fx_wing_expiries` - normalised by Black
-        vega off the same surface.
-        An expiry the surface does not carry moves to the nearest quoted one at or under 1Y, or is
-        dropped where it carries none; `Quote_Source` records either.
+        THE LADDER IS THE BOOK'S. `section` is this family's `Bootstrapper Configuration` entry and
+        every rung, pillar and floor below is read off it through the family's own declarations;
+        `None` is those declarations alone, which is what a caller holding no book gets.
+
+        Vega-weighted implied vols read off the surface - ATM at `ATM_Expiries`, plus each of
+        `Wing_Pillars` on both wings at `Wing_Expiries` - normalised by Black vega off the same
+        surface. An expiry the surface does not carry moves to the nearest quoted one at or under
+        the longest ATM rung, or is dropped where it carries none; `Quote_Source` records either.
 
         Ten rungs are not ten quotes: a substituted rung lands on a contract another rung already
         named, and a repeat is a weight rather than an observation. So DISTINCT `(expiry, strike)`
-        contracts are counted after snapping and a ladder below `fx_minimum_contracts` refuses.
+        contracts are counted after snapping and a ladder below `Minimum_Contracts` refuses.
 
         The vols are the surface's, UNSHIFTED - `Volatility_Delta` is a shift the fit applies to
         every quoted vol it prices a premium off, and applying it here too would bump twice.
@@ -671,8 +726,7 @@ class OptionQuoteFamily(ImpliedCalibration):
 
         The strikes are the surface's own coordinates: the ATM one is the delta-neutral straddle
         `K = F exp(-sigma^2 T/2)`, each wing the strike whose premium-adjusted forward delta is one
-        of `fx_wing_pillars`, found by inverting the delta the Malz solve inverted off the same
-        vols.
+        of `Wing_Pillars`, found by inverting the delta the Malz solve inverted off the same vols.
 
         No `Funding_Rate` is declared, and an FX pair needs none: `Discount_Rate` and `Yield` are
         exactly the pair `utils.calc_fx_forward` builds the priced forward from, so the calibrated
@@ -690,9 +744,10 @@ class OptionQuoteFamily(ImpliedCalibration):
         pricer simulates, orientation included.
 
         Refuses by name, with the remedy, on: no built surface, a surface type no strike can be
-        looked up on, a ladder below `fx_minimum_contracts`, a cross against the reporting currency,
+        looked up on, a ladder below `Minimum_Contracts`, a cross against the reporting currency,
         and a missing spot or discount curve.
         """
+        ladder = cls.fx_ladder(section)
         name = utils.check_rate_name(pair)
         vol_name = utils.check_tuple_name(utils.Factor('FXVol', name))
         if vol_name not in price_factors:
@@ -759,16 +814,16 @@ class OptionQuoteFamily(ImpliedCalibration):
         carry = riskfactors.construct_factor(
             utils.Factor('InterestRate', utils.check_rate_name(carry_name)),
             price_factors, factor_interp)
-        cap = max(cls.fx_atm_expiries)
+        cap = max(ladder.atm)
 
         def pillar(expiry):
             """One admissible expiry's `(T, moved, days, t, F, r, vol_at)`, or `None` where the
             surface carries no pillar the ladder may snap to. `T` is the surface's coordinate and
             `t` the emitted date's accrual - see the two-clock note in `fx_surface_block`."""
-            T, moved = cls.fx_surface_expiry(surface, expiry, cap)
+            T, moved = cls.fx_surface_expiry(surface, expiry, cap, ladder.tolerance)
             if T is None:
                 return None
-            days = int(round(T * cls.fx_days_per_year))
+            days = int(round(T * ladder.days))
             t = discount.get_day_count_accrual(base_date, days)
             rate = float(discount.current_value(t))
             forward = spot * np.exp((rate - float(carry.current_value(t))) * t)
@@ -791,7 +846,7 @@ class OptionQuoteFamily(ImpliedCalibration):
                 'Weight': cls.fx_black_vega(forward, strike, rate, vol, t),
                 'Quoted_Market_Value': vol})
 
-        for expiry in cls.fx_atm_expiries:
+        for expiry in ladder.atm:
             found = pillar(expiry)
             if found is None:
                 substituted.append('ATM {:g} DROPPED - no pillar at or under {:g}'.format(
@@ -803,8 +858,8 @@ class OptionQuoteFamily(ImpliedCalibration):
             if moved:
                 substituted.append('ATM {:g} -> {:g}'.format(expiry, T))
 
-        wings = '/'.join('{:g}'.format(x) for x in cls.fx_wing_pillars)
-        for expiry in cls.fx_wing_expiries:
+        wings = '/'.join('{:g}'.format(x) for x in ladder.pillars)
+        for expiry in ladder.wings:
             found = pillar(expiry)
             if found is None:
                 substituted.append('{}d {:g} DROPPED - no pillar at or under {:g}'.format(
@@ -812,7 +867,7 @@ class OptionQuoteFamily(ImpliedCalibration):
                 continue
             T, moved, days, t, forward, rate, vol_at = found
             x_atm, _ = cls.fx_atm_coordinate(vol_at, T)
-            for delta in cls.fx_wing_pillars:
+            for delta in ladder.pillars:
                 for side in (1.0, -1.0):
                     x = cls.fx_pillar_coordinate(vol_at, T, delta, side, x_atm)
                     quote(days, forward, rate, t, x, vol_at(x))
@@ -822,7 +877,7 @@ class OptionQuoteFamily(ImpliedCalibration):
         # a repeated contract is a weight rather than an observation, so what is counted is the
         # number of DISTINCT (expiry, strike) contracts
         contracts = {(point['Expiry_Date'], point['Strike']) for point in quotes}
-        if len(contracts) < cls.fx_minimum_contracts:
+        if len(contracts) < ladder.minimum:
             raise ValueError(
                 '{} carries pillars {} - the ladder (ATM {}, {}d wings {}) collapses onto {} '
                 'distinct contract{} on it, and {} do not identify {}, and a collapsed ladder has '
@@ -830,10 +885,10 @@ class OptionQuoteFamily(ImpliedCalibration):
                 'contracts, so at least three pillars at or under {:g}), or author the '
                 '{} block by hand. What each rung did: {}'.format(
                     vol_name, '/'.join('{:g}'.format(x) for x in surface.expiry),
-                    '/'.join('{:g}'.format(x) for x in cls.fx_atm_expiries), wings,
-                    '/'.join('{:g}'.format(x) for x in cls.fx_wing_expiries), len(contracts),
+                    '/'.join('{:g}'.format(x) for x in ladder.atm), wings,
+                    '/'.join('{:g}'.format(x) for x in ladder.wings), len(contracts),
                     '' if len(contracts) == 1 else 's', len(contracts),
-                    cls.identification_note, cls.fx_minimum_contracts, cap,
+                    cls.identification_note, ladder.minimum, cap,
                     cls.market_factor_type,
                     ', '.join(substituted) or 'every rung landed on a pillar it was asked for'))
 
@@ -847,8 +902,8 @@ class OptionQuoteFamily(ImpliedCalibration):
             point['Weight'] /= total
 
         source = '{} ATM {} + {}d wings {}, off {} as at {}'.format(
-            len(quotes), '/'.join('{:g}'.format(x) for x in cls.fx_atm_expiries),
-            wings, '/'.join('{:g}'.format(x) for x in cls.fx_wing_expiries), vol_name,
+            len(quotes), '/'.join('{:g}'.format(x) for x in ladder.atm),
+            wings, '/'.join('{:g}'.format(x) for x in ladder.wings), vol_name,
             price_factors[vol_name].get('Quote_Timestamp') or 'no stated time')
         if substituted:
             source += ('; rungs the surface does not carry, moved to the nearest quoted at or '
@@ -3091,14 +3146,23 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     identification_note = ('the forward-smile targets: the later buckets of Rho_S and Beta are '
                            'identified by them and by nothing else')
 
-    #: Four wing expiries at TWO delta pillars: a `Bootstrap` bucket with two wing quotes frees
-    #: two parameters and one with four frees four (5.4.5), and an FX smile is quoted at both
-    #: wings anyway.
-    fx_wing_expiries = (1.0 / 12.0, 0.25, 0.5, 1.0)
-    fx_wing_pillars = (0.25, 0.10)
-
-    #: The shared block plus this family's own. `European_Options` stays LAST, as it is there.
-    fields = OptionQuoteFamily.fields[:-1] + [
+    #: The shared block plus this family's own. Three ladder dials are REDECLARED rather than
+    #: added: the emitted store keys by name, so a name declared twice loses a descriptor.
+    #: `European_Options` stays LAST, as it is there.
+    fields = [field for field in OptionQuoteFamily.fields[:-1] if field.key not in (
+        'Wing_Expiries', 'Wing_Pillars', 'Minimum_Contracts')] + [
+        F('Wing_Expiries', 'Text', default='1,3,6,12',
+          description='The expiries each delta pillar is quoted at on both wings, in MONTHS - four '
+                      'here, against the plain family\'s two, because under Fit_Mode Bootstrap '
+                      'they are the calendar buckets Rho_S and Beta are fitted per'),
+        F('Wing_Pillars', 'Text', default='0.25,0.10',
+          description='The delta magnitudes each wing expiry is quoted at, each in (0, 0.5] - two '
+                      'here, because a Bootstrap bucket frees one parameter per wing quote and an '
+                      'FX smile is quoted at both pillars anyway'),
+        F('Minimum_Contracts', 'Integer', default=8,
+          description='Distinct (expiry, strike) contracts the ladder must survive snapping with - '
+                      'eight, against the plain family\'s six, because the ATM rungs are spent on '
+                      'the L bootstrap and what identifies the globals is what is left'),
         F('Fit_Mode', 'Text', default='Global', values=['Global', 'Bootstrap'],
           description='Global fits one bucket of shape parameters to every wing quote jointly and '
                       'is what an autocall wants; Bootstrap makes the ladder\'s WING EXPIRIES the '
@@ -3835,8 +3899,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                 'is the model'.format(
                     fit.market_price,
                     ', '.join('{:g}y'.format(T) for T in wings) or 'no expiry at all',
-                    '/'.join('{:g}y'.format(T) for T in self.fx_wing_expiries),
-                    '/'.join('{:g}'.format(p) for p in self.fx_wing_pillars)))
+                    '/'.join('{:g}y'.format(T) for T in self.ladder.wings),
+                    '/'.join('{:g}'.format(p) for p in self.ladder.pillars)))
         if fit.table('Param_Buckets'):
             logging.warning('{}: Param_Buckets is ignored under Fit_Mode Bootstrap - the buckets '
                             'are the ladder\'s wing expiries {}'.format(

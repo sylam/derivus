@@ -890,8 +890,8 @@ def spot_model_block(path):
 
 
 def test_the_fx_ladder_is_vega_weighted_points_on_the_surfaces_own_strikes(tmp_path):
-    """The desk's ladder off the built surface: one ATM rung per `fx_atm_expiries` plus both wings
-    at each `fx_wing_pillars` on each `fx_wing_expiries`, nothing past a year.
+    """The desk's ladder off the built surface: one ATM rung per `ATM_Expiries` plus both wings at
+    each `Wing_Pillars` on each `Wing_Expiries`, nothing past a year.
 
     THE COUNT IS THE FAMILY'S OWN DECLARATION, not a number written here - a family that widens its
     wings widens this gate with it. What is asserted is what makes them the SURFACE'S points rather
@@ -912,14 +912,14 @@ def test_the_fx_ladder_is_vega_weighted_points_on_the_surfaces_own_strikes(tmp_p
         expiries = sorted({point['Expiry_Date'] for point in points})
 
         assert name == 'LogVar2FJModelPrices.ZAR'
-        rungs = len(Family.fx_atm_expiries) + 2 * len(Family.fx_wing_expiries) * len(
-            Family.fx_wing_pillars)
+        ladder = Family.fx_ladder()
+        rungs = len(ladder.atm) + 2 * len(ladder.wings) * len(ladder.pillars)
         assert len(points) == rungs, 'the emitter did not write its own declared ladder'
         # the surface carries 1/12, 2/12, 0.25 and 0.5 in years, and nothing else
         assert [str(x.date()) for x in expiries] == [
             '2024-07-28', '2024-08-28', '2024-09-27', '2024-12-27']
         contracts = len({(point['Expiry_Date'], point['Strike']) for point in points})
-        assert Family.fx_minimum_contracts <= contracts < rungs, (
+        assert ladder.minimum <= contracts < rungs, (
             'the ladder collapsed further than the fixture says it does, or not at all')
         assert 'moved to the nearest quoted' in instrument['Quote_Source']
         for moved in ('ATM 0.75 -> 0.5', 'ATM 1 -> 0.5'):
@@ -929,7 +929,7 @@ def test_the_fx_ladder_is_vega_weighted_points_on_the_surfaces_own_strikes(tmp_p
         assert '16:30' in str(instrument['Quote_Timestamp'])
 
         # the ATM rungs are emitted in ladder order, then the wing pairs
-        n_atm = len(Family.fx_atm_expiries)
+        n_atm = len(ladder.atm)
         atm, wings = points[:n_atm], points[n_atm:]
         assert sum(point['Weight'] for point in points) == pytest.approx(1.0)
         assert {point['Expiry_Date'] for point in atm} == set(expiries)
@@ -977,7 +977,7 @@ def test_the_fx_ladder_is_vega_weighted_points_on_the_surfaces_own_strikes(tmp_p
             days = (point['Expiry_Date'] - base).days
             t = discount.get_day_count_accrual(base, days)
             pillar, _ = Family.fx_surface_expiry(
-                surface, days / Family.fx_days_per_year, max(Family.fx_atm_expiries))
+                surface, days / ladder.days, max(ladder.atm), ladder.tolerance)
             forward = spot * np.exp(
                 (float(discount.current_value(t)) - float(carry.current_value(t))) * t)
             moneyness = Family.moneyness(
@@ -1120,7 +1120,7 @@ def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(t
     try:
         instrument = block['instrument']
         emitted = sorted({point['Expiry_Date'] for point in instrument['European_Options']})
-        year = BASE + pd.DateOffset(days=int(Family.fx_days_per_year))
+        year = BASE + pd.DateOffset(days=int(Family.fx_ladder().days))
 
         assert name == 'LogVar2FJModelPrices.ZAR'
         assert emitted[-1] <= year, 'the ladder snapped onto a pillar past its own cap'

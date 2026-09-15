@@ -37,14 +37,6 @@ These are defects in the engine: each has a change to this library that closes i
   quotes, which is worth investigating, from quotes that are silent, which is a different
   situation with a different remedy. Either floor the divisor or detect the silent case and say so
   in words.
-- **The LogVar2FJ family accepts an FX ladder the equity emitter would refuse** (2026-09-11). A
-  ladder that collapses onto too few distinct contracts cannot identify the model, so a floor on
-  their count refuses it by name. The family lost its own floor of eight when its former parent
-  class was retired and now inherits the plain option family's six, sized for a five-parameter
-  model, while the Bloomberg equity emitter still refuses under eight. A ladder collapsing onto six
-  or seven contracts is accepted where it was declared refused; no document in the repository
-  changes side. One line restores the eight, and whether a thin desk surface that passes at six
-  should refuse at eight is the call to make first.
 - **A fitted block cannot be read back to see what it was struck at** (2026-09-11). A quote row may
   leave its strike at zero to mean the forward. The quote preparation resolves that to the forward
   for the fit but no longer writes it back onto the row, so the block reads zero after the fit. One
