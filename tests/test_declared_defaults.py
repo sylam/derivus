@@ -98,10 +98,13 @@ PINNED = {
         '4e04eb1cb3d428d956d66ea091d1e3568320bde3283876313dcdccfdc82444a5', 5, 0),
     'fx_tarf_job.json': (
         '0413fa7e4ff497523561e44e1ab205369d6948731061e3479fd2714a099f93d1', 5, 0),
+    # re-pinned 2026-09-16: both market files carried a null Base_Date, which the loader fills
+    # with the wall clock, so these two plans moved with the calendar. Each file now carries
+    # its job's own base date; the runs are unmoved, the date being the calculation's to set
     'platinum_hedge_shipping.json': (
-        'b0ca22eeb753a95307dabfeb3e788c4348185b820e647a310fc354303978656e', 2, 0),
+        'aeb9c875021626cc15de29d15bc705d8d77a5b11a1b87b961332ba162a44b262', 2, 0),
     'policy_test_simulate_only.json': (
-        '5f0f0bbc5a7139803121bd818a9856e72336c90ac2002720db1016c3ec72ba22', 2, 0),
+        '695ab01aa2aeebf526e64d007d47d63d2ffee852f0b162bd05fb72147f603f13', 2, 0),
 }
 
 #: The deal types whose CONSTRUCTOR writes into the authored block - `setdefault` calls that

@@ -208,11 +208,6 @@ is recorded so a reader knows which readings rest on it.
   LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
   Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree
   is in no checkout any more, so the move cannot be pinned to a line.
-- **Two plan-hash pins are a function of the calendar day**, on the platinum hedge shipping
-  fixture and the simulate-only policy fixture: both load a market-data file whose `Base_Date` is
-  null, and a config loaded without one takes the wall clock, so today's date sits in their plan.
-  Reading the job's own `Calculation.Base_Date` instead is not a swap: one market-data file is
-  cached across the jobs that name it, and they need not share a base date.
 - **The notebook write path** raises on three field names its hard-coded allowlist does not carry,
   and fourteen output-shaped descriptors have no widget. Superseded for viewing by the web UI.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
