@@ -24,19 +24,6 @@ These are defects in the engine: each has a change to this library that closes i
   but the prior on the tail parameter `Alpha` sits on the first bucket alone. Nothing moves today,
   because every book ladder fits one bucket, and a multi-bucket fit with priors on has never been
   run.
-- **A fit warns with a meaningless number when the quotes say nothing about a parameter**
-  (2026-09-11). The calibration reports, for each fitted parameter, how hard a declared prior
-  belief pushes it compared with the market quotes, and warns when the prior is doing most of the
-  work, so that a reader can tell a fitted value from an assumed one. That comparison divides by
-  how much the quotes constrain the parameter. When they do not constrain it at all, which is what
-  happens to the skew parameters on a surface quoting only at-the-money options and no wings, the
-  divisor is zero and the warning reports ratios above ten trillion. Its conclusion is right, since
-  those parameters really are held by the prior, but the number is an artefact of dividing by zero
-  rather than a reading, and it is written onto the calibrated factor and republished in every
-  valuation priced off it. A reader cannot then separate a prior a hundred times stronger than the
-  quotes, which is worth investigating, from quotes that are silent, which is a different
-  situation with a different remedy. Either floor the divisor or detect the silent case and say so
-  in words.
 - **A fitted block cannot be read back to see what it was struck at** (2026-09-11). A quote row may
   leave its strike at zero to mean the forward. The quote preparation resolves that to the forward
   for the fit but no longer writes it back onto the row, so the block reads zero after the fit. One

@@ -584,7 +584,11 @@ fitted it — the signature of a prior on a coordinate the data cannot see, whic
 identification line now prints per row (*Rho_S[0y] 38.5x, Beta[0y] 5.92x …*) — in one sentence,
 logged as a WARNING by the report, written on the factor as the structural Text field `On_Guard`
 (blank where clean), logged at INFO when the factor loads, and collected by `Base_Revaluation` into
-`Stats['On_Guard']` per factor it priced off, so a mark carries the flag. Scored on lane L's own
+`Stats['On_Guard']` per factor it priced off, so a mark carries the flag. **Where the quotes do not
+reach the coordinate at all there is no multiple**: a column carrying under `Jacobian_Rcond` of what
+its own prior rows do — an ATM-only ladder's skew columns, which are the inner Newton's rounding —
+is reported as the word, *Alpha[0y] silent* on the identification line and *quotes silent* on the
+guard, and counts as unidentified without a ratio. Scored on lane L's own
 fits the fourth guard names the α escape in one number (`Alpha[0y] 566x … Beta[0y] 551x` on NKY,
 SX5E at 532x where the three box rules had read it clean), and on lane L2's it names one thing: NDX
 at the regression's own 0.015 error, whose `ρ_s` row is 138 quote rows — a 1.5%-standard-error

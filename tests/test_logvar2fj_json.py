@@ -287,16 +287,24 @@ def test_a_factor_with_no_reserve_line_reports_none():
 # THE CALIBRATION HALF - one `Config.bootstrap` per gate, at `Paths` 2048 on the world's own
 # five-expiry ladder. A fit IS run; what is asserted is what a ruling fixed, never theta*.
 # ------------------------------------------------------------------------------------------
-def _ladder(flat=False, rungs=None, **declared):
-    """The world's ladder with its instrument varied, optionally re-quoted FLAT and optionally cut
+def _ladder(flat=False, rungs=None, atm=False, **declared):
+    """The world's ladder with its instrument varied, optionally re-quoted FLAT, optionally cut
     to its first `rungs` expiries - a fit costs one inner pillar pass per ATM expiry per iterate
-    over a walk as long as the last one, so a gate that is about a BRANCH takes the short ladder."""
+    over a walk as long as the last one, so a gate that is about a BRANCH takes the short ladder -
+    and optionally cut to the ATM rung of each expiry, the middle of its three strikes, which is
+    the ladder that quotes NO WINGS."""
     block = copy.deepcopy(_W['Market Prices'][BLOCK])
     quotes = block['instrument']['European_Options']
     if rungs:
         keep = sorted({row['Expiry_Date']['.Timestamp'] for row in quotes})[:rungs]
         quotes = [row for row in quotes if row['Expiry_Date']['.Timestamp'] in keep]
-        block['instrument']['European_Options'] = quotes
+    if atm:
+        by_expiry = {}
+        for row in quotes:
+            by_expiry.setdefault(row['Expiry_Date']['.Timestamp'], []).append(row)
+        quotes = [sorted(rung, key=lambda row: row['Strike'])[len(rung) // 2]
+                  for _, rung in sorted(by_expiry.items())]
+    block['instrument']['European_Options'] = quotes
     if flat:
         for row in quotes:
             row['Quoted_Market_Value'] = XI ** 0.5
@@ -402,6 +410,35 @@ def test_the_identification_line_is_reported(fitted):
     assert len(lines) == 3, lines
     assert all('singular values' in ln and 'column norms' in ln for ln in lines)
     assert sum('multiple of ONE quote row' in ln for ln in fitted[1].splitlines()) == 3
+    assert all(isinstance(x, float) for rows in _prior_ratios(fitted[1]).values()
+               for x in rows.values()), 'a wing-quoting ladder reaches every coordinate it fits'
+
+
+@pytest.fixture(scope='module')
+def silent_fit():
+    """The same world, quoting the ATM rung of each expiry and NO WINGS - five quotes for four
+    shape coordinates, and the xi strip reprices all five whatever the shape does."""
+    return _fit(_ladder(atm=True), 'silent')
+
+
+def test_a_ladder_with_no_wings_reads_its_skew_as_silent(silent_fit):
+    """A prior row on a coordinate the quotes do not reach has no multiple of a quote to be
+    outvoted by, so it is reported as the WORD and not as one over rounding.
+
+    Measured on this ladder: every shape column is the inner Newton's residual - `Rho_S` 3.69e-15,
+    `Beta` 1.82e-15, `Sigma_S` 1.60e-16 and `Alpha` 4.24e-17 at the polish, against 1.19e-02,
+    4.73e-03, 8.41e-03 and 2.88e-05 with the wings quoted - which is 1e-13 of what their own prior
+    rows carry, far under the `Jacobian_Rcond` 1e-3 that cuts the same matrix in the table above.
+    The ratios there read 1.8e+13x, 2.1e+13x, 8.2e+13x and 1.1e+13x before this gate.
+    """
+    factor, report = silent_fit
+    rows = _prior_ratios(report)['6 joint polish']
+    assert set(rows) == {'Rho_S[0y]', 'Beta[0y]', 'Sigma_S[0y]', 'Alpha[0y]'}, rows
+    assert all(ratio is None for ratio in rows.values()), rows
+    guard = str(factor['On_Guard'])
+    assert guard.count('quotes silent') == len(rows), guard
+    printed = [float(x) for x in re.findall(r'([\d.]+(?:e[-+]\d+)?)x\b', report)]
+    assert not [x for x in printed if x > bootstrappers.LVFit.PRIOR_RATIO], printed
 
 
 # ------------------------------------------------------------------------------------------
@@ -808,12 +845,13 @@ def _forward_rows(source):
 
 
 def _prior_ratios(report):
-    """`{stage: {coordinate: quote rows}}` off every identification table the report printed."""
+    """`{stage: {coordinate: quote rows}}` off every identification table the report printed, a
+    coordinate the quotes are silent on reading `None` rather than a multiple."""
     out, lines = {}, report.splitlines()
     for line, below in zip(lines, lines[1:]):
         if 'identification, ' in line and 'multiple of ONE quote row' in below:
             out[line.split('identification, ')[1].split(':')[0]] = {
-                name: float(value.rstrip('x')) for name, value in
+                name: None if value == 'silent' else float(value.rstrip('x')) for name, value in
                 (pair.rsplit(' ', 1) for pair in below.split('RMS: ')[1].split(', '))}
     return out
 

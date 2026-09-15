@@ -2464,22 +2464,33 @@ class LVFit(utils.Residual):
 
     def prior_ratios(self, labels, jacobian, priors):
         """Each prior row's column norm over ONE quote row's at the data's own RMS, per
-        coordinate - the multiple of a quote a row would have to be outvoted by."""
+        coordinate - the multiple of a quote a row would have to be outvoted by - or `None` where
+        the quotes are SILENT on the coordinate and no multiple exists.
+
+        Silent is `Jacobian_Rcond` read DOWN a column instead of across the singular values: a
+        coordinate whose quote rows carry under that fraction of what its prior rows do. A ladder
+        with no wings is the case - the xi strip re-bootstraps every ATM to zero whatever the skew
+        does, so the column is the inner Newton's rounding and the ratio is one over nothing.
+        """
         matrix = np.atleast_2d(np.asarray(jacobian, dtype=float))
-        quote = np.linalg.norm(matrix, axis=0) / max(np.sqrt(matrix.shape[0]), 1.0)
+        data = np.linalg.norm(matrix, axis=0)
         rows = (np.linalg.norm(np.atleast_2d(priors), axis=0) if len(priors)
                 else np.zeros(len(labels)))
-        return dict(zip(labels, rows / np.where(quote > 0.0, quote, np.nan)))
+        quote = data / max(np.sqrt(matrix.shape[0]), 1.0)
+        return {name: None if silent else row / q for name, row, q, silent in
+                zip(labels, rows, quote, data < self.rcond * rows)}
 
     def unidentified(self):
-        """`{coordinate: ratio}` for every prior row the quotes cannot outvote, read at the LAST
-        stage that fitted the coordinate: a row past `PRIOR_RATIO` quote rows sits on a
+        """`{coordinate: ratio or None}` for every prior row the quotes cannot outvote, read at the
+        LAST stage that fitted the coordinate: a row past `PRIOR_RATIO` quote rows - or on a
+        coordinate the quotes are silent on, which is a pin under another name - sits on a
         coordinate the data does not identify, so what it states is not measured here and the fit
         obeys it for free."""
         seen = {}
         for table in self.tables:
             seen.update(self.prior_ratios(*table[1:]))
-        return {name: ratio for name, ratio in seen.items() if ratio > self.PRIOR_RATIO}
+        return {name: ratio for name, ratio in seen.items()
+                if ratio is None or ratio > self.PRIOR_RATIO}
 
     def on_guard(self):
         """Every guard theta* is sitting ON, as one sentence, or `''` where it is clean: a
@@ -2508,8 +2519,9 @@ class LVFit(utils.Residual):
         for i in np.flatnonzero(c <= self.c_min + self.c_margin):
             held.append('c {:.3f} at {:g}y within {:g} of its C_Min floor {:g}'.format(
                 c[i], self.buckets[i], self.c_margin, self.c_min))
-        held += ['prior on an unidentified coordinate: {} {:.0f}x'.format(name, ratio)
-                 for name, ratio in sorted(self.unidentified().items())]
+        held += ['prior on an unidentified coordinate: {} {}'.format(
+            name, 'quotes silent' if ratio is None else '{:.0f}x'.format(ratio))
+            for name, ratio in sorted(self.unidentified().items())]
         return 'ON GUARD: {}'.format('; '.join(held)) if held else ''
 
     def written(self):
@@ -2561,8 +2573,9 @@ class LVFit(utils.Residual):
         rows than parameters has exact null directions and says so. The unscaled COLUMN NORMS go
         beside them, because scaling makes the table read conditioning: a well-conditioned
         direction whose column norm is 1e-6 moves nothing, and only the norm says so. EACH PRIOR
-        ROW goes beside them in quote rows, taken off the same Jacobian: a prior the data cannot
-        outvote is a pin, and past `PRIOR_RATIO` of them `on_guard` says so on the factor.
+        ROW goes beside them in quote rows, taken off the same Jacobian, or as `silent` where the
+        quotes do not reach that coordinate at all: a prior the data cannot outvote is a pin, and
+        past `PRIOR_RATIO` of them - or on a silent one - `on_guard` says so on the factor.
         """
         matrix = np.atleast_2d(np.asarray(jacobian, dtype=float))
         norms = np.linalg.norm(matrix, axis=0)
@@ -2574,7 +2587,9 @@ class LVFit(utils.Residual):
         if len(priors):
             logging.info('    the PRIOR rows there, each as a multiple of ONE quote row at the '
                          "data's own RMS: {}".format(', '.join(
-                             '{} {:.3g}x'.format(name, ratio) for name, ratio in
+                             '{} {}'.format(name, 'silent' if ratio is None else
+                                            '{:.3g}x'.format(ratio))
+                             for name, ratio in
                              self.prior_ratios(labels, jacobian, priors).items())))
         for i in np.flatnonzero(values <= self.rcond * max(values[0], 1e-300)):
             logging.info('    FLAT at {:.3e} ({:.1e} of the largest): {}'.format(
