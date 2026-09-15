@@ -1561,14 +1561,56 @@ def compo_vol(vols, fx_vols, rho):
     return torch.sqrt(vols * vols + 2.0 * rho * vols * fx_vols + fx_vols * fx_vols)
 
 
+def calc_compo_geometry(factor_dep, deal_time, shared, fixings=None):
+    """The fx half of a compo payoff, on both consumer shapes.
+
+    `spot_scale` is the cross that turns the local spot into S*X, `s_adj` the outright fx forward
+    that turns the local forward into the composite's - and, dividing instead, a payoff-currency
+    strike or barrier into the local one the smile is quoted against - and `fx_carry` the fx
+    forward's own carry rate, over the deal's expiry or over each fixing when `fixings` is passed.
+    A quanto's underlying stays local, as does a Standard payoff's, so both take the identity: one,
+    one and zero.
+    """
+    if 'CompoImpliedCorrelation' not in factor_dep:
+        return {'spot_scale': 1.0, 's_adj': 1.0, 'fx_carry': 0.0}
+
+    tenor = (int(factor_dep['Expiry']) - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1)
+    fx_carry = utils.curve_spread(
+        factor_dep['Other'][1], factor_dep['Local'][1], tenor if fixings is None else fixings,
+        deal_time, shared, multiply_by_time=False)
+    return {'spot_scale': utils.calc_fx_cross(
+                factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
+            's_adj': utils.calc_fx_forward(
+                factor_dep['Local'], factor_dep['Other'],
+                int(factor_dep['Expiry']), deal_time, shared),
+            'fx_carry': fx_carry if fixings is not None else torch.squeeze(fx_carry, dim=1)}
+
+
+def compo_strike(factor_dep, deal_time, shared, level):
+    """A payoff-currency level on S*X read on the LOCAL surface's own scale: the compo's strike K
+    per unit of S*X is the local strike K / F_X(T), so the moneyness the local smile is read at is
+    a local moneyness. A quanto's underlying is already local and divides by one."""
+    return level / calc_compo_geometry(factor_dep, deal_time, shared)['s_adj']
+
+
+def compo_process(adj, spot, forward, b):
+    """A compo or quanto payoff on a closed form's own coordinates.
+
+    A compo prices and monitors the PRODUCT S*X: the local spot at the fx cross, the local forward
+    at the outright fx forward and the local carry plus the fx forward's own. A quanto's ones and
+    zeros leave the underlying local and bend the carry alone."""
+    return spot * adj['spot_scale'], forward * adj['s_adj'], b + adj['b_adj'] + adj['fx_carry']
+
+
 def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=None, walking=False):
     """The quanto/compo adjustment, factored for BOTH consumer shapes.
 
     A forward-based pricer rebuilds its terminal law as `s_adj * forward * exp(b_adj * T)` - quanto
     bends the carry, compo swaps the underlying for S*X so its fx half is the outright fx forward. A
-    SIMULATING pricer takes the same information factored the way a path steps: `spot_scale` (1 for
-    quanto), `carry_adj` (per-fixing, built only when `fixings` is passed), and `fx_vol`/`rho` to
-    compose its interval vol strip (None for quanto, whose measure change touches no vol).
+    SIMULATING pricer takes the same information factored the way a path steps: the geometry above
+    beside `carry_adj` (the WHOLE carry adjustment per fixing, built only when `fixings` is passed)
+    and `fx_vol`/`rho` to compose its interval vol strip (None for quanto, whose measure change
+    touches no vol).
 
     `walking` is a non-GBM spot model: the quanto carry here is `-rho sigma_S sigma_FX` off an
     implied ATM vol the walk never reads, so it is handed back as ZERO and the caller takes `rho`
@@ -1576,6 +1618,7 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
     """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.VolSurface.rate(factor_dep['FXVol'], None, expiry, shared)
+    geo = calc_compo_geometry(factor_dep, deal_time, shared, fixings)
 
     if 'QuantoImpliedCorrelation' in factor_dep:
         # quanto fx deal
@@ -1583,23 +1626,15 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
             factor_dep['QuantoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         b_adj = torch.zeros_like(fx_vols) if walking else -utils.VolSurface.rate(
             factor_dep['Volatility'], None, expiry, shared) * fx_vols * rho
-        return {'vol': vols, 'b_adj': b_adj, 's_adj': 1.0, 'spot_scale': 1.0,
-                'carry_adj': b_adj.unsqueeze(1) if fixings is not None else None,
-                'fx_vol': None, 'rho': rho}
+        vol, fx_vol = vols, None
     else:
         rho = utils.implied_correlation(
             factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
-        forwardfx = utils.calc_fx_forward(
-            factor_dep['Local'], factor_dep['Other'],
-            int(factor_dep['Expiry']), deal_time, shared)
-        return {'vol': compo_vol(vols, fx_vols, rho),
-                'b_adj': torch.zeros_like(fx_vols), 's_adj': forwardfx,
-                'spot_scale': utils.calc_fx_cross(
-                    factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
-                'carry_adj': utils.curve_spread(
-                    factor_dep['Other'][1], factor_dep['Local'][1], fixings, deal_time, shared,
-                    multiply_by_time=False) if fixings is not None else None,
-                'fx_vol': fx_vols, 'rho': rho}
+        b_adj = torch.zeros_like(fx_vols)
+        vol, fx_vol = compo_vol(vols, fx_vols, rho), fx_vols
+
+    return dict(geo, vol=vol, b_adj=b_adj, fx_vol=fx_vol, rho=rho,
+                carry_adj=b_adj.unsqueeze(1) + geo['fx_carry'] if fixings is not None else None)
 
 
 def smooth_max(x, k, eps=0.01):
@@ -2088,6 +2123,10 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
     Discrete monitoring uses Broadie-Glasserman-Kou: the continuous formula against a barrier
     shifted AWAY from the live region by the monitoring interval's vol. The shift direction is the
     barrier TYPE, not where the spot happens to sit.
+
+    A compo prices and monitors S*X (`compo_process`): the crossing test, the bridge and the
+    continuity correction all read the composite spot, and strike and barrier are the
+    payoff-currency levels on that product the deal declares.
     """
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
@@ -2114,21 +2153,25 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
     expiry_years = factor_dep[expiry_years_key]
     forward = spot * torch.exp(b * expiry_years)
-    moneyness = calc_moneyness(shared.one * strike, spot, forward, deal_data, use_forwards, invert_moneyness)
+    moneyness = calc_moneyness(
+        compo_strike(factor_dep, deal_time, shared, shared.one * strike), spot, forward,
+        deal_data, use_forwards, invert_moneyness)
     sigma = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
+    rho = None
     if factor_dep.get('Check_Payoff_Type', False):
         # need quanto/compo adjustments
         adj = calc_vol_adjustment(factor_dep, deal_time, expiry, sigma, shared)
         sigma = adj['vol']
-        b = b + adj['b_adj']
+        spot, forward, b = compo_process(adj, spot, forward, b)
+        rho = adj['rho'] if adj['fx_vol'] is not None else None
 
     barrierOption = getbarrierpayoff(direction, eta, phi, strike, barrier)
     r = torch.squeeze(discounts.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
 
     mtm_list = []
     prev_touched = 0.0
-    interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
+    interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
     for index, (raw_sig, exp, b_t, r_t, s_t, f_t, cash_index) in enumerate(zip(
@@ -2189,6 +2232,9 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     Under ``Payment_Timing='Expiry'`` the nominal is paid at expiry if the barrier was EVER touched,
     so between the touch and expiry the path holds a CERTAIN claim on the nominal, worth its
     discounted value rather than nothing.
+
+    A compo prices and monitors S*X (`compo_process`), its barrier being the payoff-currency level
+    on that product the deal declares.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -2211,14 +2257,18 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
     expiry_years = factor_dep[expiry_years_key]
     forward = spot * torch.exp(b * expiry_years)
-    moneyness = calc_moneyness(shared.one * barrier, spot, forward, deal_data, use_forwards, invert_moneyness)
+    moneyness = calc_moneyness(
+        compo_strike(factor_dep, deal_time, shared, shared.one * barrier), spot, forward,
+        deal_data, use_forwards, invert_moneyness)
     sigma = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
+    rho = None
     if factor_dep.get('Check_Payoff_Type', False):
         # need quanto/compo adjustments
         adj = calc_vol_adjustment(factor_dep, deal_time, expiry, sigma, shared)
         sigma = adj['vol']
-        b = b + adj['b_adj']
+        spot, forward, b = compo_process(adj, spot, forward, b)
+        rho = adj['rho'] if adj['fx_vol'] is not None else None
 
     r = torch.squeeze(discounts.gather_weighted_curve(
         shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
@@ -2228,7 +2278,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     eta_scale = 0.7071067811865476 * eta
     # the same continuous-vs-observed mismatch as pv_barrier_option, but this payoff pays ON touch,
     # so missing a crossing UNDERSTATES it rather than overstating survival
-    interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
+    interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
     for index, (raw_sig, exp, b_t, r_t, s_t, cash_index) in enumerate(zip(
@@ -4827,6 +4877,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     is fitted to a lognormal and priced by Black against a strike net of the realised average. Past
     the averaging period it is the intrinsic on the realised average, at a token maturity so the AAD
     graph stays defined.
+
+    A compo averages S*X, so the deal's own fixings already ARE composite prices and nothing
+    converts them; only a SIMULATED past sample, read off the local spot factor, takes the cross.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -4857,6 +4910,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
         past_samples = past_sample_factor[0] if len(
             past_sample_factor) == 1 else past_sample_factor[0] / past_sample_factor[1]
 
+    # a simulated past sample is a LOCAL price, so a compo's takes the cross at its own date
+    past_samples = past_samples * calc_compo_geometry(
+        factor_dep, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)['spot_scale']
     all_samples = torch.cat(
         [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
     dual_samples = samples.dual()
@@ -4869,9 +4925,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
         sample_index_t = start_index[index]
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
 
-        sample_tau = daycount_fn(
-            dual_samples.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
-            t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+        sample_days = (dual_samples.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
+                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+        sample_tau = daycount_fn(sample_days)
         sample_ts = carry_block.new(sample_tau)
 
         weight_t = dual_samples.tn[sample_index_t:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
@@ -4881,14 +4937,16 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             dim=0)
 
         if sample_tau.size:
+            geo = calc_compo_geometry(factor_dep, t_block, shared, sample_days)
             # strike_bar goes negative when the realised average exceeds the strike, which Black
             # cannot take
             strike_bar = torch.clamp(
                 factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1), min=1e-5)
             sample_fwd = spot_block.unsqueeze(1) * torch.exp(carry_block.unsqueeze(1) * sample_ts.unsqueeze(2))
             moneyness = calc_moneyness(
-                (strike_bar / normalize.clamp(min=eps)).unsqueeze(1), spot_block.unsqueeze(1), sample_fwd,
-                deal_data, use_forwards, invert_moneyness)
+                (compo_strike(factor_dep, t_block, shared, strike_bar) /
+                 normalize.clamp(min=eps)).unsqueeze(1),
+                spot_block.unsqueeze(1), sample_fwd, deal_data, use_forwards, invert_moneyness)
             # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
             vols = torch.stack([utils.VolSurface.rate(
                 factor_dep['Volatility'], mon, s_tau, shared) for mon, s_tau in zip(moneyness, sample_tau)])
@@ -4896,7 +4954,11 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
                 adj = [calc_vol_adjustment(
                     factor_dep, deal_time, s_tau, vol, shared) for s_tau, vol in zip(sample_tau, vols)]
                 vols = torch.stack([x['vol'] for x in adj])
-                carry_block = torch.stack([cb + x['b_adj'] for cb, x in zip(carry_block, adj)])
+                # a compo's average is on S*X: every sample forward takes the fx forward's own carry
+                # over its own tenor and the spot the cross
+                carry_block = torch.stack(
+                    [cb + x['b_adj'] for cb, x in zip(carry_block, adj)]) + geo['fx_carry']
+                spot_block = spot_block * geo['spot_scale']
             else:
                 carry_block = torch.unsqueeze(carry_block, dim=1)
 

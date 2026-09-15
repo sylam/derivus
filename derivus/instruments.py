@@ -285,6 +285,20 @@ def get_fx_barrier_underlying(field, stochastic_offsets):
     return utils.Factor('FxRate', field['Underlying_Currency'])
 
 
+def get_compo_barrier_underlying(field, stochastic_offsets):
+    """The single factor whose simulated log-variance governs a compo's fx cross, or None.
+
+    A compo is monitored on S*X, whose fx half is the cross of the deal's two currencies, and
+    `t_Bridge_Variance_Rate` is keyed per factor - so one entry expresses that cross only when its
+    other leg is static and neither is a basis chain. None everywhere else leaves the pricer
+    observing endpoints, the conservative direction.
+    """
+    legs = [utils.Factor('FxRate', field[x]) for x in ('Currency', 'Payoff_Currency')
+            if len(field[x]) == 1]
+    live = [x for x in legs if stochastic_offsets.get(x) is not None]
+    return live[0] if len(legs) == 2 and len(live) == 1 else None
+
+
 def get_equity_barrier_underlying(fieldname):
     """The single factor whose simulated log-variance governs crossings between grid dates, or None.
 
@@ -768,6 +782,9 @@ class Deal(object):
                     field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
                 field_index['Other'] = get_fx_and_zero_rate_factor(
                     field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
+                # the compo is monitored on S*X, so a bridge needs the cross's variance too
+                field_index['Compo_Underlying'] = get_compo_barrier_underlying(
+                    field, stochastic_offsets)
         else:
             field_index['Check_Payoff_Type'] = False
 
@@ -3579,7 +3596,13 @@ class EquityDiscreteExplicitAsianOption(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'Equity_Volatility': ['EquityPriceVol']}
 
-    documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
+    documentation = ('Fx And Equity', [
+        'A path independent option described [here](#discrete-asian-options)',
+        '',
+        'Under **Payoff_Type** `Compo` the average is on $S\\cdot X$: every future sample takes the',
+        'composite forward, carry and vol at its own tenor, the realised fixings the document carries',
+        'ARE composite prices and nothing converts them, and the local smile is read at the translated',
+        'strike $K/F_X(T)$.'])
 
     def __init__(self, params, valuation_options):
         super(EquityDiscreteExplicitAsianOption, self).__init__(params, valuation_options)
@@ -3787,7 +3810,11 @@ class EquityOptionDeal(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'Equity_Volatility': ['EquityPriceVol']}
 
-    documentation = ('Fx And Equity', ['A vanilla option described [here](./definitions.md#european-options)'])
+    documentation = ('Fx And Equity', [
+        'A vanilla option described [here](./definitions.md#european-options)',
+        '',
+        'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
+        'is read at the translated strike $K/F_X(T)$.'])
 
     def __init__(self, params, valuation_options):
         super(EquityOptionDeal, self).__init__(params, valuation_options)
@@ -3861,7 +3888,7 @@ class EquityOptionDeal(Deal):
         fx_rep = utils.calc_fx_cross(
             factor['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
 
-        strike = factor['Strike_Price'] * shared.one
+        strike = pricing.compo_strike(factor, deal_time, shared, factor['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(factor['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
             factor['Equity'], factor['Equity_Zero'],
@@ -3888,6 +3915,9 @@ class EquityBinaryOption(EquityOptionDeal):
     documentation = ('Fx And Equity', [
         'A vanilla option described [here](definitions.md#european-options)',
         '',
+        'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
+        'is read at the translated strike $K/F_X(T)$, each spread leg at its own.',
+        '',
         'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
         'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
         'either side of the strike, rather than the single-vol closed form, so the vol surface',
@@ -3912,7 +3942,8 @@ class EquityBinaryOption(EquityOptionDeal):
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
 
-        strike = deal_data.Factor_dep['Strike_Price'] * shared.one
+        strike = pricing.compo_strike(deal_data.Factor_dep, deal_time, shared,
+                                      deal_data.Factor_dep['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
             deal_data.Factor_dep['Equity'], deal_data.Factor_dep['Equity_Zero'],
@@ -4395,7 +4426,12 @@ class EquityOneTouchOption(Deal):
                      'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
-        'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])
+        'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)',
+        '',
+        'Under **Payoff_Type** `Compo` the priced and MONITORED process is the product $S\\cdot X$ -',
+        'spot at the fx cross, carry including the fx forward\'s own, vol composed of the two legs -',
+        'and the barrier is the payoff-currency level on that product it is declared as, with the',
+        'local smile read at the translated level $H/F_X(T)$.'])
 
     def __init__(self, params, valuation_options):
         super(EquityOneTouchOption, self).__init__(params, valuation_options)
@@ -4604,7 +4640,19 @@ class EquityBarrierOption(Deal):
                      'one alongside a non-`None` SpotModel is the same loud skip.',
                      '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not',
                      'to the deal - a Valuation Configuration declaring one that differs from the',
-                     'fitted block is refused by name.'])
+                     'fitted block is refused by name.',
+                     '',
+                     '**Payoff_Type Compo**',
+                     '',
+                     'A composite payoff is written on $S\\cdot X$, so that product is what is priced AND',
+                     'monitored on both arms: spot at the fx cross, forward at the outright fx forward, carry',
+                     'the local one plus the fx forward\'s own, vol the composition of the two legs, and',
+                     'strike and barrier the payoff-currency levels on $S\\cdot X$ they are declared as. On the',
+                     'continuously monitored arm the crossing test, the Brownian bridge and the',
+                     'Broadie-Glasserman-Kou shift all read that composite spot and the local smile is read',
+                     'at the translated strike $K/F_X(T)$, the local strike a payoff-currency strike on',
+                     '$S\\cdot X$ is worth; the bridge composes the two factors\' published variance rates',
+                     'with the implied correlation and observes endpoints where either publishes none.'])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)

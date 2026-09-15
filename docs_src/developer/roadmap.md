@@ -174,9 +174,15 @@ is recorded so a reader knows which readings rest on it.
 - **The accumulator's boundary placement under the recompute node is unmeasured.** Its latch is
   assembled off a node output, which puts it on the right side by construction, but the reading
   that would show a dropped cotangent has not been taken.
-- **Three analytic pricers adjust the volatility for a quanto and nothing else**: the barrier, the
-  one-touch and the discrete Asian. A composite-currency barrier, one-touch or Asian therefore
-  prices half-adjusted without raising. The composite smile coordinate is decision 2.
+- **A composite or quanto AMERICAN option takes no adjustment at all.** `pv_american_option`, which
+  an `EquityOptionDeal` carrying `Option_Style: American` reaches, never calls
+  `calc_vol_adjustment`, so its vol, forward and carry are the local asset's whatever the payoff
+  currency says.
+- **Two simulating pricers read a composite's smile at the untranslated strike.** The OSS discrete
+  barrier's expiry read (`pv_discrete_barrier_option`) and the autocall's (`pv_MC_AutoCallSwap`)
+  take the payoff-currency strike against the LOCAL forward, where the declared coordinate is that
+  strike translated by the fx forward. Their per-fixing strips already land on the declared
+  coordinate under a forward moneyness rule and differ only under a spot one.
 - **A deal's fallback to a sibling's factor may name one discovery never fetched.** Safe at the 34
   sites where a discount rate falls back to a currency, because the interest rate arrives
   transitively; the one cross-leg instance is fixed.
@@ -217,12 +223,11 @@ is recorded so a reader knows which readings rest on it.
 ## Decisions waiting on the desk
 
 Nothing here is blocked on work. Numbers are stable — commit messages and the model pages cite
-them — so closed decisions (3, 4, 13, 15) keep their numbers and are not listed.
+them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not listed.
 
 1. **The per-fixing smile read.** Sticky-forward moneyness or the deal's declared moneyness; both
    defensible, one can be the pricer's own quote. A switch, not a revert, with the six removed gates
    rebuilt.
-2. **The composite smile coordinate**, undeclared because every fixture is flat. Same class as 1.
 5. **Two rates-emitter questions**: an OIS block is about 14 MB live, some 26,000 authored floats
    on a 30-year strip — accept it or build a term-authored variant; and neither side rolls a
    business day, so a two-year USD OIS pays on a Saturday.

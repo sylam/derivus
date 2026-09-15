@@ -3027,14 +3027,24 @@ def spot_on_deal_grid(spot, deal_time, shared):
         len(deal_time), shared.simulation_batch)
 
 
-def bridge_interval_variance(shared, factor_dep, deal_time):
+def bridge_interval_variance(shared, factor_dep, deal_time, compo_rho=None):
     """Per-row SIMULATION log-variance spanning each step of a deal's own time axis, for the bridge.
 
     Elapsed time comes off the DEAL's axis: its dates need not be adjacent, or even start, on the
     scenario grid the rate was published against. The leading zero leaves the first date observing
     endpoints, and a factor with no published rate leaves every date so.
+
+    `compo_rho` monitors the PRODUCT S*X: the two factors' rates compose the way `compo_vol`
+    composes vols, and either one missing leaves the bridge off, the conservative direction. It is
+    the deal's IMPLIED correlation standing beside two simulation rates, the simulation publishing
+    no pair correlation of its own.
     """
-    rate = getattr(shared, 't_Bridge_Variance_Rate', {}).get(factor_dep.get('Barrier_Underlying'))
+    rates = getattr(shared, 't_Bridge_Variance_Rate', {})
+    rate = rates.get(factor_dep.get('Barrier_Underlying'))
+    if compo_rho is not None:
+        fx_rate = rates.get(factor_dep.get('Compo_Underlying'))
+        rate = None if rate is None or fx_rate is None else \
+            rate + 2.0 * float(compo_rho) * np.sqrt(rate * fx_rate) + fx_rate
     days = deal_time[:, TIME_GRID_MTM]
     return (rate or 0.0) / DayCount.DAYS_IN_YEAR * np.diff(days, prepend=days[0])
 
