@@ -5,6 +5,8 @@ mixed liquidity, both exercise styles, and a poison table of dead prints authore
 monkeypatching - the canned terminal is a `BloombergSession` subclass whose event walks yield rows
 (`test_bloomberg_discover.Walked`), and the engine is imported and never touched.
 
+  the requests     one CALENDAR request - every listed expiry at a few strikes - then one per
+                   expiry a pillar claims, at that expiry's own date, then the contract batches
   the budget       `equity_chain` imports the standard library, this package's own modules and a
                    LAZY blpapi - read off the source and proved again in a fresh interpreter
   the screen       the order of distrust, one contract per verdict, and a census of the whole
@@ -171,9 +173,20 @@ def canned_rows(poison=None, expiries=EXPIRIES, ratios=RATIOS):
     return rows
 
 
+#: WHAT THE CANNED CALENDAR LISTS at each expiry - a small `CHAIN_POINTS_OVRD`, the members
+#: nearest the money. The strikes a rung is chosen from arrive at the per-expiry request instead,
+#: which is the shape a pillar past the front of the board depends on.
+CALENDAR_POINTS = 6
+
+
 class Walked(BloombergSession):
     """A session whose event walks are canned rows - `test_bloomberg_discover.Walked` with the BULK
-    walk canned too, so the tolerance, the per-name filling and the batching all run."""
+    walk canned too, so the tolerance, the per-name filling and the batching all run.
+
+    The bulk walk answers the TWO SHAPES the emitter asks for, keyed off the override it is handed:
+    `CHAIN_ALL` answers the underlying beside the calendar, and a dated override answers that
+    expiry's own members.
+    """
 
     def __init__(self, rows, chain=None, underlying=None, errors=None):
         super().__init__()
@@ -185,8 +198,22 @@ class Walked(BloombergSession):
         self.chain = list(rows) if chain is None else chain
         self.underlying = underlying if underlying is not None else {
             'NAME': 'S&P 500 INDEX', 'PX_LAST': SPOT, 'LAST_UPDATE_DT': '2026-08-31',
-            equity_chain.CHAIN_FIELD: [{'Security Description': name} for name in self.chain]}
-        self.batches = []
+            equity_chain.CHAIN_FIELD: [{'Ticker': name} for name in self.members()]}
+        self.batches, self.overrides = [], []
+
+    def members(self, expiry=None):
+        """The chain rows one bulk answer carries: one expiry's whole listing under its own date,
+        or the CALENDAR - `CALENDAR_POINTS` members nearest the money at every listed expiry, plus
+        every member whose ticker spells no expiry, which is where a ledger can still name it."""
+        read = {name: equity_chain.member_ticker(name) for name in self.chain}
+        if expiry is not None:
+            return [name for name, found in read.items() if found and found[0] == expiry]
+        listed = [name for name, found in read.items() if found is None]
+        for date in sorted({found[0] for found in read.values() if found}):
+            here = sorted((abs(found[2] / SPOT - 1.0), name) for name, found in read.items()
+                          if found and found[0] == date)
+            listed.extend(name for _, name in here[:CALENDAR_POINTS])
+        return listed
 
     def _walk(self, securities, fields):
         self.batches.append(tuple(securities))
@@ -196,9 +223,16 @@ class Walked(BloombergSession):
             else:
                 yield security, 'Unknown/Invalid Security', {}
 
-    def _walk_bulk(self, securities, fields):
+    def _walk_bulk(self, securities, fields, overrides=None):
+        self.overrides.append(dict(overrides or {}))
+        asked = (overrides or {}).get(equity_chain.CHAIN_EXPIRY_OVERRIDE, equity_chain.CHAIN_ALL)
         for security in securities:
-            yield security, None, dict(self.underlying)
+            if asked == equity_chain.CHAIN_ALL:
+                yield security, None, dict(self.underlying)
+            else:
+                yield security, None, {equity_chain.CHAIN_FIELD: [
+                    {'Ticker': name} for name in self.members(
+                        datetime.datetime.strptime(asked, '%Y%m%d').date())]}
 
 
 def canned_chain(**kwargs):
@@ -335,18 +369,22 @@ def test_the_screen_classifies_off_the_terminals_own_answers():
 
 
 def test_the_canned_chain_is_believed_by_census():
-    """The whole 192-contract fixture through the real reader, counted by verdict and named per
-    family of refusal. A candidate silently dropped is indistinguishable from one never asked
-    about, and on a chain this size that difference IS the report."""
+    """The canned board through the real reader, counted by verdict and named per family of
+    refusal. A candidate silently dropped is indistinguishable from one never asked about, and on
+    a chain this size that difference IS the report.
+
+    THE BOARD LISTS 192 AND THE FETCH SEES 166: every member of the five expiries a pillar claims,
+    and at the front listing no pillar claims only the members the calendar named."""
     chain = canned_chain()
-    assert len(chain.contracts) + len(chain.rejected) == len(RATIOS) * 2 * len(EXPIRIES) == 192
+    seen = len(RATIOS) * 2 * len(EXPIRIES[1:]) + CALENDAR_POINTS
+    assert len(chain.contracts) + len(chain.rejected) == seen == 166
     census = {}
     for verdict in chain.rejected.values():
         census[verdict] = census.get(verdict, 0) + 1
-    assert census == {'american': 4, 'crossed': 1, 'expiry-unclaimed': 32, 'no-open-interest': 3,
+    assert census == {'american': 4, 'crossed': 1, 'expiry-unclaimed': 6, 'no-open-interest': 3,
                       'one-sided': 1, 'stale': 2, 'strike-outside-band': 22, 'undated': 1,
                       'unpriced': 1, 'unstated-exercise': 1}
-    assert len(chain.contracts) == 192 - sum(census.values()) == 124
+    assert len(chain.contracts) == seen - sum(census.values()) == 124
     # the front listing no pillar claims and the strikes outside each expiry's band are ledgered
     # UNASKED, the poison authored on them with them - the screen judges only what was asked
     assert all(verdict == 'expiry-unclaimed' for security, verdict in chain.rejected.items()
@@ -371,23 +409,25 @@ def test_the_canned_chain_is_believed_by_census():
 
 
 def test_the_fetch_asks_the_bulk_reader_for_the_chain_and_batches_its_members():
-    """TWO ROUND TRIPS AND NO SPELLED TICKERS. Membership comes off the BULK reader, because the
+    """BULK MEMBERSHIP AND NO SPELLED TICKERS. Membership comes off the BULK reader, because the
     scalar one answers row zero of an array and says nothing about the two thousand it dropped;
     the members batch through the tolerant scalar reader, so one refused ticker in a batch of fifty
     is the finding rather than the failure."""
     session = Walked(canned_rows())
     chain = fetch_equity_chain(session, UNDERLYING, AS_OF, batch=50)
-    # 192 listed; the 32 at the front listing no pillar claims and the 22 outside their expiry's
-    # band are never asked, by name
+    # 166 seen; the 6 the calendar named at the front listing no pillar claims and the 22 outside
+    # their expiry's band are never asked, by name
     assert [len(batch) for batch in session.batches] == [50, 50, 38]
     assert sum(len(batch) for batch in session.batches) == 138
     assert chain.rejected[security_of(EXPIRIES[0], 5000.0, 'Call')] == 'expiry-unclaimed'
     assert not any('09/30/26' in security for batch in session.batches for security in batch)
 
     # the bulk reader's own contract: a LIST of rows, not row zero
-    report = session.bulk_reference_data_report([UNDERLYING], [equity_chain.CHAIN_FIELD])
+    report = session.bulk_reference_data_report(
+        [UNDERLYING], [equity_chain.CHAIN_FIELD],
+        {equity_chain.CHAIN_EXPIRY_OVERRIDE: equity_chain.CHAIN_ALL})
     members = report[UNDERLYING]['fields'][equity_chain.CHAIN_FIELD]
-    assert isinstance(members, list) and len(members) == 192
+    assert isinstance(members, list) and len(members) == CALENDAR_POINTS * len(EXPIRIES) == 36
 
     # a member the terminal refuses lands on the ledger BY NAME rather than vanishing
     rows = canned_rows()
@@ -412,7 +452,7 @@ def test_only_members_a_pillar_claims_inside_the_band_are_asked():
     assert far not in asked and 'SPX NONSENSE Index' not in asked
     assert chain.rejected[far] == 'strike-outside-band'
     assert chain.rejected['SPX NONSENSE Index'] == 'unreadable-ticker'
-    assert len(asked) == 138 and len(chain.contracts) + len(chain.rejected) == 194
+    assert len(asked) == 138 and len(chain.contracts) + len(chain.rejected) == 168
 
     # widened, the band asks the far strike, which the terminal then refuses by name
     wider = fetch_equity_chain(Walked(rows, chain=list(rows) + [far]), UNDERLYING, AS_OF,
@@ -423,6 +463,57 @@ def test_only_members_a_pillar_claims_inside_the_band_are_asked():
         fetch_equity_chain(Walked(rows, chain=['SPX NONSENSE Index']), UNDERLYING, AS_OF)
     with pytest.raises(BloombergConfigurationError, match='member_band'):
         EquityLadder(member_band=0.0)
+
+
+def test_the_calendar_is_asked_once_and_every_claimed_expiry_once():
+    """ONE CALENDAR REQUEST, ONE PER PILLAR, AND THE LONG END ARRIVES. A chain field answering its
+    first eight thousand rows nearest-expiry-first, ignoring every override, cannot be asked for a
+    1y, 2y or 3y listing at all - it answers the front monthlies and stops. `CHAIN_TICKERS` honours
+    the overrides, so the head asks for EVERY listed expiry at a few strikes - the CALENDAR, which
+    is what the pillars are matched against - and each expiry a pillar claims is then asked for by
+    its own date at `chain_points` strikes.
+
+    Four claims: the head's own override, one request per claimed expiry and none for an unclaimed
+    one, the answer filtered to the date it was asked for, and what a chain costs in requests.
+    """
+    session = Walked(canned_rows())
+    fetch_equity_chain(session, UNDERLYING, AS_OF, batch=50)
+    head, dated = session.overrides[0], session.overrides[1:]
+
+    assert head == {equity_chain.CHAIN_EXPIRY_OVERRIDE: equity_chain.CHAIN_ALL,
+                    equity_chain.CHAIN_POINTS_OVERRIDE: str(equity_chain.CALENDAR_POINTS)}
+    # one per expiry a pillar claims, at that expiry's own date and the ladder's own count; the
+    # front listing no pillar claims is never asked for at all
+    assert [asked[equity_chain.CHAIN_EXPIRY_OVERRIDE] for asked in dated] == \
+        [expiry.strftime('%Y%m%d') for expiry in EXPIRIES[1:]]
+    assert {asked[equity_chain.CHAIN_POINTS_OVERRIDE] for asked in dated} == \
+        {str(EquityLadder().chain_points)}
+    # one calendar, five pillars, three batches of contracts
+    assert len(session.overrides) == 6 and len(session.batches) == 3
+
+    # and the strikes the rungs are chosen from ARRIVE at the per-expiry request: the calendar,
+    # listing a few points an expiry, never named them
+    calendar = {row['Ticker'] for row in session.underlying[equity_chain.CHAIN_FIELD]}
+    asked = {security for batch in session.batches for security in batch}
+    assert len(calendar) == CALENDAR_POINTS * len(EXPIRIES)
+    assert len(asked - calendar) == 108
+    assert security_of(EXPIRIES[5], 5375.0, 'Call') in asked - calendar
+
+    # THE ANSWER IS FILTERED TO THE DATE IT WAS ASKED FOR: a terminal that ignored the override
+    # would answer another expiry's members, which are not this expiry's listing and are not asked
+    # about - and the chain that comes back is the one the honest terminal answers, bytes included
+    stray = security_of(EXPIRIES[0], 3500.0, 'Put')
+
+    class Ignoring(Walked):
+        def members(self, expiry=None):
+            found = super().members(expiry)
+            return found if expiry is None else found + [stray]
+
+    ignoring = Ignoring(canned_rows())
+    chain = fetch_equity_chain(ignoring, UNDERLYING, AS_OF)
+    assert stray not in chain.rejected
+    assert not any(stray in batch for batch in ignoring.batches)
+    assert equity_option_block(chain, FORWARD)[1] == equity_option_block(canned_chain(), FORWARD)[1]
 
 
 def test_a_field_exception_does_not_throw_the_contract_away_with_it():
@@ -459,7 +550,7 @@ def test_a_blank_spot_refuses_before_a_ladder_is_built_on_it():
 
     session = Walked(canned_rows())
     session.underlying = dict(session.underlying, **{equity_chain.CHAIN_FIELD: []})
-    with pytest.raises(IncompleteChain, match='OPT_CHAIN'):
+    with pytest.raises(IncompleteChain, match='CHAIN_TICKERS'):
         fetch_equity_chain(session, UNDERLYING, AS_OF)
 
 
@@ -507,8 +598,8 @@ def test_an_american_chain_refuses_by_name_with_its_remedy():
 
 def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise():
     """THE NEAR MISS, where a refusal gated on an EMPTY chain named the wrong cause: one European
-    contract among 191 American listings fired the floor, which asks a desk to quote more of a
-    chain already listing six expiries and sixteen strikes, and said neither `american` nor
+    contract among the board's American listings fired the floor, which asks a desk to quote more
+    of a chain already listing six expiries and sixteen strikes, and said neither `american` nor
     `exercise`.
 
     So the refusal reads the CENSUS - the chain cannot reach the floor and more candidates were
@@ -521,14 +612,14 @@ def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise
                 for index in range(len(EXPIRIES)) for ratio in RATIOS
                 for side in ('Call', 'Put') if (index, ratio, side) != survivor}
     chain = canned_chain(poison=american)
-    assert len(chain.contracts) == 1 and len(chain.rejected) == 191
+    assert len(chain.contracts) == 1 and len(chain.rejected) == 165
 
     with pytest.raises(UnsupportedExerciseStyle) as refusal:
         equity_option_block(chain, FORWARD)
     message = str(refusal.value)
     assert 'SPX Index' in message and 'exercise style' in message and 'american' in message
     assert 'European exercise' in message and 'SX5E Index' in message
-    assert '137 of its 191 candidates' in message and '32 expiry-unclaimed' in message
+    assert '137 of its 165 candidates' in message and '6 expiry-unclaimed' in message
     assert '22 strike-outside-band' in message
     # what it must NOT say: the floor's message and its wrong remedy
     assert 'distinct contract' not in message and 'more expiries and strikes' not in message
@@ -1659,7 +1750,11 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
 #: `quotes_per_expiry` is a switch and its OFF position is the delta ladder bit for bit. A relative
 #: tolerance cannot say that: re-associating one weight - `vega * sqrt(OI) / d` into
 #: `vega * (sqrt(OI) / d)` - passes every approx in this file and moves every document in the world.
-DEFAULT_BLOCK_SHA = '2e3091410bad08ee0f9daae78916765626f80a9af121fb905eafdda713b5f1c8'
+#:
+#: The census rides in `Quote_Source`, so WHAT THE FETCH SAW moves these bytes as surely as a
+#: weight does: the pin is over a chain that saw the calendar's members at the expiry no pillar
+#: claims, not a whole listing nobody pulls.
+DEFAULT_BLOCK_SHA = 'fa62b4080739d6871a49115f9296bd4c0752bbda159327fb6d222426780fc50a'
 
 #: The two-pillar ladder of `E2E_LADDER` asking for five quotes an expiry: ten rows, over the
 #: family's own floor of eight, which is what makes the JSON half of this gate minutes and not hours.
@@ -1803,6 +1898,10 @@ def test_a_live_terminal_answers_or_the_smoke_skips_by_name():
     from derivus_bloomberg.errors import BloombergFXError
     from derivus_bloomberg.session import blpapi_module
 
+    # a live pull is a decision, never a side effect of running the suite on a workstation with
+    # a terminal: it costs the terminal a dozen requests and is taken by setting the variable
+    if not os.environ.get('DERIVUS_LIVE_BLOOMBERG'):
+        pytest.skip('live Bloomberg smoke runs only with DERIVUS_LIVE_BLOOMBERG set')
     try:
         blpapi_module()
     except BloombergFXError as absent:

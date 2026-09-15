@@ -134,11 +134,16 @@ and refresh validate a complete block before assigning it; after that assignment
 
 ## The equity option chain
 
-`equity_chain` turns an index's listed chain into one `LogVar2FJModelPrices` block. It reaches
-the terminal twice — the underlying and its `OPT_CHAIN`
-membership through `BloombergSession.bulk_reference_data_report`, then every member in batches
-through the tolerant scalar reader — and spells no ticker of its own: a listed chain's membership
-is the terminal's to state, so the trust boundary is the **screen** rather than a grammar.
+`equity_chain` turns an index's listed chain into one `LogVar2FJModelPrices` block. It reaches the
+terminal in two kinds of bulk request through `BloombergSession.bulk_reference_data_report` — the
+underlying beside a `CHAIN_TICKERS` **calendar**, every listed expiry at a few strikes, and then one
+request per expiry a pillar claims, at that expiry's own date and `chain_points` strikes — and asks
+what the band and the grid leave of those members in batches through the tolerant scalar reader.
+`CHAIN_TICKERS` rather than `OPT_CHAIN` because it honours those overrides: `OPT_CHAIN` answers its
+first eight thousand rows, nearest expiries first, whatever it is asked, which on a large board is
+the front monthlies and no expiry a 1y, 2y or 3y pillar could claim. No ticker is spelled by the
+package itself: a listed chain's membership is the terminal's to state, so the trust boundary is
+the **screen** rather than a grammar.
 
 ```python
 from derivus_bloomberg.equity_chain import EquityForward, EquityLadder, equity_option_block, \

@@ -60,10 +60,25 @@ UNDERLYING_FIELDS = ('NAME', 'PX_LAST', 'LAST_UPDATE_DT')
 #: The BULK field naming a listed chain's members. Read through
 #: `BloombergSession.bulk_reference_data_report`, never the scalar reader - `getValue()` on an
 #: array element answers row ZERO and says nothing about the two thousand it dropped.
-CHAIN_FIELD = 'OPT_CHAIN'
+#:
+#: `CHAIN_TICKERS` rather than `OPT_CHAIN` because it HONOURS the overrides below. `OPT_CHAIN`
+#: answers at most eight thousand rows, the nearest expiries first, and ignores every override:
+#: a board's next six monthlies fill it and no expiry a 1y, 2y or 3y pillar could claim arrives.
+CHAIN_FIELD = 'CHAIN_TICKERS'
 
-#: The sub-field of an `OPT_CHAIN` row that carries the member's ticker. Tried first; a row that
-#: does not carry it falls back to its single string value, and a row with neither is ledgered.
+#: The two request-level overrides the chain field reads: WHICH expiry it lists - `CHAIN_ALL` or
+#: one date spelled `YYYYMMDD` - and HOW MANY strikes around the money it lists there.
+CHAIN_EXPIRY_OVERRIDE = 'CHAIN_EXP_DT_OVRD'
+CHAIN_POINTS_OVERRIDE = 'CHAIN_POINTS_OVRD'
+CHAIN_ALL = 'ALL'
+
+#: What the CALENDAR request lists at each expiry. Small, because the calendar is read for its
+#: DATES - which expiries a pillar claims - and never for the strikes it will ask about.
+CALENDAR_POINTS = 10
+
+#: The sub-field of a chain row that carries the member's ticker. Tried first; a row that does not
+#: carry it falls back to its single string value - a `CHAIN_TICKERS` row's own `Ticker` - and a
+#: row with neither is ledgered.
 CHAIN_MEMBER_FIELD = 'Security Description'
 
 #: What every candidate contract is asked. The first four are the CONTRACT (what it is), the next
@@ -298,6 +313,10 @@ class EquityLadder:
     member_band: float = 0.1
     member_step: float = 0.02
     member_budget: int = 600
+    #: HOW MANY STRIKES AROUND THE MONEY each claimed expiry's own chain request lists. Generous
+    #: because it is asked once per pillar and every listed strike inside any band the ladder could
+    #: draw has to be in it: a member the request never listed cannot be asked for a price.
+    chain_points: int = 500
 
     def __post_init__(self):
         # coerced to tuples, so a caller who hands in a list gets a frozen ladder rather than a
@@ -328,6 +347,10 @@ class EquityLadder:
             raise BloombergConfigurationError('minimum_contracts must be at least one')
         if not (self.member_sd > 0.0 and self.member_band > 0.0 and self.member_step > 0.0):
             raise BloombergConfigurationError('member_sd, member_band and member_step must be positive')
+        if self.chain_points < 1:
+            raise BloombergConfigurationError(
+                'chain_points is how many strikes each claimed expiry is listed at, so a chain '
+                'asked for none lists nothing to ask a price for')
         if self.member_budget < self.minimum_contracts:
             raise BloombergConfigurationError('member_budget must reach minimum_contracts')
         object.__setattr__(self, 'parity_band', tuple(self.parity_band))
@@ -465,10 +488,12 @@ def implied_vol(price, forward, strike, rate, tau, is_call, iterations=100,
 class ChainDataSource(Protocol):
     """The two readers a chain needs: the BULK one for the chain's own membership, the scalar one
     for everything asked of a member. Both are `BloombergSession`'s and both are TOLERANT - on a
-    chain of two thousand names a refused ticker is a finding, and the screen applies the policy."""
+    chain of two thousand names a refused ticker is a finding, and the screen applies the policy.
+    The bulk reader carries `overrides`, which is what makes the chain field answer one expiry."""
 
-    def bulk_reference_data_report(self, securities: Sequence[str],
-                                   fields: Sequence[str]) -> Mapping[str, Mapping[str, object]]:
+    def bulk_reference_data_report(self, securities: Sequence[str], fields: Sequence[str],
+                                   overrides: Mapping[str, object] = None
+                                   ) -> Mapping[str, Mapping[str, object]]:
         ...
 
     def reference_data_report(self, securities: Sequence[str],
@@ -541,10 +566,11 @@ def probe(source, securities, fields, batch=BATCH, on_batch=None):
 
 
 def chain_members(row, chain_field=CHAIN_FIELD):
-    """`(members, unreadable)` off one bulk `OPT_CHAIN` answer.
+    """`(members, unreadable)` off one bulk chain answer.
 
     A bulk row is a dict of Bloomberg's own sub-field names: `Security Description` is tried by
-    name first, then the row's only string value, since the sub-field's spelling is Bloomberg's
+    name first, then the row's only string value - a `CHAIN_TICKERS` row carries its ticker under
+    `Ticker` and reads through that one - since the sub-field's spelling is Bloomberg's
     and not a contract this package can pin. A row neither route reads a ticker out of comes back
     as `unreadable` rather than skipped, so it reaches the ledger like every other refusal.
     """
@@ -671,6 +697,21 @@ def member_ticker(security):
         return None
 
 
+def chain_calendar(members, as_of, ladder):
+    """`{expiry: tau}` off member tickers alone - the listed, unexpired expiries `assign_expiries`
+    then matches the pillars to. The CALENDAR request is read through this and so are the pooled
+    members, so one rule says which expiries a chain offers."""
+    expiries = {}
+    for name in members:
+        read = member_ticker(name)
+        if read is None:
+            continue
+        tau = (read[0] - as_of).days / ladder.days_per_year
+        if tau > 0.0:
+            expiries[read[0]] = tau
+    return expiries
+
+
 def members_to_ask(members, spot, as_of, ladder):
     """`(asked, ledger)` - the members whose expiry a pillar claims and whose strike is the listed
     one nearest a grid point inside that expiry's band, read off the tickers alone; everything
@@ -682,11 +723,7 @@ def members_to_ask(members, spot, as_of, ladder):
             ledger[name] = 'unreadable-ticker'
         else:
             parsed[name] = read
-    expiries = {}
-    for expiry, _, _ in parsed.values():
-        tau = (expiry - as_of).days / ladder.days_per_year
-        if tau > 0.0:
-            expiries[expiry] = tau
+    expiries = chain_calendar(parsed, as_of, ladder)
     claimed = set(assign_expiries(expiries, ladder)[0].values())
     # per expiry and side, the listed strike nearest each grid point inside the band is asked
     nearest = {}
@@ -716,12 +753,17 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
                        chain_field=CHAIN_FIELD):
     """The listed chain of one index underlying, screened - `underlying` in, `EquityChain` out.
 
-    TWO ROUND TRIPS AND NO MORE VOCABULARY THAN THAT. The first asks the underlying what it IS,
-    what it is worth and when it last printed, and asks for its chain in the same request; the
-    second asks the members a pillar can claim inside the strike band - read off their tickers,
-    the rest ledgered unasked - the ten questions a quote needs, in `discover.BATCH`-sized chunks. No
-    ticker is spelled by this package at any point - a listed chain's membership is the terminal's
-    to state, which is why the bulk route exists and why the SCREEN is the trust boundary.
+    TWO KINDS OF BULK REQUEST, THEN THE CONTRACT BATCHES. The CALENDAR asks the underlying what it
+    IS, what it is worth and when it last printed, and asks the chain field for every listed expiry
+    at `CALENDAR_POINTS` strikes in the same request - from which `assign_expiries` says which
+    expiries the pillars claim. Then ONE REQUEST PER CLAIMED EXPIRY asks the chain field for that
+    expiry's own date at `chain_points` strikes, the answer filtered to that date. What the band
+    and the grid leave of the pooled members is asked the ten questions a quote needs, in
+    `discover.BATCH`-sized chunks: one calendar request, at most one per pillar, a few batches.
+
+    No ticker is spelled by this package at any point - a listed chain's membership is the
+    terminal's to state, which is why the bulk route exists and why the SCREEN is the trust
+    boundary.
 
     The spot refuses BY NAME on anything that is not a positive number and on a print date it
     cannot read or that is older than `stale_days`: every strike, forward and weight below hangs
@@ -730,7 +772,8 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
     """
     ladder = ladder or EquityLadder()
     head = source.bulk_reference_data_report(
-        [underlying], list(UNDERLYING_FIELDS) + [chain_field])
+        [underlying], list(UNDERLYING_FIELDS) + [chain_field],
+        {CHAIN_EXPIRY_OVERRIDE: CHAIN_ALL, CHAIN_POINTS_OVERRIDE: str(CALENDAR_POINTS)})
     row = head.get(underlying, {'ok': False, 'error': 'no answer in the response', 'fields': {}})
     if not row.get('ok') and row.get('error'):
         raise_response_error('{}: {}'.format(underlying, row['error']))
@@ -767,6 +810,25 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
             'chain, or the ticker names something with no options on it. Ask for an index with a '
             'listed chain (SPX Index, SX5E Index)'.format(underlying, chain_field))
 
+    for expiry in sorted(assign_expiries(
+            chain_calendar(members, as_of, ladder), ladder)[0].values()):
+        answer = source.bulk_reference_data_report(
+            [underlying], [chain_field],
+            {CHAIN_EXPIRY_OVERRIDE: expiry.strftime('%Y%m%d'),
+             CHAIN_POINTS_OVERRIDE: str(ladder.chain_points)})
+        listed = answer.get(underlying, {'ok': False, 'error': 'no answer in the response'})
+        if not listed.get('ok') and listed.get('error'):
+            raise_response_error('{} at {}: {}'.format(
+                underlying, expiry.isoformat(), listed['error']))
+        found, unread = chain_members(listed.get('fields') or {}, chain_field)
+        unreadable.extend(unread)
+        # filtered to the date asked for: an override the terminal ignored answers the front month
+        # again, whose members the calendar already carries
+        for name in found:
+            read = member_ticker(name)
+            if read is None or read[0] == expiry:
+                members.append(name)
+
     # a row with ANY field in it is read and the SCREEN judges it; only an empty row is refused.
     # `ok: False` covers a mere fieldException too - an untraded contract carries no VOLUME - and
     # gating on it cost 1,855 of 8,000 contracts on a measured live SPX chain
@@ -777,14 +839,14 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
             '{} would be asked for {} contracts against a member_budget of {} - {} listed, the '
             'band {:g} sd at {:g} reference vol on a {:g} grid - so nothing was asked. Narrow the '
             'ladder or raise the budget deliberately'.format(
-                underlying, len(asked), ladder.member_budget, len(members), ladder.member_sd,
+                underlying, len(asked), ladder.member_budget, len(set(members)), ladder.member_sd,
                 ladder.reference_vol, ladder.member_step))
     if not asked:
         raise IncompleteChain(
             '{} lists {} members and none is at an expiry the ladder (ATM {}) can claim within '
             '{:g} log-units of the spot {:.6g}, so nothing was asked for a price: {}. Widen the '
             'ladder, or check that the chain spells expiry and strike in its tickers'.format(
-                underlying, len(members),
+                underlying, len(set(members)),
                 '/'.join('{:g}'.format(pillar) for pillar in sorted(ladder.pillars)),
                 ladder.member_band, spot,
                 ', '.join('{} {}'.format(count, verdict) for verdict, count in sorted(

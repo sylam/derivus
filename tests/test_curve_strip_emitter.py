@@ -1168,6 +1168,10 @@ def test_a_live_terminal_answers_the_strip_or_the_smoke_skips_by_name():
     from derivus_bloomberg import security_map
     from derivus_bloomberg.session import blpapi_module
 
+    # a live pull is a decision, never a side effect of running the suite on a workstation with
+    # a terminal; it is taken by setting the variable
+    if not os.environ.get('DERIVUS_LIVE_BLOOMBERG'):
+        pytest.skip('live Bloomberg smoke runs only with DERIVUS_LIVE_BLOOMBERG set')
     try:
         blpapi_module()
     except NO_TERMINAL as absent:
