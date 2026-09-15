@@ -516,6 +516,18 @@ def test_the_calendar_is_asked_once_and_every_claimed_expiry_once():
     assert equity_option_block(chain, FORWARD)[1] == equity_option_block(canned_chain(), FORWARD)[1]
 
 
+def test_a_member_spelled_without_its_sector_is_asked_with_the_underlyings():
+    """The chain field lists a member as `SX5E 03/19/27 C5100`, without the sector the terminal
+    needs to recognise a security; asked as `... Index` it answers. The suffix is the
+    underlying's own, so a chain spelled either way is asked the same names."""
+    rows = canned_rows()
+    session = Walked(rows, chain=[name[:-len(' Index')] for name in rows])
+    chain = fetch_equity_chain(session, UNDERLYING, AS_OF)
+    asked = {security for batch in session.batches for security in batch}
+    assert asked and all(security.endswith(' Index') for security in asked)
+    assert len(chain.contracts) == 124
+
+
 def test_a_field_exception_does_not_throw_the_contract_away_with_it():
     """THE POLICY IS APPLIED CLIENT-SIDE. The tolerant reader answers `ok: False` on ANY
     per-security trouble, and a fieldException is trouble: a contract that has not traded today

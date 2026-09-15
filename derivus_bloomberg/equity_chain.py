@@ -829,6 +829,11 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
             if read is None or read[0] == expiry:
                 members.append(name)
 
+    # the chain field spells a member without its sector (`SX5E 03/19/27 C5100`), which the
+    # terminal refuses as a security; asked with the underlying's own it answers
+    sector = underlying.split()[-1]
+    members = [name if name.endswith(' ' + sector) else '{} {}'.format(name, sector)
+               for name in members]
     # a row with ANY field in it is read and the SCREEN judges it; only an empty row is refused.
     # `ok: False` covers a mere fieldException too - an untraded contract carries no VOLUME - and
     # gating on it cost 1,855 of 8,000 contracts on a measured live SPX chain
