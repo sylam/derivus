@@ -4759,13 +4759,18 @@ class VolSurface:
             tenor_money_alpha_next = flat_surface.new(money_alpha[subset_index_next])
             tenor_money_indices_next = flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64)
 
+            # index_select over take: the same elements off the 1-D surface, and a backward
+            # (index_add_) that Deterministic_Kernels pins where take's put_ has no kernel
+            def read(idx):
+                return flat_surface.index_select(0, idx.reshape(-1)).reshape(idx.shape)
+
             if code[FACTOR_INDEX_SubType][0] == 'Malz':
                 # interpolate along variance for term
                 term_prior = flat_surface.new(expiry_tenor.tenor[index].reshape(-1, 1, 1))
                 term_post = flat_surface.new(expiry_tenor.tenor[index_next].reshape(-1, 1, 1))
                 t_expiry = flat_surface.new(expiry.clip(min=expiry_tenor.min).reshape(-1, 1))
-                var_prior = term_prior * flat_surface.take(tenor_money_indices)**2
-                var_post = term_post * flat_surface.take(tenor_money_indices_next)**2
+                var_prior = term_prior * read(tenor_money_indices)**2
+                var_post = term_post * read(tenor_money_indices_next)**2
                 var_surface = time_modifier * torch.sum(
                     var_prior * tenor_money_alpha * (1.0 - alpha) +
                     var_post * tenor_money_alpha_next * alpha, dim=1)
@@ -4773,8 +4778,8 @@ class VolSurface:
             else:
                 # interpolate along volatility
                 surface = time_modifier * torch.sum(
-                    flat_surface.take(tenor_money_indices) * tenor_money_alpha * (1.0 - alpha) +
-                    flat_surface.take(tenor_money_indices_next) * tenor_money_alpha_next * alpha, dim=1)
+                    read(tenor_money_indices) * tenor_money_alpha * (1.0 - alpha) +
+                    read(tenor_money_indices_next) * tenor_money_alpha_next * alpha, dim=1)
 
             shared.t_Buffer[time_code] = (surface.reshape(-1), code, CurveTenor(new_moneyness_tenor))
 

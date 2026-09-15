@@ -154,10 +154,10 @@ def test_deterministic_kernels_is_read_every_run_and_set_both_ways():
     reads whatever that run declared - a `No` run LEAVES IT OFF, or the next job in the process
     inherits a pin it never asked for.
 
-    `warn_only` is the field's own promise and not a formality - `put_`, the backward of the vol
-    surface's `take`, has no deterministic kernel and runs anyway - so `Yes` pins what torch can
-    pin and no more. This fixture carries no collateralised netting set and reproduces either way,
-    which is why the flag assertions rather than the hex one are what the dropped read fails.
+    `warn_only` is the field's own spelling: an operation torch cannot pin warns and runs unpinned
+    rather than refusing the valuation, so `Yes` pins what torch can pin and no more. This fixture
+    carries no collateralised netting set and reproduces either way, which is why the flag
+    assertions rather than the hex one are what the dropped read fails.
     """
     _, _, pinned, _ = cmc(KNOCK_IN_CMC, gradient=True, deterministic='Yes')
     assert torch.are_deterministic_algorithms_enabled(), (

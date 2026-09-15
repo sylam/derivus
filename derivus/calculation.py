@@ -480,10 +480,10 @@ DETERMINISTIC_KERNELS = (
     'Pin the GPU backward wherever torch has a deterministic kernel. The backward of `gather` and '
     'of `index_select` accumulates atomically wherever indices collide - a collateralised netting '
     'set does - so one gradient entry can differ in its last bits between two runs of identical '
-    'inputs. `Yes` selects torch\'s deterministic kernels with `warn_only`, so an operation that '
-    'has none - `put_`, the backward of the vol surface\'s flat read - warns and runs unpinned, '
-    'at 1.03x the wall clock of a collateralised CVA gradient. It pins ONE machine and ONE build: '
-    'the same document on another card or another torch version is not pinned to these bits.')
+    'inputs. `Yes` selects torch\'s deterministic kernels with `warn_only` - an operation torch '
+    'cannot pin warns and runs unpinned rather than refusing the valuation - at 1.03x the wall '
+    'clock of a collateralised CVA gradient. It pins ONE machine and ONE build: the same document '
+    'on another card or another torch version is not pinned to these bits.')
 
 
 def batch_seed(random_seed, batch_index):
