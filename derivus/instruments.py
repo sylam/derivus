@@ -2164,7 +2164,7 @@ class StructuredDeal(Deal):
             net_mtm = net_mtm + child.Instrument.calculate(shared, time_grid, child)
 
         # TODO - net off cashflows across the children
-        if deal_data.Instrument.field.get('Net Cashflows', 'No')=='Yes':
+        if deal_data.Instrument.field.get('Net_Cashflows', 'No') == 'Yes':
             pass
 
         return pricing.interpolate(net_mtm, shared, time_grid, deal_data, interpolate_grid=False)
