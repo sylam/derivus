@@ -79,3 +79,19 @@ def test_the_gradient_stands_up_where_the_correlation_is_extreme():
         r = torch.full_like(p, corner).requires_grad_(True)
         g = torch.autograd.grad(utils.BivN(p, q, r).sum(), (p, q, r))
         assert all(bool(torch.isfinite(x).all()) for x in g), corner
+
+
+def test_the_backward_is_the_closed_form_and_differentiates_again():
+    """The three partials are taken in closed form rather than off the quadrature's tape: over the
+    banked grid, against their explicit spelling, and a second derivative through them - which the
+    Hessian path asks for when it differentiates a barrier's gradient."""
+    p, q, r = (x.requires_grad_(True) for x in _grid(torch.float64)[0])
+    got = torch.autograd.grad(utils.BivN(p, q, r).sum(), (p, q, r), create_graph=True)
+    s = torch.sqrt(1.0 - r * r)
+    want = (utils.norm_pdf(p) * utils.norm_cdf((q - r * p) / s),
+            utils.norm_pdf(q) * utils.norm_cdf((p - r * q) / s),
+            torch.exp(-(p * p - 2.0 * r * p * q + q * q) / (2.0 * s * s)) / (6.283185307179586 * s))
+    for name, x, y in zip(('dP', 'dQ', 'drho'), got, want):
+        assert torch.allclose(x, y, rtol=1e-10, atol=1e-14), (name, x, y)
+    second = torch.autograd.grad(sum(x.sum() for x in got), (p, q, r))
+    assert all(bool(torch.isfinite(x).all()) for x in second), second

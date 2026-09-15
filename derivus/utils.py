@@ -2902,13 +2902,8 @@ BVN_GAUSS = (
      0.14917298647260424, 0.15275338713072628))
 
 
-def BivN(P, Q, rho):
-    """The lower tail P(X <= P, Y <= Q) of a standard bivariate normal with correlation rho, by
-    Genz's algorithm: twenty-point Gauss-Legendre in polar coordinates for |rho| < 0.925, and over
-    his tail expansion beyond it. About 1e-15 in double and the last bits in single, differentiable
-    in all three arguments (1 - rho^2 is floored so the tail's derivatives stay finite at |rho| = 1)
-    and vectorised over any broadcastable shapes, in the inputs' dtype and on their device.
-    """
+def _bivn_genz(P, Q, rho):
+    """The value alone, by Genz's algorithm; called with no tape, so the nodes are never kept."""
     h, k, r = torch.broadcast_tensors(-P, -Q, rho)
     node = torch.tensor(BVN_GAUSS[0], dtype=h.dtype, device=h.device)
     node = torch.cat([1.0 - node, 1.0 + node])
@@ -2947,6 +2942,42 @@ def BivN(P, Q, rho):
     tail = torch.where(r > 0.0, tail + norm_cdf(-torch.maximum(h, kt)),
                        0.5 * (lim + lim.abs()) - tail)
     return torch.where(r.abs() < 0.925, polar, tail)
+
+
+class _BivN(torch.autograd.Function):
+    """Genz's value with its derivatives in closed form, spelled in differentiable ops so that a
+    second derivative still goes through."""
+
+    @staticmethod
+    def forward(ctx, P, Q, rho):
+        ctx.save_for_backward(P, Q, rho)
+        with torch.no_grad():
+            return _bivn_genz(P, Q, rho)
+
+    @staticmethod
+    def backward(ctx, grad):
+        # phi(P)Phi((Q - rho P)/s) and its mirror, and the density itself; 1 - rho^2 takes the
+        # value's own floor, so |rho| = 1 is a large derivative rather than an infinite one.
+        P, Q, rho = ctx.saved_tensors
+        r = rho.clamp(-1.0, 1.0)
+        var = ((1.0 - r) * (1.0 + r)).clamp(min=torch.finfo(P.dtype).eps)
+        s = torch.sqrt(var)
+        z = (P - r * Q) / s
+        out = (norm_pdf(P) * norm_cdf((Q - r * P) / s), norm_pdf(Q) * norm_cdf(z),
+               norm_pdf(Q) * norm_pdf(z) / s)
+        return tuple((grad * g).sum_to_size(x.shape) if want else None
+                     for want, g, x in zip(ctx.needs_input_grad, out, (P, Q, rho)))
+
+
+def BivN(P, Q, rho):
+    """The lower tail P(X <= P, Y <= Q) of a standard bivariate normal with correlation rho, by
+    Genz's algorithm: twenty-point Gauss-Legendre in polar coordinates for |rho| < 0.925, and over
+    his tail expansion beyond it. About 1e-15 in double and the last bits in single, vectorised over
+    any broadcastable shapes, in the inputs' dtype and on their device. Differentiable in all three
+    arguments off the closed forms rather than off the quadrature's tape, which the twenty nodes are
+    no longer kept for; 1 - rho^2 is floored so the derivatives stay finite at |rho| = 1.
+    """
+    return _BivN.apply(P, Q, rho)
 
 
 def declared_spot(code, name):
