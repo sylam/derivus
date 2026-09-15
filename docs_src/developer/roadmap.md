@@ -101,10 +101,12 @@ is recorded so a reader knows which readings rest on it.
   44 to 20.27 against the world's 20.92 and the prior row from 6.74 to 2.35 quote rows, where the
   same rows at the declared default windows move neither. The vendor's chain quotes no
   forward-start.
-- **The vendor's implied-volatility grid answers at 30, 60 and 90 days only**, so the long end of
-  every equity fit comes from the file's own surface or the listed chain; the desk's Nikkei mark
-  moves 4.6% between a chain-only fit and one carrying the file's 2.74-year at-the-money point.
-  Whether the workstation is entitled to a longer grid is a question for Bloomberg support.
+- **The Nikkei's implied-volatility surface answers one maturity** (2026-09-15), so its long end
+  comes from the listed chain, pulled in the Tokyo session, or the file's own surface; the desk's
+  Nikkei mark moves 4.6% between a chain-only fit and one carrying the file's 2.74-year
+  at-the-money point. The S&P 500, Nasdaq 100 and Euro Stoxx 50 surfaces answer three to
+  twenty-four months at 90 to 110 percent moneyness, and the listed chain carries every expiry
+  past that.
 - **A closes-only price archive attenuates the historical estimator's shock rows** (2026-09-11).
   Two names simulated from the four-factor process with every correlation row at 0.60 and
   re-estimated from daily closes read 0.55 on the return row, 0.32 and 0.53 on the two
@@ -228,9 +230,6 @@ is recorded so a reader knows which readings rest on it.
   that has to reproduce, and the document records which it was. It is set beside the cuBLAS pin so
   the dispatch workers inherit it, and it pins one machine and one build, not results across cards
   or versions. Unread: what the deterministic kernels cost on this workload.
-- **The exposure profile is reported undeflated.** The deflation curve is applied only inside the
-  CVA and FVA scalars, so a deflated expected exposure at an expiry row cannot be read from the
-  tables. Publish the discount factor beside the mark.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
@@ -405,7 +404,7 @@ every risk-neutral calibration inherits.
   (`-0x1.2c48f36318e38p+5`). The documents, their banks and the two scripts live in the
   maintainers' artifacts store outside the repository; moving them under `gates/` waits on a check
   that no banked document carries desk data.
-- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 32 gates over
+- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 37 gates over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
