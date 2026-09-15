@@ -2320,7 +2320,7 @@ class LVFit(utils.Residual):
                                               self.quotes, (), **self.final)[:len(self.quotes)],
                                 []))
         self.slow_rows = self.prior_report()
-        self.skew_rows = self.skew_gradient()
+        self.skew_rows, self.skew_declared = self.skew_gradient(), False
         self.scalars, self.levers, self.cum = self.evaluate(theta, self.fitted)
         self.misses = [100.0 * self.quote_vol(self.cum, quote) for quote in self.quotes]
 
@@ -2466,15 +2466,13 @@ class LVFit(utils.Residual):
         parameters mean, not one of them, and every pricer of this factor reads it here."""
         knots, values = self.l_knots(self.levels)
         values = values.detach().exp()
-        nearest = min(self.skew_rows, default=None)
         return {'Property_Aliases': None,
                 **{name: float(self.state[name]) for name in utils.LogVar2FJ.PARAM_NAMES},
                 'Cap_A': self.cap_level(),
                 'Steps_Per_Year': float(self.instrument['Steps_Per_Year']),
                 'C_Min': self.c_min, 'Residual_Law': self.law,
                 'On_Guard': self.on_guard(),
-                'Skew_Gradient': '' if nearest is None else '{:.12g},{:.12g}'.format(
-                    *self.skew_rows[nearest]),
+                'Skew_Gradient': self.skew_line(),
                 'Stickiness_Band': self.skew_band,
                 'Xi_Curve': utils.Curve([], [[float(t), float(v)]
                                              for t, v in zip(knots, values)]),
@@ -2588,6 +2586,12 @@ class LVFit(utils.Residual):
                 torch.autograd.grad(skew, leaf, retain_graph=True)[0], scale)]
         self.levels, self.warm = banked, warm
         return rows
+
+    def skew_line(self):
+        """`Skew_Gradient`'s text: the EARLIEST window `skew_rows` holds, blank where no window
+        was read - which is the tenor the factor's reserve is quoted at."""
+        nearest = min(self.skew_rows, default=None)
+        return '' if nearest is None else '{:.12g},{:.12g}'.format(*self.skew_rows[nearest])
 
     def shape_readings(self, tenors=(1.0 / 12.0, 1.0)):
         """`[(T, alpha*delta_A)]` at the calibrated expiries nearest `tenors` - the 1m and 1y rows
@@ -2805,18 +2809,22 @@ class LVFit(utils.Residual):
                                          self.ratio(*slope)) + bfly
                     + (bfly[0] - bfly[2], bfly[1] - bfly[2], self.ratio(*bfly))))
         # THE RESERVE LINE wherever the forward smile was not QUOTED: the calibrator has
-        # no deal, so it states the map from the two levers to Delta_skew, writes the nearest
+        # no deal, so it states the map from the two levers to Delta_skew, writes the declared
         # tenor's pair on the factor, and `utils.LogVar2FJ.skew_reserve` composes the rest at the deal
+        written = min(self.skew_rows, default=None)
         for (T1, tenor), (d_beta, d_rho) in (
                 {} if self.source in ('Quotes', 'Reference') else self.skew_rows).items():
             logging.info(
-                '  reserve line ({:g}y into {:g}y{}), band {:g} vol points: d(Delta_skew)/dBeta '
-                '{:+.4g} and d(Delta_skew)/dRho_S {:+.4g} vol points per unit at the {:g}y bucket '
-                '- a deal\'s |dPV/dDelta_skew| x band is utils.LogVar2FJ.skew_reserve of these '
-                'and its own (dPV/dBeta, dPV/dRho_S)'.format(
-                    T1, tenor, '' if self.targets else ', REPORTED - the block is off and these '
-                    'rows are the ladder\'s own maturities, fitted to nothing',
-                    self.skew_band, d_beta, d_rho, buckets[-1]))
+                '  reserve line at {:g}y into {:g}y, {}{}: band {:g} vol points, '
+                'd(Delta_skew)/dBeta {:+.4g} and d(Delta_skew)/dRho_S {:+.4g} vol points per '
+                'unit at the {:g}y bucket - a deal\'s |dPV/dDelta_skew| x band is '
+                'utils.LogVar2FJ.skew_reserve of these and its own (dPV/dBeta, dPV/dRho_S)'
+                .format(T1, tenor, 'the DECLARED window read post-fit on its own grid'
+                        if self.skew_declared else 'the LADDER\'s own block ends, no '
+                        'declared window being reachable',
+                        ' - WRITTEN on the factor as Skew_Gradient, the tenor every deal\'s '
+                        'reserve is quoted at' if (T1, tenor) == written else '',
+                        self.skew_band, d_beta, d_rho, buckets[-1]))
         # the composition check is the smile BEYOND the last bucket boundary: that rung is
         # the composition of the conditional laws either side of it, and the rungs inside the last
         # bucket are ordinary vanillas the earlier buckets already fitted
@@ -3024,17 +3032,16 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          '',
          'THE RESERVE LINE IS OWED WHEREVER THE FORWARD SMILE WAS NOT QUOTED, which is every',
          'ladder today, so it is written on the factor: $\\partial\\Delta_{skew}/\\partial\\beta$ and',
-         '$\\partial\\Delta_{skew}/\\partial\\rho_s$ in the last bucket at the nearest forward tenor,',
+         '$\\partial\\Delta_{skew}/\\partial\\rho_s$ in the last bucket at the DECLARED forward tenor,',
          'beside *Stickiness_Band*. With the block OFF those rows are REPORTED rather than',
          'targeted - the same *Forward_Tenors* windows moved onto the grid own BLOCK ENDS, since a',
-         'window end that is not one splits a block into two mixers and moves $\\theta^*$, so the',
-         'grid, the draws and $\\theta^*$ are the vanilla-only fit own to the bit and the tenor the',
-         'reserve is read at is a fact about the QUOTES. A deal reporting *Greeks* **First** composes',
+         'window end that is not one splits a block into two mixers and moves $\\theta^*$. What',
+         'the FACTOR carries is read once more at the DECLARED window, on a grid built to carry it',
+         'exactly and off the $\\theta^*$ just written. A deal reporting *Greeks* **First** composes',
          '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ band from them and its own two',
-         'derivatives (`utils.LogVar2FJ.skew_reserve`) and reports it as **Skew_Reserve**. It is',
-         'a NETTING-SET number: *Base_Revaluation* reports one gradient for the whole portfolio,',
-         'so that is what the reserve is composed from, and a per-deal one wants a per-deal',
-         'gradient this calculation does not produce.',
+         'derivatives (`utils.LogVar2FJ.skew_reserve`) and reports it as **Skew_Reserve** - PER',
+         'DEAL and for the portfolio, the set number being those deals contracted rather than',
+         'summed.',
          '',
          'WHAT THE FIT REPORTS. The vol-point miss per maturity and over the surface, unweighted',
          'and vega-weighted; the wing and convexity residuals; per bucket the parameters and',
@@ -3581,8 +3588,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                         market_price, fit.capped, fit.max_iter))
             fit.finish(theta)
             fit.verify()
-            fit.report()
+            # THE DECLARED WINDOW, off the factor this fit just wrote: its own grid ends where the
+            # ladder does, so the rows `finish` read are the nearest block ends and not the tenor
             price_factors[param_name] = fit.written()
+            declared = self.declared_skew_rows(
+                market_price, implied_params, sys_params, price_models, price_factors,
+                factor_interp)
+            fit.skew_rows, fit.skew_declared = declared or fit.skew_rows, bool(declared)
+            price_factors[param_name]['Skew_Gradient'] = fit.skew_line()
+            fit.report()
 
             if connect:
                 factor = utils.Factor(self.price_factor_type,
@@ -3616,6 +3630,23 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                     price_factors.get(self.factor_name(market_price)))
         fit.history = self.slow_history(market_price, instrument, price_models)
         return fit if self.prepare(fit, sys_params, factors, spot) else None
+
+    def declared_skew_rows(self, market_price, implied_params, sys_params, price_models,
+                           price_factors, factor_interp):
+        """The reserve line's model half at the windows `Forward_Tenors` DECLARES, read off the
+        factor just written on a grid built to carry them exactly - one forward pass, no stage run,
+        the same route `forward_smiles` takes. Empty where this ladder reaches no declared window,
+        and the fit's own block-end rows stand."""
+        instrument = dict(self.param, **implied_params['instrument'])
+        strikes = utils.LogVar2FJ.parse_floats(instrument['Psi_Strikes'], 'Psi_Strikes', 3)
+        fit = self.fit_for(
+            market_price, implied_params, sys_params, price_models, price_factors, factor_interp,
+            {'Forward_Smile_Source': 'Reference', 'Forward_Smiles': [
+                {'T1': T1, 'Delta': delta, 'Strike': k, 'Target_Vol': 0.0}
+                for T1, delta in ([utils.LogVar2FJ.tenor(x) for x in pair.split(':')]
+                                  for pair in str(instrument['Forward_Tenors']).split(','))
+                for k in strikes]})
+        return {} if fit is None or not fit.targets else fit.skew_gradient()
 
     def forward_smiles(self, sys_params, price_models, price_factors, factor_interp, market_prices,
                        rows=None):
@@ -3875,10 +3906,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
 
         Moved rather than declared because a window end that is not a block end is not on the
         walk's grid at all, and putting one there splits a block into two mixers and moves theta*
-        - so the reserve would be quoted off a different fit from the one written. What the log
-        prints is therefore the window the LADDER has, which on a chain quoting 0.5y and 2.7y is
-        not the 6m-into-6m a desk asked for; the reserve is the model's own sensitivity at
-        theta*, and the tenor it is read at is a fact about the quotes.
+        - so the reserve would be quoted off a different fit from the one written. These rows are
+        therefore the window the LADDER has, which on a chain quoting 0.5y and 2.7y is not the
+        6m-into-6m a desk asked for; what the FACTOR carries is `declared_skew_rows`' post-fit
+        reading at the declared window, on a grid built for it once theta* is fixed.
         """
         windows, rows = set(), []
         for pair in str(fit.instrument['Forward_Tenors']).split(','):

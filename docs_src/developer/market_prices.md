@@ -769,27 +769,30 @@ number, which is `ψ_bfly(1y into 1y)` on that very ladder and two of the three 
 model half.** `Stickiness_Band` (default **0.5 vol points**, the spread between the sticky-delta and
 LSV-like views) is the band; a deal's reserve is `|∂PV/∂Δ_skew| × band`, and with `Prior` withdrawn
 this is the ONLY place a desk's forward-smile view is priced. The calibration writes
-`Skew_Gradient` — `∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket at the nearest forward
+`Skew_Gradient` — `∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket at the DECLARED forward
 tenor, in vol points per unit — and `Stickiness_Band` beside it on the `LogVar2FJModelParameters`
 factor, both STRUCTURAL. A deal reporting `Greeks: First` on that factor composes
 `utils.LogVar2FJ.skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
 the answer as **`Skew_Reserve`** beside `Value` on the `mtm` frame. Two parameters carry one target,
 so the parameter move behind a vol point of `Δ_skew` is the MINIMUM-NORM one, `Jᵀ/(J Jᵀ)` — the
-convention the quote contraction takes over its null space. **It is a NETTING-SET number**:
-`Base_Revaluation.execute` calls `pricing.greeks` once, on the netting-set object and its total MTM,
-so there is one gradient in the calculation and the reserve is composed from it; a per-deal reserve
-wants a per-deal gradient this calculation does not produce. Measured on the desk's NKY autocall
-229524957 under the fit the landed defaults write: `Skew_Reserve` **11.7m ZAR, 28% of the mark**,
-composed identically by hand.
+convention the quote contraction takes over its null space. **It is reported PER DEAL and for the
+portfolio**: `pricing.greeks` composes the netting set's off the one gradient it takes, and
+`pricing.deal_reserves` takes one reverse sweep per deal against those two levers alone, so every
+deal row carries its own number beside the set's — which is those deals CONTRACTED rather than
+summed, `|Σ|` at most `Σ|·|` and far under it wherever a book has two sides. Measured on the desk's
+NKY autocall 229524957 under the fit the landed defaults write: `Skew_Reserve` **11.7m ZAR, 28% of
+the mark**, composed identically by hand.
 
 **With the block OFF the rows are REPORTED rather than targeted.** The calibrator can evaluate the
 forward window without aiming at it, and does: each `Forward_Tenors` pair is moved onto the two grid
 BLOCK ENDS nearest its own, the second strictly beyond the first. Moved, because a window end that
 is not a block end is not on the walk's grid at all — putting one there splits a block into two
 mixers and moves θ\*, and the reserve would then be quoted off a different fit from the one written.
-So the grid, the draws and θ\* are the vanilla-only fit's to the bit, and the tenor the reserve is
-read at is a fact about the QUOTES: on a chain quoting 0.51y and 2.74y the 6m-into-6m a desk asked
-for is reported as 0.51y into 2.23y, and the log line says so.
+So the grid, the draws and θ\* are the vanilla-only fit's to the bit. What the FACTOR carries is
+read once more once θ\* is fixed, at the window `Forward_Tenors` DECLARES: `declared_skew_rows`
+prepares the same fit around those two ends — a grid that carries them exactly, one forward pass,
+no stage run — so a desk asking 6m into 6m is reserved at 6m into 6m where the fit's own rows read
+0.51y into 2.23y. The log line names each window and marks the one written.
 
 **`Forward_Smile_Source` defaults to `None`, and `Prior` is WITHDRAWN.** *Vanillas do not close this
 model* — but a target is not a source: measured on all four index ladders, a

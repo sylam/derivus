@@ -50,11 +50,6 @@ These are defects in the engine: each has a change to this library that closes i
   for the fit but no longer writes it back onto the row, so the block reads zero after the fit. One
   line writes it back; because that mutates every block that round-trips through a file, the
   blast radius comes before the line.
-- **The skew reserve is one number per calculation** rather than per deal. It is composed from the
-  single gradient the base valuation takes and read at the two block ends nearest the declared
-  forward tenors, for the Nikkei 0.51 years into 2.23 for a declared six months into six, which
-  is honest but is not the tenor a two-year autocall is exposed to. A per-deal reserve needs a
-  per-deal gradient, and the declared tenor needs a post-fit reading on its own grid.
 - **A Gaussian residual reports two sensitivities the model never reads.** Under `Residual_Law:
   Gaussian` the tail parameters `Alpha` and `Beta` are filled with defaults and reported as
   sensitivities with identically zero rows. Dropping them would make the set of reported

@@ -149,6 +149,15 @@ class DealStructure(object):
                     raise
                 stats['Structs Skipped'] = stats.setdefault('Structs Skipped', 0) + 1
 
+    def deals(self):
+        """Every deal beneath this structure, sub-structures first - the order `report` lists
+        them in."""
+        for structure in self.sub_structures:
+            for deal in structure.deals():
+                yield deal
+        for deal in self.dependencies:
+            yield deal
+
     def resolve_structure(self, shared, time_grid):
         """Price every deal and sub-structure and return the accumulated MTM."""
 
@@ -2059,6 +2068,9 @@ class Base_Revaluation(Calculation):
             key: {name: factor.declared[name] for name in utils.LogVar2FJ.RESERVE_LINE}
             for key, factor in self.static_factors.items()
             if all(name in getattr(factor, 'declared', {}) for name in utils.LogVar2FJ.RESERVE_LINE)}
+        # a PER-DEAL reserve needs each deal's own value still on the tape, and nothing else here
+        # does - so a document carrying no reserve line pays nothing for it
+        shared_mem.keep_tensor = bool(shared_mem.reserve_line) and calc_greeks is not None
         return shared_mem
 
     def report(self):
@@ -2078,6 +2090,8 @@ class Base_Revaluation(Calculation):
                             self.gradients_as_df(v, header=deal.Instrument.field.get('Reference'), display_val=True))
                     elif k == 'Value':
                         data[k] = v.item()
+                    elif k == 'Skew_Reserve':
+                        data[k] = v
                 if deal.Instrument.field.get('Tags'):
                     data.update(dict(zip(tag_titles, deal.Instrument.field['Tags'][0].split(','))))
 
@@ -2175,6 +2189,8 @@ class Base_Revaluation(Calculation):
 
         if shared_mem.calc_greeks is not None:
             self.calc_stats['Greek_Execution_Time'] = time.monotonic()
+            # each deal's own boundary terms, for the per-deal reserve alone
+            by_deal = {} if shared_mem.keep_tensor else None
             if shared_mem.boundary_sets:
                 if shared_mem.gamma:
                     raise utils.SecondOrderRefused(
@@ -2193,11 +2209,15 @@ class Base_Revaluation(Calculation):
                 # number. Worth zero forward, so only the tape gains a term
                 correction = pricing.boundary_correction(
                     shared_mem, lambda value: value.sum(axis=0), mtm,
-                    float(params.get('Boundary_AAD_Bandwidth', 0.01)))
+                    float(params.get('Boundary_AAD_Bandwidth', 0.01)), by_deal)
                 if correction is not None:
                     mtm = mtm + correction
             pricing.greeks(shared_mem, ns_obj, mtm)
             self.calc_stats['Greek_Execution_Time'] = time.monotonic() - self.calc_stats['Greek_Execution_Time']
+            if shared_mem.keep_tensor:
+                started = time.monotonic()
+                pricing.deal_reserves(shared_mem, self.netting_sets.deals(), by_deal)
+                self.calc_stats['Deal_Reserve_Time'] = time.monotonic() - started
 
         # the quanto correlation delta, which no leaf carries. `Greeks: 'All'` is excluded because
         # the second-order report labels its axes off the first-order index

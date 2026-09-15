@@ -1180,7 +1180,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='THE RESERVE LINE the calibration wrote: '
                       '$\\partial\\Delta_{skew}/\\partial\\beta$ and '
                       '$\\partial\\Delta_{skew}/\\partial\\rho_s$ in the LAST bucket at the '
-                      'nearest forward tenor, in vol points per unit, comma separated. A deal '
+                      'DECLARED forward tenor, in vol points per unit, comma separated. A deal '
                       'reporting Greeks First composes '
                       '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
                       'it and its own two derivatives (`utils.LogVar2FJ.skew_reserve`). Blank '

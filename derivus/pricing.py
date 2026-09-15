@@ -709,7 +709,7 @@ def stochastic_boundary_correction(gap, objective_jump, bandwidth):
     return ((gap - gap.detach()) * (density * weights * objective_jump).detach()).sum()
 
 
-def boundary_correction(shared, objective, reported_mtm, bandwidth):
+def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None):
     """Total boundary correction for every recorded decision - a margin call's transfer, a barrier
     crossing, an autocall trigger, any observed event whose value jump is real.
 
@@ -718,6 +718,9 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
     to `resolve_structure`'s root sum, and a collateralised set's post-collateral net sits at the
     relu kink by construction. `gap > 0` means the trigger fired, matching a jump of
     J(fired) - J(did not).
+
+    `by_deal`, where a caller offers one, also collects each correction under the deal that
+    registered it: the objective is linear in the portfolio, so a deal's own terms are its own.
     """
     def score(delta):
         return objective(reported_mtm + delta)
@@ -726,6 +729,8 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth):
     for bset in shared.boundary_sets:
         for k, (gap, jump) in enumerate(bset.objective_jumps(score)):
             corrections.append(stochastic_boundary_correction(gap, jump, bandwidth))
+            if by_deal is not None:
+                by_deal.setdefault(bset.deal, []).append(corrections[-1])
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 # the forward value is zero by construction; the COEFFICIENT it multiplies into
                 # the gap's graph is the reading
@@ -1101,8 +1106,8 @@ def skew_reserve(shared, grad):
     LAST-BUCKET `dPV/dBeta`, `dPV/dRho_S`.
 
     The band is a reserve rather than a mark wherever the forward smile was not quoted, which is
-    every ladder today, so the two halves live apart and meet here. Summed over factors: what is
-    reported is one portfolio number, as the gradient it is composed with is.
+    every ladder today, so the two halves live apart and meet here. Summed over factors, and about
+    whatever `grad` is: the portfolio's reported gradient, or one deal's own (`deal_reserves`).
     """
     total = None
     for key, line in getattr(shared, 'reserve_line', {}).items():
@@ -1115,6 +1120,37 @@ def skew_reserve(shared, grad):
                                            float(line['Stickiness_Band']))
         total = one if total is None else total + (one or 0.0)
     return total
+
+
+def deal_reserves(shared, deals, corrections=None):
+    """Each deal's OWN forward-skew reserve, written on its result block beside the portfolio's:
+    the same reserve line composed with that deal's own LAST-BUCKET `(dPV/dBeta, dPV/dRho_S)`.
+
+    ONE REVERSE SWEEP PER DEAL, against the two leaves each line names and nothing else, so what
+    it costs is the walk's backward and not the whole gradient's. The batched form
+    (`utils.vmapped_jacobian`) is closed here: the checkpointed walk RE-DRAWS its normals in the
+    backward and vmap refuses a random operation inside it. `corrections` is each deal's own
+    boundary term, added before the sweep so a deal whose trigger is decided on simulated state
+    carries its flux exactly as the portfolio does. The kept tensor is dropped with it - it is the
+    last reference to the deal's half of the graph.
+    """
+    kept = [deal for deal in deals if 'tensor' in (deal.Calc_res or {})]
+    names = [utils.check_scope_name(utils.Factor(key.type, key.name + (name,)))
+             for key in getattr(shared, 'reserve_line', {}) for name in ('Beta', 'Rho_S')]
+    leaves = [(name, tensor) for key, tensor in shared.calc_greeks
+              for name in [utils.check_scope_name(key)] if name in names]
+    if not (kept and leaves):
+        return
+    parts = corrections or {}
+    for deal in kept:
+        value = sum(parts.get(deal.Instrument.field.get('Reference'), ()),
+                    deal.Calc_res.pop('tensor').sum())
+        rows = torch.autograd.grad([value], [tensor for _, tensor in leaves],
+                                   allow_unused=True, retain_graph=True)
+        one = skew_reserve(shared, {name: np.array([float(row.reshape(-1)[-1])])
+                                    for (name, _), row in zip(leaves, rows) if row is not None})
+        if one is not None:
+            deal.Calc_res['Skew_Reserve'] = one
 
 
 def greeks(shared, deal_data, mtm):

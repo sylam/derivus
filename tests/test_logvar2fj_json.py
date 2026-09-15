@@ -243,6 +243,35 @@ def test_the_skew_reserve_is_the_minimum_norm_contraction():
     assert abs(reported - hand) <= 1e-9 * hand, (reported, hand)
 
 
+def test_the_reserve_is_per_deal_beside_the_portfolio():
+    """Every deal's OWN `Skew_Reserve` on the mtm frame beside the portfolio's, on a four-deal
+    book quoting two sides.
+
+    The reserve is a band times a SENSITIVITY, so the portfolio is the deals CONTRACTED and its
+    `|sum|` is at most their `sum |.|` - here 9.059e-4 against 1.608e-2, 5.6% of it, the two sides
+    cancelling. And a deal's number is its own rather than a share of the portfolio's: AC1 reads
+    the same 0x1.c527ee5221e24p-8 in this book as it does alone, where the one-deal book's
+    portfolio row IS that deal's, bit for bit.
+    """
+    legs = [('AC1', 'Buy'), ('AC2', 'Sell'), ('AC3', 'Buy'), ('AC4', 'Sell')]
+    factor = _priced(factor=dict(LIVE_NIG, Skew_Gradient=SKEW_GRADIENT,
+                                 Stickiness_Band=STICKINESS_BAND))
+
+    def reserves(rows, name):
+        frame = _run(_job(_base(greeks='First'), [
+            {'Instrument': {'.Deal': _autocall(Reference=reference, Buy_Sell=side)}}
+            for reference, side in rows], **factor), name)['Results']['mtm']
+        return dict(zip(frame['Reference'], frame['Skew_Reserve']))
+
+    book, alone = reserves(legs, 'four_deal'), reserves(legs[:1], 'one_deal')
+    per = [book[reference] for reference, _ in legs]
+    assert all(x > 0.0 for x in per), per
+    assert abs(book['root']) <= sum(abs(x) for x in per), (book['root'], per)
+    assert abs(book['root']) < 0.5 * sum(abs(x) for x in per), (book['root'], per)
+    assert alone['root'].hex() == alone['AC1'].hex(), alone
+    assert book['AC1'].hex() == alone['AC1'].hex(), (book['AC1'], alone['AC1'])
+
+
 def test_a_factor_with_no_reserve_line_reports_none():
     """A blank `Skew_Gradient` states no reserve, and the mtm frame carries no column for one.
 
