@@ -204,6 +204,10 @@ class DealStructure(object):
                 raise
             except Exception as e:
                 logging.critical('Deal skipped - {}'.format(e.args))
+                # the same rule as `Deal.calculate`: a post_process that prices a leg can meet a
+                # named refusal, and swallowing one leaves the structure marking at its accumulation
+                if utils.is_fatal_pricing_error(e):
+                    raise
             finally:
                 if mark is not None:
                     utils.BoundarySet.claim(shared, mark)

@@ -772,9 +772,9 @@ def is_fatal_pricing_error(e):
     is wrong, and a named refusal swallowed into a zero mark on a job that then succeeds has said
     nothing at all. Everything else keeps the canonical skip.
 
-    Read by all four guards over a deal — `Deal.calculate`, `Deal.build_features` and both compile
-    guards in `DealStructure` — so one predicate decides everywhere the answer would otherwise be a
-    quiet zero."""
+    Read by all five guards over a deal — `Deal.calculate`, `Deal.build_features`, both compile
+    guards in `DealStructure` and its `post_process` one — so one predicate decides everywhere the
+    answer would otherwise be a quiet zero."""
     return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError,
                           UnpriceableSchedule)) or (
         isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
@@ -1766,6 +1766,29 @@ def concat_resets(blocks, dim):
                       for x in blocks], dim)
 
 
+def static_factor_names(codes):
+    """The names in `codes` no model simulates - what a one-column forecast is frozen on."""
+    return ' + '.join(check_tuple_name(c[FACTOR_INDEX_Offset])
+                      for c in codes if not c[FACTOR_INDEX_Stoch])
+
+
+def join_resets(blocks, dim, deal_data, codes):
+    """Join a leg's known resets to the ones still forecast, refusing a forecast that answers with
+    one scenario column while the known block carries the batch.
+
+    `concat_resets` broadcasts that shape; this refuses it, because the factor behind it is frozen
+    and the exposure a Monte Carlo would report off one number is meaningless.
+    """
+    if min(x.shape[-1] for x in blocks) < max(x.shape[-1] for x in blocks):
+        raise UnpriceableSchedule(
+            '{} forecasts its remaining resets off {}, which no model simulates: a frozen factor '
+            'answers every scenario with one number, so the exposure this Monte Carlo would report '
+            'is meaningless. Declare a model for it in Price Models, or price the book under a '
+            'base valuation.'.format(
+                deal_data.Instrument.field.get('Reference'), static_factor_names(codes)))
+    return torch.cat(blocks, dim)
+
+
 class TensorResets(TensorSchedule):
     def __init__(self, schedule, offsets):
         super(TensorResets, self).__init__(schedule, offsets)
@@ -1821,9 +1844,7 @@ class TensorResets(TensorSchedule):
 
         if shared.simulation_batch > 1 and not all(r[FACTOR_INDEX_Stoch] for r in forward):
             logging.info('floating leg forecasts off STATIC %s - its resets are one number in '
-                         'every scenario', ' + '.join(check_tuple_name(r[FACTOR_INDEX_Offset])
-                                                      for r in forward
-                                                      if not r[FACTOR_INDEX_Stoch]))
+                         'every scenario', static_factor_names(forward))
 
         # fetch all fixed resets
         return torch.squeeze(

@@ -5320,9 +5320,13 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
         known_fx = factor_dep['Cashflows'].known_resets(
             shared.simulation_batch, utils.CASHFLOW_INDEX_FXResetValue, utils.CASHFLOW_INDEX_FXResetDate)
 
+        # the pair a still-unfixed nominal resets off, named where a frozen one is refused
+        fx_codes = mtm_currency[0] + factor_dep['Currency'][0]
+
         # the fx FORWARDS at each reset, which differ slightly from the spot fx rate
-        old_fx_rates = (torch.cat([torch.stack(known_fx), sim_fx_forward], dim=0)
-                        if known_fx else sim_fx_forward).squeeze(dim=1)
+        old_fx_rates = (utils.join_resets(
+            [torch.stack(known_fx), sim_fx_forward], 0, deal_data, fx_codes)
+            if known_fx else sim_fx_forward).squeeze(dim=1)
 
     forwards = utils.calc_time_grid_curve_rate(factor_dep['Forward'], deal_time, shared)
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
@@ -5396,7 +5400,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                     cashflows.np[past_fx_resets.shape[1]:, utils.CASHFLOW_INDEX_FXResetDate],
                     discount_block.time_grid[time_ofs:time_ofs + size], shared)
 
-                all_fx_resets = torch.cat([past_fx_resets, future_fx_resets], dim=1)
+                all_fx_resets = utils.join_resets(
+                    [past_fx_resets, future_fx_resets], 1, deal_data, fx_codes)
 
                 # the nominal in the resetting currency, and the next period's
                 Pi = all_fx_resets * cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
@@ -5787,6 +5792,9 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
     all_fx_spot = utils.calc_fx_cross(
         factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_resets, shared)
 
+    # the curve a still-unfixed reset is forecast off, named where a frozen one is refused
+    forecast_codes = factor_dep['ForwardPrice'] or factor_dep['Commodity']
+
     if factor_dep['ForwardPrice'] is None:
         # the forward curve reconstructed from the simulated components,
         # spot x exp((carry + repo) tau); past resets sample F(reset_day, fixing_day) off the same
@@ -5812,7 +5820,8 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
         torch.squeeze(reset_samples, dim=1) * all_fx_spot, dim=1) \
         if sim_resets.any() else shared.fillvalue
     old_resets = torch.squeeze(
-        torch.cat([torch.stack(known_resets), reset_values], dim=0) if known_resets else reset_values, dim=1)
+        utils.join_resets([torch.stack(known_resets), reset_values], 0, deal_data, forecast_codes)
+        if known_resets else reset_values, dim=1)
 
     start_index, start_counts = np.unique(cash_start_idx, return_counts=True)
 
@@ -5860,7 +5869,8 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
                     reset_block.np[offset:, utils.RESET_INDEX_Reset_Day],
                     discounts.time_grid[time_ofs:time_ofs + size], shared)
 
-                all_resets = torch.cat([past_resets, future_resets * forwardfx], dim=1)
+                all_resets = utils.join_resets(
+                    [past_resets, future_resets * forwardfx], 1, deal_data, forecast_codes)
             else:
                 all_resets = past_resets
 

@@ -130,14 +130,6 @@ is recorded so a reader knows which readings rest on it.
 
 ### The autocall, TARF and barrier pricers
 
-- **An energy or commodity floating leg with fixings already set fails against a static forward
-  curve** (2026-09-10). Such a leg joins its known resets to the ones still to forecast, and a
-  curve that is not simulated answers with one scenario column where the known block carries the
-  full width; the join refuses the shape with a tensor error naming dimensions rather than the leg
-  or the curve. The rate legs had the same failure until their join was replaced by a broadcasting
-  one, which exists and is proven; the two energy and commodity sites still use the plain join.
-  One call at each, unmade because no document in the repository reaches it and an unmeasured
-  change is not a fix.
 - **A parametric FX surface never mints its parameter sub-factors** (2026-09-15). The equity
   surface lookup has a branch for a surface declared by its skew or by its SVI parameters and the
   FX surface lookup has none, so an FX surface declared that way fails at the lookup with an

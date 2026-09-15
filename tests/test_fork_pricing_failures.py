@@ -12,8 +12,9 @@ the skip, which is asserted here too, because base valuation and credit Monte Ca
 
 `utils.UnpriceableSchedule` joins that class from the other direction. The first two members say the
 FRAMEWORK is wrong; this one says the DOCUMENT is, and it is fatal because a named refusal swallowed
-into a zero mark has said nothing at all. It is read by four guards - the two in `Deal`, and both
-compile guards in `DealStructure`, where an authored schedule is first touched.
+into a zero mark has said nothing at all. It is read by five guards - the two in `Deal`, both
+compile guards in `DealStructure`, where an authored schedule is first touched, and its
+`post_process` one, where a container prices a child leg.
 
 The end-to-end gates rebuild the deal shapes a fork's curve reads used to be predicted wrong for,
 each asserting the ANSWER rather than the absence of a crash: the lazily built run must equal the
@@ -21,7 +22,6 @@ one whose Hermite coefficients cover the whole block.
 """
 import copy
 import json as jsonlib
-import logging
 import os
 import sys
 
@@ -449,7 +449,7 @@ def test_a_degenerate_reset_window_refuses_by_name_and_the_run_fails_loud():
 
 
 def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
-    """`is_fatal_pricing_error` is read by FOUR guards, and the two compile ones are why the gate
+    """`is_fatal_pricing_error` is read by FIVE guards, and the two compile ones are why the gate
     above sees a raise at all: an authored schedule is touched in `calc_dependencies`, which
     `add_deal_to_structure` wraps in the skip-and-continue.
 
@@ -463,11 +463,12 @@ def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
         'the bare KeyError this row replaced must still take the canonical skip - it is what an '
         'unrelated missing field looks like')
 
-    # and both compile guards read it, off the source rather than off a second fixture: a guard
-    # that stopped consulting the predicate would swallow the refusal again with nothing red
+    # and the three DealStructure guards read it, off the source rather than off a second fixture:
+    # a guard that stopped consulting the predicate would swallow the refusal again with nothing red
     import inspect
 
     from derivus.calculation import DealStructure
-    for guard in (DealStructure.add_deal_to_structure, DealStructure.add_structure_to_structure):
+    for guard in (DealStructure.add_deal_to_structure, DealStructure.add_structure_to_structure,
+                  DealStructure.resolve_structure):
         body = inspect.getsource(guard)
         assert 'is_fatal_pricing_error' in body and 'raise' in body, guard.__name__
