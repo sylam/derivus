@@ -83,14 +83,13 @@ BARRIERS = [('Down_And_Out', 1.12, 1.25, 'Call'), ('Down_And_In', 1.12, 1.25, 'C
 #: The plan and the factor universe of every job document under `tests/fixtures`, as they read
 #: BEFORE declared defaults reached a deal. `(plan_hash, resolved factors, missing factors)` - a
 #: default entering the program moves the first and a default minting a factor moves the rest.
+#: The hash is taken over `Correlations` in the nested form the file carries, which is the only
+#: spelling of that section: a document declaring none hashes the same either way.
 PINNED = {
     'autocall_job.json': (
         'a5f6560a00df96fd7f0a5b5b1087e60495c6321517431c54e6afcb13931f5d73', 5, 0),
-    # re-pinned 2026-09-14: the document's own `Correlations` section is keyed by name PAIR on the
-    # explicit path too, so the plan carries the four correlations it declares instead of a
-    # section keyed by a string nothing reads. The factor universe is untouched
     'commodity_aps_world.json': (
-        'b18b01c43a4dbdf4562d1441624e00e06d145e255aae2a14791f8fcce74baf35', 6, 0),
+        '031cdb75215423015c9c7735d7d97dd389ba5070d89df6ae1e3319d6f6e9f61f', 6, 0),
     # re-pinned 2026-09-03: the DOCUMENT changed, not the reading of it. `Barrier_Hit` retired -
     # the knock-out is a fold over the schedule - so the block lost a field and the plan is a
     # different program. The factor universe is untouched (5, 0) and the mark is bit-identical at
@@ -100,9 +99,9 @@ PINNED = {
     'fx_tarf_job.json': (
         '0413fa7e4ff497523561e44e1ab205369d6948731061e3479fd2714a099f93d1', 5, 0),
     'platinum_hedge_shipping.json': (
-        'bbdbb1deabdb17e91f00bc1a627a50cc22c8ccce35cf65f8cddfb6cd67c2b037', 2, 0),
+        'b0ca22eeb753a95307dabfeb3e788c4348185b820e647a310fc354303978656e', 2, 0),
     'policy_test_simulate_only.json': (
-        '7d58d418ce8a4ce3eea75d4edfb69298c3a0065011bee26bfe690f2c142d9a85', 2, 0),
+        '5f0f0bbc5a7139803121bd818a9856e72336c90ac2002720db1016c3ec72ba22', 2, 0),
 }
 
 #: The deal types whose CONSTRUCTOR writes into the authored block - `setdefault` calls that

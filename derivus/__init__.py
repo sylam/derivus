@@ -35,7 +35,8 @@ from . import fields
 from . import utils
 from .instruments import construct_instrument
 from .schema import deal_at
-from .config import CustomJsonEncoder, Config, compress_deal_data, wire_sections
+from .config import (CustomJsonEncoder, Config, compress_deal_data, correlation_names,
+                     wire_sections)
 
 
 def update_dict(d, u):
@@ -415,8 +416,8 @@ class Context:
         new_cfg = Config()
         new_cfg.parse_json(path_name)
 
-        # check we need to set the base_date
-        if new_cfg.params['System Parameters'].get('Base_Date') is None:
+        # check we need to set the base_date - the declared default is the empty string
+        if not new_cfg.params['System Parameters'].get('Base_Date'):
             # today as a DATE: a wall-clock default is a nondeterministic plan input - two loads
             # of one job must hash the same, and Base_Date is a date everywhere it is read
             new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now().normalize()
@@ -622,8 +623,9 @@ class Context:
         here, because that is a different program rather than a different number.
 
         `params['Correlations']` is the SIMULATION matrix feeding the cholesky - a compile input, and
-        a different thing entirely from the `Correlation` price factor a quanto reads. It is re-keyed
-        off its name PAIR here only because JSON has no tuple key.
+        a different thing entirely from the `Correlation` price factor a quanto reads. It is hashed
+        in the nested form the file carries, JSON having no tuple key, and `sort_keys` makes that
+        form as deterministic as a flat one.
         """
         cfg = self.current_cfg
         params = dict(cfg.params)
@@ -633,8 +635,7 @@ class Context:
         params['Market Prices'] = {
             name: schema.partition_market_price(block)[0]
             for name, block in cfg.params.get('Market Prices', {}).items()}
-        params['Correlations'] = {'{}/{}'.format(*pair): value
-                                  for pair, value in cfg.params['Correlations'].items()}
+        params['Correlations'] = correlation_names(cfg.params['Correlations'])
         calculation = {k: v for k, v in cfg.deals['Calculation'].items() if k != 'Random_Seed'}
         return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation)})
 

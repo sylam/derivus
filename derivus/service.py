@@ -82,8 +82,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import Context, bootstrappers, content_hash, solve_deal_field, spine, structures
-from .schema import (mapping, deal_at, remove_deal, sniff_indent, splice_deal, tables_of,
-                      update_market_quote, walk_job_deals)
+from .schema import (mapping, deal_at, job_children, remove_deal, sniff_indent, splice_deal,
+                      tables_of, update_market_quote, walk_job_deals)
 from ._version import __version__
 from .config import as_json
 from .spine import replay
@@ -410,6 +410,7 @@ class Book:
         self.path = path
         self.lock = threading.Lock()
         self._cache = (None, None, None)  # (mtime_ns, etag, text)
+        self._verdict = (None, None)  # (etag, missing factors) - the last validate of that text
 
     def _read(self):
         stamp = os.stat(self.path).st_mtime_ns
@@ -426,12 +427,22 @@ class Book:
         with self.lock:
             return self._read()
 
+    def baseline(self, document):
+        """The factors the book ALREADY lacks, cached against the etag - a booking's before and
+        after are the same walk where nothing has changed the file between them. Read under
+        `mutate`'s lock, which is what makes the cached etag the one just parsed."""
+        if self._verdict[0] != self._cache[1]:
+            self._verdict = (self._cache[1], set(load(document).validate()['factors']))
+        return self._verdict[1]
+
     def mutate(self, edit):
         """Read-modify-write under one lock. `edit(document)` returns `(write, outcome)`; a False
         first half leaves the file untouched - a refused booking is a read, not a write."""
         with self.lock:
             document, _ = self._read()
             write, outcome = edit(document)
+            # the verdict the edit took, where the document it validated is the one being written
+            validated = outcome.pop('_validated', None)
             if write:
                 text = json.dumps(document, indent=sniff_indent(self._cache[2]))
                 temporary = self.path + '.tmp'
@@ -439,6 +450,7 @@ class Book:
                     handle.write(text)
                 os.replace(temporary, self.path)
                 self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
+                self._verdict = (self._cache[1], validated) if validated is not None else (None, None)
             return dict(outcome, etag=self._cache[1])
 
 
@@ -679,7 +691,7 @@ def deal_verdict(document, references, deal_path, already_missing):
     return True, {'written': True, 'deal_path': deal_path, 'validate': verdict}
 
 
-def deal_edit(document, deal, parent_reference=None):
+def deal_edit(document, deal, parent_reference=None, already_missing=None):
     """One deal - or one whole structured subtree - added to a wire document, as the ONE edit
     closure `/book/deals` books through: baseline taken, node spliced in, verdict read off the
     whole document.
@@ -689,7 +701,8 @@ def deal_edit(document, deal, parent_reference=None):
     booking, one atomic write, one verdict. `/book/quote` books through this same function rather
     than a second write path, so a structured deal is refused exactly as a hand-booked one is.
     """
-    already_missing = set(load(document).validate()['factors'])
+    if already_missing is None:
+        already_missing = set(load(document).validate()['factors'])
     deal_path = splice_deal(document, instrument_of(booked_node(deal)), parent_reference)
     node = deal_at(document, deal_path)
     return deal_verdict(document, deal_references(node), deal_path, already_missing)
@@ -819,7 +832,7 @@ def book_deals(request: dict):
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
         if action == 'amend':
-            already_missing = set(load(document).validate()['factors'])
+            already_missing = live_book().baseline(document)
             node = deal_at(document, request['deal_path'])
             before = instrument_of(node)
             node['Instrument']['.Deal'].update(request['fields'])
@@ -827,12 +840,14 @@ def book_deals(request: dict):
                 document, [node['Instrument']['.Deal'].get('Reference')], request['deal_path'],
                 already_missing)
             if written:
-                outcome = dict(outcome, **spine_amendment(
-                    document, request['deal_path'], before, request.get('actor')))
+                outcome = dict(outcome, _validated=set(outcome['validate']['factors']),
+                               **spine_amendment(document, request['deal_path'], before,
+                                                 request.get('actor')))
             return written, outcome
-        written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'))
+        written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'),
+                                     live_book().baseline(document))
         if written:
-            outcome = dict(outcome, **spine_fill(
+            outcome = dict(outcome, _validated=set(outcome['validate']['factors']), **spine_fill(
                 document, outcome['deal_path'], request.get('quantity'),
                 request.get('execution_reference'), request.get('actor')))
         return written, outcome
@@ -903,7 +918,7 @@ def top_level_paths(document):
     each for. A reference that is not unique maps to None rather than to one of the nodes it could
     name, because the positional path is the identity and guessing it mis-labels a row."""
     found = {}
-    for position, node in enumerate(document['Calc']['Deals']['Deals']['Children']):
+    for position, node in enumerate(job_children(document)):
         reference = node['Instrument']['.Deal'].get('Reference')
         found[reference] = None if reference in found else str(position)
     return found
@@ -954,7 +969,7 @@ def consolidated_risk(document):
                                       Object='BaseValuation', Greeks='First')
     answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
               'mtm': 0.0, 'per_deal': [], 'greeks': []}
-    if not run['Calc']['Deals']['Deals'].get('Children'):
+    if not job_children(run):
         return answer
 
     _, out = load(run).run_job()
@@ -1084,7 +1099,7 @@ def netting_sets(document):
     the XVA view's instruments. A set nested inside another container is still a set, so the whole
     tree is walked rather than the top level."""
     return [(deal_path, node)
-            for deal_path, node in walk_job_deals(document['Calc']['Deals']['Deals']['Children'])
+            for deal_path, node in walk_job_deals(document)
             if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
 
 
@@ -1144,7 +1159,7 @@ def xva_document(document, node, counterparty):
     that priced at all has, and the risk-free curve the funding spread is measured against.
     """
     run = deepcopy(document)
-    run['Calc']['Deals']['Deals']['Children'] = [node]
+    job_children(run)[:] = [node]
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
     calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
     calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)
@@ -1900,7 +1915,7 @@ def book_solve(request: dict):
     """
     document, etag = live_book().read()
     try:
-        document['Calc']['Deals']['Deals']['Children'] = []
+        job_children(document)[:] = []
         deal_path = splice_deal(document, request['deal'])
     except ValueError as error:
         raise HTTPException(422, str(error))
@@ -2369,7 +2384,9 @@ def book_quote(request: dict):
         raise HTTPException(422, str(refused))
 
     def approve(book):
-        written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent)
+        # no _validated: pin_models edits the book after the verdict, so the verdict is not its
+        written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent,
+                                     live_book().baseline(book))
         # the model rides the SAME write as the deal - never a second one that could half-land
         if written and pinned:
             structures.pin_models(book, pending['deal'], pinned)
@@ -2401,7 +2418,7 @@ def blank_book():
     import datetime
 
     document = json.loads(json.dumps(JOB_SKELETON))
-    document['Calc']['Deals']['Deals']['Children'] = []
+    job_children(document)[:] = []
     stamp = {'.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
     document['Calc']['Calculation']['Base_Date'] = stamp
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']

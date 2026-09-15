@@ -1110,8 +1110,8 @@ def checker_legs(world):
     """
     out, curve = {}, world['curve']
     for instrument in world['block']['Instrument_Definitions']:
-        name = 'Swaption_{}_{}'.format(utils.date_fmt(instrument['Start']),
-                                       utils.date_fmt(instrument['Tenor']))
+        name = 'Swaption_{}_{}'.format(utils.offset_string(instrument['Start']),
+                                       utils.offset_string(instrument['Tenor']))
         effective = BASE + instrument['Start']
         dates = utils.generate_dates_backward(
             effective + instrument['Tenor'], effective, instrument['Fixed_Frequency'])

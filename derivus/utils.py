@@ -24,7 +24,8 @@ import scipy.optimize
 import scipy.stats
 import pandas as pd
 import numpy as np
-from pyparsing import Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group
+from pyparsing import (Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group,
+                       ParseBaseException)
 
 import torch
 
@@ -872,20 +873,17 @@ class Curve:
 
 
 class Offsets:
-    lookup = {'months': 'm', 'days': 'd', 'years': 'y', 'weeks': 'w'}
-
     def __init__(self, data):
         self.grid = isinstance(data[0], list)
         self.data = data
 
     def __str__(self):
-        ofs_fmt = lambda ofs: ''.join(['%d%s' % (v, Offsets.lookup[k]) for k, v in ofs.kwds.items()])
         if self.grid:
-            periods = [ofs_fmt(value[0]) if len(value) == 1 else '{0}({1})'.format(*map(ofs_fmt, value)) for value in
-                       self.data]
+            periods = [offset_string(value[0]) if len(value) == 1 else
+                       '{0}({1})'.format(*map(offset_string, value)) for value in self.data]
             return '{0}'.format(' '.join(periods))
         else:
-            periods = [ofs_fmt(value) for value in self.data]
+            periods = [offset_string(value) for value in self.data]
             return '[{0}]'.format(','.join(periods))
 
 
@@ -991,7 +989,11 @@ _period_parser = get_grid_grammar()[1]
 def parse_period(period):
     """`'3M'` -> a `DateOffset`, and the ONE spelling of that parse: the encoder writes a
     `.DateOffset` as this string, so every reader of one comes here."""
-    return _period_parser.parseString(period)[0]
+    try:
+        return _period_parser.parseString(period)[0]
+    except ParseBaseException:
+        raise ValueError('{!r} is not a period - a count and one of D, W, M or Y, largest unit '
+                         'first (3M, 1Y6M)'.format(period))
 
 
 def offset_string(offset):
@@ -4007,11 +4009,6 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
         return self.weight * (swaption.normal_vol - self.market_normal_vol(swaption.annuity))
 
 
-date_desc = {'years': 'Y', 'months': 'M', 'days': 'D'}
-# date formatter
-date_fmt = lambda x: ''.join(['{0}{1}'.format(v, date_desc[k]) for k, v in x.kwds.items()])
-
-
 #: The two quoting conventions this family prices, each as the matched pair `create_market_swaps`
 #: needs: the numpy pricer that builds the market premium, and the tensor twin of that same formula
 #: which the quote side differentiates. Keyed by `InterestYieldVol`'s declared `Distribution_Type`,
@@ -4102,7 +4099,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         expiry = float(curve_factor.get_day_count_accrual(base_date, exp_days))
         time_index = np.searchsorted(time_grid.mtm_time_grid, [exp_days], side='right') - 1
         swaption_name = 'Swaption_{}_{}'.format(
-            date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
+            offset_string(instrument['Start']), offset_string(instrument['Tenor']))
 
         float_pay_dates = generate_dates_backward(
             maturity, effective, instrument['Floating_Frequency'])
@@ -4166,7 +4163,8 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
         shifted_strike = K + shift_parameter
         # first check if we have the actual premium (not implied)
         if vol_surface.premiums is not None:
-            swaption_price = vol_surface.get_premium(date_fmt(instrument['Start']), date_fmt(instrument['Tenor']))
+            swaption_price = vol_surface.get_premium(offset_string(instrument['Start']),
+                                                     offset_string(instrument['Tenor']))
             if vol_surface.delta:
                 # one bracket for both solves, in the scale this surface quotes its vols in
                 bracket = vol_bracket(vol)
@@ -4175,8 +4173,8 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                         shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
                         *bracket)
                 except:
-                    modified_k = vol_surface.get_strike_from_premiums(date_fmt(instrument['Start']),
-                                                                      date_fmt(instrument['Tenor']))
+                    modified_k = vol_surface.get_strike_from_premiums(
+                        offset_string(instrument['Start']), offset_string(instrument['Tenor']))
                     logging.warning(
                         'Implied vol calc during delta bump failed - calculated strike is {} - using strike from premium file {}'.format(
                             K, modified_k))

@@ -38,10 +38,10 @@ on the pair's BASE currency and refuses the other side by name. A LEVEL crosses 
 barrier does, and a leverage is a ratio that never converts. See `furnish_accrual`.
 
 PARAMETERS vs A DEAL. The runner fills the shared block from the parameters, then the leg's pinned
-block, then its slots. `expiry` is `<n><D|W|M|Y>` read through `utils.offset_lookup`, or an ISO
-date for a broken one; anything else refuses by name rather than landing on today. Every step
-prices ONE leg against a deep copy of the whole book document with the deal tree emptied. `Price`
-is a plain base valuation; `Solve` is `derivus.solve_deal_field`, bracketed.
+block, then its slots. `expiry` is a tenor the job grammar parses, or an ISO date for a broken
+one; anything else refuses by name rather than landing on today. Every step prices ONE leg against
+a deep copy of the whole book document with the deal tree emptied. `Price` is a plain base
+valuation; `Solve` is `derivus.solve_deal_field`, bracketed.
 
 A SPREAD IS QUOTED; A MID IS BOOKED. The book's `FXVol` surface is bootstrapped from
 `Quoted_Market_Value` alone, while the `FXVolPrices` block beside it may carry each pillar's
@@ -67,16 +67,11 @@ which it used under `spot`, read off the document it priced.
 
 import copy
 import json
-import re
 import time
 
 from . import utils
 from . import schema
 from .schema import F, REQUIRED
-
-#: A tenor as the job grammar spells one: a count and a period letter. Anchored and whitespace
-#: tolerant, because '3M ' out of a spreadsheet cell is the same tenor.
-TENOR = re.compile(r'^\s*(\d+)\s*([DWMY])\s*$', re.IGNORECASE)
 
 #: How wide the runner brackets a strike solve, as a multiple of the market spot. A vanilla's value
 #: is monotone in its strike, so any bracket spanning deep in- and out-of-the-money holds the root;
@@ -447,14 +442,17 @@ def timestamp(value):
 def expiry_date(base_date, expiry):
     """`Base_Date` plus a quoted tenor, as the wire form a deal's `Expiry_Date` carries.
 
-    A tenor is `<n><D|W|M|Y>` read through `utils.offset_lookup`, so the letters mean here what
-    they mean in a job's date grid. An ISO date passes through for a broken date, and anything else
-    refuses by name - an unparsed tenor landing on the base date is a zero-day option.
+    A tenor is read through `utils.parse_period`, the grammar a job's date grid is read with, so
+    the letters mean here what they mean there. An ISO date passes through for a broken date, and
+    anything else refuses by name - an unparsed tenor landing on the base date is a zero-day
+    option.
     """
     import pandas as pd
-    found = TENOR.match(str(expiry))
-    if found:
-        offset = pd.DateOffset(**{utils.offset_lookup[found.group(2).upper()]: int(found.group(1))})
+    try:
+        offset = utils.parse_period(str(expiry))
+    except ValueError:
+        offset = None
+    if offset is not None:
         return {'.Timestamp': (base_date + offset).strftime('%Y-%m-%d')}
     try:
         return {'.Timestamp': pd.Timestamp(expiry).strftime('%Y-%m-%d')}
@@ -481,14 +479,14 @@ def fixing_grid(base_date, expiry, frequency):
     carrying a time would put the final fixing one comparison past a midnight last date.
     """
     import pandas as pd
-    found = TENOR.match(str(frequency))
-    if not found:
+    try:
+        period = utils.parse_period(str(frequency)).kwds
+    except ValueError:
         raise ValueError('{!r} is not a fixing frequency - 1M, 3M, 1W'.format(frequency))
-    period, count = utils.offset_lookup[found.group(2).upper()], int(found.group(1))
     base_date = pd.Timestamp(base_date).normalize()
     last, rows, step = timestamp(expiry_date(base_date, expiry)), [], 1
     while True:
-        fixing = base_date + pd.DateOffset(**{period: count * step})
+        fixing = base_date + pd.DateOffset(**{unit: n * step for unit, n in period.items()})
         if fixing > last:
             break
         rows.append([{'.Timestamp': fixing.strftime('%Y-%m-%d')},
@@ -1070,7 +1068,7 @@ def alone(document, deal):
     compiles faster per iterate of a solve.
     """
     iterate = copy.deepcopy(document)
-    iterate['Calc']['Deals']['Deals']['Children'] = []
+    schema.job_children(iterate)[:] = []
     iterate['Calc']['Calculation']['Object'] = 'BaseValuation'
     return iterate, schema.splice_deal(iterate, deal)
 
@@ -1182,12 +1180,8 @@ def netting_set_references(document):
     """Every `NettingCollateralSet` Reference the book carries, sorted - the set names a quote may
     be booked under. A set nested inside another container is still a set, so the whole tree is
     walked rather than the top level."""
-    try:
-        children = document['Calc']['Deals']['Deals']['Children']
-    except (KeyError, TypeError):
-        return []
     return sorted(node['Instrument']['.Deal'].get('Reference')
-                  for _, node in schema.walk_job_deals(children)
+                  for _, node in schema.walk_job_deals(document)
                   if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet')
 
 
@@ -1260,8 +1254,7 @@ def risk_document(document, nodes, surface):
     run = copy.deepcopy(document)
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
                                       Object='BaseValuation', Greeks='First')
-    children = list(run['Calc']['Deals']['Deals'].get('Children') or [])
-    run['Calc']['Deals']['Deals']['Children'] = children + list(nodes)
+    schema.job_children(run).extend(nodes)
     prices = run['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
     block = prices.get(FX_VOL_PRICES.format(surface))
     if not block:
@@ -1287,7 +1280,7 @@ def vol_risk(document, nodes, surface):
     from . import Context
     from .config import CustomJsonEncoder
     run = risk_document(document, nodes, surface)
-    if not run['Calc']['Deals']['Deals']['Children']:
+    if not schema.job_children(run):
         return {}
     context = Context().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
     context.bootstrap()

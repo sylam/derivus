@@ -689,17 +689,23 @@ QUOTE_TWO_WAY = [
 # and nothing else, and every reader of them is outside config.
 
 def job_children(document):
-    """The root `Children` list of a job document in wire form, or None where it is not a job."""
+    """The root `Children` list of a job document in wire form - the ONE read of the deal tree's
+    root, so a document that is not a job refuses by name rather than raising on a missing key."""
     try:
         children = document['Calc']['Deals']['Deals']['Children']
-        return children if isinstance(children, list) else None
     except (KeyError, TypeError):
-        return None
+        children = None
+    if not isinstance(children, list):
+        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
+    return children
 
 
 def walk_job_deals(children, path=()):
-    """Every deal node of a wire-form job, as `(deal_path, node)`. The positional path ('0/2/1')
-    is the node's identity, because References are not unique in a book."""
+    """Every deal node of a wire-form job, as `(deal_path, node)`, from the document or from a
+    `Children` list. The positional path ('0/2/1') is the node's identity, because References are
+    not unique in a book."""
+    if isinstance(children, dict):
+        children = job_children(children)
     for position, node in enumerate(children):
         deal_path = path + (position,)
         yield '/'.join(map(str, deal_path)), node
@@ -717,8 +723,6 @@ def splice_deal(document, deal, parent_reference=None):
     non-container parent refuses by name.
     """
     children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
     containers = mapping['Instrument']['containers']
     parent_path = ''
     if parent_reference is not None:
@@ -758,8 +762,6 @@ def deal_at(document, deal_path):
     """The node at a positional `deal_path` - a live reference into the document, which is what
     an amendment edits in place."""
     children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
     try:
         node = None
         for position in _positions(deal_path):
@@ -774,8 +776,6 @@ def remove_deal(document, deal_path):
     """Remove and return the node at a positional `deal_path`, in place - the whole subtree goes
     with it, which is what deleting a structure means."""
     children = job_children(document)
-    if children is None:
-        raise ValueError('not a job document - no Calc.Deals.Deals.Children')
     try:
         positions = _positions(deal_path)
         for position in positions[:-1]:

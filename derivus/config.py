@@ -122,7 +122,6 @@ def correlation_names(pairs):
 
 class CustomJsonEncoder(json.JSONEncoder):
     def default(self, obj):
-        return_value = {'.Unknown': str(type(obj))}
         if isinstance(obj, utils.Curve):
             return_value = {'.Curve': {'meta': obj.meta, 'data': obj.array.tolist()}}
         elif isinstance(obj, Deal):
@@ -163,7 +162,9 @@ class CustomJsonEncoder(json.JSONEncoder):
         elif isinstance(obj, np.ndarray):
             return_value = obj.tolist()
         else:
-            logging.error('Error Saving file - Encoding object ' + str(obj) + ' failed')
+            raise TypeError('{!r} is a {} and no wire tag writes one, so the document cannot be '
+                            'saved - store the field as a type the wire form carries'.format(
+                                obj, type(obj).__name__))
         return return_value
 
 
@@ -627,9 +628,14 @@ class Config(object):
         Market Prices block, or a section key naming another family), so every run is checked
         against the family's own declared `price_factor_type`.
         """
+        prices = self.params.get('Market Prices')
+        if prices is None:
+            raise ValueError('{}: there is no Market Prices section, and a bootstrap reads its '
+                             'quotes from that section - load market data that carries '
+                             'one'.format(self.file_ref))
         # a block no family reads, or a family no class answers to, is a refusal, never a skip
         families = sorted(cls.market_factor_type for cls in FAMILIES)
-        orphans = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']} - set(families))
+        orphans = sorted({utils.check_rate_name(x)[0] for x in prices} - set(families))
         if orphans:
             raise ValueError('Market Prices carries {}, which no price family reads; the families read '
                              '{}'.format(', '.join(orphans), ', '.join(families)))
@@ -637,8 +643,7 @@ class Config(object):
         # every entry names a class before any of them runs, and the order is what it reads
         section = [(name, entries[name]) for name in bootstrap_order(entries)]
         claimed = {family_class(name).market_factor_type for name, _ in section}
-        unclaimed = sorted({utils.check_rate_name(x)[0] for x in self.params['Market Prices']}
-                           - claimed)
+        unclaimed = sorted({utils.check_rate_name(x)[0] for x in prices} - claimed)
         if unclaimed:
             logging.warning('Market Prices carries {} that no configured family claims - the '
                             'Bootstrapper Configuration section names {}. Those blocks are not '
@@ -1238,6 +1243,9 @@ class Config(object):
         self.params[name].update(correlation_pairs(data) if name == 'Correlations' else data)
 
     def parse_json(self, filename):
+        """One market-data file MERGED onto the declared sections. Several files may be loaded onto
+        one config, each carrying the sections it has, so a section no file carries is empty rather
+        than missing; a section name this engine does not declare refuses by name."""
 
         def as_internal(dct):
             return decode_wire(dct, lambda block: construct_instrument(
@@ -1248,9 +1256,12 @@ class Config(object):
             data = json.load(f, object_hook=as_internal)
 
         if 'MarketData' in data:
-            market_data = data['MarketData']
-            self.params = dict(market_data, Correlations={})
-            self.merge_section('Correlations', market_data['Correlations'])
+            for name, section in data['MarketData'].items():
+                if name not in self.params:
+                    raise ValueError(
+                        '{}: {!r} is not a section this engine reads, so nothing would load it - '
+                        'the sections are {}'.format(self.file_ref, name, ', '.join(self.params)))
+                self.merge_section(name, section)
 
         if 'Deals' in data:
             self.deals = data['Deals']
