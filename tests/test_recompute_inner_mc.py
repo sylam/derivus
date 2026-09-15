@@ -28,10 +28,12 @@ cotangent and the gradient moves.
 
 The mutations are the point. Bit-identity passes trivially against a node that reuses the forward's
 graph or never rewinds, so the counter is desynchronised by one draw, the boundary cotangent is
-dropped, and the replay is fed stale inputs - each breaking the gradient it is meant to, on BOTH
-streams (as a fraction of the largest entry: 7.5e-02 / 3.5e-01 / 1.5e-04 base, 1.4e-02 / 2.8e-01 /
-8.4e-05 CVA). A `Recompute_Inner_MC: 'Yes'` that silently kept taping leaves every bit-identity gate
-green and fails ten, all scored on a mutation.
+dropped, and the replay is fed stale inputs - each breaking the gradient it is meant to (as a
+fraction of the largest entry: 7.5e-02 / 1.5e-04 base, 1.4e-02 / 2.8e-01 / 8.4e-05 CVA). The
+boundary half is scored on the CVA grid alone: under GBM a fixing interval that is one simulated
+step integrates its knock-in by the conditional-p mixture and registers no boundary, so a base
+valuation's node carries no gap cotangent to drop. A `Recompute_Inner_MC: 'Yes'` that silently
+kept taping leaves every bit-identity gate green and fails every mutation gate below.
 
 WHERE THE REPLAY RUNS IS WHERE ITS DEFECTS ARE VISIBLE. `backward()` runs once per pricing block and
 only when a gradient is asked for - 1 forward under base valuation, 6 under exposure, the same
@@ -362,16 +364,20 @@ def cva_gradient(recompute):
     return cva, gradient
 
 
-@pytest.mark.parametrize('mutant', [DesyncedStreams, NoBoundaryInjection, StaleInputs])
-@pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
+@pytest.mark.parametrize('mutant,run,stream', [
+    (DesyncedStreams, base_gradient, 'torch.rand'), (StaleInputs, base_gradient, 'torch.rand'),
+    (DesyncedStreams, cva_gradient, 'Sobol'), (NoBoundaryInjection, cva_gradient, 'Sobol'),
+    (StaleInputs, cva_gradient, 'Sobol')])
 def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch):
-    """Every mutation must break the gradient the unmutated node reproduces bit for bit, on BOTH
-    streams, with the unmutated reading taken in the same run so the gate cannot measure nothing.
+    """Every mutation must break the gradient the unmutated node reproduces bit for bit, with the
+    unmutated reading taken in the same run so the gate cannot measure nothing.
 
     Scored on the gradient alone: all three leave the forward pass untouched, so the reported value
     agrees in every digit - which is why a price gate over this subsystem is worth nothing. As a
     fraction of the gradient's largest entry (3.73e+06 base, 8.22e+04 CVA) the kills are
-    7.5e-02 / 3.5e-01 / 1.5e-04 and 1.4e-02 / 2.8e-01 / 8.4e-05, in parametrized order.
+    7.5e-02 / 1.5e-04 and 1.4e-02 / 2.8e-01 / 8.4e-05, in parametrized order. The boundary
+    mutation runs on the CVA grid alone: on the one-row base valuation every knock-in is integrated
+    by the mixture and the node carries no gap cotangent, so there is nothing for it to drop.
     """
     value_off, grad_off = run('No')
     monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
@@ -425,22 +431,3 @@ def test_a_cashflow_settled_inside_the_replay_moves_only_the_frame(monkeypatch):
     assert not all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
         'a cashflow settled inside the replay did not move the reported frame, so the cashflow '
         'half of the exposure gate measures nothing')
-
-
-def test_the_boundary_correction_is_what_the_injection_carries(monkeypatch):
-    """Names the size of what `NoBoundaryInjection` drops, so that mutation is not merely
-    "different": the gap cotangent IS the knock-in's boundary correction.
-
-    Measured 1.32e+06 on a gradient whose largest entry is 3.73e+06, all 7 entries moving. The floor
-    is one percent of that scale rather than zero, because a correction arriving at 1e-300 would
-    satisfy "moved" while meaning the cotangent had been lost; 35x is the current margin.
-    """
-    _, corrected = baseval(KNOCK_IN, greeks=True, recompute='Yes')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', NoBoundaryInjection)
-    _, uncorrected = baseval(KNOCK_IN, greeks=True, recompute='Yes')
-    moved = np.abs(corrected - uncorrected)
-    assert moved.max() > 0.01 * np.abs(corrected).max(), (
-        'the boundary correction reaches all but nothing through the node: {:.6g} on {:.6g}'.format(
-            moved.max(), np.abs(corrected).max()))
-    print('\nboundary correction through the node: max |delta| = {:.6g} on a gradient of '
-          '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
