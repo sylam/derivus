@@ -42,6 +42,7 @@ beside the declared one, never averaged in.
 import collections.abc
 import datetime
 import math
+import re
 import statistics
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
@@ -287,6 +288,11 @@ class EquityLadder:
     #: `PARITY_BAND`. An undeclared carry is evidence like any other and is screened like it.
     parity_strikes: int = PARITY_STRIKES
     parity_band: tuple[float, float] = PARITY_BAND
+    #: How far from spot, in log-moneyness, a listed member is still ASKED for its price. A
+    #: board lists thousands of strikes and every wing the ladder can place sits within a few
+    #: standard deviations, so with the expiries no pillar claims this bounds what the terminal
+    #: is asked to a few hundred contracts; a member outside it is ledgered unasked, by name.
+    member_band: float = 0.5
 
     def __post_init__(self):
         # coerced to tuples, so a caller who hands in a list gets a frozen ladder rather than a
@@ -315,6 +321,8 @@ class EquityLadder:
             raise BloombergConfigurationError('spread_cap must be positive')
         if self.minimum_contracts < 1:
             raise BloombergConfigurationError('minimum_contracts must be at least one')
+        if not self.member_band > 0.0:
+            raise BloombergConfigurationError('member_band must be positive')
         object.__setattr__(self, 'parity_band', tuple(self.parity_band))
         if self.parity_strikes < 1:
             raise BloombergConfigurationError('parity_strikes must be at least one')
@@ -640,13 +648,57 @@ def _verdict(contract, as_of, ladder, spot=None):
     return 'live'
 
 
+MEMBER_TICKER = re.compile(r'\b(\d{2})/(\d{2})/(\d{2}) ([CP])(\d+(?:\.\d+)?)\b')
+
+
+def member_ticker(security):
+    """`(expiry, strike)` off a listed option ticker's own spelling - `SPX 12/19/25 C5000
+    Index` - or None where it does not spell them."""
+    found = MEMBER_TICKER.search(security)
+    if not found:
+        return None
+    month, day, year, _, strike = found.groups()
+    try:
+        return datetime.date(2000 + int(year), int(month), int(day)), float(strike)
+    except ValueError:
+        return None
+
+
+def members_to_ask(members, spot, as_of, ladder):
+    """`(asked, ledger)` - the members whose expiry a pillar claims and whose strike sits inside
+    `member_band`, read off the tickers alone; everything else is ledgered by name, unasked."""
+    parsed, ledger = {}, {}
+    for name in sorted(set(members)):
+        read = member_ticker(name)
+        if read is None:
+            ledger[name] = 'unreadable-ticker'
+        else:
+            parsed[name] = read
+    expiries = {}
+    for expiry, _ in parsed.values():
+        tau = (expiry - as_of).days / ladder.days_per_year
+        if tau > 0.0:
+            expiries[expiry] = tau
+    claimed = set(assign_expiries(expiries, ladder)[0].values())
+    asked = []
+    for name, (expiry, strike) in parsed.items():
+        if expiry not in claimed:
+            ledger[name] = 'expiry-unclaimed'
+        elif not strike > 0.0 or abs(math.log(strike / spot)) > ladder.member_band:
+            ledger[name] = 'strike-outside-band'
+        else:
+            asked.append(name)
+    return asked, ledger
+
+
 def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_batch=None,
                        chain_field=CHAIN_FIELD):
     """The listed chain of one index underlying, screened - `underlying` in, `EquityChain` out.
 
     TWO ROUND TRIPS AND NO MORE VOCABULARY THAN THAT. The first asks the underlying what it IS,
     what it is worth and when it last printed, and asks for its chain in the same request; the
-    second asks every member the ten questions a quote needs, in `discover.BATCH`-sized chunks. No
+    second asks the members a pillar can claim inside the strike band - read off their tickers,
+    the rest ledgered unasked - the ten questions a quote needs, in `discover.BATCH`-sized chunks. No
     ticker is spelled by this package at any point - a listed chain's membership is the terminal's
     to state, which is why the bulk route exists and why the SCREEN is the trust boundary.
 
@@ -697,9 +749,21 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
     # a row with ANY field in it is read and the SCREEN judges it; only an empty row is refused.
     # `ok: False` covers a mere fieldException too - an untraded contract carries no VOLUME - and
     # gating on it cost 1,855 of 8,000 contracts on a measured live SPX chain
-    report = probe(source, sorted(set(members)), CONTRACT_FIELDS, batch=batch, on_batch=on_batch)
-    contracts, rejected = [], {name: 'unreadable-chain-row' for name in unreadable}
-    for security in sorted(set(members)):
+    asked, rejected = members_to_ask(members, spot, as_of, ladder)
+    rejected.update({name: 'unreadable-chain-row' for name in unreadable})
+    if not asked:
+        raise IncompleteChain(
+            '{} lists {} members and none is at an expiry the ladder (ATM {}) can claim within '
+            '{:g} log-units of the spot {:.6g}, so nothing was asked for a price: {}. Widen the '
+            'ladder, or check that the chain spells expiry and strike in its tickers'.format(
+                underlying, len(members),
+                '/'.join('{:g}'.format(pillar) for pillar in sorted(ladder.pillars)),
+                ladder.member_band, spot,
+                ', '.join('{} {}'.format(count, verdict) for verdict, count in sorted(
+                    collections.Counter(rejected.values()).items()))))
+    report = probe(source, asked, CONTRACT_FIELDS, batch=batch, on_batch=on_batch)
+    contracts = []
+    for security in asked:
         answer = report.get(security, {'ok': False, 'error': 'no answer in the response',
                                        'fields': {}})
         answered = answer.get('fields') or {}
@@ -1290,7 +1354,7 @@ def quote_source(chain, forward, ladder, rungs, rows, notes, readings, leverage=
             ladder.quotes_per_expiry)
     source = (
         '{} rungs ({}){} on {} distinct contracts off the listed {} chain as at {}, {} contracts '
-        'believed of {} asked ({}); premiums are the terminal\'s own two-way mids. Forward: spot '
+        'believed of {} listed ({}); premiums are the terminal\'s own two-way mids. Forward: spot '
         '{:.6g} (last printed {}) carried at r={:.4%} on {} against {}{} [{}]'.format(
             len(rungs), '/'.join(sorted({rung.kind for rung in rungs})), mode, len(rows),
             chain.underlying, chain.as_of.isoformat(), len(chain.contracts),
