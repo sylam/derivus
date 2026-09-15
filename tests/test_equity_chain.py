@@ -343,26 +343,29 @@ def test_the_canned_chain_is_believed_by_census():
     census = {}
     for verdict in chain.rejected.values():
         census[verdict] = census.get(verdict, 0) + 1
-    assert census == {'american': 4, 'crossed': 2, 'expired': 1, 'expiry-unclaimed': 32,
-                      'malformed': 1, 'no-open-interest': 3, 'off-market': 1, 'one-sided': 2,
-                      'stale': 2, 'undated': 1, 'unpriced': 1, 'unstated-exercise': 2, 'wide': 3}
-    assert len(chain.contracts) == 192 - sum(census.values()) == 137
-    # the front listing no pillar claims is ledgered UNASKED, its two poisoned rows and its five
-    # dead far wings with it; the wide-or-unpriced that remain are NOT in the poison table: far
-    # wings whose minimum tick is a third of their mid, or whose price rounds to nothing
+    assert census == {'american': 4, 'crossed': 1, 'expiry-unclaimed': 32, 'no-open-interest': 3,
+                      'one-sided': 1, 'stale': 2, 'strike-outside-band': 22, 'undated': 1,
+                      'unpriced': 1, 'unstated-exercise': 1}
+    assert len(chain.contracts) == 192 - sum(census.values()) == 124
+    # the front listing no pillar claims and the strikes outside each expiry's band are ledgered
+    # UNASKED, the poison authored on them with them - the screen judges only what was asked
     assert all(verdict == 'expiry-unclaimed' for security, verdict in chain.rejected.items()
                if '09/30/26' in security)
-    natural = {security for security, verdict in chain.rejected.items()
-               if verdict in ('wide', 'unpriced')}
-    assert len(natural) == 4 and not any('09/30/26' in security for security in natural)
+    ladder = EquityLadder()
+    for contract in chain.contracts:
+        band = max(ladder.member_band, ladder.member_sd * ladder.reference_vol * math.sqrt(tau_of(contract.expiry)))
+        assert abs(math.log(contract.strike / SPOT)) <= band, contract.security
 
     # named, so a re-tuned screen has to come here and say so
     assert chain.rejected[security_of(EXPIRIES[5], 4250.0, 'Put')] == 'american'
     assert chain.rejected[security_of(EXPIRIES[2], 6000.0, 'Call')] == 'unstated-exercise'
-    assert chain.rejected[security_of(EXPIRIES[1], 4000.0, 'Put')] == 'crossed'
+    assert chain.rejected[security_of(EXPIRIES[3], 6000.0, 'Call')] == 'crossed'
     assert chain.rejected[security_of(EXPIRIES[3], 3750.0, 'Put')] == 'stale'
     assert chain.rejected[security_of(EXPIRIES[2], 5250.0, 'Call')] == 'undated'
-    assert chain.rejected[security_of(EXPIRIES[1], 3500.0, 'Call')] == 'off-market'
+    # a crossed print and an off-market one authored twenty and thirty percent from spot at three
+    # months sit outside that expiry's 0.15 band, so they are never asked and never screened
+    assert chain.rejected[security_of(EXPIRIES[1], 4000.0, 'Put')] == 'strike-outside-band'
+    assert chain.rejected[security_of(EXPIRIES[1], 3500.0, 'Call')] == 'strike-outside-band'
     assert chain.spot == SPOT and chain.name == 'S&P 500 INDEX'
     assert chain.expiries == EXPIRIES[1:]   # the front listing was never asked
 
@@ -374,9 +377,10 @@ def test_the_fetch_asks_the_bulk_reader_for_the_chain_and_batches_its_members():
     is the finding rather than the failure."""
     session = Walked(canned_rows())
     chain = fetch_equity_chain(session, UNDERLYING, AS_OF, batch=50)
-    # 192 listed; the 32 at the front listing no pillar claims are never asked, by name
-    assert [len(batch) for batch in session.batches] == [50, 50, 50, 10]
-    assert sum(len(batch) for batch in session.batches) == 160
+    # 192 listed; the 32 at the front listing no pillar claims and the 22 outside their expiry's
+    # band are never asked, by name
+    assert [len(batch) for batch in session.batches] == [50, 50, 38]
+    assert sum(len(batch) for batch in session.batches) == 138
     assert chain.rejected[security_of(EXPIRIES[0], 5000.0, 'Call')] == 'expiry-unclaimed'
     assert not any('09/30/26' in security for batch in session.batches for security in batch)
 
@@ -408,7 +412,7 @@ def test_only_members_a_pillar_claims_inside_the_band_are_asked():
     assert far not in asked and 'SPX NONSENSE Index' not in asked
     assert chain.rejected[far] == 'strike-outside-band'
     assert chain.rejected['SPX NONSENSE Index'] == 'unreadable-ticker'
-    assert len(asked) == 160 and len(chain.contracts) + len(chain.rejected) == 194
+    assert len(asked) == 138 and len(chain.contracts) + len(chain.rejected) == 194
 
     # widened, the band asks the far strike, which the terminal then refuses by name
     wider = fetch_equity_chain(Walked(rows, chain=list(rows) + [far]), UNDERLYING, AS_OF,
@@ -524,14 +528,17 @@ def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise
     message = str(refusal.value)
     assert 'SPX Index' in message and 'exercise style' in message and 'american' in message
     assert 'European exercise' in message and 'SX5E Index' in message
-    assert '159 of its 191 candidates' in message and '32 expiry-unclaimed' in message
+    assert '137 of its 191 candidates' in message and '32 expiry-unclaimed' in message
+    assert '22 strike-outside-band' in message
     # what it must NOT say: the floor's message and its wrong remedy
     assert 'distinct contract' not in message and 'more expiries and strikes' not in message
 
     # and the mixed board still calibrates, per contract, off what is left
     mixed = canned_chain()
+    # six exercise verdicts are authored; the blank one at thirty percent from spot at one year
+    # sits outside its band and is never asked, so five are screened
     assert sum(1 for verdict in mixed.rejected.values()
-               if verdict in ('american', 'unstated-exercise')) == 6
+               if verdict in ('american', 'unstated-exercise')) == 5
     assert len(equity_option_block(mixed, FORWARD)[1]['instrument']['European_Options']) == 13
 
 
@@ -1652,7 +1659,7 @@ def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with
 #: `quotes_per_expiry` is a switch and its OFF position is the delta ladder bit for bit. A relative
 #: tolerance cannot say that: re-associating one weight - `vega * sqrt(OI) / d` into
 #: `vega * (sqrt(OI) / d)` - passes every approx in this file and moves every document in the world.
-DEFAULT_BLOCK_SHA = 'e1a0bb544b665e2ffbcbae334dfb8303d99a02e2a0182d650d8310aa27c2a603'
+DEFAULT_BLOCK_SHA = '2e3091410bad08ee0f9daae78916765626f80a9af121fb905eafdda713b5f1c8'
 
 #: The two-pillar ladder of `E2E_LADDER` asking for five quotes an expiry: ten rows, over the
 #: family's own floor of eight, which is what makes the JSON half of this gate minutes and not hours.

@@ -288,11 +288,16 @@ class EquityLadder:
     #: `PARITY_BAND`. An undeclared carry is evidence like any other and is screened like it.
     parity_strikes: int = PARITY_STRIKES
     parity_band: tuple[float, float] = PARITY_BAND
-    #: How far from spot, in log-moneyness, a listed member is still ASKED for its price. A
-    #: board lists thousands of strikes and every wing the ladder can place sits within a few
-    #: standard deviations, so with the expiries no pillar claims this bounds what the terminal
-    #: is asked to a few hundred contracts; a member outside it is ledgered unasked, by name.
-    member_band: float = 0.5
+    #: WHAT THE TERMINAL IS ASKED, bounded before anything is asked. A board lists thousands of
+    #: strikes; the wings the ladder can place sit within `member_sd` standard deviations of
+    #: spot at `reference_vol`, never nearer than `member_band` in log-moneyness, and one
+    #: listed strike per `member_step` of log-moneyness is enough to choose them from. A member
+    #: outside the band, or not the nearest to a grid point, is ledgered unasked, by name; a
+    #: chain that would still cost more than `member_budget` questions refuses by name instead.
+    member_sd: float = 1.5
+    member_band: float = 0.1
+    member_step: float = 0.02
+    member_budget: int = 600
 
     def __post_init__(self):
         # coerced to tuples, so a caller who hands in a list gets a frozen ladder rather than a
@@ -321,8 +326,10 @@ class EquityLadder:
             raise BloombergConfigurationError('spread_cap must be positive')
         if self.minimum_contracts < 1:
             raise BloombergConfigurationError('minimum_contracts must be at least one')
-        if not self.member_band > 0.0:
-            raise BloombergConfigurationError('member_band must be positive')
+        if not (self.member_sd > 0.0 and self.member_band > 0.0 and self.member_step > 0.0):
+            raise BloombergConfigurationError('member_sd, member_band and member_step must be positive')
+        if self.member_budget < self.minimum_contracts:
+            raise BloombergConfigurationError('member_budget must reach minimum_contracts')
         object.__setattr__(self, 'parity_band', tuple(self.parity_band))
         if self.parity_strikes < 1:
             raise BloombergConfigurationError('parity_strikes must be at least one')
@@ -652,21 +659,22 @@ MEMBER_TICKER = re.compile(r'\b(\d{2})/(\d{2})/(\d{2}) ([CP])(\d+(?:\.\d+)?)\b')
 
 
 def member_ticker(security):
-    """`(expiry, strike)` off a listed option ticker's own spelling - `SPX 12/19/25 C5000
-    Index` - or None where it does not spell them."""
+    """`(expiry, side, strike)` off a listed option ticker's own spelling - `SPX 12/19/25
+    C5000 Index` - or None where it does not spell them."""
     found = MEMBER_TICKER.search(security)
     if not found:
         return None
-    month, day, year, _, strike = found.groups()
+    month, day, year, side, strike = found.groups()
     try:
-        return datetime.date(2000 + int(year), int(month), int(day)), float(strike)
+        return datetime.date(2000 + int(year), int(month), int(day)), side, float(strike)
     except ValueError:
         return None
 
 
 def members_to_ask(members, spot, as_of, ladder):
-    """`(asked, ledger)` - the members whose expiry a pillar claims and whose strike sits inside
-    `member_band`, read off the tickers alone; everything else is ledgered by name, unasked."""
+    """`(asked, ledger)` - the members whose expiry a pillar claims and whose strike is the listed
+    one nearest a grid point inside that expiry's band, read off the tickers alone; everything
+    else is ledgered by name, unasked."""
     parsed, ledger = {}, {}
     for name in sorted(set(members)):
         read = member_ticker(name)
@@ -675,19 +683,32 @@ def members_to_ask(members, spot, as_of, ladder):
         else:
             parsed[name] = read
     expiries = {}
-    for expiry, _ in parsed.values():
+    for expiry, _, _ in parsed.values():
         tau = (expiry - as_of).days / ladder.days_per_year
         if tau > 0.0:
             expiries[expiry] = tau
     claimed = set(assign_expiries(expiries, ladder)[0].values())
-    asked = []
-    for name, (expiry, strike) in parsed.items():
+    # per expiry and side, the listed strike nearest each grid point inside the band is asked
+    nearest = {}
+    for name, (expiry, side, strike) in parsed.items():
         if expiry not in claimed:
             ledger[name] = 'expiry-unclaimed'
-        elif not strike > 0.0 or abs(math.log(strike / spot)) > ladder.member_band:
+            continue
+        band = max(ladder.member_band,
+                   ladder.member_sd * ladder.reference_vol * math.sqrt(expiries[expiry]))
+        moneyness = math.log(strike / spot) if strike > 0.0 else math.inf
+        if abs(moneyness) > band:
             ledger[name] = 'strike-outside-band'
+            continue
+        point = (expiry, side, round(moneyness / ladder.member_step))
+        distance = abs(moneyness - point[2] * ladder.member_step)
+        if point not in nearest or distance < nearest[point][0]:
+            if point in nearest:
+                ledger[nearest[point][1]] = 'strike-off-grid'
+            nearest[point] = (distance, name)
         else:
-            asked.append(name)
+            ledger[name] = 'strike-off-grid'
+    asked = sorted(name for _, name in nearest.values())
     return asked, ledger
 
 
@@ -751,6 +772,13 @@ def fetch_equity_chain(source, underlying, as_of, ladder=None, batch=BATCH, on_b
     # gating on it cost 1,855 of 8,000 contracts on a measured live SPX chain
     asked, rejected = members_to_ask(members, spot, as_of, ladder)
     rejected.update({name: 'unreadable-chain-row' for name in unreadable})
+    if len(asked) > ladder.member_budget:
+        raise IncompleteChain(
+            '{} would be asked for {} contracts against a member_budget of {} - {} listed, the '
+            'band {:g} sd at {:g} reference vol on a {:g} grid - so nothing was asked. Narrow the '
+            'ladder or raise the budget deliberately'.format(
+                underlying, len(asked), ladder.member_budget, len(members), ladder.member_sd,
+                ladder.reference_vol, ladder.member_step))
     if not asked:
         raise IncompleteChain(
             '{} lists {} members and none is at an expiry the ladder (ATM {}) can claim within '
