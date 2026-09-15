@@ -209,19 +209,16 @@ is recorded so a reader knows which readings rest on it.
   while three older spot models cast theirs to single. Inert while the hedge Monte Carlo runs in
   single precision whatever the job says; a double-precision hedge solve would hand the critic one
   double block among single ones.
-- **`NettingCollateralSet`'s backward is not bit-reproducible on the GPU**: one gradient entry can
-  differ in its last bits between runs of bit-identical inputs. Isolated on this card
-  (2026-09-12): the backward of `gather` and of `index_select` accumulates atomically wherever
-  indices collide, and five runs of one such backward differ by up to 5.3e-05 absolute, about
-  forty float32 epsilons over the accumulated terms; the same backward under
-  `torch.use_deterministic_algorithms(True)` is bit-identical across runs and torch accepts it,
-  so a deterministic kernel exists for both. `cumsum` is not implicated: its backward is
-  bit-identical over five runs on this version and raises nothing under the same switch. The
-  effect is far below the 1% a desk reads, so the switch becomes a DECLARED FIELD on the
-  calculation rather than a default: off is the faster arithmetic, on pins the gradient for a run
-  that has to reproduce, and the document records which it was. It is set beside the cuBLAS pin so
-  the dispatch workers inherit it, and it pins one machine and one build, not results across cards
-  or versions. Unread: what the deterministic kernels cost on this workload.
+- **`Deterministic_Kernels: Yes` does not pin a collateralised backward**: the field selects
+  torch's deterministic kernels, which covers the `gather` and `index_select` the collateral walk
+  runs on, but `put_` - the backward of the `take` in `VolSurface._flat` - has none, so under
+  `warn_only` it warns and runs its atomic accumulation anyway. Measured on this card
+  (2026-09-15) on a collateralised CVA gradient: six of the 38 reported gradient entries, every
+  one of them an `EquityPriceVol` leaf, differ across five `Yes` runs of identical inputs by up to
+  3.0e-08 absolute on a largest entry of 0.80 - the same entries that move under `No` - while the
+  uncollateralised twin is bit-identical over five runs either way and every other reported number
+  of both is. The effect is far below the 1% a desk reads; a surface read taking its points
+  through `index_select` would have the deterministic kernel `take` does not.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after

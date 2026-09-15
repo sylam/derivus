@@ -474,6 +474,17 @@ QUASI_ANCHOR = 1024
 #: `torch.quasirandom.SobolEngine`'s dimension cap. A draw wider than this is taken in chunks.
 SOBOL_MAX_DIMENSION = 21201
 
+#: `Deterministic_Kernels`, one description for the three calculations that declare it beside
+#: `Random_Seed`.
+DETERMINISTIC_KERNELS = (
+    'Pin the GPU backward wherever torch has a deterministic kernel. The backward of `gather` and '
+    'of `index_select` accumulates atomically wherever indices collide - a collateralised netting '
+    'set does - so one gradient entry can differ in its last bits between two runs of identical '
+    'inputs. `Yes` selects torch\'s deterministic kernels with `warn_only`, so an operation that '
+    'has none - `put_`, the backward of the vol surface\'s flat read - warns and runs unpinned, '
+    'at 1.03x the wall clock of a collateralised CVA gradient. It pins ONE machine and ONE build: '
+    'the same document on another card or another torch version is not pinned to these bits.')
+
 
 def batch_seed(random_seed, batch_index):
     """The seed a batch runs under: a SplitMix64 mix of (seed, global batch), not `seed + batch`.
@@ -915,6 +926,8 @@ class Credit_Monte_Carlo(Calculation):
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         F('Random_Seed', 'Integer', default=5120),
+        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
+          description=DETERMINISTIC_KERNELS),
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
@@ -1127,6 +1140,9 @@ class Credit_Monte_Carlo(Calculation):
                     self.static_var[key] = implied_leaves[key] if key in implied_leaves else \
                         self.factor_leaf(key, current_val, calc_grad, factor_tenor_offset)
 
+        # beside the seed, and set BOTH ways every run: the switch is process-global, so a job
+        # that declared Yes must not leave the next job in the process pinned
+        torch.use_deterministic_algorithms(params['Deterministic_Kernels'] == 'Yes', warn_only=True)
         shared_mem = self._init_shared_mem(
             int(params['Random_Seed']), params['NoModel'],
             params['Currency'], params['MCMC_Simulations'],
@@ -1906,6 +1922,8 @@ class Base_Revaluation(Calculation):
         F('Currency', 'Text', default='ZAR'),
         F('MCMC_Simulations', 'Integer', default=4096 * 8),
         F('Random_Seed', 'Integer', default=5120),
+        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
+          description=DETERMINISTIC_KERNELS),
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
           description='First order factor sensitivities, or `All` for the second order block '
                       '(`Greeks_Second`) as well - see the class docstring for its shape'),
@@ -2043,6 +2061,9 @@ class Base_Revaluation(Calculation):
     def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks, random_seed):
         # fix the seed if we need to price mc instruments
         torch.manual_seed(random_seed)
+        # beside the seed, and set BOTH ways every run - the switch is process-global
+        torch.use_deterministic_algorithms(
+            self.params['Deterministic_Kernels'] == 'Yes', warn_only=True)
 
         base_currency = utils.Factor(
             'FxRate', (self.config.params['System Parameters']['Base_Currency'],))
@@ -2351,6 +2372,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         F('Random_Seed', 'Integer', default=5120),
+        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
+          description=DETERMINISTIC_KERNELS),
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
         F('MCMC_Simulations', 'Integer', default=2048),

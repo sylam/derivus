@@ -84,7 +84,8 @@ def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
     return price, frame[column].values.astype(np.float64)
 
 
-def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128):
+def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
+        deterministic='No'):
     """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 512 scenarios, so the pricer
     takes the Sobol branch - the memoized half of the stream contract - and the boundary
     correction has a population to fit a kernel to."""
@@ -93,6 +94,7 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128):
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
+        'Deterministic_Kernels': deterministic,
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}}
@@ -141,6 +143,31 @@ def test_a_state_that_was_never_told_runs_the_taped_path():
     state = utils.Calculation_State(
         {}, torch.ones([1, 1], dtype=DTYPE), 8, None, 'Constant', 1, False)
     assert state.recompute_inner_mc is False
+
+
+# ------------------------------------------------- the sibling switch, same calculation block
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='the atomics are the GPU backward')
+def test_deterministic_kernels_is_read_every_run_and_set_both_ways():
+    """`Deterministic_Kernels` is PROCESS-GLOBAL state the calculation sets from the document, so
+    the plumbing is two statements: a `Yes` run reproduces its own gradient, and the flag afterwards
+    reads whatever that run declared - a `No` run LEAVES IT OFF, or the next job in the process
+    inherits a pin it never asked for.
+
+    `warn_only` is the field's own promise and not a formality - `put_`, the backward of the vol
+    surface's `take`, has no deterministic kernel and runs anyway - so `Yes` pins what torch can
+    pin and no more. This fixture carries no collateralised netting set and reproduces either way,
+    which is why the flag assertions rather than the hex one are what the dropped read fails.
+    """
+    _, _, pinned, _ = cmc(KNOCK_IN_CMC, gradient=True, deterministic='Yes')
+    assert torch.are_deterministic_algorithms_enabled(), (
+        'the calculation never read Deterministic_Kernels: Yes out of the document')
+    _, _, again, _ = cmc(KNOCK_IN_CMC, gradient=True, deterministic='Yes')
+    assert [x.hex() for x in pinned] == [x.hex() for x in again], (
+        'the pinned CVA gradient did not reproduce:\n{}\n{}'.format(pinned, again))
+    cmc(KNOCK_IN_CMC, gradient=True, deterministic='No')
+    assert not torch.are_deterministic_algorithms_enabled(), (
+        'a No run left the process pinned - the switch is being set one way only')
 
 
 # ---------------------------------------------------------------- (a) the value must not move
