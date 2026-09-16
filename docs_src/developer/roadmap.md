@@ -150,16 +150,20 @@ is recorded so a reader knows which readings rest on it.
   the Gauss-Hermite rule it uses.
 - **The partial-time barrier's rebate settlement is audited but ungated**, for want of a
   collateralised partial-barrier document.
-- **The window-touch switch decides the sign of a boundary term and its magnitude is
-  unestablished**: −2.25 with the window registered against +0.52 without, on an oracle that
-  scatters 88% of its own median. Decision 10.
+- **The window-touch switch's magnitude is established and the default has not moved**: on a grid
+  carrying a row a month — seven inside the window, six of them live — five seeds read a registered
+  −2.136 at 8,192 paths and −1.915 at 32,768 against an unregistered +1.318, every one of the 70
+  CRN readings negative and the pooled oracle 0.5% from the registered delta against 168% from the
+  unregistered one. The ladder is still not FLAT, 13% to 35% over h ≥ 5e-4. Decision 10.
 - **The boundary correction's bandwidth plateau holds at 16,384 to 20,480 paths** over bandwidths
   of 0.005 to 0.08, the correction spreading 2.4% to 3.9% and the CVA delta 0.6% to 0.2%; at 2,048
   paths the correction falls monotonically by 24%. Acceptance names 32,768 paths and that re-read
   is pending. The correction's scoping has no public seam a mutation gate could reach.
-- **The accumulator's boundary placement under the recompute node is unmeasured.** Its latch is
-  assembled off a node output, which puts it on the right side by construction, but the reading
-  that would show a dropped cotangent has not been taken.
+- **The accumulator's latch is measured OUTSIDE the recompute node, and no gate holds it there.**
+  Dropping every node cotangent but the marks' reproduces the corrected CVA gradient bit for bit
+  while suppressing the correction moves it 2.52% — the barrier's side, not the autocall's, the
+  gaps being the outer scenario's own observed fixings. The injection mutant cannot fail on this
+  pricer: of the node's five outputs only the marks' ever arrives with a cotangent.
 - **The American option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
@@ -224,8 +228,10 @@ them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not li
 9. **Flagged, not authorised**: the hedge runtime's free functions over the bundle, two clusters
    with a duplicated utility table, and the deal structure's recursions — the shape
    [Conventions](conventions.md) calls a class waiting to happen.
-10. **The window-touch switch's magnitude.** The switch decides the sign; grid dates can now be
-    added, so the enriched fixture and the re-measurement are possible.
+10. **The window-touch switch's magnitude.** Measured: with six live decisions in the window the
+    registered delta reads −1.915 at 32,768 paths over five seeds against an unregistered +1.318,
+    and the CRN oracle is negative on all 70 readings and 0.5% from the registered one. The ladder
+    is still not flat, so turning the default on is the desk's call and not a gate's.
 11. **The `Branch_And_Weight` default.** The family question is closed, the surviving spot model
     handing each fixing interval its own Gaussian block law; what remains is a rule for averaging
     payoffs falling back to the crisp pricer, since the averaging arms refuse under the switch.

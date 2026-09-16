@@ -34,9 +34,7 @@ unions `base_time_grid` into every deal's own grid, so a finer `Time_grid` is ho
 The window is therefore monitored over TWO intervals here, which is exact for GBM given the bridge
 and is why the oracle agrees.
 """
-import io
 import json
-import logging
 import math
 import os
 import sys
@@ -545,9 +543,10 @@ def test_the_window_touch_registration_is_opt_in_and_off_by_default():
     switch off - the bridge branch's message, i.e. nothing registered - and the reported gradient
     is BIT-IDENTICAL to the same run with the correction suppressed through the bandwidth.
 
-    WHY IT IS NOT ON: at 16384 paths the CRN ladder spreads 68% of its own median, against a
-    corrected delta 77% out and a suppressed one of the opposite sign - and at 8192 paths the
-    ladder is not even sign-unanimous, so the sign is not a gateable statement either.
+    WHY IT IS NOT ON: the SIGN is now a measurement - on a grid carrying six live decisions every
+    CRN reading over five seeds and both path counts is negative where the suppressed delta is
+    positive - but the ladder is still not FLAT, 13% to 35% over h = 5e-4..1e-2, so what turns the
+    default on is a desk decision and not a gate.
     """
     job = _cva_job(LATCH_DEAL, gradient=True, bridge=False, hessian=True, batch=512, batches=1,
                    window_touch='No')
@@ -567,15 +566,16 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
     forward, so any drift means the registration path perturbed the valuation. On the endpoint
     branch, the one that registers at all.
 
-    THE TERM'S MAGNITUDE: at 32768 paths dCVA/dspot reads -2.2467692 with the registration and
-    +0.5207422 without, so the SIGN is what the flux decides, and its own bandwidth ladder is flat
-    to 12% over a factor of ten in the bandwidth.
+    THE TERM'S MAGNITUDE ON THIS GRID is not established and no gate here pretends otherwise: the
+    deal prices on THREE rows, so the window carries two decisions and one is live, and over five
+    seeds dCVA/dspot reads a registered median -0.666 at 32768 paths against an unregistered
+    +3.292 while the CRN oracle spreads 327% of its own median and is not sign-unanimous - which is
+    what differencing across a genuine discontinuity on one decision looks like.
 
-    WHAT IS NOT ESTABLISHED IS THAT MAGNITUDE, and no gate here pretends otherwise: the CRN oracle
-    spreads 88% of its own median and SCATTERS rather than refining, which is what differencing
-    across a genuine discontinuity looks like. The deal prices on THREE rows, so the window carries
-    at most two decisions and one is live - there is no fixture with more, which is why the ladder
-    cannot be tightened by raising paths. Which is why the registration is OPT-IN."""
+    A ROW A MONTH is where it resolves, seven rows in the window and six of them live: -1.915
+    registered against +1.318 unregistered at 32768 paths, every CRN reading negative and the
+    pooled oracle 0.5% from the registered delta. The ladder is still not flat, so the registration
+    stays OPT-IN and the default is the desk's."""
     off, _ = _cva(deal=LATCH_DEAL, bridge=False, batch=1024, batches=1)
     on, grad = _cva(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)
