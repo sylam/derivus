@@ -4141,9 +4141,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     OBSERVED fixing and a block opening on an unaligned one. A coupon row of ``<= 0`` would be a
     third and inexact way; ``calc_dependencies`` refuses that document by name.
 
-    THE FULL-PATH BRANCH REFUSES BY NAME rather than no-opping: its termination is a smoothed
-    per-inner-path weight with no crisp per-scenario decision to replace, and its ``breached`` is a
-    hard indicator, on the average or the spot as the deal declares.
+    THE FULL-PATH BRANCH FALLS BACK TO THE CRISP ESTIMATOR, named at INFO: its termination is a
+    smoothed per-inner-path weight with no crisp per-scenario decision to replace and its
+    ``breached`` is a hard indicator, so clearing ``smooth`` prices it bit for bit as the switch off
+    does - greeks included, blind to the kink - and a mixed book runs under one setting.
     """
     def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
         """The FULL-PATH branch's inner walk: coupons trigger off the running average of spots and
@@ -4631,21 +4632,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # registration below rather than joining it - one decision, one estimator
     smooth = shared.branch_and_weight
     if smooth and not factor_dep['oss_windows']:
-        raise ValueError(
-            "Branch_And_Weight: 'Yes' is refused on {} because it prices on the FULL-PATH branch - "
-            'a barrier date off the coupon dates, or a window of fixings under GBM or a DAILY spot '
-            'model, which have no block law to truncate the window prefix against. '
-            'That branch has no crisp per-scenario decision for the switch to replace: its '
-            'termination is a smoothed per-inner-path weight (pricing.smooth_heaviside_up) and its '
-            'breach is a hard indicator on the AVERAGE, whose conditioning law is the distribution '
-            "of a MEAN of spots and not one fixing interval's lognormal - which the construction "
-            'does not have (roadmap.md, "Branch and weight for TARFs and autocalls"). Pricing it '
-            "here would put the smooth estimator's name on an estimator that is not it. What works "
-            'today: put every barrier date ON a coupon date and either book ONE price fixing per '
-            "coupon or declare SpotModel: 'LogVar2FJ', which prices the window on the OSS arm the "
-            "switch does reach; or run it with Branch_And_Weight: 'No', the default, which is the "
-            'crisp estimator this deal already prices under, unchanged.'.format(
-                deal_data.Instrument.field.get('Reference')))
+        # THE FALLBACK, so a mixed book runs under ONE setting with every deal priced: clearing
+        # `smooth` restores the crisp path entire - the registration below, the estimator, the bits
+        smooth = False
+        logging.info(
+            "Branch_And_Weight: 'Yes' falls back to the CRISP estimator on %s - it prices on the "
+            'FULL-PATH branch (a barrier date off the coupon dates, or a window of fixings under '
+            'GBM or a DAILY spot model), whose termination is a smoothed per-inner-path weight '
+            '(pricing.smooth_heaviside_up) and whose breach is a hard indicator on the AVERAGE, '
+            'with no block law to truncate a window prefix against. Its value and greeks are the '
+            "crisp estimator's, BLIND to the threshold kink, bit for bit what it prices with the "
+            "switch off. To reach the switch's own estimator: put every barrier date ON a coupon "
+            "date and either book ONE price fixing per coupon or declare SpotModel: 'LogVar2FJ'.",
+            deal_data.Instrument.field.get('Reference'))
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. The
     # model is only wired into the OSS arm

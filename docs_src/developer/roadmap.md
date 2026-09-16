@@ -141,9 +141,13 @@ is recorded so a reader knows which readings rest on it.
   count, not the deal, is what the number depends on. Beside it, the autocall's floating leg and
   its terminal put register no settled cash, so the reported cashflows carry the coupons alone.
 - **The target redemption forward's target pin is a kink the crisp default is blind to.** The pin
-  fires on 27% to 61% of paths and the delta is 27% short uncorrected. It is exact behind
-  `Branch_And_Weight: 'Yes'`; the default keeps the declared blindness, since neither the bandwidth
-  estimator at 13% spread nor the oracle at 9% flatness does better than about ten percent.
+  fires on 41% to 60% of paths. Behind `Branch_And_Weight: 'Yes'` a common-random-number
+  ladder of the switch's own value surface is flat to 0.05% and lands on the reported delta to
+  0.0002%; under the default the same ladder does not converge, 0.24% to 1.41% flat and 0.14%
+  to 0.63% off, and the delta itself is the same number under both, the fired branch paying a
+  constant both estimators differentiate through the same analytic probability. Under a base
+  valuation there is no boundary correction to be uncorrected: one row resolves no fixing, the
+  registration reads no decision, and the correction is an exposure-grid object.
 - **The extendable forward under a credit-support annex does not register its settled cash**: a
   quarter of a percent across four amplifying documents, against ladders that resolve no finer.
   Its rolling backward pass also carries a one-signed smoothing bias over the payoff's kink from
@@ -232,11 +236,13 @@ them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not li
     registered delta reads −1.915 at 32,768 paths over five seeds against an unregistered +1.318,
     and the CRN oracle is negative on all 70 readings and 0.5% from the registered one. The ladder
     is still not flat, so turning the default on is the desk's call and not a gate's.
-11. **The `Branch_And_Weight` default.** The family question is closed, the surviving spot model
-    handing each fixing interval its own Gaussian block law; what remains is a rule for averaging
-    payoffs falling back to the crisp pricer, since the averaging arms refuse under the switch.
-    Values re-mark within their own Monte Carlo noise at twelve to twenty-three times less
-    variance; the greeks are the prize.
+11. **The `Branch_And_Weight` default.** The averaging arms fall back to the crisp pricer by name
+    at INFO rather than refusing, so a mixed book runs under one setting with every deal priced;
+    what remains is the flip. Over thirteen documents at five seeds the value is bit-identical
+    on eleven and re-marks within half a crisp seed standard deviation on the TARF and the
+    autocall, at twenty and four times less variance; the first-order block is identical
+    everywhere; four documents go from a second-order refusal to a reported Hessian and none
+    the other way. The Hessian is the prize, and the price is nothing measured.
 12. **The correlation as a leaf.** A correlation mints no leaf today, so a quanto's correlation
     delta is reported as a common-random-number bump of 0.025: −22.42m ZAR per unit of correlation
     on the desk's Nikkei autocall, flat to 0.003% between half-widths. The leaf is three edits with

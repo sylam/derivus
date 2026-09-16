@@ -1948,9 +1948,9 @@ class Base_Revaluation(Calculation):
                       'integrated analytically against that interval\'s own lognormal law and the '
                       'continuing branch drawn from the truncated one. Same expectation, lower '
                       'variance, and no indicator on the tape - so second-order greeks flow where '
-                      'the crisp estimator has to refuse them. An AVERAGING autocall refuses by '
-                      'name, its conditioning law being the distribution of a mean of spots rather '
-                      'than one fixing interval\'s. Off is the crisp path bit for bit, and '
+                      'the crisp estimator has to refuse them. An AVERAGING autocall FALLS BACK to '
+                      'the crisp estimator by name, its conditioning law being a mean of spots '
+                      'rather than one fixing interval\'s. Off is the crisp path bit for bit, and '
                       'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
                       'prices a settlement convention, never which convention the deal settles on'),
         F('Correlation_Bump', 'Float', default=0.025,

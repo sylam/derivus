@@ -1995,26 +1995,36 @@ def test_the_autocall_ledger_conserves_on_a_real_document(tmp_path):
 
 
 @pytest.mark.parametrize('by', ['fixings', 'barrier'])
-def test_an_averaging_autocall_under_the_switch_refuses_by_name(by, tmp_path):
-    """THE ARM THE SWITCH DOES NOT REACH, refused rather than quietly no-opped. Its termination is
-    a smoothed per-inner-path weight (`smooth_heaviside_up`) with no crisp per-scenario decision to
-    replace, and its breach is a hard indicator on the AVERAGE, whose conditioning law is the
-    distribution of a mean of spots.
+def test_an_averaging_autocall_under_the_switch_falls_back_by_name(by, tmp_path):
+    """THE ARM THE SWITCH DOES NOT REACH, priced on the CRISP estimator and said so rather than
+    refused - so a mixed book runs under one setting with every deal priced.
 
-    Both ways `calc_dependencies` puts a deal on that arm are walked: more than one price fixing
-    per coupon, and a barrier date off the coupon dates. The same documents price with the switch
-    OFF, which is what makes the refusal the switch's and not the document's.
+    Its termination is a smoothed per-inner-path weight (`smooth_heaviside_up`) with no crisp
+    per-scenario decision to replace, and its breach is a hard indicator on the AVERAGE, whose
+    conditioning law is the distribution of a mean of spots. Both ways `calc_dependencies` puts a
+    deal on that arm are walked: more than one price fixing per coupon, and a barrier date off the
+    coupon dates.
+
+    THE FALLBACK IS THE SWITCH-OFF RUN BIT FOR BIT, hex against hex, and the line names the deal
+    and what its greeks are blind to. The switch-off run carries no such line, which is what makes
+    the line the fallback's and not the document's.
     """
-    priced, _, _ = _run_doc(_averaging(_autocall_doc(0.7), by), tmp_path, 'avg_off')
-    assert np.isfinite(priced) and priced != 0.0, (
-        'the averaging document does not price with the switch OFF either, so the refusal below '
+    crisp, _, off_log = _run_doc(_averaging(_autocall_doc(0.7), by), tmp_path, 'avg_off',
+                                 debug=True)
+    assert np.isfinite(crisp) and crisp != 0.0, (
+        'the averaging document does not price with the switch OFF either, so the fallback below '
         'would be attributable to the deal rather than to the switch')
-    refused, _, log = _run_doc(_smooth(_averaging(_autocall_doc(0.7), by)), tmp_path, 'avg_on',
-                               debug=True)
-    assert math.isnan(refused), 'the deal priced on an arm the switch has no conditioning law for'
-    # the loader logs the exception's ARGS, so every quote arrives escaped
-    log = log.replace('\\', '')
+    assert 'falls back to the CRISP estimator' not in off_log, (
+        'the switch-off run announces a fallback it did not make')
+    fell_back, _, log = _run_doc(_smooth(_averaging(_autocall_doc(0.7), by)), tmp_path, 'avg_on',
+                                 debug=True)
+    assert fell_back.hex() == crisp.hex(), (
+        'the fallback is a re-price, not the crisp estimator: {} against {}'.format(
+            fell_back.hex(), crisp.hex()))
+    assert 'falls back to the CRISP estimator on AC1' in log, (
+        'the fallback does not name the deal it fell back on: {}'.format(log[-1200:]))
     assert 'FULL-PATH branch' in log and 'AVERAGE' in log, log[-1200:]
-    assert 'smooth_heaviside_up' in log, 'the refusal names what it will not put its name on'
-    assert 'ONE price fixing per coupon' in log and "Branch_And_Weight: 'No'" in log, (
-        'a refusal names its remedies')
+    assert 'smooth_heaviside_up' in log, 'the line names the arm it has no estimator for'
+    assert 'BLIND to the threshold kink' in log, (
+        'the line does not say what the reported greeks are blind to')
+    assert 'ONE price fixing per coupon' in log, 'the line names the remedy'
