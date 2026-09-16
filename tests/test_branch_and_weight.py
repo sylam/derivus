@@ -1830,7 +1830,7 @@ def test_the_switch_claims_exactly_four_products_and_no_more(tmp_path):
             '{!r}: {}'.format(named, field.description))
     readers = sorted(name for name, fn in vars(pricing).items()
                      if name.startswith('pv_') and inspect.isfunction(fn) and
-                     'branch_and_weight(shared' in inspect.getsource(fn))
+                     'shared.branch_and_weight' in inspect.getsource(fn))
     assert readers == ['pv_MC_Accumulator', 'pv_MC_AutoCallSwap', 'pv_MC_Tarf',
                        'pv_discrete_barrier_option'], (
         'a pricer reads the switch that this declaration does not enumerate, or one that does no '
@@ -1970,7 +1970,7 @@ def test_a_zero_coupon_row_refuses_by_name(barrier, tmp_path):
     priced, _, log = _run_doc(_zero_coupon_doc(coupon=AC_COUPON, barrier=barrier),
                               tmp_path, 'zc_real', debug=True)
     line, = [ln for ln in log.splitlines() if 'AUTOCALL AC1' in ln]
-    assert 'averaging=0' in line and 'coupons=3 thresholds=3' in line, (
+    assert 'fullpath=0' in line and 'coupons=3 thresholds=3' in line, (
         'the control no longer reaches the arm the refusal guards, so it says nothing about '
         'what that refusal costs an ordinary document: {}'.format(line))
     assert np.isfinite(priced) and priced != 0.0, (
@@ -2014,7 +2014,7 @@ def test_an_averaging_autocall_under_the_switch_refuses_by_name(by, tmp_path):
     assert math.isnan(refused), 'the deal priced on an arm the switch has no conditioning law for'
     # the loader logs the exception's ARGS, so every quote arrives escaped
     log = log.replace('\\', '')
-    assert 'averages' in log and 'AVERAGING arm' in log, log[-1200:]
+    assert 'FULL-PATH branch' in log and 'AVERAGE' in log, log[-1200:]
     assert 'smooth_heaviside_up' in log, 'the refusal names what it will not put its name on'
     assert 'ONE price fixing per coupon' in log and "Branch_And_Weight: 'No'" in log, (
         'a refusal names its remedies')
