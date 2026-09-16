@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import logging
+import re
 import threading
 import time
 import zipfile
@@ -242,6 +243,39 @@ def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
     assert 'UI-MARKER' in ui.get('/ui/').text
     assert ui.get('/ui', follow_redirects=False).status_code in (301, 307)
     assert ui.get('/ui/portfolio').status_code == 404
+
+
+#: One client call in `web/src/api.ts` - the method, and the path up to its query string, with the
+#: template holes left in. `call<T>` itself is not a call site, so the lookbehind drops it.
+API_CALL = re.compile(r"(?<!function )call<[^(]*\(\s*'(GET|POST|PUT|DELETE)',\s*['`]([^'`?]*)")
+
+#: A path PARAMETER on either side - `${id}` as the client writes it, `{table:path}` as the route
+#: declares it - so the two spellings of the same hole compare equal.
+PATH_HOLE = re.compile(r'\$\{[^}]*\}|\{[^}]*\}')
+
+
+def test_every_path_the_web_client_names_is_a_route_this_service_declares():
+    """The client renders from `/schema`, so the ONE thing it cannot read off a declaration is the
+    endpoint list - which makes a renamed route the one drift nothing catches until a desk clicks.
+    Here it is a gate: every `call(method, path)` in `api.ts` against `app.routes`, path parameters
+    normalised so the client's `/results/${id}` is the declared `/results/{result_id}`.
+
+    The web tree is optional to the library - a wheel carries the BUILD, not the source - so this
+    skips where it is absent rather than failing a package that never had it.
+    """
+    source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          'web', 'src', 'api.ts')
+    if not os.path.exists(source):
+        pytest.skip('web/src is not in this tree: the UI ships as a built directory')
+    with open(source, encoding='utf-8') as handle:
+        text = handle.read()
+
+    called = {(method, PATH_HOLE.sub('{}', path)) for method, path in API_CALL.findall(text)}
+    # a regex that stopped matching would pass an empty set against anything
+    assert len(called) == len(re.findall(r'(?<!function )call<', text))
+    declared = {(method, PATH_HOLE.sub('{}', route.path)) for route in service.app.routes
+                for method in getattr(route, 'methods', None) or ()}
+    assert sorted(called - declared) == []
 
 
 #: What a client books into the live book: the same cashflow shape, its own reference and size.

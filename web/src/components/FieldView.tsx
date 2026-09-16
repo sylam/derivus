@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { failure } from '../api';
 import {
-  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, offsetText, token,
+  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, label, offsetText,
+  token,
 } from '../tokens';
 import type { Descriptor } from '../types';
 import { CurveChart } from './CurveChart';
@@ -22,19 +24,13 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
     if (arity === 3 || arity === 4) return <SurfaceHeatmap data={curve.data} />;
     return <JsonView value={value} />;
   }
-  const stamp = token(value, '.Timestamp');
-  if (stamp !== undefined) return <span className="num">{String(stamp)}</span>;
-  if (token(value, '.DateOffset') !== undefined) {
-    return <span className="num">{offsetText(value)}</span>;
+  for (const name of ['.Timestamp', '.DateOffset', '.Percent', '.Basis'] as const) {
+    if (token(value, name) !== undefined) return <span className="num">{label(value)}</span>;
   }
   const grid = token(value, '.Grid');
   if (Array.isArray(grid)) {
     return <span className="num">{grid.map(offsetText).join(' ')}</span>;
   }
-  const percent = token(value, '.Percent');
-  if (percent !== undefined) return <span className="num">{formatNumber(percent as number)} %</span>;
-  const basis = token(value, '.Basis');
-  if (basis !== undefined) return <span className="num">{formatNumber(basis as number)} bp</span>;
   for (const list of ['.DateList', '.DateEqualList', '.CreditSupportList'] as const) {
     const rows = token(value, list);
     if (Array.isArray(rows)) {
@@ -65,7 +61,13 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   // --- plain shapes, refined by the descriptor ---
   if (Array.isArray(value)) {
     if (descriptor?.widget === 'Table' || value.every((row) => Array.isArray(row))) {
-      return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={value} />;
+      const names = descriptor?.col_names ?? [];
+      // a declared table's rows travel as dicts, and the declared column ORDER is what makes one
+      // a row: a quote ladder reads as its own columns rather than as JSON
+      const rows = names.length > 0 && value.every(isObject)
+        ? value.map((row) => names.map((name) => (row as Record<string, unknown>)[name]))
+        : value;
+      return <DataTable columns={names} index={[]} data={rows} />;
     }
     return <JsonView value={value} />;
   }
@@ -177,7 +179,7 @@ function EditableScalar({ name, descriptor, value, onAmend }: {
     try {
       setRefused(await onAmend(name, encodeScalar(descriptor, nextRaw)));
     } catch (error) {
-      setRefused([String(error)]);
+      setRefused([failure(error).error]);
     } finally {
       setSaving(false);
     }

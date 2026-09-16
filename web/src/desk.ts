@@ -207,11 +207,16 @@ export type XvaTotals = {
    * left the book, and never over a set with no number. */
   cva: number;
   counted: number;
+  /** The FVA over the rows that CARRY one, counted apart: a done row filed before the column
+   * existed reads null there, so this count can be short of `counted` and the screen says so. */
+  fva: number;
+  countedFva: number;
 };
 
 export function xvaTotals(view: BookXva): XvaTotals {
   const totals: XvaTotals = {
-    sets: 0, done: 0, failed: 0, neverRun: 0, running: 0, orphans: 0, cva: 0, counted: 0,
+    sets: 0, done: 0, failed: 0, neverRun: 0, running: 0, orphans: 0,
+    cva: 0, counted: 0, fva: 0, countedFva: 0,
   };
   for (const set of view.sets) {
     if (set.recalc) totals.running += 1;
@@ -223,9 +228,14 @@ export function xvaTotals(view: BookXva): XvaTotals {
     if (set.status === 'done') totals.done += 1;
     else if (set.status === 'failed') totals.failed += 1;
     else if (set.status === 'never run') totals.neverRun += 1;
-    if (set.status === 'done' && typeof set.cva === 'number') {
+    if (set.status !== 'done') continue;
+    if (typeof set.cva === 'number') {
       totals.cva += set.cva;
       totals.counted += 1;
+    }
+    if (typeof set.fva === 'number') {
+      totals.fva += set.fva;
+      totals.countedFva += 1;
     }
   }
   return totals;
@@ -233,12 +243,15 @@ export function xvaTotals(view: BookXva): XvaTotals {
 
 /** The replay tuple, labelled: what the row IS to the book over what the RUN was, in that order.
  * A null reads as absent rather than as a blank - the expander is where a desk goes to find out
- * whether a number can be reproduced, and half a tuple must look like half a tuple. */
+ * whether a number can be reproduced, and half a tuple must look like half a tuple. `FVA` is here
+ * as well as in the table because its absence is a fact about the RUN: a null beside a `done` row
+ * says the row predates the column, which is what an old `as_of` and a recalc would fix. */
 export function replayRows(set: XvaSet): [string, string | null][] {
   return [
     ['Deal path', set.deal_path],
     ['Counterparty', set.counterparty],
     ['Collateralised', set.collateralized ? 'yes' : 'no'],
+    ['FVA', set.fva === null ? null : formatNumber(set.fva)],
     ['Last run', set.as_of === null ? null : stampText(set.as_of)],
     ['Result id', set.result_id],
     ['Plan hash', set.plan_hash],

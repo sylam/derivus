@@ -1,10 +1,10 @@
-import { useEffect } from 'react';
-import { getResult, getTable, postExecute } from '../api';
+import { Fragment, useEffect } from 'react';
+import { failure, getResult, getTable, postExecute } from '../api';
 import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { useApp } from '../state';
-import { formatNumber, token } from '../tokens';
+import { formatNumber, isObject, token } from '../tokens';
 import type { TableShape } from '../types';
 
 const PAGE = 200;
@@ -30,7 +30,7 @@ export function CalculationView() {
       try {
         dispatch({ type: 'RUN_POLLED', summary: await getResult(run.resultId!) });
       } catch (error) {
-        dispatch({ type: 'RUN_FAILED', error: String(error) });
+        dispatch({ type: 'RUN_FAILED', error: failure(error).error });
       }
     }, POLL_MS);
     return () => clearInterval(timer);
@@ -58,7 +58,7 @@ export function CalculationView() {
     if (!run.table || !run.resultId || run.status !== 'done') return;
     getTable(run.resultId, run.table, 0, PAGE)
       .then((page) => dispatch({ type: 'PAGE_LOADED', page }))
-      .catch((error) => dispatch({ type: 'RUN_FAILED', error: String(error) }));
+      .catch((error) => dispatch({ type: 'RUN_FAILED', error: failure(error).error }));
   }, [run.table, run.resultId, run.status, dispatch]);
 
   if (!doc || !schema) return null;
@@ -70,7 +70,7 @@ export function CalculationView() {
       const submitted = await postExecute(doc!);
       dispatch({ type: 'RUN_SUBMITTED', resultId: submitted.result_id });
     } catch (error) {
-      dispatch({ type: 'RUN_FAILED', error: String(error) });
+      dispatch({ type: 'RUN_FAILED', error: failure(error).error });
     }
   }
 
@@ -118,33 +118,81 @@ function StatusChip() {
   );
 }
 
+/** A stat value as one line: a list joins, a number formats, and a dict past the one level of
+ * nesting a card gives it reads as itself. */
+function statText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(statText).join(', ');
+  if (typeof value === 'number') return formatNumber(value);
+  if (value === null || value === undefined) return '—';
+  return isObject(value) ? JSON.stringify(value) : String(value);
+}
+
+/** One stat the tile strip cannot hold: a dict as a key/value card, a dict of dicts as a card per
+ * key one level down. The job-shaped verbs publish their WHOLE answer under one such key, so a
+ * strip that kept only numbers left their page blank. */
+function StatCard({ name, value, nest = true }: { name: string; value: unknown; nest?: boolean }) {
+  const entries = Object.entries(value as Record<string, unknown>);
+  const cards = nest ? entries.filter(([, inner]) => isObject(inner)) : [];
+  const lines = entries.filter(([, inner]) => !nest || !isObject(inner));
+  return (
+    <section className="card">
+      <h3>{name}</h3>
+      {lines.length > 0 && (
+        <div className="fields">
+          {lines.map(([key, inner]) => (
+            <Fragment key={key}>
+              <div className="k">{key}</div>
+              <div className="v">
+                <span className={typeof inner === 'number' ? 'num' : undefined}>
+                  {statText(inner)}</span>
+              </div>
+            </Fragment>
+          ))}
+        </div>
+      )}
+      {cards.map(([key, inner]) => (
+        <div className="nested" key={key}><StatCard name={key} value={inner} nest={false} /></div>
+      ))}
+    </section>
+  );
+}
+
 function Results() {
   const { state, dispatch } = useApp();
   const { run } = state;
   const tables = run.summary?.tables ?? {};
   const listed = Object.keys(tables).filter((name) => !isScalar(tables[name])).sort();
-  const stats = run.summary?.stats ?? {};
+  // every key the service publishes appears: a number is a tile, a dict a card, anything else a
+  // line. Four verbs answer ENTIRELY under a dict key, and Results empty beside it
+  const stats = Object.entries(run.summary?.stats ?? {});
+  const tiles = stats.filter(([, value]) => typeof value === 'number');
+  const cards = stats.filter(([, value]) => isObject(value));
+  const lines = stats.filter(([, value]) => typeof value !== 'number' && !isObject(value));
 
   return (
     <>
-      {(Object.keys(run.scalars).length > 0 || Object.keys(stats).length > 0) && (
+      {(Object.keys(run.scalars).length > 0 || tiles.length > 0) && (
         <div className="stats">
           {Object.entries(run.scalars).map(([name, value]) => (
             <div className="stat" key={name}>
               <div className="label">{name}</div>
-              <div className="value">{typeof value === 'number' ? formatNumber(value) : String(value)}</div>
+              <div className="value">{statText(value)}</div>
             </div>
           ))}
-          {Object.entries(stats)
-            .filter(([, value]) => typeof value === 'number')
-            .map(([name, value]) => (
-              <div className="stat" key={name}>
-                <div className="label">{name}</div>
-                <div className="value">{formatNumber(value as number)}</div>
-              </div>
-            ))}
+          {tiles.map(([name, value]) => (
+            <div className="stat" key={name}>
+              <div className="label">{name}</div>
+              <div className="value">{formatNumber(value as number)}</div>
+            </div>
+          ))}
         </div>
       )}
+      {lines.map(([name, value]) => (
+        <div className="pager" key={name}>
+          <span>{name}</span><span className="mono">{statText(value)}</span>
+        </div>
+      ))}
+      {cards.map(([name, value]) => <StatCard key={name} name={name} value={value} />)}
       {listed.length > 0 && (
         <div className="pager">
           <span>table</span>

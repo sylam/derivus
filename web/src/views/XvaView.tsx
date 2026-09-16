@@ -87,6 +87,12 @@ export function XvaView() {
               <b>{formatNumber(totals.cva)}</b> {currency}
             </span>
           )}
+          {totals.countedFva > 0 && (
+            <span className="hint" title={`the sum over the ${totals.countedFva} rows that CARRY a funding number; a row filed before the column existed carries none, and is not counted here`}>
+              FVA over the {totals.countedFva} that carry one{' '}
+              <b>{formatNumber(totals.fva)}</b> {currency}
+            </span>
+          )}
           <span className="spacer" />
           <span className="hint" title={view.as_of}>read {stampText(view.as_of)}</span>
         </div>
@@ -110,6 +116,7 @@ export function XvaView() {
                 <th>Counterparty</th>
                 <th>CSA</th>
                 <th className="n">{currency ? `CVA (${currency})` : 'CVA'}</th>
+                <th className="n">{currency ? `FVA (${currency})` : 'FVA'}</th>
                 <th>Last run</th>
                 <th>Status</th>
                 <th />
@@ -132,7 +139,7 @@ export function XvaView() {
               })}
               {view.sets.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="hint">
+                  <td colSpan={9} className="hint">
                     this book carries no netting sets, and the projection file holds no rows for
                     any that have left it — there is no XVA to read.
                   </td>
@@ -177,11 +184,8 @@ function Row({ set, read, opened, onOpen }: {
             {set.collateralized ? 'CSA' : 'no CSA'}
           </span>
         </td>
-        <td className={`n${set.cva !== null && set.cva < 0 ? ' neg' : ''}`}>
-          {set.cva === null
-            ? <span className="hint" title="a CVA is reported only for a run that completed">—</span>
-            : formatNumber(set.cva)}
-        </td>
+        <Money value={set.cva} absent="a CVA is reported only for a run that completed" />
+        <Money value={set.fva} absent="this row was filed before the funding column existed" />
         <td className={`age ${age.tone}`} title={age.title}>{age.text}</td>
         <td>
           <span className={`chip ${chip.tone}`} title={chip.title}>{chip.text}</span>
@@ -198,7 +202,7 @@ function Row({ set, read, opened, onOpen }: {
       </tr>
       {opened && (
         <tr className="detail">
-          <td colSpan={8}>
+          <td colSpan={9}>
             {orphan && <div className="banner">{set.note}</div>}
             {/* the engine's own wording, verbatim: reformatting it would put a second author
                 between the engine and the desk */}
@@ -224,6 +228,16 @@ function Row({ set, read, opened, onOpen }: {
         </tr>
       )}
     </>
+  );
+}
+
+/** One adjustment's cell. A null is an ABSENCE, and the two have different reasons: no completed
+ * run for a CVA, a row older than the column for an FVA. */
+function Money({ value, absent }: { value: number | null; absent: string }) {
+  return (
+    <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}>
+      {value === null ? <span className="hint" title={absent}>—</span> : formatNumber(value)}
+    </td>
   );
 }
 

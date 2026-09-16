@@ -18,7 +18,7 @@ export function App() {
   useEffect(() => {
     getSchema()
       .then((schema) => dispatch({ type: 'SCHEMA_LOADED', schema }))
-      .catch((error) => dispatch({ type: 'SCHEMA_FAILED', error: String(error) }));
+      .catch((error) => dispatch({ type: 'SCHEMA_FAILED', error: failure(error).error }));
   }, []);
 
   // the live book, if the service serves one - silence (a 404) just means "open a file instead"

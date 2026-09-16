@@ -13,11 +13,18 @@ export function token(value: unknown, name: string): unknown {
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** A column/index entry as text: tuples join, `.Timestamp` tokens read as their date. */
+/** A column, index or cell entry as text: tuples join, and every scalar wire token reads as what
+ * it is - a date, a period, a percent or a basis with its unit. A table's cells carry the same
+ * tokens a field does, so they are read in one place. */
 export function label(value: unknown): string {
   if (Array.isArray(value)) return value.map(label).join(' / ');
   const stamp = token(value, '.Timestamp');
   if (stamp !== undefined) return String(stamp);
+  if (token(value, '.DateOffset') !== undefined) return offsetText(value);
+  const percent = token(value, '.Percent');
+  if (percent !== undefined) return `${formatNumber(percent as number)} %`;
+  const basis = token(value, '.Basis');
+  if (basis !== undefined) return `${formatNumber(basis as number)} bp`;
   if (value === null || value === undefined) return '';
   return String(value);
 }

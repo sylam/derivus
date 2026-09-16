@@ -140,6 +140,10 @@ export type XvaSet = {
   status: string;
   /** The book's report currency, and null unless `status` is 'done'. */
   cva: number | null;
+  /** The funding adjustment, a column of the SAME run - one CMC per set, so it shares this row's
+   * `as_of` and replay tuple. Null on a done row means that row was filed before the column
+   * existed, not that funding cost nothing: a set declaring no `Funding_Rate` reads exactly 0.0. */
+  fva: number | null;
   /** When THAT row's run happened - not when the view was read. */
   as_of: string | null;
   result_id: string | null;
