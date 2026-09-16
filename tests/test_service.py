@@ -1178,8 +1178,8 @@ def test_a_collapsed_ladder_refuses_and_nothing_past_a_year_is_ever_snapped_to(t
 
 
 # THE ROUND TRIP - the verb authoring a block, installing it through the market seam,
-# bootstrapping, and the model repricing the quotes it was fitted to - is a MINUTES-LONG fit and
-# lives as a document: `artifacts/hnpin/verb.py`, one `/book/model` call landing
+# bootstrapping, and the model repricing the quotes it was fitted to - is a MINUTES-LONG fit, so
+# it is read as a document outside the suite: one `/book/model` call landing
 # `LogVar2FJModelParameters.ZAR` off the banked USDZAR surface.
 
 

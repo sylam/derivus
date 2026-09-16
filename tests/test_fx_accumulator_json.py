@@ -413,8 +413,7 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# THE RECIPROCAL AXIS was gated here on the plain Heston-Nandi family's parameter carry. LogVar2FJ
-# transports as a MEASURE CHANGE inside its walk instead (`utils.LogVar2FJ.walk`), and the documents that
-# read it live under `artifacts/lv_reciprocal_20260906/` - the GBM limit, both orientations of one
-# accumulator, the TARF's refusal and one inverted credit MC.
+# THE RECIPROCAL AXIS. LogVar2FJ transports as a MEASURE CHANGE inside its walk
+# (`utils.LogVar2FJ.walk`); the documents that read it - the GBM limit, both orientations of one
+# accumulator, the TARF's refusal and one inverted credit MC - are read outside the suite.
 # --------------------------------------------------------------------------------------------

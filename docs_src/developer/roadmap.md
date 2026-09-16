@@ -337,9 +337,10 @@ every risk-neutral calibration inherits.
   (`STALE` otherwise; `--build-map --repo <clean checkout>`, about 16 minutes). What it cannot
   see: string-keyed dispatch outside the registries, callables passed as values, virtual dispatch
   out of an inherited body, a branch no data takes, a document over the 180 s cap,
-  `derivus_bloomberg/`. At the map's last build (2026-09-05): 852 of 2,133 symbols executed by
-  some document; no document reaches 40 of 50 deals, 24 of 34 pricers and 3 of 8 bootstrapper
-  families.
+  `derivus_bloomberg/`. At the map's last build (2026-09-16): 896 of 2,203 symbols executed by
+  some document; no document reaches 36 of 50 deals, 21 of 34 pricers and 2 of 6 bootstrapper
+  families; 102 of the store's 179 documents carry retired LogVar2FJ declarations and refuse by
+  name, and 16 name market files in checkouts that no longer exist.
 - **Which tests a change reaches**: `gates/impacted.py --dirty --run` joins an execution-coverage
   map (built at a campaign boundary) with a static fixture map; file-granular, fails open loudly;
   `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
@@ -350,7 +351,7 @@ every risk-neutral calibration inherits.
   (`-0x1.2c48f36318e38p+5`). The documents, their banks and the two scripts live in the
   maintainers' artifacts store outside the repository; moving them under `gates/` waits on a check
   that no banked document carries desk data.
-- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 37 gates over
+- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 38 gates over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
@@ -376,19 +377,12 @@ every risk-neutral calibration inherits.
 - `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
   on a `.md` at the repo root, so a change that adds a fixture cannot use the selector until the next
   boundary run rebuilds the map.
-- `gates/reach.py`'s document map is stale in substance as well as in commit: of the 43 autocall
-  documents it names, 31 no longer load on the head (16 carry the Poisson-era factor block, 14
-  the retired component family, one is gone), so a bit-identity claim over "every document the
-  map names" is over the 12 that price. Rebuild the map (`--build-map`) at the next campaign
-  boundary.
 - One banked reading of a two-name correlation document from 2026-09-08 no longer reproduces at
   double precision (one term reads 4.163e-17 against 2.776e-17 banked; the single-precision half
   reproduces exactly). Re-bank it.
 - `derivus_jupyter.set_repr` raises on any multi-column Table outside a four-name allowlist, which
   now includes `EquityBarrierBinaryOption.Barrier_Dates` and `QEDI_CustomAutoCallSwap.Coupon_Observations`;
   loading, pricing, the generated docs and the MCP descriptors are unaffected.
-- An early calibration pack in the artifacts store still walks the retired Poisson residual and no
-  longer imports; delete it or re-spell its scripts against the NIG residual.
 - Inline comment density: about twelve blocks of 4–11 comment lines from the boundary-correction
   work (the discrete barrier's hit-mask and rebate blocks, the observed-spot walk's terminal
   digital, the net-from-gross helper); house style is 2–3 lines.
