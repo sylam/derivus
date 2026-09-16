@@ -3860,12 +3860,28 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     callOrPut = factor_dep['Option_Type']
     buy_sell = factor_dep['Buy_Sell']
 
+    # WHAT THE SETTLED FIXINGS LEFT: the pot the strip opens on. A row that settled before the base
+    # date enters the deal HERE and nowhere else - its dates are off the grid and its cash is
+    # history - and it folds through the strip's own accrual, so every arm reads one number
+    opening = shared.one * 0.0
+    for value in factor_dep['Settled_Fixings']:
+        opening = opening + accrued(value * shared.one, strike, callOrPut, invertedTarget)
+    accrued_in = float(opening)
+
     # `resolved` counts the fixings taken off the realized path and is NOT `num_samples`:
     # `calc_fx_cross` on an empty schedule returns a broadcast row, so `len(all_samples)` reads 1
     # where nothing is resolved
-    logging.debug('TARF %s fixings=%d resolved=%d target=%.6g barrier=%.6g blocks=%d',
+    logging.debug('TARF %s fixings=%d resolved=%d target=%.6g accrued=%.6g barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
-                  len(known_resets) + len(sim_samples), targetValue, barrier, len(counts))
+                  len(known_resets) + len(sim_samples), targetValue, accrued_in, barrier,
+                  len(counts))
+
+    if accrued_in >= targetValue:
+        # redeemed before the base date: nothing to simulate, nothing left to settle
+        logging.info('TARF %s redeemed before the base date - its settled fixings accrued %.6g of '
+                     'a %.6g target, so it is worth nothing',
+                     deal_data.Instrument.field.get('Reference'), accrued_in, targetValue)
+        return shared.one.new_zeros((deal_time.shape[0], shared.simulation_batch))
 
     # read once before a draw is taken. It SUPERSEDES the two registrations below rather than
     # joining them - one decision, one estimator
@@ -3894,8 +3910,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     # the accrual by SCHEDULE POSITION - `accumulation[k]` nets the first k fixings, the declared
     # ones and then the simulated ones behind them. A block opens on the pot its SETTLED fixings
-    # left, so an observed-but-unsettled fixing enters through the strip's loop and nowhere else
-    accumulation, raw = [shared.one * 0.0], [shared.one * 0.0]
+    # left, so an observed-but-unsettled fixing enters through the strip's loop and nowhere else.
+    # `opening` is below the target here, so its clamped and unclamped walks start together
+    accumulation, raw = [opening], [opening]
     declared = [x * shared.one for x in fx_samples.declared_values()]
     for sample_val in declared + list(next_samples):
         accumulation.append(calc_accum_value(

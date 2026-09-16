@@ -13,7 +13,6 @@ Pre-registered, from the document below: one fixing observed at 1.15 against a 1
 **-50.00** to the seller, on every scenario.
 """
 import json
-import math
 import os
 import sys
 
@@ -167,3 +166,84 @@ def test_an_oss_run_wider_than_the_sobol_dimension_cap_prices(tmp_path):
     assert profile.shape[1] == 1 << 15, profile.shape
     today = float(out['Results']['cashflows']['USD'].values[0].mean())
     assert abs(today - EXPECTED_TODAY) < 1e-3, (today, EXPECTED_TODAY)
+
+
+# ---------------------------------------------------------------------------------------------
+# A SEASONED TARF UNDER EXPOSURE
+#
+# A row that SETTLED before the base date folds into the pot at the compile, so the deal is the
+# SUBSTITUTED one - the same document without that row and with its accrual off the target - row
+# for row, ledger and CVA included. A row FIXED but not yet settled is still the strip's and its
+# settlement lands in the ledger on its own date.
+# ---------------------------------------------------------------------------------------------
+SEASONED_SKEW = [[0.8, 0.02, 0.13], [0.8, 2.0, 0.125], [1.0, 0.02, 0.10], [1.0, 2.0, 0.105],
+                 [1.2, 0.02, 0.09], [1.2, 2.0, 0.095]]
+#: settled, and close enough behind the base date that the compile used to keep its FIXING while
+#: cutting its settlement - which left the strip one discount factor short and marked NaN
+SEASONED_SETTLED = [{'.Timestamp': _day(-5)}, {'.Timestamp': _day(-3)}, 1.15]
+#: fixed yesterday, settling in three days
+SEASONED_OBSERVED = [{'.Timestamp': _day(-1)}, {'.Timestamp': _day(3)}, 1.14]
+SEASONED_LIVE = [[{'.Timestamp': _day(30 * k)}, {'.Timestamp': _day(30 * k + 2)}, 0.0]
+                 for k in range(1, 6)]
+SEASONED_TARGET = 0.12
+SETTLED_ACCRUAL = SEASONED_SETTLED[2] - STRIKE                    # 0.05
+OBSERVED_PAYMENT = N1 * (SEASONED_OBSERVED[2] - STRIKE)           # 40.00, on 2024-07-01
+
+
+def _seasoned_job(rows, target):
+    """The exposure document with a counterparty, a skewed surface and `rows` for a schedule."""
+    job = _job('Buy')
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['FXVol.EUR.USD']['Surface'] = _curve(SEASONED_SKEW)
+    market['Price Factors']['SurvivalProb.CPTY'] = {
+        'Recovery_Rate': 0.4, 'Curve': _curve([[0.0, 0.0], [10.0, 0.4]])}
+    job['Calc']['Calculation']['Credit_Valuation_Adjustment'] = {
+        'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
+        'Stochastic_Hazard_Rates': 'No'}
+    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'].update(
+        TARF_ExpiryDates=rows, TargetLevel=target)
+    return job
+
+
+def test_a_seasoned_tarf_exposes_and_books_what_is_left_of_it(tmp_path):
+    """The profile, the ledger and the CVA of a deal one of whose rows has already paid.
+
+    On main this document marked NOT A NUMBER on every row: the settled fixing survived the window
+    the compile kept a pre-base fixing by while its settlement did not, so the strip walked four
+    fixings against three discount factors, ran off the end of them and the deal was skipped.
+
+    The oracle is the substituted deal, and the agreement is the estimator's rather than the bit's
+    for one reason: the exposure runs in float32, where `0.12 - 0.05` computed in the engine and
+    the same subtraction handed in as a reduced target differ by an ulp. That is 6.1e-5 on a mark
+    whose rows scatter over 210, and 1.9e-6 of the CVA.
+
+    The observed-but-unsettled row banks its own 40.00 on 2024-07-01, its own settlement date and
+    the first row of the ledger - the deal's dates being reporting rows under exposure.
+    """
+    rows = [SEASONED_SETTLED, SEASONED_OBSERVED] + SEASONED_LIVE
+    out = _run(_seasoned_job(rows, SEASONED_TARGET), tmp_path, 'seasoned')
+    sub = _run(_seasoned_job(rows[1:], SEASONED_TARGET - SETTLED_ACCRUAL), tmp_path, 'substituted')
+
+    profile = np.asarray(out['Results']['mtm'], dtype=float)
+    assert np.isfinite(profile).all(), 'the seasoned exposure marked not-a-number'
+    assert profile.shape[0] > 1 and profile.std(axis=1).max() > 1.0, (
+        'a one-row or undispersed profile gates nothing', profile.shape)
+    assert np.allclose(profile, np.asarray(sub['Results']['mtm'], dtype=float),
+                       rtol=1e-5, atol=1e-3), 'the seasoned profile is not the substituted deal'
+    cva, cva_sub = float(out['Results']['cva']), float(sub['Results']['cva'])
+    assert abs(cva - cva_sub) < 1e-4 * abs(cva_sub), (cva, cva_sub)
+
+    ledger = out['Results']['cashflows']['USD']
+    assert str(ledger.index[0])[:10] == _day(3), (
+        'the observed fixing did not settle on its own date', ledger.index[0])
+    assert abs(float(ledger.values[0].mean()) - OBSERVED_PAYMENT) < 1e-3, ledger.values[0].mean()
+
+
+def test_a_tarf_its_settled_fixings_redeemed_exposes_and_pays_nothing(tmp_path):
+    """Redeemed before the base date: no exposure on any row of any scenario, and no cash. The
+    same document with a target its settled row already exhausted."""
+    rows = [SEASONED_SETTLED, SEASONED_OBSERVED] + SEASONED_LIVE
+    out = _run(_seasoned_job(rows, SETTLED_ACCRUAL / 2.0), tmp_path, 'redeemed')
+    assert float(np.abs(np.asarray(out['Results']['mtm'], dtype=float)).max()) == 0.0
+    assert float(np.abs(np.asarray(
+        out['Results']['cashflows']['USD'].values, dtype=float)).max()) == 0.0

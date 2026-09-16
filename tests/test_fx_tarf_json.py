@@ -334,3 +334,163 @@ def test_the_second_observed_fixing_in_a_block_reads_its_own_level(tmp_path):
                                   Expiry_Date=LAGGED_SCHEDULE[1][1]), tmp_path, 'own_level')[0])
     assert abs(value - oracle) < 1e-9 * oracle, (
         'the observed fixings are not reading their own levels', value, oracle)
+
+
+# --------------------------------------------------------------------------------------------
+# A SEASONED TARF PRICES WHAT IS LEFT OF IT
+#
+# A row whose SETTLEMENT date is behind the base date has paid: its accrual opens the pot the
+# strip walks from, and both its dates leave the grid so every remaining fixing is paired with
+# its own settlement again. The oracle is the SUBSTITUTED deal - the same document with that row
+# deleted and `TargetLevel` reduced by its accrual - which walks the same fixings and draws the
+# same numbers, so the equality is to the BIT once the reduced target is the same double.
+#
+# The surface is SKEWED and the spot is the level the last observed fixing printed at: the strip
+# walks on from an observed level, so an oracle written at another spot reads the smile elsewhere.
+# --------------------------------------------------------------------------------------------
+#: (Option_Type, spot, the settled fixing, the observed-but-unsettled one), each accruing on its
+#: own side of the strike - 0.05 settled and 0.04 observed, either way round.
+SEASONED_WORLDS = [('Call', 1.14, 1.15, 1.14), ('Put', 1.06, 1.05, 1.06)]
+SEASONED_SKEW = [[0.8, 0.02, 0.13], [0.8, 2.0, 0.125], [1.0, 0.02, 0.10], [1.0, 2.0, 0.105],
+                 [1.2, 0.02, 0.09], [1.2, 2.0, 0.095]]
+#: settles BEFORE the base date, its fixing close enough behind it that the compile used to keep
+#: the fixing while dropping the settlement - which is what left the strip short a discount factor
+SETTLED_DATES = [{'.Timestamp': '2024-06-10'}, {'.Timestamp': '2024-06-12'}]
+#: fixed before the base date, settling after it
+OBSERVED_DATES = [{'.Timestamp': '2024-06-27'}, {'.Timestamp': '2024-07-01'}]
+SEASONED_TARGET = 0.12
+LIVE_ROWS = _D['TARF_ExpiryDates']
+SEASONED_SIMS = 1 << 16
+#: a LIVE NIG kit for the pair, so the seasoned identity is read on the walk as well as on GBM
+LV_FACTOR = {
+    'Kappa_L': 0.5, 'Sigma_L': 1.0, 'Rho_L': -0.4, 'Kappa_S': 6.0, 'C_Min': 0.12,
+    'Cap_A': 4.605170185988092, 'Residual_Law': 'NIG', 'On_Guard': '', 'Skew_Gradient': '',
+    'Stickiness_Band': 0.0,
+    'Xi_Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.01], [5.0, 0.01]]}},
+    'Rho_S': {'.Curve': {'meta': [], 'data': [[0.0, -0.6]]}},
+    'Sigma_S': {'.Curve': {'meta': [], 'data': [[0.0, 2.4]]}},
+    'Alpha': {'.Curve': {'meta': [], 'data': [[0.0, 8.0]]}},
+    'Beta': {'.Curve': {'meta': [], 'data': [[0.0, -2.0]]}}}
+
+
+def _accrual(option_type, level):
+    """One fixing's accrual toward the target - the pricer's own expression, to the bit."""
+    return max((level - STRIKE) if option_type == 'Call' else (STRIKE - level), 0.0)
+
+
+def _seasoned(rows, target, spot, model='None', smooth=False, sims=SEASONED_SIMS, **overrides):
+    """The template reseated on `rows`: a skewed surface and a spot on the last observed level."""
+    job = _job(TARF_ExpiryDates=rows, TargetLevel=target, Expiry_Date=rows[-1][1], **overrides)
+    job['Calc']['Calculation']['MCMC_Simulations'] = sims
+    if smooth:
+        job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes'
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['FxRate.EUR']['Spot'] = spot
+    market['Price Factors']['FXVol.EUR.USD']['Surface']['.Curve']['data'] = SEASONED_SKEW
+    if model != 'None':
+        market['Price Factors']['LogVar2FJModelParameters.EUR'] = LV_FACTOR
+        market['Valuation Configuration'] = {'FXTARFOptionDeal': {
+            'SpotModel': model, 'Steps_Per_Year': 252.0, 'Internal_Step_Days': 1}}
+    return job
+
+
+@pytest.mark.parametrize('option_type,spot,settled,observed', SEASONED_WORLDS)
+@pytest.mark.parametrize('buy_sell', ['Buy', 'Sell'])
+def test_a_settled_fixing_opens_the_pot_rather_than_vanishing(
+        tmp_path, option_type, spot, settled, observed, buy_sell):
+    """A fixing that has already paid is not a fixing the deal has stopped having.
+
+    Both its dates were cut at the base date and its accrual went nowhere, so the deal priced
+    against its WHOLE original target - bit-identical to deleting the row. Measured here: a bought
+    call read 80.7373 where the deal is worth 46.4464, 73.8% over; a bought put -71.6956 against
+    -80.0158, 10.4% under. Which way it errs is the payoff's, not the defect's.
+
+    Equal to the BIT, not approximately: the substituted deal walks the same two fixings and draws
+    the same Sobol numbers, and the only quantity that differs is the remaining target - the same
+    double on both sides, since the oracle reduces it by the pricer's own accrual expression.
+    """
+    side = dict(Option_Type=option_type, Buy_Sell=buy_sell)
+    rows = [SETTLED_DATES + [settled]] + LIVE_ROWS
+    accrual = _accrual(option_type, settled)
+    seasoned = _mtm(_run(_seasoned(rows, SEASONED_TARGET, spot, **side), tmp_path, 'seasoned')[0])
+    substituted = _mtm(_run(_seasoned(LIVE_ROWS, SEASONED_TARGET - accrual, spot, **side),
+                            tmp_path, 'substituted')[0])
+    full = _mtm(_run(_seasoned(LIVE_ROWS, SEASONED_TARGET, spot, **side), tmp_path, 'full')[0])
+    assert seasoned == substituted, (
+        'the settled fixing did not open the pot', seasoned, substituted)
+    assert seasoned != full, (
+        'the deal prices against its whole original target, so the settled fixing reached nothing')
+
+
+@pytest.mark.parametrize('option_type,spot,settled,observed', SEASONED_WORLDS)
+@pytest.mark.parametrize('buy_sell', ['Buy', 'Sell'])
+def test_a_fixing_observed_but_not_settled_banks_its_own_settlement(
+        tmp_path, option_type, spot, settled, observed, buy_sell):
+    """A row fixed before the base date and settling after it is still the STRIP's.
+
+    Beside a settled row it was also the crash: the settled fixing survived the window the compile
+    kept a pre-base fixing by while its settlement did not, so the strip carried four fixings
+    against three discount factors and ran off the end of them. The deal was skipped and the book
+    marked NOT A NUMBER - which is what this document read on main, on every one of these arms.
+
+    Two oracles. Deleting the SETTLED row and reducing the target by its accrual leaves the same
+    three-fixing strip, so that equality is to the bit. Deleting the observed row as well pays its
+    settlement in cash instead, and that one is the estimator's own: the shorter strip draws one
+    fewer Sobol dimension, which is 1.1e-4 of the mark for the call and 1.9e-4 for the put at the
+    262,144 inner paths used here, and 4.5e-3 at 65,536.
+    """
+    side = dict(Option_Type=option_type, Buy_Sell=buy_sell, sims=1 << 18)
+    sign = 1.0 if buy_sell == 'Buy' else -1.0
+    settled_accrual, observed_accrual = (_accrual(option_type, settled),
+                                         _accrual(option_type, observed))
+    rows = [SETTLED_DATES + [settled], OBSERVED_DATES + [observed]] + LIVE_ROWS
+    seasoned = _mtm(_run(_seasoned(rows, SEASONED_TARGET, spot, **side), tmp_path, 'both')[0])
+    assert math.isfinite(seasoned), 'the seasoned deal marked not-a-number'
+    kept = _mtm(_run(_seasoned(rows[1:], SEASONED_TARGET - settled_accrual, spot, **side),
+                     tmp_path, 'kept')[0])
+    assert seasoned == kept, ('the settled row did not fold into the pot', seasoned, kept)
+
+    banked = sign * _leg(OBSERVED_DATES, observed_accrual)
+    live = _mtm(_run(_seasoned(LIVE_ROWS, SEASONED_TARGET - settled_accrual - observed_accrual,
+                               spot, **side), tmp_path, 'live')[0])
+    assert abs(seasoned - live - banked) < 5e-4 * abs(seasoned), (seasoned, live + banked)
+
+
+def test_settled_fixings_that_reach_the_target_redeem_the_deal(tmp_path):
+    """There is nothing left to price: the pot the settled rows leave IS the target, so the deal
+    is worth zero, simulates nothing and settles nothing.
+
+    Said by name in the log, because a row marking flat is otherwise indistinguishable from one
+    nobody priced. On main the same document read 10.1089 - a deal still carrying its whole target.
+    """
+    option_type, spot, settled, _observed = SEASONED_WORLDS[0]
+    rows = [SETTLED_DATES + [settled]] + LIVE_ROWS
+    out, log = _run(_seasoned(rows, _accrual(option_type, settled) / 2.0, spot,
+                              Option_Type=option_type), tmp_path, 'redeemed', debug=True)
+    assert _mtm(out) == 0.0, _mtm(out)
+    assert any('redeemed before the base date' in line for line in log.splitlines()), log
+
+
+def test_a_fixing_whose_date_has_passed_must_carry_the_rate_it_fixed_at(tmp_path):
+    """A blank row behind the base date records nothing, and reading it as a zero rate accrues
+    nothing where the deal accrued - the same mis-mark as dropping the row. Refused by name at
+    the compile, where the remedy is the observation."""
+    rows = [SETTLED_DATES + [0.0]] + LIVE_ROWS
+    with pytest.raises(rf.utils.UnpriceableSchedule):
+        _run(_seasoned(rows, SEASONED_TARGET, 1.14), tmp_path, 'blank')
+
+
+@pytest.mark.parametrize('model', ['None', 'LogVar2FJ'])
+@pytest.mark.parametrize('smooth', [False, True])
+def test_the_seasoned_pot_is_one_number_on_every_arm(tmp_path, model, smooth):
+    """The crisp default and `Branch_And_Weight`, GBM and the LogVar2FJ kit: four estimators, one
+    spelling of what the settled fixings left, and the substituted identity is to the bit on all
+    of them. Measured: 46.5710 on GBM and 40.3114 on the walk, each unmoved by the switch."""
+    option_type, spot, settled, observed = SEASONED_WORLDS[0]
+    arm = dict(Option_Type=option_type, model=model, smooth=smooth)
+    rows = [SETTLED_DATES + [settled], OBSERVED_DATES + [observed]] + LIVE_ROWS
+    seasoned = _mtm(_run(_seasoned(rows, SEASONED_TARGET, spot, **arm), tmp_path, 'arm')[0])
+    substituted = _mtm(_run(_seasoned(rows[1:], SEASONED_TARGET - _accrual(option_type, settled),
+                                      spot, **arm), tmp_path, 'arm_sub')[0])
+    assert math.isfinite(seasoned) and seasoned == substituted, (model, smooth, seasoned,
+                                                                 substituted)

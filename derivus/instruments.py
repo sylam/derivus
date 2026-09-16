@@ -99,6 +99,19 @@ def refuse_consequence_field(field, name, deal_type, remedy):
                 field.get('Reference', deal_type), name, name, field[name], remedy))
 
 
+def refuse_unpaired_schedule(field, rows, deal_type):
+    """Refuse a `(fixing, settlement, ...)` schedule whose rows do not pair one with one.
+
+    An OSS strip walks its j-th fixing and pays it at its j-th settlement, so a repeated fixing
+    date or a settlement running backwards re-dates a payment silently.
+    """
+    if any(x[1] < x[0] for x in rows) or \
+            any(a[0] >= b[0] or a[1] > b[1] for a, b in zip(rows, rows[1:])):
+        raise ValueError('{}: {} fixings must be strictly increasing with non-decreasing '
+                         'settlements on or after their fixing'.format(
+                             field.get('Reference', deal_type), deal_type))
+
+
 def refuse_zero_cash_payoff(field, deal_type):
     """Refuse a digital whose `Cash_Payoff` is exactly 0.0.
 
@@ -5877,6 +5890,13 @@ class FXTARFOptionDeal(Deal):
             'OTM payments from the terminated fixing. Surviving paths continue with $A_j = A_{j-1} + \\Delta_j$',
             'drawn from the truncated distribution.',
             '',
+            'A SEASONED deal is the same deal with less of it left: a row whose SETTLEMENT date is',
+            'behind the base date has paid, so its `Value` accrues into $A_0$ and its dates leave',
+            'the grid - the strip prices against $T^* - A_0$ and never pays that row again, and a',
+            'deal whose settled rows reach $T^*$ between them is redeemed and worth zero. A row',
+            'FIXED but not yet settled is still the strip\'s: it walks in-loop on its `Value` at',
+            'survival 1 and banks its payment at its own settlement date.',
+            '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
             '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
@@ -5905,6 +5925,10 @@ class FXTARFOptionDeal(Deal):
                           calendars):
         """Resolve the TARF's factor dependencies and the opt-in spot-model switch.
 
+        A row whose SETTLEMENT is behind the base date is history: it leaves the grid and its
+        observed value goes to `Settled_Fixings`, which the pricer folds into the pot the strip
+        opens on. What is left is one fixing per settlement, which is what the strip walks.
+
         The switch swaps the (moneyness, vol-surface) lookup for the model's own walk in the
         pricer, leaving the GBM `field_index['Volatility']` path untouched when off or absent. No
         deal field: the params factor resolves by NAMING CONVENTION off the pair's NON-BASE token,
@@ -5915,13 +5939,22 @@ class FXTARFOptionDeal(Deal):
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
 
-        pf = {x[0]:(x[-1] if (x[-1] is not None) else 0.0) for x in self.field['TARF_ExpiryDates']}
-        sd = [x[1] for x in self.field['TARF_ExpiryDates']]
+        schedule = sorted(self.field['TARF_ExpiryDates'], key=lambda x: x[0])
+        active = [x for x in schedule if x[1] >= base_date]
+        if not active:
+            raise utils.InstrumentExpired(self.field.get('Reference', 'FXTARFOptionDeal'))
+        refuse_unpaired_schedule(self.field, active, 'FXTARFOptionDeal')
+        if any(not x[-1] for x in schedule if x[0] < base_date):
+            raise utils.UnpriceableSchedule(
+                '{}: a TARF fixing whose date has PASSED must carry the rate observed on it - the '
+                'schedule is the record of what the deal has already accrued, and a blank row '
+                'prices it against a target nothing has been taken out of'.format(
+                    self.field.get('Reference', 'FXTARFOptionDeal')))
 
-        # bit of a hack - assume that a fixing is at most a month before it's settlement
-        sd_dates = sorted([x for x in sd if x >= base_date])
-        pf_dates = sorted([x for x in pf if x > min(sd_dates) - pd.DateOffset(months=1)])
-        all_dates = sorted(set(sd_dates).union(set(pf_dates)))
+        pf = {x[0]: (x[-1] if (x[-1] is not None) else 0.0) for x in active}
+        pf_dates = [x[0] for x in active]
+        sd_dates = [x[1] for x in active]
+        all_dates = sorted(set(sd_dates).union(pf_dates))
 
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
             field['Currency']
@@ -5942,6 +5975,7 @@ class FXTARFOptionDeal(Deal):
             'Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf.get(x,-1)] for x in all_dates]),
             'Price_Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
             'Settlement': np.array([(x-base_date).days for x in sd_dates]),
+            'Settled_Fixings': [x[-1] for x in schedule if x[1] < base_date],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Notional1': self.field['Underlying_Amount'],
@@ -6079,12 +6113,8 @@ class FXAccumulatorOptionDeal(Deal):
             raise utils.InstrumentExpired(self.field.get('Reference', 'FXAccumulatorOptionDeal'))
 
         # not defensive: the pricer's block search assumes settlements monotone in fixing order,
-        # and a duplicated fixing date would silently collapse in the lookup - refuse loudly
-        if any(x[1] < x[0] for x in active) or \
-                any(a[0] >= b[0] or a[1] > b[1] for a, b in zip(active, active[1:])):
-            raise ValueError('{}: accumulator fixings must be strictly increasing with '
-                             'non-decreasing settlements on or after their fixing'.format(
-                                 self.field.get('Reference', 'FXAccumulatorOptionDeal')))
+        # and a duplicated fixing date would silently collapse in the lookup
+        refuse_unpaired_schedule(self.field, active, 'FXAccumulatorOptionDeal')
 
         pf = {x[0]: (x[-1] if (x[-1] is not None) else 0.0) for x in active}
         fixing_dates = [x[0] for x in active]

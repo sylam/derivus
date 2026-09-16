@@ -144,10 +144,6 @@ is recorded so a reader knows which readings rest on it.
   fires on 27% to 61% of paths and the delta is 27% short uncorrected. It is exact behind
   `Branch_And_Weight: 'Yes'`; the default keeps the declared blindness, since neither the bandwidth
   estimator at 13% spread nor the oracle at 9% flatness does better than about ten percent.
-- **Two seasoned target redemption forwards no fixture reaches.** One whose settlements began
-  before the base date discards the settled fixing outright, which is bit-identical to deleting
-  it, so the deal prices against its full original target. One valued between two settlements
-  marks not-a-number on every tree measured.
 - **The extendable forward under a credit-support annex does not register its settled cash**: a
   quarter of a percent across four amplifying documents, against ladders that resolve no finer.
   Its rolling backward pass also carries a one-signed smoothing bias over the payoff's kink from
