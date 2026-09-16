@@ -118,6 +118,16 @@ def calc_statistics(data_frame, method='Log', num_business_days=252.0, frequency
     return stats, correlation, data
 
 
+def start_of_return(index, source):
+    """An innovation is dated at the START of the return it belongs to - `calc_statistics`'
+    `shift(-frequency)`, and the one clock the factor calibration joins every estimator's `delta`
+    on. `index` are the dates the returns END on, `source` the observations they were differenced
+    from."""
+    at = source.get_indexer(index)
+    assert at.min() > 0, 'an innovation dated off the observations it was differenced from'
+    return source[at - 1]
+
+
 def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=None, val2=None):
     def final_integration_points(only_np, int_points, interp_value):
         # return all but last point and make a tensor if necessary
@@ -2729,7 +2739,8 @@ class MarkovHMMSpotCalibration(object):
         # posterior regime path - approximately iid N(0,1), so the framework's correlation
         # consolidation is not contaminated by regime-induced heteroskedasticity
         innov = (diffs.values - means[regimes]) / np.where(sigmas[regimes] > 0, sigmas[regimes], 1.0)
-        delta = pd.DataFrame({data_frame.columns[0]: innov}, index=diffs.index)
+        delta = pd.DataFrame({data_frame.columns[0]: innov},
+                             index=start_of_return(diffs.index, prices.index))
 
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
@@ -3229,7 +3240,8 @@ class GARCHSpotCalibration(object):
 
         # delta = standardised residual ε_t = r_t/√h_t off the filtered variance path (both in
         # percent units, so the 100· scaling cancels) — approximately iid under the fit.
-        delta = pd.DataFrame({data_frame.columns[0]: x / np.sqrt(h)}, index=r.index)
+        delta = pd.DataFrame({data_frame.columns[0]: x / np.sqrt(h)},
+                             index=start_of_return(r.index, px.index))
 
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
@@ -3529,8 +3541,8 @@ class QuadraticCarryCurveCalibration(object):
             'Calibration_DT_Years': 1.0 / float(num_business_days),
         }
         archive_name = cols[0].split(',', 1)[0]
-        delta = pd.DataFrame(
-            {f'{archive_name},L': res_L, f'{archive_name},D': res_D}, index=joint.index[1:])
+        delta = pd.DataFrame({f'{archive_name},L': res_L, f'{archive_name},D': res_D},
+                             index=start_of_return(joint.index[1:], joint.index))
         return utils.CalibrationInfo(param, np.eye(2).tolist(), delta)
 
 
@@ -4572,7 +4584,8 @@ class BasisLinkedSpotCalibration(object):
         }
         if span:
             param.update({'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1])})
-        delta = pd.DataFrame({basis_col: eta}, index=joint.index[1:])
+        delta = pd.DataFrame({basis_col: eta},
+                             index=start_of_return(joint.index[1:], joint.index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
     def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib):
@@ -4642,7 +4655,7 @@ class BasisLinkedSpotCalibration(object):
             'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1]),
             'Calibration_DT_Years': dt_calib,
         }
-        delta = pd.DataFrame({basis_col: z_all}, index=index[2:])
+        delta = pd.DataFrame({basis_col: z_all}, index=start_of_return(index[2:], index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
 
@@ -5192,8 +5205,8 @@ class LogVar2FJCalibration(object):
         # unit-variance, so a row estimated here is the row the outer process realises
         columns = {name: eps, name + '.S': shocks[:, 0] / shocks[:, 0].std(),
                    name + '.L': shocks[:, 1] / shocks[:, 1].std(), name + '.G': g_eps}
-        return utils.CalibrationInfo(
-            param, np.eye(4).tolist(), pd.DataFrame(columns, index=bar.index[1:-1]).loc[keep])
+        return utils.CalibrationInfo(param, np.eye(4).tolist(), pd.DataFrame(
+            columns, index=start_of_return(bar.index[1:-1], bar.index)).loc[keep])
 
 class LogVar2FJImpliedSpotModel(StochasticProcess):
     """The xVA outer process of the LogVar2FJ model - the pricer's OWN walk on the trading day.

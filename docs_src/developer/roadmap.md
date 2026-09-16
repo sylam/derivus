@@ -112,15 +112,6 @@ is recorded so a reader knows which readings rest on it.
   normal distribution function of the mixer normal saturates in double past 8.3 standard
   deviations, where the inverse-Gaussian root answers the top of its bracket: one draw in 1e16,
   named rather than guarded.
-- **The newer historical estimators index an innovation one business day away from the incumbent**
-  (2026-09-07): `calc_statistics`, which every ordinary factor is estimated with, places a return's
-  innovation on the date the return STARTS; the GARCH, regime-switching, basis and LogVar2FJ
-  estimators place it on the date the return ends, and the factor calibration correlates the two
-  families as they stand. Measured on one simulated pair drawn at 0.6: a GARCH factor reads 0.009
-  against a lognormal sibling and 0.335 against the LogVar2FJ estimator's own residual. The shift
-  belongs to the four newer estimators, not to `calc_statistics` — every correlation a desk has
-  banked was estimated under the incumbent's convention, and moving it would silently re-date all of
-  them. Aligning the four leaves banked market data untouched and needs no re-read.
 - **A quanto correlation can be written in two bases, and nothing checks which.** The parameter
   writer emits a quanto correlation as the correlation between the FX Brownian and each rate
   factor's own, while the correlation section's rows are the independent normals the Cholesky
