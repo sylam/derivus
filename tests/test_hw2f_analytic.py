@@ -47,8 +47,10 @@ LOCAL, because `bootstrap` runs every curve through one bootstrapper.
 
 THE PREMIUM CONVENTION. `create_market_swaps` reads `Distribution_Type` off `Factor3D.get_subtype`
 and the displacement off `InterestYieldVol.displacement`. One numeric ladder read both ways is
-9.68x to 11.37x apart, which is 1/F - what pricing a normal vol as a lognormal one cost. A zero or
-absent `Market_Volatility` refuses rather than falling through to the surface's ATM read.
+9.68x to 11.37x apart, which is 1/F - what pricing a normal vol as a lognormal one cost. The BLOCK
+declares `Distribution_Type` too, blank by default: non-blank and differing from the surface's, the
+fit refuses before a benchmark is built. A zero or absent `Market_Volatility` refuses rather than
+falling through to the surface's ATM read.
 
 THE SEED AND THE CLOCK: one 2026-09-02 re-marking event, and it moved every recorded theta* here.
 The premium expiry now reads the curve's day count rather than 365.25ths (`OLD_CLOCK` is the
@@ -3153,6 +3155,43 @@ def test_the_two_conventions_are_two_prices_and_the_normal_one_is_the_bachelier_
     for name, swap in normal['swaps'].items():
         assert float(swap.premium(swap.quote).detach()).hex() == float(swap.price).hex(), (
             '{}: the float64 Bachelier twin is not the numpy premium it splices onto'.format(name))
+
+
+def test_the_block_declares_the_convention_its_numbers_are_in():
+    """THE BLOCK'S OWN `Distribution_Type`, blank by default and a CHECK rather than an
+    instruction: the premium is still priced in the convention the NAMED SURFACE declares, and a
+    non-blank declaration differing from it refuses instead of fitting the other market quietly.
+
+    Declaring `Lognormal` beside this fixture's lognormal surface solves to `AN_FOUR_THETA` TO THE
+    BIT - the same 23 doubles the undeclared block returns. Declaring `Normal` against that same
+    surface refuses, naming the block and both conventions.
+
+    AND IT REFUSES BEFORE A PREMIUM IS BUILT, asserted by ORDER rather than by a spy: the last
+    block also quotes a ZERO vol, whose own refusal lives inside the benchmark loop, so a
+    comparison made after the first premium would report that one instead.
+    """
+    calibration, _ = identified_calibration(Objective='Analytic', Distribution_Type='Lognormal')
+    solved = calibration.unflatten(calibration.solve())
+    for name, recorded in AN_FOUR_THETA.items():
+        assert [float(v).hex() for v in np.atleast_1d(solved[name])] == [
+            float(v).hex() for v in recorded], (
+            '{} solved to {} under a declared Lognormal against the recorded {} - the declaration '
+            'is a check, not an instruction'.format(name, list(solved[name]), recorded))
+
+    with pytest.raises(Exception) as refused:
+        identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic',
+                           Distribution_Type='Normal')
+    sentence = str(refused.value)
+    assert 'HullWhite2FactorModelPrices' in sentence and "'Normal'" in sentence and (
+        "'Lognormal'" in sentence), sentence
+
+    with pytest.raises(Exception) as ordered:
+        identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic',
+                           Distribution_Type='Normal',
+                           Instrument_Definitions=quoted_definitions(CHECKER_BENCHMARKS, 4 * [0.0]))
+    assert 'Distribution_Type' in str(ordered.value), (
+        'a zero-vol row refused first, so the comparison is not ahead of the benchmark loop: '
+        '{}'.format(ordered.value))
 
 
 #: THE LADDER THE OLD BRACKET COULD NOT REACH: 78bp and 40bp of absolute rate move, alternating so

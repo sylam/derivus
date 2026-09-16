@@ -4715,7 +4715,8 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         market_swaps = utils.create_market_swaps(
             base_date, time_grid, curve_index, vol_surface, process.factor,
             block['Instrument_Definitions'],
-            shared_mem.one if quote_sensitivity == 'Yes' else None)
+            shared_mem.one if quote_sensitivity == 'Yes' else None,
+            declared=block['Distribution_Type'])
         # number of random factors to use
         numfactors = process.num_factors()
         # compiled here rather than by a DealStructure, so they bind here
@@ -5038,11 +5039,16 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
                       'reported; nothing in the fit reads it, because what counts as too old is '
                       'the consumer\'s policy and not the parameters\''),
         F('Quote_Source', 'Text', default='',
-          description='How this block was authored, in one line: what the vols were read off, the '
-                      'convention they are quoted in, and the surface whose Distribution_Type the '
-                      'calibration will actually price them under. Declared so a machine-fetched '
-                      'ladder\'s provenance is data on the block rather than an undeclared key '
-                      'bootstrap reads past')
+          description='How this block was authored, in one line: what the vols were read off and '
+                      'the convention they are quoted in. Declared so a machine-fetched ladder\'s '
+                      'provenance is data on the block rather than an undeclared key bootstrap '
+                      'reads past'),
+        F('Distribution_Type', 'Text', default='', values=['', 'Lognormal', 'Normal'],
+          description='The convention the Market_Volatility column is quoted in. Blank, the '
+                      'default, is UNCHECKED - the fit prices in whatever the named surface '
+                      'declares; a non-blank declaration differing from that surface\'s refuses by '
+                      'name before a premium is priced, one ladder read the two ways being an '
+                      'order of magnitude apart in premium')
     ]
 
     def __init__(self, param, device, dtype):

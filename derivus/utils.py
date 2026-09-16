@@ -4077,7 +4077,7 @@ def market_premium(pvbp, strike, expiry, delta, option, quote):
 
 
 def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_factor,
-                        instrument_definitions, unit=None):
+                        instrument_definitions, unit=None, declared=''):
     """The benchmark swaptions of one risk-neutral IR calibration: a compiled par swap, the market
     premium the model has to reproduce, and the objective weight.
 
@@ -4088,10 +4088,13 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     the premium and the map is the identity.
 
     The premium is priced in the surface's declared convention, read through `get_subtype` as the
-    deal path reads it: see `PREMIUM_CONVENTIONS`. The `Volatility_Delta` re-solve brackets in that
-    same declared scale, `IMPLIED_VOL_BRACKETS` being co-keyed with it. The displacement is
-    `vol_surface.displacement`, where the declared `Shift` outranks the `Property_Aliases` legacy
-    (see `riskfactors.InterestYieldVol.displacement`). An absent or zero `Market_Volatility` refuses.
+    deal path reads it: see `PREMIUM_CONVENTIONS`. `declared` is the BLOCK's own
+    `Distribution_Type`, the convention its own numbers say they are in - blank is unchecked, and a
+    non-blank one differing from the surface's refuses here, before a benchmark is built. The
+    `Volatility_Delta` re-solve brackets in that same declared scale, `IMPLIED_VOL_BRACKETS` being
+    co-keyed with it. The displacement is `vol_surface.displacement`, where the declared `Shift`
+    outranks the `Property_Aliases` legacy (see `riskfactors.InterestYieldVol.displacement`). An
+    absent or zero `Market_Volatility` refuses.
 
     THE SCHEDULE the analytic objective reads is extracted here for every benchmark whatever the
     block's `Objective` - see `swaption_schedule_class` for why the curve's own clock.
@@ -4115,6 +4118,15 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
             'calibration prices a benchmark premium in - they are {}. Correct the surface\'s '
             'Distribution_Type to one of those'.format(
                 distribution, ' and '.join(sorted(PREMIUM_CONVENTIONS))))
+    # the block's own account of what its numbers are, held against the surface's before any
+    # benchmark is built - blank is unchecked, which is what every undeclared block has always done
+    if declared and declared != distribution:
+        raise Exception(
+            "HullWhite2FactorModelPrices declares Distribution_Type '{0}' and the InterestYieldVol "
+            "it names declares '{1}', so these quotes would price as {1} vols - one ladder read "
+            "the two ways is an order of magnitude apart in premium. Re-declare the block at '{1}', "
+            'or declare the surface in the convention its quotes are in'.format(
+                declared, distribution))
     price_option, tensor_option = PREMIUM_CONVENTIONS[distribution]
     # the re-solve's bracket off that same read - the quote's scale is the convention's
     vol_bracket = IMPLIED_VOL_BRACKETS[distribution]

@@ -280,11 +280,12 @@ fix. What ships:
   every benchmark with `utils.black_european_option_price` whatever the surface declared, an order
   of magnitude away from the quote (9.7x–11.4x on the four-quote fixture, which is 1/F); it now
   reads the named `InterestYieldVol`'s `Distribution_Type` through `Factor3D.get_subtype` and
-  strikes a Normal ladder's premium with Bachelier. **The declaration this depends on lives on the
-  SURFACE, which this emitter does not author** — so a desk pointing `Swaption_Volatility` at a
-  lognormally-declared factor still gets a lognormal fit of normal quotes, and `Quote_Source` says
-  so in the block. A **zero** vol is still refused from the ladder by name, and the engine refuses
-  it too now: it used to be a silent instruction to read the surface's ATM instead.
+  strikes a Normal ladder's premium with Bachelier. **The block declares which convention its own
+  numbers are in** — `Distribution_Type`, written here with what the terminal quoted — and one
+  differing from that surface's refuses by name before a premium is priced, so a desk pointing
+  `Swaption_Volatility` at a lognormally-declared factor is told rather than fitted. A **zero** vol
+  is still refused from the ladder by name, and the engine refuses it too now: it used to be a
+  silent instruction to read the surface's ATM instead.
 - **A re-quoted grid is a re-authoring.** `HullWhite2FactorModelPrices` quotes in
   `Instrument_Definitions` rather than `Points`, so `schema.partition_market_price` gives it an
   empty values half and no tick reaches it. `reauthor` drops the block and re-installs it, as

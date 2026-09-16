@@ -21,10 +21,9 @@ WHAT IS HELD:
                    surface's ATM rather than a bad number
   the row          the seed's declared conventions on every row, the vol scaled into the family's
                    `Percent` column, `Weight` flat, and the two-way and stamp beside them
-  the distribution declared, carried into `Quote_Source`, and READ BY THE ENGINE: the premium
-                   construction held to the Bachelier pair as source AND as behaviour, and the
-                   block's own line held to saying which convention its numbers are in, because the
-                   declaration the engine reads lives on a SURFACE this emitter does not author
+  the distribution declared ON THE BLOCK and read by the engine: the premium construction held to
+                   the Bachelier pair as source AND as behaviour, and the emitted
+                   `Distribution_Type` held to the convention the terminal quoted
   the partition    this family has an EMPTY values half, so `update_market_quote` refuses a re-tick
                    and `reauthor` is the only route a re-quoted grid reaches a book by
   determinism      the same canned grid emits the same bytes
@@ -193,19 +192,20 @@ def test_the_row_is_the_committed_schemas_own_declaration():
     assert tuple(key for key in row if key in declared) == swaption_vol.INSTRUMENT_COLUMNS
     assert set(row) - set(declared) == set(swaption_vol.QUOTE_VALUE_KEYS)
 
-    # the BLOCK-level keys, every one of them DECLARED. HW2F declares `Quote_Source` and
-    # `Quote_Timestamp` on the shape the option family already had, so the subtraction is
-    # empty. Read off the WORKING TREE, because that declaration lands in this same change
+    # the BLOCK-level keys, every one of them DECLARED. HW2F declares `Quote_Source`,
+    # `Quote_Timestamp` and `Distribution_Type` on the shape the option family already had, so the
+    # subtraction is empty. Read off the WORKING TREE, because a declaration can land in the change
     instrument = block_of()[1]['instrument']
     block_fields = committed_fields('HullWhite2FactorModelParameters', at=None)
     assert set(instrument) - set(block_fields) == set(), sorted(set(instrument) - set(block_fields))
     assert 'Quote_Source' in block_fields and 'Quote_Timestamp' in block_fields
-    assert set(instrument) == {'Swaption_Volatility', 'Instrument_Definitions', 'Quote_Source'}
-    # and the row columns are unmoved by it: the block gained two fields, the ladder none
-    assert 'Quote_Source' not in declared and 'Quote_Timestamp' not in declared
+    assert set(instrument) == {'Swaption_Volatility', 'Instrument_Definitions', 'Quote_Source',
+                               'Distribution_Type'}
+    # and the row columns are unmoved by it: the block gained three fields, the ladder none
+    assert not {'Quote_Source', 'Quote_Timestamp', 'Distribution_Type'} & set(declared)
 
 
-def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
+def test_the_engine_reads_the_declared_distribution_and_this_block_declares_it():
     """`SASN` is a NORMAL vol in basis points, and `create_market_swaps` used to price every
     benchmark's premium with `utils.black_european_option_price` whatever the surface declared. It
     reads `Distribution_Type` now, and this holds that seam from both sides.
@@ -220,7 +220,7 @@ def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
     """
     import inspect
 
-    from derivus import riskfactors, utils
+    from derivus import bootstrappers, riskfactors, utils
 
     body = inspect.getsource(utils.create_market_swaps)
     assert 'get_subtype' in body, (
@@ -251,13 +251,14 @@ def test_the_engine_reads_the_declared_distribution_and_this_block_says_which():
         'lognormal one is the defect this gate exists for'.format(
             row['Market_Volatility'], premium['Normal'] / premium['Lognormal']))
 
-    # and the block still says which, because the family declares no field for it and the surface
-    # this emitter does not author is what the engine actually reads
-    source_line = block_of()[1]['instrument']['Quote_Source']
-    assert 'NORMAL vols' in source_line
-    assert 'the convention the named surface DECLARES' in source_line
-    assert 'Distribution_Type Normal' in source_line
-    assert 'LOGNORMAL Black' not in source_line and 'reads no Distribution_Type' not in source_line
+    # and the block DECLARES what its own numbers are, in the family's own spelling, so a
+    # machine-authored ladder is checked against that surface from the day it is written
+    instrument = block_of()[1]['instrument']
+    field = next(f for f in bootstrappers.HullWhite2FactorModelParameters.fields
+                 if f.name == 'Distribution_Type')
+    assert field.default == '' and instrument['Distribution_Type'] == SHIPPED['distribution']
+    assert instrument['Distribution_Type'] in field.values, field.values
+    assert 'NORMAL vols' in instrument['Quote_Source']
 
 
 # =============================================================================================

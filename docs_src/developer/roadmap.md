@@ -192,9 +192,6 @@ is recorded so a reader knows which readings rest on it.
 - **The kernel bandwidth is chosen per batch.** The Silverman rule sizes the boundary correction's
   bandwidth from one batch's paths, so a run with more than one batch oversmooths against its true
   path count.
-- **A swaption's quoting convention lives on the surface, which the Bloomberg emitter does not
-  author.** A factor declared lognormal therefore gets a lognormal fit of normal quotes, and the
-  two conventions are ten to eleven times apart in premium.
 - **A solved zero-cost strike moved between two landings of 2026-09-06 on documents that carry no
   LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
   Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree

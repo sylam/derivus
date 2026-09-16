@@ -28,7 +28,10 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
    carry its own `Market_Volatility`: a zero (which used to mean "read the named surface's ATM
    instead") and an absent column both refuse by name since 2026-09-01, and the vol is read in the
    convention that surface's `Distribution_Type` declares — a lognormal Black vol by default, an
-   absolute normal one where it says `Normal`. They are specified as:
+   absolute normal one where it says `Normal`. The block may declare a `Distribution_Type` of its
+   own saying which convention its numbers are in: blank, the default, is unchecked, and a
+   non-blank one differing from that surface's refuses by name before a premium is priced. They are
+   specified as:
 
 ```json
 {
