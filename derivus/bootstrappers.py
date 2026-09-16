@@ -16,7 +16,7 @@
 import copy
 import time
 import logging
-from collections import namedtuple, OrderedDict
+from collections import namedtuple
 
 # third party stuff
 import numpy as np
@@ -3796,8 +3796,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             by_expiry.setdefault(quote.T, []).append(i)
         atm = [min(by_expiry[T], key=lambda i: abs(quotes[i].strike / quotes[i].forward - 1.0))
                for T in sorted(by_expiry)]
-        wings = OrderedDict((T, [i for i in by_expiry[T] if i not in set(atm)])
-                            for T in sorted(by_expiry) if len(by_expiry[T]) > 1)
+        wings = {T: [i for i in by_expiry[T] if i not in set(atm)]
+                 for T in sorted(by_expiry) if len(by_expiry[T]) > 1}
         fit.buckets = self.param_buckets(fit, wings)
         if fit.quadrature and fit.buckets.size > 1:
             raise ValueError(
@@ -3839,8 +3839,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                                      weight=np.sqrt(quote.weight * (1.0 - share) / total))
                       for i, quote in enumerate(quotes)]
         fit.atm = [fit.quotes[i] for i in atm]
-        fit.wings = OrderedDict((T, [fit.quotes[i] for i in rows])
-                                for T, rows in wings.items())
+        fit.wings = {T: [fit.quotes[i] for i in rows] for T, rows in wings.items()}
         if targets:
             total = sum(target.weight for target in targets)
             targets = [target._replace(
