@@ -135,12 +135,11 @@ is recorded so a reader knows which readings rest on it.
   FX surface lookup has none, so an FX surface declared that way fails at the lookup with an
   attribute error, under either moneyness rule, before any strip is read. Two documents in the
   artifacts store reproduce it.
-- **Two stale-fixing reads in the autocall's observation arm.** A second consecutive coupon whose
+- **A stale-fixing read in the autocall's observation arm.** A second consecutive coupon whose
   observation window is already wholly in the past reads the first coupon's last fixing under spot
   observation, the same staleness the window's prefix already carries; no document here reaches
-  it. And a block whose fixings lag its coupon dates prices the final coupon crisply off a fixing
-  the reporting row has not yet reached: on the campaign book two rows in mid 2028 read a fixing
-  dated a week later.
+  it. A block whose fixings lag its coupon dates is a booking error, not the engine's: the
+  fixing schedule is the deal's to author.
 - **The European leg of the observed-spot pricers still branches on the model family** in two
   places, a step count and a scalar carry against the walked block, where one spelling should
   serve both families.
@@ -174,10 +173,11 @@ is recorded so a reader knows which readings rest on it.
 - **The accumulator's boundary placement under the recompute node is unmeasured.** Its latch is
   assembled off a node output, which puts it on the right side by construction, but the reading
   that would show a dropped cotangent has not been taken.
-- **A composite or quanto AMERICAN option takes no adjustment at all.** `pv_american_option`, which
-  an `EquityOptionDeal` carrying `Option_Style: American` reaches, never calls
-  `calc_vol_adjustment`, so its vol, forward and carry are the local asset's whatever the payoff
-  currency says.
+- **The American option's approximation is to be retired, not patched** (2026-09-16).
+  `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
+  never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
+  whatever the payoff currency says. The owner's ruling: leave it as it is and replace the
+  approximation with a different pricer rather than adjust this one.
 - **Two simulating pricers read a composite's smile at the untranslated strike.** The OSS discrete
   barrier's expiry read (`pv_discrete_barrier_option`) and the autocall's (`pv_MC_AutoCallSwap`)
   take the payoff-currency strike against the LOCAL forward, where the declared coordinate is that
