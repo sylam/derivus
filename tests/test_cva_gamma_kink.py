@@ -59,6 +59,7 @@ TWO GRID CHOICES ARE LOAD-BEARING.
 """
 import datetime
 import json
+import logging
 import os
 import sys
 
@@ -103,6 +104,10 @@ VOL_TENOR = [0.0, 1.0, 3.0]
 PATHS = 1 << 16
 GRID = '1d 3m(3m) 12m'
 SEED_TOL = 0.02
+#: the state `exposure_kink_term` reads its batch count off where a probe calls it directly - a real
+#: one, at the declared 1, so the Silverman width is the row's own path count
+ONE_BATCH = utils.Calculation_State({}, torch.ones([1, 1], dtype=torch.float64), 1, [],
+                                    'Constant', 1, False)
 
 
 def _stamp(days):
@@ -124,7 +129,7 @@ def _autocall():
     return deal
 
 
-def _job(children=None, hessian='No', gradient='Yes', paths=PATHS, seed=1):
+def _job(children=None, hessian='No', gradient='Yes', paths=PATHS, seed=1, batches=1):
     """The market fixture as a credit Monte Carlo with a counterparty and the CVA block on.
 
     The deals hang under an uncollateralised `NettingCollateralSet` because a bare deal reports only
@@ -140,7 +145,7 @@ def _job(children=None, hessian='No', gradient='Yes', paths=PATHS, seed=1):
                      for deal in (children or [_forward('FWD1', FORWARD_PRICE)])]}]
     job['Calc']['Calculation'] = {
         'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': BASE}, 'Currency': 'USD',
-        'Time_grid': GRID, 'Batch_Size': paths, 'Simulation_Batches': 1, 'Random_Seed': seed,
+        'Time_grid': GRID, 'Batch_Size': paths, 'Simulation_Batches': batches, 'Random_Seed': seed,
         'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'All',
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
@@ -196,6 +201,13 @@ def _second_order(results):
     vanna = sum(float(frame.loc[row, c]) for c in frame.columns
                 if c[1].startswith('GBMAssetPriceTSModelParameters'))
     return gamma, vanna
+
+
+def _kink_widths(messages):
+    """The Silverman width `pricing.kink_kernel` sized per reporting row, off its DEBUG line - one
+    run's rows in order, a multi-batch run's batch after batch."""
+    return [float(m.split('eps=')[1].split()[0])
+            for m in messages if m.startswith('KINK exposure ')]
 
 
 def _spot_patch(spot):
@@ -358,7 +370,7 @@ def test_a_row_whose_density_climbs_as_its_bandwidth_narrows_refuses_by_name():
     row = torch.full((1, n), 1.0, dtype=torch.float64)
     row[0, :int(0.5 * n)] = 0.0
     with pytest.raises(utils.SecondOrderRefused) as refusal:
-        pricing.exposure_kink_term(row)
+        pricing.exposure_kink_term(ONE_BATCH, row)
     message = str(refusal.value)
     assert 'ATOM' in message and 'exposure_kink_term' in message, message
     assert 'row(s) [0]' in message, (
@@ -403,7 +415,8 @@ def test_a_collapsed_row_away_from_the_kink_is_ignored_rather_than_refused():
     """
     def curvature(rows):
         theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-        term = pricing.exposure_kink_term(theta * torch.tensor(rows, dtype=torch.float64)).sum()
+        term = pricing.exposure_kink_term(
+            ONE_BATCH, theta * torch.tensor(rows, dtype=torch.float64)).sum()
         first, = torch.autograd.grad(term, theta, create_graph=True)
         second, = torch.autograd.grad(first, theta)
         return float(term.detach()), float(first), float(second)
@@ -443,7 +456,7 @@ def test_the_kernel_argument_is_detached_so_K_prime_never_reaches_the_tape():
     """
     rows = torch.linspace(-4.0, 4.0, 512, dtype=torch.float64).reshape(1, -1)
     theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-    term = pricing.exposure_kink_term(theta * rows).sum()
+    term = pricing.exposure_kink_term(ONE_BATCH, theta * rows).sum()
     first, = torch.autograd.grad(term, theta, create_graph=True)
     second, = torch.autograd.grad(first, theta, create_graph=True)
     assert float(second.detach()) > 0.0, 'the probe found no curvature, so it tests nothing'
@@ -515,6 +528,47 @@ def test_a_collateralised_set_is_refused_one_step_before_the_kink_term_sees_it(t
     job['Calc']['Calculation']['Credit_Valuation_Adjustment']['Hessian'] = 'No'
     survives = _run(job, tmp_path, 'collateral_first')
     assert survives['cva'] > 0.0, 'the same collateralised book must still price at first order'
+
+
+# ---------------------------------------------------------------- the bandwidth's sample
+
+def test_the_kernel_width_is_the_runs_path_count_and_not_one_batchs(tmp_path, caplog):
+    """THE SILVERMAN WIDTH BELONGS TO THE RUN, NOT TO A BATCH.
+
+    Every batch re-estimates these same five reporting rows and their gradients are ACCUMULATED, so
+    the density's effective sample is `Simulation_Batches x Batch_Size`. Sizing from `Batch_Size`
+    alone is too wide by `Simulation_Batches ** 0.2` - 14.87% at two batches - and the term's
+    O(eps^2) bias rides it: this document's 65536 paths split two ways read the vanna entry 2.99%
+    off its own CRN ladder where one batch reads 1.61%, and four ways 5.24% against 3.64% here.
+
+    THE WIDTH IS THE ASSERTION, because it is what the mutation moves. Off `kink_kernel`'s own
+    DEBUG line the two-batch run's rows sit 0.26 / 0.75 / 0.19 / 0.79 / 1.95% from the one-batch
+    run's, which is the per-batch spread estimated off half the paths; reading the batch's own
+    count again multiplies every one of them by 1.1487. The corrected entries FOLLOW rather than
+    gate - gamma 0.08% and vanna 0.30%, against 0.27% and 1.14% uncorrected - because a 2% move is
+    inside this document's own seed spread either way.
+    """
+    with caplog.at_level(logging.DEBUG):
+        one = _run(_job(hessian='Yes'), tmp_path, 'width_one')
+        widths_one = _kink_widths(caplog.messages)
+        caplog.clear()
+        two = _run(_job(hessian='Yes', paths=PATHS // 2, batches=2), tmp_path, 'width_two')
+        widths_two = _kink_widths(caplog.messages)
+
+    assert widths_one and len(widths_two) == 2 * len(widths_one), (
+        'the two-batch run did not estimate the same rows twice: {} widths against {}'.format(
+            len(widths_two), len(widths_one)))
+    off = max(abs(w / widths_one[i % len(widths_one)] - 1.0) for i, w in enumerate(widths_two))
+    assert off <= 0.03, (
+        'a two-batch run of the same total paths did not use the one-batch width: worst row '
+        '{:.2%} against a tolerance of 3%, and sizing from the batch alone would read {:.2%} '
+        'wider than that\n  one batch {}\n  two batches {}'.format(
+            off, 2 ** 0.2 - 1.0, widths_one, widths_two))
+
+    for name, a, b in zip(('gamma', 'vanna'), _second_order(one), _second_order(two)):
+        assert abs(b / a - 1.0) <= 0.02, (
+            'the corrected {} moved {:.2%} when the same 65536 paths were run in two batches, '
+            'against a tolerance of 2%: {:.8g} -> {:.8g}'.format(name, b / a - 1.0, a, b))
 
 
 # ---------------------------------------------------------------- noise

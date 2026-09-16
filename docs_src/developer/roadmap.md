@@ -193,9 +193,6 @@ is recorded so a reader knows which readings rest on it.
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
   the base date, which dies on an empty random block or an empty maximum.
-- **The kernel bandwidth is chosen per batch.** The Silverman rule sizes the boundary correction's
-  bandwidth from one batch's paths, so a run with more than one batch oversmooths against its true
-  path count.
 - **A solved zero-cost strike moved between two landings of 2026-09-06 on documents that carry no
   LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
   Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree

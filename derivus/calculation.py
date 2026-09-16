@@ -1315,6 +1315,8 @@ class Credit_Monte_Carlo(Calculation):
             seed, job_id, num_jobs, scale_by_survival, nomodel=self.params.get('NoModel', 'Constant'),
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
+        # the kink kernel's Silverman width is sized from this job's WHOLE path count, not a batch's
+        shared_mem.simulation_batches = self.params['Simulation_Batches']
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         shared_mem.checkpoint_outer_walk = self.params.get('Checkpoint_Outer_Walk', 'Yes') == 'Yes'
         # the one registration that is opt-in rather than implied by wanting sensitivities - its
@@ -1804,7 +1806,7 @@ class Credit_Monte_Carlo(Calculation):
                     if hessian:
                         # the relu's argument above, SIGNED; built only when second order is asked
                         kink = pricing.exposure_kink_term(
-                            tensors['mtm'] * unscale * fx_report * Dt_T / fx_report[0])
+                            shared_mem, tensors['mtm'] * unscale * fx_report * Dt_T / fx_report[0])
                         # mirrors the reported reduction exactly: same trapezoid, prob and recovery,
                         # so the (exact-zero) term rides the objective's own weights
                         cva_for_aad = cva_for_aad + (1.0 - recovery) * (

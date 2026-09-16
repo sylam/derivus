@@ -43,6 +43,9 @@ TARF_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              'fixtures', 'fx_tarf_job.json')
 
 DT = torch.float64
+#: the state `exposure_kink_term` reads its batch count off - a real one, at the declared 1, so the
+#: Silverman width is the row's own path count
+ONE_BATCH = utils.Calculation_State({}, torch.ones([1, 1], dtype=DT), 1, [], 'Constant', 1, False)
 
 
 # ======================================================================================
@@ -396,7 +399,7 @@ def test_the_exposure_term_is_the_shared_kernel_and_nothing_else():
     V = (torch.randn(5, 4096, dtype=DT) * 1.3).requires_grad_(True)
     kernel, _, _ = pricing.kink_kernel(V.detach(), 1, 'gate')
     u = V - V.detach()
-    assert torch.equal(pricing.exposure_kink_term(V), 0.5 * kernel * u * u)
+    assert torch.equal(pricing.exposure_kink_term(ONE_BATCH, V), 0.5 * kernel * u * u)
 
 
 def test_the_accrual_kink_is_zero_at_value_and_bit_identically_zero_at_first_order():
@@ -463,7 +466,7 @@ def test_the_exposure_refusal_still_names_itself_after_the_factoring():
     row = torch.ones(1, 65536, dtype=DT)
     row[0, :64] = 0.0
     with pytest.raises(utils.SecondOrderRefused) as refusal:
-        pricing.exposure_kink_term(row)
+        pricing.exposure_kink_term(ONE_BATCH, row)
     message = str(refusal.value)
     assert 'exposure_kink_term' in message and 'ATOM' in message, message
     assert 'reporting row' in message, message

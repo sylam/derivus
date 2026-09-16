@@ -43,7 +43,8 @@ KINK_ATOM_BANDWIDTH_FLOOR = 0.01
 """How far below a reporting row's OWN scale its Silverman bandwidth may fall before the kernel is
 WRITTEN to zero rather than evaluated (``exposure_kink_term``). It decides nothing about atoms.
 The test is on the row's COEFFICIENT OF VARIATION: ``eps <= 0.01 * mean|V|`` is exactly
-``std/mean|V| <= 0.01/(1.06 * n**-0.2)`` - 0.0867 at 65536 paths, 0.0657 at 16384, 0.0377 at 1024.
+``std/mean|V| <= 0.01/(1.06 * n**-0.2)`` with ``n`` the RUN's paths - its batches times a batch's -
+so 0.0867 at 65536 of them, 0.0657 at 16384, 0.0377 at 1024.
 A row carrying mass at the kink cannot land under it (straddling zero gives a CV near 1.25); what
 does is a row whose whole mass sits at ONE level. A merely NARROW row is refused by the ladder."""
 
@@ -749,7 +750,7 @@ def _kink_density_at_zero(Vbar, width, n_paths_axis):
         dim=n_paths_axis, keepdim=True) / (width * math.sqrt(2.0 * math.pi))
 
 
-def kink_kernel(Gbar, axis, label):
+def kink_kernel(Gbar, axis, label, batches=1):
     """The kernel machinery every ``max(x, 0)`` on a simulated quantity needs: Silverman per row,
     the atom ladder, and the normalised Gaussian kernel evaluated AT the kink.
 
@@ -757,6 +758,12 @@ def kink_kernel(Gbar, axis, label):
     ``K'`` on a tape. ``axis`` is the sample axis the bandwidth and density are taken over:
     reporting paths for ``exposure_kink_term``, one fixing's inner sims for ``accrual_kink_term``.
     Everything else broadcasts.
+
+    ``batches`` is how many BATCHES the run takes, because the width Silverman sizes belongs to the
+    sample the estimate is finally read off: every batch re-estimates the same reporting rows and
+    the batches' gradients are averaged, so it is their total. At 1 it is the axis alone. A
+    fixing's inner sims are one outer path's OWN conditional law, which the next batch's outer
+    paths do not add to, so ``accrual_kink_term`` leaves this at 1.
 
     Returns ``(kernel, atom, rungs)``. The refusal is the CALLER's - an atom means the same thing at
     both, but the remedies differ - so the caller reads ``atom`` and says its own sentence carrying
@@ -770,7 +777,7 @@ def kink_kernel(Gbar, axis, label):
     # one sample -> zero width; std() would be NaN and a single path has no density to estimate
     spread = Gbar.std(dim=axis, keepdim=True) if n > 1 else torch.zeros_like(
         Gbar.narrow(axis, 0, 1))
-    eps = 1.06 * spread * n ** -0.2
+    eps = 1.06 * spread * (n * batches) ** -0.2
     # the row's OWN scale, so the floor is scale-free in the argument's units
     floor = KINK_ATOM_BANDWIDTH_FLOOR * Gbar.abs().mean(dim=axis, keepdim=True)
     collapsed = eps <= floor
@@ -790,8 +797,9 @@ def kink_kernel(Gbar, axis, label):
         # the term's forward value is an exact zero on every row, so the LADDER is the reading -
         # how a row that passed is told from a row that had nothing to say
         for r, rung in enumerate(torch.stack([x.reshape(-1) for x in rungs], dim=-1).tolist()):
-            logging.debug('KINK %s row=%d f(0)=%.6g ladder=%s climb=%.3f collapsed=%d', label, r,
-                          rung[1], '/'.join('{:.6g}'.format(x) for x in rung),
+            logging.debug('KINK %s row=%d eps=%.9g f(0)=%.6g ladder=%s climb=%.3f collapsed=%d',
+                          label, r, float(eps.reshape(-1)[r]), rung[1],
+                          '/'.join('{:.6g}'.format(x) for x in rung),
                           rung[-1] / rung[0] if rung[0] else float('nan'),
                           int(collapsed.reshape(-1)[r]))
 
@@ -854,7 +862,7 @@ def accrual_kink_term(gain, fixing, n_paths_axis=1):
     return 0.5 * kernel * u * u
 
 
-def exposure_kink_term(V, n_paths_axis=1):
+def exposure_kink_term(shared, V, n_paths_axis=1):
     """A term worth EXACTLY ZERO in the forward pass and BIT-IDENTICALLY zero at first order that
     carries the exposure relu's missing SECOND derivative into the double backward.
 
@@ -867,9 +875,10 @@ def exposure_kink_term(V, n_paths_axis=1):
     ``K``'s argument is DETACHED, confining the construction to the density's value and keeping
     ``K'`` off the tape; ``K`` is NORMALISED, because the caller's reduction is a mean over paths
     and it is that mean that has to be the density estimate. The bandwidth, ladder and kernel are
-    ``kink_kernel``'s; what stays here is the REFUSAL. A row whose narrowest rung stands
-    ``KINK_ATOM_LADDER_DIVERGENCE`` times its widest is refused by name with its readings - the
-    gamma there is singular rather than noisy.
+    ``kink_kernel``'s, sized from the RUN's paths - ``shared.simulation_batches`` times the row's,
+    every batch estimating these same rows; what stays here is the REFUSAL. A row whose narrowest
+    rung stands ``KINK_ATOM_LADDER_DIVERGENCE`` times its widest is refused by name with its
+    readings - the gamma there is singular rather than noisy.
 
     The collateralised case this refusal was written for cannot reach here: a
     ``NettingCollateralSet`` with ``Collateralized: 'True'`` registers an ``MTABoundarySet``, so
@@ -881,7 +890,7 @@ def exposure_kink_term(V, n_paths_axis=1):
     400k paths, +/- 0.13 per xVA row at 1024 paths and +/- 0.07 at 4096.
     """
     Vbar = V.detach()
-    kernel, atom, rungs = kink_kernel(Vbar, n_paths_axis, 'exposure')
+    kernel, atom, rungs = kink_kernel(Vbar, n_paths_axis, 'exposure', shared.simulation_batches)
 
     if bool(atom.any()):
         rows, worst_row, reading, ladder, climb, span = _kink_atom_reading(atom, rungs)

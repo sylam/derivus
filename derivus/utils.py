@@ -1399,6 +1399,9 @@ class Calculation_State(object):
         self.one = unit
         self.fillvalue = unit.new_zeros((0, 1, simulation_batch))
         self.simulation_batch = simulation_batch
+        # How many batches the RUN takes, so its sample is this times `simulation_batch`. Declared
+        # here, at 1, so a calculation that does not batch is read without a fallback.
+        self.simulation_batches = 1
         self.Report_Currency = report_currency
         self.t_Cashflows = None
         # these are shared parameter states
