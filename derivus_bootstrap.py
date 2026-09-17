@@ -98,7 +98,8 @@ class Parent(object):
         self.ref = None
         self.daily = False
 
-    def start(self, rundate, input_path, calendar, outfile='CVAMarketDataCal', premium_file=None, delta=0):
+    def start(self, rundate, input_path, calendar, outfile='CVAMarketDataCal', premium_file=None, delta=0,
+              families=None):
         # disable gpus
         os.environ['CUDA_VISIBLE_DEVICES'] = "-1"
         # set the logger
@@ -201,8 +202,22 @@ class Parent(object):
         # first and is read exactly as it always was. The order is the engine's own topological
         # sort over what each family writes against what it reads, as `Config.bootstrap` takes it.
         section = self.cx.params['Bootstrapper Configuration']
+        # `families` names the entries to run, in either spelling the registry resolves; the rest
+        # are skipped by name, and a name the section does not carry refuses before a worker exists
+        wanted = None
+        if families:
+            from derivus.bootstrappers import family_class
+            by_class = {family_class(name): name for name in section}
+            unknown = [name for name in families if family_class(name) not in by_class]
+            if unknown:
+                raise ValueError('{} not in this Bootstrapper Configuration, which carries {}'.format(
+                    ', '.join(unknown), ', '.join(sorted(section))))
+            wanted = {by_class[family_class(name)] for name in families}
         queued = []
         for bootstrapper_name in bootstrap_order(section):
+            if wanted is not None and bootstrapper_name not in wanted:
+                logging.info('%s - skipped, not among the families asked for', bootstrapper_name)
+                continue
             params = section[bootstrapper_name]
             if isinstance(params, dict):
                 options = params
@@ -293,21 +308,25 @@ def main():
                         help='amount to add (in percentage) to implied swaption vol (default 0)', default=0)
     market.add_argument('-o', '--output_file', type=str, help='output filename (uses the path of the '
                                                               'market_file) - do not include the extension .json')
+    parser.add_argument('-f', '--families', type=str, default=None,
+                        help='comma-separated Bootstrapper Configuration entries to run; the rest are skipped')
     parser.add_argument_group('CopyHW', 'options for copying the HW2 factor model to non RF curves')
 
     # get the arguments
     args = parser.parse_args()
+    families = [x.strip() for x in args.families.split(',')] if args.families else None
     # parse the files
     if args.task == 'Historical':
         for rundate in [x for x in sorted(os.listdir(args.input_path))
                         if args.start < x < args.end and os.path.isdir(os.path.join(args.input_path, x))]:
-            Parent(args.num_jobs).start(rundate, args.input_path, os.path.join(args.input_path, 'calendars.cal'))
+            Parent(args.num_jobs).start(rundate, args.input_path, os.path.join(args.input_path, 'calendars.cal'),
+                                        families=families)
     elif args.task == 'Daily':
         calendar = os.path.join(
             os.path.split(args.market_file)[0], 'calendars.cal')
         Parent(args.num_jobs).start(
             None, args.market_file, calendar, outfile=args.output_file, premium_file=args.premium_file,
-            delta=args.delta)
+            delta=args.delta, families=families)
     elif args.task == 'CopyHW':
         import numpy as np
         import derivus.utils as utils
