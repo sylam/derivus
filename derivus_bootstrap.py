@@ -20,7 +20,7 @@ import logging
 import tempfile
 import pandas as pd
 
-from multiprocessing import Process, Queue, Manager
+from multiprocessing import get_context
 
 # list of curves that are assumed to be represented with swaption vols that we calibrate to
 master_curve_list = {
@@ -87,9 +87,10 @@ class Parent(object):
 
             Parent.cuda_device_count = torch.cuda.device_count()
 
-        self.queue = Queue()
-        self.result = Queue()
-        self.manager = Manager()
+        self.process_context = get_context('spawn')
+        self.queue = self.process_context.Queue()
+        self.result = self.process_context.Queue()
+        self.manager = self.process_context.Manager()
         self.NUMBER_OF_PROCESSES = num_jobs
         self.NUMBER_OF_CUDA_DEVICES = Parent.cuda_device_count
         self.path = None
@@ -223,7 +224,7 @@ class Parent(object):
 
         logging.info("starting {0} workers over {1} CUDA devices in {2}".format(
             self.NUMBER_OF_PROCESSES, self.NUMBER_OF_CUDA_DEVICES, input_path))
-        self.workers = [Process(target=work, args=(
+        self.workers = [self.process_context.Process(target=work, args=(
             i, self.NUMBER_OF_CUDA_DEVICES, self.queue, self.result, price_factors, price_factor_interp,
             price_models, sys_params, holidays)) for i in range(self.NUMBER_OF_PROCESSES)]
 
