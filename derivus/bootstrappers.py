@@ -3653,8 +3653,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                     'Fit Global, which carries it, or read the risk on the parameters'.format(
                         market_price))
             if connect:
+                # the FIT's own device and not the family's: a quadrature fit with no forward
+                # block runs on the host, and `market` splices this leaf onto premia built there
                 fit.leaf = torch.tensor(
-                    [quote.quoted for quote in fit.quotes], device=self.device, dtype=self.prec,
+                    [quote.quoted for quote in fit.quotes], device=fit.device, dtype=self.prec,
                     requires_grad=True)
 
             theta = utils.LeastSquaresSolve.apply(fit, fit.rcond, fit.stationarity, fit.leaf)
@@ -4135,6 +4137,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
 
         previous, levels = fit.previous, None
         if previous:
+            # before the warm start indexes it: a retired-era factor is missing every name this
+            # model declares, and a KeyError says neither which key nor what replaced it
+            utils.LogVar2FJ.retired('{}, the factor {} warm starts from'.format(
+                self.factor_name(fit.market_price), fit.market_price), previous)
             law = str(previous.get('Residual_Law', 'NIG'))
             if law != fit.law:
                 raise ValueError(
@@ -5855,11 +5861,21 @@ class InterestRateCurveParameters(Construction):
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
         points = self.used_quotes(block, market_price)
         nodes = quote_nodes(points, discount_rate)
+        knots = quote_knots(nodes, base_date, block['Day_Count'], calendars)
+        # a knot at tenor zero identifies nothing - the curve is flat below its shortest by
+        # clipping - and the Newton solve meets it as a singular Jacobian rather than a bad curve
+        dead = ['{} (last cashflow {:%Y-%m-%d})'.format(
+            point['Descriptor'], max(max(leaf.get_reval_dates()) for leaf in leaf_deals(node)))
+            for point, node, knot in zip(points, nodes, knots) if knot <= 0.0]
+        if dead:
+            raise ValueError(
+                '{}: {} matured on or before the base date {:%Y-%m-%d}, so the knot each '
+                'identifies lands at tenor zero, which no curve carries. Hold the quote out with '
+                'Use No, or move the base date'.format(market_price, '; '.join(dead), base_date))
         price_factors[utils.check_tuple_name(curve)] = {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
             'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
-                quote_knots(nodes, base_date, block['Day_Count'], calendars),
-                [point['Quoted_Market_Value'] / 100.0 for point in points])))}
+                knots, [point['Quoted_Market_Value'] / 100.0 for point in points])))}
         return curve, points, nodes, discount_rate
 
     def coupled_sets(self, blocks, price_factors, factor_interp, base_date, calendars):

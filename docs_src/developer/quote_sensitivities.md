@@ -145,7 +145,9 @@ Jacobian is square in, so the quote-delta buckets a desk reads are the benchmark
 **No knot at tenor zero.** A curve never carries a 0.0 knot: rates start at T+1, and a rate at tenor
 zero is redundant anyway since its discount factor is 1 by identity. `Factor1D.interpolate` divides
 by the tenor for the rate-times-time kinds, so a zero knot yields NaN — the contract asserting itself.
-The knot rule complies by construction: every benchmark's last cashflow is strictly after t0.
+The knot rule complies where the quotes do, and says so where they do not: a benchmark whose last
+cashflow is on or before the base date refuses by name as its block is seeded, naming the quote, that
+date and the two remedies — hold it out with `Use`, or move the base date.
 
 **The compounding leg is a compile-time SHAPE, not a pricer branch.** `pv_float_cashflow_list` routes
 an accrual period through geometric compounding when the reset count differs from the cashflow count

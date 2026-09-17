@@ -510,6 +510,24 @@ def test_a_withdrawn_declaration_refuses_by_name(declared, names):
     assert names in _refused(_ladder(**declared), 'refuse')
 
 
+def test_a_warm_start_off_a_retired_factor_refuses_by_name():
+    """A written factor is a WARM START, read key by key off the names this model declares, so one
+    written before a retirement has to refuse exactly as a declaration does, naming the retired key
+    and what replaced it.
+
+    Here the curve carries its Poisson-era spelling, `L_Curve` where the model now declares
+    `Xi_Curve`. The refusal is the factor's own and runs on `previous` BEFORE the seed indexes it:
+    read first, the same factor dies on a `KeyError` for the name it does not carry, which says
+    neither which key is retired nor what replaced it.
+    """
+    previous = {name: value for name, value in dict(GBM_LIMIT, **LIVE_NIG).items()
+                if name != 'Xi_Curve'}
+    message = _refused(dict(_ladder(rungs=2), **{'Price Factors': {FACTOR: dict(
+        previous, L_Curve=_curve([[0.0, -3.0]]))}}), 'retired_warm')
+    assert FACTOR in message and 'L_Curve' in message, message[:400]
+    assert 'Xi_Curve, the EXPECTED FORWARD VARIANCE' in message, message[:400]
+
+
 def test_two_class_tables_disagreeing_in_sign_refuse():
     """`Leverage_Product_Defaults` is the row and `Leverage_Prior_Defaults` signs the seed, so a
     class whose two disagree would seed a fit AGAINST its own prior. Refused at construction, in
@@ -943,3 +961,50 @@ def test_the_forward_block_costs_this_ladder_no_vanilla_fit(forward_fits):
             for tag, (_, report) in forward_fits.items()}
     assert max(rmse.values()) == rmse['Off'], rmse
     assert rmse['Reference'] <= 1.1 * rmse['Off'], rmse
+
+
+# ------------------------------------------------------------------------------------------
+# 12  RISK IN QUOTE SPACE
+# ------------------------------------------------------------------------------------------
+#: the world's ladder cut to two expiries - six quotes, the shortest fit the switch needs: what it
+#: is judged on is that the fit did not move, not where theta* landed
+QUOTE_RISK = dict(rungs=2, Paths=1024, Stationary_Spread='Floor')
+
+
+def _written(sections, name):
+    """`(the written factor, the block's quote leaves or None)` - the leaves are published on the
+    `Config`, and `_fit` keeps only the factor."""
+    cx = rf.Context()
+    cx.load_json((_dumps(_job(_base(), (), **sections)), name + '.json'))
+    cx.bootstrap()
+    return cx.current_cfg.params['Price Factors'][FACTOR], cx.current_cfg.quote_leaves.get(BLOCK)
+
+
+def test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves():
+    """`Quote_Sensitivity: Yes` ATTACHES the written parameters to the numbers quoted - it does not
+    fit. Every residual measures against a market premium carrying its quote as a splice worth zero
+    in the forward pass, so the same ladder fitted both ways writes the same factor: all seventeen
+    fields, the twenty floats hex for hex and the three text ones. With the switch on the fit
+    publishes one leaf per quote, carrying those quotes' own numbers, for `Calculation.factor_leaf`
+    to splice onto its parameter leaf.
+
+    THE KILLING MUTATION is the leaf minted on the FAMILY's device rather than the fit's: this
+    ladder prices its vanillas by quadrature with no forward block, which runs on the HOST while
+    the job runs on the card, so the splice inside `market()` dies on a device mismatch before a
+    stage runs. On a CPU-only box the two devices coincide and the mutation is invisible.
+    """
+    ladder = _ladder(Quote_Sensitivity='Yes', **QUOTE_RISK)
+    off, unattached = _written(_ladder(Quote_Sensitivity='No', **QUOTE_RISK), 'quote_off')
+    on, published = _written(ladder, 'quote_on')
+    assert unattached is None, 'the switch off attaches nothing'
+    read, banked = _floats_of(on), _floats_of(off)
+    assert list(on) == list(off) and len(read) == 20, (list(on), len(read))
+    assert read == banked, {k: (v, banked.get(k)) for k, v in read.items() if banked.get(k) != v}
+    for name in ('Residual_Law', 'On_Guard', 'Skew_Gradient'):
+        assert on[name] == off[name], name
+    descriptors, leaf = published
+    quoted = [row['Quoted_Market_Value']
+              for row in ladder['Market Prices'][BLOCK]['instrument']['European_Options']]
+    assert len(descriptors) == leaf.numel() == len(quoted), (descriptors, leaf)
+    assert leaf.requires_grad, 'a leaf nothing differentiates reports no dV/dq'
+    assert sorted(float(x) for x in leaf) == sorted(quoted), (leaf, quoted)

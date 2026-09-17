@@ -274,6 +274,40 @@ def test_a_held_out_quote_leaves_the_solve():
                   full[curve_name]['Curve'].array[:-1, 1]).max() < 1e-10
 
 
+def test_a_benchmark_matured_at_the_base_date_refuses_by_name():
+    """A quote whose last cashflow is ON the base date wants its knot at tenor zero, and the knot
+    rule cannot make that square: the curve is flat below its shortest knot by `CurveTenor`'s
+    clipping, so a knot there identifies nothing. What the solve makes of it is a singular matrix
+    out of `damped_newton` naming nothing, so the family refuses first - the block, the benchmark,
+    its last cashflow, the base date and the two remedies.
+
+    The second arm is one of those remedies taken: the same block with that quote's `Use` off
+    solves and recovers its own curve, which is what says the refusal reads the TENOR and not the
+    extra quote.
+    """
+    market_prices, true_factors, _ = authored_world('zar')
+    block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
+    # a live one-month deposit that pays TODAY - one real cashflow, on the base date itself
+    started = BASE - pd.DateOffset(months=1)
+    block['Points'].insert(0, quote_point('ZAR O/N', dict(
+        deposit('DEPO_ON', 'ZAR', 'ZAR-JIBAR-3M', 1, 7.5, day_count='ACT_365'),
+        Effective_Date=started, Maturity_Date=BASE,
+        Interest_Rate_Schedule=utils.DateList({started: 7.5}))))
+
+    with pytest.raises(ValueError) as refusal:
+        bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M')
+    message = str(refusal.value)
+    assert 'ZAR O/N (last cashflow {:%Y-%m-%d})'.format(BASE) in message, message
+    assert 'base date {:%Y-%m-%d}'.format(BASE) in message, message
+    assert 'tenor zero' in message and 'Use No' in message, message
+
+    block['Points'][0]['Use'] = 'No'
+    curve_name = 'InterestRate.ZAR-JIBAR-3M'
+    solved = bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M')[curve_name]['Curve'].array
+    assert (solved[:, 0] > 0.0).all(), solved
+    assert np.abs(solved[:, 1] - true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
+
+
 def test_config_bootstrap_drives_the_family_and_finds_the_curve_it_wrote(caplog):
     """End to end through `Config.bootstrap`, which is how a job reaches this.
 
