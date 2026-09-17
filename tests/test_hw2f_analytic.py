@@ -3484,7 +3484,7 @@ def test_a_quoted_zero_refuses_and_so_does_an_absent_one():
         identified_closure(benchmarks=CHECKER_BENCHMARKS, Objective='Analytic',
                            batch_size=2048, Instrument_Definitions=rows)
     assert 'Swaption_2Y_5Y' in str(refused.value), refused.value
-    assert 'drop the row' in str(refused.value), 'the remedy: {}'.format(refused.value)
+    assert 'premium file' in str(refused.value), 'the remedy: {}'.format(refused.value)
 
     rows = quoted_definitions(CHECKER_BENCHMARKS, [20.0] * len(CHECKER_BENCHMARKS))
     del rows[2]['Market_Volatility']

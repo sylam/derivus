@@ -319,9 +319,12 @@ chain is 13.4 s against 75.1 s; and **the quote side exists**
 unchanged to the bit and remains the oracle. The α→0 series branches, the declared seed pair and
 the domestic-measure correction are in `tests/test_hw2f_analytic.py`.
 
-**Two standing re-marking events.** Every foreign-curve HW2F θ\* solved before the domestic-measure
-fix re-solves to a different θ\*, and every θ\* solved before 2026-09-02 re-marks on the seed and
-premium-clock change. A desk naming an old θ\* re-baselines or re-solves; carrying one forward
+**Three standing re-marking events.** Every foreign-curve HW2F θ\* solved before the domestic-measure
+fix re-solves to a different θ\*, every θ\* solved before 2026-09-02 re-marks on the seed and
+premium-clock change, and every θ\* solved before 2026-09-17 re-marks on the basin search's
+generator, numpy's default generator in place of the legacy one under the same seed: on the
+four-quote document the two mean reversions move 14% and 8%, the correlation from −0.04 to −0.16
+and the 1Y×1Y quote delta 4%, a walk along the directions four quotes do not identify. A desk naming an old θ\* re-baselines or re-solves; carrying one forward
 looks like the first and is neither. Emissions that move with it: `Quanto_FX_Correlation_1/2` and
 every locus recorded downstream of a fit. The MC's numeraire bias is the curve's tenor grid, not
 discretisation (adding 1D/1M/3M/6M nodes collapses it from −1.6e-2 to −1.1e-3) — a fixture lesson
