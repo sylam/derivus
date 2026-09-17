@@ -68,9 +68,10 @@ def test_every_tool_is_registered_and_carries_its_contract():
     the read-only hints are what let a host run discovery without asking permission to write."""
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
-                'describe_factor_type', 'job_skeleton', 'read_book', 'read_deal', 'book_deal',
-                'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal', 'execute_book',
-                'validate_book', 'describe_book', 'poll_result', 'fetch_table', 'deal_values',
+                'describe_factor_type', 'describe_configuration', 'job_skeleton', 'read_book',
+                'read_deal', 'book_deal', 'amend_deal', 'delete_deal', 'price_candidate',
+                'solve_deal', 'execute_book', 'validate_book', 'describe_book', 'poll_result',
+                'fetch_table', 'deal_values', 'configure_book',
                 'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg',
                 'describe_structure', 'solve_structure', 'book_quote', 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva'}
@@ -82,7 +83,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'recalc_xva', 'calibrate_spot_model'}
+                       'recalc_xva', 'calibrate_spot_model', 'configure_book'}
 
 
 def test_the_progress_tool_does_not_advertise_its_context():
@@ -301,6 +302,39 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
 
         with pytest.raises(ToolError, match='tmp'):
             mcp_server.book_quote('nothing-was-ever-quoted-under-this')
+    finally:
+        service.BOOK = None
+
+
+def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
+    """The two configuration tools end to end, through the in-process service: the store read as
+    the declarations with the menu it NAMES resolved beside it, one dial set on the live book, and
+    a dial that will not build refused by name with the file untouched. The entry is asked for by
+    the factor the family writes and lands under the class name the book spells it by."""
+    from test_service import configured_book, surface_nodes
+
+    path = tmp_path / 'book.json'
+    configured_book(path, {'FXVolSurfaceParameters': {}})
+    try:
+        declared = mcp_server.describe_configuration()
+        entry = declared['sections']['Bootstrapper Configuration']['types']['FXVol']
+        assert entry['aliases'] == ['FXVolSurfaceParameters']
+        assert entry['fields']['Grid_Tolerance']['value'] == 1e-4, 'not the declared default'
+        assert 'HermiteRT' in declared['interpolations']['InterestRate']
+
+        outcome = mcp_server.configure_book(
+            'Bootstrapper Configuration', 'FXVol', {'Grid_Tolerance': 0.5})
+        assert outcome['written'] is True and outcome['rewrote'] == ['FXVol.USD.ZAR']
+        assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Bootstrapper Configuration'] == {
+                'FXVolSurfaceParameters': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
+        assert surface_nodes(path)
+
+        before = path.read_bytes()
+        with pytest.raises(ToolError, match='Sigma_L_Bounds'):
+            mcp_server.configure_book('Bootstrapper Configuration', 'LogVar2FJModelParameters',
+                                      {'Sigma_L_Bounds': '2.0,0.3'})
+        assert path.read_bytes() == before
     finally:
         service.BOOK = None
 

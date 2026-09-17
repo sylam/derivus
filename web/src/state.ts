@@ -3,6 +3,7 @@
 // etag moved - a booking made by any other client appears within a tick.
 
 import { createContext, useContext, type Dispatch } from 'react';
+import { getBook, type BookDealOutcome } from './api';
 import type {
   BookRisk, BookXva, DescribeResult, JobDoc, ResultSummary, Schema, TablePage, ValidateResult,
 } from './types';
@@ -170,6 +171,19 @@ export function reducer(state: AppState, action: Action): AppState {
         xva: { data: null, error: action.error, status: action.status, loading: false },
       };
   }
+}
+
+/** One book WRITE as the answer an editing panel reads: the service's refusal verbatim, or null
+ * once the re-read document has been dispatched. There is no client-side edit state anywhere -
+ * the file is the truth, so a write is answered by reading it back. */
+export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutcome) {
+  if (!outcome.written) return outcome.refused ?? ['refused'];
+  const live = await getBook();
+  dispatch({
+    type: 'DOC_LOADED', doc: live.document, refresh: true,
+    source: { kind: 'book', etag: live.etag, path: live.path },
+  });
+  return null;
 }
 
 export const AppContext = createContext<{ state: AppState; dispatch: Dispatch<Action> } | null>(null);

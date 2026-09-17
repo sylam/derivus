@@ -54,6 +54,9 @@ export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
     { action: 'amend', deal_path: dealPath, fields });
 export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/market', { patch: { [factor]: fields } });
+// the bootstrap's own dials: merged into one declared entry, then the market re-bootstrapped
+export const configureBook = (section: string, entry: string, fields: Record<string, unknown>) =>
+  call<BookDealOutcome>('POST', '/book/configure', { section, entry, fields });
 // the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and
 // answers from the cache afterwards, and the XVA verb never runs anything at all - a recalc is
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.

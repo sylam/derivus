@@ -134,6 +134,22 @@ on its generated page; the fields promoted out of the code on 2026-09-08 —
 declaring none of them fits what it fit before (the NKY block bit for bit, the four book ladders
 within 1e-11).
 
+**The section is declared, set and re-bootstrapped from outside the file.** `emit_configuration`
+publishes `mapping['Configuration']`, one entry per family keyed the way the section is keyed, its
+dials the family's own declarations less the Tables and Containers — those are the quote block's
+ladders and instrument definitions, never a hyperparameter — each carrying the default it stands
+at, and the class-name spellings beside them as `aliases`, so a client files an older book's key
+without knowing what a price family is. `POST /book/configure` (`{section, entry, fields}`) merges
+`fields` into the entry under the key the book already uses, rather than renaming it, completing
+one that states no `Prices` with the stem it routes on; it validates by CONSTRUCTING the family
+off the merged entry, which is where a malformed value refuses by name before a quote is read; and
+it then re-bootstraps the whole market through the tick's own path, so a bootstrap that complains
+writes NOTHING and hands its messages back, and an answer that writes names the price factors the
+run rewrote. `Price Factor Interpolation` is the second section the verb writes — one method per
+routed curve type, held to `Interpolation_factor_map`, which is also what the store names rather
+than restating. The web UI's Settings screen renders both off that store, every dial at what the
+entry states or the declaration's default otherwise, edited in place.
+
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
 **The block.** `InterestRateCurveParameters` declares the `Currency` of the curve to build, the

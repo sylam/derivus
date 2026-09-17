@@ -18,6 +18,17 @@ export type Descriptor = {
 
 export type Section = Record<string, Descriptor>;
 
+/** One market-data section the book states its bootstrap in, rendered by SHAPE: `types` is an
+ * entry per declared key with the spellings an older book files it under, `menu` NAMES a sibling
+ * store holding one list of values per key and `value` is what the engine uses where the book
+ * says nothing. `entry` is what the configure verb takes for the second shape. */
+export type ConfigSection = {
+  types?: Record<string, { aliases: string[]; fields: Section }>;
+  entry?: string;
+  menu?: string;
+  value?: string;
+};
+
 export type Schema = {
   Instrument: {
     groups: Record<string, string[]>;
@@ -30,6 +41,7 @@ export type Schema = {
   Calculation: { types: Record<string, Section> };
   Calibration: { types: Record<string, Section> };
   MarketPrices: { types: Record<string, Section> };
+  Configuration: Record<string, ConfigSection>;
   Process_factor_map: Record<string, string[]>;
   Interpolation_factor_map: Record<string, string[]>;
   System: { fields: Section; types: Record<string, string[]> };

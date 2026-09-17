@@ -748,6 +748,52 @@ def test_the_quote_block_declares_what_the_bootstrapper_reads(market_type):
         f'{market_type} reads quote keys no schema-authored block can carry: {undeclared}')
 
 
+def test_the_configuration_store_is_the_families_own_declarations():
+    """A `Bootstrapper Configuration` entry's dials ARE the family's declarations - the same
+    descriptor the MarketPrices store publishes, at the same default - less the Tables and
+    Containers, which are the quote BLOCK's ladders and instrument definitions and belong to no
+    section. Every family in the registry has an entry under the factor it writes, and every
+    spelling the registry answers to reaches one, which is what lets a client file an older book's
+    class-name key without knowing what a price family is."""
+    store = schema.mapping['Configuration']
+    entries = store['Bootstrapper Configuration']['types']
+    assert set(entries) == {cls.price_factor_type for cls in bootstrappers.FAMILIES}
+
+    for cls in bootstrappers.FAMILIES:
+        declared = {f.key: f for f in cls.fields}
+        dials = dict(entries[cls.price_factor_type]['fields'])
+        stem = dials.pop(bootstrappers.PRICES_KEY)
+        assert stem['value'] + 'Prices' == cls.market_factor_type, (
+            f'{cls.price_factor_type} routes on {stem["value"]!r}, which is not its block')
+        assert set(dials) == {key for key, f in declared.items()
+                              if f.type not in ('Table', 'Container')}, (
+            f'{cls.price_factor_type} publishes dials its family does not declare, or drops one')
+        for key, descriptor in dials.items():
+            assert descriptor == declared[key].descriptor(), f'{key} is not the declared field'
+            assert descriptor['widget'] not in ('Table', 'Container'), f'{key} is a table'
+
+    spellings = {name for key, entry in entries.items() for name in [key] + entry['aliases']}
+    assert spellings == set(bootstrappers.WRITERS)
+    for name in spellings:
+        assert bootstrappers.family_class(name).price_factor_type in entries
+
+
+def test_the_interpolation_section_references_the_menu_and_the_engines_own_default():
+    """The second section states no methods of its own: it NAMES the menu beside it, and its value
+    is what a routed factor is actually built with where the section declares nothing for it - read
+    off a constructed factor, because a store agreeing with a constant it was built from would
+    agree with the wrong one just as happily."""
+    from derivus.config import ModelParams
+
+    declared = schema.mapping['Configuration']['Price Factor Interpolation']
+    assert schema.mapping[declared['menu']] is INTERPOLATION_MAP
+    factor = derivus.utils.Factor('InterestRate', ('USD',))
+    built = riskfactors.construct_factor(factor, {'InterestRate.USD': {
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': derivus.utils.Curve([], [[0.0, 0.02], [5.0, 0.02]])}}, ModelParams())
+    assert built.param['Interpolation'] == declared['value']
+
+
 def declared_values(descriptors):
     """Every declared key's default value, containers flattened the way `declared_keys` flattens."""
     out = {}

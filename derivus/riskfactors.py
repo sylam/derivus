@@ -26,6 +26,10 @@ from scipy.special import ndtr
 #: `Price Factor Interpolation` may be set to. Listed by the classes that opt in.
 INTERPOLATION_METHODS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
 
+#: What a routed factor is built with where the section names none for it - `construct_factor`'s
+#: fallback below, and `Factor1D.check_interpolation`'s own last branch.
+INTERPOLATION_DEFAULT = 'Linear'
+
 # map the names of various factor interpolations to something simpler
 factor_interp_map = {
     'CubicSplineCurveInterpolation': 'Hermite',
@@ -1730,7 +1734,7 @@ def construct_factor(factor, price_factors, factor_interp, base_date=None):
     if factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
         interp_method = factor_interp.search(factor, pf, True)
         pf_local.update(
-            {'Interpolation' : factor_interp_map.get(interp_method, 'Linear'),
+            {'Interpolation' : factor_interp_map.get(interp_method, INTERPOLATION_DEFAULT),
              'base_date': base_date})
     return globals().get(factor.type)(pf_local)
 

@@ -290,7 +290,8 @@ them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not li
   `Credit_Monte_Carlo`, the same two-run seam with a different calculation in it; a ratio-solve
   primitive for participating forwards beside it.
 - **Service layer, what remains** — SSE for progress, a cost estimate that reads the real grid,
-  auth with budget caps, the web UI's edit surface and the blotter's two screens.
+  auth with budget caps, and the tables, curves and quote blocks the web UI still renders
+  read-only: declared scalars, market values and the bootstrap's own dials edit in place.
 - **Excel end-state** — `RF_*_PORTFOLIO` migrated to `GET /schema`, after which nothing in
   `excel_integration/` imports the engine.
 - **`bind=` for payoff-only deal fields** — a strike moves no discovery, but a deal field is

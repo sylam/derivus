@@ -36,6 +36,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
+| `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
 | `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
@@ -1481,6 +1482,99 @@ def book_market(request: dict):
     def edit(document):
         return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
                            request.get('bootstrap'))
+
+    try:
+        return live.mutate(edit)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+
+
+def bootstrapper_entry(market, entry, fields):
+    """One `Bootstrapper Configuration` entry with `fields` merged in, under the key the BOOK uses:
+    an older book's class-name spelling is kept rather than renamed. An entry stating no `Prices`
+    is completed with the stem its family routes on - the one key `derivus_bootstrap` cannot route
+    without - while one stating another family's keeps it and is refused for it. Constructing the
+    family off the result is the validation: a malformed dial refuses by name there, before a quote
+    is read."""
+    section = market.setdefault('Bootstrapper Configuration', {})
+    family = bootstrappers.family_class(entry)
+    key = next((name for name in section if bootstrappers.family_class(name) is family), entry)
+    current = section.get(key)
+    merged = {bootstrappers.PRICES_KEY: family.market_factor_type[:-len('Prices')],
+              **(current if isinstance(current, dict) else {}), **fields}
+    bootstrappers.construct_bootstrapper(key, merged)
+    section[key] = merged
+    return key, merged
+
+
+def interpolation_entry(market, entry, fields):
+    """One half of the `Price Factor Interpolation` `ModelParams` with `fields` merged in: a routed
+    factor type against the method its own menu offers, both refused by name. Only the defaults
+    half is a dial - a filter row is a condition rule, authored rather than set."""
+    declared = mapping['Configuration']['Price Factor Interpolation']
+    menu = mapping[declared['menu']]
+    if entry != declared['entry']:
+        raise ValueError('Price Factor Interpolation has no {} to set - {} is the half that '
+                         'names one method per factor type'.format(entry, declared['entry']))
+    for factor_type, method in sorted(fields.items()):
+        if method not in menu.get(factor_type, ()):
+            raise ValueError(
+                'Price Factor Interpolation: {} is no interpolation for a {} - {}'.format(
+                    method, factor_type,
+                    'that type offers {}'.format(', '.join(menu[factor_type]))
+                    if factor_type in menu else
+                    'and the engine routes none to it; it routes {}'.format(
+                        ', '.join(sorted(menu)))))
+    section = market.setdefault('Price Factor Interpolation', {})
+    # both halves, because the decoder reads each by direct subscript
+    params = section.setdefault('.ModelParams', {'modeldefaults': {}, 'modelfilters': {}})
+    params[entry] = dict(params.get(entry) or {}, **fields)
+    return entry, params[entry]
+
+
+#: What `/book/configure` writes, per market-data section: the amendment that merges `fields` into
+#: one entry and validates it by building what READS it. `/schema`'s `Configuration` store declares
+#: the same two sections, so a client renders what this takes.
+CONFIGURED_SECTIONS = {'Bootstrapper Configuration': bootstrapper_entry,
+                       'Price Factor Interpolation': interpolation_entry}
+
+
+def configure_edit(document, section, entry, fields):
+    """One configuration entry amended as an edit closure for `Book.mutate`, then the whole market
+    re-bootstrapped through `market_edit` - so a bootstrap error writes NOTHING and comes back as
+    the refusal, exactly as a tick's does, and the answer names what the run rewrote."""
+    amend = CONFIGURED_SECTIONS.get(section)
+    if amend is None:
+        raise ValueError('{} is no configuration section - this book configures {}'.format(
+            section, ' and '.join(sorted(CONFIGURED_SECTIONS))))
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    key, dials = amend(market, entry, fields)
+    before = dict(market.get('Price Factors', {}))
+    write, refusal = market_edit(document, {}, {}, bootstrap='Yes')
+    if not write:
+        return write, refusal
+    return True, {'written': True, 'section': section, 'entry': key, 'dials': dials,
+                  'rewrote': sorted(name for name, block in market['Price Factors'].items()
+                                    if before.get(name) != block)}
+
+
+@app.post('/book/configure', summary='Set one bootstrapping dial - validated, then re-bootstrapped')
+def book_configure(request: dict):
+    """`{section, entry, fields}` - `fields` MERGED into one entry of `Bootstrapper Configuration`
+    (keyed by the price factor a family writes, or the class name an older book spells it by) or of
+    `Price Factor Interpolation` (one method per routed factor type).
+
+    A book states every bootstrapping hyperparameter ONCE, in that entry, and every quote block of
+    the family is read over it. The change is validated by building what reads it - a malformed
+    dial refuses by name before a quote is read - and the whole market is then re-bootstrapped in
+    the same atomic write, so a bootstrap that complains writes NOTHING and hands its messages back
+    as `refused`. `/schema`'s `Configuration` store declares what each entry may carry.
+    """
+    live = live_book()
+
+    def edit(document):
+        return configure_edit(document, request['section'], request['entry'],
+                              request.get('fields', {}))
 
     try:
         return live.mutate(edit)

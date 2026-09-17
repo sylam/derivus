@@ -30,6 +30,7 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 | `describe_instrument_type` | one type's fields as declared — required, defaults, valid values |
 | `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs, the recipe |
 | `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
+| `describe_configuration` | every dial the book's bootstrap can be set with, per section, at the default it stands at |
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
 | `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
@@ -39,6 +40,7 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 | `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the client's side of a two-way, strikes solved, the mid and the edge said, the pending trade filed under its id |
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
+| `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
 | `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |

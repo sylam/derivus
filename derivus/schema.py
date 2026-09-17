@@ -392,6 +392,38 @@ def emit_market_prices(module):
             and 'market_factor_type' in cls.__dict__}
 
 
+def emit_configuration(module, interpolation_default):
+    """`mapping['Configuration']` - one declaration per market-data SECTION a book states its
+    bootstrap in, keyed by the section's own name.
+
+    A `Bootstrapper Configuration` entry is keyed by what its family WRITES, the key the registry
+    resolves, and its dials are `Prices` - the stem of the `Market Prices` type it routes on - plus
+    every scalar the family declares. A Table or a Container is the quote BLOCK's (the ladders and
+    the instrument definitions), never the section's. `aliases` is what else the registry answers
+    to for that family, so an older book's class-name key files under the right entry.
+
+    `Price Factor Interpolation` REFERENCES the menu beside it rather than restating it, names the
+    `ModelParams` half an entry is, and states what a routed factor is built with where the section
+    names nothing.
+    """
+    entries = {}
+    for cls in module.FAMILIES:
+        stem = cls.market_factor_type[:-len('Prices')]
+        dials = {module.PRICES_KEY: F(module.PRICES_KEY, 'Text', default=stem,
+                                      description='The Market Prices stem this entry routes on'
+                                      ).descriptor()}
+        dials.update({f.key: f.descriptor() for f in cls.fields
+                      if f.type not in ('Table', 'Container')})
+        entries[cls.price_factor_type] = {
+            'aliases': sorted(name for name, family in module.WRITERS.items()
+                              if family is cls and name != cls.price_factor_type),
+            'fields': dials}
+    return {'Bootstrapper Configuration': {'types': entries},
+            'Price Factor Interpolation': {'entry': 'modeldefaults',
+                                           'menu': 'Interpolation_factor_map',
+                                           'value': interpolation_default}}
+
+
 def emit_calibration(module):
     """The `types` of `mapping['Calibration']` - each PROCESS holding its tuning block.
 
@@ -877,6 +909,8 @@ mapping = {
     'Process': {'types': _process_types},
     # a price FAMILY holds its own, keyed by the type string the engine selects work by
     'MarketPrices': {'types': emit_market_prices(bootstrappers)},
+    # the two market-data sections a book states its bootstrap in, and what each entry may carry
+    'Configuration': emit_configuration(bootstrappers, riskfactors.INTERPOLATION_DEFAULT),
     # a SALES structure holds its vernacular, parameters, legs and recipe
     'Structure': {'types': emit_structures(structures)},
     # the UI's two menus, the same declarations read the other way round

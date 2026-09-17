@@ -753,6 +753,119 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     assert book.read_bytes() == before
 
 
+def configured_book(path, entries):
+    """A live book carrying the USDZAR smile as a quote block that states NO `Grid_Tolerance`, so
+    the SECTION's own dial is what the surface is refined to, plus the entries the gate configures.
+    The Bloomberg emitter writes that field into every block it emits, which is what a section dial
+    is read over, so the gate drops it rather than authoring a second smile."""
+    quotes = json.loads(dump(fx_vol_quotes()))
+    del quotes['FXVolPrices.USD.ZAR']['instrument']['Grid_Tolerance']
+    path.write_text(json.dumps(json.loads(dump(job(sections={
+        'Bootstrapper Configuration': entries, 'Market Prices': quotes}))), indent=2),
+        newline='\n')
+    service.BOOK = service.Book(str(path))
+
+
+def surface_nodes(path):
+    """How many (moneyness, expiry, vol) rows the written `FXVol` surface carries - what
+    `Grid_Tolerance` SIZES, and the only thing on the file that moves when it does."""
+    surface = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors'].get('FXVol.USD.ZAR')
+    return surface and len(surface['Surface']['.Curve']['data'])
+
+
+def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
+    """The write half of `/book/configure`: a dial merged into the entry the BOOK spells, the
+    market re-bootstrapped in the same atomic write, and the answer naming what moved.
+
+    `Grid_Tolerance` sizes the log-moneyness grid the FX surface is refined to, so it is the one
+    dial whose effect is countable on the file. The book declares the entry by its old class name
+    and the request names the factor the family writes: the same family either way, so the dial
+    lands in the entry that is there rather than a second one beside it - a desk file is never
+    renamed under a desk.
+    """
+    path = tmp_path / 'book.json'
+    configured_book(path, {'FXVolSurfaceParameters': {}})
+    try:
+        fine = CLIENT.post('/book/configure', json={
+            'section': 'Bootstrapper Configuration', 'entry': 'FXVol',
+            'fields': {'Grid_Tolerance': 1e-4}}).json()
+
+        assert fine['written'] is True and fine['entry'] == 'FXVolSurfaceParameters'
+        assert fine['rewrote'] == ['FXVol.USD.ZAR'], 'the re-bootstrap did not reach the surface'
+        assert fine['dials'] == {'Prices': 'FXVol', 'Grid_Tolerance': 1e-4}
+        refined = surface_nodes(path)
+
+        coarse = CLIENT.post('/book/configure', json={
+            'section': 'Bootstrapper Configuration', 'entry': 'FXVol',
+            'fields': {'Grid_Tolerance': 0.5}}).json()
+
+        assert coarse['rewrote'] == ['FXVol.USD.ZAR']
+        assert surface_nodes(path) < refined, (
+            'a tenfold looser tolerance refined the same grid - the dial did not reach the fit')
+        assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Bootstrapper Configuration'] == {
+                'FXVolSurfaceParameters': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
+    finally:
+        service.BOOK = None
+
+
+def test_a_malformed_dial_refuses_by_name_before_a_quote_is_read(tmp_path):
+    """Constructing the family IS the validation, which is why the refusal is the family's own
+    sentence and not the bootstrap's: `Sigma_L_Bounds` reversed is refused at construction, before
+    a quote is read, and the file is untouched - entry and all, the entry being created only if
+    what it says builds."""
+    path = tmp_path / 'book.json'
+    configured_book(path, {'FXVolSurfaceParameters': {}})
+    try:
+        before = path.read_bytes()
+        refused = CLIENT.post('/book/configure', json={
+            'section': 'Bootstrapper Configuration', 'entry': 'LogVar2FJModelParameters',
+            'fields': {'Sigma_L_Bounds': '2.0,0.3'}})
+
+        assert refused.status_code == 422
+        assert refused.json()['detail'].startswith('Sigma_L_Bounds'), (
+            'the refusal is the bootstrap\'s, so a quote was read before the dial was judged')
+        assert 'lower < upper' in refused.json()['detail']
+        assert path.read_bytes() == before
+    finally:
+        service.BOOK = None
+
+
+def test_an_interpolation_the_engine_routes_nowhere_refuses_by_name(tmp_path):
+    """The second section: one method per routed curve type, held to the menu the store publishes.
+    A method reaches the engine's own `ModelParams` and is what `construct_factor` then injects; a
+    type nothing routes and a method nothing implements are both refused by name, because neither
+    raises anywhere downstream - the curve is silently interpolated the default way instead.
+    """
+    path = tmp_path / 'book.json'
+    configured_book(path, {'FXVolSurfaceParameters': {}})
+    try:
+        written = CLIENT.post('/book/configure', json={
+            'section': 'Price Factor Interpolation', 'entry': 'modeldefaults',
+            'fields': {'InterestRate': 'HermiteRT'}}).json()
+
+        assert written['written'] is True and written['dials'] == {'InterestRate': 'HermiteRT'}
+        document = json.loads(path.read_text())
+        assert document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Price Factor Interpolation'] == {'.ModelParams': {
+                'modeldefaults': {'InterestRate': 'HermiteRT'}, 'modelfilters': {}}}
+        assert in_process(document).current_cfg.params['Price Factor Interpolation'].search(
+            utils.Factor('InterestRate', ('ZAR',)), {}, True) == 'HermiteRT'
+
+        before = path.read_bytes()
+        for fields, named in (({'FxRate': 'HermiteRT'}, 'FxRate'),
+                              ({'InterestRate': 'Cubic'}, 'Cubic')):
+            refused = CLIENT.post('/book/configure', json={
+                'section': 'Price Factor Interpolation', 'entry': 'modeldefaults',
+                'fields': fields})
+            assert refused.status_code == 422 and named in refused.json()['detail']
+            assert 'InterestRate' in refused.json()['detail'], 'a refusal naming no menu'
+        assert path.read_bytes() == before
+    finally:
+        service.BOOK = None
+
+
 #: A `NettingCollateralSet` authored as a DEAL compiles like any other and has no `Deal.generate`,
 #: so `Deal.calculate` logs CRITICAL and marks it at nothing - a real book whose PRICING talks on
 #: the channel `CapturedErrors` listens to.

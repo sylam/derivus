@@ -12,9 +12,9 @@ book of record, a booking validates before it writes, and every other client - t
 poll, Excel - sees a booking on its next read. Market data moves on the engine's own terms: quote
 blocks tick through `update_market_quotes` (values only - structure is a re-authoring, refused by
 name - with the bootstrap judging the whole write), spots and vols through `patch_market_values`
-(the `bind='value'` seam; a structural key is refused by the engine's rule). What never moves
-from here is structure: a new factor, a moved pillar, a changed convention is authoring, not
-ticking.
+(the `bind='value'` seam; a structural key is refused by the engine's rule), and the dials a family
+fits under through `configure_book`, which re-bootstraps what they change. What never moves from
+here is structure: a new factor, a moved pillar, a changed convention is authoring, not ticking.
 
 Answers are SUMMARIES AND POINTERS, never payloads: the model needs to know a deal booked or a
 calculation ran, not to hold a simulation cube in its context. A run comes back as its replay
@@ -285,6 +285,22 @@ def describe_factor_type(factor_type: str) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
+def describe_configuration() -> dict:
+    """Every dial the book's bootstrap can be set with, per section - what `configure_book` writes.
+
+    `Bootstrapper Configuration` holds one entry per price family, keyed by the price factor that
+    family WRITES (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`, ...) with the class name an
+    older book spells it by beside it as an alias; the entry's dials are the boxes a fit is solved
+    in, the seeds it starts from and the budgets it stops on, each with the default it stands at
+    where the book states nothing. `Price Factor Interpolation` sets one method per routed curve
+    type, and `interpolations` is that menu. Quote ladders and instrument tables are NOT dials -
+    they belong to the quote block and move through `update_market_quotes`."""
+    schema = service().call('GET', '/schema')
+    return {'sections': schema['Configuration'],
+            'interpolations': schema['Interpolation_factor_map']}
+
+
+@MCP.tool(annotations=READ_ONLY)
 def job_skeleton() -> dict:
     """A complete minimal job document that loads and prices - the reference for the ENVELOPE
     shape (where market data, deals and the calculation sit), which the field declarations alone
@@ -434,6 +450,26 @@ def update_market_quotes(quotes: dict, bootstrap: bool = True) -> dict:
     successful tick, `solve_deal` and `price_candidate` price against the fresh market."""
     return service().call('POST', '/book/market', json={
         'quotes': quotes, 'bootstrap': 'Yes' if bootstrap else 'No'})
+
+
+@MCP.tool()
+def configure_book(section: str, entry: str, fields: dict) -> dict:
+    """Set the dials the live book bootstraps its market with - `fields` MERGED into one entry
+    `describe_configuration` declares, everything else in it standing.
+
+    `section` is `Bootstrapper Configuration` (`entry` the price factor a family writes, or the
+    class name the book spells it by) or `Price Factor Interpolation` (`entry` `modeldefaults`,
+    `fields` one method per routed curve type). A book states each hyperparameter ONCE here and
+    every quote block of that family is read over it, so this is where a fit's box, seed or budget
+    moves - never inside a quote.
+
+    The change is checked by building what reads it, so a malformed dial is refused by name before
+    a quote is read; the whole market is then re-bootstrapped in the same atomic write, and a
+    bootstrap that complains refuses everything and hands its messages back as `refused` with the
+    file untouched. On success the answer names the entry written, the dials it now carries, and
+    the price factors the re-bootstrap rewrote."""
+    return service().call('POST', '/book/configure',
+                          json={'section': section, 'entry': entry, 'fields': fields})
 
 
 @MCP.tool()

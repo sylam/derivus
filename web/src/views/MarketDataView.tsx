@@ -1,7 +1,7 @@
-import { getBook, patchMarket } from '../api';
+import { patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree } from '../components/Tree';
-import { useApp } from '../state';
+import { useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Schema } from '../types';
 
@@ -56,16 +56,8 @@ export function MarketDataView() {
   // so structure stays read-only exactly where the engine refuses it anyway
   const onPatch: AmendField | undefined =
     state.source?.kind === 'book' && selected
-      ? async (key, wireValue) => {
-          const outcome = await patchMarket(selected, { [key]: wireValue });
-          if (!outcome.written) return outcome.refused ?? ['refused'];
-          const live = await getBook();
-          dispatch({
-            type: 'DOC_LOADED', doc: live.document, refresh: true,
-            source: { kind: 'book', etag: live.etag, path: live.path },
-          });
-          return null;
-        }
+      ? async (key, wireValue) =>
+          written(dispatch, await patchMarket(selected, { [key]: wireValue }))
       : undefined;
 
   return (
