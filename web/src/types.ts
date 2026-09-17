@@ -40,7 +40,8 @@ export type Schema = {
   Process: { types: Record<string, Section> };
   Calculation: { types: Record<string, Section> };
   Calibration: { types: Record<string, Section> };
-  MarketPrices: { types: Record<string, Section> };
+  /** `values` is the quote-row plane the tick verb moves - the only columns a client may edit. */
+  MarketPrices: { types: Record<string, Section>; values: string[] };
   Configuration: Record<string, ConfigSection>;
   Process_factor_map: Record<string, string[]>;
   Interpolation_factor_map: Record<string, string[]>;
@@ -77,6 +78,8 @@ export type ResultSummary = {
   engine_version?: string;
   seed?: number;
   tables?: Record<string, TableShape>;
+  /** A job that publishes its own, while it waits or runs. */
+  progress?: { done: number; total: number; note: string };
 };
 
 export type TablePage = {

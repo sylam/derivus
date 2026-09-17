@@ -3,12 +3,22 @@
 A client over the derivus HTTP service: the portfolio tree, the **blotter** (the same tree read
 as a desk list — one row per deal, containers holding their legs, sorted by days-to-roll against
 the book's `Base_Date`, with a roll-off window filter), the blotter's two data views — **risk**
-and **XVA** — the market data (curves and surfaces plotted), the calculation, and a run's results.
+and **XVA** — the **market prices** (the quote ladders, edited and ticked), the **bootstrapper**
+(the dials each price family is fitted with), the market data (curves plotted, a vol surface read
+four ways), the calculation, and a run's results.
 **View + run + scalar edit**: over the live book,
 declared scalar fields (amounts, dates, rates, dropdowns) edit in place — saved through the
 service's validate-before-write `amend` verb, refusals rendered verbatim, the etag poll doing the
-repaint, so there is no client-side edit state at all. Tables, curves and market data stay
-read-only for now; booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
+repaint, so there is no client-side edit state at all. A quote ladder's VALUE columns edit the same
+way — the schema publishes which columns those are (`MarketPrices.values`) and the tick verb posts
+the whole block, so structure stays where the engine refuses it. Everything else stays read-only;
+booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
+
+A `Surface`-shaped price factor renders as four views over one pure module (`src/vols.ts`): the
+**smiles**, one line per expiry over the x coordinate; the **term structure** at one x; the
+**surface**, a rotatable 3-D mesh whose `echarts-gl` code is a lazy chunk the base bundle does not
+carry; and the **heatmap**, on numeric axes. The axis names are the factor's own declaration — the
+tuple its descriptor opens with — so nothing here knows what a moneyness is.
 
 **The two data views are reads, and neither has a run button.** *Risk* is `GET /book/risk`: the
 book's consolidated mark and its whole-book gradient, counterparty-blind — a headline strip, the

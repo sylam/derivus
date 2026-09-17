@@ -907,8 +907,11 @@ mapping = {
     # a factor TYPE holds its own descriptors, and so does a process type
     'Factor': {'types': _factor_types},
     'Process': {'types': _process_types},
-    # a price FAMILY holds its own, keyed by the type string the engine selects work by
-    'MarketPrices': {'types': emit_market_prices(bootstrappers)},
+    # a price FAMILY holds its own, keyed by the type string the engine selects work by; `values`
+    # is the quote-row plane `update_market_quote` refuses against, so a client ticks what the
+    # engine calls a value without spelling one of the four names
+    'MarketPrices': {'types': emit_market_prices(bootstrappers),
+                     'values': list(MARKET_QUOTE_VALUES)},
     # the two market-data sections a book states its bootstrap in, and what each entry may carry
     'Configuration': emit_configuration(bootstrappers, riskfactors.INTERPOLATION_DEFAULT),
     # a SALES structure holds its vernacular, parameters, legs and recipe

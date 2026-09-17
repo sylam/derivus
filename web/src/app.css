@@ -228,7 +228,8 @@ table.data tr:hover td { background: var(--surface-2); }
 
 .blotterbar .hint b { color: var(--text); }
 
-.blotterbar button.chip {
+/* a chip that is a control - the blotter's filters, a surface's four views */
+button.chip {
   appearance: none; border: 1px solid var(--border); cursor: pointer;
   font: 550 12px var(--sans);
 }
@@ -483,3 +484,8 @@ select {
   flex-basis: 100%;
   color: var(--bad); font-size: 12px;
 }
+
+/* a quote ladder's value cells: the same input, table width */
+td .editcell input { width: 88px; padding: 2px 6px; }
+
+td .editcell .refusal { max-width: 320px; white-space: normal; }

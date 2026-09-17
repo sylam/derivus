@@ -8,7 +8,7 @@ import type { Descriptor } from '../types';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
 import { JsonView } from './JsonView';
-import { SurfaceHeatmap } from './SurfaceHeatmap';
+import { VolSurface } from './VolSurface';
 
 /** One field, read-only, dispatched on the VALUE first and the descriptor second. The value is
  * authoritative: a document may carry a key the schema does not declare, and a viewer that hides
@@ -21,7 +21,9 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   if (curve) {
     const arity = curve.data[0]?.length ?? 0;
     if (arity === 2) return <CurveChart data={curve.data} />;
-    if (arity === 3 || arity === 4) return <SurfaceHeatmap data={curve.data} />;
+    if (arity === 3 || arity === 4) {
+      return <VolSurface data={curve.data} descriptor={descriptor} />;
+    }
     return <JsonView value={value} />;
   }
   for (const name of ['.Timestamp', '.DateOffset', '.Percent', '.Basis'] as const) {
@@ -163,8 +165,9 @@ function FieldRow({ name, descriptor, value, declared, onAmend }: {
 
 /** One scalar input, saved on Enter or on leaving the field when changed. No client-side edit
  * state beyond this component: a successful save refreshes the book, the incoming value moves,
- * and the effect below re-syncs - the file is the truth, always. A refusal renders verbatim. */
-function EditableScalar({ name, descriptor, value, onAmend }: {
+ * and the effect below re-syncs - the file is the truth, always. A refusal renders verbatim.
+ * Exported because a quote ladder's value cells are the same input in a table cell. */
+export function EditableScalar({ name, descriptor, value, onAmend }: {
   name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField;
 }) {
   const incoming = editRaw(value);

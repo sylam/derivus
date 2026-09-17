@@ -52,8 +52,16 @@ export const getBook = () => call<BookResponse>('GET', '/book');
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/deals',
     { action: 'amend', deal_path: dealPath, fields });
+// the market tick, one endpoint and two vocabularies: a price factor's values, or whole quote
+// blocks - which the verb value-updates and bootstraps in the same atomic write
+const postMarket = (body: Record<string, unknown>) =>
+  call<BookDealOutcome>('POST', '/book/market', body);
 export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
-  call<BookDealOutcome>('POST', '/book/market', { patch: { [factor]: fields } });
+  postMarket({ patch: { [factor]: fields } });
+export const tickMarket = (quotes: Record<string, unknown>) => postMarket({ quotes });
+// the desk's own scope, fetched and installed as a queued job - polled like an execute
+export const tickBloomberg = () =>
+  call<{ result_id: string; status: string }>('POST', '/book/bloomberg', {});
 // the bootstrap's own dials: merged into one declared entry, then the market re-bootstrapped
 export const configureBook = (section: string, entry: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/configure', { section, entry, fields });

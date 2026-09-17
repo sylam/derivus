@@ -657,8 +657,28 @@ def test_the_market_prices_store_is_generated():
     assert market_price_classes(), 'no bootstrapper declares `fields` - these gates are vacuous'
     assert MARKET_PRICES['types'] == schema.emit_market_prices(bootstrappers), (
         'the MarketPrices store is not the emitted view - a hand-written copy has come back')
-    assert set(MARKET_PRICES) == {'types'}, (
-        f'sub-stores have come back beside the types: {sorted(set(MARKET_PRICES) - {"types"})}')
+    assert set(MARKET_PRICES) == {'types', 'values'}, (
+        f'sub-stores have come back beside the types: '
+        f'{sorted(set(MARKET_PRICES) - {"types", "values"})}')
+
+
+def test_the_quote_value_plane_is_published_beside_the_families():
+    """A client ticks a quote by moving its VALUE columns and nothing else, and which columns those
+    are is not a name it may spell: the store publishes the one tuple `update_market_quote` refuses
+    against, so the screen that edits them cannot drift from the guard that admits them.
+
+    The second half is the predicate a client finds a block's ladder BY - the declared field whose
+    row carries every value key - held to `quote_containers`' own reading of the same declarations,
+    because a table a client cannot find is a quote it cannot tick.
+    """
+    assert MARKET_PRICES['values'] == list(schema.MARKET_QUOTE_VALUES), (
+        'the published value plane is not the tuple the tick guard reads')
+    found = {key for section in MARKET_PRICES['types'].values() for key, d in section.items()
+             if set(MARKET_PRICES['values']) <= set(d.get('col_names')
+                                                    or d.get('sub_fields') or ())}
+    assert found == set(schema.MARKET_QUOTE_CONTAINERS), (
+        'the published declarations name {} as quote tables, the engine {}'.format(
+            sorted(found), sorted(schema.MARKET_QUOTE_CONTAINERS)))
 
 
 @pytest.mark.parametrize('market_type', sorted(market_price_classes()))

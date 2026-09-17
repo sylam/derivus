@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import type { ReactNode } from 'react';
 import { formatNumber, label } from '../tokens';
 
 /** Runs of equal adjacent values, for the top row of a two-level header. */
@@ -20,9 +20,11 @@ function Cell({ value }: { value: unknown }) {
 
 /** Any frame the wire carries: `columns` may be plain labels or same-length tuples (a MultiIndex
  * renders as a two-row header), `index` labels the leading column when present, and a row may be
- * a plain scalar (a serialised vector). */
-export function DataTable({ columns, index, data }: {
+ * a plain scalar (a serialised vector). `cell` replaces one cell's content by (row, column) -
+ * which is what makes a quote ladder's value columns editable without a second table renderer. */
+export function DataTable({ columns, index, data, cell }: {
   columns: unknown[]; index: unknown[]; data: unknown[];
+  cell?: (row: number, column: number) => ReactNode | undefined;
 }) {
   const twoLevel = columns.length > 0 &&
     columns.every((c) => Array.isArray(c) && c.length >= 2);
@@ -59,7 +61,11 @@ export function DataTable({ columns, index, data }: {
           {rows.map((row, r) => (
             <tr key={r}>
               {hasIndex && <td>{label(index[r])}</td>}
-              {row.map((cell, c) => <Fragment key={c}><Cell value={cell} /></Fragment>)}
+              {row.map((value, c) => {
+                const override = cell?.(r, c);
+                return override === undefined
+                  ? <Cell key={c} value={value} /> : <td key={c}>{override}</td>;
+              })}
             </tr>
           ))}
         </tbody>

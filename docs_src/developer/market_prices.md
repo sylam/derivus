@@ -147,8 +147,20 @@ it then re-bootstraps the whole market through the tick's own path, so a bootstr
 writes NOTHING and hands its messages back, and an answer that writes names the price factors the
 run rewrote. `Price Factor Interpolation` is the second section the verb writes — one method per
 routed curve type, held to `Interpolation_factor_map`, which is also what the store names rather
-than restating. The web UI's Settings screen renders both off that store, every dial at what the
-entry states or the declaration's default otherwise, edited in place.
+than restating.
+
+**Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
+every dial at what the entry states or the declaration's default otherwise, edited in place, and
+offers the families the book does not configure yet: adding one posts an empty entry, which the verb
+completes with that family's stem and then re-bootstraps like any other change — so a family the book
+has quotes for lands and one that writes no price factor refuses in `Config.bootstrap`'s own words
+with the file untouched. *Market Prices* renders every quote block against `mapping['MarketPrices']`,
+each block's ladder under the columns its family declares, and edits the VALUE columns alone:
+`mapping['MarketPrices']['values']` publishes `MARKET_QUOTE_VALUES` beside the types, so a client
+moves what the tick guard admits without spelling one of the four names, and finds a block's ladder by
+the predicate `quote_containers` uses — the declared row carrying them all. An edit posts the WHOLE
+block back through `/book/market`, which value-updates it and bootstraps in one atomic write, and a
+structural change refuses by name.
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
