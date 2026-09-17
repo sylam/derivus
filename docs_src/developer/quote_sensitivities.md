@@ -475,10 +475,10 @@ the parameters happen to be written in — but it is still a convention, so the 
 quote's delta beside the share of it lying in the null space the cutoff discards: the Euclidean
 projection of `dθ/dq_j` onto the unscaled Jacobian's null space over `‖dθ/dq_j‖`, and the same for
 the value's cotangent. On the four-quote block that share is 0.99–1.00 on every quote, which is why
-the fourth benchmark's `dV/dq` read 0.1356 under the scaled metric where the unscaled one read 0.2704
-with θ\* and the three identified benchmarks unchanged to the digit
-(`tests/fixtures/hw2f_four_quote_job.json` pins those numbers with this sentence); on the identified
-block it is 0.70 typical, on a LogVar2FJ autocall fit 0.90.
+the fourth benchmark's `dV/dq` read 0.3014 under the scaled metric where the unscaled one read 0.2667
+at the same θ\* — the metric enters the backward alone — every quote moving 0.60 to 1.21 of its
+scaled reading (`tests/fixtures/hw2f_four_quote_job.json` pins those numbers with this sentence); on
+the identified block it is 0.70 typical, on a LogVar2FJ autocall fit 0.90.
 
 !!! warning "`.grad` after an analytic chain is 0.3–2.3% of the answer, which is worse than six orders out"
     Basin hopping calls `total_loss.backward()` per evaluation and the quote leaves accumulate across
