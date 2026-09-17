@@ -88,8 +88,9 @@ def _ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _expected():
-    """Value and dV/dspot of the strip of Europeans an unreachable target degenerates to."""
+def _expected(cp=1.0):
+    """Value and dV/dspot of the strip of Europeans an unreachable target degenerates to, at the
+    deal's own side `cp`: the ITM leg on `Underlying_Amount` against the leveraged OTM one."""
     value = delta = 0.0
     for fix, settle in FIXINGS:
         t, ts = fix / DAYS, settle / DAYS
@@ -97,9 +98,9 @@ def _expected():
         F, sd, D = SPOT * fwd, SIGMA * math.sqrt(fix / DAYS), math.exp(-_r_usd(ts) * ts)
         d1 = (math.log(F / STRIKE) + 0.5 * sd * sd) / sd
         d2 = d1 - sd
-        value += D * (N1 * (F * _ndtr(d1) - STRIKE * _ndtr(d2)) -
-                      N2 * (STRIKE * _ndtr(-d2) - F * _ndtr(-d1)))
-        delta += D * fwd * (N1 * _ndtr(d1) + N2 * _ndtr(-d1))
+        value += cp * D * (N1 * (F * _ndtr(cp * d1) - STRIKE * _ndtr(cp * d2)) -
+                           N2 * (STRIKE * _ndtr(-cp * d2) - F * _ndtr(-cp * d1)))
+        delta += cp * D * fwd * (N1 * _ndtr(cp * d1) + N2 * _ndtr(-cp * d1))
     return value, delta
 
 
@@ -189,6 +190,41 @@ def test_a_reachable_target_is_worth_less_than_an_unreachable_one(tmp_path):
     strip, _ = _run(_job(), tmp_path, 'strip')
     knocked, _ = _run(_job(TargetLevel=0.02), tmp_path, 'knocked')
     assert abs(_mtm(knocked)) < abs(_mtm(strip)), (_mtm(knocked), _mtm(strip))
+
+
+#: What the fixture as it stands marks - the control that the cap's mask is inert wherever the cap
+#: is live, the CALL side being the one where it never goes negative.
+BANKED_CALL = float.fromhex('0x1.f36e678d65e72p+5')
+
+
+def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):
+    """A fill no single fixing can reach is not a level the pricer may take a log of.
+
+    One-step survival standardises the PnL cap `B = K + (R/N)*cp`, which for a PUT is the strike
+    LESS the remaining target per unit - negative at every fixing whose target is above the strike,
+    and `log(B/S)` then takes the whole deal to not-a-number. A put accrues at most the strike at
+    one fixing, so fifty and five times it are both unreachable; on main both mark NaN, as does the
+    desk's own USDZAR put TARF at every target above its 16.825 strike (+3,240,865 at 0.5,
+    -2,228,134 at 5, NaN at 50 and above).
+
+    A cap at or below zero cannot be crossed, so survival is one and the deal is the UNCAPPED
+    STRIP: the two targets agree to the BIT, the only quantity differing between them being the
+    remaining target the mask takes out of the arithmetic, and both land on the closed-form strip -
+    `Underlying_Amount` puts against the leveraged calls - at 0.066%.
+
+    MUTATION: drop the mask and the first assertion reads NaN. Substitute the OTHER infinity and
+    the step knocks out with certainty, paying the remaining target - ten times apart on the two
+    arms, which the bit-equality catches. The banked call is the third arm: a live cap is masked by
+    nothing and must not move.
+    """
+    fifty = _mtm(_run(_job(Option_Type='Put', TargetLevel=50.0 * STRIKE), tmp_path, 'put50')[0])
+    five = _mtm(_run(_job(Option_Type='Put', TargetLevel=5.0 * STRIKE), tmp_path, 'put5')[0])
+    strip, _ = _expected(-1.0)
+
+    assert math.isfinite(fifty), 'the put marked not-a-number above its strike'
+    assert fifty == five, ('the masked cap leaked the remaining target', fifty, five)
+    assert abs(fifty - strip) / abs(strip) < TOL, (fifty, strip)
+    assert _mtm(_run(_job(), tmp_path, 'banked')[0]) == BANKED_CALL, 'a live cap moved'
 
 
 # --------------------------------------------------------------------------------------------

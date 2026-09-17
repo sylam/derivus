@@ -3694,7 +3694,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         vol_step = fwd_vol * torch.sqrt(dt)
                     else:
                         fwd_drift, vol_step = law[0][..., j], law[1][..., j]
-                    z_max = (torch.log(B_pnl/Sj) - fwd_drift) / vol_step
+                    # a cap at or below zero is a fill no single fixing can reach - a put's strike
+                    # less the remaining target, an inverted call's reciprocal - so the step cannot
+                    # knock out and the bound runs to the tail its own side leaves untruncated
+                    fillable = B_pnl > 0.0
+                    level = torch.where(fillable, B_pnl, Sj)
+                    z_max = torch.where(fillable, (torch.log(level/Sj) - fwd_drift) / vol_step,
+                                        callOrPut * math.inf)
                     # the survival side follows the PnL cap's direction
                     Sj_prev = Sj
                     p, Z = oss_truncated_draw(u[j], z_max, callOrPut > 0)

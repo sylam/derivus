@@ -33,7 +33,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
 | `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state |
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
-| `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, writes nothing |
+| `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
@@ -866,13 +866,23 @@ def book_price(request: dict):
     `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
     same what-if twice is one run.
 
+    THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
+    candidate naming market data the book does not carry would load and then be DROPPED by
+    discovery, leaving a run whose only trace of it is `Deals Skipped`. It refuses 422 in the
+    booking's own words instead. The book's own deals are not re-validated - only what the
+    candidate adds.
+
     THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, _ = live_book().read()
     try:
         if request.get('deal') is not None:
-            splice_deal(document, request['deal'], request.get('parent_reference'))
+            written, outcome = deal_edit(document, request['deal'],
+                                         request.get('parent_reference'),
+                                         live_book().baseline(document))
+            if not written:
+                raise HTTPException(422, '; '.join(outcome['refused']))
     except ValueError as error:
         raise HTTPException(422, str(error))
     document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))

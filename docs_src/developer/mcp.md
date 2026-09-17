@@ -61,6 +61,8 @@ authoring messages, or market data the book did not already lack. A refusal is a
 (`{written: false, refused: [...]}`), not a tool error, because the model's next move is to read the
 messages and fix what they name. Tool errors are reserved for *cannot proceed*: service down (named,
 with how to start it), unknown type (with close matches), a parent that takes no children.
+`price_candidate` runs the same check before the what-if queues, in the same words: a candidate the
+book has no market data for is refused there rather than dropped from the run it asked for.
 
 !!! warning "OPEN — a spine-configured desk cannot book through this tool"
     Under a configured `DV_SPINE_HOME` the endpoint additionally requires `quantity`,

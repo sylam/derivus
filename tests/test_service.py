@@ -482,6 +482,28 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert book.read_bytes() == before
 
 
+def test_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
+    """The what-if validates its candidate before it queues, in the booking's own words.
+
+    A candidate naming a curve the book has no block for LOADS and is then dropped by discovery, so
+    the run came back `done` with `Deals Skipped: 1` and no mtm row - the candidate's absence was a
+    count and nothing else. The same candidate on a curve the book carries queues and prices, which
+    is what says the check reads the DELTA: a what-if is no more blocked by the book's own gaps
+    than a booking is.
+    """
+    candidate = dict(CASHFLOW, Reference='CF9', Amount=100_000.0)
+    absent = CLIENT.post('/book/price', content=dump(
+        {'deal': dict(candidate, Discount_Rate='ZAR-SWAP')}), headers=JSON)
+    carried = CLIENT.post('/book/price', content=dump({'deal': candidate}), headers=JSON)
+    service.EXECUTOR.queue.join()
+
+    assert absent.status_code == 422
+    assert absent.json()['detail'] == 'no market data for InterestRate.ZAR-SWAP'
+    assert carried.status_code == 200
+    assert mtm(carried.json()['result_id'])['CF9'] == pytest.approx(
+        candidate['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+
+
 def fx_vol_snapshot():
     """A USDZAR snapshot through the Bloomberg package's own normalization - canned observations
     standing in for the terminal, everything downstream the real pipeline. One object, so the

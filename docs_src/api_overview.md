@@ -329,7 +329,7 @@ DV_Service --port 8000
 | `GET` | `/ui` | a built web UI - the wheel's own by default, or the `DV_Service --ui <dir>` build |
 | `GET` | `/book` | the live job document the service serves — `DV_HOME/book.json` by default (a missing file starts blank), `DV_Service --book <file>` for another, `--no-book` to serve none and 404 every `/book` verb — with the etag naming its state |
 | `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
-| `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing |
+| `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing, and the candidate is validated BEFORE it queues, a 422 naming any market data the book lacks rather than a run that drops it |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
 | `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
 | `POST` | `/book/bloomberg` | provision the security map (first use creates `DV_HOME`, copies the packaged seed, verifies every candidate against the terminal), fetch the desk's FX vol surfaces and tick the book — a queued job whose `/results/{id}` carries `progress` while it runs |
