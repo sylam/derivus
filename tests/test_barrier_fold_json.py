@@ -283,14 +283,17 @@ def test_a_folded_state_registers_no_boundary_correction():
 
     Read through the document rather than by inspecting `shared`: `Greeks: 'All'` refuses on a deal
     that registered a boundary correction, so the unfolded barrier refuses BY NAME and the folded
-    one answers - with the vanilla's own second-order block, to the bit.
+    one answers - with the vanilla's own second-order block, to the bit. The CRISP estimator is
+    declared because it is the one that registers: the default integrates the decision instead,
+    leaving nothing to refuse.
     """
+    crisp = {'Greeks': 'All', 'Branch_And_Weight': 'No'}
     with pytest.raises(Exception) as refusal:
-        mtm(barrier('Down_And_In', rows()), calc={'Greeks': 'All'})
+        mtm(barrier('Down_And_In', rows()), calc=crisp)
     assert 'boundary correction' in str(refusal.value), str(refusal.value)
 
-    folded = mtm(barrier('Down_And_In', rows({-60: 85.0})), calc={'Greeks': 'All'})
-    assert folded == mtm(vanilla(), calc={'Greeks': 'All'})
+    folded = mtm(barrier('Down_And_In', rows({-60: 85.0})), calc=crisp)
+    assert folded == mtm(vanilla(), calc=crisp)
 
 
 def test_the_digital_barrier_folds_to_its_own_vanilla():

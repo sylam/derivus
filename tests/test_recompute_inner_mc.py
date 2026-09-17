@@ -110,17 +110,18 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
     return float(out['Results']['cva']), out['Results']['mtm'].values, grad, cashflows
 
 
-def base_hessian(recompute, sims=1 << 10):
+def base_hessian(recompute, sims=1 << 10, estimator='No'):
     """The reported second-order block. `Greeks: 'All'` sets `Base_Reval_State.gamma`, so
     `SensitivitiesEstimator` runs with `create_graph=True`.
 
-    On THIS fixture it never gets that far: the TARF registers a boundary correction and base
-    valuation refuses a second derivative over one before any node is reached. The autocall in
-    `test_recompute_equity_pricers` registers none and is where the node's OWN refusal is
-    measured."""
+    On THIS fixture it never gets that far: under the CRISP estimator - declared here, because
+    `Branch_And_Weight`'s default integrates the decision instead of registering it - the TARF
+    registers a boundary correction and base valuation refuses a second derivative over one
+    before any node is reached. The autocall in `test_recompute_equity_pricers` registers none
+    and is where the node's OWN refusal is measured."""
     _, out = run_baseval(tarf._cfg(KNOCK_IN, tarf.SPOT), overrides={
         'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
-        'Recompute_Inner_MC': recompute})
+        'Recompute_Inner_MC': recompute, 'Branch_And_Weight': estimator})
     return out['Results']['Greeks_Second'].values.astype(np.float64)
 
 

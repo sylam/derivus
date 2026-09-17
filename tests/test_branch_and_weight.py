@@ -504,26 +504,28 @@ def test_the_switch_is_declared_on_base_valuation_alone():
     assert 'Branch_And_Weight' not in emitted['HedgeMonteCarlo']
 
 
-def test_the_switch_defaults_to_no():
-    """The declaration is the single source of the default, so an omitted key and an explicit 'No'
-    are the same run."""
-    assert _declared(calculation.Base_Revaluation)['Branch_And_Weight'].default == 'No'
-    assert schema.declared_defaults(calculation.Base_Revaluation, {})['Branch_And_Weight'] == 'No'
+def test_the_switch_defaults_to_yes():
+    """The declaration is the single source of the default, so an omitted key and an explicit 'Yes'
+    are the same run, and the crisp estimator is one 'No' away."""
+    assert _declared(calculation.Base_Revaluation)['Branch_And_Weight'].default == 'Yes'
+    assert schema.declared_defaults(calculation.Base_Revaluation, {})['Branch_And_Weight'] == 'Yes'
 
 
 def test_the_state_declares_it_so_a_pricer_reads_it_without_a_fallback():
     """`Calculation_State` carries the flag, so a pricer reads `shared.branch_and_weight` directly
-    rather than through a `getattr` default a second calculation could disagree with."""
+    rather than through a `getattr` default a second calculation could disagree with. False HERE is
+    what keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator now that
+    `Base_Revaluation` defaults to the switch."""
     state = utils.Calculation_State(
         {}, torch.ones([1, 1], dtype=DT), 1, None, 'Constant', 1, False)
     assert state.branch_and_weight is False
 
 
-def test_the_switch_off_is_the_crisp_path(tmp_path):
-    """OFF IS OFF on a real document: the key absent and the key written 'No' are the same number
-    to the last bit. Every other gate in the suite depends on it."""
+def test_an_undeclared_document_runs_the_switch(tmp_path):
+    """THE DEFAULT IS THE SWITCH on a real document: the key absent and the key written 'Yes' are
+    the same number to the last bit. Every other gate in the suite depends on it."""
     absent = _run_tarf(_tarf_job(), tmp_path, 'absent')
-    written = _run_tarf(_tarf_job(Branch_And_Weight='No'), tmp_path, 'written')
+    written = _run_tarf(_tarf_job(Branch_And_Weight='Yes'), tmp_path, 'written')
     assert absent == written, (absent, written)
 
 
@@ -664,6 +666,12 @@ def _acc_doc(same_day=False, **kwargs):
 def _smooth(job, on=True):
     job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes' if on else 'No'
     return job
+
+
+def _crisp(job):
+    """The crisp estimator DECLARED. The default is the switch, so a gate about the crisp path has
+    to say so; an undeclared document is the smooth one."""
+    return _smooth(job, on=False)
 
 
 def _run_doc(job, tmp_path, name, debug=False):
@@ -880,19 +888,20 @@ def _rel(got, want):
 
 
 # ======================================================================================
-# OFF IS OFF, and what the switch is attributable for
+# THE DEFAULT IS THE SWITCH, and what the switch is attributable for
 # ======================================================================================
 
 @pytest.mark.parametrize('build,name', [(_tarf_doc, 'tarf'), (_acc_doc, 'accumulator')])
-def test_off_is_off_on_a_real_document(build, name, tmp_path):
-    """The key ABSENT and the key written 'No' are the same run - value, the whole reported mtm
+def test_the_default_is_the_switch_on_a_real_document(build, name, tmp_path):
+    """The key ABSENT and the key written 'Yes' are the same run - value, the whole reported mtm
     frame and every first-order greek, by `np.array_equal` rather than a tolerance.
 
     Every number in `test_fx_tarf_json`, `test_fx_accumulator_json`, `test_tarf_cash_settle` and
-    the two boundary-event files is a regression bar for this build only while this holds.
+    the two boundary-event files is banked under the estimator its own document declares, and an
+    undeclared document declares this one.
     """
     absent, out_a, _ = _run_doc(build(greeks='First'), tmp_path, name + '_absent')
-    written, out_w, _ = _run_doc(_smooth(build(greeks='First'), on=False), tmp_path, name + '_no')
+    written, out_w, _ = _run_doc(_smooth(build(greeks='First')), tmp_path, name + '_yes')
     assert absent == written, (absent, written)
     # `DataFrame.equals` rather than `array_equal`: the frame carries an all-NaN root row, and NaN
     # is not equal to itself
@@ -908,7 +917,7 @@ def test_a_tarf_with_no_knock_in_is_bit_identical_under_the_switch(tmp_path):
     leveraged knock-in on and they part by ~1.3% at 65536 paths (the gate below): that leg was the
     one indicator this pricer still sampled.
     """
-    crisp, _, _ = _run_doc(_tarf_doc(barrier=0.0), tmp_path, 'nokick_off')
+    crisp, _, _ = _run_doc(_crisp(_tarf_doc(barrier=0.0)), tmp_path, 'nokick_off')
     smooth, _, _ = _run_doc(_smooth(_tarf_doc(barrier=0.0)), tmp_path, 'nokick_on')
     assert crisp == smooth, (crisp, smooth)
 
@@ -1028,7 +1037,8 @@ def test_the_switch_is_rao_blackwell_and_not_a_smoothing(tmp_path):
     0.135% out).
     """
     seeds = range(1, 11)
-    crisp = [_run_doc(_tarf_doc(seed=s, sims=1 << 14), tmp_path, 'rb_off')[0] for s in seeds]
+    crisp = [_run_doc(_crisp(_tarf_doc(seed=s, sims=1 << 14)), tmp_path, 'rb_off')[0]
+             for s in seeds]
     smooth = [_run_doc(_smooth(_tarf_doc(seed=s, sims=1 << 14)), tmp_path, 'rb_on')[0]
               for s in seeds]
     truth = _table(_tarf_reference)['value']
@@ -1080,7 +1090,7 @@ def test_the_filling_fixing_pays_the_remaining_target_under_both_estimators(tmp_
     quadrature, whose fired branch pays `N1 * r` and nothing else.
     """
     truth = _table(_tarf_reference)['value']
-    crisp, _, _ = _run_doc(_tarf_doc(sims=1 << 18), tmp_path, 'conv_off')
+    crisp, _, _ = _run_doc(_crisp(_tarf_doc(sims=1 << 18)), tmp_path, 'conv_off')
     smooth, _, _ = _run_doc(_smooth(_tarf_doc(sims=1 << 18)), tmp_path, 'conv_on')
     for label, got in (('crisp', crisp), ('smooth', smooth)):
         assert _rel(got, truth) < 0.01, (
@@ -1121,7 +1131,7 @@ def test_gamma_flows_under_the_switch_and_is_refused_without_it(tmp_path):
     is itself a kernel estimate whose bandwidth comes from the sample's own spread.
     """
     with pytest.raises(utils.SecondOrderRefused) as refusal:
-        _run_doc(_tarf_doc(greeks='All'), tmp_path, 'all_off')
+        _run_doc(_crisp(_tarf_doc(greeks='All')), tmp_path, 'all_off')
     assert 'boundary correction' in str(refusal.value)
 
     _, out, _ = _run_doc(_smooth(_tarf_doc(greeks='All')), tmp_path, 'all_on')
@@ -1212,7 +1222,7 @@ def test_the_accumulator_value_is_untouched_and_its_curvature_is_not(tmp_path):
         vanna      -1791.03       -220.69        -211.25       8.5x        -> 4.5%
     """
     ref = _table(_acc_reference)
-    crisp, out_c, _ = _run_doc(_acc_doc(greeks='All'), tmp_path, 'acc_off')
+    crisp, out_c, _ = _run_doc(_crisp(_acc_doc(greeks='All')), tmp_path, 'acc_off')
     smooth, out_s, _ = _run_doc(_smooth(_acc_doc(greeks='All')), tmp_path, 'acc_on')
     assert crisp == smooth, (crisp, smooth)
     assert _first(out_c) == _first(out_s), 'first order moved, and it has nothing to move through'
@@ -1237,10 +1247,11 @@ def test_the_accumulator_registration_is_superseded_not_lost(tmp_path):
     one-sample gap supports no local-linear fit, and the correction is exactly zero by construction.
     """
     with pytest.raises(utils.SecondOrderRefused):
-        _run_doc(_acc_doc(same_day=True, greeks='All'), tmp_path, 'sd_off')
+        _run_doc(_crisp(_acc_doc(same_day=True, greeks='All')), tmp_path, 'sd_off')
     _, out, _ = _run_doc(_smooth(_acc_doc(same_day=True, greeks='All')), tmp_path, 'sd_on')
     assert np.isfinite(_second(out)[0])
-    crisp, out_c, _ = _run_doc(_acc_doc(same_day=True, greeks='First'), tmp_path, 'sd1_off')
+    crisp, out_c, _ = _run_doc(
+        _crisp(_acc_doc(same_day=True, greeks='First')), tmp_path, 'sd1_off')
     smooth, out_s, _ = _run_doc(
         _smooth(_acc_doc(same_day=True, greeks='First')), tmp_path, 'sd1_on')
     assert crisp == smooth
@@ -1347,10 +1358,10 @@ def test_off_is_off_across_the_whole_barrier_family(barrier, over, digital):
     absent, _ = _barrier_run(barrier, on=None, sims=1 << 12, digital=digital, **over)
     off, _ = _barrier_run(barrier, on=False, sims=1 << 12, digital=digital, **over)
     smooth, _ = _barrier_run(barrier, on=True, sims=1 << 12, digital=digital, **over)
-    assert absent == off, ('the declared default moved the number', absent, off)
-    assert absent == smooth, (
-        'the switch moved a value its own sampler already computed the smooth way: {!r} absent, '
-        '{!r} on'.format(absent, smooth))
+    assert absent == smooth, ('the declared default moved the number', absent, smooth)
+    assert absent == off, (
+        'the crisp estimator moved a value its own sampler already computed the smooth way: '
+        '{!r} absent, {!r} off'.format(absent, off))
 
 
 @pytest.mark.parametrize('barrier,over,digital', [
@@ -1706,7 +1717,7 @@ def test_the_crisp_put_leg_lands_on_its_ladder_with_or_without_the_switch(tmp_pa
     def miss(put_barrier, smooth):
         def job(**kw):
             built = _autocall_doc(put_barrier, sims=1 << 16, **kw)
-            return _smooth(built) if smooth else built
+            return _smooth(built) if smooth else _crisp(built)
 
         aad = _first(_run_doc(job(greeks='First'), tmp_path, 'k_d')[1], factor='EquityPrice.EQ')
         rung = ladder(price=lambda s: _run_doc(job(spot=s), tmp_path, 'k_v')[0],
@@ -1783,7 +1794,7 @@ def test_the_put_barrier_above_the_threshold_is_the_whole_surviving_set(tmp_path
 
 
 # ======================================================================================
-# OFF IS OFF, and what the switch is attributable for on this product
+# THE DEFAULT IS THE SWITCH, and what it is attributable for on this product
 # ======================================================================================
 
 @pytest.mark.parametrize('kwargs,name', [
@@ -1792,14 +1803,14 @@ def test_the_put_barrier_above_the_threshold_is_the_whole_surviving_set(tmp_path
     ({'put_barrier': 0.7, 'rebate': 0.05}, 'two coupons, put barrier and rebate'),
     ({'coupon_days': (91, 182, 273), 'put_barrier': 0.6}, 'three coupons'),
     ({'same_day': True, 'put_barrier': 0.7}, 'a coupon observed on the base date')])
-def test_off_is_off_on_an_autocall_document(kwargs, name, tmp_path):
-    """The key ABSENT and the key written 'No' are the same run - value, the whole mtm frame and
-    every first-order greek, by `np.array_equal`. The identity stops there: 'Yes' legitimately
-    changes the estimator on this product, so it is checked against the quadrature above instead.
+def test_the_default_is_the_switch_on_an_autocall_document(kwargs, name, tmp_path):
+    """The key ABSENT and the key written 'Yes' are the same run - value, the whole mtm frame and
+    every first-order greek, by `np.array_equal`. The identity stops there: 'No' legitimately
+    changes the estimator on this product, and lands on its own ladder two gates above.
     """
     absent, out_a, _ = _run_doc(_autocall_doc(greeks='First', **kwargs), tmp_path, 'ac_absent')
     written, out_w, _ = _run_doc(
-        _smooth(_autocall_doc(greeks='First', **kwargs), on=False), tmp_path, 'ac_no')
+        _smooth(_autocall_doc(greeks='First', **kwargs)), tmp_path, 'ac_yes')
     assert absent == written, (name, absent, written)
     assert out_a['Results']['mtm'].equals(out_w['Results']['mtm']), 'the reported frame moved'
     assert np.array_equal(out_a['Results']['Greeks_First'].values,
@@ -1811,7 +1822,7 @@ def test_an_autocall_with_no_put_barrier_is_bit_identical_under_the_switch(tmp_p
     fired branch `(1 - p) * L * coup * D_j`, truncated continuation - so with no put barrier the
     two estimators agree TO THE BIT at value and at both greek blocks. The `Greeks: 'All'` half
     also says the registration this document never made is not what is being measured."""
-    crisp, out_c, _ = _run_doc(_autocall_doc(greeks='All'), tmp_path, 'ac_nobar_off')
+    crisp, out_c, _ = _run_doc(_crisp(_autocall_doc(greeks='All')), tmp_path, 'ac_nobar_off')
     smooth, out_s, _ = _run_doc(_smooth(_autocall_doc(greeks='All')), tmp_path, 'ac_nobar_on')
     assert crisp == smooth, (crisp, smooth)
     assert np.array_equal(out_c['Results']['Greeks_First'].values,
@@ -1858,7 +1869,8 @@ def test_the_autocall_gamma_flows_under_the_switch_and_is_refused_without_it(tmp
     (delta 3.08 crisp against 3.70 smooth).
     """
     with pytest.raises(utils.SecondOrderRefused) as refusal:
-        _run_doc(_autocall_doc(0.7, same_day=True, greeks='All'), tmp_path, 'ac_all_off')
+        _run_doc(_crisp(_autocall_doc(0.7, same_day=True, greeks='All')), tmp_path,
+                 'ac_all_off')
     assert 'boundary correction' in str(refusal.value)
 
     _, out, _ = _run_doc(_smooth(_autocall_doc(0.7, same_day=True, greeks='All', sims=1 << 16)),
@@ -1885,11 +1897,11 @@ def test_the_autocall_registration_is_superseded_not_lost(tmp_path):
     correction is exactly zero by construction.
     """
     with pytest.raises(utils.SecondOrderRefused):
-        _run_doc(_autocall_doc(same_day=True, greeks='All'), tmp_path, 'ac_sd_off')
+        _run_doc(_crisp(_autocall_doc(same_day=True, greeks='All')), tmp_path, 'ac_sd_off')
     _, out, _ = _run_doc(_smooth(_autocall_doc(same_day=True, greeks='All')),
                          tmp_path, 'ac_sd_on')
     assert np.isfinite(_second(out, spot='EquityPrice.EQ', vol='EquityPriceVol.EQ')[0])
-    crisp, out_c, _ = _run_doc(_autocall_doc(same_day=True, greeks='First'),
+    crisp, out_c, _ = _run_doc(_crisp(_autocall_doc(same_day=True, greeks='First')),
                                tmp_path, 'ac_sd1_off')
     smooth, out_s, _ = _run_doc(_smooth(_autocall_doc(same_day=True, greeks='First')),
                                 tmp_path, 'ac_sd1_on')
@@ -1914,7 +1926,7 @@ def test_an_observed_breach_is_data_and_the_switch_does_not_touch_it(tmp_path):
         return _barrier_on_the_base_date(
             _autocall_doc(1.1, same_day=True, spot=90.0, greeks='First', **kw))
 
-    crisp, out_c, _ = _run_doc(job(), tmp_path, 'ac_obs_off')
+    crisp, out_c, _ = _run_doc(_crisp(job()), tmp_path, 'ac_obs_off')
     smooth, out_s, _ = _run_doc(_smooth(job()), tmp_path, 'ac_obs_on')
     assert crisp == smooth, (
         'an OBSERVED breach moved under the switch - its `Sj` is the scenario\'s own spot, so '
@@ -2012,8 +2024,8 @@ def test_an_averaging_autocall_under_the_switch_falls_back_by_name(by, tmp_path)
     and what its greeks are blind to. The switch-off run carries no such line, which is what makes
     the line the fallback's and not the document's.
     """
-    crisp, _, off_log = _run_doc(_averaging(_autocall_doc(0.7), by), tmp_path, 'avg_off',
-                                 debug=True)
+    crisp, _, off_log = _run_doc(_crisp(_averaging(_autocall_doc(0.7), by)), tmp_path,
+                                 'avg_off', debug=True)
     assert np.isfinite(crisp) and crisp != 0.0, (
         'the averaging document does not price with the switch OFF either, so the fallback below '
         'would be attributable to the deal rather than to the switch')

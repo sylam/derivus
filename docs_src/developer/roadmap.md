@@ -140,14 +140,14 @@ is recorded so a reader knows which readings rest on it.
   10% at 2,048; a lognormal autocall under the same annex reads 12% short at 2,048. The path
   count, not the deal, is what the number depends on. Beside it, the autocall's floating leg and
   its terminal put register no settled cash, so the reported cashflows carry the coupons alone.
-- **The target redemption forward's target pin is a kink the crisp default is blind to.** The pin
-  fires on 41% to 60% of paths. Behind `Branch_And_Weight: 'Yes'` a common-random-number
+- **The target redemption forward's target pin is a kink the crisp estimator is blind to.** The
+  pin fires on 41% to 60% of paths. Under the default (`Branch_And_Weight`) a common-random-number
   ladder of the switch's own value surface is flat to 0.05% and lands on the reported delta to
-  0.0002%; under the default the same ladder does not converge, 0.24% to 1.41% flat and 0.14%
-  to 0.63% off, and the delta itself is the same number under both, the fired branch paying a
-  constant both estimators differentiate through the same analytic probability. Under a base
-  valuation there is no boundary correction to be uncorrected: one row resolves no fixing, the
-  registration reads no decision, and the correction is an exposure-grid object.
+  0.0002%; one `'No'` away the same ladder does not converge, 0.24% to 1.41% flat and 0.14% to
+  0.63% off, and the delta itself is the same number under both, the fired branch paying a
+  constant both estimators differentiate through the same analytic probability. What stays open is
+  the exposure grid, which a credit valuation always prices crisp, declaring no such field: under
+  a base valuation there is no boundary correction to be uncorrected, one row resolving no fixing.
 - **The extendable forward under a credit-support annex does not register its settled cash**: a
   quarter of a percent across four amplifying documents, against ladders that resolve no finer.
   Its rolling backward pass also carries a one-signed smoothing bias over the payoff's kink from
@@ -207,7 +207,7 @@ is recorded so a reader knows which readings rest on it.
 ## Decisions waiting on the desk
 
 Nothing here is blocked on work. Numbers are stable — commit messages and the model pages cite
-them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not listed.
+them — so closed decisions (2, 3, 4, 11, 13, 15) keep their numbers and are not listed.
 
 1. **The per-fixing smile read.** Sticky-forward moneyness or the deal's declared moneyness; both
    defensible, one can be the pricer's own quote. A switch, not a revert, with the six removed gates
@@ -233,13 +233,6 @@ them — so closed decisions (2, 3, 4, 13, 15) keep their numbers and are not li
     registered delta reads −1.915 at 32,768 paths over five seeds against an unregistered +1.318,
     and the CRN oracle is negative on all 70 readings and 0.5% from the registered one. The ladder
     is still not flat, so turning the default on is the desk's call and not a gate's.
-11. **The `Branch_And_Weight` default.** The averaging arms fall back to the crisp pricer by name
-    at INFO rather than refusing, so a mixed book runs under one setting with every deal priced;
-    what remains is the flip. Over thirteen documents at five seeds the value is bit-identical
-    on eleven and re-marks within half a crisp seed standard deviation on the TARF and the
-    autocall, at twenty and four times less variance; the first-order block is identical
-    everywhere; four documents go from a second-order refusal to a reported Hessian and none
-    the other way. The Hessian is the prize, and the price is nothing measured.
 12. **The correlation as a leaf.** A correlation mints no leaf today, so a quanto's correlation
     delta is reported as a common-random-number bump of 0.025: −22.42m ZAR per unit of correlation
     on the desk's Nikkei autocall, flat to 0.003% between half-widths. The leaf is three edits with
@@ -357,10 +350,11 @@ every risk-neutral calibration inherits.
   The full suite runs at campaign boundaries with the tree held still.
 - **The standing readings every landing runs**: sixteen banked documents of the autocall
   validation campaign under the lognormal and Hull-White laws, 4,180 floats compared bit for bit
-  against their bank, and one crisp lognormal target redemption forward compared to the bit
-  (`-0x1.2c48f36318e38p+5`). The documents, their banks and the two scripts live in the
-  maintainers' artifacts store outside the repository; moving them under `gates/` waits on a check
-  that no banked document carries desk data.
+  against their bank, and one lognormal target redemption forward compared to the bit
+  (`-0x1.2b36cda3bf2d4p+5`). That document declares no estimator, so it pins the default; the
+  crisp path it used to pin reads `-0x1.2c48f36318e38p+5`, one `'No'` away. The documents, their
+  banks and the two scripts live in the maintainers' artifacts store outside the repository;
+  moving them under `gates/` waits on a check that no banked document carries desk data.
 - **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 38 gates over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,

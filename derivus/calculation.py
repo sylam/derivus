@@ -1944,17 +1944,20 @@ class Base_Revaluation(Calculation):
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
-        F('Branch_And_Weight', 'Text', default='No', values=['Yes', 'No'],
-          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
-                      'autocall) with the SMOOTH estimator: the fired branch of each fixing '
-                      'integrated analytically against that interval\'s own lognormal law and the '
-                      'continuing branch drawn from the truncated one. Same expectation, lower '
-                      'variance, and no indicator on the tape - so second-order greeks flow where '
+        F('Branch_And_Weight', 'Text', default='Yes', values=['Yes', 'No'],
+          description='THE DEFAULT: price fixing-observed knockouts (TARF, accumulator, discrete '
+                      'barrier, autocall) with the SMOOTH estimator - the fired branch of each '
+                      'fixing integrated analytically against that interval\'s own lognormal law, '
+                      'the continuing branch drawn from the truncated one. Same expectation, lower '
+                      'variance, and no indicator on the tape, so second-order greeks flow where '
                       'the crisp estimator has to refuse them. An AVERAGING autocall FALLS BACK to '
-                      'the crisp estimator by name, its conditioning law being a mean of spots '
-                      'rather than one fixing interval\'s. Off is the crisp path bit for bit, and '
-                      'on it is a RE-ESTIMATION of the same deal - it changes which estimator '
-                      'prices a settlement convention, never which convention the deal settles on'),
+                      'the crisp pricer by name, its conditioning law being a mean of spots rather '
+                      'than one fixing interval\'s. `No` is the crisp path bit for bit, and is what '
+                      '`CreditMonteCarlo` always prices on, declaring no such field: a deal\'s mark '
+                      'and its exposure grid come from two estimators that agree within noise and '
+                      'are not the same number. Either setting is a RE-ESTIMATION of the same deal '
+                      '- it changes which estimator prices a settlement convention, never which '
+                      'convention the deal settles on'),
         F('Correlation_Bump', 'Float', default=0.025,
           description='Half-width of the CRN bump reporting a quanto or compo correlation delta. '
                       '`Correlation` is a `DimensionLessFactor` and mints no leaf, so that delta '

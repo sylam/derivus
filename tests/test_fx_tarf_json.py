@@ -255,8 +255,7 @@ def _lagged_job(smooth=False, **overrides):
     job = _job(TARF_ExpiryDates=LAGGED_SCHEDULE, TargetLevel=LAGGED_TARGET,
                Expiry_Date={'.Timestamp': '2024-09-29'})
     job['Calc']['Calculation']['MCMC_Simulations'] = 1 << 14
-    if smooth:
-        job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes'
+    job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes' if smooth else 'No'
     _deal_of(job).update(overrides)
     return job
 
@@ -418,8 +417,7 @@ def _seasoned(rows, target, spot, model='None', smooth=False, sims=SEASONED_SIMS
     """The template reseated on `rows`: a skewed surface and a spot on the last observed level."""
     job = _job(TARF_ExpiryDates=rows, TargetLevel=target, Expiry_Date=rows[-1][1], **overrides)
     job['Calc']['Calculation']['MCMC_Simulations'] = sims
-    if smooth:
-        job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes'
+    job['Calc']['Calculation']['Branch_And_Weight'] = 'Yes' if smooth else 'No'
     market = job['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors']['FxRate.EUR']['Spot'] = spot
     market['Price Factors']['FXVol.EUR.USD']['Surface']['.Curve']['data'] = SEASONED_SKEW
@@ -519,7 +517,7 @@ def test_a_fixing_whose_date_has_passed_must_carry_the_rate_it_fixed_at(tmp_path
 @pytest.mark.parametrize('model', ['None', 'LogVar2FJ'])
 @pytest.mark.parametrize('smooth', [False, True])
 def test_the_seasoned_pot_is_one_number_on_every_arm(tmp_path, model, smooth):
-    """The crisp default and `Branch_And_Weight`, GBM and the LogVar2FJ kit: four estimators, one
+    """The crisp estimator and the default, GBM and the LogVar2FJ kit: four estimators, one
     spelling of what the settled fixings left, and the substituted identity is to the bit on all
     of them. Measured: 46.5710 on GBM and 40.3114 on the walk, each unmoved by the switch."""
     option_type, spot, settled, observed = SEASONED_WORLDS[0]

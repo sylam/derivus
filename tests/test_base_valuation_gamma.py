@@ -161,14 +161,16 @@ MONTE_CARLO_LADDER = {
     'gbm': (gbm_autocall_cfg, 1 << 12, [(1e-2, 1e-6), (1e-3, 1e-8), (1e-4, 2e-10)])}
 
 
-def valued(config, greeks='All', simulations=1):
+def valued(config, greeks='All', simulations=1, estimator='Yes'):
     """(portfolio value, first-order frame, second-order frame); the second is None below `'All'`.
     The first-order frame carries the factor LEVEL in `Value` and the gradient in the column named
     after the reporting reference, which is why that column is picked by elimination. `simulations`
-    is 1 for every analytic fixture and is what the Monte Carlo ladder raises.
+    is 1 for every analytic fixture and is what the Monte Carlo ladder raises. `estimator` is
+    `Branch_And_Weight`: only its crisp setting registers a boundary correction to refuse over.
     """
     _, out = run_baseval(config, prec=DTYPE, overrides={
-        'Greeks': greeks, 'Random_Seed': 1, 'MCMC_Simulations': simulations})
+        'Greeks': greeks, 'Random_Seed': 1, 'MCMC_Simulations': simulations,
+        'Branch_And_Weight': estimator})
     rows = out['Results']['mtm']
     value = float(rows[rows['Parent'] == 'root']['Value'].sum())
     frame = out['Results'].get('Greeks_First')
@@ -371,10 +373,11 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
     `(gap - gap.detach())` times a detached coefficient keeps the smooth part and silently loses
     the density-derivative term, so what comes back is a plausible gamma with a term missing. The
     message names the deals - a portfolio's author cannot otherwise tell which to take out - and
-    points at bumping the adjoint under common random numbers.
+    points at bumping the adjoint under common random numbers. The CRISP estimator is declared
+    because it is the one that registers: the default integrates the decision instead.
     """
     with pytest.raises(Exception) as raised:
-        valued(re_._cfg('barrier'))
+        valued(re_._cfg('barrier'), estimator='No')
     message = str(raised.value)
     assert 'BARR1' in message, f'the refusal does not name the deal: {message}'
     assert 'density-derivative' in message and 'common random numbers' in message, (
@@ -382,7 +385,7 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
 
     # the same portfolio is fine at first order, so the refusal is about the SECOND derivative and
     # not about the deal being unpriceable
-    _, first, second = valued(re_._cfg('barrier'), greeks='First')
+    _, first, second = valued(re_._cfg('barrier'), greeks='First', estimator='No')
     assert second is None and np.abs(first_order(first)).max() > 0.0
 
 

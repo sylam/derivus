@@ -109,7 +109,9 @@ def _cfg(deal, spot, counterparty=False, simulate_fx=False):
 def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16, bandwidth=None):
     """(price, d(price)/d(FxRate.AUD spot)). One date, one scenario - and still a full inner MC
     underneath, which is where the knock-in is decided."""
-    overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1,
+    # the CRISP estimator declared: this whole module is about the boundary correction, and
+    # the default swaps the estimator rather than correcting it, registering nothing
+    overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1, 'Branch_And_Weight': 'No',
                  'Greeks': 'First' if greeks else 'No'}
     if bandwidth is not None:
         overrides['Boundary_AAD_Bandwidth'] = bandwidth

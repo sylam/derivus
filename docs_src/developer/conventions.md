@@ -4,7 +4,7 @@ House rules for the derivus codebase. Enforced by convention, not by lint.
 
 ## JSON is the contract {#json-is-the-contract}
 
-The job JSON is the whole program. End-user scripts do `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)` — **no internal imports, no monkey-patching**. Every framework feature ships behind a JSON switch, defaulting to bit-identical-when-off. The format is documented in [JSON Configuration](../json/index.md) and generated from `schema.mapping`.
+The job JSON is the whole program. End-user scripts do `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)` — **no internal imports, no monkey-patching**. Every framework feature ships behind a JSON switch, defaulting to bit-identical-when-off until the desk moves that default on measured numbers, which leaves the estimator it replaced one value away (`Branch_And_Weight`, whose `'No'` is the crisp path). The format is documented in [JSON Configuration](../json/index.md) and generated from `schema.mapping`.
 
 - **No defensive checks.** The JSON is validated by being the contract; code assumes required fields are present and fails loud (`KeyError` naming the factor via `check_tuple_name`). Do not add `if x in d` guards for contract fields.
 - **Config per variant, not flags.** A variant is a separate JSON config; scripts stay generic. Do not thread experiment booleans through function signatures.

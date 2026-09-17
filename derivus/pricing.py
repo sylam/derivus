@@ -1702,13 +1702,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     registration DECLARES its ledger: ``settles`` for the expiry, which pays the deal's whole value,
     and ``cash_events`` for the rebate leg, one entry per crossing on the date it falls due.
 
-    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
-    that registration rather than joining it; off, and absent, is bit for bit. This sampler is
-    already the smooth estimator - every monitored step is an analytic ``p`` with a
-    survival-truncated continuation - so the value is bit-identical. What changes: the outer
-    registration is skipped, so ``Greeks: 'All'`` flows where it used to refuse; and the terminal
-    European's kink gets its second-order term (``accrual_kink_term``), added to ``surv_payoff``
-    BEFORE the in-out parity subtraction so parity holds at second order and not only at value.
+    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
+    for that registration rather than joining it; ``'No'`` is bit for bit. This sampler is already
+    the smooth estimator - every monitored step is an analytic ``p`` with a survival-truncated
+    continuation - so the value is bit-identical. What changes: the outer registration is skipped,
+    so ``Greeks: 'All'`` flows where it used to refuse; and the terminal European's kink gets its
+    second-order term (``accrual_kink_term``), added to ``surv_payoff`` BEFORE the in-out parity
+    subtraction so parity holds at second order and not only at value.
 
     IN-OUT PARITY IS THIS PRICER'S CONSERVATION STATEMENT, exact on the smooth path:
     ``KO + KI == vanilla + rebate`` in a zero-rate world, at value, delta and gamma. Its rebate half
@@ -2724,9 +2724,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     test, which pays nothing if it fires and kills every later fixing with it. The amount is the
     pending head's own spelling at weight one, undiscounted where it lands.
 
-    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
-    that registration rather than joining it; off, and absent, is bit for bit. This loop is already
-    the smooth estimator - survival is an analytic ``p``, the continuation its truncated draw, the
+    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
+    for that registration rather than joining it; ``'No'`` is bit for bit. This loop is already the
+    smooth estimator - survival is an analytic ``p``, the continuation its truncated draw, the
     fired branch exactly zero - so the VALUE is bit-identical. What changes: the registration is
     skipped, so ``Greeks: 'All'`` flows where it used to refuse; and the per-fixing accrual kink is
     built at second order (``accrual_kink_term``), both legs being relus of one argument whose
@@ -3554,9 +3554,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     very paths that decided. A graphless historic decision is registered anyway - it contributes
     zero, and skipping it corrupts the latch reconstruction.
 
-    BRANCH AND WEIGHT (``Branch_And_Weight: 'Yes'``, base valuation only) SWAPS the estimator for
-    both registrations rather than joining them, or the flux is counted twice; off, and absent, is
-    bit for bit. Most of the construction is already here - the KO-in-step term IS the fired branch
+    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
+    for both registrations rather than joining them, or the flux is counted twice; ``'No'`` is bit
+    for bit. Most of the construction is already here - the KO-in-step term IS the fired branch
     integrated against the interval's own law, and ``R`` is measurable one fixing back. It adds the
     knock-in INTEGRATED rather than sampled (``lognormal_fired_gain``, so the indicator leaves the
     tape), the per-fixing accrual kink at second order (``accrual_kink_term``, added to ``cf_itm``
@@ -4134,7 +4134,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     paid but never ``cash_settle``d here, and a fact the chain cannot find in ``Cf_Rec`` replays a
     ledger the reported world does not have.
 
-    BRANCH AND WEIGHT REACHES THE OSS ARM (``Branch_And_Weight: 'Yes'``, base valuation
+    BRANCH AND WEIGHT REACHES THE OSS ARM (``Branch_And_Weight``, THE DEFAULT, base valuation
     only) and SUPERSEDES that registration rather than joining it. A constant coupon already makes
     ``(1 - p) * L * coup * D_j`` a conditional expectation; what the switch adds is the deal's
     SECOND per-fixing decision, the PUT LEG INTEGRATED rather than sampled -

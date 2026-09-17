@@ -1416,15 +1416,9 @@ class Calculation_State(object):
         # Second derivatives are wanted (`Greeks: 'All'`, base valuation only), so the reverse
         # sweep runs with `create_graph`. Declared here for the same reason as the switch above.
         self.gamma = False
-        # The smooth (branch-and-weight) value estimator is wanted (`Branch_And_Weight`, base
-        # valuation only); off is the crisp one-step-survival path bit for bit. False here is what
-        # keeps `Credit_Monte_Carlo`, which declares no such field, on the crisp estimator.
-        # THE SMOOTH ESTIMATOR is wanted (`Branch_And_Weight`, base valuation only): at each
-        # fixing the fired branch is integrated analytically against the FIXING INTERVAL's own
-        # lognormal law - which is what makes `p` a Phi and the continuing draw a Phi^-1
-        # (`pricing.oss_truncated_draw`) - and the continuing branch draws from the truncated one.
-        # A SWAP and not an addition: on the smooth path a deal registers no `BoundarySet`, or the
-        # boundary flux is counted twice. Off, and absent, is the crisp OSS path bit for bit.
+        # THE SMOOTH ESTIMATOR (`Branch_And_Weight`, the base valuation's default): each fixing's
+        # fired branch integrated against its interval's own law, and a SWAP - a deal on it
+        # registers no `BoundarySet`. False HERE keeps `Credit_Monte_Carlo` on the crisp path.
         self.branch_and_weight = False
         # where the memoized quasi-random stream stands, per (dimension, sample_size) - only
         # `CMC_State.quasi_rng` advances it, but `rng_position` seeks every state's streams

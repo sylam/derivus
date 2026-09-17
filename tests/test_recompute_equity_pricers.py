@@ -150,13 +150,14 @@ def baseval(pricer, greeks=False, sims=1 << 12, recompute='No'):
     return price, frame[column].values.astype(np.float64)
 
 
-def base_hessian(pricer, recompute, sims=1 << 10):
+def base_hessian(pricer, recompute, sims=1 << 10, estimator='Yes'):
     """The reported second-order block. `Greeks: 'All'` is what sets `Base_Reval_State.gamma`, so
     `SensitivitiesEstimator` runs with `create_graph=True` and the node is asked to be
-    differentiated twice."""
+    differentiated twice. `estimator` is `Branch_And_Weight`: its default registers nothing to
+    refuse, so a gate about the registration declares the crisp one."""
     _, out = run_baseval(_cfg(pricer), overrides={
         'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
-        'Recompute_Inner_MC': recompute})
+        'Recompute_Inner_MC': recompute, 'Branch_And_Weight': estimator})
     return out['Results']['Greeks_Second'].values.astype(np.float64)
 
 
@@ -289,10 +290,13 @@ def test_a_registered_boundary_correction_is_refused_first():
     as much as under exposure, and a second derivative taken through that correction silently
     drops the density-derivative term. So the refusal that fires is the outer one, whichever way
     `Recompute_Inner_MC` is set - the node is never asked. It names the deal.
+
+    The CRISP estimator is declared because it is the one that registers: under the default the
+    decision is integrated instead and there is nothing left to refuse.
     """
     for recompute in ('No', 'Yes'):
         with pytest.raises(Exception, match=r"Greeks: 'All' is refused.*BARR1"):
-            base_hessian('barrier', recompute)
+            base_hessian('barrier', recompute, estimator='No')
 
 
 # ---------------------------------------------------------------- (e) the mutations
