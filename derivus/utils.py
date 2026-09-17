@@ -4097,7 +4097,8 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
     `Volatility_Delta` re-solve brackets in that same declared scale, `IMPLIED_VOL_BRACKETS` being
     co-keyed with it. The displacement is `vol_surface.displacement`, where the declared `Shift`
     outranks the `Property_Aliases` legacy (see `riskfactors.InterestYieldVol.displacement`). An
-    absent or zero `Market_Volatility` refuses.
+    An absent `Market_Volatility` refuses. A zero placeholder is valid only when a premium file
+    supplies the target and no volatility-delta re-strike is requested.
 
     THE SCHEDULE the analytic objective reads is extracted here for every benchmark whatever the
     block's `Objective` - see `swaption_schedule_class` for why the curve's own clock.
@@ -4189,17 +4190,19 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                 base_date, fixed_schedule[:, CASHFLOW_INDEX_Pay_Day]),
             accruals=fixed_schedule[:, CASHFLOW_INDEX_Year_Frac].copy())
 
-        # a benchmark has to carry a quote: neither an absent nor a zero vol is a price
+        # A benchmark always names a volatility. A zero is a valid placeholder only when the
+        # premium file supplies the target directly and no delta re-strike needs a vol bracket.
         if 'Market_Volatility' not in instrument:
             raise Exception(
                 '{}: the benchmark carries no Market_Volatility, and a swaption with no quote is '
                 'not a benchmark. Author the vol on the row, or drop the row'.format(swaption_name))
         vol = instrument['Market_Volatility'].amount
-        if not vol:
+        if not vol and (vol_surface.premiums is None or vol_surface.delta):
             raise Exception(
                 '{}: Market_Volatility is quoted ZERO, and a zero vol is not a price - it used to '
                 "read the surface's own ATM instead, which calibrates against a quote nobody gave. "
-                'Author the vol on the row, or drop the row'.format(swaption_name))
+                'Author the vol on the row, or provide a premium file without Volatility_Delta'.format(
+                    swaption_name))
 
         deal_data = DealDataType(
             Instrument=None, Factor_dep={'Cashflows': float_cash, 'Forward': curve_index,

@@ -5170,7 +5170,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         # one generator for the whole random search - the step taker here, the Metropolis test in
         # `solve` - so the search is a function of `Random_Seed` alone
         block = declared_defaults(type(self), implied_params['instrument'])
-        rng = np.random.RandomState(int(block['Random_Seed']))
+        rng = np.random.default_rng(int(block['Random_Seed']))
         bounds_ok, make_step = make_basin_callbacks(
             float(block['Basin_Step']), self.sigma_bounds, self.alpha_bounds, self.corr_bounds,
             rng)
