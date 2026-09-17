@@ -1951,26 +1951,38 @@ class LVFit(utils.Residual):
                               / (2.0 * self.state['Kappa_L']))
                 for sigma_s in self.state['Sigma_S']]
 
+    @property
+    def polish_only(self):
+        """Is this fit a WARM START - a previous factor in `Price Factors` the seed has already put
+        the whole state at, so the staged search would re-walk a basin the state names?
+
+        `Bootstrap` has no joint stage to polish: bucket `k` is fitted GIVEN the buckets before it,
+        so its last stage is one bucket's and not the surface's, and it stays cold.
+        """
+        return self.previous is not None and self.mode != 'Bootstrap'
+
     def global_stages(self):
         """The order: the residual off the short end, the fast pair off the sub-year smile,
-        the slow pair off what is beyond it, the forward block, then a joint polish."""
-        short = [q for q in self.quotes if q.T <= self.stage_horizons[0]]
-        middle = [q for q in self.quotes if q.T <= self.stage_horizons[1]]
-        long = [q for q in self.quotes if q.T > self.stage_horizons[1]]
-        self.stage('2 (alpha, beta)', [('Alpha', 0), ('Beta', 0)],
-                   short or middle or self.quotes)
-        # THE FORWARD ROWS ENTER AT STAGE 3: the split between the residual's skew and
-        # `rho_s sigma_s` is what a forward smile sees and a spot smile does not, so a stage that
-        # fits the fast pair without them is fitting a direction the vanillas leave flat
-        self.stage('3 (rho_s, sigma_s)', [('Rho_S', 0), ('Sigma_S', 0)],
-                   middle or self.quotes, self.targets)
-        if self.identified_slow():
-            self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)], long)
-        else:
+        the slow pair off what is beyond it, the forward block, then a joint polish - or, off a
+        previous factor, the polish alone from where that factor left the state."""
+        if not self.polish_only:
+            short = [q for q in self.quotes if q.T <= self.stage_horizons[0]]
+            middle = [q for q in self.quotes if q.T <= self.stage_horizons[1]]
+            self.stage('2 (alpha, beta)', [('Alpha', 0), ('Beta', 0)],
+                       short or middle or self.quotes)
+            # THE FORWARD ROWS ENTER AT STAGE 3: the split between the residual's skew and
+            # `rho_s sigma_s` is what a forward smile sees and a spot smile does not, so a stage
+            # that fits the fast pair without them is fitting a direction the vanillas leave flat
+            self.stage('3 (rho_s, sigma_s)', [('Rho_S', 0), ('Sigma_S', 0)],
+                       middle or self.quotes, self.targets)
+        if not self.identified_slow():
             self.pin_slow()
+        elif not self.polish_only:
+            self.stage('4 (rho_l, sigma_l)', [('Rho_L', None), ('Sigma_L', None)],
+                       [q for q in self.quotes if q.T > self.stage_horizons[1]])
 
         last = self.buckets.size - 1
-        if self.targets and last:
+        if self.targets and last and not self.polish_only:
             self.guarded = self.guard_rungs()
             self.base_rmse = self.rmse(self.evaluate()[2], self.guarded)
             later = list(range(1, self.buckets.size))
@@ -2240,11 +2252,13 @@ class LVFit(utils.Residual):
                     self.leverage_weight / (self.sigma_reference if name == self.LEVERAGE else 1.0),
                     logs))
                 # the state seeded at what each residual row is ON - the skew through the alpha
-                # beside it, which at the shipped defaults is (44, -22)
-                if self.priors and name == 'Alpha':
-                    self.state['Alpha'] = [inside] * len(self.state['Alpha'])
-                elif self.priors and name == self.SHARE:
-                    self.state['Beta'] = [inside * alpha for alpha in self.state['Alpha']]
+                # beside it, which at the shipped defaults is (44, -22). A POLISH is already at a
+                # fitted pair: the row still enters the objective, the seed stays where it is
+                if self.priors and not self.polish_only:
+                    if name == 'Alpha':
+                        self.state['Alpha'] = [inside] * len(self.state['Alpha'])
+                    elif name == self.SHARE:
+                        self.state['Beta'] = [inside * alpha for alpha in self.state['Alpha']]
         if not self.priors:
             self.prior_lines.append('the prior rows are NOT IN FORCE, Model_Priors is Off')
 
@@ -2932,6 +2946,11 @@ class LVFit(utils.Residual):
                          self.calls['j_s'] - self.calls['l_s'] * self.calls['j'] / sweeps,
                          self.elapsed - self.calls['j_s']
                          - self.calls['l_s'] * self.calls['n'] / sweeps))
+        if self.polish_only:
+            logging.info('  WARM START off the factor Price Factors already carries: the staged '
+                         'search is the basin, and a fitted factor names it, so this fit is the '
+                         'joint POLISH from that state alone - {} evaluations'.format(
+                             self.calls['n']))
         self.family.quote_trailer(self.instrument)
 
 

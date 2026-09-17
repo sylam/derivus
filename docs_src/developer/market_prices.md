@@ -404,6 +404,26 @@ transition state-dependent, and the block sums below it are the one spelling eit
 between block ends with a stub landing each block on its `T`: reading the same rung on the
 trading-day grid instead costs **0.124 vol points** at the 1m ATM (`jac_check.py`).
 
+**A PREVIOUS FACTOR IS THE WARM START, and no field declares it.** Either `Price Factors` already
+carries this block's fitted factor — the seed puts every scalar, the four bucket curves and the `ξ`
+strip at it — or it does not. Where it does, the fit is the JOINT POLISH from that state and
+nothing before it: the staged search is what finds the BASIN, and a fitted factor names it. A first
+fit is that staged search unchanged, to the bit. Measured on the five-expiry synthetic world:
+**45** evaluations cold, over stages 2/3/6 as 20/5/20; the polish off its own answer on an unmoved
+market **1**, the solver confirming the gradient it was handed, every written float back within
+2.0e-14 relative; and with every quote moved +2%, **6** against that market's own cold **43**, the
+two landing 7.3e-4 relative apart at the worst — on `Beta`, the direction vanillas leave flat — at
+one 0.742 vol points of RMSE. The desk's Nasdaq ladder reads the same shape, 42 cold against a
+polish of 9–10. Every guard, prior row, identification table and `On_Guard` reading is the polish's
+own, and the report says once at INFO that the fit was a warm start, with its count. Two previous
+factors are not warm starts at all and refuse in the seed BY NAME: a retired-era one, and one of the
+other `Residual_Law`. **`Fit_Mode: Bootstrap` stays COLD** — bucket `k` is fitted GIVEN the buckets
+before it, so its last stage is one bucket's and not the surface's, and there is no joint stage to
+polish. What a polish does not take from the class priors is the RESIDUAL SEED: `α` and the skew
+share seed a cold fit at their own rows' targets, where a state already at a fitted pair keeps it
+and the rows go on weighing in the objective. `/book/model` leaves the written factor where it is,
+so a desk's second call on a pair is the polish.
+
 **`Sampling` picks the stream, and it is what sets `Paths`.** The draws are fixed for the whole
 fit, so `Paths` is not a confidence interval around θ\*, it is the NOISE FLOOR under it: the same
 ladder at another `Random_Seed` lands somewhere else, and how far is the only honest reading of

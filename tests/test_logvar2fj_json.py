@@ -1008,3 +1008,109 @@ def test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves():
     assert len(descriptors) == leaf.numel() == len(quoted), (descriptors, leaf)
     assert leaf.requires_grad, 'a leaf nothing differentiates reports no dV/dq'
     assert sorted(float(x) for x in leaf) == sorted(quoted), (leaf, quoted)
+
+
+# ------------------------------------------------------------------------------------------
+# 13  A PREVIOUS FACTOR IS A WARM START, AND A WARM START IS THE POLISH
+#
+# No field declares it: either `Price Factors` already carries a fitted factor, in which case the
+# state is at an answer and the basin is named, or it does not. The three gates are the two a desk
+# meets - a re-fit on an unmoved market and a re-fit after a tick - and the refusal that says
+# which previous factor is not a warm start at all.
+# ------------------------------------------------------------------------------------------
+def _moved(by=1.02):
+    """The world's ladder with every quote moved - a day's market."""
+    sections = _ladder()
+    for row in sections['Market Prices'][BLOCK]['instrument']['European_Options']:
+        row['Quoted_Market_Value'] *= by
+    return sections
+
+
+def _warm(sections, factor):
+    """`sections` with a written factor in `Price Factors`, which IS the warm start."""
+    return dict(sections, **{'Price Factors': {FACTOR: factor}})
+
+
+def _stages(report):
+    """`{stage: evaluations}` off the report's own per-stage line."""
+    return {tag: int(n) for tag, n in
+            re.findall(r'  stage (.+?): \d+ rows, (\d+) evaluations', report)}
+
+
+def _distance(read, against):
+    """`(worst relative move, its name)` over every float two written factors share."""
+    read, against = _floats_of(read), _floats_of(against)
+    return max((abs(float.fromhex(x) - float.fromhex(against[name]))
+                / max(abs(float.fromhex(against[name])), 1e-12), name)
+               for name, x in read.items())
+
+
+@pytest.fixture(scope='module')
+def warm_fits(fitted):
+    """Three fits off `fitted`'s own cold answer: the same ladder again, and a ladder whose every
+    quote moved +2% fitted both warm from the unmoved factor and cold."""
+    factor, _ = fitted
+    return {'warm': _fit(_warm(_ladder(), factor), 'warm'),
+            'warm_moved': _fit(_warm(_moved(), factor), 'warm_moved'),
+            'cold_moved': _fit(_moved(), 'cold_moved')}
+
+
+def test_a_previous_factor_makes_the_fit_the_polish_alone(fitted, warm_fits):
+    """The staged search is what finds the BASIN, and a fitted factor names it, so a fit that warm
+    starts off one runs the joint polish from that state and nothing before it.
+
+    Measured on the world's ladder: cold 45 evaluations over stages 2/3/6 as 20/5/20, the polish
+    from its own answer ONE - the solver confirming the gradient it was handed - and every written
+    float back within 2.0e-14 relative, so the polish is not a second opinion. The report says it
+    once, and the `On_Guard` reading the cold fit earned is carried.
+
+    KILLING MUTATION: the staged path taken despite the previous factor. Stage 2 reappears in the
+    report and the count goes back to the cold 45.
+    """
+    cold, cold_report = fitted
+    warm, report = warm_fits['warm']
+    assert list(_stages(report)) == ['6 joint polish'], _stages(report)
+    assert 'WARM START' in report, report[-2000:]
+    assert sum(_stages(report).values()) <= 0.25 * sum(_stages(cold_report).values()), (
+        _stages(report), _stages(cold_report))
+    worst, name = _distance(warm, cold)
+    assert worst <= 1e-12, (name, worst)
+    assert warm['On_Guard'] == cold['On_Guard'], (warm['On_Guard'], cold['On_Guard'])
+
+
+def test_a_days_move_is_a_polish_that_lands_where_cold_lands(warm_fits):
+    """Every quote +2% is a day's market, and the polish from the UNMOVED factor has to land where
+    a cold fit on the moved one lands - which is what says a re-marking is a polish and not a
+    search.
+
+    Measured: cold-moved 43 evaluations over 18/5/20 against the polish's 6, both reporting 0.742
+    vol points of RMSE, and the parameters agreeing to 7.3e-4 relative at the worst. That worst is
+    `Beta` - the residual skew fifteen vanillas do not identify, held by its prior row along a
+    direction the quotes are nearly flat in, which is where two fits reaching one minimum from
+    opposite sides differ most. `Sigma_S` reads 1.8e-4, `Alpha` 1.0e-4, `Rho_S` 9.2e-5 and the xi
+    curve under 1.9e-5. Gated at 1e-3, a margin of 1.4x on the one parameter that earns it.
+
+    The same 9.2e-5 on `Rho_S` STRADDLES A GUARD: `c` reads 0.169991 warm against 0.170115 cold,
+    either side of the `C_Min + C_Margin` 0.17 the flag fires at, so the two runs disagree about
+    `On_Guard` while agreeing about theta*. A guard is a reading of theta*, and this ladder sits on
+    its margin.
+    """
+    warm, warm_report = warm_fits['warm_moved']
+    cold, cold_report = warm_fits['cold_moved']
+    assert list(_stages(warm_report)) == ['6 joint polish'], _stages(warm_report)
+    assert sum(_stages(warm_report).values()) <= 0.25 * sum(_stages(cold_report).values()), (
+        _stages(warm_report), _stages(cold_report))
+    worst, name = _distance(warm, cold)
+    assert worst <= 1e-3, (name, worst)
+    rmse = [_report_floats(report, 'RMSE', 'vol points unweighted')[0]
+            for report in (warm_report, cold_report)]
+    assert abs(rmse[0] - rmse[1]) <= 0.01, rmse
+
+
+def test_a_warm_start_off_the_other_residual_law_refuses_by_name():
+    """`Residual_Law: Gaussian` drops the mixer, so a factor carrying one and an NIG block are two
+    models and neither seeds the other. Refused in the seed, before a stage runs, naming both laws.
+    """
+    message = _refused(dict(_ladder(rungs=2), **{'Price Factors': {FACTOR: GBM_LIMIT}}), 'law_warm')
+    assert 'Residual_Law Gaussian' in message, message[:400]
+    assert 'neither seeds the other' in message, message[:400]
