@@ -319,6 +319,11 @@ chain is 13.4 s against 75.1 s; and **the quote side exists**
 unchanged to the bit and remains the oracle. The α→0 series branches, the declared seed pair and
 the domestic-measure correction are in `tests/test_hw2f_analytic.py`.
 
+A block whose `HullWhite2FactorModelParameters` factor already stands is a **warm start** — the
+basin search is skipped and the least squares runs from that factor — which is 421 objective
+evaluations against 6 on the four-quote block and adds no re-marking event, a document carrying no
+such factor running the chain it always ran.
+
 **Three standing re-marking events.** Every foreign-curve HW2F θ\* solved before the domestic-measure
 fix re-solves to a different θ\*, every θ\* solved before 2026-09-02 re-marks on the seed and
 premium-clock change, and every θ\* solved before 2026-09-17 re-marks on the basin search's

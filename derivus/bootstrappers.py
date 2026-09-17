@@ -208,7 +208,9 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
                       'a NEGATIVE alpha, where the decay term grows the vol out to settlement'),
         F('Seed', 'Text', default='0.5,0.1',
           description='Where the local minimisation starts, sigma,alpha - both strictly inside '
-                      'their own boxes'),
+                      'their own boxes. Read on a COLD block only: where this family has already '
+                      'written its own parameter factor for that curve, that factor is the seed, '
+                      'clipped to the two boxes'),
         F('Energy_Futures_Options', 'Table', default='null',
           row=Row(OPTION_QUOTE[:1] + [F('Settlement_Date', 'Date',
                                         description='Futures settlement, which sets the '
@@ -313,6 +315,15 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
 
                 block = implied_params['instrument']
                 seed, sigma_box, alpha_box = self.typed(block)
+                price_param = utils.check_tuple_name(
+                    utils.Factor(self.__class__.__name__, market_factor.name))
+                # this family's own written factor IS the warm start: present, the minimisation
+                # starts at it (clipped to the declared boxes) rather than at Seed
+                previous = price_factors.get(price_param)
+                if previous is not None:
+                    seed = [np.clip(previous['Sigma'], *sigma_box),
+                            np.clip(previous['Alpha'], *alpha_box)]
+                    logging.info('{} - warm start off {}'.format(market_price, price_param))
                 result = scipy.optimize.minimize(
                     calc_error, seed, args=(block['Energy_Futures_Options'],),
                     bounds=[sigma_box, alpha_box])
@@ -331,9 +342,7 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
                             implied_params['instrument']['Energy'], option['Strike'], option['Expiry_Date'],
                             option['sigma'], vol, option['Premium'], fitted_premium, err))
 
-                price_param = utils.Factor(self.__class__.__name__, market_factor.name)
-
-                price_factors[utils.check_tuple_name(price_param)] = {
+                price_factors[price_param] = {
                     'Property_Aliases': None,
                     'Sigma': result.x[0],
                     'Alpha': result.x[1]}
@@ -4584,6 +4593,11 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         self.calibrated = {}
         self.quote_leaves = {}
 
+    def param_name(self, rate):
+        """This family's own written factor for that curve - the name `implied_process` seeds off,
+        `save_params` writes, and whose presence IS the warm start."""
+        return utils.check_tuple_name(utils.Factor(type=self.__class__.__name__, name=rate[1:]))
+
     def calc_loss_on_ir_curve(self, implied_params, base_date, time_grid, process,
                               implied_obj, ir_factor, vol_surface, resid=lambda x: x * x, jac=False):
         """The swaption calibration's residual closure: implied parameters in, one weighted error
@@ -4793,6 +4807,14 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
                 mtm_dates = set(
                     [base_date + x['Start'] for x in implied_params['instrument']['Instrument_Definitions']])
 
+                # this family's own written factor for this curve IS the warm start - there either
+                # are parameters in the price factors or there are not
+                warm = self.param_name(rate) in price_factors
+                if warm:
+                    logging.info(
+                        '{} - warm start off {}: the basin search is skipped and the least squares '
+                        'runs from that factor'.format(market_factor.name[0], self.param_name(rate)))
+
                 # grab the implied process
                 implied_obj, process, vol_tenors = self.implied_process(
                     base_currency, price_factors, price_models, ir_curve, rate,
@@ -4806,7 +4828,8 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
 
                 # calculate the error
                 objective, optimizers, implied_var, market_swaptions = self.calc_loss(
-                    implied_params, base_date, time_grid, process, implied_obj, ir_factor, swaptionvol)
+                    implied_params, base_date, time_grid, process, implied_obj, ir_factor,
+                    swaptionvol, warm)
 
                 # check the time
                 time_now = time.monotonic()
@@ -5065,7 +5088,14 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         self.alpha_bounds = utils.LogVar2FJ.parse_bounds(self.param['Alpha_Bounds'], 'Alpha_Bounds')
         self.corr_bounds = utils.LogVar2FJ.parse_bounds(self.param['Correlation_Bounds'], 'Correlation_Bounds')
 
-    def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor, vol_surface):
+    def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor,
+                  vol_surface, warm=False):
+        """The residual and the optimizer chain over it.
+
+        `warm` is the ruling: a block whose parameter factor already exists is a warm start -
+        `implied_process` seeded `x0` off it, so the random search that finds a basin is skipped and
+        the least squares polishes from that seed alone. Cold, both stages run.
+        """
 
         def split_param(x):
             corr = x[2:3]
@@ -5180,11 +5210,11 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
         lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
 
-        optimizers = [('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds,
-                       rng, float(block['Basin_Temperature']), int(block['Basin_Hops'])),
-                      ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))]
+        basin = ('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds,
+                 rng, float(block['Basin_Temperature']), int(block['Basin_Hops']))
+        leastsq = ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))
 
-        return objective, optimizers, implied_var_dict, market_swaptions
+        return objective, [leastsq] if warm else [basin, leastsq], implied_var_dict, market_swaptions
 
     @staticmethod
     def sigma_knots(rows):
@@ -5224,13 +5254,13 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         installs $K$ in a scenario run, being handed the emitted factor rather than this twin.
 
         The seed is asymmetric by ruling; `ALPHA_SEED` says why. A block whose parameter factor
-        already exists warm-starts off it instead, clipped to the declared bounds.
+        already exists warm-starts off it instead, clipped to the declared bounds, and `calc_loss`
+        then runs the least squares alone from that seed.
         """
         if vol_tenors is None:
             vol_tenors = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
         # construct an initial guess - need to read from params
-        param_name = utils.check_tuple_name(
-            utils.Factor(type=self.__class__.__name__, name=rate[1:]))
+        param_name = self.param_name(rate)
 
         # check if we need a quanto fx vol
         fx_factor = utils.Factor('GBMAssetPriceTSModelParameters', ir_curve.get_currency())
@@ -5285,8 +5315,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         return implied_obj, process, vol_tenors
 
     def save_params(self, vars, price_factors, implied_obj, rate):
-        param_name = utils.check_tuple_name(
-            utils.Factor(type=self.__class__.__name__, name=rate[1:]))
+        param_name = self.param_name(rate)
         # grab the sigma tenors
         sig1_tenor, sig2_tenor = implied_obj.get_vol_tenors()
         # store the basic paramters

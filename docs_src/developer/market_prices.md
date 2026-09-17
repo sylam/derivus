@@ -49,6 +49,19 @@ type it writes, or the class name as an alias.
 | `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
 | `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
 
+**A family's own written factor is its warm start.** There either are parameters in `Price Factors`
+for that name or there are not, and no field declares which: present, the next fit of that block
+starts at them and skips the SEARCH that finds a basin, running the polish alone; absent, the full
+search. That is what an intraday tick pays for — on the four-quote Hull-White block, whose chain is
+fifty basin hops and then a least squares, it is 421 objective evaluations against 6, landing 9.4e-9
+apart, and on a 2% move in every quoted vol 429 against 49 at the lower residual. The energy fit,
+one bounded minimisation from its declared `Seed`, reads 69 against 15. The two families whose seed
+is already a function of the CURRENT quotes take nothing from this and are unchanged: `FXVolPrices`
+[reuses its pinned grid](#fxvolprices) at the same expiries and tolerance, and `InterestRatePrices`
+seeds from the par rates, which move with the tick where a previous θ\* does not — measured on the
+round-trip worlds, a previous θ\* is worth one Newton iteration of four or five, none, or one more.
+`GBMAssetPriceTSModelParameters` fits nothing.
+
 ## `Bootstrapper Configuration` is the book's own default for every dial {#bootstrapper-configuration}
 
 A `Market Prices` block carries the quotes and the factors they price against. Everything else a
