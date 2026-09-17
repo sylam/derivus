@@ -341,10 +341,11 @@ every risk-neutral calibration inherits.
   (`STALE` otherwise; `--build-map --repo <clean checkout>`, about 16 minutes). What it cannot
   see: string-keyed dispatch outside the registries, callables passed as values, virtual dispatch
   out of an inherited body, a branch no data takes, a document over the 180 s cap,
-  `derivus_bloomberg/`. At the map's last build (2026-09-16): 896 of 2,203 symbols executed by
-  some document; no document reaches 36 of 50 deals, 21 of 34 pricers and 2 of 6 bootstrapper
-  families; 102 of the store's 179 documents carry retired LogVar2FJ declarations and refuse by
-  name, and 16 name market files in checkouts that no longer exist.
+  `derivus_bloomberg/`. At the map's last build (2026-09-17): 956 of 2,209 symbols executed by
+  some document; no document reaches 32 of 50 deals, 18 of 34 pricers, 2 of 6 bootstrapper
+  families and 9 of 17 processes. The store was swept the same day of every document that
+  named a retired model or declaration or a market file no longer on disk, so the 61 documents
+  the map names are the ones that load, 53 pricing and 8 refusing by name on purpose.
 - **Which tests a change reaches**: `gates/impacted.py --dirty --run` joins an execution-coverage
   map (built at a campaign boundary) with a static fixture map; file-granular, fails open loudly;
   `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
