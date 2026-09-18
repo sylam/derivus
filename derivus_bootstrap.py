@@ -35,22 +35,33 @@ master_curve_list = {
 }
 
 
-def bootstrap_threads():
+def bootstrap_threads(num_jobs):
+    """Threads per worker: the physical cores shared out over the workers, floor one.
+
+    Never more threads than cores, and the split matters by block size: a small block is
+    dispatch-bound, so eight single-thread workers fit four times what one eight-thread worker
+    does on the five-expiry world, while a desk-size block is bandwidth-bound and reads the same
+    throughput at eight by one as at four by eight. The hyperthreads add nothing either way.
+    Torch's own default thread count is the physical core count. The PARENT calls this before the
+    workers spawn, because a spawned worker re-imports numpy before it runs and a BLAS pool is
+    sized at import. `DV_BOOTSTRAP_THREADS` overrides.
+    """
+    import torch
     requested = os.environ.get('DV_BOOTSTRAP_THREADS')
-    threads = int(requested) if requested is not None else min(12, os.cpu_count() or 1)
+    cores = torch.get_num_threads()
+    threads = int(requested) if requested is not None else max(1, cores // num_jobs)
     if threads < 1:
         raise ValueError('DV_BOOTSTRAP_THREADS must be a positive integer')
     for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
         os.environ.setdefault(name, str(threads))
-    return threads
+    return threads, cores
 
 
-def work(job_id, num_devices, queue, result, price_factors, price_factor_interp,
+def work(job_id, num_devices, threads, queue, result, price_factors, price_factor_interp,
         price_models, sys_params, holidays):
     # Set visibility before Derivus imports torch. Each worker sees its assigned physical GPU as
     # local cuda:0; modulo deliberately permits more workers than devices.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(job_id % num_devices) if num_devices else '-1'
-    threads = bootstrap_threads()
     import torch
     torch.set_num_threads(threads)
     torch.set_num_interop_threads(1)
@@ -252,11 +263,14 @@ class Parent(object):
                     bootstrapper_name, market_price))
             queued.append((bootstrapper_name, options, market_prices))
 
-        logging.info("starting {0} workers over {1} CUDA devices in {2}".format(
-            self.NUMBER_OF_PROCESSES, self.NUMBER_OF_CUDA_DEVICES, input_path))
+        threads, cores = bootstrap_threads(self.NUMBER_OF_PROCESSES)
+        logging.info("starting {0} workers over {1} CUDA devices in {2}, {3} thread(s) each of {4} "
+                     "cores".format(self.NUMBER_OF_PROCESSES, self.NUMBER_OF_CUDA_DEVICES, input_path,
+                                    threads, cores))
         self.workers = [self.process_context.Process(target=work, args=(
-            i, self.NUMBER_OF_CUDA_DEVICES, self.queue, self.result, price_factors, price_factor_interp,
-            price_models, sys_params, holidays)) for i in range(self.NUMBER_OF_PROCESSES)]
+            i, self.NUMBER_OF_CUDA_DEVICES, threads, self.queue, self.result, price_factors,
+            price_factor_interp, price_models, sys_params, holidays))
+            for i in range(self.NUMBER_OF_PROCESSES)]
 
         for w in self.workers:
             w.start()

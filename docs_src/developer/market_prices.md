@@ -101,7 +101,13 @@ warning naming the fix, the family knowing its own type, and one naming another 
 refuses on both paths. An entry may still be the legacy CSV string an older file carries, which
 routes on its first field and declares no hyperparameter. The rename also repairs
 `derivus_bootstrap`'s daily carry-over, which matches previously written factors against the
-section's keys and so never carried an `FXVol.*` or `InterestRate.*` forward.
+section's keys and so never carried an `FXVol.*` or `InterestRate.*` forward. The launcher shares
+the physical cores out over its workers, never more threads than cores, and the split matters by
+block size: a small block is dispatch-bound, so eight single-thread workers fit four times what
+one eight-thread worker does on the five-expiry world, while a desk-size block is
+bandwidth-bound and reads the same throughput at eight by one as at four by eight; the
+hyperthreads add nothing either way. The parent sets it before the workers spawn, since a
+spawned worker sizes its BLAS pool at import; `DV_BOOTSTRAP_THREADS` overrides.
 
 **The section drives the loop, and the order is a topological sort.** `Config.bootstrap` and
 `derivus_bootstrap.Parent.start` both take `bootstrappers.bootstrap_order`, a
