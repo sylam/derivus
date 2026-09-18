@@ -453,7 +453,7 @@ def test_the_deal_ages_as_a_martingale(barrier_type, at_start, barrier):
 # static. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
 # variance is zero, and `barrier_touched` collapses to a 0/1 endpoint test - the latch form.
 def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
-             batch=8192, batches=4, bandwidth=0.01, window_touch='Yes'):
+             batch=8192, batches=4, bandwidth=0.01, window_touch=None):
     factors = {k: dict(v) for k, v in FACTORS.items()}
     factors['FxRate.EUR'] = dict(factors['FxRate.EUR'], Spot=spot)
     factors['SurvivalProb.CPTY'] = {
@@ -475,7 +475,7 @@ def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
             'Time_grid': '0d 12m(1m)', 'Batch_Size': batch, 'Simulation_Batches': batches,
             'MCMC_Simulations': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': base,
             'Gradient_Variables': 'Factors', 'Boundary_AAD_Bandwidth': bandwidth,
-            'Boundary_AAD_Window_Touch': window_touch,
+            **({'Boundary_AAD_Window_Touch': window_touch} if window_touch else {}),
             'Credit_Valuation_Adjustment': {
                 'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
                 'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No',
@@ -535,25 +535,30 @@ def test_the_window_touch_decision_registers_only_where_it_is_a_latch(bridge):
             'the endpoint branch is a 0/1 latch and registered nothing: ' + message)
 
 
-def test_the_window_touch_registration_is_opt_in_and_off_by_default():
-    """It decides the SIGN of the reported delta on a magnitude nobody has established, so it does
-    not ship live: `Boundary_AAD_Window_Touch` defaults to No and the pricer registers nothing.
+def test_the_window_touch_registration_is_the_default_and_no_is_the_unregistered_estimator():
+    """A document declaring nothing registers: `Boundary_AAD_Window_Touch` defaults to Yes, on the
+    measured SIGN - on a grid carrying six live decisions every CRN reading over five seeds and
+    both path counts is negative where the unregistered delta is positive - and `'No'` is the
+    unregistered estimator one value away, its ladder still not FLAT (13% to 35% over
+    h = 5e-4..1e-2), which is why both stay declarable.
 
-    Two exact readings: the Hessian refusal on the endpoint branch says `ATOM of exposure` with the
-    switch off - the bridge branch's message, i.e. nothing registered - and the reported gradient
-    is BIT-IDENTICAL to the same run with the correction suppressed through the bandwidth.
-
-    WHY IT IS NOT ON: the SIGN is now a measurement - on a grid carrying six live decisions every
-    CRN reading over five seeds and both path counts is negative where the suppressed delta is
-    positive - but the ladder is still not FLAT, 13% to 35% over h = 5e-4..1e-2, so what turns the
-    default on is a desk decision and not a gate.
+    Two exact readings either side. Undeclared, the Hessian refusal on the endpoint branch says
+    `registered a boundary correction`; declared `'No'` it says `ATOM of exposure` - the bridge
+    branch's message, i.e. nothing registered - and the reported gradient is BIT-IDENTICAL to the
+    same run with the correction suppressed through the bandwidth. Killing mutations: the default
+    put back to No swaps the first message; the read ignoring a declared No swaps the second.
     """
+    job = _cva_job(LATCH_DEAL, gradient=True, bridge=False, hessian=True, batch=512, batches=1)
+    with pytest.raises(utils.SecondOrderRefused) as refusal:
+        _run(job)
+    assert 'registered a boundary correction' in str(refusal.value), (
+        'the default registered nothing: ' + str(refusal.value))
     job = _cva_job(LATCH_DEAL, gradient=True, bridge=False, hessian=True, batch=512, batches=1,
                    window_touch='No')
     with pytest.raises(utils.SecondOrderRefused) as refusal:
         _run(job)
     assert 'ATOM of exposure' in str(refusal.value), (
-        'the default registered a boundary correction: ' + str(refusal.value))
+        'a declared No registered a boundary correction: ' + str(refusal.value))
 
     kw = dict(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     off = _cva(window_touch='No', **kw)[1]
@@ -574,8 +579,8 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
 
     A ROW A MONTH is where it resolves, seven rows in the window and six of them live: -1.915
     registered against +1.318 unregistered at 32768 paths, every CRN reading negative and the
-    pooled oracle 0.5% from the registered delta. The ladder is still not flat, so the registration
-    stays OPT-IN and the default is the desk's."""
+    pooled oracle 0.5% from the registered delta. That sign is what the registration is the
+    default on; the ladder is still not flat, so the unregistered estimator stays one No away."""
     off, _ = _cva(deal=LATCH_DEAL, bridge=False, batch=1024, batches=1)
     on, grad = _cva(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)

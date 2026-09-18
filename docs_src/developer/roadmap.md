@@ -154,11 +154,15 @@ is recorded so a reader knows which readings rest on it.
   the Gauss-Hermite rule it uses.
 - **The partial-time barrier's rebate settlement is audited but ungated**, for want of a
   collateralised partial-barrier document.
-- **The window-touch switch's magnitude is established and the default has not moved**: on a grid
-  carrying a row a month — seven inside the window, six of them live — five seeds read a registered
-  −2.136 at 8,192 paths and −1.915 at 32,768 against an unregistered +1.318, every one of the 70
-  CRN readings negative and the pooled oracle 0.5% from the registered delta against 168% from the
-  unregistered one. The ladder is still not FLAT, 13% to 35% over h ≥ 5e-4. Decision 10.
+- **The window-touch registration's ladder is not flat, and it is the default on its sign**: on a
+  grid carrying a row a month — seven inside the window, six of them live — five seeds read a
+  registered −2.136 at 8,192 paths and −1.915 at 32,768 against an unregistered +1.318, every one
+  of the 70 CRN readings negative and the pooled oracle 0.5% from the registered delta against
+  168% from the unregistered one. The ladder is still not FLAT, 13% to 35% over h ≥ 5e-4, so the
+  registered delta's magnitude is known to about a third where the unregistered sign is known to
+  be wrong; `Boundary_AAD_Window_Touch: No` is the unregistered estimator, one value away. The
+  switch is the credit Monte Carlo's alone: a base valuation's single date never reaches the
+  observed-spot branch the latch lives in, so it declares no such field.
 - **The boundary correction's bandwidth plateau holds at 16,384 to 20,480 paths** over bandwidths
   of 0.005 to 0.08, the correction spreading 2.4% to 3.9% and the CVA delta 0.6% to 0.2%; at 2,048
   paths the correction falls monotonically by 24%. Acceptance names 32,768 paths and that re-read
@@ -207,7 +211,7 @@ is recorded so a reader knows which readings rest on it.
 ## Decisions waiting on the desk
 
 Nothing here is blocked on work. Numbers are stable — commit messages and the model pages cite
-them — so closed decisions (2, 3, 4, 11, 13, 15) keep their numbers and are not listed.
+them — so closed decisions (2, 3, 4, 10, 11, 13, 15) keep their numbers and are not listed.
 
 1. **The per-fixing smile read.** Sticky-forward moneyness or the deal's declared moneyness; both
    defensible, one can be the pricer's own quote. A switch, not a revert, with the six removed gates
@@ -229,10 +233,6 @@ them — so closed decisions (2, 3, 4, 11, 13, 15) keep their numbers and are no
 9. **Flagged, not authorised**: the hedge runtime's free functions over the bundle, two clusters
    with a duplicated utility table, and the deal structure's recursions — the shape
    [Conventions](conventions.md) calls a class waiting to happen.
-10. **The window-touch switch's magnitude.** Measured: with six live decisions in the window the
-    registered delta reads −1.915 at 32,768 paths over five seeds against an unregistered +1.318,
-    and the CRN oracle is negative on all 70 readings and 0.5% from the registered one. The ladder
-    is still not flat, so turning the default on is the desk's call and not a gate's.
 12. **The correlation as a leaf.** A correlation mints no leaf today, so a quanto's correlation
     delta is reported as a common-random-number bump of 0.025: −22.42m ZAR per unit of correlation
     on the desk's Nikkei autocall, flat to 0.003% between half-widths. The leaf is three edits with

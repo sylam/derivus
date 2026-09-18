@@ -2371,12 +2371,12 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     one entry per decision on the date the hit pays - zero at row 0, which books nothing, and zero
     at the terminal row, whose rebate is inside the expiry settle.
 
-    IT IS OPT-IN (``Boundary_AAD_Window_Touch``, default No). On the endpoint branch the
-    registration decides the SIGN, and on a grid carrying six live decisions it decides the
-    MAGNITUDE too: over five seeds the registered delta reads -1.915 at 32,768 paths against an
-    unregistered +1.318, the CRN oracle is negative on all 70 readings and its pooled median sits
-    0.5% away. What is still missing is FLATNESS - 13% to 35% over h = 5e-4..1e-2 - so the default
-    is a desk decision rather than a gate's."""
+    IT IS THE DEFAULT (``Boundary_AAD_Window_Touch``, No being the unregistered estimator one
+    value away). On the endpoint branch the registration decides the SIGN, and on a grid carrying
+    six live decisions the MAGNITUDE too: over five seeds the registered delta reads -1.915 at
+    32,768 paths against an unregistered +1.318, the CRN oracle is negative on all 70 readings and
+    its pooled median sits 0.5% away. Its ladder is not FLAT, 13% to 35% over h = 5e-4..1e-2, so
+    the magnitude is known to about a third where the unregistered sign is known to be wrong."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     factor_dep = deal_data.Factor_dep
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
