@@ -1646,6 +1646,19 @@ def test_a_solve_that_cannot_reach_its_target_says_so(book):
     assert result['status'] == 'error' and result['error']
 
 
+def test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
+    """The solve validates its candidate before it queues, in the booking's own words - the
+    what-if's check. Without it the candidate LOADS, discovery drops it on the first iterate, the
+    marks frame carries no row under its reference and the loop dies reading one: an error result
+    saying `single positional indexer is out-of-bounds`, the market data never named."""
+    absent = CLIENT.post('/book/solve', content=dump({
+        'deal': dict(CASHFLOW, Reference='SLV4', Discount_Rate='ZAR-SWAP'), 'field': 'Amount',
+        'target': 1.0}), headers=JSON)
+
+    assert absent.status_code == 422
+    assert absent.json()['detail'] == 'no market data for InterestRate.ZAR-SWAP'
+
+
 def test_validate_over_http_is_the_verb_verbatim():
     """Both halves of the want-list: a deal that breaks an authoring rule, and one naming a curve
     the market data has no block for."""

@@ -2020,13 +2020,22 @@ def book_solve(request: dict):
     not depend on its siblings and a lone deal compiles faster per iterate. Answers
     `{result_id, status}`; the solved value, pricing count and residual arrive under the
     result's `stats.Solved`, and the result's tables are the run AT the solved value.
+
+    THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: one
+    naming market data the book does not carry would load and be dropped by discovery on every
+    iterate, and the loop would die reading a row the marks frame does not carry. It refuses 422
+    in the booking's own words instead.
     """
     document, etag = live_book().read()
     try:
+        already = live_book().baseline(document)
         job_children(document)[:] = []
-        deal_path = splice_deal(document, request['deal'])
+        written, outcome = deal_edit(document, request['deal'], None, already)
     except ValueError as error:
         raise HTTPException(422, str(error))
+    if not written:
+        raise HTTPException(422, '; '.join(outcome['refused']))
+    deal_path = outcome['deal_path']
     document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
     document['Calc']['Calculation']['Object'] = 'BaseValuation'
     solve = {key: request[key] for key in ('field', 'target', 'bounds', 'tolerance')
