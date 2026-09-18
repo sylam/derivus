@@ -184,6 +184,20 @@ and moved as VALUES, a row whose print the screen refuses keeps its number and i
 RE-AUTHORED from its own rows and conventions first, because the dates are structure and no tick may
 move them.
 
+**The snap sets the date.** A row priced off the terminal carries the print's own clock, so both the
+curve verb and the tick author on the LATEST print they came back with, and where that is later than
+the day the book stands at the book rolls onto it — `System Parameters.Base_Date`, what the
+benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on, move together — with
+every other curve block re-authored there in the same write, two curves dated differently being one
+of them solved for a day nobody asked about. A snap never rolls a book BACKWARDS: an old print is
+evidence about a quote, not a valuation date, and a row a desk states by hand carries no print at
+all and is authored as of the day the book already stands at. `POST /book/date` (`{base_date}`) is
+the verb that puts the date ANYWHERE, back-valuations included: it stamps both dates, re-authors
+every block on the new day from its own rows and conventions with no terminal asked, and
+re-bootstraps the whole market in one atomic write, naming a block too old to carry its conventions
+and leaving it exactly as it stands. Because the strip is a function of its own tenors, a roll that
+leaves the year fractions alone leaves the solved factor alone with them.
+
 **Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
 every dial at what the entry states or the declaration's default otherwise, edited in place, and
 offers the families the book does not configure yet: adding one posts an empty entry, which the verb

@@ -1642,15 +1642,46 @@ CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
 CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
 
 
+def read_stamp(stated):
+    """A date as a `datetime.date` - an ISO day, or the wire `{'.Timestamp': ...}` the book itself
+    carries, so what a client read off the book is what it can hand back."""
+    import datetime
+
+    try:
+        return datetime.date.fromisoformat(
+            str(stated.get('.Timestamp') if isinstance(stated, dict) else stated)[:10])
+    except (TypeError, ValueError):
+        raise ValueError('{!r} is no date - a date is YYYY-MM-DD'.format(stated))
+
+
 def book_base_date(document):
     """The book's own base date as a `datetime.date` - what a curve's benchmarks are rolled off. A
     block authored on it moves its values alone; one authored before it re-rolls."""
-    import datetime
+    return read_stamp(document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Date'])
 
-    stamp = document['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'System Parameters']['Base_Date']
-    return datetime.date.fromisoformat(
-        str(stamp['.Timestamp'] if isinstance(stamp, dict) else stamp)[:10])
+
+def stamp_base_date(document, base_date):
+    """The book's two base dates, set together: `System Parameters.Base_Date`, what a curve's
+    benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on."""
+    stamp = {'.Timestamp': base_date.isoformat()}
+    document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Date'] = stamp
+    document['Calc']['Calculation']['Base_Date'] = stamp
+
+
+def snap_date(rows, as_of):
+    """The day a probed set of rows is authored on: the LATEST print among them where that is later
+    than the book's own date, and the book's otherwise.
+
+    A curve is dated the day its quotes were snapped. A snap never rolls a book BACKWARDS - an old
+    print is evidence about a quote, not a valuation date - and a row a desk stated by hand carries
+    no print at all, so it is authored on the book's date as today.
+    """
+    from derivus_bloomberg.ir_curve import read_date
+
+    return max([as_of] + [day for day in (read_date(row.last_update) for row in rows)
+                          if day is not None])
 
 
 def curve_holidays(document, calendar):
@@ -1691,9 +1722,13 @@ def live_rows(rows, as_of, conventions):
 
 
 def authored_curve(document, request):
-    """`(Market Prices name, block)` for the curve a request DECLARES - the seed completing the
-    conventions it leaves out, the book's own calendar rolling the dates, and the terminal asked
-    for any row it did not quote.
+    """`(Market Prices name, block, date)` for the curve a request DECLARES - the seed completing
+    the conventions it leaves out, the book's own calendar rolling the dates, and the terminal
+    asked for any row it did not quote.
+
+    THE SNAP SETS THE DATE: a row the terminal priced carries the print's own clock, so the block
+    is authored on the latest of them where that is later than the book's date, and the caller
+    rolls the book onto it. A block of rows a desk stated by hand is authored on the book's date.
 
     `derivus_bloomberg` is imported HERE for the reason `BloombergJob` imports it inside `run_job`,
     and its refusals are re-raised as the `ValueError` every /book verb answers 422 on.
@@ -1709,19 +1744,21 @@ def authored_curve(document, request):
         conventions = ir_curve.curve_conventions(
             security_map.curve_seed(curve), curve,
             {name: value for name, value in request.items() if name not in CURVE_FIELDS})
-        rows = tuple(ir_curve.RatePrint(
+        rows = live_rows(tuple(ir_curve.RatePrint(
             label=row['tenor'], kind='', security=row.get('security', ''),
-            value=row.get('quote'), use=row.get('use', 'Yes')) for row in request['rows'])
-        return ir_curve.author_block(
+            value=row.get('quote'), use=row.get('use', 'Yes')) for row in request['rows']),
+            as_of, conventions)
+        as_of = snap_date(rows, as_of)
+        name, block = ir_curve.author_block(
             {'curve': curve, 'currency': request['currency'], 'conventions': conventions,
-             'rows': live_rows(rows, as_of, conventions),
-             'discount_rate': request.get('discount_rate')},
+             'rows': rows, 'discount_rate': request.get('discount_rate')},
             as_of, curve_holidays(document, conventions.calendar))
+        return name, block, as_of
     except BloombergFXError as error:
         raise ValueError(str(error))
 
 
-def curve_edit(document, curves, quotes={}):
+def curve_edit(document, curves, base_date, quotes={}):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
     bootstrapped through `market_edit`.
 
@@ -1730,9 +1767,13 @@ def curve_edit(document, curves, quotes={}):
     the written factors keep their identity through a tick. `quotes` is whatever else rides the
     same atomic write, which is what makes a tick's surfaces and its curves one write and one
     bootstrap.
+
+    `base_date` is the day the blocks handed in were authored on, stamped onto the book before they
+    land, so the curves and the calculation are dated together or not at all.
     """
     from derivus_bloomberg.ir_curve import reauthor
 
+    stamp_base_date(document, base_date)
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     prices = market.setdefault('Market Prices', {})
     reauthored = [name for name in sorted(curves)
@@ -1741,13 +1782,13 @@ def curve_edit(document, curves, quotes={}):
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
     write, outcome = market_edit(document, dict(quotes, **curves), {}, 'Yes')
-    return write, (dict(outcome, reauthored=reauthored, rewrote=rewrote(before, market))
-                   if write else outcome)
+    return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
+                        rewrote=rewrote(before, market)) if write else outcome)
 
 
-def curve_quotes(source, document):
-    """Every `InterestRatePrices` block the book carries, re-authored at the book's base date with
-    its used rows re-priced off the terminal - `(blocks, held out)`.
+def curve_quotes(source, document, base_date=None):
+    """Every `InterestRatePrices` block the book carries, re-authored with its used rows re-priced
+    off `source` - `(blocks, held out, date)`.
 
     THE BLOCK IS THE CURVE'S DEFINITION, so its own conventions are what a rolled date is re-rolled
     under and nothing is read off the seed but the print scale. A row whose print the screen
@@ -1755,11 +1796,16 @@ def curve_quotes(source, document):
     one knot fewer where a refused strip is no curve at all - and `POST /book/curve` is what puts
     it back. A block this emitter cannot read, an older book's among them, is named and left
     exactly as it stands rather than taking the tick down with it.
+
+    THE SNAP SETS THE DATE: the blocks are authored on the latest print the terminal answered with
+    where that is later than the book's own day. `base_date` authors on a day a desk STATED
+    instead, and no source is the same walk with no terminal at all - the rows exactly as they
+    stand, re-rolled onto that day.
     """
     from derivus_bloomberg import ir_curve, security_map
     from derivus_bloomberg.errors import BloombergFXError
 
-    as_of, quotes, held = book_base_date(document), {}, []
+    as_of, read, quotes, held = base_date or book_base_date(document), {}, {}, []
     prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
     for name in sorted(prices):
         if not name.startswith(CURVE_FAMILY + '.'):
@@ -1769,18 +1815,27 @@ def curve_quotes(source, document):
             instrument = prices[name]['instrument']
             conventions = ir_curve.block_conventions(
                 instrument, security_map.curve_seed(curve), curve)
-            rows = ir_curve.price_rows(source, ir_curve.block_rows(instrument), as_of, conventions)
-            held += ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict)
-                     for row in rows if row.verdict]
-            quotes[name] = ir_curve.author_block(
-                {'curve': curve, 'currency': instrument['Currency'], 'conventions': conventions,
-                 'rows': ir_curve.hold_out(rows), 'discount_rate': instrument['Discount_Rate']},
-                as_of, curve_holidays(document, conventions.calendar))[1]
+            rows = ir_curve.block_rows(instrument)
+            if source is not None:
+                rows = ir_curve.price_rows(source, rows, as_of, conventions)
+                held += ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict)
+                         for row in rows if row.verdict]
+            read[name] = (curve, instrument, conventions, ir_curve.hold_out(rows))
         except (BloombergFXError, KeyError) as error:
             # a block authored before the conventions rode beside the quotes declares no
             # `Spot_Days` to re-roll under, and neither does one this emitter did not write
             held.append('{} left as it stands - {}'.format(name, error))
-    return quotes, held
+    if base_date is None:
+        as_of = snap_date([row for _, _, _, rows in read.values() for row in rows], as_of)
+    for name, (curve, instrument, conventions, rows) in read.items():
+        try:
+            quotes[name] = ir_curve.author_block(
+                {'curve': curve, 'currency': instrument['Currency'], 'conventions': conventions,
+                 'rows': rows, 'discount_rate': instrument['Discount_Rate']},
+                as_of, curve_holidays(document, conventions.calendar))[1]
+        except BloombergFXError as error:
+            held.append('{} left as it stands - {}'.format(name, error))
+    return quotes, held, as_of
 
 
 @app.post('/book/curve', summary='Set a curve up from its benchmark rows - solved, then written')
@@ -1798,19 +1853,35 @@ def book_curve(request: dict):
     The block is AUTHORED and never ticked - dropped and re-installed, the `InterestRate`
     bootstrapper entry added where the book configures none - and the whole market is then
     re-bootstrapped in the same atomic write, so a bootstrap that complains writes NOTHING and
-    answers 422 in its own words. The answer names the block, the knots it solved on, and the
-    price factors the run rewrote.
+    answers 422 in its own words. The answer names the date it was authored on, the block, the
+    knots it solved on, and the price factors the run rewrote.
+
+    THE SNAP SETS THE DATE. Rows priced off the terminal carry the print's own clock, and where
+    that is later than the book's own day the book rolls onto it - both its dates - and every other
+    curve block is re-authored there too, in the same write. Rows a desk states by hand carry no
+    print and are authored as of the day the book already stands at. A book that rolled PAST that
+    day while the terminal was answering refuses by name rather than going back, and only
+    `POST /book/date` moves it anywhere else.
     """
     live = live_book()
     document, _ = live.read()
     try:
-        name, block = authored_curve(document, request)
+        name, block, as_of = authored_curve(document, request)
 
         def edit(document):
             # a book that has never carried a curve configures the family that solves one
             bootstrapper_entry(document['Calc']['MergeMarketData']['ExplicitMarketData'],
                                CURVE_BOOTSTRAPPER, {})
-            return curve_edit(document, {name: block})
+            dated = book_base_date(document)
+            if as_of < dated:
+                raise ValueError(
+                    'the book rolled to {} while the terminal priced these rows, which are '
+                    'authored as of {} - a curve is never dated behind its own book and a snap '
+                    'never rolls one back, so post it again'.format(
+                        dated.isoformat(), as_of.isoformat()))
+            rolled, held = ({}, []) if as_of == dated else curve_quotes(None, document, as_of)[:2]
+            write, outcome = curve_edit(document, {**rolled, name: block}, as_of)
+            return write, (dict(outcome, held_out=held) if write else outcome)
 
         written = live.mutate(edit)
     except (ValueError, KeyError) as error:
@@ -1828,6 +1899,10 @@ def book_curves(curve: str = None):
     interpolation the solved factor carries - the book's `Price Factor Interpolation` entry, or the
     engine's own fallback where it states none. `curve` narrows the answer to one.
 
+    `base_date` is the day every block on the book is authored on, and each one's `snapped` is the
+    latest print its own rows carry - equal to it where the curve was set up off a terminal, and
+    earlier where the book has been dated past its quotes.
+
     With no curve named the answer also carries `seeded` - the curve entries this workstation's
     seed declares, the desk's own file completed by the packaged one, each with its conventions and
     the tenor/security rows it could be set up with. NONE of those is verified against a terminal;
@@ -1841,7 +1916,7 @@ def book_curves(curve: str = None):
     methods = (market.get('Price Factor Interpolation', {}).get('.ModelParams', {})
                .get('modeldefaults', {}))
     seed = {'rates': security_map.seeded_rates()}
-    answer = {'etag': etag, 'curves': {}}
+    answer = {'etag': etag, 'base_date': book_base_date(document).isoformat(), 'curves': {}}
     for name in sorted(market.get('Market Prices', {})):
         named = name.split('.', 1)[1] if name.startswith(CURVE_FAMILY + '.') else None
         if named is None or curve not in (None, named):
@@ -1851,6 +1926,8 @@ def book_curves(curve: str = None):
             'curve': named, 'currency': instrument['Currency'],
             'discount_rate': instrument['Discount_Rate'],
             'interpolation': methods.get(CURVE_BOOTSTRAPPER, riskfactors.INTERPOLATION_DEFAULT),
+            'snapped': max([(row.get('Timestamp') or {}).get('.Timestamp', '')
+                            for row in instrument['Points']], default=''),
             'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
                       'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
                      for row in instrument['Points']]}
@@ -1872,6 +1949,42 @@ def book_curves(curve: str = None):
         except BloombergFXError as error:
             answer['seeded'][name] = {'refused': str(error)}
     return answer
+
+
+def date_edit(document, base_date):
+    """The book's calculation date moved as ONE edit closure for `Book.mutate`: both stamps set,
+    every curve block re-authored on the new date from its own rows and conventions with no
+    terminal asked, and the whole market re-bootstrapped through `curve_edit` - so a bootstrap that
+    complains writes NOTHING and the date does not move either."""
+    curves, held, _ = curve_quotes(None, document, base_date)
+    write, outcome = curve_edit(document, curves, base_date)
+    return write, (dict(outcome, held_out=held) if write else outcome)
+
+
+@app.post('/book/date', summary="Set the book's calculation date - curves re-rolled, re-solved")
+def book_date(request: dict):
+    """`{base_date}` - an ISO day, or the wire `{'.Timestamp': ...}` the book answers with.
+
+    THE BOOK CARRIES THE DATE TWICE and this moves both: `System Parameters.Base_Date`, what a
+    curve's benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on. Every
+    `InterestRatePrices` block is re-authored on the new day from its own rows and conventions -
+    the same benchmarks on new dates, the quotes exactly as they stand - and the whole market is
+    re-bootstrapped in the same atomic write, so a bootstrap that complains writes NOTHING and
+    answers 422 in its own words. A block authored before it carried its conventions has nothing to
+    re-roll under: it is named in `held_out` and left standing, as the tick leaves it.
+
+    THIS IS THE VERB THAT GOES ANYWHERE - back as readily as forward. The curve verb and the tick
+    roll the date FORWARD onto the day their quotes were snapped and never off it.
+    """
+    live = live_book()
+    try:
+        base_date = read_stamp(request['base_date'])
+        written = live.mutate(lambda document: date_edit(document, base_date))
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+    if not written['written']:
+        raise HTTPException(422, '; '.join(written['refused']))
+    return written
 
 
 class BloombergJob:
@@ -1924,7 +2037,7 @@ class BloombergJob:
                 map_document, created = discover.provision(
                     session, datetime.date.today(), on_batch=on_batch)
                 pairs = self.scope.get('pairs') or sorted(map_document['blocks']['fx_vol'])
-                quotes, late, curves, held = {}, {}, {}, []
+                quotes, late, curves, held, snapped = {}, {}, {}, [], book_base_date(document)
                 for index, pair in enumerate(pairs, 1):
                     self.note('fetching {} {}/{}'.format(pair, index, len(pairs)),
                               index - 1, len(pairs))
@@ -1939,7 +2052,7 @@ class BloombergJob:
                             to_market_prices_block(snapshot))
                 if not late:
                     self.note('valuing the curve rows', len(pairs), len(pairs))
-                    curves, held = curve_quotes(session, document)
+                    curves, held, snapped = curve_quotes(session, document)
             if late:
                 return self.outcome(started, written=False, refused=[
                     '{} is stale - {}'.format(name, why) for name, why in sorted(late.items())])
@@ -1947,7 +2060,7 @@ class BloombergJob:
             self.note('installing and bootstrapping', len(pairs), len(pairs))
             try:
                 written = self.book.mutate(
-                    lambda document: curve_edit(document, curves, quotes))
+                    lambda document: curve_edit(document, curves, snapped, quotes))
             except (ValueError, KeyError) as error:
                 # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
                 # the metronome's failed-beat handling reads `refused` off these Stats, where
@@ -2002,6 +2115,10 @@ def book_bloomberg(request: dict):
     rows re-priced off the securities they name and moved as VALUES; a block whose base date has
     rolled is re-authored from its own rows and conventions first, and a row the screen refuses is
     held out by name in `held_out` rather than refusing the tick.
+
+    THE SNAP SETS THE DATE. Where the prints came back later than the day the book stands at, both
+    its dates roll onto the latest of them and every curve block is re-authored there, in the same
+    write - so a book ticked with today's quotes is dated today. A tick never rolls it back.
 
     Answers `{result_id, status}` like `/execute`, a terminal round trip being minutes of work:
     `/results/{result_id}` carries `progress` while it runs and the outcome under `stats.Bloomberg`.

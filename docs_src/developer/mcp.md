@@ -43,6 +43,7 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 | `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
 | `describe_curve` | the book's curves as definitions — rows, conventions, interpolation — and, with none named, the seed's own entries a desk can set up |
 | `configure_curve` | `POST /book/curve` — a curve's benchmark rows stated, the block authored from them and the curve solved |
+| `set_base_date` | `POST /book/date` — the day the book is valued as of, both spellings of it, with every curve re-rolled onto it |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
 | `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
@@ -161,7 +162,10 @@ startup where `blpapi` does not import, and `--tick --no-book` is refused by nam
 rows a desk quotes — a tenor, the security it prints on and a number — and the TENOR is what says
 what each instrument is, so a model never authors a deposit or a FRA. The block is re-authored whole
 and the market re-bootstrapped in one write, which is why this is a separate verb from
-`update_market_quotes`: a benchmark set is structure, and structure is never a tick.
+`update_market_quotes`: a benchmark set is structure, and structure is never a tick. A row priced
+off the terminal carries the print's own clock, so both this verb and the tick roll the book's date
+FORWARD onto the day their quotes were snapped and re-author every other curve there; `set_base_date`
+is the one that puts it anywhere, which is how a model back-values a book.
 
 **Market data moves on the engine's terms.** `patch_market_values` rides the `bind='value'` seam —
 the engine's own `patch_market` refuses a structural key by name. `update_market_quotes` installs or

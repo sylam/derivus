@@ -75,9 +75,10 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'read_deal', 'book_deal', 'amend_deal', 'delete_deal', 'price_candidate',
                 'solve_deal', 'execute_book', 'validate_book', 'describe_book', 'poll_result',
                 'fetch_table', 'deal_values', 'configure_book', 'describe_curve', 'configure_curve',
-                'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg',
-                'describe_structure', 'solve_structure', 'book_quote', 'calibrate_spot_model',
-                'book_risk_summary', 'xva_view', 'recalc_xva'}
+                'set_base_date', 'update_market_quotes', 'patch_market_values',
+                'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
+                'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
+                'recalc_xva'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -86,7 +87,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve'}
+                       'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
+                       'set_base_date'}
 
 
 #: The tools that sit on a run and therefore have to speak while they sit.
@@ -404,6 +406,37 @@ def test_a_curve_is_described_set_up_and_read_back(book):
     with pytest.raises(ToolError, match='3Q'):
         mcp_server.configure_curve('ZAR', 'ZAR', [dict(row, tenor='3Q') if row['tenor'] == '5Y'
                                                   else row for row in CURVE_ROWS])
+
+
+def test_the_date_is_set_by_name_and_the_curve_follows_it(book):
+    """A model that can book and quote can also say WHEN. One string, both of the book's dates, and
+    every curve block re-rolled onto the day it names - the whole "value this as of" move, with no
+    document editing and no second verb to remember.
+
+    Killing mutations: the tool posting the date under any other key (the verb answers 422 naming
+    `base_date`); the answer not carrying the date it wrote, which is the only thing a model can
+    read the move back off.
+    """
+    from test_service import CURVE_ROWS
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    assert set(tools['set_base_date'].input_schema['properties']) == {'base_date'}
+    mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
+    before = mcp_server.describe_curve('ZAR')
+
+    outcome = mcp_server.set_base_date('2024-09-30')
+    described = mcp_server.describe_curve('ZAR')
+    rows = described['curves']['InterestRatePrices.ZAR']['rows']
+
+    assert outcome['written'] is True and outcome['base_date'] == '2024-09-30'
+    assert outcome['reauthored'] == ['InterestRatePrices.ZAR'] and outcome['held_out'] == []
+    assert described['base_date'] == '2024-09-30' and before['base_date'] == '2024-06-28'
+    assert rows == before['curves']['InterestRatePrices.ZAR']['rows'], 'a re-roll moved a quote'
+    assert json.loads(book.read_text())['Calc']['Calculation']['Base_Date'] == {
+        '.Timestamp': '2024-09-30'}
+
+    with pytest.raises(ToolError, match='no date'):
+        mcp_server.set_base_date('the thirtieth')
 
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):

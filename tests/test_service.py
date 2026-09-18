@@ -1038,6 +1038,11 @@ CURVE_ROWS = [{'tenor': '3M', 'security': 'JIBA3M Index', 'quote': 7.41},
 
 CURVE_BLOCK = 'InterestRatePrices.ZAR'
 
+#: A second curve for the gates that need two on one book: the seed's USD entry is an overnight
+#: front and an OIS strip, and every row here is quoted BY HAND, so no terminal is in the picture.
+USD_ROWS = [{'tenor': 'ON', 'quote': 5.33}, {'tenor': '1Y', 'quote': 5.05},
+            {'tenor': '2Y', 'quote': 4.55}, {'tenor': '5Y', 'quote': 4.05}]
+
 
 def set_up_curve(rows=None, **request):
     return CLIENT.post('/book/curve', content=dump(dict(
@@ -1051,9 +1056,10 @@ def curve_block(path, curve='ZAR'):
 
 
 def par_residuals(path, curve='ZAR'):
-    """Every benchmark of the written block repriced off the curve the bootstrap solved - the par
-    vector, which is zero iff the knot grid is square and the dates the emitter rolled are the ones
-    the solve used. A million of notional, so 1e-6 is a thousandth of a basis point of principal."""
+    """Every benchmark of the written block repriced off the curve the bootstrap solved, AS OF THE
+    DAY THE BOOK IS DATED - the par vector, which is zero iff the knot grid is square and the dates
+    the emitter rolled are the ones the solve used. A million of notional, so 1e-6 is a thousandth
+    of a basis point of principal."""
     import copy
 
     import torch
@@ -1069,8 +1075,9 @@ def par_residuals(path, curve='ZAR'):
         deal = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
         author_quote(deal, point['Quoted_Market_Value'], curve)
         nodes.append(quote_node(deal, {}))
-    return BenchmarkInstruments(nodes, market['Price Factors'], ModelParams(), BASE,
-                                block['Currency'], {}, [], torch.device('cpu'))({}).detach().numpy()
+    return BenchmarkInstruments(nodes, market['Price Factors'], ModelParams(),
+                                market['System Parameters']['Base_Date'], block['Currency'], {},
+                                [], torch.device('cpu'))({}).detach().numpy()
 
 
 def test_a_curve_set_up_from_its_rows_solves_at_par(book):
@@ -1871,10 +1878,11 @@ class CannedTerminal:
     """A terminal answering `reference_data_report` in the shape a discovery run records - one row
     per security carrying `ok`, `error` and `fields`, the mid with both sides and the print's own
     date. It is the SESSION as well, so the job's `BloombergSession(...)` lands on it and blpapi is
-    never reached; `asked` is every security it was handed, batch by batch."""
+    never reached; `asked` is every security it was handed, batch by batch, and `stamp` is the day
+    every print claims - which is the SNAP a curve is dated by."""
 
-    def __init__(self, prints, dead=()):
-        self.prints, self.dead, self.asked = prints, set(dead), []
+    def __init__(self, prints, dead=(), stamp='2024-06-27'):
+        self.prints, self.dead, self.asked, self.stamp = prints, set(dead), [], stamp
 
     def __call__(self, **options):
         return self
@@ -1890,7 +1898,7 @@ class CannedTerminal:
         return {name: {'ok': name not in self.dead, 'error': None,
                        'fields': {} if name in self.dead else {
                            'PX_LAST': self.prints[name], 'PX_BID': self.prints[name] - 0.01,
-                           'PX_ASK': self.prints[name] + 0.01, 'LAST_UPDATE_DT': '2024-06-27'}}
+                           'PX_ASK': self.prints[name] + 0.01, 'LAST_UPDATE_DT': self.stamp}}
                 for name in securities}
 
 
@@ -1996,6 +2004,179 @@ def test_a_rolled_base_date_re_authors_the_curve_rather_than_refusing(curve_desk
     assert [row['Deal']['Effective_Date'] for row in block['Points'][2:]] == [
         {'.Timestamp': '2024-07-01'}] * 4, 'a spot swap that did not re-roll onto the new base date'
     assert outcome['rewrote'] == ['InterestRate.ZAR']
+
+
+def test_the_date_verb_sets_both_dates_and_re_rolls_every_curve_onto_them(curve_desk):
+    """A DESK SETS THE DATE TO ANYTHING. The book carries it twice - the day a curve's benchmarks
+    roll off and the day the pricers run on - and this verb moves both together, forward as readily
+    as back, re-authoring every curve block on the new day from its own rows and conventions. The
+    same benchmarks and the same quotes on new dates, and the strip still solves at par as of the
+    day the book now claims, which is what says the re-roll and the re-solve agree.
+
+    A block too old to carry the conventions it was authored under has nothing to re-roll with: it
+    is NAMED and left exactly as it stands, the refusal the tick answers with.
+
+    Killing mutations: stamping one of the two dates and not the other (`Calculation.Base_Date` or
+    `System Parameters.Base_Date` stands at the old day); handing `curve_quotes` no date, so the
+    blocks are re-authored on the day the book already had and the maturities never move.
+    """
+    before = [row['Deal']['Maturity_Date'] for row in curve_block(curve_desk)['Points']]
+
+    for day in ('2024-09-30', '2024-01-15'):
+        answer = CLIENT.post('/book/date', json={'base_date': day})
+        outcome = answer.json()
+        document = json.loads(curve_desk.read_text())
+        block = curve_block(curve_desk)
+
+        assert answer.status_code == 200, outcome
+        assert outcome['written'] is True and outcome['base_date'] == day
+        assert outcome['reauthored'] == [CURVE_BLOCK] and outcome['held_out'] == []
+        assert outcome['rewrote'] == ['InterestRate.ZAR']
+        assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': day}
+        assert document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'System Parameters']['Base_Date'] == {'.Timestamp': day}
+        assert [row['Tenor'] for row in block['Points']] == [row['tenor'] for row in CURVE_ROWS]
+        assert [row['Quoted_Market_Value'] for row in block['Points']] == [
+            row['quote'] for row in CURVE_ROWS], 'a re-roll that moved a quote'
+        assert [row['Deal']['Maturity_Date'] for row in block['Points']] != before
+        assert abs(par_residuals(curve_desk)).max() < 1e-6
+
+    points = curve_block(curve_desk)['Points']
+    document = json.loads(curve_desk.read_text())
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][
+        CURVE_BLOCK]['instrument']['Spot_Days']
+    curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
+    standing = CLIENT.post('/book/date', json={'base_date': {'.Timestamp': '2024-01-10'}}).json()
+
+    assert standing['held_out'] == ["{} left as it stands - 'Spot_Days'".format(CURVE_BLOCK)]
+    assert standing['reauthored'] == [] and standing['base_date'] == '2024-01-10'
+    assert curve_block(curve_desk)['Points'] == points, 'a block with no conventions was re-rolled'
+
+
+def test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_does_not(
+        curve_desk, monkeypatch):
+    """WHEN WE BOOTSTRAP THE CURVE WE KNOW WHEN IT WAS SNAPPED. The tick authors on the latest
+    print it came back with: where that is later than the day the book stands at, both of the
+    book's dates roll onto it and the block is RE-AUTHORED there rather than value-ticked, so a
+    book fetched with Friday's quotes is dated Friday and its benchmarks mature off Friday.
+
+    An older print is evidence about a QUOTE and never a valuation date, so the second tick moves
+    the values alone and leaves the dates where the first one put them - the block `updated`, its
+    plan standing.
+
+    Killing mutations: dropping the book's own date from `snap_date`'s floor, so the second tick
+    rolls the book back onto 2024-07-02; authoring on the book's date rather than on the snap, so
+    the first tick leaves both dates at 2024-06-28 and reports no re-authoring at all.
+    """
+    prints = {row['security']: row['quote'] for row in CURVE_ROWS}
+    before = [row['Deal']['Maturity_Date'] for row in curve_block(curve_desk)['Points']]
+
+    result, outcome = curve_tick(monkeypatch, CannedTerminal(prints, stamp='2024-07-05'))
+    document = json.loads(curve_desk.read_text())
+    block = curve_block(curve_desk)
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['base_date'] == '2024-07-05' and outcome['reauthored'] == [CURVE_BLOCK]
+    assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': '2024-07-05'}
+    assert document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Date'] == {'.Timestamp': '2024-07-05'}
+    assert all(row['Timestamp'] == {'.Timestamp': '2024-07-05'} for row in block['Points'])
+    assert [row['Deal']['Maturity_Date'] for row in block['Points']] != before
+    assert abs(par_residuals(curve_desk)).max() < 1e-6
+
+    moved = {security: value + 0.1 for security, value in prints.items()}
+    result, outcome = curve_tick(monkeypatch, CannedTerminal(moved, stamp='2024-07-02'))
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['base_date'] == '2024-07-05' and outcome['reauthored'] == []
+    assert outcome['updated'] == [CURVE_BLOCK], 'a print older than the book re-authored it'
+    assert [row['Quoted_Market_Value'] for row in curve_block(curve_desk)['Points']] == list(
+        moved.values())
+    assert json.loads(curve_desk.read_text())['Calc']['Calculation']['Base_Date'] == {
+        '.Timestamp': '2024-07-05'}
+
+
+def test_a_curve_set_up_off_a_later_print_rolls_the_book_and_every_other_curve(
+        curve_desk, monkeypatch):
+    """A SNAP IS A DATE, through the verb as through the tick. The desk sets the ZAR curve up
+    again quoting no row itself, so the terminal prices every one of them; the prints come back
+    dated after the day the book stands at, the book rolls onto them, and the USD curve beside it
+    is RE-AUTHORED there too in the same write - two curves dated differently being one of them
+    solved for a day nobody asked about. Both still reprice at par afterwards.
+
+    Killing mutations: leaving the other blocks where they stood on a roll, so the USD strip keeps
+    its June maturities under a July book; taking the snap off the book's date rather than off the
+    prints, so nothing rolls and the ZAR block is authored in June.
+    """
+    from derivus_bloomberg import session
+
+    assert set_up_curve(rows=USD_ROWS, curve='USD', currency='USD').status_code == 200
+    dollars = [row['Deal']['Maturity_Date'] for row in curve_block(curve_desk, 'USD')['Points']]
+    monkeypatch.setattr(session, 'BloombergSession', CannedTerminal(
+        {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'))
+
+    answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
+                                for row in CURVE_ROWS])
+    outcome = answer.json()
+    document = json.loads(curve_desk.read_text())
+
+    assert answer.status_code == 200, outcome
+    assert outcome['base_date'] == '2024-07-05' and outcome['block'] == CURVE_BLOCK
+    assert outcome['reauthored'] == ['InterestRatePrices.USD', CURVE_BLOCK]
+    # the USD FACTOR is unmoved: a week's roll leaves an ON/1Y/2Y/5Y strip on the same year
+    # fractions off the same quotes, so a curve is a function of its tenors and not of its dates
+    assert outcome['rewrote'] == ['InterestRate.ZAR'] and outcome['held_out'] == []
+    assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': '2024-07-05'}
+    assert [row['Deal']['Maturity_Date']
+            for row in curve_block(curve_desk, 'USD')['Points']] != dollars
+    assert abs(par_residuals(curve_desk, 'USD')).max() < 1e-6
+    assert abs(par_residuals(curve_desk)).max() < 1e-6
+
+    # the read verb says both: the day every block is authored on, and the day each was snapped
+    read = CLIENT.get('/book/curve', params={'curve': 'USD'}).json()
+    assert read['base_date'] == '2024-07-05'
+    assert read['curves']['InterestRatePrices.USD']['snapped'] == '2024-06-28'
+
+
+def test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_rolling_back(
+        curve_desk, monkeypatch):
+    """A SNAP NEVER ROLLS A BOOK BACK, and the terminal round trip is the one window where it
+    could: the verb reads the book, spends minutes pricing its rows, and writes against a book a
+    tick may have rolled since. Rather than stamping the day it read, the write refuses BY NAME
+    with both days in it and touches nothing - a curve dated behind its own book has a front
+    whose accrual already started, which is no benchmark at all.
+
+    The seam is the terminal itself: this one rolls the book forward while it is being asked about,
+    which is a tick landing mid-trip with nothing threaded.
+
+    Killing mutation: stamp the day the rows were authored on, and both of the book's dates go
+    back to 2024-07-05 with every other block re-rolled onto it.
+    """
+    from derivus_bloomberg import session
+
+    class TickingTerminal(CannedTerminal):
+        def reference_data_report(self, securities, fields):
+            document = json.loads(curve_desk.read_text())
+            stamp = {'.Timestamp': '2024-08-01'}
+            document['Calc']['MergeMarketData']['ExplicitMarketData'][
+                'System Parameters']['Base_Date'] = stamp
+            document['Calc']['Calculation']['Base_Date'] = stamp
+            curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
+            return super().reference_data_report(securities, fields)
+
+    monkeypatch.setattr(session, 'BloombergSession', TickingTerminal(
+        {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'))
+    points = curve_block(curve_desk)['Points']
+    answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
+                                for row in CURVE_ROWS])
+    detail = answer.json()['detail']
+    document = json.loads(curve_desk.read_text())
+
+    assert answer.status_code == 422, answer.json()
+    assert '2024-08-01' in detail and '2024-07-05' in detail and 'post it again' in detail
+    # the book stands where the TICK left it, the refused set-up having written nothing
+    assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': '2024-08-01'}
+    assert curve_block(curve_desk)['Points'] == points
 
 
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):

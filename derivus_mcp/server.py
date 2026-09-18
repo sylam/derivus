@@ -492,7 +492,9 @@ def describe_curve(curve: str = None) -> dict:
     it discounts on, the interpolation the solved factor carries, the conventions its benchmarks
     were authored under (the calendar, the settlement lag, both legs' frequency and day count,
     whether the swap rows compound overnight, and any near-end scheme), and the rows themselves -
-    tenor, the security each quote came off, the number, and whether the curve uses it.
+    tenor, the security each quote came off, the number, and whether the curve uses it. `base_date`
+    is the day every block on the book is authored on, and a block's `snapped` is the latest print
+    its own rows carry, so a curve dated past its quotes says so.
 
     With no `curve` named the answer also carries `seeded`: the curve entries this workstation's
     seed declares, each with its conventions and the tenor/security rows it could be set up with.
@@ -523,11 +525,34 @@ def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = 
 
     The block is AUTHORED, not ticked: it is re-installed whole and the market re-bootstrapped in
     one atomic write, so a bootstrap that complains writes nothing and names what it complained
-    about. The answer names the block, the knots it solved on and the price factors that moved.
-    Afterwards `tick_market_from_bloomberg` keeps these rows valued off the terminal."""
+    about. The answer names the date the block was authored on, the block, the knots it solved on
+    and the price factors that moved. A row priced off the terminal carries the print's own clock,
+    and where that is later than the day the book stands at the book ROLLS ONTO IT - both its dates
+    - and every other curve is re-authored there too. Afterwards `tick_market_from_bloomberg` keeps
+    these rows valued off the terminal."""
     return service().call('POST', '/book/curve', json=dict(
         conventions or {}, curve=curve, currency=currency, rows=rows,
         **({} if discount_rate is None else {'discount_rate': discount_rate})))
+
+
+@MCP.tool()
+def set_base_date(base_date: str) -> dict:
+    """Set the live book's CALCULATION DATE - the day everything it holds is valued as of.
+
+    `base_date` is an ISO day, `"2026-09-19"`. The book carries the date twice - the day its
+    curves' benchmarks roll off and the day the pricers run on - and this moves both together.
+    Every interest-rate curve block is re-authored on the new day from its own rows and conventions
+    (the same benchmarks on new dates, the quotes exactly as they stand, no terminal asked) and the
+    whole market is re-bootstrapped in one atomic write, so a bootstrap that complains writes
+    nothing and hands its messages back. The answer names the date, the blocks re-authored and the
+    price factors the re-solve rewrote; a block too old to carry its conventions is named in
+    `held_out` and left standing.
+
+    `tick_market_from_bloomberg` and `configure_curve` already roll the date FORWARD onto the day
+    their quotes were snapped. This is the verb that puts it anywhere - a back-valuation included -
+    so call it to value the book as of a day of someone's choosing, never to catch up with a
+    tick."""
+    return service().call('POST', '/book/date', json={'base_date': base_date})
 
 
 @MCP.tool()
@@ -551,7 +576,10 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     IT COVERS THE CURVES TOO: every `InterestRatePrices` block the book carries has its rows
     re-priced off the securities they name and re-solved, beside the FX surfaces. A row whose
     print the terminal refuses is held out by name in `held_out` rather than refusing the tick,
-    and `configure_curve` is what puts it back.
+    and `configure_curve` is what puts it back. THE SNAP SETS THE DATE: where the prints came back
+    later than the day the book stands at, the book rolls onto the latest of them and every curve
+    is re-authored there, so a book ticked with today's quotes is dated today. It never rolls back;
+    `set_base_date` is what values the book as of any other day.
 
     WHEN THE SERVICE RUNS WITH `--tick`, THE MARKET REFRESHES ITSELF on a cadence, through this
     same job - so call this verb only to FORCE a refresh between beats, or to provision on first
