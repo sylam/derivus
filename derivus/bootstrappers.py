@@ -32,6 +32,9 @@ from ._version import __version__
 import scipy.optimize
 import scipy.stats
 
+#: The day-count menu every rate instrument declares, spelled once for the blocks that quote one.
+DAY_COUNTS = ('ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA')
+
 
 def resolve_factor(name, price_factors, candidates):
     """The factor `name` refers to, typed by the first candidate the price factors hold a block for.
@@ -5076,8 +5079,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
             F('Last_Maturity', 'Period', default='10Y'),
             F('Fixed_Frequency', 'Period', default='6M'),
             F('Floating_Frequency', 'Period', default='6M'),
-            F('Day_Count', 'Text', default='ACT_365',
-              values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+            F('Day_Count', 'Text', default='ACT_365', values=list(DAY_COUNTS)),
             F('Index_Offset', 'Integer', default=0)],
           description='Unbuilt: the grid Generate_Instruments would sweep'),
         F('Quote_Timestamp', 'Date', default='',
@@ -5699,6 +5701,12 @@ class InterestRateCurveParameters(Construction):
     this family's quote schema. The family authors that block at its `Quoted_Market_Value`, and a
     fair benchmark prices to zero, so the solve is a root find on the t0 PV vector.
 
+    THE BLOCK IS THE CURVE'S DEFINITION: beside the quotes it declares the conventions they were
+    authored under - the calendar, the settlement lag, both legs' frequency and day count, whether
+    the swap rows compound overnight - and the interpolation the solved curve carries, including a
+    `Near_Interpolation` up to `Near_Tenor` where the near end is quoted in another instrument. Each
+    row carries the `Tenor` it was authored from, so a strip re-rolls on a new date from the block.
+
     Two blocks make a multi-curve set - an OIS discount curve, then a projection curve discounting
     on it - and `Discount_Rate` is what orders them. A blank `Discount_Rate` discounts on the curve
     being built, the single-curve configuration and the harder solve.
@@ -5727,11 +5735,33 @@ class InterestRateCurveParameters(Construction):
     lifecycle_fields = ('Quote_Sensitivity', 'Quote_Propagation', 'Drift_Tolerance')
     fields = [
         F('Currency', 'Text', default=REQUIRED, description='The currency of the curve to build'),
-        F('Day_Count', 'Text', default='ACT_365',
-          values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA'],
+        F('Day_Count', 'Text', default='ACT_365', values=list(DAY_COUNTS),
           description='Daycount the solved curve\'s tenors are expressed in'),
         F('Discount_Rate', 'Text', default='',
           description='The curve the quotes discount on; blank builds a self-discounting curve'),
+        F('Calendar', 'Text', default='',
+          description='The holiday calendar the benchmark dates were rolled against, named in the '
+                      'job\'s calendar file; blank is Monday to Friday'),
+        F('Spot_Days', 'Integer', default=0,
+          description='Settlement lag in business days - where a spot-starting benchmark begins'),
+        F('Fixed_Frequency', 'Period', default='3M',
+          description='Coupon frequency of a swap benchmark\'s fixed leg'),
+        F('Float_Frequency', 'Period', default='3M',
+          description='Coupon frequency of a swap benchmark\'s floating leg'),
+        F('Fixed_Day_Count', 'Text', default='ACT_365', values=list(DAY_COUNTS),
+          description='Daycount a swap benchmark\'s fixed leg accrues on'),
+        F('Float_Day_Count', 'Text', default='ACT_365', values=list(DAY_COUNTS),
+          description='Daycount a swap benchmark\'s floating leg and its index accrue on'),
+        F('Front_Day_Count', 'Text', default='ACT_365', values=list(DAY_COUNTS),
+          description='Daycount the front deposit accrues on'),
+        F('Compounding', 'Text', default='None', values=['None', 'OIS'],
+          description='What the swap rows are: OIS marks an overnight-compounded benchmark'),
+        F('Near_Interpolation', 'Text', default='',
+          values=[''] + list(riskfactors.INTERPOLATION_METHODS),
+          description='Interpolation the solved curve carries up to Near_Tenor, where the near end '
+                      'is quoted in a different instrument; blank leaves one scheme over all of it'),
+        F('Near_Tenor', 'Period', default='',
+          description='Where the near interpolation stops, as a period from the base date'),
         F('N_Iter', 'Integer', default=50,
           description='Newton iteration cap. Newton is quadratic near the root and a par-rate seed '
                       'is already within a few basis points, so a well-posed strip converges in '
@@ -5779,6 +5809,13 @@ class InterestRateCurveParameters(Construction):
             F('Deal', 'Container', default={},
               description='The instrument itself, authored as a deal of type DealType'),
             F('Descriptor', 'Text', default='', description='Free text naming the quote'),
+            F('Tenor', 'Text', default='',
+              description='The label this benchmark was authored from, in the block\'s '
+                          'conventions: ON, 3M, 3Y, 1Mx4M for a FRA, 6M1M for a swap starting in '
+                          'six months. Structure - it is what re-rolls the dates on a new date'),
+            F('Security', 'Text', default='',
+              description='The security the row is quoted off, where it came from a market data '
+                          'source. Stored and reported, read by nothing in the solve'),
             F('DealType', 'Text', default='DepositDeal', values=list(quote_instruments),
               description='The instrument type the quote is a price for'),
             F('Quote_Type', 'Text', default='Par_Rate', values=['Par_Rate'],
@@ -5927,10 +5964,19 @@ class InterestRateCurveParameters(Construction):
                 '{}: {} matured on or before the base date {:%Y-%m-%d}, so the knot each '
                 'identifies lands at tenor zero, which no curve carries. Hold the quote out with '
                 'Use No, or move the base date'.format(market_price, '; '.join(dead), base_date))
-        price_factors[utils.check_tuple_name(curve)] = {
+        written = {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
             'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
                 knots, [point['Quoted_Market_Value'] / 100.0 for point in points])))}
+        if block['Near_Interpolation']:
+            if not block['Near_Tenor']:
+                raise ValueError('{}: Near_Interpolation {} names no Near_Tenor to stop at'.format(
+                    market_price, block['Near_Interpolation']))
+            # the near end is quoted in another instrument, so it carries another scheme: the
+            # factor stacks the two on the knot the tenor lands in and the solve reads both
+            written.update({'Near_Interpolation': block['Near_Interpolation'],
+                            'Near_Date': base_date + block['Near_Tenor']})
+        price_factors[utils.check_tuple_name(curve)] = written
         return curve, points, nodes, discount_rate
 
     def coupled_sets(self, blocks, price_factors, factor_interp, base_date, calendars):

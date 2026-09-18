@@ -31,7 +31,7 @@ import pandas as pd
 import pytest
 import torch
 
-from derivus import utils
+from derivus import riskfactors, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
                                    author_quote,
@@ -106,10 +106,58 @@ def zar_blocks():
         'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': points}}
 
 
+# ---------------------------------------------------------------------------------------------
+# A ZARONIA-style world: an overnight front, OIS swaps quoted MONTHLY out to the last policy
+# meeting anyone has a view on, and ordinary annual swaps beyond. That is two quoting conventions
+# on one curve, which is what `Near_Interpolation` is for - LinearRT through the monthly half,
+# HermiteRT over the annual one. Its shape is a cutting cycle that stops: 7.05% easing to 6.85% by
+# 18M, then steepening back to 7.65% at ten years.
+# ---------------------------------------------------------------------------------------------
+ZARONIA_MONTHS = (1, 2, 3, 6, 9, 12, 15, 18)
+ZARONIA_YEARS = (2, 3, 5, 10)
+ZARONIA_TRUE = [0.0702, 0.0700, 0.0697, 0.0694, 0.0692, 0.0690, 0.0687, 0.0686, 0.0685, 0.0685,
+                0.0692, 0.0710, 0.0741, 0.0765]
+
+
+def zaronia_blocks():
+    """The monthly half is the near one, and `Near_Tenor` is where it stops - the last monthly
+    benchmark, so the split lands ON a knot rather than inside a segment.
+
+    `Tol` IS DECLARED HERE, and the overnight front is why. That benchmark's PV is a difference of
+    two numbers of the notional's size, so its residual floors at one ULP of 1e6 - 1.16e-10 - and
+    the Newton step that floor implies is `1.16e-10 / (N tau)` with tau a day, which is 4e-14: the
+    declared default of 1e-14 is below the arithmetic and the line search runs out of halvings at
+    iteration 4. A three-month front divides the same floor by ninety and never sees it.
+    """
+    points = [quote_point('ZAR ON', deposit('ON', 'ZAR', 'ZAR-ZARONIA', 0, 0.0,
+                                            day_count='ACT_365', days=1))]
+    points += [quote_point('ZAR {}M OIS'.format(m),
+                           par_swap('OIS_{}M'.format(m), 'ZAR', 'ZAR-ZARONIA', 'ZAR-ZARONIA', 0,
+                                    0.0, fixed_frequency=12, float_frequency=12,
+                                    day_count='ACT_365', compounding='OIS', months=m))
+               for m in ZARONIA_MONTHS]
+    # THE ONE BENCHMARK THAT READS THE NEAR HALF BETWEEN ITS KNOTS. Every OIS row above pays
+    # annually, so each reads the curve at its own maturity and at knots the ladder already
+    # carries; a 4x7 FRA reads 4M, which no quote puts a knot at, and is therefore the only row
+    # the near interpolation can move. Placed at its own maturity so the grid stays ascending.
+    points.insert(5, quote_point('ZAR FRA 4x7', fra('FRA_4X7', 'ZAR', 'ZAR-ZARONIA', 'ZAR-ZARONIA',
+                                                    4, 7, 0.0, day_count='ACT_365')))
+    points += [quote_point('ZAR {}Y OIS'.format(y),
+                           par_swap('OIS_{}Y'.format(y), 'ZAR', 'ZAR-ZARONIA', 'ZAR-ZARONIA', y,
+                                    0.0, fixed_frequency=12, float_frequency=12,
+                                    day_count='ACT_365', compounding='OIS'))
+               for y in ZARONIA_YEARS]
+    return {'InterestRatePrices.ZAR-ZARONIA': {
+        'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': points,
+        'Tol': 1e-13, 'Near_Interpolation': 'LinearRT',
+        'Near_Tenor': pd.DateOffset(months=18)}}
+
+
 WORLDS = {
     'usd': (usd_blocks, {'InterestRate.USD-OIS': USD_OIS_TRUE, 'InterestRate.USD-3M': USD_PROJ_TRUE},
             'USD', 'USD-OIS'),
     'zar': (zar_blocks, {'InterestRate.ZAR-JIBAR-3M': ZAR_TRUE}, 'ZAR', 'ZAR-JIBAR-3M'),
+    'zaronia': (zaronia_blocks, {'InterestRate.ZAR-ZARONIA': ZARONIA_TRUE}, 'ZAR', 'ZAR-ZARONIA'),
 }
 
 
@@ -133,7 +181,7 @@ def discount_of(market_price, block):
     return block['Discount_Rate'] or '.'.join(utils.check_rate_name(market_price)[1:])
 
 
-def par_quotes(block, discount_rate, price_factors):
+def par_quotes(block, discount_rate, price_factors, interp=None):
     """The rate, in percent, at which each benchmark is worth exactly zero on `price_factors`.
 
     PV is affine in the quote, so `PV(0) / (PV(0) - PV(1))` is the root and not an approximation of
@@ -142,12 +190,12 @@ def par_quotes(block, discount_rate, price_factors):
     root in percent, which is the unit every quote field on every one of these deals is read in.
     """
     priced = [BenchmarkInstruments(
-        block_nodes(block, discount_rate, quote), price_factors, INTERP, BASE, block['Currency'],
-        {}, [], DEVICE)({}).detach().numpy() for quote in (0.0, 1.0)]
+        block_nodes(block, discount_rate, quote), price_factors, interp or INTERP, BASE,
+        block['Currency'], {}, [], DEVICE)({}).detach().numpy() for quote in (0.0, 1.0)]
     return priced[0] / (priced[0] - priced[1])
 
 
-def authored_world(world):
+def authored_world(world, interp=None):
     """`(market_prices, price_factors, true_curves)` - the quotes generated off a known curve.
 
     The knots come from the family's own rule, so the curve is authored on exactly the grid the
@@ -165,29 +213,34 @@ def authored_world(world):
         knots = quote_knots(block_nodes(block, discount_rate, 0.0), BASE, block['Day_Count'], {})
         assert (np.diff(knots) > 0).all(), 'the quotes must be authored in maturity order'
         true_curves[curve_of(market_price)] = knots
-        price_factors[curve_of(market_price)] = {
+        price_factors[curve_of(market_price)] = dict({
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': currency,
             'Day_Count': block['Day_Count'],
-            'Curve': utils.Curve([], list(zip(knots, true_nodes[curve_of(market_price)])))}
+            'Curve': utils.Curve([], list(zip(knots, true_nodes[curve_of(market_price)])))},
+            # the TRUE curve carries the split the block declares, or the quotes would be generated
+            # under one interpolation and recovered under another
+            **({'Near_Interpolation': block['Near_Interpolation'],
+                'Near_Date': BASE + block['Near_Tenor']}
+               if block.get('Near_Interpolation') else {}))
 
     # in block order, which is dependency order here: the projection quotes discount on the OIS
     # curve, so that curve has to be authored before they can be priced
     for market_price, block in blocks.items():
         for point, quote in zip(block['Points'], par_quotes(
-                block, discount_of(market_price, block), price_factors)):
+                block, discount_of(market_price, block), price_factors, interp)):
             point['Quoted_Market_Value'] = quote
 
     market_prices = {name: {'instrument': block, 'Children': []} for name, block in blocks.items()}
     return market_prices, price_factors, true_curves
 
 
-def bootstrapped(market_prices, currency, spot_curve, dtype=torch.float32):
+def bootstrapped(market_prices, currency, spot_curve, dtype=torch.float32, interp=None):
     """Run the family the way `Config.bootstrap` runs it, into an empty `Price Factors`."""
     price_factors = {'FxRate.{}'.format(currency): {
         'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}}
     InterestRateCurveParameters({}, DEVICE, dtype).bootstrap(
-        {'Base_Date': BASE, 'Base_Currency': currency}, {}, price_factors, INTERP, market_prices,
-        {})
+        {'Base_Date': BASE, 'Base_Currency': currency}, {}, price_factors, interp or INTERP,
+        market_prices, {})
     return price_factors
 
 
@@ -345,6 +398,101 @@ def test_the_solver_knobs_are_read_off_the_block(knob, value):
     market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument'][knob] = value
     with pytest.raises(Exception, match='Curve bootstrap'):
         bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M')
+
+
+def test_the_near_split_is_written_through_and_every_quote_still_reprices():
+    """THE BLOCK SAYS HOW THE CURVE IT DEFINES IS INTERPOLATED AT THE FRONT, and the seed writes
+    that onto the factor: `Near_Interpolation` as declared, `Near_Date` as base date plus
+    `Near_Tenor`. A ZARONIA curve is quoted monthly to the last policy meeting anyone has a view on
+    and annually beyond, which is two conventions on one curve - LinearRT through the near half,
+    the job's own scheme over the far one.
+
+    THE SOLVE READS BOTH SEGMENTS, which is what makes this more than a stored string:
+    `BenchmarkInstruments` constructs its factor with the base date, so the residual is priced off
+    the stacked interpolation and every benchmark comes back at par. Drop the two keys from `seed`
+    and the solve prices under one scheme where the quotes were generated under two: the round trip
+    misses by **1.907e-05** with a Linear far leg and 1.879e-05 with a HermiteRT one, against its
+    1e-10 bound.
+
+    THE PAR CHECK CANNOT SEE IT AND THE ROUND TRIP CAN. A solve drives its own benchmarks to par
+    under whatever scheme it is using, so the residual reads 1.164e-10 either way; only a curve
+    AUTHORED under the split separates them. And it separates them only where a benchmark reads the
+    near half BETWEEN its knots - which annual-paying OIS rows never do, every coupon of theirs
+    landing on a knot the ladder already carries. The 4x7 FRA is in the world for that one reason,
+    and without it this gate's own mutation survives.
+
+    A block declaring NEITHER writes exactly the five keys it always wrote.
+    """
+    interp = ModelParams()
+    interp.append('InterestRate', (), 'HermiteRT')
+    market_prices, true_factors, _ = authored_world('zaronia', interp)
+    solved = bootstrapped(market_prices, 'ZAR', 'ZAR-ZARONIA', interp=interp)
+    factor = solved['InterestRate.ZAR-ZARONIA']
+    assert factor['Near_Interpolation'] == 'LinearRT'
+    assert factor['Near_Date'] == BASE + pd.DateOffset(months=18)
+
+    # the factor the engine builds off it carries TWO segments, split on the 18M knot itself
+    built = riskfactors.construct_factor(
+        utils.Factor('InterestRate', ('ZAR-ZARONIA',)), solved, interp, base_date=BASE)
+    assert [segment[2][0] for segment in built.interpolation] == ['LinearRT', 'HermiteRT']
+    split = built.interpolation[0][1]
+    assert built.tenors[split] == pytest.approx(
+        ((BASE + pd.DateOffset(months=18)) - BASE).days / 365.0)
+    # the overnight front, every monthly benchmark and the FRA between them
+    assert split == len(ZARONIA_MONTHS) + 1
+
+    # every benchmark reprices at par off the SOLVED curve, read through both segments
+    block = market_prices['InterestRatePrices.ZAR-ZARONIA']['instrument']
+    priced = BenchmarkInstruments(block_nodes(block, 'ZAR-ZARONIA'), solved, interp, BASE, 'ZAR',
+                                  {}, [], DEVICE)({}).detach().numpy()
+    assert np.abs(priced).max() < 1e-9, priced
+
+    plain = bootstrapped(*authored_world('zar')[:1], 'ZAR', 'ZAR-JIBAR-3M')
+    assert set(plain['InterestRate.ZAR-JIBAR-3M']) == {
+        'Property_Aliases', 'Sub_Type', 'Currency', 'Day_Count', 'Curve'}
+
+
+def test_a_near_interpolation_without_its_tenor_refuses_by_name():
+    """The split needs the date it stops at: a block naming the scheme and no tenor is refused
+    before a quote is read, rather than dying on a date plus an empty string."""
+    market_prices, _, _ = authored_world('zaronia')
+    market_prices['InterestRatePrices.ZAR-ZARONIA']['instrument']['Near_Tenor'] = ''
+    with pytest.raises(Exception, match='Near_Tenor'):
+        bootstrapped(market_prices, 'ZAR', 'ZAR-ZARONIA')
+
+
+def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
+    """WHY THE OIS BENCHMARK IS A TERM SWAP. At t0 the compounded overnight forwards read off a
+    curve telescope to the period forward, so a coupon carrying ONE reset over its own accrual
+    prices what a list of daily fixings prices - on a flat curve and on a sloped one alike.
+
+    MEASURED, at a 4% quote on a million of notional. On a flat 4% curve the 2Y reads
+    483.511030079 both ways off 523 items against one deal, the 10Y 2068.437863819 off 2612; on the
+    world's own sloped curve the 5Y reads -355.506266991 both ways and the 10Y 2012.027439223. The
+    largest disagreement over the eight readings is 6.4e-10, which is the float64 noise of summing
+    2612 items rather than a difference.
+
+    The shape that does NOT work is the one in between: a list authored one item per COUPON, each
+    carrying every fixing's reset, which is what the engine's own leg generation produces and which
+    `pv_float_cashflow_list` averages at 1/n.
+    """
+    _, price_factors, _ = authored_world('usd')
+    flat = dict(price_factors)
+    flat['InterestRate.USD-OIS'] = dict(
+        price_factors['InterestRate.USD-OIS'],
+        Curve=utils.Curve([], [(t, 0.04) for t in
+                               price_factors['InterestRate.USD-OIS']['Curve'].array[:, 0]]))
+
+    for label, factors in (('flat', flat), ('sloped', price_factors)):
+        for months in (12, 24, 60, 120):
+            listed = quote_node(ois_swap('LIST', 'USD', 'USD-OIS', months, 4.0), {})
+            term = quote_node(par_swap('TERM', 'USD', 'USD-OIS', 'USD-OIS', 0, 4.0,
+                                       fixed_frequency=12, float_frequency=12, months=months,
+                                       compounding='OIS'), {})
+            pvs = [float(BenchmarkInstruments([node], factors, INTERP, BASE, 'USD', {}, [],
+                                              DEVICE)({}).detach().numpy()[0])
+                   for node in (listed, term)]
+            assert pvs[0] == pytest.approx(pvs[1], abs=1e-8), (label, months, pvs)
 
 
 def test_a_tighter_tolerance_still_converges_to_the_same_curve():

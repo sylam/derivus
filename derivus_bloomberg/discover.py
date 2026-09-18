@@ -44,10 +44,13 @@ STALE_DAYS = 5
 #: partial outage partial.
 BATCH = 50
 
-#: The OIS-strip tenor suffix has three forms in one family: integer+Z for weeks, a bare letter
-#: A..K for months 1..11, and the plain year number - USOSFR1Z / USOSFRA / USOSFR1.
+#: The OIS-strip tenor suffix has four forms in one family: integer+Z for weeks, a bare letter
+#: A..K for months 1..11, the year number carrying the leftover months as that same letter, and
+#: the plain year number - USOSFR1Z / USOSFRA / SAOIAA1C (15M) / USOSFR1.
 WEEK_SUFFIX = {'1W': '1Z', '2W': '2Z', '3W': '3Z'}
 MONTH_SUFFIX = {'{}M'.format(month + 1): code for month, code in enumerate('ABCDEFGHIJK')}
+LONG_MONTH_SUFFIX = {'{}M'.format(12 * year + month): '{}{}'.format(year, code or '')
+                     for year in (1, 2) for month, code in enumerate('ABCDEFGHIJK', 1)}
 
 Candidate = namedtuple('Candidate', 'security path expect')
 Verdict = namedtuple('Verdict', 'candidate verdict name last_update error')
@@ -87,26 +90,43 @@ def fx_spot_candidates(pairs):
                         (_dashed(pair), 'X-RATE'))
 
 
-def strip_candidates(currency, spec):
-    """A swap strip from a seed-supplied prefix. The expected NAME is the seed's `expect`
+def _ticker(spec, suffix):
+    """A strip ticker: the prefix, the tenor suffix and the pricing source the seed declares.
+    `BGN` is the composite both shipped strips are verified under; a family the terminal answers
+    under its own name declares `"source": ""`."""
+    return ' '.join(filter(None, ('{}{}'.format(spec['prefix'], suffix),
+                                  spec.get('source', 'BGN'), 'Curncy')))
+
+
+def strip_candidates(curve, spec):
+    """One seeded curve's benchmarks from its prefix. The expected NAME is the seed's `expect`
     fragment alone - strip names spell their tenors too inconsistently to grammar ('1WK',
-    'SASW10' truncating - unlike the FX grid, which is checked tenor and all)."""
-    prefix, expect = spec['prefix'], (spec['expect'],)
+    'SASW10' truncating - unlike the FX grid, which is checked tenor and all).
+
+    `weeks`, `months` and `long_months` take `true` for the whole table or the labels wanted. A
+    FRA and a forward-starting swap family carry their own prefix and a `{label: suffix}` table,
+    spelled as DATA because neither suffix is a rule: `SAFR0I1` is 9x12 and `SAFR011C` is 12x15.
+    """
     suffixes = {}
-    if spec.get('weeks'):
-        suffixes.update(WEEK_SUFFIX)
-    if spec.get('months'):
-        suffixes.update(MONTH_SUFFIX)
+    for declared, table in (('weeks', WEEK_SUFFIX), ('months', MONTH_SUFFIX),
+                            ('long_months', LONG_MONTH_SUFFIX)):
+        asked = spec.get(declared)
+        suffixes.update(table if asked is True else
+                        {label: table[label] for label in asked or ()})
     suffixes.update({'{}Y'.format(year): str(year) for year in spec.get('years', [])})
     for label, suffix in suffixes.items():
-        yield Candidate('{}{} BGN Curncy'.format(prefix, suffix),
-                        ('rates', currency, 'strip', label), expect)
+        yield Candidate(_ticker(spec, suffix), ('rates', curve, 'strip', label), (spec['expect'],))
+    for kind in ('fra', 'forward'):
+        family = spec.get(kind + 's', {})
+        for label, suffix in family.get('tenors', {}).items():
+            yield Candidate(_ticker(family, suffix),
+                            ('rates', curve, kind, label), (family['expect'],))
     overnight = spec.get('overnight')
     if overnight:
-        yield Candidate(overnight['security'], ('rates', currency, 'overnight'),
+        yield Candidate(overnight['security'], ('rates', curve, 'overnight'),
                         (overnight['expect'],))
     for label, fixing in spec.get('fixings', {}).items():
-        yield Candidate(fixing['security'], ('rates', currency, 'fixings', label),
+        yield Candidate(fixing['security'], ('rates', curve, 'fixings', label),
                         (fixing['expect'],))
 
 
@@ -126,8 +146,8 @@ def candidates_from_seed(seed):
     for pair in fx_vol.get('pairs', []):
         yield from fx_vol_candidates(pair, fx_vol.get('expiries', {}), fx_vol.get('pillars', []))
     yield from fx_spot_candidates(seed.get('fx_spot', {}).get('pairs', []))
-    for currency, spec in seed.get('rates', {}).items():
-        yield from strip_candidates(currency, spec)
+    for curve, spec in seed.get('rates', {}).items():
+        yield from strip_candidates(curve, spec)
     for currency, spec in seed.get('swaption', {}).items():
         yield from swaption_candidates(currency, spec)
 

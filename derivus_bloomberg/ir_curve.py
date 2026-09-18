@@ -16,21 +16,28 @@ The family quotes an instrument rather than a number: each `Points` row carries 
 the instrument's own conventions and the solve holds it at PV zero, so the emitter's job is to say
 what the instrument IS, from declared data.
 
-Conventions are seed-declared - `USOSFR10` is annual/annual ACT/360 compounded overnight, `SASW10`
-quarterly/quarterly ACT/365 against 3M JIBAR, and the same number under the other convention is a
-different curve by basis points. A currency whose seed entry carries no `conventions` block refuses
-by name with the missing fields listed. `front` names which verified entry seeds the short end (a
-SOFR OIS curve's is the overnight print, a JIBAR-3M curve's the 3M JIBAR fixing) and the remaining
-seeded fixings are ledgered `not-a-benchmark`. Securities come from `discover.strip_candidates`
-walked against the workstation's own verified map, so the ticker grammar is spelled once in this
-package and a strip the terminal never verified cannot enter a block on a seed's say-so.
+THE BLOCK IS THE CURVE'S DEFINITION, so the conventions the rows were authored under are emitted
+beside them and each row carries the `Tenor` it came from. They are seed-declared - `USOSFR10` is
+annual/annual ACT/360 compounded overnight, `SASW10` quarterly/quarterly ACT/365 against 3M JIBAR,
+and the same number under the other convention is a different curve by basis points. A seed entry
+carrying no `conventions` block refuses by name with the missing fields listed. `front` names which
+verified entry seeds the short end (a SOFR OIS curve's is the overnight print, a JIBAR-3M curve's
+the 3M JIBAR fixing) and the remaining seeded fixings are ledgered `not-a-benchmark`. Securities
+come from `discover.strip_candidates` walked against the workstation's own verified map, so the
+ticker grammar is spelled once in this package and a strip the terminal never verified cannot enter
+a block on a seed's say-so.
 
 The quote is not authored into the deal: `QUOTE_WRITERS` is where a number lands, off
 `Quoted_Market_Value`, and every rate-carrying field is authored at a neutral zero, so a value-only
 re-tick passes `schema.update_market_quote` as 'updated' rather than refusing as a moved plan.
 
-V1 SCOPE: a self-discounting single curve, the declared front point, the swap strip as seeded, and
-`Quote_Type` `Par_Rate`. No FRAs, no FX-forward outrights, no cross-currency, no projection curve.
+The four shapes a row's `Tenor` names: `3M` at the front is a deposit, `1Mx4M` a FRA, `3Y` a spot
+swap and `6M1M` a swap starting in six months. An OIS strip is the same swap with `Compounding` OIS
+and ONE reset spanning each coupon - at t0 that prices the par swap the daily fixing list does, to
+the ninth decimal, and a two-year benchmark is 1.4 KB rather than the 285 KB its fixings encode to.
+
+SCOPE: a self-discounting single curve and `Quote_Type` `Par_Rate`. No FX-forward outrights, no
+cross-currency, no projection curve.
 
 IMPORTS: the standard library and this package's own modules. `discover` is reached for its grammar
 and carries pandas, so unlike `equity_chain` this module makes no pandas-free claim; nothing here
@@ -58,25 +65,26 @@ BATCH = 50
 FAMILY = 'InterestRatePrices'
 QUOTE_TYPE = 'Par_Rate'
 
-#: The two authoring shapes a swap strip is written in, and the DealType each one names. `OIS` is a
-#: container over an OIS-compounded floating leg and a fixed leg, which the compounding rule
-#: requires: `pv_float_cashflow_list` compounds geometrically only when the reset count differs
-#: from the cashflow count, and a `SwapInterestDeal`'s generated legs never reach that compression.
-#: `Swap` is the vanilla single-reset par swap, one deal.
-AUTHORING = {'OIS': 'StructuredDeal', 'Swap': 'SwapInterestDeal'}
+#: What a swap row IS - the `SwapInterestDeal` field of the same name. `OIS` marks a benchmark
+#: against an overnight index; the coupon carries one reset spanning itself either way.
+COMPOUNDING = ('None', 'OIS')
 
-#: The day counts this emitter computes an accrual in - ACT/365 and ACT/360 and no more, because an
-#: authored `Accrual_Year_Fraction` is used verbatim by `TensorCashFlows.float`. ACT_365_ISDA and
-#: ACT_ACT_ICMA (which the engine answers as days/365 behind a TODO) and the two 30/360 conventions
-#: refuse by name rather than being reproduced on trust.
-DAY_COUNTS = {'ACT_365': 365.0, 'ACT_360': 360.0}
+#: The day counts a seed may declare - ACT/365 and ACT/360 and no more, because the engine's own
+#: schedule generation answers ACT_365_ISDA and ACT_ACT_ICMA as days/365 behind a TODO and the two
+#: 30/360 conventions need date arithmetic this module does not author.
+DAY_COUNTS = ('ACT_365', 'ACT_360')
 
-#: The convention fields a seeded currency must declare before its strip can be authored, and the
+#: `riskfactors.INTERPOLATION_METHODS`, re-spelled because this package imports no engine module.
+#: A gate reads the two declarations and requires them equal, so neither drifts alone.
+INTERPOLATIONS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
+
+#: The convention fields a seeded curve must declare before its strip can be authored, and the
 #: ones that carry a default. A missing one is a NAMED refusal listing all of them at once, because
 #: a desk filling in a seed wants the whole list rather than one field per run.
-REQUIRED_CONVENTIONS = ('curve_day_count', 'spot_days', 'front', 'front_day_count', 'authoring',
+REQUIRED_CONVENTIONS = ('curve_day_count', 'spot_days', 'front', 'front_day_count', 'compounding',
                         'fixed_frequency', 'float_frequency', 'fixed_day_count', 'float_day_count')
-OPTIONAL_CONVENTIONS = {'notional': 1000000.0, 'quote_scale': 1.0}
+OPTIONAL_CONVENTIONS = {'notional': 1000000.0, 'quote_scale': 1.0, 'calendar': '',
+                        'near_interpolation': '', 'near_tenor': ''}
 
 
 class ReferenceDataSource(Protocol):
@@ -94,17 +102,17 @@ class ReferenceDataSource(Protocol):
 
 @dataclass(frozen=True)
 class CurveConventions:
-    """What a currency's strip IS - read off the seed, never inferred from a ticker.
+    """What a curve's strip IS - read off the seed, never inferred from a ticker.
 
-    Every field here is a market convention somebody owns. They are validated on construction
-    (a day count this module cannot compute, an authoring shape it does not write, a negative
-    settlement lag) so a bad declaration refuses at the seed rather than inside a cashflow.
+    Every field here is a market convention somebody owns. They are validated on construction (a
+    day count this module does not write, a compounding rule no swap carries, half a near split, a
+    negative settlement lag) so a bad declaration refuses at the seed rather than inside a cashflow.
     """
     curve_day_count: str
     spot_days: int
     front: str
     front_day_count: str
-    authoring: str
+    compounding: str
     fixed_frequency: str
     float_frequency: str
     fixed_day_count: str
@@ -115,33 +123,41 @@ class CurveConventions:
     #: `Swap_Rate`, and a fixed leg's `Rate` is a `Percent`. Both seeded strips print percent
     #: already and declare 1.0; a family printing decimals is then a seed edit.
     quote_scale: float = OPTIONAL_CONVENTIONS['quote_scale']
+    #: The holiday calendar the dates are rolled against, named in the job's calendar file. The
+    #: DATES come from an iterable the caller hands in; this is what the block declares it used.
+    calendar: str = OPTIONAL_CONVENTIONS['calendar']
+    #: Where the near end is quoted in another instrument, the scheme it carries up to `near_tenor`
+    #: - a ZARONIA curve is monthly MPC-dated to 18M and ordinary swaps beyond.
+    near_interpolation: str = OPTIONAL_CONVENTIONS['near_interpolation']
+    near_tenor: str = OPTIONAL_CONVENTIONS['near_tenor']
 
     def __post_init__(self):
-        if self.authoring not in AUTHORING:
+        if self.compounding not in COMPOUNDING:
             raise BloombergConfigurationError(
-                'authoring {!r} is not a shape this emitter writes - a swap strip is authored as '
-                '{}. Fix the currency\'s `conventions` in the seed'.format(
-                    self.authoring, ' or '.join(
-                        '{!r} (a {})'.format(key, value) for key, value in sorted(AUTHORING.items()))))
+                'compounding {!r} is not what a swap row can be - it is {}. Fix the curve\'s '
+                '`conventions` in the seed'.format(self.compounding, ' or '.join(
+                    repr(value) for value in COMPOUNDING)))
         for name in ('curve_day_count', 'front_day_count', 'fixed_day_count', 'float_day_count'):
-            _day_count_factor(getattr(self, name), name)
+            _check_day_count(getattr(self, name), name)
         for name in ('fixed_frequency', 'float_frequency'):
-            # POSITIVE, not merely readable: on a zero-length coupon period `_dates_backward` walks
-            # forever rather than refusing, and a hang carries no message
+            # POSITIVE, not merely readable: a zero-length coupon period is a schedule the engine's
+            # own generation never advances along, and a hang carries no message
             if read_tenor(getattr(self, name), name)[0] <= 0:
                 raise BloombergConfigurationError(
                     '{} is {!r} - a leg frequency has to be a positive period, or the coupon '
                     'schedule never advances'.format(name, getattr(self, name)))
-        # V1 AUTHORS BOTH OIS LEGS ON ONE SCHEDULE: `_ois_swap` rolls the coupon dates once off
-        # `fixed_frequency`, so a differing `float_frequency` would be declared and never read. The
-        # `Swap` path reads both - the engine generates the legs there - and is left alone.
-        if self.authoring == 'OIS' and self.float_frequency != self.fixed_frequency:
+        if self.near_interpolation and self.near_interpolation not in INTERPOLATIONS:
             raise BloombergConfigurationError(
-                'float_frequency is {!r} against a fixed_frequency of {!r} on an OIS declaration, '
-                'and v1 authors BOTH OIS legs on ONE schedule rolled off fixed_frequency - so the '
-                'float frequency would be declared here and read nowhere. Declare the two equal, '
-                'or declare `authoring: "Swap"`, where the engine generates each leg on its own '
-                'frequency'.format(self.float_frequency, self.fixed_frequency))
+                'near_interpolation {!r} is not a scheme the engine interpolates a curve with - it '
+                'is one of {}, or blank for one scheme over the whole curve'.format(
+                    self.near_interpolation, ', '.join(INTERPOLATIONS)))
+        if bool(self.near_interpolation) != bool(self.near_tenor):
+            raise BloombergConfigurationError(
+                'near_interpolation is {!r} against a near_tenor of {!r} - a near scheme is a '
+                'scheme AND where it stops, and half of it would be read nowhere. Declare both, or '
+                'neither'.format(self.near_interpolation, self.near_tenor))
+        if self.near_tenor:
+            read_tenor(self.near_tenor, 'near_tenor')
         if not isinstance(self.spot_days, int) or self.spot_days < 0:
             raise BloombergConfigurationError(
                 'spot_days must be a whole number of business days at or above zero, not {!r} - it '
@@ -152,21 +168,17 @@ class CurveConventions:
         if not math.isfinite(self.quote_scale) or self.quote_scale == 0.0:
             raise BloombergConfigurationError('quote_scale must be finite and non-zero')
 
-    @property
-    def deal_type(self) -> str:
-        return AUTHORING[self.authoring]
 
-
-def curve_conventions(seed: Mapping, currency: str) -> CurveConventions:
-    """The declared conventions of one seeded currency, or the refusal naming EVERY absent field at
+def curve_conventions(seed: Mapping, curve: str) -> CurveConventions:
+    """The declared conventions of one seeded curve, or the refusal naming EVERY absent field at
     once - a desk extending a seed wants the whole questionnaire, not one field per run.
     """
-    spec = seed.get('rates', {}).get(currency)
+    spec = seed.get('rates', {}).get(curve)
     if spec is None:
         raise BloombergConfigurationError(
-            'the seed names no rates entry for {} - a currency this workstation never seeded has no '
+            'the seed names no rates entry for {} - a curve this workstation never seeded has no '
             'strip to fetch and no conventions to author one in. Add it to `seed.json` and re-run '
-            '`DV_Bloomberg discover`'.format(currency))
+            '`DV_Bloomberg discover`'.format(curve))
     declared = spec.get('conventions')
     if not isinstance(declared, collections.abc.Mapping):
         raise BloombergConfigurationError(
@@ -174,34 +186,34 @@ def curve_conventions(seed: Mapping, currency: str) -> CurveConventions:
             'something says what it accrues on, and this emitter reads that rather than guessing '
             'it. Declare {} on the {} entry in your seed (see derivus_bloomberg/seed.json for the '
             'shipped USD and ZAR declarations)'.format(
-                currency, ', '.join(REQUIRED_CONVENTIONS), currency))
+                curve, ', '.join(REQUIRED_CONVENTIONS), curve))
     missing = [name for name in REQUIRED_CONVENTIONS if declared.get(name) is None]
     if missing:
         raise BloombergConfigurationError(
             '{} declares no {} - the full set this emitter reads is {}, and a convention block '
             'filled in half way authors an instrument nobody stated. Fix the {} entry in your '
-            'seed'.format(currency, ', '.join(missing), ', '.join(REQUIRED_CONVENTIONS), currency))
+            'seed'.format(curve, ', '.join(missing), ', '.join(REQUIRED_CONVENTIONS), curve))
     unknown = sorted(set(declared) - set(REQUIRED_CONVENTIONS) - set(OPTIONAL_CONVENTIONS))
     if unknown:
         raise BloombergConfigurationError(
             '{} declares {} which this emitter reads nothing of - a convention nobody reads is a '
             'convention that is not applied, which is worse than one that is missing. Remove it, or '
             'spell it as one of {}'.format(
-                currency, ', '.join(unknown),
+                curve, ', '.join(unknown),
                 ', '.join(sorted(set(REQUIRED_CONVENTIONS) | set(OPTIONAL_CONVENTIONS)))))
     # `front` is a PATH INTO THE SEED, so it is checked HERE rather than in `__post_init__`, which
     # cannot see one: a path that names nothing does not fail, it aims elsewhere. `front:
     # 'strip/1Y'` would author the 1Y par swap as a one-day deposit labelled overnight.
-    admissible = _seeded_fronts(seed, currency)
+    admissible = _seeded_fronts(seed, curve)
     if declared['front'] not in admissible:
         raise BloombergConfigurationError(
             '{} declares its front as {!r}, which is not an entry its seed could name - the '
             'admissible spellings are {}. The front is what seeds the short end, and a `front` '
             'aimed at the swap strip would author a par swap as a one-day overnight deposit and '
             'name it `overnight` in the Descriptor rather than refuse. Fix the {} entry in your '
-            'seed'.format(currency, declared['front'],
+            'seed'.format(curve, declared['front'],
                           ', '.join(admissible) or 'none: the entry seeds neither an `overnight` '
-                          'print nor any `fixings`, so it can carry no front at all', currency))
+                          'print nor any `fixings`, so it can carry no front at all', curve))
     return CurveConventions(**{name: declared[name] for name in REQUIRED_CONVENTIONS},
                             **{name: declared[name] for name in OPTIONAL_CONVENTIONS
                                if name in declared})
@@ -220,13 +232,6 @@ class CurveScreen:
     #: How many believed prints a block needs. Two is the floor a CURVE means anything at: one knot
     #: is a flat curve quoted once, and the family's own knot rule puts one knot per used quote.
     minimum_points: int = 2
-    #: How many daily fixings the whole block may author, across every OIS benchmark in it.
-    #:
-    #: A SIZE BOUND. An OIS floating leg is one authored item per business-day fixing (see
-    #: `_ois_swap`), so a 30Y benchmark is about 7,800 items and the shipped USD strip about 25,700
-    #: - roughly fourteen megabytes of JSON, which the default admits. What the cap catches is a
-    #: seed reaching further, and it refuses with the count rather than with a MemoryError.
-    maximum_fixings: int = 50000
 
     def __post_init__(self):
         object.__setattr__(self, 'rate_band', tuple(self.rate_band))
@@ -321,8 +326,13 @@ def probe(source, securities, fields=QUOTE_FIELDS, batch=BATCH, on_batch=None):
     return report
 
 
-def strip_entries(document, seed, currency):
-    """`(wanted, ledger)` - the verified securities of one currency's strip, walked off the GRAMMAR.
+#: What a candidate's own map path says the row IS - the grammar's third segment, and the shape
+#: `author_point` writes. `fixings` is the only one that is not a benchmark on its own.
+KINDS = {'strip': 'swap', 'fra': 'fra', 'forward': 'forward'}
+
+
+def strip_entries(document, seed, curve):
+    """`(wanted, ledger)` - the verified securities of one curve's strip, walked off the GRAMMAR.
 
     `discover.strip_candidates` supplies the candidates and each one's `path` is looked up in the
     workstation's own map, so this module spells no ticker and no map path. A candidate the map did
@@ -330,14 +340,15 @@ def strip_entries(document, seed, currency):
     front point is `not-a-benchmark`, since a 6M JIBAR print is an index rather than an instrument
     this block holds at par.
 
-    `wanted` is `[(label, kind, security)]` with `kind` one of `front` / `swap`, in the grammar's
-    own order - the emitter sorts by maturity later, that being a property of the calendar.
+    `wanted` is `[(label, kind, security)]` with `kind` one of `front` / `swap` / `fra` /
+    `forward`, in the grammar's own order - the emitter sorts by maturity later, that being a
+    property of the calendar.
     """
-    conventions = curve_conventions(seed, currency)
+    conventions = curve_conventions(seed, curve)
     blocks = document.get('blocks', {})
-    front_path = ('rates', currency) + tuple(part for part in conventions.front.split('/') if part)
+    front_path = ('rates', curve) + tuple(part for part in conventions.front.split('/') if part)
     wanted, ledger, found_front = [], {}, False
-    for candidate in discover.strip_candidates(currency, seed['rates'][currency]):
+    for candidate in discover.strip_candidates(curve, seed['rates'][curve]):
         entry = blocks
         for part in candidate.path:
             entry = entry.get(part) if isinstance(entry, collections.abc.Mapping) else None
@@ -350,8 +361,8 @@ def strip_entries(document, seed, currency):
         if candidate.path == front_path:
             wanted.append((_front_label(candidate.path), 'front', security))
             found_front = True
-        elif candidate.path[2] == 'strip':
-            wanted.append((candidate.path[-1], 'swap', security))
+        elif candidate.path[2] in KINDS:
+            wanted.append((candidate.path[-1], KINDS[candidate.path[2]], security))
         else:
             ledger[security] = 'not-a-benchmark'
     if not found_front:
@@ -360,42 +371,43 @@ def strip_entries(document, seed, currency):
             'front is what seeds the short end of the curve, and a strip quoted from its first swap '
             'alone leaves everything under {} unidentified. Re-run `DV_Bloomberg discover` (the '
             'entry may have gone dead), or declare a `front` the map verified: the seeded ones are '
-            '{}'.format(currency, conventions.front, wanted[0][0] if wanted else 'its first knot',
-                        ', '.join(_seeded_fronts(seed, currency)) or 'none'))
+            '{}'.format(curve, conventions.front, wanted[0][0] if wanted else 'its first knot',
+                        ', '.join(_seeded_fronts(seed, curve)) or 'none'))
     return tuple(wanted), ledger
 
 
-def _seeded_fronts(seed, currency):
-    """The `front` spellings a currency's seed entry could name - what a refusal offers."""
-    spec = seed.get('rates', {}).get(currency, {})
+def _seeded_fronts(seed, curve):
+    """The `front` spellings a curve's seed entry could name - what a refusal offers."""
+    spec = seed.get('rates', {}).get(curve, {})
     return (['overnight'] if spec.get('overnight') else []) + [
         'fixings/{}'.format(label) for label in sorted(spec.get('fixings', {}))]
 
 
 def _front_label(path):
     """The front point's TENOR as a label. A named fixing carries its own (`fixings/3M` is a 3M
-    deposit); an overnight print has none to carry, so `overnight` is the label and the deposit's
-    span is worked out from the calendar at authoring time."""
-    return path[-1] if path[2] == 'fixings' else 'overnight'
+    deposit); an overnight print has none to carry, so `ON` is the label and the deposit's span is
+    worked out from the calendar at authoring time."""
+    return path[-1] if path[2] == 'fixings' else 'ON'
 
 
-def fetch_curve_strip(source, document, seed, currency, as_of, curve=None, screen=None,
+def fetch_curve_strip(source, document, seed, key, as_of, curve=None, screen=None,
                       batch=BATCH, on_batch=None):
-    """One currency's verified strip, screened - a `CurveStrip`.
+    """One seeded curve's verified strip, screened - a `CurveStrip`.
 
     ONE ROUND TRIP over the securities the map believed, asking each the value, both sides of its
     two-way and its own last print. The tolerant reader makes the request and the strict policy is
     applied CLIENT-SIDE, per print: one dead point is a curve with one fewer knot, where a strip
     refused whole is no curve at all.
 
-    `curve` names the `InterestRate` factor this strip builds and defaults to the CURRENCY, the
-    single-curve V1's own name and what an `FxRate`'s `Interest_Rate` points at. A desk running a
-    multi-curve set names its curves itself (`USD-OIS`, `ZAR-JIBAR-3M`); the block key is
-    `InterestRatePrices.<curve>` and the deals project off it.
+    THE SEED IS KEYED BY CURVE and the entry declares the `currency` it is quoted in, an entry
+    without one being its own currency: `USD` is the USD curve, `ZAR-ZARONIA` a second ZAR one.
+    `curve` names the `InterestRate` factor this strip builds and defaults to that key, so the block
+    key is `InterestRatePrices.<curve>` and the deals project off it.
     """
     screen = screen or CurveScreen()
-    conventions = curve_conventions(seed, currency)
-    wanted, ledger = strip_entries(document, seed, currency)
+    conventions = curve_conventions(seed, key)
+    currency = seed['rates'][key].get('currency', key)
+    wanted, ledger = strip_entries(document, seed, key)
     report = probe(source, [security for _, _, security in wanted], batch=batch, on_batch=on_batch)
 
     prints, rejected = [], dict(ledger)
@@ -413,7 +425,7 @@ def fetch_curve_strip(source, document, seed, currency, as_of, curve=None, scree
             last_update=read_word(answered.get('LAST_UPDATE_DT')) or None))
     accepted, screened = screen_strip(prints, as_of, screen)
     rejected.update(screened)
-    return CurveStrip(currency=currency, curve=curve or currency, as_of=as_of,
+    return CurveStrip(currency=currency, curve=curve or key, as_of=as_of,
                       conventions=conventions, prints=accepted, rejected=rejected)
 
 
@@ -511,89 +523,57 @@ def _add_tenor(date, label):
     return _add_months(date, count * (12 if unit == 'Y' else 1))
 
 
-def _is_business_day(date):
-    """Monday to Friday, and NO HOLIDAY CALENDAR. The authored deals carry `Accrual_Calendars:
-    None` and `Payment_Calendars: None`, so the engine adjusts nothing either - one convention on
-    both sides of the boundary. A desk needing a real settlement calendar is read here."""
-    return date.weekday() < 5
+def split_tenors(label, what='tenor pair'):
+    """`1Mx4M` and `6M1M` as their two tenors - a FRA's two dates, and a forward-starting swap's
+    start and term. The `x` separates where it is written; without one the first unit letter does,
+    which is how the terminal spells a forward start."""
+    text = read_word(label).upper()
+    left, _, right = text.partition('X')
+    if not right:
+        cut = next((i for i, letter in enumerate(text) if letter in 'DWMY'), len(text) - 1)
+        left, right = text[:cut + 1], text[cut + 1:]
+    read_tenor(left, what), read_tenor(right, what)
+    return left, right
 
 
-def _next_business_day(date):
-    moved = date + datetime.timedelta(days=1)
-    while not _is_business_day(moved):
-        moved += datetime.timedelta(days=1)
-    return moved
+def roll(date, holidays=(), modified=False):
+    """A date moved onto a business day - Following, or Modified Following where the roll would
+    leave the month.
 
-
-def _add_business_days(date, count):
+    THE ONE CALENDAR RULE. A business day is Monday to Friday and not in `holidays`, an iterable of
+    dates the caller reads out of the job's calendar file, so no holidays handed in is the weekday
+    rule this module has always applied. Deposits roll Following, a swap's two dates and a FRA's
+    Modified Following, the market's convention; the coupon dates the engine generates between a
+    swap's two dates are not rolled.
+    """
     moved = date
-    for _ in range(count):
-        moved = _next_business_day(moved)
+    while moved.weekday() > 4 or moved in holidays:
+        moved += datetime.timedelta(days=1)
+    if modified and moved.month != date.month:
+        moved = date
+        while moved.weekday() > 4 or moved in holidays:
+            moved -= datetime.timedelta(days=1)
     return moved
 
 
-def _business_days(start, end):
-    """Every business day in `[start, end)` - the days an overnight leg takes a fixing on.
-
-    HALF OPEN AT THE END, so the last day found accrues to the coupon's own end rather than past
-    it. A `start` on a weekend is not a business day and does not appear, so the days between it
-    and the first Monday belong to no window returned here: TILING THE COUPON IS THE CALLER'S JOB,
-    and `_ois_swap` does it by putting the coupon's own start in front of what comes back.
-    """
-    days, moved = [], start
-    while moved < end:
-        if _is_business_day(moved):
-            days.append(moved)
-        moved += datetime.timedelta(days=1)
-    return days
+def _next_business_day(date, holidays=()):
+    return roll(date + datetime.timedelta(days=1), holidays)
 
 
-def _dates_backward(end, start, frequency):
-    """The coupon dates of one leg, rolled BACKWARD from maturity and clipped at the effective date
-    - `utils.generate_dates_backward`, re-spelled.
+def _add_business_days(date, count, holidays=()):
+    moved = roll(date, holidays)
+    for _ in range(count):
+        moved = _next_business_day(moved, holidays)
+    return moved
 
-    BACKWARD RATHER THAN FORWARD, so the stub is at the FRONT. That is the market's roll and what
-    the engine does generating a `SwapInterestDeal`'s legs, so both authoring shapes put the stub
-    in the same place: an 18M OIS pays at +6M and +18M under either.
-    """
-    count, unit = read_tenor(frequency, 'frequency')
-    if count <= 0:
+
+def _check_day_count(day_count, what='day count'):
+    if day_count not in DAY_COUNTS:
         raise BloombergConfigurationError(
-            'a coupon schedule cannot roll by {!r} - the loop below would never reach its own '
-            'start'.format(frequency))
-    dates, index, moved = [end], 1, end
-    while moved > start:
-        moved = max(start, _step_back(end, count * index, unit))
-        dates.append(moved)
-        index += 1
-    dates.reverse()
-    return dates
-
-
-def _step_back(end, count, unit):
-    if unit == 'D':
-        return end - datetime.timedelta(days=count)
-    if unit == 'W':
-        return end - datetime.timedelta(weeks=count)
-    return _add_months(end, -count * (12 if unit == 'Y' else 1))
-
-
-def _day_count_factor(day_count, what='day count'):
-    factor = DAY_COUNTS.get(day_count)
-    if factor is None:
-        raise BloombergConfigurationError(
-            '{!r} is not a {} this emitter computes an accrual in - it writes {}. An authored '
-            '`Accrual_Year_Fraction` is used verbatim by the engine, so ACT_365_ISDA and '
-            'ACT_ACT_ICMA are refused rather than reproduced (the engine answers both as days/365 '
-            'behind a TODO) and the 30/360 conventions need date arithmetic this module does not '
-            'author'.format(day_count, what, ' or '.join(sorted(DAY_COUNTS))))
-    return factor
-
-
-def _accrual(start, end, day_count):
-    """`(end - start).days / N` - `utils.DayCount.accrual`'s ACT/N branch, the only one this
-    module authors into a cashflow."""
-    return (end - start).days / _day_count_factor(day_count)
+            '{!r} is not a {} a seed may declare here - it writes {}. The engine answers '
+            'ACT_365_ISDA and ACT_ACT_ICMA as days/365 behind a TODO and the 30/360 conventions '
+            'need date arithmetic this module does not author, so they are refused rather than '
+            'declared on trust'.format(day_count, what, ' or '.join(sorted(DAY_COUNTS))))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -628,10 +608,6 @@ def wire_percent(value):
     return {'.Percent': value}
 
 
-def wire_basis(value):
-    return {'.Basis': value}
-
-
 def wire_date_list(pairs):
     return {'.DateList': [[date.isoformat(), value] for date, value in pairs]}
 
@@ -641,7 +617,7 @@ def wire_date_list(pairs):
 # ---------------------------------------------------------------------------------------------
 
 def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, notional):
-    """A money-market deposit - the strip's FRONT point, and the one shape both authorings share.
+    """A money-market deposit - the strip's FRONT point.
 
     The rate is pinned through `Interest_Rate_Schedule`, which keeps a front quote off the forecast
     curve entirely: `DepositDeal.reset` drops the `Interest_Rate` dependency when the schedule
@@ -662,13 +638,37 @@ def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, 
         'Interest_Rate_Schedule': wire_date_list(())}
 
 
-def _par_swap(reference, currency, curve, effective, maturity, conventions):
-    """A vanilla par interest-rate swap - fixed against a single-reset floating leg.
+def _fra(reference, currency, curve, effective, maturity, conventions):
+    """A forward rate agreement - the front of a curve between its deposit and its swaps.
 
-    `Index_Tenor` of zero months makes each coupon carry ONE reset spanning its own accrual period,
-    which for a leg paying at the index's own frequency IS the index: a quarterly leg on 3M JIBAR.
-    A leg whose payment frequency differs from its index tenor is a different instrument and V1
-    does not author it.
+    The reset is AT the effective date rather than a fixing lag before it, which is what holds the
+    benchmark at par: the quote identifies the forward the curve carries over `[effective,
+    maturity]`, and a lag would price a rate fixed off a date the strip says nothing about.
+
+    `FRA_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`, where
+    `QUOTE_WRITERS['FRADeal']` puts it.
+    """
+    return {
+        'Object': 'FRADeal', 'Reference': reference, 'Currency': currency,
+        'Interest_Rate': curve,
+        'Effective_Date': wire_timestamp(effective), 'Maturity_Date': wire_timestamp(maturity),
+        'Reset_Date': wire_timestamp(effective), 'Day_Count': conventions.float_day_count,
+        'Principal': conventions.notional, 'FRA_Rate': 0.0, 'Borrower_Lender': 'Borrower',
+        'Use_Known_Rate': 'No', 'Known_Rate': 0.0, 'Payment_Timing': 'End', 'Calendars': None}
+
+
+def _swap(reference, currency, curve, effective, maturity, conventions):
+    """A par interest-rate swap - fixed against a single-reset floating leg, and the ONE shape
+    every swap row of a strip is authored in, spot-starting or forward-starting, term index or
+    overnight.
+
+    `Index_Tenor` of zero months makes each coupon carry ONE reset spanning its own accrual period.
+    For a leg paying at the index's own frequency that IS the index - a quarterly leg on 3M JIBAR -
+    and for an overnight benchmark it is the compounded rate over the coupon, which at t0 is what
+    the daily fixing list prices: the compounded forwards read off a curve telescope to the period
+    forward. So `Compounding` OIS is a `Compounding_Method` on this deal and not a cashflow list of
+    one item per business day, which is two orders of magnitude of JSON for the same number and
+    prices NaN when a coupon spans several resets.
 
     `Swap_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`:
     `QUOTE_WRITERS['SwapInterestDeal']` writes it, so a re-tick moves the value plane alone.
@@ -693,91 +693,11 @@ def _par_swap(reference, currency, curve, effective, maturity, conventions):
         'Index_Frequency': wire_period('0M'), 'Index_Offset': 0,
         'Index_Calendars': None, 'Index_Publication_Calendars': None,
         'Reset_Type': 'Standard', 'Rate_Multiplier': 1.0, 'Rate_Constant': wire_percent(0.0),
-        'Floating_Margin': 0.0, 'Fixed_Compounding': 'No', 'Compounding_Method': 'None',
+        'Floating_Margin': 0.0, 'Fixed_Compounding': 'No',
+        'Compounding_Method': conventions.compounding,
         'Known_Rates': None, 'Amortisation': None, 'Swap_Rate': 0.0,
         'Principal': conventions.notional,
         'Interest_Rate_Volatility': '', 'Discount_Rate_Volatility': ''}
-
-
-def _ois_swap(reference, currency, curve, effective, maturity, conventions):
-    """An OIS swap as a CONTAINER over two legs - the shape the compounding rule requires.
-
-    `pv_float_cashflow_list` compounds an accrual period geometrically when the reset count differs
-    from the cashflow count, a reshape `compress_no_compounding(groupsize=-1)` sets up under
-    `Compounding_Method='OIS'`. So the floating leg is ONE ITEM PER FIXING, every item of a coupon
-    sharing that coupon's payment date: the compression merges them into one cashflow carrying
-    every reset at `Weight` 1 and only then compounds. A leg authored as one item with many resets
-    arrives weighted `1/n` and compounds at a fraction of the rate.
-
-    The fixed leg carries the quote on every row of its schedule, so every `Rate` here is authored
-    at ZERO percent and the print rides in `Quoted_Market_Value` alone.
-
-    THE FIXING WINDOWS PARTITION THE COUPON, which is what puts the two legs on one convention.
-    Both roll off the SAME coupon dates, so they accrue the same span only if the float leg's
-    windows tile `[coupon_start, coupon_end]` exactly - and the coupon's own start is a boundary
-    whatever weekday it falls on, a fixing accruing through a weekend at a coupon boundary as it
-    does inside one. Starting at the first BUSINESS day instead drops days: on the USD 5Y OIS
-    effective 2026-09-02, the coupon starting Saturday 2028-09-02 accrued 1.00833333 of a year
-    against the fixed leg's 1.01388889.
-    """
-    coupons = _dates_backward(maturity, effective, conventions.fixed_frequency)
-    float_items, fixed_items = [], []
-    for start, end in zip(coupons[:-1], coupons[1:]):
-        fixings = _business_days(start, end)
-        if not fixings or fixings[0] != start:
-            fixings.insert(0, start)
-        for fixing, following in zip(fixings, fixings[1:] + [end]):
-            accrual = _accrual(fixing, following, conventions.float_day_count)
-            float_items.append({
-                'Payment_Date': wire_timestamp(end), 'Notional': conventions.notional,
-                'Accrual_Start_Date': wire_timestamp(fixing), 'Accrual_End_Date': wire_timestamp(following),
-                'Accrual_Day_Count': conventions.float_day_count,
-                'Accrual_Year_Fraction': accrual,
-                'Resets': [[wire_timestamp(fixing), wire_timestamp(fixing), wire_timestamp(following), accrual,
-                            wire_period('1D'), conventions.float_day_count, '0D', 0.0, 'No',
-                            wire_percent(0.0)]],
-                'Margin': wire_basis(0.0), 'Fixed_Amount': 0.0,
-                'FX_Reset_Date': None, 'Known_FX_Rate': 0.0})
-        fixed_items.append({
-            'Payment_Date': wire_timestamp(end), 'Notional': conventions.notional,
-            'Rate': wire_percent(0.0),
-            'Accrual_Start_Date': wire_timestamp(start), 'Accrual_End_Date': wire_timestamp(end),
-            'Accrual_Day_Count': conventions.fixed_day_count,
-            'Accrual_Year_Fraction': _accrual(start, end, conventions.fixed_day_count),
-            'Fixed_Amount': 0.0, 'Discounted': 'No',
-            'FX_Reset_Date': None, 'Known_FX_Rate': 0.0})
-
-    return {
-        'Object': 'StructuredDeal', 'Reference': reference, 'Currency': currency,
-        'Net_Cashflows': 'Yes', 'Children': [
-            _cashflow_leg('CFFloatingInterestListDeal', reference + '_FLOAT', currency, 'Buy',
-                          {'Compounding_Method': 'OIS', 'Averaging_Method': 'Average_Interest',
-                           'Properties': [], 'Items': float_items},
-                          Forecast_Rate=curve, Rate_Adjustment_Method='None',
-                          Rate_Sticky_Month_End='Yes', Rate_Offset=0, Rate_Calendars=None,
-                          Accrual_Calendars=None, Forecast_Rate_Cap_Volatility='',
-                          Forecast_Rate_Swaption_Volatility='', Discount_Rate_Cap_Volatility='',
-                          Discount_Rate_Swaption_Volatility=''),
-            _cashflow_leg('CFFixedInterestListDeal', reference + '_FIXED', currency, 'Sell',
-                          {'Compounding': 'No', 'Items': fixed_items},
-                          Calendars=None, Rate_Currency='')]}
-
-
-def _cashflow_leg(object_type, reference, currency, buy_sell, cashflows, **extra):
-    """The `CashflowListDeal` block both interest-cashflow legs share, plus the type's own fields.
-
-    `Discount_Rate` is absent here and on every other authored deal: `author_quote` stamps it on
-    the node and recurses into `Children`, because what an instrument PROJECTS off is its own
-    business while what the quote set DISCOUNTS on is a property of the curve set.
-    """
-    return dict({
-        'Object': object_type, 'Reference': reference, 'Currency': currency,
-        'Buy_Sell': buy_sell, 'Description': '',
-        'Settlement_Date': None, 'Settlement_Amount': 0.0, 'Settlement_Style': 'Physical',
-        'Settlement_Amount_Is_Clean': 'Yes', 'Is_Defaultable': 'No', 'Repo_Rate': '',
-        'Recovery_Rate': '', 'Survival_Probability': '', 'Investment_Horizon': None,
-        'Issuer': '', 'Settlement_Rate': '', 'Cashflows': cashflows}, **extra)
-
 
 # ---------------------------------------------------------------------------------------------
 # the block
@@ -790,51 +710,62 @@ def market_price_name(curve):
     return '{}.{}'.format(FAMILY, curve)
 
 
-def strip_dates(item, as_of, conventions):
-    """`(effective, maturity, tenor label)` for one print - the calendar, applied once.
+def strip_dates(tenor, kind, as_of, conventions, holidays=()):
+    """`(effective, maturity)` for one row - the calendar, applied once.
 
-    The front point starts at t0 and matures on the next business day when it is an OVERNIGHT rate,
-    and starts at spot like every swap when it is a named fixing: a 3M JIBAR deposit is a spot-start
-    three-month instrument, an O/N print is not. The tenor label doubles as the deposit's own
-    payment frequency, so the pinned schedule is ONE period - an overnight spanning a weekend is a
-    `3D` period rather than three of them.
+    THE ROLL IS THE SHAPE'S. A deposit rolls Following, a swap's maturity and a FRA's two dates
+    Modified Following; spot is `spot_days` business days on. An `ON` print starts at t0 and matures
+    the next business day, where a named fixing is a spot-starting deposit of its own tenor: a 3M
+    JIBAR deposit is a spot-start three-month instrument, an overnight print is not. A FRA's and a
+    forward swap's dates are both measured off SPOT before either is rolled, so a rolled start does
+    not drag the end with it.
     """
-    spot = _add_business_days(as_of, conventions.spot_days)
-    if item.kind != 'front':
-        return spot, _add_tenor(spot, item.label), item.label
-    if item.label == 'overnight':
-        maturity = _next_business_day(as_of)
-        return as_of, maturity, '{}D'.format((maturity - as_of).days)
-    return spot, _add_tenor(spot, item.label), item.label
+    spot = _add_business_days(as_of, conventions.spot_days, holidays)
+    if kind == 'front':
+        if tenor == 'ON':
+            return as_of, _next_business_day(as_of, holidays)
+        return spot, roll(_add_tenor(spot, tenor), holidays)
+    if kind == 'swap':
+        return spot, roll(_add_tenor(spot, tenor), holidays, True)
+    start, term = split_tenors(tenor)
+    effective = _add_tenor(spot, start)
+    end = _add_tenor(spot, term) if kind == 'fra' else _add_tenor(effective, term)
+    return roll(effective, holidays, True), roll(end, holidays, True)
 
 
-def author_point(item, as_of, currency, curve, conventions):
+def author_point(item, as_of, currency, curve, conventions, holidays=()):
     """One `Points` row: an authored instrument, what kind of number is quoted, and the number.
+
+    THE ROW CARRIES WHAT IT WAS AUTHORED FROM. `Tenor` is the label the block's conventions and the
+    calendar turn into dates, so a strip re-rolled on a later date is the same plan re-read rather
+    than a new one guessed; `Security` is where the number came off.
 
     `Deal` carries the block with neither `Object` nor `Discount_Rate` on it - the point names the
     type in `DealType` and the family stamps the discount curve from the block it belongs to, so
-    neither is authored twice. `Use` is Yes, `Quote_Type` is `Par_Rate`, and `Descriptor` names the
-    ticker the number came off, which is the only place in the block a security lands.
+    neither is authored twice. `Use` is Yes and `Quote_Type` is `Par_Rate`.
 
     `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered
     them. They are `schema.MARKET_QUOTE_VALUES` - the value plane `schema.update_market_quote` lets
-    a tick move - and `InterestRateCurveParameters.Points` declares all three among its nine
-    sub-fields, so the two-way and the print's own clock land as declared evidence.
+    a tick move - so the two-way and the print's own clock land as declared evidence.
     """
-    effective, maturity, tenor = strip_dates(item, as_of, conventions)
+    effective, maturity = strip_dates(item.label, item.kind, as_of, conventions, holidays)
     reference = '{}_{}'.format(currency, item.label.replace('/', '_'))
     if item.kind == 'front':
-        deal = _deposit(reference, currency, curve, effective, maturity, tenor,
+        # the overnight's own span is the calendar's - a Friday print is a 3D period, not three
+        span = '{}D'.format((maturity - effective).days) if item.label == 'ON' else item.label
+        deal = _deposit(reference, currency, curve, effective, maturity, span,
                         conventions.front_day_count, conventions.notional)
-    elif conventions.authoring == 'OIS':
-        deal = _ois_swap(reference, currency, curve, effective, maturity, conventions)
+    elif item.kind == 'fra':
+        deal = _fra(reference, currency, curve, effective, maturity, conventions)
     else:
-        deal = _par_swap(reference, currency, curve, effective, maturity, conventions)
+        deal = _swap(reference, currency, curve, effective, maturity, conventions)
     row = {
         'Use': 'Yes',
         'DealType': deal['Object'],
         'Quote_Type': QUOTE_TYPE,
         'Quoted_Market_Value': item.value,
+        'Tenor': item.label,
+        'Security': item.security,
         'Descriptor': '{} {} ({})'.format(currency, item.label, item.security),
         'Deal': {key: value for key, value in deal.items() if key != 'Object'},
     }
@@ -846,8 +777,14 @@ def author_point(item, as_of, currency, curve, conventions):
     return maturity, row
 
 
-def ir_curve_block(strip, screen=None):
+def ir_curve_block(strip, screen=None, holidays=()):
     """`(Market Prices name, block)` - one verified strip as ONE `InterestRatePrices` block.
+
+    THE BLOCK IS THE CURVE'S DEFINITION: the conventions the rows were authored under are emitted
+    beside them, so a reader has the instrument AND the rule that made it, and a later re-roll needs
+    nothing this block does not carry. `holidays` is an iterable of dates for the calendar the
+    conventions NAME - `Config.parse_calendar_file` answers `{Location: {'holidays': {...}}}` and
+    the caller hands the dates over - and none handed in is the Monday-to-Friday rule.
 
     THE ORDER IS THE CALENDAR'S. Points are emitted by maturity, so the block reads as a strip and
     the knot grid the family builds - one knot per used quote, at that benchmark's last cashflow
@@ -859,7 +796,7 @@ def ir_curve_block(strip, screen=None):
     otherwise reach the solve as a singular Jacobian rather than as a sentence.
 
     `Discount_Rate` is blank - the self-discounting single-curve configuration, and the harder
-    solve, since the unknown appears on both sides. V1 authors no multi-curve case.
+    solve, since the unknown appears on both sides. No multi-curve case is authored here.
     """
     screen = screen or CurveScreen()
     if len(strip.prints) < screen.minimum_points:
@@ -875,8 +812,8 @@ def ir_curve_block(strip, screen=None):
                 ', '.join('{} {}'.format(count, verdict)
                           for verdict, count in sorted(strip.census.items())) or 'nothing refused'))
 
-    dated = [author_point(item, strip.as_of, strip.currency, strip.curve, strip.conventions)
-             for item in strip.prints]
+    dated = [author_point(item, strip.as_of, strip.currency, strip.curve, strip.conventions,
+                          holidays) for item in strip.prints]
     knots = {}
     for maturity, row in dated:
         if maturity in knots:
@@ -888,27 +825,23 @@ def ir_curve_block(strip, screen=None):
                     knots[maturity], row['Descriptor'], maturity.isoformat()))
         knots[maturity] = row['Descriptor']
 
-    points = [row for _, row in sorted(dated, key=lambda item: (item[0], item[1]['Descriptor']))]
-    fixings = sum(len(child['Cashflows']['Items'])
-                  for row in points if row['DealType'] == 'StructuredDeal'
-                  for child in row['Deal']['Children']
-                  if child['Object'] == 'CFFloatingInterestListDeal')
-    if fixings > screen.maximum_fixings:
-        raise IncompleteStrip(
-            '{} authors {} daily fixings across its {} OIS benchmarks, past the declared cap of {}. '
-            'An OIS floating leg is ONE ITEM PER BUSINESS-DAY FIXING - that is what makes the leg '
-            'compound geometrically rather than average - so the block grows with the SUM of the '
-            'strip\'s tenors rather than with its point count, and a strip reaching {} would encode '
-            'to something no reader downstream should be handed. Cut the currency\'s seeded `years` '
-            'back, or raise CurveScreen.maximum_fixings deliberately'.format(
-                strip.currency, fixings,
-                sum(1 for row in points if row['DealType'] == 'StructuredDeal'),
-                screen.maximum_fixings, max(knots).isoformat()))
+    conventions = strip.conventions
     return market_price_name(strip.curve), {'instrument': {
         'Currency': strip.currency,
-        'Day_Count': strip.conventions.curve_day_count,
+        'Day_Count': conventions.curve_day_count,
         'Discount_Rate': '',
-        'Points': points}}
+        'Calendar': conventions.calendar,
+        'Spot_Days': conventions.spot_days,
+        'Fixed_Frequency': wire_period(conventions.fixed_frequency),
+        'Float_Frequency': wire_period(conventions.float_frequency),
+        'Fixed_Day_Count': conventions.fixed_day_count,
+        'Float_Day_Count': conventions.float_day_count,
+        'Front_Day_Count': conventions.front_day_count,
+        'Compounding': conventions.compounding,
+        'Near_Interpolation': conventions.near_interpolation,
+        'Near_Tenor': wire_period(conventions.near_tenor) if conventions.near_tenor else '',
+        'Points': [row for _, row in sorted(
+            dated, key=lambda item: (item[0], item[1]['Descriptor']))]}}
 
 
 def reauthor(market_prices, name, block):

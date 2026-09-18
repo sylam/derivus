@@ -40,8 +40,8 @@ payloads, each leaf's `Factor_dep` / `Time_dep` — and prices them at t0 from a
 curve nodes, returning one PV per benchmark as a `torch` vector whose graph reaches those tensors.
 
 A benchmark is a **node**, not a deal, so a container with `Children` is one benchmark: a deposit and
-an FRA are single deals, a par swap is one `SwapInterestDeal`, an OIS swap is a container over an
-OIS-compounded floating leg and a fixed leg. The node's PV is the sum of its leaves', each converted
+an FRA are single deals, a par swap and an OIS swap are each one `SwapInterestDeal`, and a two-leg
+benchmark is a `StructuredDeal`. The node's PV is the sum of its leaves', each converted
 to the reporting currency by its own `pv_*_leg`. No netting or collateral rule applies on top, which
 keeps this out of `DealStructure`.
 
@@ -154,10 +154,21 @@ an accrual period through geometric compounding when the reset count differs fro
 (`all_resets.shape[1] != reset_cashflows.np.shape[0]`) — daily resets against quarterly cashflows, the
 reshape set up at `calculate_dependencies` by `compress_no_compounding(groupsize=-1)` under
 `Compounding_Method='OIS'`. The regular route's `Weight = 1/n` resets are the AVERAGING legs'
-arithmetic and must never reach the compounding path. This is why an OIS benchmark is authored as a
-floating list with `Compounding_Method='OIS'` (under a `StructuredDeal` for the par swap) and not as a
-`SwapInterestDeal`, whose generated legs never pass through the compression. **The shape-difference
-check is acknowledged tech debt** — it works, and it is subtle enough to be written down.
+arithmetic and must never reach the compounding path. **The shape-difference check is acknowledged
+tech debt** — it works, and it is subtle enough to be written down.
+
+**An OIS benchmark is nevertheless a TERM swap.** At t0 the compounded overnight forwards read off a
+curve telescope to the period forward, so a `SwapInterestDeal` with `Compounding_Method='OIS'` and
+one reset spanning each coupon (`Index_Tenor` and `Receive_Interest_Frequency` at `0M`) prices what
+the daily fixing list prices. Measured at a 4% quote on a million of notional: on a flat 4% curve the
+2Y reads **483.511030079** both ways — one deal against 523 cashflow items — and the 10Y
+**2068.437863819** off 2612; on a sloped curve the 5Y reads **-355.506266991** both ways and the 10Y
+**2012.027439223**. The largest disagreement over those eight readings is 6.4e-10, the float64 noise
+of summing 2612 items. So the list is a **spelling**, two orders of magnitude of JSON for the same
+number, and the benchmark is authored as the term swap. What the list spelling still buys is a leg
+whose fixings are KNOWN rather than forecast; what nothing buys is the shape in between — a list
+authored one item per coupon, each carrying every fixing's reset, which is what the engine's own leg
+generation produces and which the regular route averages at `1/n`.
 
 ## The IFT contract {#the-ift-contract}
 

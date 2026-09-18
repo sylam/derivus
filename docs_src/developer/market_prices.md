@@ -191,6 +191,21 @@ set takes the strictest of its members'), the three lifecycle switches (`Quote_S
 `Quote_Propagation`, `Drift_Tolerance` — see [Quote Propagation](quote_propagation.md)), and the
 quote `Points`. A blank `Discount_Rate` builds a **self-discounting** curve.
 
+**The block is the curve's definition.** Beside the quotes it declares what they were authored
+under — the `Calendar` the dates were rolled against, `Spot_Days`, `Fixed_Frequency` and
+`Float_Frequency`, `Fixed_Day_Count`, `Float_Day_Count` and `Front_Day_Count`, and `Compounding`,
+which says whether the swap rows are overnight benchmarks — and each `Points` row carries the
+`Tenor` it came from (`ON`, `3M`, `3Y`, `1Mx4M` for a FRA, `6M1M` for a swap starting in six
+months) and the `Security` it was quoted off. None of that is read by the solve, which prices the
+`Deal` it is handed; it is what lets a strip be **re-rolled on a later date** from the block alone
+rather than from whatever authored it, and what makes two blocks quoting the same number under
+different conventions distinguishable. The curve's interpolation comes from `Price Factor
+Interpolation`, with one exception the block owns: `Near_Interpolation` and `Near_Tenor` are
+written onto the solved factor as `Near_Interpolation` and `Near_Date`, so a curve whose near end
+is quoted in a different instrument — a ZARONIA curve is quoted monthly to the last policy meeting
+anyone has a view on and annually beyond — carries one scheme through the near half and the job's
+own over the far one. The solve reads both segments, so every benchmark still reprices at par.
+
 **The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal` or a
 `StructuredDeal` over two legs, authored exactly as it would be in `Trade Data` — plus `DealType`,
 `Quote_Type`, `Quoted_Market_Value`, a free-text `Descriptor` and a `Use` flag so a quote can be held

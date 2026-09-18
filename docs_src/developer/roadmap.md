@@ -202,6 +202,12 @@ is recorded so a reader knows which readings rest on it.
   spanning each coupon, the par swap's default, is exact: at t0 the compounded forwards read off
   a curve telescope to the period forward, so the same leg reads 483.405067 authored as one reset
   per coupon and as the 520-item daily list alike, on a flat curve and a sloped one.
+- **A term swap's coupon dates are generated unrolled** (2026-09-18). The swap deal builds its
+  coupon schedule from its two dates with no calendar, so a benchmark authored under Modified
+  Following has rolled end dates and unrolled coupons between them, which the market rolls. The
+  par rate moves at second order, both legs sharing the dates, and the size is unmeasured;
+  handing the deal's calendars to the generator is one line that reaches every swap in every
+  book naming a calendar.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
@@ -220,14 +226,11 @@ is recorded so a reader knows which readings rest on it.
 ## Decisions waiting on the desk
 
 Nothing here is blocked on work. Numbers are stable — commit messages and the model pages cite
-them — so closed decisions (2, 3, 4, 10, 11, 13, 15) keep their numbers and are not listed.
+them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and are not listed.
 
 1. **The per-fixing smile read.** Sticky-forward moneyness or the deal's declared moneyness; both
    defensible, one can be the pricer's own quote. A switch, not a revert, with the six removed gates
    rebuilt.
-5. **Two rates-emitter questions**: an OIS block is about 14 MB live, some 26,000 authored floats
-   on a 30-year strip — accept it or build a term-authored variant; and neither side rolls a
-   business day, so a two-year USD OIS pays on a Saturday.
 6. **The Hull-White seed's worst benchmark**: the honesty reprice reads −6.25% against the retired
    seed's −4.64% while the root-mean-square miss improved from 2.71% to 2.39% and the count outside
    3% fell from ten to three. One order statistic, anti-correlated with the fit; a desk's eye

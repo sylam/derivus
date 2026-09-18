@@ -82,20 +82,27 @@ def no_terminal_reason(error):
         type(error).__name__, error)
 
 #: The SHIPPED declarations as data - the gate the owner checks, since a convention is market fact.
-#: USD SOFR OIS settles T+2, annual/annual on ACT/360 with an overnight compounded float leg; ZAR
+#: USD SOFR OIS settles T+2, annual/annual on ACT/360 against a compounded overnight index; ZAR
 #: SASW settles same day, quarterly/quarterly on ACT/365 against 3M JIBAR, whose own fixing - not
-#: ZARONIA - is the front of a JIBAR curve.
+#: ZARONIA - is the front of a JIBAR curve; the ZARONIA OIS curve is a third, annual/annual on
+#: ACT/365 and quoted monthly to 18M, which is what its near split is for.
 SHIPPED = {
     'USD': {'curve_day_count': 'ACT_365', 'spot_days': 2, 'front': 'overnight',
-            'front_day_count': 'ACT_360', 'authoring': 'OIS',
+            'front_day_count': 'ACT_360', 'compounding': 'OIS',
             'fixed_frequency': '1Y', 'float_frequency': '1Y',
             'fixed_day_count': 'ACT_360', 'float_day_count': 'ACT_360',
             'notional': 1000000.0, 'quote_scale': 1.0},
     'ZAR': {'curve_day_count': 'ACT_365', 'spot_days': 0, 'front': 'fixings/3M',
-            'front_day_count': 'ACT_365', 'authoring': 'Swap',
+            'front_day_count': 'ACT_365', 'compounding': 'None',
             'fixed_frequency': '3M', 'float_frequency': '3M',
             'fixed_day_count': 'ACT_365', 'float_day_count': 'ACT_365',
             'notional': 1000000.0, 'quote_scale': 1.0},
+    'ZAR-ZARONIA': {'curve_day_count': 'ACT_365', 'spot_days': 0, 'front': 'overnight',
+                    'front_day_count': 'ACT_365', 'compounding': 'OIS',
+                    'fixed_frequency': '1Y', 'float_frequency': '1Y',
+                    'fixed_day_count': 'ACT_365', 'float_day_count': 'ACT_365',
+                    'notional': 1000000.0, 'quote_scale': 1.0,
+                    'near_interpolation': 'LinearRT', 'near_tenor': '18M'},
 }
 
 
@@ -103,8 +110,11 @@ def packaged_seed():
     return json.load(open(os.path.join(ROOT, 'derivus_bloomberg', 'seed.json'), encoding='utf-8'))
 
 
-#: The canned world's seed - the shipped vocabulary cut to two currencies and a handful of tenors,
-#: with the SHIPPED conventions carried across unchanged.
+#: The canned world's seed - the shipped vocabulary cut to three CURVES over two currencies and a
+#: handful of tenors, with the SHIPPED conventions carried across unchanged. Between them the four
+#: authored shapes are covered: a deposit and a term swap on ZAR, a FRA strip beside them, an
+#: overnight front and an OIS swap on USD and ZARONIA, and the forward-starting swaps on the
+#: fourth key - the family the ZARONIA entry declares and does not use.
 SEED = {
     'fx_vol': {}, 'fx_spot': {},
     'rates': {
@@ -118,7 +128,23 @@ SEED = {
                 'fixings': {'1M': {'security': 'JIBA1M Index', 'expect': 'Johannesburg'},
                             '3M': {'security': 'JIBA3M Index', 'expect': 'Johannesburg'},
                             '6M': {'security': 'JIBA6M Index', 'expect': 'Johannesburg'}},
+                'fras': {'prefix': 'SAFR', 'expect': 'ZAR FRA', 'source': '',
+                         'tenors': {'1Mx4M': '0AD', '6Mx9M': '0FI'}},
                 'conventions': SHIPPED['ZAR']},
+        'ZAR-ZARONIA': {'currency': 'ZAR', 'prefix': 'SAOIAA', 'expect': 'ZAR OIS', 'source': '',
+                        'months': ['3M', '9M'], 'long_months': ['18M'], 'years': [3, 5],
+                        'overnight': {'security': 'ZARONIA Index',
+                                      'expect': 'South African Overnight'},
+                        'conventions': SHIPPED['ZAR-ZARONIA']},
+        'ZAR-ZARONIA-FWD': {'currency': 'ZAR',
+                            'overnight': {'security': 'ZARONIA Index',
+                                          'expect': 'South African Overnight'},
+                            'forwards': {'prefix': 'SAFOM', 'expect': 'FW SWP(ZARONIA)',
+                                         'source': '',
+                                         'tenors': {'1M1M': 'AA', '6M1M': 'FA', '15M1M': 'OA'}},
+                            'conventions': {
+                                key: value for key, value in SHIPPED['ZAR-ZARONIA'].items()
+                                if not key.startswith('near_')}},
     },
 }
 
@@ -140,7 +166,10 @@ CLEAN = {'SOFRRATE Index': 4.33, 'USOSFR1Z BGN Curncy': 4.31, 'USOSFR2Z BGN Curn
          'USOSFR5 BGN Curncy': 3.79, 'ZARONIA Index': 7.02, 'JIBA1M Index': 7.28,
          'JIBA3M Index': 7.41, 'JIBA6M Index': 7.55, 'SASW1 BGN Curncy': 7.62,
          'SASW2 BGN Curncy': 7.94, 'SASW3 BGN Curncy': 8.21, 'SASW5 BGN Curncy': 8.55,
-         'SASW10 BGN Curncy': 8.83}
+         'SASW10 BGN Curncy': 8.83, 'SAFR0AD Curncy': 7.35, 'SAFR0FI Curncy': 7.48,
+         'SAOIAAC Curncy': 7.05, 'SAOIAAI Curncy': 7.12, 'SAOIAA1F Curncy': 7.24,
+         'SAOIAA3 Curncy': 7.56, 'SAOIAA5 Curncy': 7.81, 'SAFOMAA Curncy': 7.04,
+         'SAFOMFA Curncy': 7.18, 'SAFOMOA Curncy': 7.33}
 
 
 # =============================================================================================
@@ -209,16 +238,16 @@ def canned_session(seed=None, poison=None):
     return Walked(rows)
 
 
-def strip_of(currency, seed=None, poison=None, screen=None, as_of=AS_OF, curve=None):
+def strip_of(key, seed=None, poison=None, screen=None, as_of=AS_OF, curve=None):
     # the poison table is resolved HERE and passed on explicitly, so the map and the session are
     # built from the SAME one - a cell dead in one half and live in the other gates nothing
     seed, poison = seed or SEED, POISON if poison is None else poison
     return fetch_curve_strip(canned_session(seed, poison), verified_map(seed, poison), seed,
-                             currency, as_of, curve=curve, screen=screen)
+                             key, as_of, curve=curve, screen=screen)
 
 
-def block_of(currency, **kwargs):
-    return ir_curve_block(strip_of(currency, **kwargs))
+def block_of(key, holidays=(), **kwargs):
+    return ir_curve_block(strip_of(key, **kwargs), holidays=holidays)
 
 
 # =============================================================================================
@@ -292,28 +321,46 @@ def test_importing_the_curve_emitter_lands_no_engine_and_no_blpapi():
 # =============================================================================================
 
 def test_the_shipped_conventions_are_the_declared_ones():
-    """THE OWNER'S GATE. Every convention this package will author a USD or ZAR benchmark in, as
-    data off the shipped seed, so a change to a market convention is a diff here rather than a
-    number that moved inside a cashflow.
+    """THE OWNER'S GATE. Every convention this package will author a USD, ZAR or ZARONIA benchmark
+    in, as data off the shipped seed, so a change to a market convention is a diff here rather than
+    a number that moved inside a cashflow.
 
-    The two a ticker cannot tell you: USD OIS accrues ACT/360 on both legs where the curve's tenors
-    are ACT/365, and the ZAR front is the 3M JIBAR fixing rather than the ZARONIA print beside it -
-    a JIBAR curve seeded with an overnight rate is a basis error nothing downstream reports.
+    The three a ticker cannot tell you: USD OIS accrues ACT/360 on both legs where the curve's
+    tenors are ACT/365, the ZAR front is the 3M JIBAR fixing rather than the ZARONIA print beside
+    it - a JIBAR curve seeded with an overnight rate is a basis error nothing downstream reports -
+    and the ZARONIA curve is quoted monthly to 18M, which is the near split and not a tenor grid.
     """
     shipped = packaged_seed()['rates']
-    for currency, declared in SHIPPED.items():
-        assert shipped[currency]['conventions'] == declared, currency
-        conventions = curve_conventions(packaged_seed(), currency)
-        assert conventions.authoring == declared['authoring']
-        assert conventions.deal_type == {'OIS': 'StructuredDeal',
-                                         'Swap': 'SwapInterestDeal'}[declared['authoring']]
+    for curve, declared in SHIPPED.items():
+        assert shipped[curve]['conventions'] == declared, curve
+        conventions = curve_conventions(packaged_seed(), curve)
+        assert conventions.compounding == declared['compounding']
     assert curve_conventions(packaged_seed(), 'USD').front == 'overnight'
     assert curve_conventions(packaged_seed(), 'ZAR').front == 'fixings/3M'
+    # THE SEED IS KEYED BY CURVE: two ZAR curves, each naming its own currency, and an entry
+    # naming none is its own - which is what keeps USD, EUR and the rest where they were
+    assert {curve: spec.get('currency', curve) for curve, spec in shipped.items()
+            if spec.get('currency')} == {'ZAR-ZARONIA': 'ZAR', 'ZAR-ZARONIA-FWD': 'ZAR'}
+    assert 'currency' not in shipped['USD'] and 'currency' not in shipped['ZAR']
+    near = curve_conventions(packaged_seed(), 'ZAR-ZARONIA')
+    assert (near.near_interpolation, near.near_tenor) == ('LinearRT', '18M')
+    assert curve_conventions(packaged_seed(), 'ZAR-ZARONIA-FWD').near_interpolation == ''
     # currencies the seed maps but does NOT declare conventions for must refuse rather than inherit
     # a neighbour's
     for currency in ('EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD'):
         with pytest.raises(BloombergConfigurationError, match='carries no `conventions` block'):
             curve_conventions(packaged_seed(), currency)
+
+
+def test_the_interpolation_menu_cannot_drift_from_the_engines_declaration():
+    """This package imports no engine module, so the near-end schemes it admits are re-spelled
+    here - and a scheme the engine stopped declaring would otherwise reach a block and be silently
+    read as `Linear` by `factor_interp_map.get`."""
+    source = _committed('derivus/riskfactors.py', at=None)
+    declared = next(line for line in source.splitlines()
+                    if line.startswith('INTERPOLATION_METHODS'))
+    assert list(ir_curve.INTERPOLATIONS) == list(
+        ast.literal_eval(declared.split('=', 1)[1].strip()))
 
 
 def test_a_currency_without_its_conventions_refuses_naming_every_missing_field():
@@ -349,17 +396,26 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
     `ACT_365_ISDA` and `ACT_ACT_ICMA` are days/365 in the engine behind a `# TODO`.
     """
     for field, value, expected in (
-            ('authoring', 'Bootstrap', 'is not a shape this emitter writes'),
-            ('float_day_count', 'ACT_ACT_ICMA', 'is not a float_day_count this emitter'),
-            ('fixed_day_count', '_30_360', 'is not a fixed_day_count this emitter'),
+            ('compounding', 'Flat', 'is not what a swap row can be'),
+            ('float_day_count', 'ACT_ACT_ICMA', 'is not a float_day_count a seed may declare'),
+            ('fixed_day_count', '_30_360', 'is not a fixed_day_count a seed may declare'),
             ('spot_days', -1, 'spot_days must be a whole number'),
             ('fixed_frequency', '1', 'is not a tenor this emitter can read'),
             # a zero-length coupon period would roll towards a maturity it never reaches
-            ('float_frequency', '0M', 'has to be a positive period')):
+            ('float_frequency', '0M', 'has to be a positive period'),
+            # half a near split is a scheme with no end, or an end with no scheme
+            ('near_interpolation', 'LinearRT', 'a near scheme is a scheme AND where it stops'),
+            ('near_tenor', '18M', 'a near scheme is a scheme AND where it stops')):
         seed = copy.deepcopy(SEED)
         seed['rates']['USD']['conventions'][field] = value
         with pytest.raises(BloombergConfigurationError, match=expected):
             curve_conventions(seed, 'USD')
+
+    # a scheme the engine does not interpolate with refuses too, naming the menu
+    seed = copy.deepcopy(SEED)
+    seed['rates']['ZAR-ZARONIA']['conventions']['near_interpolation'] = 'Cubic'
+    with pytest.raises(BloombergConfigurationError, match='HermiteRT'):
+        curve_conventions(seed, 'ZAR-ZARONIA')
 
 
 def test_a_front_the_seed_could_not_name_refuses_before_it_mis_authors_the_short_end():
@@ -419,34 +475,22 @@ def test_an_unverified_front_point_refuses_and_offers_the_ones_the_seed_names():
     assert 'fixings/1M' in message and 'fixings/3M' in message and 'overnight' in message
 
 
-def test_an_ois_declaration_whose_float_frequency_nobody_reads_refuses():
-    """A CONVENTION NOBODY READS IS NOT APPLIED. `_ois_swap` rolls the coupon dates ONCE off
-    `fixed_frequency` and hangs both the fixed items and the compounded fixing windows on those
-    boundaries, so `float_frequency` is required, validated, then read by nothing - declaring USD at
-    `6M` emitted a BYTE-IDENTICAL block. V1 authors both OIS legs on one schedule, so a declaration
-    saying otherwise refuses rather than being ignored.
+def test_both_leg_frequencies_are_read_on_every_swap_row():
+    """EVERY SWAP ROW IS ONE `SwapInterestDeal` and the engine generates each leg on its own
+    frequency, OIS rows included - so a declaration that differs is authored rather than refused.
+
+    It used to be refused on an OIS declaration, because the fixing-list authoring rolled ONE
+    schedule off `fixed_frequency` and hung both legs on it: declaring USD at `6M` emitted a
+    byte-identical block, a convention validated and then read by nothing. The term authoring has
+    no schedule of its own to disagree with.
     """
-    seed = copy.deepcopy(SEED)
-    seed['rates']['USD']['conventions']['float_frequency'] = '6M'
-    with pytest.raises(BloombergConfigurationError) as refused:
-        curve_conventions(seed, 'USD')
-    message = str(refused.value)
-    assert "float_frequency is '6M' against a fixed_frequency of '1Y'" in message
-    assert 'BOTH OIS legs on ONE schedule' in message
-    with pytest.raises(BloombergConfigurationError, match='read nowhere'):
-        strip_of('USD', seed=seed)
-
-    # equal frequencies still emit, which is what makes this a boundary rather than a ban
+    for curve, fixed in (('ZAR', '3M'), ('USD', '1Y')):
+        swapped = copy.deepcopy(SEED)
+        swapped['rates'][curve]['conventions']['float_frequency'] = '6M'
+        deal = points_of(block_of(curve, seed=swapped)[1])['2Y' if curve == 'USD' else '1Y']['Deal']
+        assert deal['Pay_Frequency'] == {'.DateOffset': fixed}
+        assert deal['Receive_Frequency'] == {'.DateOffset': '6M'}
     assert curve_conventions(SEED, 'USD').float_frequency == '1Y'
-    assert len(block_of('USD')[1]['instrument']['Points']) == 3
-
-    # the `Swap` path READS BOTH - the engine generates each leg on its own frequency - so an
-    # unequal declaration is authored rather than refused
-    swapped = copy.deepcopy(SEED)
-    swapped['rates']['ZAR']['conventions']['float_frequency'] = '6M'
-    deal = points_of(block_of('ZAR', seed=swapped)[1])['1Y']['Deal']
-    assert deal['Pay_Frequency'] == {'.DateOffset': '3M'}
-    assert deal['Receive_Frequency'] == {'.DateOffset': '6M'}
 
 
 # =============================================================================================
@@ -485,12 +529,12 @@ def test_the_canned_strip_is_believed_by_census():
     """Every candidate accounted for either way - which is what makes a short strip legible. A
     candidate silently dropped is indistinguishable from one never asked about."""
     usd, zar = strip_of('USD'), strip_of('ZAR')
-    assert [item.label for item in usd.prints] == ['overnight', '1W', '2Y']
+    assert [item.label for item in usd.prints] == ['ON', '1W', '2Y']
     assert usd.rejected == {
         'USOSFR3Z BGN Curncy': 'unverified', 'USOSFR2Z BGN Curncy': 'crossed',
         'USOSFR1 BGN Curncy': 'unpriced', 'USOSFR5 BGN Curncy': 'stale'}
 
-    assert [item.label for item in zar.prints] == ['3M', '1Y', '3Y']
+    assert [item.label for item in zar.prints] == ['3M', '1Mx4M', '6Mx9M', '1Y', '3Y']
     assert zar.rejected == {
         'ZARONIA Index': 'not-a-benchmark', 'JIBA1M Index': 'not-a-benchmark',
         'JIBA6M Index': 'not-a-benchmark', 'SASW2 BGN Curncy': 'undated',
@@ -511,12 +555,13 @@ def test_a_strip_below_its_floor_refuses_naming_what_the_terminal_served():
     """One knot is a flat curve quoted once, so a strip that screened away says what it was asked and
     what came back - "no curve" with no census is not something a desk can act on."""
     poison = dict(POISON, **{security: {'PX_LAST': None} for security in
-                             ('SASW1 BGN Curncy', 'SASW3 BGN Curncy')})
+                             ('SASW1 BGN Curncy', 'SASW3 BGN Curncy',
+                              'SAFR0AD Curncy', 'SAFR0FI Curncy')})
     with pytest.raises(IncompleteStrip) as refused:
         block_of('ZAR', poison=poison)
     message = str(refused.value)
     assert 'ZAR screened to 1 believed point against a floor of 2' in message
-    assert '2 unpriced' in message and '3 not-a-benchmark' in message
+    assert '4 unpriced' in message and '3 not-a-benchmark' in message
 
 
 # =============================================================================================
@@ -524,132 +569,132 @@ def test_a_strip_below_its_floor_refuses_naming_what_the_terminal_served():
 # =============================================================================================
 
 def points_of(block):
-    return {row['Descriptor'].split()[1]: row for row in block['instrument']['Points']}
+    return {row['Tenor']: row for row in block['instrument']['Points']}
 
 
-def test_the_ois_strip_is_authored_as_the_compounding_rule_requires():
-    """A USD OIS benchmark is a CONTAINER over an OIS-compounded floating leg and a fixed leg, with
-    ONE FLOAT ITEM PER FIXING WINDOW sharing its coupon's payment date.
+def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
+    """AN OIS BENCHMARK IS ONE `SwapInterestDeal`, `Compounding_Method` OIS, with `Index_Tenor` and
+    `Receive_Interest_Frequency` at zero months - ONE RESET SPANNING EACH COUPON.
 
-    `pv_float_cashflow_list` compounds geometrically only when the reset count differs from the
-    cashflow count, and `compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`
-    merges a payment date's items into ONE cashflow carrying all their resets at `Weight` 1. A leg
-    authored as one item with many resets arrives weighted `1/n` and compounds at a fraction of the
-    rate - the AVERAGING legs' arithmetic.
+    It used to be a `StructuredDeal` over a floating cashflow LIST carrying one item per
+    business-day fixing, because `pv_float_cashflow_list` compounds geometrically only where the
+    reset count differs from the cashflow count. That spelling is retired: at t0 the compounded
+    forwards read off a curve telescope to the period forward, so the term swap prices the same par
+    rate (`test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces` measures it), and a list
+    authored one item per COUPON - the shape a generated leg has - pays one over n of the interest.
+
+    THIS CANNED USD BLOCK IS 290,967 BYTES ON MAIN AND 4,470 HERE, the same three benchmarks with
+    531 cashflow items gone; the shipped thirty-year strip was some 26,000 items and 14 MB.
     """
     row = points_of(block_of('USD')[1])['2Y']
-    assert row['DealType'] == 'StructuredDeal'
+    assert row['DealType'] == 'SwapInterestDeal'
     deal = row['Deal']
-    assert deal['Net_Cashflows'] == 'Yes'
-    floating, fixed = deal['Children']
-    assert floating['Object'] == 'CFFloatingInterestListDeal'
-    assert floating['Cashflows']['Compounding_Method'] == 'OIS'
-    assert floating['Forecast_Rate'] == 'USD'
-    assert fixed['Object'] == 'CFFixedInterestListDeal'
+    assert 'Children' not in deal
+    assert deal['Compounding_Method'] == 'OIS'
+    assert deal['Index_Tenor'] == {'.DateOffset': '0M'}
+    assert deal['Receive_Interest_Frequency'] == {'.DateOffset': '0M'}
+    assert deal['Interest_Rate'] == 'USD'
+    assert deal['Pay_Frequency'] == deal['Receive_Frequency'] == {'.DateOffset': '1Y'}
+    assert deal['Pay_Day_Count'] == deal['Receive_Day_Count'] == 'ACT_360'
+    assert deal['Principal'] == 1000000.0
+    # T+2 on a Monday as-of, and the 2Y maturity rolls off the weekend it lands on
+    assert deal['Effective_Date'] == {'.Timestamp': '2026-09-02'}
+    assert deal['Maturity_Date'] == {'.Timestamp': '2028-09-04'}
 
-    # ANNUAL coupons rolled BACKWARD from maturity, where the market puts a stub.
-    #
-    # AND UNADJUSTED - a stated limitation: the second payment falls on a Saturday and stays there.
-    # The deals carry `Accrual_Calendars: None` and `Payment_Calendars: None`, so the engine rolls
-    # nothing either. A weekend roll invented here would disagree with the legs the engine generates
-    # itself for the `Swap` authoring, where only Effective and Maturity come from this module.
-    payments = sorted({item['Payment_Date']['.Timestamp'] for item in fixed['Cashflows']['Items']})
-    assert payments == ['2027-09-02', '2028-09-02']
-    assert datetime.date.fromisoformat(payments[1]).weekday() == 5
-    assert deal['Children'][0]['Cashflows']['Items'][0]['Accrual_Start_Date']['.Timestamp'] == \
-        '2026-09-02', 'the strip starts at T+2, which is what spot_days declares'
-
-    # every float item carries exactly ONE reset, and they tile their coupon exactly
-    items = [item for item in floating['Cashflows']['Items']
-             if item['Payment_Date']['.Timestamp'] == payments[0]]
-    assert all(len(item['Resets']) == 1 for item in items)
-    windows = sorted((item['Accrual_Start_Date']['.Timestamp'],
-                      item['Accrual_End_Date']['.Timestamp']) for item in items)
-    assert windows[0][0] == '2026-09-02' and windows[-1][1] == payments[0]
-    assert all(left[1] == right[0] for left, right in zip(windows, windows[1:]))
-    # INSIDE a coupon a window starts on a business day; the coupon's OWN start is a boundary
-    # whatever weekday it falls on, which is what makes the two legs accrue the same span. This
-    # coupon starts on a Wednesday, so the weekend case is the next gate's
-    assert all(datetime.date.fromisoformat(start).weekday() < 5 for start, _ in windows[1:])
-
-    # the DECLARED day count, on the item the engine reads verbatim
-    item = items[0]
-    assert item['Accrual_Day_Count'] == 'ACT_360'
-    span = (datetime.date.fromisoformat(item['Accrual_End_Date']['.Timestamp']) -
-            datetime.date.fromisoformat(item['Accrual_Start_Date']['.Timestamp'])).days
-    assert item['Accrual_Year_Fraction'] == pytest.approx(span / 360.0)
-    assert item['Resets'][0][3] == item['Accrual_Year_Fraction']
+    # a whole USD block is now small enough to read - the fixing list was 25,700 items shipped
+    assert len(json.dumps(block_of('USD')[1])) < 20000
 
 
-def _wire_date(value):
-    return datetime.date.fromisoformat(value['.Timestamp'])
+def test_a_fra_row_is_a_fradeal_spanning_the_two_tenors_its_label_names():
+    """`1Mx4M` IS THE INSTRUMENT: both dates measured off spot, each rolled Modified Following, and
+    the reset AT the effective date - the forward the curve carries over that window, which is what
+    the solve holds at par. `FRA_Rate` is authored at zero; `QUOTE_WRITERS['FRADeal']` puts the
+    print in."""
+    row = points_of(block_of('ZAR')[1])['6Mx9M']
+    assert row['DealType'] == 'FRADeal'
+    # 2027-02-28 is a Sunday AND the end of February, so Modified Following goes BACK to the 26th
+    assert row['Deal']['Effective_Date'] == {'.Timestamp': '2027-02-26'}
+    assert row['Deal']['Maturity_Date'] == {'.Timestamp': '2027-05-31'}
+    deal = points_of(block_of('ZAR')[1])['1Mx4M']['Deal']
+    assert deal['Effective_Date'] == {'.Timestamp': '2026-09-30'}
+    assert deal['Maturity_Date'] == {'.Timestamp': '2026-12-31'}
+    assert deal['Reset_Date'] == deal['Effective_Date']
+    assert deal['Day_Count'] == 'ACT_365' and deal['Principal'] == 1000000.0
+    assert deal['FRA_Rate'] == 0.0 and points_of(block_of('ZAR')[1])['1Mx4M'][
+        'Quoted_Market_Value'] == 7.35
+    assert deal['Borrower_Lender'] == 'Borrower' and deal['Payment_Timing'] == 'End'
+    assert deal['Interest_Rate'] == 'ZAR'
+
+    # the end is measured off SPOT, not off the rolled start: 9M from 2026-08-31 is 2027-05-31, and
+    # walking three months off the rolled 2027-02-26 would have said the 26th of May instead
+    assert ir_curve.strip_dates('6Mx9M', 'fra', AS_OF, curve_conventions(SEED, 'ZAR')) == (
+        datetime.date(2027, 2, 26), datetime.date(2027, 5, 31))
 
 
-def test_the_ois_fixing_windows_partition_every_coupon():
-    """THE TWO LEGS ACCRUE THE SAME SPAN, PER COUPON, on a swap the solve holds at PV zero.
+def test_a_forward_starting_row_starts_at_spot_plus_its_first_tenor():
+    """`6M1M` is a swap EFFECTIVE at spot + 6M running one month on - the MPC-dated shape a ZARONIA
+    curve is quoted in inside 18 months, and the one row whose maturity is measured off its own
+    effective date rather than off spot."""
+    row = points_of(block_of('ZAR-ZARONIA-FWD')[1])['6M1M']
+    assert row['DealType'] == 'SwapInterestDeal'
+    deal = row['Deal']
+    assert deal['Effective_Date'] == {'.Timestamp': '2027-02-26'}
+    assert deal['Maturity_Date'] == {'.Timestamp': '2027-03-29'}
+    assert deal['Compounding_Method'] == 'OIS'
+    assert deal['Index_Tenor'] == {'.DateOffset': '0M'}
+    # one coupon: the leg frequency is annual and the swap is a month long, so the engine's own
+    # backward roll puts a single period between the two dates
+    assert deal['Pay_Frequency'] == {'.DateOffset': '1Y'}
+    assert row['Security'] == 'SAFOMFA Curncy'
 
-    Both legs roll off the SAME coupon dates, so they accrue the same span only if the float leg's
-    fixing windows tile `[coupon_start, coupon_end]` exactly. A FIXING ACCRUES THROUGH A WEEKEND, at
-    a coupon boundary exactly as inside a coupon, so the coupon's own start is a window boundary
-    whatever weekday it falls on.
+    # the END is measured off the UNROLLED effective, so a start rolled back three days does not
+    # shorten the swap: 2027-02-28 plus a month is 2027-03-28, a Sunday, rolling on to the 29th
+    assert ir_curve.strip_dates('15M1M', 'forward', AS_OF,
+                                curve_conventions(SEED, 'ZAR-ZARONIA-FWD')) == (
+        datetime.date(2027, 11, 30), datetime.date(2027, 12, 30))
 
-    STARTING THE LEG AT THE FIRST BUSINESS DAY IS WHERE THIS WAS WRONG. On this canned USD 5Y the
-    coupon starting Saturday 2028-09-02 accrued 1.00833333 on the float leg against the fixed leg's
-    1.01388889 - two days of a one-year coupon - and Sunday 2029-09-02 accrued 1.01111111, losing
-    one. Both now read 1.01388889.
 
-    The 5Y carries the weekend boundaries, so the poison table lets it through here; the 2Y's
-    coupons start on a Wednesday and a Thursday, which is why the gate beside this ran green.
+def test_the_roll_moves_a_date_onto_a_business_day_and_stays_in_its_month():
+    """ONE CALENDAR RULE, and the two cases that separate Following from Modified Following.
+
+    A Saturday maturity rolls FORWARD to Monday; a month-end that would roll into the next month
+    rolls BACK instead, which is what keeps a monthly strip's knots in the months they are quoted
+    for. With no holidays handed in the rule is Monday to Friday, which is what this module has
+    always applied; a holiday set moves a date the weekday rule leaves alone.
     """
-    poison = {security: value for security, value in POISON.items()
-              if security != 'USOSFR5 BGN Curncy'}
-    points = points_of(block_of('USD', poison=poison)[1])
-    assert '5Y' in points, 'the 5Y is the benchmark whose coupons land on a weekend'
+    saturday, sunday = datetime.date(2028, 9, 2), datetime.date(2029, 9, 2)
+    assert ir_curve.roll(saturday) == datetime.date(2028, 9, 4)
+    assert ir_curve.roll(saturday, modified=True) == datetime.date(2028, 9, 4)
+    assert ir_curve.roll(sunday, modified=True) == datetime.date(2029, 9, 3)
 
-    weekend = []
-    for label, row in sorted(points.items()):
-        if row['DealType'] != 'StructuredDeal':
-            continue
-        floating, fixed = row['Deal']['Children']
-        windows = {}
-        for item in floating['Cashflows']['Items']:
-            windows.setdefault(item['Payment_Date']['.Timestamp'], []).append(
-                (_wire_date(item['Accrual_Start_Date']), _wire_date(item['Accrual_End_Date']),
-                 item['Accrual_Year_Fraction'], item['Accrual_Day_Count']))
-        for coupon in fixed['Cashflows']['Items']:
-            start, end = _wire_date(coupon['Accrual_Start_Date']), \
-                _wire_date(coupon['Accrual_End_Date'])
-            spans = sorted(windows[coupon['Payment_Date']['.Timestamp']])
-            # THE PARTITION: no gap, no overlap, and the ends are the coupon's own
-            assert spans[0][0] == start, (label, start)
-            assert spans[-1][1] == end, (label, end)
-            assert all(left[1] == right[0] for left, right in zip(spans, spans[1:])), label
-            # the same span on the same day count - stated in DAYS first, an integer equality that
-            # cannot be a rounding
-            assert sum((stop - begin).days for begin, stop, _, _ in spans) == (end - start).days
-            assert {day_count for _, _, _, day_count in spans} == {coupon['Accrual_Day_Count']} \
-                == {'ACT_360'}, 'USD declares ACT/360 on both legs'
-            float_accrual = sum(fraction for _, _, fraction, _ in spans)
-            assert float_accrual == pytest.approx(coupon['Accrual_Year_Fraction']), (label, start)
-            if start.weekday() >= 5:
-                weekend.append((label, start.isoformat(), round(float_accrual, 8)))
+    # 2026-05-31 is a Sunday and the last day of May: Following leaves May, Modified goes back
+    month_end = datetime.date(2026, 5, 31)
+    assert ir_curve.roll(month_end) == datetime.date(2026, 6, 1)
+    assert ir_curve.roll(month_end, modified=True) == datetime.date(2026, 5, 29)
 
-    # THE MEASURED CASE, named - so a strip that stopped carrying a weekend boundary fails here
-    # rather than passing vacuously
-    assert weekend == [('5Y', '2028-09-02', 1.01388889), ('5Y', '2029-09-02', 1.01388889)]
+    # a business day is not moved, with or without a calendar
+    assert ir_curve.roll(datetime.date(2026, 9, 2)) == datetime.date(2026, 9, 2)
+    holidays = {datetime.date(2026, 9, 2), datetime.date(2026, 9, 3)}
+    assert ir_curve.roll(datetime.date(2026, 9, 2), holidays) == datetime.date(2026, 9, 4)
+    assert ir_curve.roll(datetime.date(2026, 9, 30), holidays={datetime.date(2026, 9, 30)},
+                         modified=True) == datetime.date(2026, 9, 29)
 
-    # the first window of such a coupon starts ON the weekend day: it is the coupon boundary that is
-    # unadjusted, not the fixing calendar
-    five = points['5Y']['Deal']['Children'][0]['Cashflows']['Items']
-    boundary = sorted(_wire_date(item['Accrual_Start_Date']) for item in five
-                      if _wire_date(item['Accrual_Start_Date']).weekday() >= 5)
-    assert [date.isoformat() for date in boundary] == ['2028-09-02', '2029-09-02']
+    # and it reaches the authored dates: a ZAR holiday on the 1Y maturity moves that knot alone
+    plain = points_of(block_of('ZAR')[1])
+    holiday = points_of(block_of('ZAR', holidays={datetime.date(2027, 8, 31)})[1])
+    assert plain['1Y']['Deal']['Maturity_Date'] == {'.Timestamp': '2027-08-31'}
+    assert holiday['1Y']['Deal']['Maturity_Date'] == {'.Timestamp': '2027-08-30'}
+    assert holiday['3Y']['Deal']['Maturity_Date'] == plain['3Y']['Deal']['Maturity_Date']
+    # spot itself moves where the holiday is the as-of, which is the settlement lag reading the
+    # same calendar as the maturity
+    assert ir_curve.strip_dates('1Y', 'swap', AS_OF, curve_conventions(SEED, 'ZAR'),
+                                {AS_OF})[0] == datetime.date(2026, 9, 1)
 
 
 def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
-    """ZAR declares `Swap` authoring, so a point is ONE `SwapInterestDeal` and the engine generates
-    both legs: quarterly against quarterly on ACT/365, with `Index_Tenor` zero months so each
-    coupon carries one reset spanning its own accrual - which for a quarterly leg IS 3M JIBAR."""
+    """ZAR declares `None` compounding, so its swap rows carry a TERM index: quarterly against
+    quarterly on ACT/365, with `Index_Tenor` zero months so each coupon carries one reset spanning
+    its own accrual - which for a quarterly leg IS 3M JIBAR."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert row['DealType'] == 'SwapInterestDeal'
     deal = row['Deal']
@@ -679,11 +724,16 @@ def test_the_front_point_is_the_one_the_seed_declared():
     # USD declares the overnight one: an O/N deposit is T+0 to the NEXT BUSINESS DAY, so its payment
     # frequency is that span and the pinned schedule is one period
     usd = points_of(block_of('USD')[1])
-    assert 'SOFRRATE Index' in usd['overnight']['Descriptor']
-    assert usd['overnight']['Deal']['Effective_Date'] == {'.Timestamp': '2026-08-31'}
-    assert usd['overnight']['Deal']['Maturity_Date'] == {'.Timestamp': '2026-09-01'}
-    assert usd['overnight']['Deal']['Payment_Frequency'] == {'.DateOffset': '1D'}
-    assert usd['overnight']['Deal']['Accrual_Day_Count'] == 'ACT_360'
+    assert 'SOFRRATE Index' in usd['ON']['Descriptor'] and usd['ON']['Security'] == 'SOFRRATE Index'
+    assert usd['ON']['Deal']['Effective_Date'] == {'.Timestamp': '2026-08-31'}
+    assert usd['ON']['Deal']['Maturity_Date'] == {'.Timestamp': '2026-09-01'}
+    assert usd['ON']['Deal']['Payment_Frequency'] == {'.DateOffset': '1D'}
+    assert usd['ON']['Deal']['Accrual_Day_Count'] == 'ACT_360'
+
+    # a Friday as-of spans the weekend, so the pinned schedule is ONE 3D period, not three of one
+    friday = points_of(block_of('USD', as_of=datetime.date(2026, 8, 28))[1])
+    assert friday['ON']['Deal']['Payment_Frequency'] == {'.DateOffset': '3D'}
+    assert friday['ON']['Deal']['Maturity_Date'] == {'.Timestamp': '2026-08-31'}
 
 
 def test_the_quote_is_never_authored_into_the_deal():
@@ -698,16 +748,15 @@ def test_the_quote_is_never_authored_into_the_deal():
     assert zar['1Y']['Quoted_Market_Value'] == 7.62
     assert zar['3M']['Deal']['Interest_Rate_Schedule'] == {'.DateList': []}
     assert zar['3M']['Quoted_Market_Value'] == 7.41
-    fixed = usd['2Y']['Deal']['Children'][1]
-    assert {item['Rate']['.Percent'] for item in fixed['Cashflows']['Items']} == {0.0}
+    assert zar['1Mx4M']['Deal']['FRA_Rate'] == 0.0
+    assert zar['1Mx4M']['Quoted_Market_Value'] == 7.35
+    assert usd['2Y']['Deal']['Swap_Rate'] == 0.0
     assert usd['2Y']['Quoted_Market_Value'] == 3.88
 
     # neither `Object` nor `Discount_Rate` is authored twice: the point NAMES the type and the
     # family stamps the discount curve from the block it belongs to
     for row in list(usd.values()) + list(zar.values()):
         assert 'Object' not in row['Deal'] and 'Discount_Rate' not in row['Deal']
-        for child in row['Deal'].get('Children', ()):
-            assert 'Discount_Rate' not in child
 
 
 def test_the_two_way_and_the_stamp_ride_beside_the_mid():
@@ -729,35 +778,54 @@ def test_the_two_way_and_the_stamp_ride_beside_the_mid():
 
 def test_the_block_writes_only_fields_the_family_declares():
     """Every BLOCK-level key is a declared field of `InterestRateCurveParameters`, read off the
-    COMMITTED declaration. The solve's knobs (`N_Iter`, `Tol`, `Damping_Halvings`) and the three
-    lifecycle switches are deliberately NOT written - properties of a job rather than of a market,
-    each read by the engine with its declared default.
+    declaration. The solve's knobs (`N_Iter`, `Tol`, `Damping_Halvings`) and the three lifecycle
+    switches are deliberately NOT written - properties of a job rather than of a market, each read
+    by the engine with its declared default.
 
-    THE POINT KEYS ARE A SUBSET TOO, and that half reads the WORKING TREE (`at=None`): the
-    `Quoted_Bid`/`Quoted_Ask`/`Timestamp` columns are declared by this change, so HEAD cannot be
-    asked about them. Nothing else in this file reads the tree.
+    THE CONVENTIONS ARE. The block is the curve's definition, so the calendar, the settlement lag,
+    both legs' frequency and day count, the front's day count, the compounding rule and the near
+    split are emitted beside the rows - and each row carries the `Tenor` it was authored from and
+    the `Security` it was quoted off.
+
+    Read off the WORKING TREE (`at=None`), the declarations being this change's own.
     """
-    declared = committed_fields('InterestRateCurveParameters')
+    declared = committed_fields('InterestRateCurveParameters', at=None)
     instrument = block_of('ZAR')[1]['instrument']
     assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
-    assert set(instrument) == {'Currency', 'Day_Count', 'Discount_Rate', 'Points'}
-    assert instrument['Discount_Rate'] == '', 'V1 builds a self-discounting single curve'
-    assert instrument['Day_Count'] == 'ACT_365'
-    # the block key names the curve the strip BUILDS - defaulting to the currency, named by a
-    # multi-curve desk - and the deals project off exactly that name
+    assert set(instrument) == {'Currency', 'Day_Count', 'Discount_Rate', 'Calendar', 'Spot_Days',
+                               'Fixed_Frequency', 'Float_Frequency', 'Fixed_Day_Count',
+                               'Float_Day_Count', 'Front_Day_Count', 'Compounding',
+                               'Near_Interpolation', 'Near_Tenor', 'Points'}
+    assert instrument['Discount_Rate'] == '', 'the emitter builds a self-discounting single curve'
+    assert (instrument['Day_Count'], instrument['Front_Day_Count']) == ('ACT_365', 'ACT_365')
+    assert (instrument['Calendar'], instrument['Spot_Days']) == ('', 0)
+    assert instrument['Fixed_Frequency'] == instrument['Float_Frequency'] == {'.DateOffset': '3M'}
+    assert instrument['Compounding'] == 'None'
+    assert (instrument['Near_Interpolation'], instrument['Near_Tenor']) == ('', '')
+
+    # a curve quoted monthly at the front declares the split it carries, in the block
+    zaronia = block_of('ZAR-ZARONIA')[1]['instrument']
+    assert zaronia['Near_Interpolation'] == 'LinearRT'
+    assert zaronia['Near_Tenor'] == {'.DateOffset': '18M'}
+    assert zaronia['Compounding'] == 'OIS' and zaronia['Currency'] == 'ZAR'
+
+    # the block key names the curve the strip BUILDS - the seed's own key, or a name the caller
+    # gives - and the deals project off exactly that name
     assert block_of('ZAR')[0] == 'InterestRatePrices.ZAR'
+    assert block_of('ZAR-ZARONIA')[0] == 'InterestRatePrices.ZAR-ZARONIA'
     named = ir_curve_block(strip_of('ZAR', curve='ZAR-JIBAR-3M'))
     assert named[0] == 'InterestRatePrices.ZAR-JIBAR-3M'
     assert {row['Deal'].get('Interest_Rate') for row in named[1]['instrument']['Points']} == {
         'ZAR-JIBAR-3M'}
     # and every POINT key is a declared sub-field - no undeclared extra rides beside the mid
     points = committed_fields('InterestRateCurveParameters', table='Points', at=None)
-    assert set(points) == {'Use', 'Deal', 'Descriptor', 'DealType', 'Quote_Type',
-                           'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}, points
+    assert set(points) == {'Use', 'Deal', 'Descriptor', 'Tenor', 'Security', 'DealType',
+                           'Quote_Type', 'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask',
+                           'Timestamp'}, points
     for row in instrument['Points']:
         assert set(row) <= set(points), sorted(set(row) - set(points))
         # the mid and the structure are on every row; the two-way and the stamp only where printed
-        assert {'Use', 'Deal', 'Descriptor', 'DealType', 'Quote_Type',
+        assert {'Use', 'Deal', 'Descriptor', 'Tenor', 'Security', 'DealType', 'Quote_Type',
                 'Quoted_Market_Value'} <= set(row)
 
 
@@ -882,26 +950,19 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
       Discount_Rate       stamped by `author_quote`. What an instrument PROJECTS off is its own
                           business; what the quote set DISCOUNTS on is the curve set's
 
-    `Children` is the only authored key that is not a declared field: it is the deal TREE's own key.
+    Every one of the three authored types is covered, which is what the closing set says.
     """
     seen = set()
-    for currency in ('USD', 'ZAR'):
-        for row in block_of(currency)[1]['instrument']['Points']:
-            nodes = [(row['DealType'], row['Deal'], False)]
-            nodes += [(child['Object'], child, True) for child in row['Deal'].get('Children', ())]
-            for deal_type, node, is_child in nodes:
-                declared = committed_deal_fields(deal_type)
-                extra = set(node) - declared
-                assert sorted(extra) == (['Children'] if deal_type == 'StructuredDeal' else []), \
-                    (currency, deal_type, sorted(extra))
-                missing = declared - set(node)
-                assert missing == ({'MtM', 'Tags', 'Sales_Margin', 'Sales_Margin_Currency'}
-                                   | (set() if is_child else {'Object'})
-                                   | ({'Discount_Rate'} if 'Discount_Rate' in declared else set())), \
-                    (currency, deal_type, sorted(missing))
-                seen.add(deal_type)
-    assert seen == {'DepositDeal', 'SwapInterestDeal', 'StructuredDeal',
-                    'CFFloatingInterestListDeal', 'CFFixedInterestListDeal'}, sorted(seen)
+    for curve in ('USD', 'ZAR', 'ZAR-ZARONIA-FWD'):
+        for row in block_of(curve)[1]['instrument']['Points']:
+            deal_type, node = row['DealType'], row['Deal']
+            declared = committed_deal_fields(deal_type)
+            assert not set(node) - declared, (curve, deal_type, sorted(set(node) - declared))
+            missing = declared - set(node)
+            assert missing == {'MtM', 'Tags', 'Sales_Margin', 'Sales_Margin_Currency',
+                               'Object', 'Discount_Rate'}, (curve, deal_type, sorted(missing))
+            seen.add(deal_type)
+    assert seen == {'DepositDeal', 'FRADeal', 'SwapInterestDeal'}, sorted(seen)
 
 
 # =============================================================================================
@@ -931,17 +992,21 @@ def test_two_benchmarks_on_one_maturity_refuse_by_name():
     assert 'ONE knot per used quote' in message
 
 
-def test_the_fixing_cap_names_the_arithmetic_rather_than_dying_on_it():
-    """An OIS block grows with the SUM of its strip's tenors, one item per business-day fixing, so
-    the shipped USD strip is tens of thousands of items and tens of megabytes. The default admits
-    that; the bound catches a seed reaching further, and refuses with the count."""
-    with pytest.raises(IncompleteStrip) as refused:
-        ir_curve_block(strip_of('USD'), CurveScreen(maximum_fixings=10))
-    message = str(refused.value)
-    assert 'daily fixings across its 2 OIS benchmarks, past the declared cap of 10' in message
-    assert 'ONE ITEM PER BUSINESS-DAY FIXING' in message
-    # the seeded strip is inside the shipped default, which makes the cap a bound not a blockage
-    assert ir_curve_block(strip_of('USD'))[1]['instrument']['Points']
+def test_the_knots_of_every_shape_are_the_maturities_the_labels_name():
+    """ONE KNOT PER USED QUOTE at its own last cashflow, for all four shapes - a deposit, a FRA, a
+    term swap and a forward-starting one - and the block comes out in maturity order, so the grid
+    the family builds is ascending without anything sorting it afterwards.
+
+    A FRA and a forward start are the two whose knot is NOT `spot + label`: each lands at the end of
+    its own window, which is what puts a monthly forward strip's knots a month apart."""
+    zar = block_of('ZAR')[1]['instrument']['Points']
+    assert [row['Tenor'] for row in zar] == ['3M', '1Mx4M', '6Mx9M', '1Y', '3Y']
+    assert [row['Deal']['Maturity_Date']['.Timestamp'] for row in zar] == [
+        '2026-11-30', '2026-12-31', '2027-05-31', '2027-08-31', '2029-08-31']
+    forwards = block_of('ZAR-ZARONIA-FWD')[1]['instrument']['Points']
+    assert [row['Tenor'] for row in forwards] == ['ON', '1M1M', '6M1M', '15M1M']
+    assert [row['Deal']['Maturity_Date']['.Timestamp'] for row in forwards] == [
+        '2026-09-01', '2026-10-30', '2027-03-29', '2027-12-30']
 
 
 def test_the_same_canned_strip_emits_the_same_bytes():
@@ -961,6 +1026,27 @@ def test_the_same_canned_strip_emits_the_same_bytes():
 # =============================================================================================
 # 6  the engine seam - read-only
 # =============================================================================================
+
+#: The canned world's curves and how many points each screens to - what the engine section runs
+#: over, so a shape that stopped being authored fails a count rather than passing unexercised.
+CURVES = {'USD': 3, 'ZAR': 5, 'ZAR-ZARONIA': 6, 'ZAR-ZARONIA-FWD': 4}
+
+
+def decoded_blocks(curves):
+    """Every named curve's block through the ENGINE'S OWN JSON reader - the wire timestamps,
+    periods and percents turned into what a pricer indexes."""
+    from derivus.config import Config
+    blocks = dict(block_of(curve) for curve in curves)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_strip_probe.json')
+    try:
+        with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+            json.dump(job_document(blocks), handle)
+        data = Config().read_json(path)
+    finally:
+        if os.path.isfile(path):
+            os.remove(path)
+    return data['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices']
+
 
 def job_document(market_prices=None):
     """A wire-form job document with a `Market Prices` section - what `update_market_quote` writes
@@ -1105,10 +1191,12 @@ def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
     into a benchmark deal node by `quote_nodes`, and `quote_knots` resets each leaf and reads its
     last cashflow date.
 
-    WHAT THIS PROVES: the authored blocks CONSTRUCT, every leg resets, every benchmark produces a
-    last cashflow date, and the knot grid is ASCENDING and strictly positive (`Factor1D.interpolate`
-    divides by the tenor, so a zero knot is NaN). The quote reaches the field the family's writer
-    puts it in.
+    WHAT THIS PROVES: all four authored shapes CONSTRUCT, every leg resets, every benchmark
+    produces a last cashflow date, and the knot grid is ASCENDING and strictly positive
+    (`Factor1D.interpolate` divides by the tenor, so a zero knot is NaN). A FRA's and a forward
+    swap's knots land at their OWN last cashflow rather than at the label's outer tenor, which is
+    what puts a monthly forward strip's knots a month apart. The quote reaches the field the
+    family's writer puts it in.
 
     WHAT IT DOES NOT PROVE is that the authored field NAMES are declared ones - a misspelled day
     count reaches this gate and passes it. That belongs to
@@ -1116,35 +1204,73 @@ def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
     """
     import pandas as pd
     from derivus.bootstrappers import quote_knots, quote_nodes
-    from derivus.config import Config
 
-    name, block = block_of('ZAR')
-    usd_name, usd_block = block_of('USD')
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_strip_probe.json')
-    try:
-        with open(path, 'w', encoding='utf-8', newline='\n') as handle:
-            json.dump(job_document({name: block, usd_name: usd_block}), handle)
-        data = Config().read_json(path)
-    finally:
-        if os.path.isfile(path):
-            os.remove(path)
-    prices = data['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices']
-
-    for market_price, currency, expected in ((name, 'ZAR', 3), (usd_name, 'USD', 3)):
-        instrument = prices[market_price]['instrument']
+    prices = decoded_blocks(CURVES)
+    for curve, expected in CURVES.items():
+        instrument = prices[ir_curve.market_price_name(curve)]['instrument']
         assert len(instrument['Points']) == expected
-        nodes = quote_nodes(instrument['Points'], currency)
+        nodes = quote_nodes(instrument['Points'], instrument['Currency'])
         knots = quote_knots(nodes, pd.Timestamp(AS_OF), instrument['Day_Count'], {})
         assert len(knots) == expected
-        assert list(knots) == sorted(knots), knots
-        assert all(knot > 0.0 for knot in knots), knots
+        assert list(knots) == sorted(knots), (curve, knots)
+        assert all(knot > 0.0 for knot in knots), (curve, knots)
+        # the knot IS the maturity the row was authored to, in the block's own day count
+        for point, knot in zip(instrument['Points'], knots):
+            assert knot == pytest.approx(
+                (point['Deal']['Maturity_Date'] - pd.Timestamp(AS_OF)).days / 365.0), point['Tenor']
 
-    # the quote reached the instrument through the family's own writer
-    zar = prices[name]['instrument']
-    swap = [point for point in zar['Points'] if point['DealType'] == 'SwapInterestDeal'][0]
-    node = quote_nodes([swap], 'ZAR')[0]
-    assert float(node['Instrument'].field['Swap_Rate']) == pytest.approx(
-        swap['Quoted_Market_Value'])
+    # the quote reached each instrument through the family's own writer, per type
+    zar = prices['InterestRatePrices.ZAR']['instrument']
+    for point in zar['Points']:
+        node = quote_nodes([point], 'ZAR')[0]
+        if point['DealType'] == 'SwapInterestDeal':
+            assert float(node['Instrument'].field['Swap_Rate']) == pytest.approx(
+                point['Quoted_Market_Value'])
+        elif point['DealType'] == 'FRADeal':
+            assert float(node['Instrument'].field['FRA_Rate']) == pytest.approx(
+                point['Quoted_Market_Value'])
+
+
+def test_every_authored_shape_solves_to_par():
+    """THE SHAPES PRICE. Each canned block is bootstrapped the way `Config.bootstrap` runs the
+    family, and every benchmark it was solved from is then repriced off the solved curve and has to
+    come back at PV zero - a deposit, a FRA, a term swap, an OIS swap and a forward-starting swap.
+
+    This is what a knot grid being square looks like from outside: one knot per used quote at its
+    own last cashflow, so the residual vector and the unknowns are the same length and the damped
+    Newton has a root to find. A shape whose dates the emitter got wrong reprices away from par
+    here even though it constructs.
+    """
+    import pandas as pd
+    import torch
+    from derivus.bootstrappers import (BenchmarkInstruments, InterestRateCurveParameters,
+                                       author_quote, quote_node)
+    from derivus.config import ModelParams
+
+    base, device = pd.Timestamp(AS_OF), torch.device('cpu')
+    prices = decoded_blocks(CURVES)
+    for curve in CURVES:
+        name = ir_curve.market_price_name(curve)
+        block = prices[name]['instrument']
+        currency = block['Currency']
+        price_factors = {'FxRate.{}'.format(currency): {
+            'Domestic_Currency': None, 'Interest_Rate': curve, 'Priority': 1, 'Spot': 1.0}}
+        InterestRateCurveParameters({}, device, torch.float32).bootstrap(
+            {'Base_Date': base, 'Base_Currency': currency}, {}, price_factors, ModelParams(),
+            {name: {'instrument': copy.deepcopy(block), 'Children': []}}, {})
+        assert 'InterestRate.{}'.format(curve) in price_factors
+
+        nodes = []
+        for point in block['Points']:
+            deal = copy.deepcopy(dict(point['Deal'], Object=point['DealType']))
+            author_quote(deal, point['Quoted_Market_Value'], curve)
+            nodes.append(quote_node(deal, {}))
+        priced = BenchmarkInstruments(nodes, price_factors, ModelParams(), base, currency, {}, [],
+                                      device)({}).detach().numpy()
+        # a notional of a million, so 1e-6 is a thousandth of a basis point of the principal
+        assert abs(priced).max() < 1e-6, (curve, priced)
+
+
 
 
 # =============================================================================================

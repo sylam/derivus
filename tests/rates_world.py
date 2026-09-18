@@ -40,20 +40,22 @@ def market(currency, curves, discount_curve, day_count='ACT_365'):
     return factors
 
 
-def deposit(ref, currency, discount, months, quote, day_count='ACT_360'):
+def deposit(ref, currency, discount, months, quote, day_count='ACT_360', days=0):
     """A money-market deposit quoted at `quote` percent.
 
     The rate is pinned through `Interest_Rate_Schedule`, which is what keeps a depo quote off the
     forecast curve entirely - `DepositDeal.reset` drops the `Interest_Rate` dependency when the
     schedule covers every accrual start, so a quote cannot depend on the curve it is solving for.
+
+    `days` is for an OVERNIGHT front, which no whole number of months spells.
     """
-    maturity = BASE + pd.DateOffset(months=months)
+    period = pd.DateOffset(days=days) if days else pd.DateOffset(months=months)
+    maturity = BASE + period
     return {
         'Object': 'DepositDeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': discount,
         'Effective_Date': BASE, 'Maturity_Date': maturity,
-        'Payment_Frequency': pd.DateOffset(months=months),
-        'Interest_Frequency': pd.DateOffset(months=months),
+        'Payment_Frequency': period, 'Interest_Frequency': period,
         'Accrual_Day_Count': day_count, 'Amount': 1e6, 'Amortisation': None,
         'Compounding': 'No', 'Payment_Timing': 'End', 'Payment_Offset': 0,
         'Accrual_Calendars': None, 'Payment_Calendars': None,
@@ -82,15 +84,21 @@ def fra(ref, currency, forecast, discount, start_months, end_months, quote, day_
         'Payment_Timing': timing, 'Calendars': None}
 
 
-def par_swap(ref, currency, forecast, discount, years, quote,
-             fixed_frequency=12, float_frequency=3, day_count='ACT_360'):
+def par_swap(ref, currency, forecast, discount, years, quote, fixed_frequency=12,
+             float_frequency=3, day_count='ACT_360', compounding='None', months=0, start=0):
     """A par interest-rate swap quoted at `quote` percent - fixed against a single-reset floating
     leg. `Index_Tenor` of zero months is what makes each coupon carry ONE reset spanning its own
-    accrual period, which is the vanilla shape; a multi-reset period is the OIS one below."""
+    accrual period, which is the vanilla shape; the same shape under `compounding='OIS'` is an
+    overnight benchmark, a multi-reset period being the retired cashflow-list one below.
+
+    `months` spells a tenor no whole number of years reaches and `start` a forward-starting swap.
+    """
+    effective = BASE + pd.DateOffset(months=start)
     return {
         'Object': 'SwapInterestDeal', 'Reference': ref, 'Currency': currency,
         'Discount_Rate': discount, 'Interest_Rate': forecast,
-        'Effective_Date': BASE, 'Maturity_Date': BASE + pd.DateOffset(years=years),
+        'Effective_Date': effective,
+        'Maturity_Date': effective + pd.DateOffset(months=months or 12 * years),
         'Pay_Rate_Type': 'Fixed', 'Pay_Frequency': pd.DateOffset(months=fixed_frequency),
         'Pay_Day_Count': day_count, 'Pay_Interest_Frequency': pd.DateOffset(months=fixed_frequency),
         'Pay_Timing': 'End', 'Pay_Payment_Offset': 0, 'Pay_Accrual_Calendars': None,
@@ -105,7 +113,7 @@ def par_swap(ref, currency, forecast, discount, years, quote,
         'Index_Frequency': pd.DateOffset(months=0), 'Index_Offset': 0,
         'Index_Calendars': None, 'Index_Publication_Calendars': None,
         'Reset_Type': 'Standard', 'Rate_Multiplier': 1.0, 'Rate_Constant': utils.Percent(0.0),
-        'Floating_Margin': 0.0, 'Fixed_Compounding': 'No', 'Compounding_Method': 'None',
+        'Floating_Margin': 0.0, 'Fixed_Compounding': 'No', 'Compounding_Method': compounding,
         'Known_Rates': None, 'Amortisation': None, 'Swap_Rate': quote, 'Principal': 1e6,
         'Interest_Rate_Volatility': '', 'Discount_Rate_Volatility': ''}
 
@@ -120,13 +128,18 @@ def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
     geometrically. A leg whose resets arrive weighted `1/n` compounds at `1/n` of the rate.
 
     Fixings are on business days, each accruing to the next so the daily windows tile the coupon
-    exactly. Coupons are annual with a final stub, so a sub-annual OIS is one compounded period.
+    exactly - the COUPON'S OWN START is a window boundary whatever weekday it falls on, or a coupon
+    beginning on a Saturday loses the two days before its first business day and the two legs
+    accrue different spans. Coupons are annual with a final stub, so a sub-annual OIS is one
+    compounded period.
     """
     coupons = [BASE + pd.DateOffset(months=m) for m in range(0, months, 12)] + [
         BASE + pd.DateOffset(months=months)]
     float_items, fixed_items = [], []
     for start, end in zip(coupons[:-1], coupons[1:]):
-        fixings = pd.bdate_range(start, end, inclusive='left')
+        fixings = list(pd.bdate_range(start, end, inclusive='left'))
+        if not fixings or fixings[0] != start:
+            fixings.insert(0, start)
         for fixing, nxt in zip(fixings, list(fixings[1:]) + [end]):
             accrual = utils.DayCount.accrual(
                 fixing, (nxt - fixing).days, utils.DayCount.code(day_count))
