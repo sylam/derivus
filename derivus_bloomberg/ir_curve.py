@@ -616,7 +616,8 @@ def wire_date_list(pairs):
 # authoring an instrument
 # ---------------------------------------------------------------------------------------------
 
-def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, notional):
+def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, notional,
+             calendar):
     """A money-market deposit - the strip's FRONT point.
 
     The rate is pinned through `Interest_Rate_Schedule`, which keeps a front quote off the forecast
@@ -632,7 +633,7 @@ def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, 
         'Payment_Frequency': wire_period(tenor), 'Interest_Frequency': wire_period(tenor),
         'Accrual_Day_Count': day_count, 'Amount': notional, 'Amortisation': None,
         'Compounding': 'No', 'Payment_Timing': 'End', 'Payment_Offset': 0,
-        'Accrual_Calendars': None, 'Payment_Calendars': None,
+        'Accrual_Calendars': calendar, 'Payment_Calendars': calendar,
         'First_Coupon_Date': None, 'Penultimate_Coupon_Date': None,
         'Rate_Currency': '', 'FX_Reset_Offset': 0, 'Known_FX_Rates': None,
         'Interest_Rate_Schedule': wire_date_list(())}
@@ -654,7 +655,8 @@ def _fra(reference, currency, curve, effective, maturity, conventions):
         'Effective_Date': wire_timestamp(effective), 'Maturity_Date': wire_timestamp(maturity),
         'Reset_Date': wire_timestamp(effective), 'Day_Count': conventions.float_day_count,
         'Principal': conventions.notional, 'FRA_Rate': 0.0, 'Borrower_Lender': 'Borrower',
-        'Use_Known_Rate': 'No', 'Known_Rate': 0.0, 'Payment_Timing': 'End', 'Calendars': None}
+        'Use_Known_Rate': 'No', 'Known_Rate': 0.0, 'Payment_Timing': 'End',
+        'Calendars': conventions.calendar or None}
 
 
 def _swap(reference, currency, curve, effective, maturity, conventions):
@@ -673,6 +675,7 @@ def _swap(reference, currency, curve, effective, maturity, conventions):
     `Swap_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`:
     `QUOTE_WRITERS['SwapInterestDeal']` writes it, so a re-tick moves the value plane alone.
     """
+    calendar = conventions.calendar or None
     return {
         'Object': 'SwapInterestDeal', 'Reference': reference, 'Currency': currency,
         'Interest_Rate': curve,
@@ -680,14 +683,14 @@ def _swap(reference, currency, curve, effective, maturity, conventions):
         'Pay_Rate_Type': 'Fixed', 'Pay_Frequency': wire_period(conventions.fixed_frequency),
         'Pay_Day_Count': conventions.fixed_day_count,
         'Pay_Interest_Frequency': wire_period(conventions.fixed_frequency),
-        'Pay_Timing': 'End', 'Pay_Payment_Offset': 0, 'Pay_Accrual_Calendars': None,
-        'Pay_Payment_Calendars': None, 'Pay_First_Coupon_Date': None,
+        'Pay_Timing': 'End', 'Pay_Payment_Offset': 0, 'Pay_Accrual_Calendars': calendar,
+        'Pay_Payment_Calendars': calendar, 'Pay_First_Coupon_Date': None,
         'Pay_Penultimate_Coupon_Date': None,
         'Receive_Frequency': wire_period(conventions.float_frequency),
         'Receive_Day_Count': conventions.float_day_count,
         'Receive_Interest_Frequency': wire_period('0M'), 'Receive_Timing': 'End',
-        'Receive_Payment_Offset': 0, 'Receive_Accrual_Calendars': None,
-        'Receive_Payment_Calendars': None, 'Receive_First_Coupon_Date': None,
+        'Receive_Payment_Offset': 0, 'Receive_Accrual_Calendars': calendar,
+        'Receive_Payment_Calendars': calendar, 'Receive_First_Coupon_Date': None,
         'Receive_Penultimate_Coupon_Date': None,
         'Index_Tenor': wire_period('0M'), 'Index_Day_Count': conventions.float_day_count,
         'Index_Frequency': wire_period('0M'), 'Index_Offset': 0,
@@ -754,7 +757,8 @@ def author_point(item, as_of, currency, curve, conventions, holidays=()):
         # the overnight's own span is the calendar's - a Friday print is a 3D period, not three
         span = '{}D'.format((maturity - effective).days) if item.label == 'ON' else item.label
         deal = _deposit(reference, currency, curve, effective, maturity, span,
-                        conventions.front_day_count, conventions.notional)
+                        conventions.front_day_count, conventions.notional,
+                        conventions.calendar or None)
     elif item.kind == 'fra':
         deal = _fra(reference, currency, curve, effective, maturity, conventions)
     else:

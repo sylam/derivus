@@ -85,7 +85,7 @@ def no_terminal_reason(error):
 #: USD SOFR OIS settles T+2, annual/annual on ACT/360 against a compounded overnight index; ZAR
 #: SASW settles same day, quarterly/quarterly on ACT/365 against 3M JIBAR, whose own fixing - not
 #: ZARONIA - is the front of a JIBAR curve; the ZARONIA OIS curve is a third, annual/annual on
-#: ACT/365 and quoted monthly to 18M, which is what its near split is for.
+#: ACT/365 and quoted monthly to a year and then at two, which is what its near split is for.
 SHIPPED = {
     'USD': {'curve_day_count': 'ACT_365', 'spot_days': 2, 'front': 'overnight',
             'front_day_count': 'ACT_360', 'compounding': 'OIS',
@@ -102,7 +102,7 @@ SHIPPED = {
                     'fixed_frequency': '1Y', 'float_frequency': '1Y',
                     'fixed_day_count': 'ACT_365', 'float_day_count': 'ACT_365',
                     'notional': 1000000.0, 'quote_scale': 1.0,
-                    'near_interpolation': 'LinearRT', 'near_tenor': '18M'},
+                    'near_interpolation': 'LinearRT', 'near_tenor': '2Y'},
 }
 
 
@@ -328,7 +328,8 @@ def test_the_shipped_conventions_are_the_declared_ones():
     The three a ticker cannot tell you: USD OIS accrues ACT/360 on both legs where the curve's
     tenors are ACT/365, the ZAR front is the 3M JIBAR fixing rather than the ZARONIA print beside
     it - a JIBAR curve seeded with an overnight rate is a basis error nothing downstream reports -
-    and the ZARONIA curve is quoted monthly to 18M, which is the near split and not a tenor grid.
+    and the ZARONIA curve is quoted monthly to a year and then at two, the near split reaching the
+    two-year knot rather than a tenor grid.
     """
     shipped = packaged_seed()['rates']
     for curve, declared in SHIPPED.items():
@@ -343,7 +344,7 @@ def test_the_shipped_conventions_are_the_declared_ones():
             if spec.get('currency')} == {'ZAR-ZARONIA': 'ZAR', 'ZAR-ZARONIA-FWD': 'ZAR'}
     assert 'currency' not in shipped['USD'] and 'currency' not in shipped['ZAR']
     near = curve_conventions(packaged_seed(), 'ZAR-ZARONIA')
-    assert (near.near_interpolation, near.near_tenor) == ('LinearRT', '18M')
+    assert (near.near_interpolation, near.near_tenor) == ('LinearRT', '2Y')
     assert curve_conventions(packaged_seed(), 'ZAR-ZARONIA-FWD').near_interpolation == ''
     # currencies the seed maps but does NOT declare conventions for must refuse rather than inherit
     # a neighbour's
@@ -806,7 +807,7 @@ def test_the_block_writes_only_fields_the_family_declares():
     # a curve quoted monthly at the front declares the split it carries, in the block
     zaronia = block_of('ZAR-ZARONIA')[1]['instrument']
     assert zaronia['Near_Interpolation'] == 'LinearRT'
-    assert zaronia['Near_Tenor'] == {'.DateOffset': '18M'}
+    assert zaronia['Near_Tenor'] == {'.DateOffset': '2Y'}
     assert zaronia['Compounding'] == 'OIS' and zaronia['Currency'] == 'ZAR'
 
     # the block key names the curve the strip BUILDS - the seed's own key, or a name the caller

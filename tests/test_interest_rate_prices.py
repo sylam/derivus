@@ -123,11 +123,11 @@ def zaronia_blocks():
     """The monthly half is the near one, and `Near_Tenor` is where it stops - the last monthly
     benchmark, so the split lands ON a knot rather than inside a segment.
 
-    `Tol` IS DECLARED HERE, and the overnight front is why. That benchmark's PV is a difference of
-    two numbers of the notional's size, so its residual floors at one ULP of 1e6 - 1.16e-10 - and
-    the Newton step that floor implies is `1.16e-10 / (N tau)` with tau a day, which is 4e-14: the
-    declared default of 1e-14 is below the arithmetic and the line search runs out of halvings at
-    iteration 4. A three-month front divides the same floor by ninety and never sees it.
+    The overnight front is why `Tol` defaults to 1e-13. That benchmark's PV is a difference of two
+    numbers of the notional's size, so its residual floors at one ULP of 1e6 - 1.16e-10 - and the
+    Newton step that floor implies is `1.16e-10 / (N tau)` with tau a day, which is 4e-14: under a
+    1e-14 tolerance the line search ran out of halvings at iteration 4. A three-month front divides
+    the same floor by ninety and never sees it.
     """
     points = [quote_point('ZAR ON', deposit('ON', 'ZAR', 'ZAR-ZARONIA', 0, 0.0,
                                             day_count='ACT_365', days=1))]
@@ -149,7 +149,7 @@ def zaronia_blocks():
                for y in ZARONIA_YEARS]
     return {'InterestRatePrices.ZAR-ZARONIA': {
         'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': points,
-        'Tol': 1e-13, 'Near_Interpolation': 'LinearRT',
+        'Near_Interpolation': 'LinearRT',
         'Near_Tenor': pd.DateOffset(months=18)}}
 
 
@@ -837,3 +837,27 @@ def test_a_forward_block_cannot_publish_a_ride_operator():
         InterestRateCurveParameters({}, DEVICE, torch.float32).bootstrap(
             {'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP, solo, {})
     assert 'FXForwardDeal' in str(alone.value), str(alone.value)
+
+
+def test_a_swap_rolls_the_coupons_it_generates_on_its_payment_calendar():
+    """A benchmark's two dates are rolled by whoever authored it; the coupons between them are the
+    engine's own schedule, and the leg's payment calendar is what rolls those, Modified Following.
+    A deal naming no calendar keeps the tenor arithmetic's dates, which is every book without a
+    calendar file. Killing mutation: the calendar not handed to the generator."""
+    from derivus import instruments
+    deal = par_swap('SWP', 'ZAR', 'ZAR-ZARONIA', 'ZAR-ZARONIA', 2, 7.0, fixed_frequency=6,
+                    float_frequency=6)
+    coupon = BASE + pd.DateOffset(months=12)
+    business = pd.offsets.CustomBusinessDay(holidays=[coupon])
+    calendars = {'JHB': {'businessday': business}}
+    plain = instruments.SwapInterestDeal(deal, {})
+    plain.reset(calendars)
+    rolled = instruments.SwapInterestDeal(
+        dict(deal, Pay_Payment_Calendars='JHB', Receive_Payment_Calendars='JHB'), {})
+    rolled.reset(calendars)
+
+    assert coupon in plain.paydates and coupon in plain.recdates
+    assert coupon not in rolled.paydates and coupon not in rolled.recdates
+    moved = utils.adjust_date(business, True, coupon)
+    assert moved in rolled.paydates and moved in rolled.recdates
+    assert len(rolled.paydates) == len(plain.paydates)

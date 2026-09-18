@@ -5767,11 +5767,11 @@ class InterestRateCurveParameters(Construction):
                       'is already within a few basis points, so a well-posed strip converges in '
                       'single digits; reaching the cap raises rather than returning a half-solved '
                       'curve'),
-        F('Tol', 'Float', default=1e-14,
+        F('Tol', 'Float', default=1e-13,
           description='Convergence tolerance on the Newton STEP, in rate space. A zero rate is '
-                      'O(1e-2), so 1e-14 is about 1e-12 relative - inside the 1e-10 a round trip '
-                      'asks for, and where the linear solve\'s own rounding stops the iteration '
-                      'improving'),
+                      'O(1e-2), so 1e-13 is about 1e-11 relative, inside the 1e-10 a round trip '
+                      'asks for; an overnight knot\'s step floors at machine epsilon over a day\'s '
+                      'accrual, about 8e-14, which a tighter tolerance sits under'),
         F('Damping_Halvings', 'Integer', default=6,
           description='How many times the line search may halve a Newton step before giving up. '
                       'Below that the step LENGTH is not what is wrong, so the solve says so '

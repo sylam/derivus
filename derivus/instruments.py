@@ -2384,10 +2384,16 @@ class SwapInterestDeal(Deal):
 
     def reset(self, calendars):
         super(SwapInterestDeal, self).reset()
+        # a leg's payment calendar rolls its coupon dates Modified Following; a blank one leaves
+        # them where the tenor arithmetic puts them, which is every book naming no calendar
         self.paydates = utils.generate_dates_backward(
-            self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Pay_Frequency'])
+            self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Pay_Frequency'],
+            bus_day=calendars.get(self.field.get('Pay_Payment_Calendars'), {}).get('businessday'),
+            modified=True)
         self.recdates = utils.generate_dates_backward(
-            self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Receive_Frequency'])
+            self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Receive_Frequency'],
+            bus_day=calendars.get(self.field.get('Receive_Payment_Calendars'), {}).get('businessday'),
+            modified=True)
         self.add_reval_dates(self.paydates, self.field['Currency'])
         self.add_reval_dates(self.recdates, self.field['Currency'])
         # this swap could be quantoed - TODO

@@ -410,3 +410,37 @@ def test_an_override_rides_the_request_and_its_absence_sends_no_element():
     bulk.bulk_reference_data_report(['NKY Index'], ('OPT_CHAIN',), {'SINGLE_DATE_OVERRIDE': 1})
     assert [row.named for row in bulk.sent[0].elements['overrides'].rows] == [
         {'fieldId': 'SINGLE_DATE_OVERRIDE', 'value': '1'}]
+
+
+class Counting(Answering):
+    """The answering terminal, remembering every name it was asked about."""
+
+    def __init__(self):
+        super().__init__()
+        self.asked = []
+
+    def _walk(self, securities, fields):
+        self.asked.extend(securities)
+        yield from super()._walk(securities, fields)
+
+
+def test_extending_a_map_probes_only_the_names_it_has_never_heard_of(tmp_path, monkeypatch):
+    """A seed that gains a curve costs the terminal that curve's names alone. Every entry the map
+    already carries keeps its evidence untouched and is never re-asked; a new name the terminal
+    does not answer lands on the ledger by name; a seed with nothing new probes nothing."""
+    provisioning_home(tmp_path, monkeypatch)
+    document, _ = discover.provision(Answering(), AS_OF)
+    before = json.loads(json.dumps(document))
+    seed = json.loads(json.dumps(SEED))
+    seed['rates']['NEW-CURVE'] = {'currency': 'ZAR', 'prefix': 'NEWX', 'expect': 'NEW',
+                                  'years': [1, 2]}
+    terminal = Counting()
+    grown, verdicts = discover.extend(document, seed, terminal, AS_OF)
+
+    assert set(terminal.asked) == {'NEWX1 BGN Curncy', 'NEWX2 BGN Curncy'}
+    assert grown['blocks']['fx_spot'] == before['blocks']['fx_spot']
+    assert {item.candidate.security for item in verdicts} == set(terminal.asked)
+    assert set(terminal.asked) <= set(grown['rejected'])
+
+    again = Counting()
+    assert discover.extend(grown, seed, again, AS_OF)[1] == [] and again.asked == []

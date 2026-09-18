@@ -243,6 +243,27 @@ def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     return build_map(seed, verdicts, as_of.isoformat()), verdicts
 
 
+def extend(document, seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
+    """Grow an existing map by the seed's candidates it has never heard of, probed alone - a
+    seed that gains a curve costs the terminal that curve's names, not the whole vocabulary. An
+    entry already verified, or already on the ledger, is left as it stands. `(document, verdicts)`
+    for the new names, the document updated in place."""
+    known = {entry['security'] for _, entry in entries(document)} | set(document.get('rejected', {}))
+    candidates = [item for item in candidates_from_seed(seed) if item.security not in known]
+    if not candidates:
+        return document, []
+    report = probe(session, [item.security for item in candidates], on_batch=on_batch)
+    verdicts = verify(candidates, report, as_of, stale_days)
+    grown = build_map(seed, verdicts, as_of.isoformat())
+    for path, entry in entries(grown):
+        node = document['blocks']
+        for part in path[:-1]:
+            node = node.setdefault(part, {})
+        node[path[-1]] = entry
+    document.setdefault('rejected', {}).update(grown['rejected'])
+    return document, verdicts
+
+
 def provisioned(home=None):
     """The map's path on disk, or None.
 
@@ -318,6 +339,9 @@ def main():
                              help='the vocabulary file you own (default: DV_HOME/seed.json)')
     discovering.add_argument('--out', default=os.path.join(home(), 'security_map.json'),
                              help='where the map lands (default: DV_HOME/security_map.json)')
+    discovering.add_argument('--extend', action='store_true',
+                             help='probe only the seed\'s names the map at --out has never heard '
+                                  'of, and grow it; the rest of the map is not re-asked')
     checking = verbs.add_parser('verify', help='re-probe an existing map and report drift')
     checking.add_argument('--map', default=os.path.join(home(), 'security_map.json'),
                           dest='map_path', help='the map to re-probe (default: DV_HOME/security_map.json)')
@@ -338,7 +362,10 @@ def main():
         with open(args.seed, encoding='utf-8') as handle:
             seed = json.load(handle)
         with BloombergSession(timeout_ms=30000) as session:
-            document, verdicts = discover(seed, session, as_of, args.stale_days)
+            if args.extend and os.path.isfile(args.out):
+                document, verdicts = extend(load(args.out), seed, session, as_of, args.stale_days)
+            else:
+                document, verdicts = discover(seed, session, as_of, args.stale_days)
         with open(args.out, 'w', encoding='utf-8', newline='\n') as handle:
             json.dump(document, handle, indent=1)
         counts = {}

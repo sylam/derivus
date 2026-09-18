@@ -120,7 +120,7 @@ each read with the declared default as its `.get` fallback (a gate holds the two
 | Field | Default | |
 | --- | --- | --- |
 | `N_Iter` | 50 | a par-rate seed is within a few basis points, so a well-posed strip converges in single digits. Reaching the cap raises rather than returning a half-solved curve |
-| `Tol` | 1e-14 | a zero rate is O(1e-2), so ~1e-12 relative — inside the 1e-10 a round trip asks for, and where the linear solve's rounding stops the iteration improving |
+| `Tol` | 1e-13 | a zero rate is O(1e-2), so ~1e-11 relative — inside the 1e-10 a round trip asks for; an overnight knot's step floors at machine epsilon over a day's accrual, about 8e-14, which a tighter tolerance sits under |
 | `Damping_Halvings` | 6 | below that the step *length* is not what is wrong, so the solve says so rather than creeping |
 
 Convergence is tested on the **step, before the line search**. A step inside the linear solve's own

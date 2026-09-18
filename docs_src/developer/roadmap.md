@@ -202,12 +202,6 @@ is recorded so a reader knows which readings rest on it.
   spanning each coupon, the par swap's default, is exact: at t0 the compounded forwards read off
   a curve telescope to the period forward, so the same leg reads 483.405067 authored as one reset
   per coupon and as the 520-item daily list alike, on a flat curve and a sloped one.
-- **A term swap's coupon dates are generated unrolled** (2026-09-18). The swap deal builds its
-  coupon schedule from its two dates with no calendar, so a benchmark authored under Modified
-  Following has rolled end dates and unrolled coupons between them, which the market rolls. The
-  par rate moves at second order, both legs sharing the dates, and the size is unmeasured;
-  handing the deal's calendars to the generator is one line that reaches every swap in every
-  book naming a calendar.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
