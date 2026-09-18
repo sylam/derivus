@@ -1804,15 +1804,20 @@ def book_curves(curve: str = None):
         if named is None or curve not in (None, named):
             continue
         instrument = market['Market Prices'][name]['instrument']
-        conventions = ir_curve.block_conventions(instrument, seed, named)
-        answer['curves'][name] = {
+        entry = {
             'curve': named, 'currency': instrument['Currency'],
             'discount_rate': instrument['Discount_Rate'],
             'interpolation': methods.get(CURVE_BOOTSTRAPPER, riskfactors.INTERPOLATION_DEFAULT),
-            'conventions': conventions.__dict__,
-            'rows': [{'tenor': row['Tenor'], 'security': row.get('Security', ''),
+            'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
                       'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
                      for row in instrument['Points']]}
+        try:
+            entry['conventions'] = ir_curve.block_conventions(instrument, seed, named).__dict__
+        except KeyError as missing:
+            # a block authored before it carried its definition: its quotes read, it cannot re-roll
+            entry['note'] = 'authored without {} - set it up again through POST /book/curve'.format(
+                missing)
+        answer['curves'][name] = entry
     if curve is not None:
         return answer
     answer['seeded'] = {}

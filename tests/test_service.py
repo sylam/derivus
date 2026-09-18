@@ -3039,3 +3039,26 @@ def test_a_quote_is_firm_only_for_the_window_the_book_declares(quoting, tmp_path
     node = deal_at(json.loads(quoting.read_text()), booked['deal_path'])
     assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
         {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]
+
+
+def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_note(tmp_path):
+    """An older book's curve block has quotes and no definition: no tenor on its rows, no
+    conventions on the block. The read verb answers it as far as it goes, blank tenors and the
+    quotes, with a note naming what is missing and the verb that re-authors it, rather than dying
+    on the first missing key."""
+    old = {'instrument': {'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': [
+        {'Use': 'Yes', 'Descriptor': 'ZAR 3M', 'DealType': 'DepositDeal', 'Quote_Type': 'Par_Rate',
+         'Quoted_Market_Value': 7.1, 'Deal': {}}]}}
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Market Prices': {'InterestRatePrices.ZAR': old}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        answer = CLIENT.get('/book/curve')
+        assert answer.status_code == 200
+        curve = answer.json()['curves']['InterestRatePrices.ZAR']
+        assert 'Tenor' in curve['note'] and '/book/curve' in curve['note']
+        assert curve['rows'] == [{'tenor': '', 'security': '', 'quote': 7.1, 'use': 'Yes'}]
+        assert 'conventions' not in curve
+    finally:
+        service.BOOK = None
