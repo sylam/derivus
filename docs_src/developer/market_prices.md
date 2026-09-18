@@ -274,15 +274,14 @@ through the pricers — one backward pass per quote gives a whole row, no bump l
 derivative the [quote-sensitivity](quote_sensitivities.md) thread carries the other way into `dV/dq`.
 The residual is written once and differentiated twice.
 
-**Fields that are not declared, on the terms every store here is held to** — a field the engine does
-not read is not declared. `Zero_Rate_Grid` (there is no second output grid), `Spot_Offset` (a quote's
-own `Deal` states its `Effective_Date`), and `Quote_Type`'s `Rate` and `Price` values, which are
-conventions the family would have to author differently.
+**Fields that are not declared, on the terms every store here is held to** — a field nothing reads
+is not declared. `Zero_Rate_Grid` (there is no second output grid), and `Quote_Type`'s `Rate` and
+`Price` values, which are conventions the family would have to author differently.
 
 The curve this writes is an `InterestRate`, not a `<ClassName>` parameter block, so the class
 declares `price_factor_type` and `Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads
-it. Interpolation of a solved curve comes from `Price Factor Interpolation`, not the block — see
-[Conventions](conventions.md#registries-not-functions).
+it. Interpolation of a solved curve comes from `Price Factor Interpolation`, the near split aside —
+see [Conventions](conventions.md#registries-not-functions).
 
 ## Retired: the two Heston-Nandi families {#hestonnandi-retired}
 

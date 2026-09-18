@@ -199,9 +199,8 @@ is recorded so a reader knows which readings rest on it.
   pricer reads as OIS compounding, and the deal marks NaN under a base valuation; a cashflow list
   hand-authored in that shape, one item per coupon carrying every fixing's reset, pays one over n
   of the interest, 289.08 against 76,967.94 on a two-year annual leg of 266 fixings. One reset
-  spanning each coupon, the par swap's default, is exact: at t0 the compounded forwards read off
-  a curve telescope to the period forward, so the same leg reads 483.405067 authored as one reset
-  per coupon and as the 520-item daily list alike, on a flat curve and a sloped one.
+  spanning each coupon, the par swap's default, is exact, and [Quote
+  Sensitivities](quote_sensitivities.md#curve-contracts) carries the readings.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
@@ -289,9 +288,9 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   `Credit_Monte_Carlo`, the same two-run seam with a different calculation in it; a ratio-solve
   primitive for participating forwards beside it.
 - **Service layer, what remains** — SSE for progress, a cost estimate that reads the real grid,
-  auth with budget caps, and the tables and price factors the web UI still renders read-only:
+  auth with budget caps, and the tables and price factors the web UI still renders read-only;
   declared scalars, market values, a quote block's values, the bootstrap's own dials and a curve's
-  benchmark rows edit in place.
+  benchmark rows already edit in place.
 - **Excel end-state** — `RF_*_PORTFOLIO` migrated to `GET /schema`, after which nothing in
   `excel_integration/` imports the engine.
 - **`bind=` for payoff-only deal fields** — a strike moves no discovery, but a deal field is
