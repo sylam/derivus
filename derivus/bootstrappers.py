@@ -5229,6 +5229,13 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
         lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
 
+        lower, upper = var_to_bounds.T
+        if not np.isfinite(x0).all():
+            raise ValueError('HullWhite2FactorModelParameters initial parameters are not finite')
+        x0 = np.clip(x0, lower, upper)
+        x0 = np.where(x0 <= lower, np.nextafter(lower, upper), x0)
+        x0 = np.where(x0 >= upper, np.nextafter(upper, lower), x0)
+
         basin = ('basin', x0, basin_hopper_fn_grad, make_step, bounds_ok, var_to_bounds,
                  rng, float(block['Basin_Temperature']), int(block['Basin_Hops']))
         leastsq = ('leastsq', x0, lsq_fn, jacobian, list(zip(*var_to_bounds)))

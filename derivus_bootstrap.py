@@ -34,11 +34,26 @@ master_curve_list = {
     'ZAR': 'ZAR-SWAP'
 }
 
+
+def bootstrap_threads():
+    requested = os.environ.get('DV_BOOTSTRAP_THREADS')
+    threads = int(requested) if requested is not None else min(12, os.cpu_count() or 1)
+    if threads < 1:
+        raise ValueError('DV_BOOTSTRAP_THREADS must be a positive integer')
+    for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        os.environ.setdefault(name, str(threads))
+    return threads
+
+
 def work(job_id, num_devices, queue, result, price_factors, price_factor_interp,
         price_models, sys_params, holidays):
     # Set visibility before Derivus imports torch. Each worker sees its assigned physical GPU as
     # local cuda:0; modulo deliberately permits more workers than devices.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(job_id % num_devices) if num_devices else '-1'
+    threads = bootstrap_threads()
+    import torch
+    torch.set_num_threads(threads)
+    torch.set_num_interop_threads(1)
 
     # log to file
     logging.basicConfig(level=logging.INFO,
