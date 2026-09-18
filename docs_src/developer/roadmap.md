@@ -193,6 +193,15 @@ is recorded so a reader knows which readings rest on it.
   while three older spot models cast theirs to single. Inert while the hedge Monte Carlo runs in
   single precision whatever the job says; a double-precision hedge solve would hand the critic one
   double block among single ones.
+- **A floating leg with several resets per coupon does not price** (2026-09-18). A term swap whose
+  index tenor is shorter than its coupon — a semi-annual leg on a 3M index, a quarterly leg on a
+  1M or 1W index, a daily leg — generates its resets at weight one over n, the shape the list
+  pricer reads as OIS compounding, and the deal marks NaN under a base valuation; a cashflow list
+  hand-authored in that shape, one item per coupon carrying every fixing's reset, pays one over n
+  of the interest, 289.08 against 76,967.94 on a two-year annual leg of 266 fixings. One reset
+  spanning each coupon, the par swap's default, is exact: at t0 the compounded forwards read off
+  a curve telescope to the period forward, so the same leg reads 483.405067 authored as one reset
+  per coupon and as the 520-item daily list alike, on a flat curve and a sloped one.
 - **Three books the credit Monte Carlo cannot frame, and dies on without a name.** A book whose
   only deal folded to a static value, a single scalar against the time-by-scenario grid; a book
   whose only deal was skipped; and a book whose deals reach no stochastic factor or no date after
