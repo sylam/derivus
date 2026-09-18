@@ -5846,6 +5846,9 @@ class InterestRateCurveParameters(Construction):
 
     def __init__(self, param, device, dtype):
         super().__init__(param, device, dtype)
+        # the solve is dispatch-bound - one small backward per quote per iteration - so it runs on
+        # the host: three desk curves in 5 s there against 17 s on the card
+        self.device = torch.device('cpu')
         #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
         #: per curve, plus the quote leaf per block. `Config.bootstrap` harvests both - tensors
         #: cannot live in `Price Factors`.

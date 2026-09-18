@@ -929,7 +929,10 @@ identified by three things.
 
 ## The precision seam {#the-precision-seam}
 
-The curve bootstrap and its Jacobian are **float64 regardless of the simulation's precision**.
+The curve bootstrap and its Jacobian are **float64 regardless of the simulation's precision**, and
+they run on the host whatever device the job runs on: a benchmark Jacobian is one small backward
+per quote per iteration, so the solve is dispatch-bound, and three desk curves solve in 5 s on the
+host against 17 s on an RTX 3090.
 `BenchmarkInstruments.dtype` states it once and `construct_bootstrapper`'s own `dtype` — float32 by
 default — does not reach it: a solve converging to 1e-10 cannot be done in float32. Gate:
 `test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with`.

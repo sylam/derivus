@@ -296,6 +296,15 @@ def test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with():
                   true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
 
 
+def test_the_solve_runs_on_the_host_whatever_device_the_job_runs_on():
+    """A benchmark Jacobian is one small backward per quote per iteration, so the solve is
+    dispatch-bound and a card is the slow place for it: three desk curves in 5 s on the host
+    against 17 s on an RTX 3090. Killing mutation: take the family's own device back from the
+    constructor's, which on a CUDA box puts the solve on the card."""
+    family = InterestRateCurveParameters({}, torch.device('cuda'), torch.float64)
+    assert family.device.type == 'cpu'
+
+
 def test_the_blocks_are_solved_in_dependency_order():
     """A projection curve solved before the discount curve it prices against is solved against a
     curve that does not exist. Authoring the two blocks the wrong way round has to change nothing,
