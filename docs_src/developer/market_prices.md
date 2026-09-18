@@ -2,7 +2,7 @@
 
 `Market Prices` is the risk-neutral half of the market data: the **quotes** a risk-neutral model is
 fitted to, where `Price Factors` holds the curves and surfaces a historical calibration produces. A
-*bootstrapper* turns each block into the factor or model parameters the simulation reads. All eight
+*bootstrapper* turns each block into the factor or model parameters the simulation reads. All six
 families are built.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
@@ -256,7 +256,7 @@ contracts (0.131 vol points against 0.663 and 0.760), with second-order greeks a
 where both Heston-Nandi families refused the switch by name. Everything the two families measured
 stands in the roadmap; nothing in the engine reads them, and a book that names one refuses by name.
 
-## `LogVar2FJModelPrices` — a Monte Carlo fit with a forward-skew term {#logvar2fj}
+## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 
 **The block** is `OptionQuoteFamily`'s shared quote preparation plus `Fit_Mode`, the walk, the
 structural constants, `Residual_Law`, the two declared guards, the weights, the calendar-time
@@ -364,9 +364,17 @@ drift are elementwise over the step axis with one reduction each — tens of dis
 where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is **0.156 s against the scan's 0.349 s**, and
 with its backward **0.251 s against 0.704 s**; the same walk on an RTX 3090 is **0.0062 s and
 0.0099 s**, twenty-five times the CPU, where the scan measured SLOWER on the card than on the
-host. **THE FIT RUNS ON THE JOB'S DEVICE**, which on a CUDA box is the card: the constructed
-device is no longer ignored, and the two things the old note held the pin for are answered rather
-than avoided. THE STREAM IS THE SEED'S AND NOT THE SILICON'S — `draw` generates both streams on
+host. **`Vanilla_Pricer` is `Quadrature` by default** (2026-09-14): a vanilla is priced off the
+surrogate law's closed-form moments by Gauss-Hermite over the clock and the mixer
+(`Quadrature_Nodes`, 24 and 16, converged to 2e-5 vol points), with no seed, no path count and no
+sampling noise in the objective, so the same document writes the same bytes on every run; the
+forward-start rows price on the walk either way, and `Walk` prices the vanillas on it too. **A
+fit that walks nothing — quadrature vanillas and no forward block — runs on the HOST**, where
+tensors that small dispatch faster than a card launches (11.7 s against 23.5 s on the five-expiry
+world), and a `Quadrature` block declaring `Cap_A` or a second residual bucket refuses by name.
+**A WALK RUNS ON THE JOB'S DEVICE**, which on a CUDA box is the card: the constructed device is no
+longer ignored, and the two things the old note held the pin for are answered rather than
+avoided. THE STREAM IS THE SEED'S AND NOT THE SILICON'S — `draw` generates both streams on
 the HOST under `Random_Seed`'s own generator and moves the tensors, so `Pseudo` 8192 on the card
 is the draw it was on the CPU and a banked fit re-fits to it; a CUDA generator is a different
 stream, and a seed that named a draw only together with the device it was drawn on would make "the
@@ -463,7 +471,7 @@ determinism rather than agreement.
 | `Leverage_Prior_Weight` | 0.02 | one instance of the general rule: `0.01 × 0.2 / 0.1` is one quote-vol-point per tenth of `ρ_s`. Since lane L the row is on the product and the scale is this over `Sigma_S_Reference`, the same statement at the reference vol-of-vol; a history's product carries a delta-method error and is weighted by it. At a fitted `σ_s` of 5 a unit of `ρ_s` is five of product, so the row reads 6.5 quote rows on `ρ_s` where it read 2.3 — open decision 16 |
 | `Leverage_Product_Defaults` | index −1.9, FX 0.0 | `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement; the ruling's number |
 | `Sigma_S_Reference` | 2.4 | the state's own `Sigma_S` seed, the Q-sized vol-of-vol a declared `Leverage_Prior` is multiplied by to reach the product; refused at or below zero |
-| the fit's device | the job's | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s |
+| the fit's device | the job's for a walk; the host for a quadrature fit with no forward block | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s; a quadrature fit's tensors are too small to fill the card, 11.7 s on the host against 23.5 s on it |
 
 **`Tolerance` is `ftol` on a MONTE CARLO objective, and it is not what a stage stops on.** Asking
 a fixed-draw sample mean to converge to 1e-8 looks like asking it to converge to its own rounding

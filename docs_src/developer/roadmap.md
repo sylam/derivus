@@ -283,8 +283,8 @@ them — so closed decisions (2, 3, 4, 11, 13, 15) keep their numbers and are no
   `Credit_Monte_Carlo`, the same two-run seam with a different calculation in it; a ratio-solve
   primitive for participating forwards beside it.
 - **Service layer, what remains** — SSE for progress, a cost estimate that reads the real grid,
-  auth with budget caps, and the tables, curves and quote blocks the web UI still renders
-  read-only: declared scalars, market values and the bootstrap's own dials edit in place.
+  auth with budget caps, and the tables and curves the web UI still renders read-only: declared
+  scalars, market values, a quote block's values and the bootstrap's own dials edit in place.
 - **Excel end-state** — `RF_*_PORTFOLIO` migrated to `GET /schema`, after which nothing in
   `excel_integration/` imports the engine.
 - **`bind=` for payoff-only deal fields** — a strike moves no discovery, but a deal field is
@@ -349,7 +349,7 @@ every risk-neutral calibration inherits.
   `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
   The full suite runs at campaign boundaries with the tree held still.
 - **The standing readings every landing runs**: sixteen banked documents of the autocall
-  validation campaign under the lognormal and Hull-White laws, 4,180 floats compared bit for bit
+  validation campaign under the lognormal and Hull-White laws, 5,487 floats compared bit for bit
   against their bank, and one lognormal target redemption forward compared to the bit
   (`-0x1.2b36cda3bf2d4p+5`). That document declares no estimator, so it pins the default; the
   crisp path it used to pin reads `-0x1.2c48f36318e38p+5`, one `'No'` away. The documents, their
