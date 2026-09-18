@@ -1,17 +1,20 @@
 """The MCP binding owns no logic, and these gates are what says so.
 
 Every tool is a plain function the decorator registers, so the gates drive the FUNCTIONS against
-the service in process (`configure(session=TestClient(...))`) - no stdio, no subprocess, and the
-one async touch is reading the registry. Gated: the import discipline (a thin client stays thin),
-the registry carrying real docstrings, the schema tools being the declarations, a booking that
-prices, a refusal that writes nothing and carries the engine's own messages, and the formatting
-round trip that keeps the book diffable.
+the service in process (`configure(session=TestClient(...))`) - no stdio, no subprocess, and a tool
+that waits is awaited the way a host awaits it. Gated: the import discipline (a thin client stays
+thin), the registry carrying real docstrings, the schema tools being the declarations, a booking
+that prices, a refusal that writes nothing and carries the engine's own messages, the formatting
+round trip that keeps the book diffable, and the notifications a waiting tool keeps its host on.
 """
 import ast
 import asyncio
+import inspect
 import json
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -86,12 +89,36 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve'}
 
 
-def test_the_progress_tool_does_not_advertise_its_context():
+#: The tools that sit on a run and therefore have to speak while they sit.
+WAITING = ('price_candidate', 'execute_book', 'solve_deal', 'solve_structure',
+           'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg')
+
+
+def test_no_tool_advertises_the_context_the_sdk_injects():
     """`ctx` is the SDK's injection, not an argument: a host that saw it in the schema would try
-    to fill it in, and the model would spend a field guessing at a transport object."""
+    to fill it in, and the model would spend a field guessing at a transport object. Every waiting
+    tool takes one now, so the whole registry is read rather than the one that had it first.
+
+    Killing mutation: annotate any tool's `ctx` as something other than `Context` - a `dict`, say -
+    and the SDK stops injecting it and advertises it instead.
+    """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
-    schema = tools['tick_market_from_bloomberg'].input_schema
-    assert set(schema['properties']) == {'pairs', 'expiries', 'pillars', 'wait_seconds'}
+    for name, tool in tools.items():
+        assert 'ctx' not in tool.input_schema['properties'], name
+    assert set(tools['tick_market_from_bloomberg'].input_schema['properties']) == {
+        'pairs', 'expiries', 'pillars', 'wait_seconds'}
+
+
+def test_every_waiting_tool_is_async_and_takes_the_context():
+    """A desktop host cuts a tool call that stays quiet for about a minute, so a tool that sits on
+    a run has to be able to speak while it sits: `async`, with the injected context last.
+
+    Killing mutation: make any one of them `def` again, or drop its `ctx`, and it fails by name.
+    """
+    for name in WAITING:
+        tool = getattr(mcp_server, name)
+        assert asyncio.iscoroutinefunction(tool), name
+        assert list(inspect.signature(tool).parameters)[-1] == 'ctx', name
 
 
 def test_the_schema_tools_are_the_declarations():
@@ -151,7 +178,7 @@ def test_booking_a_deal_prices_it(book):
     assert outcome['written'] is True and outcome['deal_path'] == '1'
     assert mcp_server.read_deal('1')['deal']['Reference'] == 'CF2'
 
-    run = mcp_server.execute_book()
+    run = asyncio.run(mcp_server.execute_book())
     assert run['status'] == 'done' and run['waited'] is True
     values = mcp_server.deal_values(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
@@ -161,7 +188,8 @@ def test_a_what_if_prices_without_writing(book):
     """The par-solve half: a candidate priced against the book with the file standing still -
     two of these at two amounts is the exact affine solve the booking docstring teaches."""
     before = book.read_bytes()
-    run = mcp_server.price_candidate(deal=json.loads(dump(dict(BOOKED, Reference='TRIAL'))))
+    run = asyncio.run(mcp_server.price_candidate(
+        deal=json.loads(dump(dict(BOOKED, Reference='TRIAL')))))
     assert run['status'] == 'done'
     assert mcp_server.deal_values(run['result_id'])['TRIAL'] == pytest.approx(
         BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
@@ -171,15 +199,15 @@ def test_a_what_if_prices_without_writing(book):
 def test_solving_then_booking_a_structured_deal(book):
     """The structuring flow: solve the amount that marks the deal at the margin, get the deal back
     ready to book, book it, and the book marks it there - the loop server-side."""
-    outcome = mcp_server.solve_deal(
-        json.loads(dump(dict(BOOKED, Reference='SLV1'))), 'Amount', target=200_000.0)
+    outcome = asyncio.run(mcp_server.solve_deal(
+        json.loads(dump(dict(BOOKED, Reference='SLV1'))), 'Amount', target=200_000.0))
 
     assert outcome['status'] == 'done'
     assert abs(outcome['solved']['residual']) <= 0.01
     assert outcome['solved_deal']['Amount'] == outcome['solved']['value']
 
     booked = mcp_server.book_deal(outcome['solved_deal'])
-    run = mcp_server.execute_book()
+    run = asyncio.run(mcp_server.execute_book())
     assert booked['written'] is True
     assert mcp_server.deal_values(run['result_id'])['SLV1'] == pytest.approx(200_000.0, abs=0.01)
 
@@ -190,9 +218,9 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     crosses at the book's own spot and the deal is solved to mark there - the desk's own side of
     the ticket, at PLUS the margin. What comes back records the charge as agreed, and books with
     it: the field is on every deal, a margin being a property of the ticket."""
-    outcome = mcp_server.solve_deal(
+    outcome = asyncio.run(mcp_server.solve_deal(
         json.loads(dump(dict(BOOKED, Reference='SLV2'))), 'Amount',
-        target={'amount': 50_000.0, 'currency': 'ZAR'})
+        target={'amount': 50_000.0, 'currency': 'ZAR'}))
 
     assert outcome['status'] == 'done'
     assert outcome['solved']['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
@@ -201,7 +229,7 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     assert outcome['solved_deal']['Sales_Margin_Currency'] == 'ZAR'
 
     assert mcp_server.book_deal(outcome['solved_deal'])['written'] is True
-    run = mcp_server.execute_book()
+    run = asyncio.run(mcp_server.execute_book())
     assert mcp_server.deal_values(run['result_id'])['SLV2'] == pytest.approx(
         50_000.0 * SPOT, abs=0.01)
 
@@ -220,19 +248,19 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         assert ticked['written'] is True and 'FXVol.USD.ZAR' in ticked['new_factors']
 
         option = json.loads(dump(FX_OPTION))
-        outcome = mcp_server.solve_deal(option, 'Strike_Price', target=500_000.0,
-                                        bounds=[12.0, 30.0])
+        outcome = asyncio.run(mcp_server.solve_deal(option, 'Strike_Price', target=500_000.0,
+                                                    bounds=[12.0, 30.0]))
         assert outcome['status'] == 'done' and abs(outcome['solved']['residual']) <= 0.01
 
         booked = mcp_server.book_deal(outcome['solved_deal'])
-        run = mcp_server.execute_book()
+        run = asyncio.run(mcp_server.execute_book())
         assert booked['written'] is True
         assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(
             500_000.0, abs=0.01)
 
         # and a values tick moves the mark - the market is live, not a snapshot baked at load
         patched = mcp_server.patch_market_values({'FxRate.ZAR': {'Spot': SPOT * 1.02}})
-        moved = mcp_server.execute_book()
+        moved = asyncio.run(mcp_server.execute_book())
         assert patched['written'] is True
         assert mcp_server.deal_values(moved['result_id'])['OPT1'] > 550_000.0
     finally:
@@ -267,7 +295,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         # the convention under test. A floor 5% out of the money.
         asked = {'pair': 'USDZAR', 'expiry': expiry, 'notional': 1_000_000.0,
                  'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)}
-        quote = mcp_server.solve_structure('ZeroCostCollar', asked)
+        quote = asyncio.run(mcp_server.solve_structure('ZeroCostCollar', asked))
 
         assert quote['structure'] == 'ZeroCostCollar' and quote['quote_id']
         assert len(quote['legs']) == 2 and 'protection' in {leg['role'] for leg in quote['legs']}
@@ -278,8 +306,8 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
 
         # the same collar with the desk's charge in it: a margin is an amount in the currency it
         # was agreed in, and the client's paper is worth MINUS it
-        charged = mcp_server.solve_structure(
-            'ZeroCostCollar', asked, margin={'amount': 500.0, 'currency': 'ZAR'})
+        charged = asyncio.run(mcp_server.solve_structure(
+            'ZeroCostCollar', asked, margin={'amount': 500.0, 'currency': 'ZAR'}))
         assert charged['margin']['value'] == pytest.approx(500.0 * SPOT, rel=1e-12)
         assert charged['net'] == pytest.approx(-500.0 * SPOT, abs=1.0)
         assert charged['deal']['Sales_Margin'] == 500.0
@@ -295,7 +323,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         node = mcp_server.read_deal(booked['deal_path'])
         assert len(node['children']) == 2, 'the structure booked without its legs'
 
-        run = mcp_server.execute_book()
+        run = asyncio.run(mcp_server.execute_book())
         assert mcp_server.deal_values(run['result_id'])[
             node['deal']['Reference']] == pytest.approx(quote['net'], abs=1.0)
         assert os.path.isfile(pending), 'the pending trade is an audit trail, not a scratch file'
@@ -396,7 +424,7 @@ def test_an_amendment_changes_the_value_it_names(book):
     assert outcome['written'] is True
     assert mcp_server.read_deal('0')['deal']['Amount'] == 500_000.0
 
-    run = mcp_server.execute_book()
+    run = asyncio.run(mcp_server.execute_book())
     assert mcp_server.deal_values(run['result_id'])['CF1'] == pytest.approx(
         500_000.0 * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
@@ -442,7 +470,7 @@ def test_the_service_being_down_names_dv_service(book):
 def test_execute_hands_back_the_id_when_it_will_not_wait(book):
     """A zero wait is the escape hatch for a long simulation: the id and the way forward travel
     in `hint`, and `poll_result` finishes the story once the queue drains."""
-    run = mcp_server.execute_book(wait_seconds=0.0)
+    run = asyncio.run(mcp_server.execute_book(wait_seconds=0.0))
     if run['status'] != 'done':  # the worker may still win the race on a tiny book
         assert 'poll_result' in run['hint']
     service.EXECUTOR.queue.join()
@@ -483,7 +511,7 @@ def held_result(result_id, results):
 def test_a_run_comes_back_as_shapes_never_cells(book):
     """The minimal-context rule: the model learns the run happened - identity, stats, one line per
     table - and never holds a table's columns or cells unless it asks for a page."""
-    run = mcp_server.execute_book()
+    run = asyncio.run(mcp_server.execute_book())
     assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'seed',
                         'stats', 'tables', 'waited', 'error'}
     for name, shape in run['tables'].items():
@@ -595,7 +623,12 @@ def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
 
 def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
     """A client resets its timeout on each notification, which is what carries the five-minute
-    first use - so every poll carrying a progress dict must reach the context, `note` included."""
+    first use - so every poll reaches the context: how long the wait has run, the wait it was
+    given, and the run's status carrying the job's own note where it publishes one.
+
+    Killing mutation: report the status alone and both notes collapse to `queued` and `running`,
+    leaving a user watching a provisioning with nothing to watch.
+    """
     delays = []
 
     async def instant(seconds, *rest):  # the gate is about the loop, not its patience
@@ -612,5 +645,34 @@ def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
     answer = asyncio.run(mcp_server.tick_market_from_bloomberg(ctx=watching))
 
     assert answer == {'status': 'done', 'installed': ['FXVol.USD.ZAR']}
-    assert watching.reported == [(0, 3, 'copying the seed'), (2, 3, 'verifying USDZAR')]
-    assert delays == [2, 2], 'a poll between notifications, not a spin'
+    assert [(total, note) for _, total, note in watching.reported] == [
+        (360.0, 'queued - copying the seed'), (360.0, 'running - verifying USDZAR')]
+    assert delays == [0.25, 0.25], 'a poll between notifications, not a spin'
+
+
+def test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits(book):
+    """The cadence, against the real queue: the one worker is held for three seconds by a job of
+    the store's own, so the candidate really is queued while the tool waits - and a host that cuts
+    a call quiet for a minute hears from it about once a second. Nothing is patched.
+
+    Killing mutation: drop the `report_progress` call from `_await_result` and the context records
+    nothing; leave it inside an `if progress` and a run publishing no note goes silent too.
+    """
+    holding = threading.Event()
+    service.EXECUTOR.submit(service.Job('mcp-busy', Held('mcp-busy', [], hold=holding), {}),
+                            service.HEAVY)
+    threading.Timer(3.0, holding.set).start()
+    watching = Watching()
+
+    started = time.monotonic()
+    # a candidate nothing else prices, so this really queues rather than reading a stored run
+    run = asyncio.run(mcp_server.price_candidate(
+        deal=json.loads(dump(dict(BOOKED, Reference='BUSY', Amount=3_141_592.0))), ctx=watching))
+    waited = time.monotonic() - started
+
+    assert run['status'] == 'done' and waited > 3.0
+    assert watching.reported, 'a wait a host hears nothing from is a wait it cuts'
+    seconds = [done for done, _, _ in watching.reported]
+    assert max(b - a for a, b in zip([0.0] + seconds, seconds + [waited])) <= 5.0
+    said = {(total, note) for _, total, note in watching.reported}
+    assert (120.0, 'queued') in said and said <= {(120.0, 'queued'), (120.0, 'running')}

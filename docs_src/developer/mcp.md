@@ -107,17 +107,28 @@ book's. `book_quote(quote_id)` is the approval that makes it a trade, booking th
 pending deal — a quote is client paper, a book holds the bank's position — over the same
 validate-before-write seam, and the file stays afterwards.
 
-**First use provisions the desk, and progress is what keeps that call alive.**
-`tick_market_from_bloomberg` is the one verb a model calls for today's market, and on a fresh machine
-it is also the setup: `DV_HOME` created, the packaged seed copied in, every candidate the seed spells
-verified against *this* workstation's terminal (what it is, whether it prices, when it last printed),
-and only then the surfaces fetched through the same quote-block tick. That verification is minutes,
-so the tool is `async`, every blocking HTTP call goes through `asyncio.to_thread`, and each poll
-carrying a `progress` dict is forwarded to the injected `Context` as `report_progress(done, total,
-note)`. A host resets its call timeout on each notification: they are what lets a five-minute first
-use finish instead of timing out. `ctx` is injected by the SDK and never appears in the advertised
-schema (a gate reads the listed tool's properties to prove it). Past `wait_seconds` the answer is
-`execute_book`'s pointer, `{result_id, status, hint}`, the provisioning carrying on service-side.
+**A waiting tool speaks while it waits.** A desktop host cuts a tool call that stays quiet for about
+a minute and resets that clock on every progress notification, and the runs behind these verbs are
+measured in minutes: a credit Monte Carlo, a spot-model fit, a first Bloomberg use. So every tool
+that sits on a run — `price_candidate`, `execute_book`, `solve_deal`, `solve_structure`,
+`recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg` — is `async`, puts every blocking
+HTTP call through `asyncio.to_thread`, and waits in the one poll loop (`_await_result`), which
+notifies the injected `Context` on every poll: `done` the seconds waited, `total` the `wait_seconds`
+asked for, and the note the run's status carrying the job's own `progress` note where it publishes
+one (the provisioning and the spot-model fit do). The poll is a quarter second for the first two and
+a second after that, so a host hears from the call about once a second however long the run takes —
+which is what lets a five-minute first use finish instead of timing out. `ctx` is injected by the
+SDK and never appears in an advertised schema (a gate reads every listed tool's properties to prove
+it). Past `wait_seconds` the answer is the pointer it always was, `{result_id, status, hint}`, the
+run carrying on service-side.
+
+**First use provisions the desk.** `tick_market_from_bloomberg` is the one verb a model calls for
+today's market, and on a fresh machine it is also the setup: `DV_HOME` created, the packaged seed
+copied in, every candidate the seed spells verified against *this* workstation's terminal (what it
+is, whether it prices, when it last printed), and only then the surfaces fetched through the same
+quote-block tick. That verification is the minutes the notifications exist for, and its answer is
+the provisioning's own — what installed, what updated, what was refused — where every other waiting
+tool answers the run's summary.
 
 **A ticking service refreshes itself, so the verb is for forcing and for provisioning.**
 `DV_Service --tick SECONDS` (30 with no value) runs a metronome thread submitting the *same* queued

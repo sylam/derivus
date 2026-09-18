@@ -124,25 +124,36 @@ def _summary(raw, result_id):
     return trimmed
 
 
-def _await_result(result_id, wait_seconds):
-    """Poll `/results/{id}` until it settles or `wait_seconds` runs out, so one tool call returns
-    the answer rather than a model burning a turn per poll.
+async def _await_result(result_id, wait_seconds, ctx=None, summarise=True,
+                        hint=', and fetch_table once it is done'):
+    """Poll `/results/{id}` until it settles or `wait_seconds` runs out, saying on every poll how
+    long it has waited, so one tool call returns the answer rather than a model burning a turn per
+    poll - and a host never hears silence.
 
-    On timeout the id and the way forward travel in `hint`, so a long simulation stays reachable.
+    A desktop host cuts a tool call that stays quiet for about a minute and resets that clock on
+    every notification, so a run measured in minutes only finishes if the wait speaks: `done` is
+    the seconds waited, `total` the wait asked for, and the note is the run's status with whatever
+    the job itself is publishing. On timeout the id and the way forward travel in `hint`, so a long
+    run stays reachable.
     """
-    deadline = time.monotonic() + wait_seconds
-    interval, stepped_up = 0.25, time.monotonic() + 2.0
+    started = time.monotonic()
     while True:
-        summary = _raw_result(result_id)
-        if summary.get('status') not in ('queued', 'running'):
-            return dict(_summary(summary, result_id), waited=True)
-        if time.monotonic() >= deadline:
-            return {'result_id': result_id, 'status': summary['status'],
-                    'hint': 'still {} - call poll_result({!r}) to check again, and fetch_table '
-                            'once it is done'.format(summary['status'], result_id)}
-        if time.monotonic() >= stepped_up:
-            interval = 1.0
-        time.sleep(interval)
+        # Every HTTP call is blocking, so it goes to a thread and the event loop stays free to put
+        # the progress notifications on the wire.
+        raw = await asyncio.to_thread(_raw_result, result_id)
+        if raw.get('status') not in ('queued', 'running'):
+            return dict(_summary(raw, result_id), waited=True) if summarise else raw
+        waited = time.monotonic() - started
+        if ctx is not None:
+            note = (raw.get('progress') or {}).get('note')
+            await ctx.report_progress(round(waited, 1), wait_seconds,
+                                      ' - '.join(filter(None, (raw['status'], note))))
+        if waited >= wait_seconds:
+            return {'result_id': result_id, 'status': raw['status'],
+                    'hint': 'still {} - call poll_result({!r}) to check again{}'.format(
+                        raw['status'], result_id, hint)}
+        # a quick run should not pay a second of latency, a long one should not spin
+        await asyncio.sleep(1.0 if waited >= 2.0 else 0.25)
 
 
 def _booking(outcome):
@@ -412,9 +423,9 @@ def delete_deal(deal_path: str) -> dict:
 
 
 @MCP.tool()
-def price_candidate(deal: dict | None = None, parent_reference: str | None = None,
-                    calculation_overrides: dict | None = None,
-                    wait_seconds: float = 120.0) -> dict:
+async def price_candidate(deal: dict | None = None, parent_reference: str | None = None,
+                          calculation_overrides: dict | None = None,
+                          wait_seconds: float = 120.0, ctx: Context = None) -> dict:
     """Price the book PLUS a candidate deal without booking anything - the what-if verb, and the
     solving half of a par booking: price a trial amount, price a second, solve the affine
     relation for the amount that lands the value on your target, then `book_deal` the answer.
@@ -434,8 +445,8 @@ def price_candidate(deal: dict | None = None, parent_reference: str | None = Non
         request['parent_reference'] = parent_reference
     if calculation_overrides:
         request['calculation_overrides'] = calculation_overrides
-    submitted = service().call('POST', '/book/price', json=request)
-    return _await_result(submitted['result_id'], wait_seconds)
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/price', json=request)
+    return await _await_result(submitted['result_id'], wait_seconds, ctx)
 
 
 @MCP.tool()
@@ -574,27 +585,14 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
                                              ('pillars', pillars)) if value is not None}
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/bloomberg', json=request)
-    result_id = submitted['result_id']
-    deadline = time.monotonic() + wait_seconds
-    while True:
-        # Every HTTP call is blocking, so it goes to a thread and the event loop stays free to put
-        # the progress notifications on the wire.
-        raw = await asyncio.to_thread(_raw_result, result_id)
-        if raw.get('status') not in ('queued', 'running'):
-            return raw
-        progress = raw.get('progress')
-        if progress and ctx is not None:
-            # A client resets its timeout on progress, which is what buys a long first use.
-            await ctx.report_progress(progress['done'], progress['total'], progress.get('note'))
-        if time.monotonic() >= deadline:
-            return {'result_id': result_id, 'status': raw['status'],
-                    'hint': 'still {} - call poll_result({!r}) to check again; the provisioning '
-                            'carries on service-side either way'.format(raw['status'], result_id)}
-        await asyncio.sleep(2)
+    # a provisioning answer is what installed and what was refused, so this one is not summarised
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
+                               hint='; the provisioning carries on service-side either way')
 
 
 @MCP.tool()
-def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800.0) -> dict:
+async def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800.0,
+                               ctx: Context = None) -> dict:
     """Fit one FX pair's spot-model parameters to the vol surface the book already carries, and
     land them in the book - the model a TARF or an accumulator prices on when its `SpotModel` is
     that family. `family` blank takes the one the book's own runner pins, which is what a desk
@@ -633,15 +631,16 @@ def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800
     the book's `Price Factors` IS the result, so `read_book` serves it like any other market data.
     A pair the book carries no built surface for refuses BY NAME - tick the market first.
     """
-    submitted = service().call('POST', '/book/model',
-                               json={'pair': pair, 'family': family})
-    outcome = _await_result(submitted['result_id'], wait_seconds)
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/model',
+                                        json={'pair': pair, 'family': family})
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     return dict(outcome, factor=submitted['factor'])
 
 
 @MCP.tool()
-def solve_deal(deal: dict, field: str, target: float | dict = 0.0, bounds: list | None = None,
-               calculation_overrides: dict | None = None, wait_seconds: float = 300.0) -> dict:
+async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
+                     bounds: list | None = None, calculation_overrides: dict | None = None,
+                     wait_seconds: float = 300.0, ctx: Context = None) -> dict:
     """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the
     deal back READY TO BOOK - the structuring tool. A par forward: solve the amount to target 0.
     A sales margin: target the margin. A zero-cost collar: fix one strike, solve the other to
@@ -670,8 +669,8 @@ def solve_deal(deal: dict, field: str, target: float | dict = 0.0, bounds: list 
         request['bounds'] = bounds
     if calculation_overrides:
         request['calculation_overrides'] = calculation_overrides
-    submitted = service().call('POST', '/book/solve', json=request)
-    outcome = _await_result(submitted['result_id'], wait_seconds)
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/solve', json=request)
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     solved = outcome.get('stats', {}).pop('Solved', None) if 'stats' in outcome else None
     if solved is not None:
         outcome['solved'] = solved
@@ -684,8 +683,9 @@ def solve_deal(deal: dict, field: str, target: float | dict = 0.0, bounds: list 
 
 
 @MCP.tool()
-def solve_structure(structure: str, params: dict, netting_set: str | None = None,
-                    margin: dict | None = None, wait_seconds: float = 120.0) -> dict:
+async def solve_structure(structure: str, params: dict, netting_set: str | None = None,
+                          margin: dict | None = None, wait_seconds: float = 120.0,
+                          ctx: Context = None) -> dict:
     """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
     the one to reach for instead of composing legs by hand: the structure declares its own legs,
     their conventions and the order they solve in, so the finance does not depend on this
@@ -753,10 +753,11 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     also FIRM ONLY FOR A WINDOW where the book declares one (`Quote Policy.firm_seconds`, ten
     minutes by default): approve it while it is fresh, or re-quote.
     """
-    submitted = service().call('POST', '/book/structure',
-                               json={'structure': structure, 'params': params,
-                                     'netting_set': netting_set, 'margin': margin})
-    outcome = _await_result(submitted['result_id'], wait_seconds)
+    submitted = await asyncio.to_thread(
+        service().call, 'POST', '/book/structure',
+        json={'structure': structure, 'params': params,
+              'netting_set': netting_set, 'margin': margin})
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
         return quote
@@ -802,12 +803,12 @@ def book_quote(quote_id: str) -> dict:
 
 
 @MCP.tool()
-def execute_book(calculation_overrides: dict | None = None,
-                 wait_seconds: float = 120.0) -> dict:
+async def execute_book(calculation_overrides: dict | None = None,
+                       wait_seconds: float = 120.0, ctx: Context = None) -> dict:
     """Run the book's own calculation as it stands - `price_candidate` with no candidate. Waits
     up to `wait_seconds`; on timeout the answer's `hint` says how to pick the run up later."""
-    return price_candidate(calculation_overrides=calculation_overrides,
-                           wait_seconds=wait_seconds)
+    return await price_candidate(calculation_overrides=calculation_overrides,
+                                 wait_seconds=wait_seconds, ctx=ctx)
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -873,7 +874,8 @@ def xva_view() -> dict:
 
 
 @MCP.tool()
-def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0) -> dict:
+async def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0,
+                     ctx: Context = None) -> dict:
     """Recalculate the XVA projection - every netting set, or only the ones named.
 
     THIS IS THE EXPENSIVE ONE. Each set is a credit Monte Carlo over that set's own subtree of the
@@ -891,13 +893,14 @@ def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0) ->
     `{reference, result_id}` pairs and where that last run got to. Read the numbers with `xva_view`
     once it is done; `poll_result` follows any one set.
     """
-    submitted = service().call('POST', '/book/xva', json={'netting_sets': netting_sets})
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/xva',
+                                        json={'netting_sets': netting_sets})
     queued = submitted['queued']
     if not queued:
         return dict(submitted, hint='the book carries no netting sets - there is no XVA to run')
     # Freshly queued sets drain in order through one worker, so the last settling usually means
     # every one has - but a cached set answers 'done' at once, so xva_view's per-row status rules.
-    last = _await_result(queued[-1]['result_id'], wait_seconds)
+    last = await _await_result(queued[-1]['result_id'], wait_seconds, ctx)
     return {'queued': queued, 'last': last,
             'hint': 'xva_view reads the rows and each row carries its own status; poll_result '
                     'follows any one set by its result_id'}
