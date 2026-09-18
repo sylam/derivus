@@ -376,6 +376,101 @@ def test_a_booking_naming_market_data_the_book_lacks_is_refused(book):
     assert 'no market data for InterestRate.GBP' in outcome['refused']
 
 
+def test_a_malformed_booking_is_refused_by_name_and_writes_nothing(book):
+    """Nothing malformed reaches the file. A misspelt `Object`, a missing one, an amount authored
+    as text and a date authored as a bare string are each an ANSWER naming the field and the form
+    it takes, and the file stands still through all four.
+
+    KILLING MUTATION: every one of these was WRITTEN with `book_issues: 1` - the first two loading
+    as a node carrying no deal at all, the string amount making every later validate of the book
+    die `can only concatenate str (not "float") to str`, and the bare date answering a 500 out of
+    `discover_factors` comparing a Timestamp with a str.
+    """
+    before = book.read_bytes()
+    refused = {}
+    for label, deal in [('typo', dict(BOOKED, Object='FixedCashflwDeal')),
+                        ('nameless', {'Reference': 'CF3', 'Amount': 1.0}),
+                        ('text amount', dict(BOOKED, Amount='1e6')),
+                        ('bare date', dict(BOOKED, Payment_Date='2027-01-15'))]:
+        answer = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': deal}),
+                             headers=JSON)
+        assert answer.status_code == 200, (label, answer.text)
+        refused[label] = answer.json()
+
+    assert not any(outcome['written'] for outcome in refused.values())
+    assert "Object is 'FixedCashflwDeal'" in refused['typo']['refused'][0]
+    assert 'names no deal type' in refused['nameless']['refused'][0]
+    assert refused['text amount']['refused'] == ["Amount must be a number, not '1e6'"]
+    assert refused['bare date']['refused'] == [
+        'Payment_Date must be {".Timestamp": "2027-01-15"}, not \'2027-01-15\'']
+    assert book.read_bytes() == before
+
+
+def test_a_container_booked_with_one_unnamed_child_refuses_whole(book):
+    """A legacy import lands as ONE node - a set carrying a converted export - so a misspelt type
+    among its children refuses the whole batch, naming that child by its walk position.
+
+    KILLING MUTATION: a 500, `AttributeError: 'dict' object has no attribute 'field'`, out of
+    `compress_deal_data`, which walks a container's children as the document loads.
+    """
+    before = book.read_bytes()
+    batch = {'Object': 'StructuredDeal', 'Reference': 'BATCH', 'Currency': 'ZAR', 'Children': [
+        {'Instrument': {'.Deal': BOOKED}},
+        {'Instrument': {'.Deal': dict(BOOKED, Reference='CF3', Object='FixedCashflwDeal')}}]}
+    answer = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': batch}),
+                         headers=JSON)
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json()['written'] is False
+    assert answer.json()['refused'] == [
+        "deal at position 3 names no deal type - Object is 'FixedCashflwDeal'; name a declared "
+        'type or delete the deal']
+    assert book.read_bytes() == before
+
+
+def test_a_book_carrying_an_unnamed_deal_names_it_rather_than_dying(tmp_path):
+    """A file a booking can no longer write - a legacy import, a hand edit - is NAMED at the first
+    verb that compiles it, with the walk position and the `Object` as authored.
+
+    KILLING MUTATION: `AttributeError: 'dict' object has no attribute 'base_currency' and no
+    __dict__ for setting new attributes` in `Calculation.set_deal_structures` - the whole book
+    unpriceable, under every verb, with nothing naming the deal that did it.
+    """
+    document = json.loads(dump(job(deals=(CASHFLOW, dict(
+        CASHFLOW, Reference='CF3', Object='FixedCashflwDeal')))))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        submitted = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        priced = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        risk = CLIENT.get('/book/risk')
+        named = ("deal at position 1 names no deal type - Object is 'FixedCashflwDeal'; name a "
+                 'declared type or delete the deal')
+
+        assert priced['status'] == 'error' and priced['error'] == named
+        assert risk.status_code == 422 and named in risk.json()['detail']
+        assert CLIENT.post('/validate', content=dump(document), headers=JSON).json() == {
+            'deals': {'#1': [named]}, 'factors': []}
+    finally:
+        service.BOOK = None
+
+
+def test_a_value_outside_its_own_declaration_is_an_authoring_message():
+    """A field declaring `values` accepts nothing else, so a misspelt menu value is a message
+    rather than a deal priced as something.
+
+    KILLING MUTATION: `validate_instrument` read the REQUIRED fields and nothing else, so
+    `Option_Type: 'Putt'` was written and priced, the pricer's own `== 'Call'` making it a put.
+    """
+    document = job(deals=[dict(BINARY, Cash_Payoff=100.0, Option_Type='Putt')],
+                   factors=dict(FACTORS, **EQUITY))
+
+    assert CLIENT.post('/validate', content=dump(document), headers=JSON).json()['deals'] == {
+        'BIN1': ["Option_Type is 'Putt', not one of Call, Put"]}
+
+
 def test_booking_then_deleting_restores_the_file_bytes(book):
     """The rewrite keeps the file's own indent, so book-then-delete is a no-op to the byte and a
     booking is reviewable as the diff of the deal and nothing else."""
@@ -480,6 +575,55 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert mtm(submitted['result_id'])['CF2'] == pytest.approx(
         BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
     assert book.read_bytes() == before
+
+
+def test_a_calculation_override_is_judged_against_its_own_declarations(book):
+    """An override is a dial of a declared calculation, so a field it does not declare and a value
+    outside that field's menu each refuse 422 naming it - and the book still prices with the dials
+    it does declare.
+
+    KILLING MUTATION: both RAN, the value simply ignored, so a model asking for Greeks got a run
+    with no gradient in it and no way to tell.
+    """
+    unknown = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Nope': 1}}), headers=JSON)
+    outside = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Greeks': 'Maybe'}}), headers=JSON)
+    declared = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Greeks': 'First'}}), headers=JSON)
+    service.EXECUTOR.queue.join()
+
+    assert unknown.status_code == 422 and 'BaseValuation declares no Nope' in unknown.json()[
+        'detail']
+    assert outside.status_code == 422
+    assert outside.json()['detail'] == "Greeks is 'Maybe', not one of All, First, No"
+    assert declared.status_code == 200
+    assert CLIENT.get('/results/{}'.format(
+        declared.json()['result_id'])).json()['status'] == 'done'
+
+
+def test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws(book):
+    """A book with no `Price Models` gives a credit Monte Carlo nothing to simulate, and a book
+    whose deals all matured gives it no grid to grow: each refuses naming which.
+
+    KILLING MUTATION: `RuntimeError: cannot reshape tensor of 0 elements into shape [0, 16, -1]`
+    for the first and `ValueError: max() iterable argument is empty` for the second - the roadmap's
+    three books, dying on the tensor with nothing said about the book.
+    """
+    submitted = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Object': 'CreditMonteCarlo'}}), headers=JSON).json()
+    matured = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Object': 'CreditMonteCarlo',
+                                   'Base_Date': BASE + pd.DateOffset(years=5)}}),
+        headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    modelless = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    gridless = CLIENT.get('/results/{}'.format(matured['result_id'])).json()
+
+    assert modelless['status'] == 'error'
+    assert modelless['error'].startswith('no factor of this book has a model')
+    assert gridless['status'] == 'error'
+    assert gridless['error'].startswith('no deal of this book has a date after the base date')
 
 
 def test_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
@@ -717,6 +861,13 @@ def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(
     assert structural.status_code == 422
     assert book.read_bytes() == before
 
+    # KILLING MUTATION: the patch was WRITTEN and the book's spot became the string 'high', which
+    # every pricer then read as a number
+    typed = CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 'high'}}})
+    assert typed.status_code == 422
+    assert typed.json()['detail'] == "FxRate.ZAR: Spot must be a number, not 'high'"
+    assert book.read_bytes() == before
+
 
 def test_a_bootstrap_that_complains_writes_nothing(book):
     """A bootstrap that reports an ERROR refuses the WHOLE write with its own messages - the good
@@ -827,6 +978,15 @@ def test_a_malformed_dial_refuses_by_name_before_a_quote_is_read(tmp_path):
         assert refused.json()['detail'].startswith('Sigma_L_Bounds'), (
             'the refusal is the bootstrap\'s, so a quote was read before the dial was judged')
         assert 'lower < upper' in refused.json()['detail']
+        assert path.read_bytes() == before
+
+        # KILLING MUTATION: `could not convert string to float: 'tight'` out of the cast, naming
+        # neither the dial nor the entry it was posted to
+        typed = CLIENT.post('/book/configure', json={
+            'section': 'Bootstrapper Configuration', 'entry': 'InterestRate',
+            'fields': {'Tol': 'tight'}})
+        assert typed.status_code == 422
+        assert typed.json()['detail'].endswith("Tol must be a number, not 'tight'")
         assert path.read_bytes() == before
     finally:
         service.BOOK = None
@@ -1891,6 +2051,32 @@ def test_a_solve_that_cannot_reach_its_target_says_so(book):
     result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
 
     assert result['status'] == 'error' and result['error']
+
+
+def test_a_solve_refuses_a_field_and_a_bounds_the_deal_cannot_carry(book):
+    """What a model gets wrong about a solve is named instead of being handed to scipy: a field the
+    deal's type does not declare, a `bounds` that is not a pair, and a target the field cannot
+    reach - the first two before anything prices at all.
+
+    KILLING MUTATION: `RuntimeError: Tolerance ... Failed to converge` for the unknown field and
+    the unreachable target, and `IndexError: list index out of range` for the one-ended bounds -
+    three sentences naming neither the field nor the deal.
+    """
+    answers = {}
+    for label, solve in [('field', {'field': 'Nope', 'target': 0.0}),
+                         ('bounds', {'field': 'Amount', 'target': 0.0, 'bounds': [1.0]}),
+                         ('reach', {'field': 'Amount', 'target': 1e300})]:
+        submitted = CLIENT.post('/book/solve', content=dump(dict(
+            solve, deal=dict(CASHFLOW, Reference='SLV_' + label))), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        answers[label] = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+
+    assert all(answer['status'] == 'error' for answer in answers.values())
+    assert answers['field']['error'].startswith('Nope is not a field of FixedCashflowDeal')
+    assert 'Payment_Date' in answers['field']['error']
+    assert answers['bounds']['error'] == (
+        'bounds is a pair [low, high] of numbers with low below high, not [1.0]')
+    assert answers['reach']['error'].startswith('solve for Amount never reached 1e+300')
 
 
 def test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused(book):

@@ -445,7 +445,8 @@ def expiry_date(base_date, expiry):
     A tenor is read through `utils.parse_period`, the grammar a job's date grid is read with, so
     the letters mean here what they mean there. An ISO date passes through for a broken date, and
     anything else refuses by name - an unparsed tenor landing on the base date is a zero-day
-    option.
+    option. So does a tenor that lands ON or BEFORE the base date: nothing is left to price and
+    every premium the recipe quotes would be a premium for no optionality.
     """
     import pandas as pd
     try:
@@ -453,11 +454,18 @@ def expiry_date(base_date, expiry):
     except ValueError:
         offset = None
     if offset is not None:
-        return {'.Timestamp': (base_date + offset).strftime('%Y-%m-%d')}
-    try:
-        return {'.Timestamp': pd.Timestamp(expiry).strftime('%Y-%m-%d')}
-    except (ValueError, TypeError):
-        raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
+        expires = pd.Timestamp(base_date) + offset
+    else:
+        try:
+            expires = pd.Timestamp(expiry)
+        except (ValueError, TypeError):
+            raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
+    if expires <= pd.Timestamp(base_date):
+        raise ValueError('an expiry of {!r} is {} - on or before the base date {}, where there is '
+                         'no optionality left to quote'.format(
+                             expiry, expires.strftime('%Y-%m-%d'),
+                             pd.Timestamp(base_date).strftime('%Y-%m-%d')))
+    return {'.Timestamp': expires.strftime('%Y-%m-%d')}
 
 
 def fixing_grid(base_date, expiry, frequency):
@@ -508,12 +516,17 @@ def fixing_grid(base_date, expiry, frequency):
 
 
 def declared(structure, params):
-    """`params` completed by the structure's OWN declared defaults.
+    """`params` completed by the structure's OWN declared defaults, or a refusal naming what is
+    missing beside everything the structure takes.
 
     Almost every parameter is `REQUIRED` - a strike a client did not name is a strike nobody
     agreed. A market CONVENTION is the exception, and the number belongs on the `F` descriptor
     where `describe_structure` publishes it rather than in a `.get` inside the runner.
     """
+    missing = [f.key for f in structure.fields if f.default is REQUIRED and not params.get(f.key)]
+    if missing:
+        raise ValueError('{} states no {} - a structure is quoted on its declared parameters, and '
+                         'these carry no default'.format(structure.__name__, ', '.join(missing)))
     stated = {f.key: f.default for f in structure.fields if f.default is not REQUIRED}
     return dict(stated, **params)
 
@@ -953,6 +966,11 @@ def materialize(structure, params, document):
     An ACCRUAL leg is furnished the same way plus a schedule - see `furnish_accrual`. It may WRITE
     to `document` to pin the spot model on the deal type, so the caller owns the copy exactly as it
     does for `with_live_spots`.
+
+    THE PAIR IS THE BOOK'S. A surface is quoted one way round, so a pair stated backwards names a
+    block the book does not carry, every leg is dropped at load and the quote comes back priced at
+    nothing; it refuses here naming the pairs the book does quote. A notional is a positive amount
+    - which side of the trade the desk is on is the structure's own statement, not the sign.
     """
     params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
@@ -960,12 +978,22 @@ def materialize(structure, params, document):
     if underlying not in (base, quote_ccy):
         raise ValueError('notional_currency {!r} is not a side of {}'.format(
             underlying, params['pair']))
+    notional = float(params['notional'])
+    if notional <= 0.0:
+        raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
+                         "the structure's own".format(notional))
+    factors = market_data(document)
+    if FX_VOL_FACTOR.format('{}.{}'.format(base, quote_ccy)) not in factors:
+        raise ValueError('{} is not a pair this book quotes - it carries {}'.format(
+            params['pair'], ', '.join(name.split('.', 1)[1].replace('.', '')
+                                      for name in sorted(factors)
+                                      if name.startswith('FXVol.')) or 'no FX surface'))
     settlement = quote_ccy if underlying == base else base
     # the quoted axis is the deal's own only when the notional is the pair's BASE currency
     inverted = underlying == quote_ccy
     base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
     shared = {'Currency': settlement, 'Discount_Rate': settlement,
-              'Underlying_Currency': underlying, 'Underlying_Amount': float(params['notional']),
+              'Underlying_Currency': underlying, 'Underlying_Amount': notional,
               'FX_Volatility': '{}.{}'.format(base, quote_ccy),
               'Expiry_Date': expiry_date(base_date, params['expiry'])}
     seed = engine_spot(document, underlying, settlement)

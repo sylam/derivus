@@ -964,6 +964,32 @@ def test_a_quote_is_an_act_not_a_lookup(book):
     assert first['net'] == pytest.approx(second['net'], rel=1e-12)
 
 
+def test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced(book):
+    """Four asks nobody can be quoted on, each named against the structure's own declarations: no
+    parameters at all, the pair stated backwards, an expiry on the base date, and a notional the
+    client would be paid to take.
+
+    KILLING MUTATION: `KeyError: 'pair'` for the first; for the backwards pair a quote that got as
+    far as `ZeroCostCollar-..._protection priced but reported no mtm row`, every leg having been
+    dropped at load for a surface the book does not carry; and two QUOTES for the last two - the
+    zero-day collar priced as if live, the negative notional priced with negative premiums.
+    """
+    refusals = {}
+    for label, ask in [('none', {}),
+                       ('backwards', params(pair='ZARUSD', floor=1.0 / (SPOT * 0.95))),
+                       ('expired', params(floor=SPOT * 0.95, expiry='0D')),
+                       ('negative', params(floor=SPOT * 0.95, notional=-NOTIONAL))]:
+        with pytest.raises(ValueError) as refusal:
+            structures.quote(book, 'ZeroCostCollar', ask)
+        refusals[label] = str(refusal.value)
+
+    assert refusals['none'].startswith('ZeroCostCollar states no pair, expiry, notional')
+    assert refusals['backwards'].startswith('ZARUSD is not a pair this book quotes')
+    assert 'USDZAR' in refusals['backwards']
+    assert 'on or before the base date' in refusals['expired']
+    assert refusals['negative'].startswith('a notional is a positive amount, not -1e+06')
+
+
 def test_an_unparsed_tenor_refuses_rather_than_expiring_today(book):
     """A tenor that does not parse must never fall through to the base date - a zero-day option
     prices at zero without complaining, quoting the client nothing for something."""

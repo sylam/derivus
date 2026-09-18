@@ -178,7 +178,9 @@ cx.validate()
 
 - `'deals'` — the authoring messages of every deal in the book, keyed by the deal's `Reference`
   (the walk position, as `#3`, where that is blank or repeated). These are the rules a deal states
-  about itself: a field it cannot price without, or a rule spanning several of its fields.
+  about itself: a field it cannot price without, a value that is not what that field declares —
+  a number, a `{".Timestamp": ...}` date, one of a menu's own strings — or a rule spanning
+  several of its fields.
 - `'factors'` — every price factor the book names that the market data has no `Price Factors` block
   for, spelled as the key you would add. A factor with no block is never built, so the deals that
   reference it are dropped from the portfolio when the run reaches them.
@@ -198,8 +200,8 @@ cx.describe()
 ```
 
 - `'deals'` — the book counted by the `Object` each deal was constructed from. A node whose `Object`
-  names no deal type is counted under nothing: the name went with the payload, and `validate()` is
-  where that node is reported.
+  names no deal type is counted under nothing: it keeps that name and nothing else, and
+  `validate()` is where it is reported, by its walk position and the name as authored.
 - `'factors'` — the same walk as `validate()`, both halves this time: `resolved` is what a run would
   build, and `missing` is the want-list `validate()` returns on its own.
 - `'calculation'` — the `Calculation` block as loaded.

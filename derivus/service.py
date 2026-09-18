@@ -85,7 +85,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures)
 from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sniff_indent,
-                      splice_deal, tables_of, update_market_quote, walk_job_deals)
+                     splice_deal, tables_of, update_market_quote, value_message,
+                     walk_job_deals)
 from ._version import __version__
 from .config import Config, as_json
 from .spine import replay
@@ -412,7 +413,7 @@ class Book:
         self.path = path
         self.lock = threading.Lock()
         self._cache = (None, None, None)  # (mtime_ns, etag, text)
-        self._verdict = (None, None)  # (etag, missing factors) - the last validate of that text
+        self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
 
     def _read(self):
         stamp = os.stat(self.path).st_mtime_ns
@@ -430,11 +431,12 @@ class Book:
             return self._read()
 
     def baseline(self, document):
-        """The factors the book ALREADY lacks, cached against the etag - a booking's before and
-        after are the same walk where nothing has changed the file between them. Read under
-        `mutate`'s lock, which is what makes the cached etag the one just parsed."""
+        """The WHOLE verdict the book already carries - every deal's messages and the factors it
+        lacks - cached against the etag, a booking's before and after being the same walk where
+        nothing has changed the file between them. Read under `mutate`'s lock, which is what makes
+        the cached etag the one just parsed."""
         if self._verdict[0] != self._cache[1]:
-            self._verdict = (self._cache[1], set(load(document).validate()['factors']))
+            self._verdict = (self._cache[1], load(document).validate())
         return self._verdict[1]
 
     def mutate(self, edit):
@@ -674,26 +676,32 @@ def deal_references(node):
         for reference in deal_references(child)]
 
 
-def deal_verdict(document, references, deal_path, already_missing):
+def deal_verdict(document, references, deal_path, baseline):
     """The validate-before-write verdict on a document a change has already landed on:
-    `(write, outcome)` for `Book.mutate`, written iff nothing is said against the CHANGED deals.
+    `(write, outcome)` for `Book.mutate`, written iff nothing NEWLY SAID stands against it.
 
-    What counts against them is their own authoring messages plus market data the book did not
-    already lack (`already_missing`, taken before the change), so a book failing elsewhere cannot
-    block a correct change. Both mutating actions of `/book/deals` and every approved quote end
-    here, which makes a refusal one wording rather than three.
+    Newly said is one rule over the whole verdict against `baseline`, the same walk taken before
+    the change: every message against the CHANGED deals, every deal key the book did not already
+    carry - a `Reference`, or the `#position` a node that never became a deal is keyed by, which
+    is how a misspelt `Object` is caught at all - and every factor the book did not already lack.
+    So a book failing elsewhere cannot block a correct change, and nothing malformed lands.
+
+    Both mutating actions of `/book/deals` and every approved quote end here, which makes a
+    refusal one wording rather than three.
     """
     verdict = load(document).validate()
-    refused = [message for reference in references
-               for message in verdict['deals'].get(reference, [])]
+    said = [reference for reference in references if reference in verdict['deals']]
+    said += [key for key in sorted(verdict['deals'])
+             if key not in baseline['deals'] and key not in said]
+    refused = [message for key in said for message in verdict['deals'][key]]
     refused += ['no market data for {}'.format(name)
-                for name in sorted(set(verdict['factors']) - already_missing)]
+                for name in sorted(set(verdict['factors']) - set(baseline['factors']))]
     if refused:
         return False, {'written': False, 'refused': refused, 'validate': verdict}
     return True, {'written': True, 'deal_path': deal_path, 'validate': verdict}
 
 
-def deal_edit(document, deal, parent_reference=None, already_missing=None):
+def deal_edit(document, deal, parent_reference=None, baseline=None):
     """One deal - or one whole structured subtree - added to a wire document, as the ONE edit
     closure `/book/deals` books through: baseline taken, node spliced in, verdict read off the
     whole document.
@@ -703,11 +711,11 @@ def deal_edit(document, deal, parent_reference=None, already_missing=None):
     booking, one atomic write, one verdict. `/book/quote` books through this same function rather
     than a second write path, so a structured deal is refused exactly as a hand-booked one is.
     """
-    if already_missing is None:
-        already_missing = set(load(document).validate()['factors'])
+    if baseline is None:
+        baseline = load(document).validate()
     deal_path = splice_deal(document, instrument_of(booked_node(deal)), parent_reference)
     node = deal_at(document, deal_path)
-    return deal_verdict(document, deal_references(node), deal_path, already_missing)
+    return deal_verdict(document, deal_references(node), deal_path, baseline)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -814,8 +822,10 @@ def book_deals(request: dict):
     quoted structure books: the legs land with the container, in one write and under one verdict.
 
     The contract is VALIDATE-BEFORE-WRITE, one spelling for both mutating actions: the change lands
-    on a copy, the whole document is validated, and the file is rewritten only if nothing is said
-    against the CHANGED deal. A refusal is `{written: False, ...}` and touches nothing.
+    on a copy, the whole document is validated, and the file is rewritten only if nothing is NEWLY
+    said - against the changed deal, against any deal the book was not already carrying a message
+    about, or about market data it did not already lack. A refusal is `{written: False, ...}` and
+    touches nothing.
 
     UNDER A SPINE HOME the write is a pair and the event goes first: an `add` appends the `fill`
     and an `amend` the `amendment` before the file is rewritten, and the outcome carries the
@@ -834,22 +844,22 @@ def book_deals(request: dict):
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
         if action == 'amend':
-            already_missing = live_book().baseline(document)
+            baseline = live_book().baseline(document)
             node = deal_at(document, request['deal_path'])
             before = instrument_of(node)
             node['Instrument']['.Deal'].update(request['fields'])
             written, outcome = deal_verdict(
                 document, [node['Instrument']['.Deal'].get('Reference')], request['deal_path'],
-                already_missing)
+                baseline)
             if written:
-                outcome = dict(outcome, _validated=set(outcome['validate']['factors']),
+                outcome = dict(outcome, _validated=outcome['validate'],
                                **spine_amendment(document, request['deal_path'], before,
                                                  request.get('actor')))
             return written, outcome
         written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'),
                                      live_book().baseline(document))
         if written:
-            outcome = dict(outcome, _validated=set(outcome['validate']['factors']), **spine_fill(
+            outcome = dict(outcome, _validated=outcome['validate'], **spine_fill(
                 document, outcome['deal_path'], request.get('quantity'),
                 request.get('execution_reference'), request.get('actor')))
         return written, outcome
@@ -860,13 +870,40 @@ def book_deals(request: dict):
         raise HTTPException(422, str(error))
 
 
+def with_overrides(document, overrides):
+    """`calculation_overrides` merged into the book's `Calculation` block IN PLACE, each judged
+    against the calculation's OWN declarations: a field it does not declare, or a value outside
+    that field's menu, refuses by name.
+
+    The class judged is the one the MERGED block names, so an override switching `Object` is read
+    against the calculation it switches to. `Object` is the type token rather than a field of the
+    type, so it is the one key judged by naming a calculation.
+    """
+    calculation = dict(document['Calc']['Calculation'], **overrides)
+    declared = mapping['Calculation']['types'].get(calculation.get('Object'))
+    if declared is None:
+        raise ValueError('{!r} is no calculation - this engine runs {}'.format(
+            calculation.get('Object'), ', '.join(sorted(mapping['Calculation']['types']))))
+    for field, value in sorted(overrides.items()):
+        if field == 'Object':
+            continue
+        if field not in declared:
+            raise ValueError('{} declares no {} to override - it declares {}'.format(
+                calculation['Object'], field, ', '.join(sorted(declared))))
+        menu = declared[field].get('values')
+        if menu is not None and value not in menu:
+            raise ValueError('{} is {!r}, not one of {}'.format(field, value, ', '.join(menu)))
+    document['Calc']['Calculation'] = calculation
+
+
 @app.post('/book/price', summary='Price the book, with an optional candidate deal - writes nothing')
 def book_price(request: dict):
     """The what-if verb: `{deal?, parent_reference?, calculation_overrides?}` prices the book plus
     an optional candidate on an in-memory copy - the file never moves. Overrides merge into
-    `Calc.Calculation`, so "with Greeks" or "as a CMC" needs no second write surface. Answers
-    `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
-    same what-if twice is one run.
+    `Calc.Calculation` against the calculation's own declarations - an undeclared field or a value
+    outside its menu refuses 422 - so "with Greeks" or "as a CMC" needs no second write surface and
+    a misspelt dial is not silently ignored. Answers `{result_id, status}` exactly like `/execute`,
+    and the same content addressing applies: the same what-if twice is one run.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load and then be DROPPED by
@@ -885,9 +922,9 @@ def book_price(request: dict):
                                          live_book().baseline(document))
             if not written:
                 raise HTTPException(422, '; '.join(outcome['refused']))
+        with_overrides(document, request.get('calculation_overrides', {}))
     except ValueError as error:
         raise HTTPException(422, str(error))
-    document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
     context = load(document)
     stamp = replay(context)
     submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY)
@@ -1494,12 +1531,18 @@ def bootstrapper_entry(market, entry, fields):
     """One `Bootstrapper Configuration` entry with `fields` merged in, under the key the BOOK uses:
     an older book's class-name spelling is kept rather than renamed. An entry stating no `Prices`
     is completed with the stem its family routes on - the one key `derivus_bootstrap` cannot route
-    without - while one stating another family's keeps it and is refused for it. Constructing the
-    family off the result is the validation: a malformed dial refuses by name there, before a quote
-    is read."""
+    without - while one stating another family's keeps it and is refused for it. A dial is read
+    against the family's own declaration first, so a number posted as text names the dial rather
+    than the cast; constructing the family off the result is the rest of the validation, before a
+    quote is read."""
     section = market.setdefault('Bootstrapper Configuration', {})
     family = bootstrappers.family_class(entry)
     key = next((name for name in section if bootstrappers.family_class(name) is family), entry)
+    declared = {f.key: f for f in family.fields}
+    for field, value in sorted(fields.items()):
+        message = value_message(declared[field], value) if field in declared else None
+        if message:
+            raise ValueError('{}: {}'.format(key, message))
     current = section.get(key)
     merged = {bootstrappers.PRICES_KEY: family.market_factor_type[:-len('Prices')],
               **(current if isinstance(current, dict) else {}), **fields}
@@ -2263,7 +2306,8 @@ def book_solve(request: dict):
     """The structuring verb: `{deal, field, target?, bounds?, tolerance?,
     calculation_overrides?}` finds the value of `deal[field]` at which the deal's own base
     valuation marks at `target` (default 0 - par), against the book's market data, on an
-    in-memory copy - the file never moves.
+    in-memory copy - the file never moves. `field` is one the deal's type DECLARES and
+    `bounds` a pair of numbers, both refused by name before anything prices.
 
     `target` is a number in the run's own reporting currency, or the money form
     `{'amount': 50000.0, 'currency': 'ZAR'}` - a sales margin as it was agreed - which crosses to
@@ -2286,16 +2330,19 @@ def book_solve(request: dict):
     """
     document, etag = live_book().read()
     try:
-        already = live_book().baseline(document)
+        baseline = live_book().baseline(document)
         job_children(document)[:] = []
-        written, outcome = deal_edit(document, request['deal'], None, already)
+        written, outcome = deal_edit(document, request['deal'], None, baseline)
     except ValueError as error:
         raise HTTPException(422, str(error))
     if not written:
         raise HTTPException(422, '; '.join(outcome['refused']))
     deal_path = outcome['deal_path']
-    document['Calc']['Calculation'].update(request.get('calculation_overrides', {}))
-    document['Calc']['Calculation']['Object'] = 'BaseValuation'
+    try:
+        with_overrides(document, dict(request.get('calculation_overrides', {}),
+                                      Object='BaseValuation'))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
     solve = {key: request[key] for key in ('field', 'target', 'bounds', 'tolerance')
              if key in request}
     if 'field' not in solve:

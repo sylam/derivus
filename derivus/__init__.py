@@ -20,6 +20,7 @@ import os
 import json
 import torch
 import hashlib
+import numbers
 import pathlib
 import logging
 import numpy as np
@@ -138,12 +139,27 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
     two evaluations for anything affine in the field. Raises when the residual cannot reach
     `tolerance`, naming it.
 
+    THREE THINGS REFUSE BEFORE ANY PRICING, because a root find is not where a desk finds out: a
+    field the deal's type does not declare, a `bounds` that is not a pair of numbers with
+    `low < high`, and - after the loop - a search that never converged, which scipy states in its
+    own terms and this restates in the field, the target and the last residual.
+
     Returns `(solved_value, evaluations, residual, out)`, `out` being the full output of the run
     AT the solved value.
     """
     from scipy import optimize
 
-    reference = deal_at(document, deal_path)['Instrument']['.Deal'].get('Reference')
+    block = deal_at(document, deal_path)['Instrument']['.Deal']
+    declared = schema.instrument_fields(block.get('Object'))
+    if field not in declared:
+        raise ValueError('{} is not a field of {} - it declares {}'.format(
+            field, block.get('Object'), ', '.join(declared)))
+    if bounds is not None and not (
+            len(bounds) == 2 and all(isinstance(end, numbers.Real) for end in bounds)
+            and bounds[0] < bounds[1]):
+        raise ValueError('bounds is a pair [low, high] of numbers with low below high, '
+                         'not {!r}'.format(bounds))
+    reference = block.get('Reference')
     priced = {}
 
     def value(x):
@@ -156,14 +172,23 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
             priced[x] = (float(frame[frame['Reference'] == reference]['Value'].iloc[0]), out)
         return priced[x][0]
 
-    if bounds is not None:
-        solved = float(optimize.brentq(lambda x: value(x) - target, bounds[0], bounds[1],
-                                       maxiter=max_iterations))
-    else:
-        start = deal_at(document, deal_path)['Instrument']['.Deal'].get(field)
-        x0 = float(start) if isinstance(start, (int, float)) and start else 1.0
-        solved = float(optimize.newton(lambda x: value(x) - target, x0, x1=x0 * 1.0001 + 1.0,
-                                       maxiter=max_iterations))
+    try:
+        if bounds is not None:
+            solved = float(optimize.brentq(lambda x: value(x) - target, bounds[0], bounds[1],
+                                           maxiter=max_iterations))
+        else:
+            seed = block.get(field)
+            x0 = float(seed) if isinstance(seed, numbers.Real) and seed else 1.0
+            solved = float(optimize.newton(lambda x: value(x) - target, x0, x1=x0 * 1.0001 + 1.0,
+                                           maxiter=max_iterations))
+    except RuntimeError:
+        # the search stopped moving; scipy states iterations, a desk needs the coordinate it was
+        # moving and how far it got
+        last = priced[next(reversed(priced))][0]
+        raise ValueError(
+            'solve for {} never reached {:.6g} in {} pricings - the last was {:.6g} away, so this '
+            'target may be out of reach on this deal'.format(
+                field, target, len(priced), last - target)) from None
 
     residual = value(solved) - target
     if abs(residual) > tolerance:
@@ -585,6 +610,9 @@ class Context:
         `schema.MARKET_QUOTE_VALUES` per row; `null` clears a two-way side or a `Timestamp`, and a
         null mid refuses.
 
+        A price factor's value is checked against its own declaration, so a spot patched to a
+        string refuses by name rather than becoming the string the pricers then read.
+
         A quote patch does NOT re-bootstrap: the price factors the last bootstrap wrote stand as
         they are, and `values_hash` records the board that is actually standing.
         """
@@ -594,10 +622,14 @@ class Context:
             if name in factors:
                 type_name = utils.check_rate_name(name)[0]
                 structural, value_fields = schema.partition_factor(type_name, factors[name])
-                for field in values:
+                for field, content in values.items():
                     if field not in value_fields:
                         raise ValueError(
                             '{}: {} is structural, not a value'.format(name, field))
+                    message = schema.value_message(
+                        schema.FACTOR_FIELDS[type_name][field], content)
+                    if message:
+                        raise ValueError('{}: {}'.format(name, message))
                 factors[name] = schema.apply_values(
                     type_name, structural, {**value_fields, **values})
             elif name in prices:

@@ -307,8 +307,10 @@ def compress_deal_data(deals):
 
     # return this as our compressed portfolio
     reduced_deals = deals
-    # first try and compress equity_swaps
-    equity_swaps = [x for x in reduced_deals if x['Instrument'].field['Object'] == 'EquitySwapletListDeal']
+    # first try and compress equity_swaps - a node that never became a Deal is not compressible,
+    # and is named by `nameless_deals` rather than died on here
+    equity_swaps = [x for x in reduced_deals if isinstance(x['Instrument'], Deal)
+                    and x['Instrument'].field['Object'] == 'EquitySwapletListDeal']
     # don't bother if there are less than 400 swaps
     if equity_swaps and len(equity_swaps) > 400:
         logging.info('Compressing {} EquitySwaplets'.format(len(equity_swaps)))
@@ -868,6 +870,11 @@ class Config(object):
         dependants raises `KeyError` on the absent block and is SKIPPED before `dependent_factors`,
         while every other type is discovered happily and fails later in `construct_factor` - so it
         is the set difference against `Price Factors`.
+
+        A deal whose values are not what it declares they are is left out of the walk
+        (`readable`): discovery reads the block's own dates and amounts, so a bare-string date or a
+        string amount dies inside it, and a want-list is a question only a readable block can be
+        asked. A deal merely MISSING a required field is walked and still reports what it lacks.
         """
         # cached against the deal list it walked, because `validate` and `describe` both read it
         # and the booking verbs load a fresh document rather than editing a loaded book in place
@@ -875,7 +882,8 @@ class Config(object):
         if self._universe_of is children:
             return self._universe
         options = self.deals['Calculation']
-        factors, skipped, _, _ = self.discover_factors(options, options['Base_Date'], '0d', False)
+        factors, skipped, _, _ = self.discover_factors(
+            options, options['Base_Date'], '0d', False, readable=True)
         names = set(map(utils.check_tuple_name, factors))
         # resolved through the same lookup `construct_factor` uses, or a vol surface written under
         # its pre-tag name would be reported missing and then built anyway
@@ -887,21 +895,34 @@ class Config(object):
                           'missing': sorted(skipped.union(names.difference(present)))}
         return self._universe
 
+    def nameless_deals(self):
+        """`{walk position: refusal}` for every node whose `Object` named no deal type.
+
+        One reading, two readers: `validate` files each as that node's authoring message, and the
+        compile refuses on the lot - a `{}` carries no `base_currency` to stamp, and one deal
+        nobody can name must not make the whole book unpriceable without saying which.
+        """
+        return {position: 'deal at position {} names no deal type - Object is {!r}; name a '
+                          'declared type or delete the deal'.format(
+                              position, instrument.get('Object'))
+                for position, instrument in enumerate(self.walk_deals())
+                if not isinstance(instrument, Deal)}
+
     def validate(self):
         """What stops this job running, as data: the authoring messages of every deal in the book,
         and the price factors the book names that the market data has no block for.
 
         Keyed by the deal's `Reference`, with the walk position appended where that is blank or
-        repeated. Nothing here raises, and a message never stops a deal pricing.
+        repeated. A deal whose VALUES are not what it declares them to be does not reach the factor
+        walk (`factor_universe`) - discovery reads the block's own dates and amounts, and one that
+        never parsed is what it died on. Nothing here raises, and a message never stops a deal
+        pricing.
         """
-        deals = {}
+        deals, nameless = {}, self.nameless_deals()
         for position, instrument in enumerate(self.walk_deals()):
-            if isinstance(instrument, Deal):
-                key, messages = instrument.field.get('Reference'), schema.validate_instrument(instrument)
-            else:
-                # construct_instrument logged the unknown Object and returned {}, taking the
-                # payload with it, so the position is all that is left to name this node by
-                key, messages = None, ['Object names no deal type']
+            key = None if position in nameless else instrument.field.get('Reference')
+            messages = [nameless[position]] if position in nameless \
+                else schema.validate_instrument(instrument)
             if messages:
                 key = key or '#{}'.format(position)
                 deals[key if key not in deals else '{}#{}'.format(key, position)] = messages
@@ -936,7 +957,8 @@ class Config(object):
 
         return dependent_factors, stochastic_factors, additional_factors, reset_dates, currency_settlement_dates
 
-    def discover_factors(self, options, base_date, base_MTM_dates, calc_dates=True):
+    def discover_factors(self, options, base_date, base_MTM_dates, calc_dates=True,
+                         readable=False):
         """Every price factor the deal walk reaches, ordered so a factor follows the factors it
         depends on, with the reset and settlement dates the walk collected.
 
@@ -945,6 +967,9 @@ class Config(object):
         discovered, so this is the only place that knowledge exists. A type without dependants is
         discovered happily and fails later, in `construct_factor`. Reads the market data, writes
         nothing.
+
+        `readable` walks only the deals whose values are what their declarations say - what
+        `factor_universe` asks, a run asking over the book as it is.
         """
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
@@ -1086,9 +1111,11 @@ class Config(object):
             for node in deals:
                 instrument = node['Instrument']
 
-                # an Object naming no class loaded as {} (construct_instrument logs and returns
-                # it), and a node that never became a Deal has no factors to contribute
-                if node.get('Ignore') == 'True' or not isinstance(instrument, Deal):
+                # an Object naming no class loaded as the bare name it was authored with
+                # (construct_instrument logs and returns it), and a node that never became a Deal
+                # has no factors to contribute
+                if node.get('Ignore') == 'True' or not isinstance(instrument, Deal) or (
+                        readable and schema.unreadable(instrument)):
                     continue
 
                 children.append(instrument)

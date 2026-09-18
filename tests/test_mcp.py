@@ -417,6 +417,30 @@ def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
     assert book.read_bytes() == before
 
 
+def test_what_a_model_actually_mistypes_comes_back_as_data(book):
+    """The four a model sends unprompted - a misspelt type, no type at all, an amount as text and a
+    date as a bare string - reach it as `{written: false, refused: [...]}` with the file untouched,
+    which is the shape whose next move is to fix what it names.
+
+    KILLING MUTATION: all four WRITTEN, `book_issues: {deal_messages: 1}`; the bare date a tool
+    error reading `DV_Service answered 500 for POST /book/deals: Internal Server Error`.
+    """
+    before = book.read_bytes()
+    refused = {
+        'typo': mcp_server.book_deal(json.loads(dump(dict(BOOKED, Object='FixedCashflwDeal')))),
+        'nameless': mcp_server.book_deal({'Reference': 'CF3', 'Amount': 1.0}),
+        'text amount': mcp_server.book_deal(json.loads(dump(dict(BOOKED, Amount='1e6')))),
+        'bare date': mcp_server.book_deal(
+            dict(json.loads(dump(BOOKED)), Payment_Date='2027-01-15'))}
+
+    assert not any(outcome['written'] for outcome in refused.values())
+    assert all(outcome['refused'] for outcome in refused.values())
+    assert "Object is 'FixedCashflwDeal'" in refused['typo']['refused'][0]
+    assert refused['text amount']['refused'] == ["Amount must be a number, not '1e6'"]
+    assert '.Timestamp' in refused['bare date']['refused'][0]
+    assert book.read_bytes() == before
+
+
 def test_an_amendment_changes_the_value_it_names(book):
     """The 'change a value' flow in plain language: amend the amount, see the deal carry it, see
     the book mark it - and an amendment that breaks the deal is an answer, not a write."""

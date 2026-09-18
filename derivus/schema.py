@@ -29,9 +29,11 @@ recompiling - see `partition_factor`.
 
 import copy
 import logging
+import numbers
 import re
 
 import numpy as np
+import pandas as pd
 
 from . import utils
 
@@ -83,6 +85,15 @@ WIDGET_FORMAT = {
 OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text': 'Text',
               'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Boolean': 'Boolean',
               'Table': 'ResetArray'}
+
+#: What one declared field's value must BE once `decode_wire` has run, and the wire form to name
+#: where it is not: keyed by the `obj` token a field declares, else by its `type`. A declaration
+#: absent here is one nothing checkable can be said about from the descriptor alone - a Text, a
+#: table, a shape, and a Period, which is a `DateOffset` on a deal and the bare string a desk posts
+#: a convention as. A scaled number is a number: the tag says which unit it was authored in.
+AUTHORED = {'Date': ((pd.Timestamp,), '{".Timestamp": "2027-01-15"}'),
+            'Float': ((numbers.Real, utils.Scaled), 'a number'),
+            'Integer': ((numbers.Real, utils.Scaled), 'a number')}
 
 
 class Row(object):
@@ -192,10 +203,22 @@ def own(cls_name, fields, role='Fields'):
     return Group('{}.{}'.format(cls_name, role), fields)
 
 
+def declared_fields(cls):
+    """Every field a class declares, by the key an author writes - inherited declarations included,
+    which is the reading `mapping` composes a type's sections from."""
+    return {f.key: f for group in getattr(cls, 'fields', []) for f in group.fields}
+
+
 def required_fields(cls):
     """Every field a class declares REQUIRED, inherited declarations included."""
-    return [f.key for group in getattr(cls, 'fields', []) for f in group.fields
-            if f.default is REQUIRED]
+    return [key for key, f in declared_fields(cls).items() if f.default is REQUIRED]
+
+
+def instrument_fields(deal_type):
+    """Every JSON key one deal TYPE declares, off the emitted store - the reading a wire block's
+    `Object` reaches, and the descriptors `describe_instrument_type` publishes."""
+    return sorted(key for section in mapping['Instrument']['types'].get(deal_type, ())
+                  for key in mapping['Instrument']['sections'][section])
 
 
 def declared_defaults(cls, params):
@@ -281,17 +304,56 @@ class DealFields(dict):
         return self.furnished.setdefault(key, copy.deepcopy(self.declared[key]))
 
 
+def value_message(field, value):
+    """What one authored value gets wrong against its own declaration, or None.
+
+    A wire tag is the author's spelling and the loader has already turned it into what the engine
+    reads, so a bare string where a date belongs survives decoding unchanged - which is what naming
+    the wire form is for. A `bool` is not a number, `True` pricing as 1.0, and a field declaring
+    `values` accepts nothing outside them. A FALSY value states nothing and is read against
+    nothing: an optional field declares an empty default, and a required one missing is a
+    different message.
+    """
+    if not value:
+        return None
+    if field.values is not None and value not in field.values:
+        return '{} is {!r}, not one of {}'.format(field.key, value, ', '.join(field.values))
+    wanted = AUTHORED.get(field.obj or field.type)
+    if wanted is None or (not isinstance(value, bool) and isinstance(value, wanted[0])):
+        return None
+    return '{} must be {}, not {!r}'.format(field.key, wanted[1], value)
+
+
+def unreadable(deal):
+    """Whether any value this deal carries is not what its own declaration says it must be.
+
+    What a walk over a deal's dates and amounts cannot be taken over: a date that stayed a string
+    compares against no Timestamp, a string amount concatenates. A REQUIRED field left out is not
+    one of these - it is absent, and every reader tests the value rather than the key.
+    """
+    declared = declared_fields(type(deal))
+    return any(value_message(declared[key], value)
+               for key, value in deal.field.items() if key in declared)
+
+
 def validate_instrument(deal):
     """Authoring-time messages for one constructed deal; empty when it has nothing to say.
 
-    The declarations give the REQUIRED fields; a rule spanning several fields is code in the class's
-    own `validate()`. Missing means FALSY, not absent - optional fields declare an empty default and
-    every fallback tests the value rather than the key. `validate` is looked up normally rather than
-    own-attr-only, unlike `fields`, so an alias subclass inherits the rules. Nothing in the valuation
-    path calls this; a message never stops a deal.
+    The declarations give the REQUIRED fields and what every authored value has to BE; a rule
+    spanning several fields is code in the class's own `validate()`. Missing means FALSY, not
+    absent - optional fields declare an empty default and every fallback tests the value rather
+    than the key - and a falsy value is checked against nothing else, having nothing to state.
+    `validate` is looked up normally rather than own-attr-only, unlike `fields`, so an alias
+    subclass inherits the rules. Nothing in the valuation path calls this; a message never stops a
+    deal.
     """
-    messages = ['{} is required'.format(name) for name in required_fields(type(deal))
-                if not deal.field.get(name)]
+    messages = []
+    for key, field in declared_fields(type(deal)).items():
+        value = deal.field.get(key)
+        message = ('{} is required'.format(key) if not value and field.default is REQUIRED
+                   else value_message(field, value))
+        if message:
+            messages.append(message)
     own = getattr(deal, 'validate', None)
     return messages + (list(own()) if own else [])
 

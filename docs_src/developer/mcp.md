@@ -60,14 +60,32 @@ three-hour-old CVA as live or paying for a book-wide Monte Carlo to answer "what
 
 ## The contracts that matter
 
-**Validate-before-write.** `book_deal` never writes a deal something is said against — its own
-authoring messages, or market data the book did not already lack. A refusal is a **normal return**
-(`{written: false, refused: [...]}`), not a tool error, because the model's next move is to read the
-messages and fix what they name. Tool errors are reserved for *cannot proceed*: service down (named,
-with how to start it), unknown type (with close matches), a parent that takes no children.
-`price_candidate` and `solve_deal` run the same check before the what-if or the solve queues, in the
-same words: a candidate the book has no market data for is refused there rather than dropped from
-the run it asked for.
+**Validate-before-write.** `book_deal` never writes a deal something is said against. The rule is
+what the booking NEWLY says: its own authoring messages, any deal the book was not already carrying
+a message about — which is how a misspelt `Object` is caught, a node that never became a deal being
+keyed by its walk position rather than by a reference it no longer has — and market data the book
+did not already lack. The messages are the declarations read back: a field the type cannot price
+without, an amount authored as text, a date that is not `{".Timestamp": "YYYY-MM-DD"}`, a value
+outside the menu its field declares. A refusal is a **normal return** (`{written: false, refused:
+[...]}`), not a tool error, because the model's next move is to read the messages and fix what they
+name. Tool errors are reserved for *cannot proceed*: service down (named, with how to start it),
+unknown type (with close matches), a parent that takes no children. `price_candidate` and
+`solve_deal` run the same check before the what-if or the solve queues, in the same words: a
+candidate the book has no market data for is refused there rather than dropped from the run it
+asked for.
+
+**A refusal names the thing and the remedy, wherever the model gets it wrong.** `solve_deal` refuses
+a field the deal's type does not declare and a `bounds` that is not a pair of numbers before
+anything prices, and states the field, the target and the distance left where the search will not
+converge. `calculation_overrides` are judged against the calculation's own declarations, so a dial
+it does not declare and a value outside that dial's menu refuse rather than being ignored.
+`patch_market_values` refuses a value whose type is not the declared field's. `solve_structure`
+refuses parameters the structure declares and the client did not state, a pair the book does not
+quote (naming the ones it does), an expiry on or before the base date and a notional that is not
+positive. A credit Monte Carlo over a book with no model, no loaded deal or no date after the base
+date refuses naming which, rather than dying inside the simulation. A book carrying a node whose
+`Object` names no deal type — a legacy import, a hand edit — is named by position at the first verb
+that compiles it instead of making the whole book unpriceable.
 
 !!! warning "OPEN — a spine-configured desk cannot book through this tool"
     Under a configured `DV_SPINE_HOME` the endpoint additionally requires `quantity`,

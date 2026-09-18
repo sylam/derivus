@@ -65,6 +65,13 @@ a 0.97-spot forward extra misprices by exactly the moneyness. `notional_currency
 underlying, which makes "is the notional the quote currency" exactly the discriminator the inversion
 needs.
 
+**What cannot be quoted refuses before a leg is built.** A parameter the structure declares REQUIRED
+and the client did not state is named against its own `fields`. A pair whose surface the book does not
+carry is named with the pairs it does, because otherwise every leg is dropped at load and the quote
+comes back `priced but reported no mtm row`. An expiry on or before the base date and a notional that
+is not positive refuse there too — a zero-day option quoted as if live, and premiums with the sign
+reversed, are both numbers a client could be handed.
+
 **Strike solves are BRACKETED** (brentq over `(0.25, 4.0) ×` the market spot, crossed to the engine
 axis), never the secant — `solve_deal_field`'s secant seed lands in the dead flat region for an
 engine-axis strike of 0.06. A zero-cost leg no strike inside the bracket can fund refuses by name.

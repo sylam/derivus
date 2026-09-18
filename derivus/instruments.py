@@ -7203,9 +7203,15 @@ def accepts_children(deal_type):
 
 
 def construct_instrument(param, all_valuation_options):
+    """The deal `param` names, or the bare `{'Object': ...}` an unknown type loads as.
+
+    A node that never became a `Deal` keeps the name it was authored with and nothing else, which
+    is what `Config.nameless_deals` refuses it by - the payload goes, a misspelt type carrying no
+    terms anyone can price.
+    """
     if param.get('Object') not in globals():
         logging.error('Instrument {0} not defined'.format(param.get('Object')))
-        return {}
+        return {'Object': param.get('Object')}
     else:
         deal_options = all_valuation_options.get(param.get('Object'), {})
         return globals().get(param.get('Object'))(param, deal_options)

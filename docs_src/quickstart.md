@@ -12,9 +12,9 @@ calc, out = cx.run_job(overrides={})
 
 `out['Results']` holds the tables — see [Understanding Output](output.md). Before running
 anything, `cx.validate()` reports what would stop the job (missing market-data blocks, deals
-missing required fields) without pricing a thing, and `cx.describe()` reports what the engine
-made of the document. The [API Overview](api_overview.md) covers both, plus patching market
-values and replaying a run.
+missing required fields, values that are not what their field declares) without pricing a
+thing, and `cx.describe()` reports what the engine made of the document. The [API
+Overview](api_overview.md) covers both, plus patching market values and replaying a run.
 
 The same document runs over HTTP — `DV_Service` publishes the schema and executes posted jobs —
 see [the service verbs](api_overview.md#the-same-verbs-over-http).

@@ -23,7 +23,8 @@ from functools import reduce
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
 from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
-from .instruments import get_fxrate_factor, get_survival_component, get_interest_factor, get_survival_factor
+from .instruments import (Deal, get_fxrate_factor, get_survival_component, get_interest_factor,
+                          get_survival_factor)
 from .pricing import SensitivitiesEstimator
 from . import utils, pricing
 from .schema import F, REQUIRED, Row, declared_defaults
@@ -443,7 +444,11 @@ class Calculation(object):
         observations leave it no decisions compiles as ANOTHER type (`Deal.resolve_history`), and
         that type's own block is what the substitute must read. The substitute is local to the
         compile - the loaded book is never rewritten - and its reval dates are a SUBSET of the ones
-        this grid was built from, so the fold cannot move the grid under itself."""
+        this grid was built from, so the fold cannot move the grid under itself.
+
+        A node that never became a `Deal` REFUSES here rather than failing to take the stamp: one
+        misspelt `Object` in an imported book would otherwise make the whole book unpriceable
+        without naming which deal, so every such node is named at once."""
         base_currency = utils.check_rate_name(
             self.config.params['System Parameters']['Base_Currency'])
         valuation_options = self.config.params.get('Valuation Configuration', {})
@@ -452,6 +457,8 @@ class Calculation(object):
             if node.get('Ignore') == 'True':
                 self.calc_stats['Ignored'] = self.calc_stats.setdefault('Ignored', 0) + 1
                 continue
+            if not isinstance(instrument, Deal):
+                raise ValueError('; '.join(self.config.nameless_deals().values()))
 
             instrument.base_currency = base_currency
             logging.root.name = instrument.field.get('Reference', '<undefined>')
@@ -1191,6 +1198,11 @@ class Credit_Monte_Carlo(Calculation):
 
     def update_time_grid(self, base_date, reset_dates, settlement_currencies, dynamic_scenario_dates=False):
         dynamic_dates = set([x for x in reset_dates if x > base_date])
+        if not dynamic_dates:
+            raise ValueError(
+                'no deal of this book has a date after the base date {} - a simulation grid is '
+                'grown from the dates the deals reach, and there are none to grow it from'.format(
+                    base_date.strftime('%Y-%m-%d')))
 
         # we are repeating a period till the last reset date
         if self.input_time_grid.strip().endswith(')'):
@@ -1407,6 +1419,24 @@ class Credit_Monte_Carlo(Calculation):
 
         return self.output
 
+    def refuse_unframed(self):
+        """Refuse a book this calculation would simulate nothing of, naming the shape it met.
+
+        Read once the models and the deal structures are both known. Unframed, the batch loop
+        reshapes a draw of no factors or reduces a structure holding no deal, and the run dies on
+        the tensor rather than on the book. The third shape - no date after the base date - is
+        refused where the grid is grown, `update_time_grid` having nothing to take a maximum over.
+        """
+        if not (self.calc_stats.get('Deals loaded', 0) + self.calc_stats.get('Structs loaded', 0)):
+            raise ValueError(
+                'every deal of this book was skipped or ignored - a credit Monte Carlo projects '
+                'nothing over an empty book; /validate names what each deal is missing')
+        if not self.num_factors:
+            raise ValueError(
+                'no factor of this book has a model - a credit Monte Carlo simulates nothing; '
+                'declare a Price Models entry for a factor the deals reach, or run this book as '
+                'a BaseValuation')
+
     def execute(self, params, job_id=0, num_jobs=1, deterministic_batches=False):
         """Run the batched exposure simulation plus whichever sub-calculations `params` enables
         (collateral, initial margin, CVA, FVA, scenarios, cashflows) and return the netting sets,
@@ -1479,6 +1509,7 @@ class Credit_Monte_Carlo(Calculation):
             self.config.deals['Deals']['Children'], self.netting_sets, shared_mem.one,
             deal_level_mtm=params.get('DealLevel', False))
         self.netting_sets.finalize_struct(base_date, self.time_grid)
+        self.refuse_unframed()
 
         output = defaultdict(list)
         tensors = {}
