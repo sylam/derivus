@@ -168,6 +168,42 @@ def test_a_missing_seed_is_an_instruction_not_a_traceback(tmp_path, monkeypatch)
         discover.main()
 
 
+def test_a_desk_seed_that_declares_no_conventions_reads_the_packaged_entry(
+        tmp_path, monkeypatch, caplog):
+    """THE DESK'S SEED IS AUTHORITATIVE WHERE IT DECLARES SOMETHING, and read-only either way.
+
+    A desk file written before the conventions existed names a currency and says nothing about what
+    it accrues on; one written before a curve was keyed has no entry at all. Both read the PACKAGED
+    declaration, said at INFO so the desk knows whose numbers it got, and neither writes the desk's
+    own file - a seed is the one file no tool here edits. An entry that does declare its
+    conventions wins, packaged spelling included.
+    """
+    import logging
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    desk = tmp_path / 'seed.json'
+    desk.write_text(json.dumps({'rates': {
+        'ZAR': {'prefix': 'SASW', 'expect': 'ZAR SWAP QTR', 'years': [1, 5]},
+        'MINE': {'prefix': 'X', 'expect': 'X', 'conventions': {'front': 'overnight'}}}}),
+        encoding='utf-8', newline='\n')
+    before = desk.read_bytes()
+
+    with caplog.at_level(logging.INFO):
+        stale = security_map.curve_seed('ZAR')
+        unkeyed = security_map.curve_seed('ZAR-ZARONIA')
+    declared = security_map.curve_seed('MINE')
+    rates = security_map.seeded_rates()
+
+    assert stale['rates']['ZAR']['conventions']['front'] == 'fixings/3M'
+    assert unkeyed['rates']['ZAR-ZARONIA']['conventions']['compounding'] == 'OIS'
+    assert declared['rates']['MINE'] == {'prefix': 'X', 'expect': 'X',
+                                         'conventions': {'front': 'overnight'}}
+    assert sum(str(desk) in record.getMessage() for record in caplog.records) == 2
+    assert rates['MINE'] == declared['rates']['MINE'], "the desk's own entry did not win"
+    assert rates['ZAR']['conventions'] and 'ZAR-ZARONIA' in rates
+    assert desk.read_bytes() == before, 'the desk seed was written'
+
+
 def test_a_map_entry_without_evidence_is_refused_by_name(tmp_path):
     """The map is trusted BECAUSE each entry records what the terminal answered - so a hand-edited
     entry with the evidence stripped refuses to load, naming the entry."""

@@ -36,8 +36,13 @@ swap and `6M1M` a swap starting in six months. An OIS strip is the same swap wit
 and ONE reset spanning each coupon - at t0 that prices the par swap the daily fixing list does, to
 the ninth decimal, and a two-year benchmark is 1.4 KB rather than the 285 KB its fixings encode to.
 
-SCOPE: a self-discounting single curve and `Quote_Type` `Par_Rate`. No FX-forward outrights, no
-cross-currency, no projection curve.
+A DESK STATES THE SAME THING. `author_block` authors a block off DECLARED rows - a tenor, a
+security and a number - reading each row's shape off its own tenor rather than off a map path, and
+`block_conventions` reads a block back as the definition it is, which is what re-rolls a strip on a
+later date without the seed that started it.
+
+SCOPE: `Quote_Type` `Par_Rate`, discounting on the curve itself or on one the definition names. No
+FX-forward outrights, no cross-currency, no projection curve.
 
 IMPORTS: the standard library and this package's own modules. `discover` is reached for its grammar
 and carries pandas, so unlike `equity_chain` this module makes no pandas-free claim; nothing here
@@ -46,7 +51,7 @@ imports `derivus`, the block being emitted as wire JSON.
 import collections.abc
 import datetime
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Protocol, Sequence
 
 from . import discover
@@ -169,17 +174,23 @@ class CurveConventions:
             raise BloombergConfigurationError('quote_scale must be finite and non-zero')
 
 
-def curve_conventions(seed: Mapping, curve: str) -> CurveConventions:
+def curve_conventions(seed: Mapping, curve: str, stated: Mapping = ()) -> CurveConventions:
     """The declared conventions of one seeded curve, or the refusal naming EVERY absent field at
     once - a desk extending a seed wants the whole questionnaire, not one field per run.
+
+    `stated` is what a REQUEST says, and it wins over the seed field by field: a desk setting a
+    curve up completes its entry rather than editing the file, and one that states the whole
+    questionnaire needs no entry at all.
     """
     spec = seed.get('rates', {}).get(curve)
-    if spec is None:
+    if spec is None and not stated:
         raise BloombergConfigurationError(
             'the seed names no rates entry for {} - a curve this workstation never seeded has no '
             'strip to fetch and no conventions to author one in. Add it to `seed.json` and re-run '
             '`DV_Bloomberg discover`'.format(curve))
-    declared = spec.get('conventions')
+    declared = (spec or {}).get('conventions')
+    if stated:
+        declared = dict(declared if isinstance(declared, collections.abc.Mapping) else {}, **stated)
     if not isinstance(declared, collections.abc.Mapping):
         raise BloombergConfigurationError(
             '{} carries no `conventions` block - a par swap rate is not an instrument until '
@@ -205,7 +216,7 @@ def curve_conventions(seed: Mapping, curve: str) -> CurveConventions:
     # cannot see one: a path that names nothing does not fail, it aims elsewhere. `front:
     # 'strip/1Y'` would author the 1Y par swap as a one-day deposit labelled overnight.
     admissible = _seeded_fronts(seed, curve)
-    if declared['front'] not in admissible:
+    if spec is not None and declared['front'] not in admissible:
         raise BloombergConfigurationError(
             '{} declares its front as {!r}, which is not an entry its seed could name - the '
             'admissible spellings are {}. The front is what seeds the short end, and a `front` '
@@ -248,7 +259,12 @@ class CurveScreen:
 
 @dataclass(frozen=True)
 class RatePrint:
-    """One quoted point of a strip as the terminal answered for it - raw, unjudged, not believed."""
+    """One quoted point of a strip as the terminal answered for it - raw, unjudged, not believed.
+
+    It is also the row a DESK declares, which is the same thing stated instead of fetched: `use` is
+    the family's own hold-out flag and `verdict` is why the screen did not believe the print, so a
+    dead ticker leaves the row standing and named rather than taking the curve with it.
+    """
     label: str
     kind: str
     security: str
@@ -256,6 +272,8 @@ class RatePrint:
     bid: float | None = None
     ask: float | None = None
     last_update: str | None = None
+    use: str = 'Yes'
+    verdict: str = ''
 
 
 @dataclass(frozen=True)
@@ -271,6 +289,9 @@ class CurveStrip:
     conventions: CurveConventions
     prints: tuple
     rejected: Mapping[str, str] = field(default_factory=dict)
+    #: What the quotes DISCOUNT on. Blank is the self-discounting curve a fetched strip builds; a
+    #: definition naming another curve makes the two a multi-curve set, which `Discount_Rate` orders.
+    discount_rate: str = ''
 
     @property
     def census(self) -> dict:
@@ -359,7 +380,7 @@ def strip_entries(document, seed, curve):
             ledger[candidate.security] = 'unverified'
             continue
         if candidate.path == front_path:
-            wanted.append((_front_label(candidate.path), 'front', security))
+            wanted.append((front_tenor(conventions.front), 'front', security))
             found_front = True
         elif candidate.path[2] in KINDS:
             wanted.append((candidate.path[-1], KINDS[candidate.path[2]], security))
@@ -383,11 +404,28 @@ def _seeded_fronts(seed, curve):
         'fixings/{}'.format(label) for label in sorted(spec.get('fixings', {}))]
 
 
-def _front_label(path):
+def front_tenor(front):
     """The front point's TENOR as a label. A named fixing carries its own (`fixings/3M` is a 3M
     deposit); an overnight print has none to carry, so `ON` is the label and the deposit's span is
     worked out from the calendar at authoring time."""
-    return path[-1] if path[2] == 'fixings' else 'ON'
+    label, _, tenor = read_word(front).partition('/')
+    return tenor if label == 'fixings' else 'ON'
+
+
+def row_kind(tenor, front='ON'):
+    """What a DECLARED row is, read off its own tenor - the grammar `strip_entries` reads off a map
+    path instead, and the one thing a desk never has to state.
+
+    The declared front and `ON` are the deposit; an `x` is a FRA (`1Mx4M`); two tenors run together
+    are a forward-starting swap (`6M1M`, the terminal's own spelling); everything else is a spot
+    swap. A label neither this nor `read_tenor` can read refuses when the dates are rolled.
+    """
+    text = read_word(tenor).upper()
+    if text in (read_word(front).upper(), 'ON'):
+        return 'front'
+    if 'X' in text:
+        return 'fra'
+    return 'forward' if sum(letter in 'DWMY' for letter in text) > 1 else 'swap'
 
 
 def fetch_curve_strip(source, document, seed, key, as_of, curve=None, screen=None,
@@ -410,19 +448,8 @@ def fetch_curve_strip(source, document, seed, key, as_of, curve=None, screen=Non
     wanted, ledger = strip_entries(document, seed, key)
     report = probe(source, [security for _, _, security in wanted], batch=batch, on_batch=on_batch)
 
-    prints, rejected = [], dict(ledger)
-    for label, kind, security in wanted:
-        row = report.get(security, {'ok': False, 'error': 'no answer in the response', 'fields': {}})
-        answered = row.get('fields') or {}
-        if not answered:
-            rejected[security] = 'invalid'
-            continue
-        prints.append(RatePrint(
-            label=label, kind=kind, security=security,
-            value=_scaled(answered.get('PX_LAST'), conventions.quote_scale),
-            bid=_scaled(answered.get('PX_BID'), conventions.quote_scale),
-            ask=_scaled(answered.get('PX_ASK'), conventions.quote_scale),
-            last_update=read_word(answered.get('LAST_UPDATE_DT')) or None))
+    prints, rejected = read_prints(report, wanted, conventions.quote_scale)
+    rejected.update(ledger)
     accepted, screened = screen_strip(prints, as_of, screen)
     rejected.update(screened)
     return CurveStrip(currency=currency, curve=curve or key, as_of=as_of,
@@ -432,6 +459,64 @@ def fetch_curve_strip(source, document, seed, key, as_of, curve=None, screen=Non
 def _scaled(value, quote_scale):
     number = read_number(value)
     return None if number is None else number * quote_scale
+
+
+def read_prints(report, wanted, quote_scale=1.0):
+    """`(prints, rejected)` - one `RatePrint` per `(label, kind, security)` the terminal answered
+    about, and `invalid` on the ledger for the ones it answered nothing for."""
+    prints, rejected = [], {}
+    for label, kind, security in wanted:
+        answered = (report.get(security) or {}).get('fields') or {}
+        if not answered:
+            rejected[security] = 'invalid'
+            continue
+        prints.append(RatePrint(
+            label=label, kind=kind, security=security,
+            value=_scaled(answered.get('PX_LAST'), quote_scale),
+            bid=_scaled(answered.get('PX_BID'), quote_scale),
+            ask=_scaled(answered.get('PX_ASK'), quote_scale),
+            last_update=read_word(answered.get('LAST_UPDATE_DT')) or None))
+    return prints, rejected
+
+
+def price_rows(source, rows, as_of, conventions, screen=None, batch=BATCH, on_batch=None):
+    """DECLARED rows re-priced off the terminal - one batched round trip over the securities the
+    used rows name, screened per print the way a strip is.
+
+    A believed print moves the row's mid, both sides and its stamp; one the screen refuses leaves
+    the row's number where it stood and puts the VERDICT on it, so a caller either holds that row
+    out by name (a tick) or refuses naming it (an authoring). A row with no security keeps what it
+    carries - a benchmark quoted by hand is nothing the terminal knows about.
+    """
+    wanted = [row for row in rows if _asked(row)]
+    report = probe(source, [row.security for row in wanted], batch=batch, on_batch=on_batch)
+    prints, rejected = read_prints(report, [(row.label, row.kind, row.security) for row in wanted],
+                                   conventions.quote_scale)
+    accepted, screened = screen_strip(prints, as_of, screen)
+    rejected.update(screened)
+    priced = {item.security: item for item in accepted}
+    moved = []
+    for row in rows:
+        item = priced.get(row.security)
+        if not _asked(row):
+            moved.append(row)
+        elif item is not None:
+            moved.append(replace(row, value=item.value, bid=item.bid, ask=item.ask,
+                                 last_update=item.last_update))
+        else:
+            moved.append(replace(row, verdict=rejected.get(row.security, 'invalid')))
+    return tuple(moved)
+
+
+def _asked(row):
+    """A row the terminal is asked about: one the block uses, quoted off a security it names."""
+    return row.use == 'Yes' and bool(row.security)
+
+
+def hold_out(rows):
+    """Rows the screen did not believe, marked `Use: No`. One dead ticker is one knot fewer, never
+    a curve refused; the verb is what puts a held-out row back."""
+    return tuple(replace(row, use='No') if row.verdict else row for row in rows)
 
 
 def screen_strip(prints, as_of, screen=None):
@@ -602,6 +687,12 @@ def wire_period(label):
     return {'.DateOffset': label}
 
 
+def read_period(period):
+    """A wire tenor read back as its label - `{'.DateOffset': '3M'}` is `3M`, and a blank stays
+    blank. What lets a block declare a frequency AND be re-authored from what it declares."""
+    return period.get('.DateOffset', '') if isinstance(period, dict) else read_word(period)
+
+
 def wire_percent(value):
     """`utils.Percent`'s wire form. The number is in PERCENT - `{'.Percent': 4.28}` is 4.28%, and
     the decoded object's `.amount` is 0.0428."""
@@ -764,20 +855,22 @@ def author_point(item, as_of, currency, curve, conventions, holidays=()):
     else:
         deal = _swap(reference, currency, curve, effective, maturity, conventions)
     row = {
-        'Use': 'Yes',
+        'Use': item.use,
         'DealType': deal['Object'],
         'Quote_Type': QUOTE_TYPE,
         'Quoted_Market_Value': item.value,
         'Tenor': item.label,
         'Security': item.security,
-        'Descriptor': '{} {} ({})'.format(currency, item.label, item.security),
+        'Descriptor': '{} {}{}'.format(currency, item.label,
+                                       ' ({})'.format(item.security) if item.security else ''),
         'Deal': {key: value for key, value in deal.items() if key != 'Object'},
     }
     if item.bid is not None:
         row['Quoted_Bid'] = item.bid
     if item.ask is not None:
         row['Quoted_Ask'] = item.ask
-    row['Timestamp'] = wire_timestamp(read_date(item.last_update))
+    # a DECLARED row has no print to date itself by, so the day it was authored is its stamp
+    row['Timestamp'] = wire_timestamp(read_date(item.last_update) or as_of)
     return maturity, row
 
 
@@ -799,18 +892,19 @@ def ir_curve_block(strip, screen=None, holidays=()):
     under-determined between them, and a seed quoting 4W beside 1M does exactly that. It would
     otherwise reach the solve as a singular Jacobian rather than as a sentence.
 
-    `Discount_Rate` is blank - the self-discounting single-curve configuration, and the harder
-    solve, since the unknown appears on both sides. No multi-curve case is authored here.
+    `Discount_Rate` is the strip's own - blank for the self-discounting configuration a fetched
+    strip builds, and the harder solve, since the unknown appears on both sides.
     """
     screen = screen or CurveScreen()
-    if len(strip.prints) < screen.minimum_points:
+    used = [item for item in strip.prints if item.use == 'Yes']
+    if len(used) < screen.minimum_points:
         raise IncompleteStrip(
             '{} screened to {} believed point{} against a floor of {} - the terminal was asked '
             'about {} securities and refused {} ({}). One knot is a flat curve quoted once, so '
             'there is no strip to solve. Widen the screen the census names, re-run `DV_Bloomberg '
             'discover` if the strip has gone dead, or quote a currency this workstation is '
             'entitled to'.format(
-                strip.currency, len(strip.prints), '' if len(strip.prints) == 1 else 's',
+                strip.currency, len(used), '' if len(used) == 1 else 's',
                 screen.minimum_points, len(strip.prints) + len(strip.rejected),
                 len(strip.rejected),
                 ', '.join('{} {}'.format(count, verdict)
@@ -820,6 +914,9 @@ def ir_curve_block(strip, screen=None, holidays=()):
                           holidays) for item in strip.prints]
     knots = {}
     for maturity, row in dated:
+        # a held-out row carries no knot, so two of them on one day are no clash at all
+        if row['Use'] != 'Yes':
+            continue
         if maturity in knots:
             raise IncompleteStrip(
                 '{} and {} both mature on {} - the family puts ONE knot per used quote at that '
@@ -833,7 +930,7 @@ def ir_curve_block(strip, screen=None, holidays=()):
     return market_price_name(strip.curve), {'instrument': {
         'Currency': strip.currency,
         'Day_Count': conventions.curve_day_count,
-        'Discount_Rate': '',
+        'Discount_Rate': strip.discount_rate,
         'Calendar': conventions.calendar,
         'Spot_Days': conventions.spot_days,
         'Fixed_Frequency': wire_period(conventions.fixed_frequency),
@@ -846,6 +943,89 @@ def ir_curve_block(strip, screen=None, holidays=()):
         'Near_Tenor': wire_period(conventions.near_tenor) if conventions.near_tenor else '',
         'Points': [row for _, row in sorted(
             dated, key=lambda item: (item[0], item[1]['Descriptor']))]}}
+
+
+def author_block(definition, as_of, holidays=(), screen=None):
+    """`(Market Prices name, block)` for a curve a desk DECLARED - `ir_curve_block` over stated
+    rows rather than over a workstation's verified strip.
+
+    `definition` is `{curve, currency, conventions, rows, discount_rate?}`, `rows` being the
+    `RatePrint`s the caller collected. Each row's SHAPE is read off its own tenor, so a desk states
+    a tenor, a ticker and a number and never an instrument.
+
+    A used row carrying no number REFUSES BY NAME, carrying the screen's verdict where a print was
+    asked for and not believed: a benchmark with no quote identifies no knot, and an unquoted block
+    cannot bootstrap.
+    """
+    conventions = definition['conventions']
+    front = front_tenor(conventions.front)
+    rows = tuple(replace(row, kind=row_kind(row.label, front)) for row in definition['rows'])
+    blank = ['{}{}{}'.format(row.label, ' ({})'.format(row.security) if row.security else '',
+                             ': ' + row.verdict if row.verdict else '')
+             for row in rows if row.use == 'Yes' and row.value is None]
+    if blank:
+        raise InvalidQuote(
+            '{} carries no quote for {} - a benchmark with no number identifies no knot, so the '
+            'block cannot bootstrap. State a `quote` on the row, hold it out with `use` No, or '
+            'name a `security` this workstation\'s terminal prices'.format(
+                definition['curve'], ', '.join(blank)))
+    return ir_curve_block(CurveStrip(
+        currency=definition['currency'], curve=definition['curve'], as_of=as_of,
+        conventions=conventions, prints=rows,
+        discount_rate=definition.get('discount_rate') or ''), screen, holidays)
+
+
+def block_rows(instrument):
+    """A block's `Points` read back as the rows they were authored from - the tenor, the security
+    the number came off, the number, its two-way and whether the block uses it. `Timestamp` is read
+    in its WIRE spelling, a block on the book being what a tick and a re-roll both hold."""
+    return tuple(RatePrint(
+        label=row['Tenor'], kind='', security=row.get('Security', ''),
+        value=row.get('Quoted_Market_Value'), bid=row.get('Quoted_Bid'), ask=row.get('Quoted_Ask'),
+        last_update=(row.get('Timestamp') or {}).get('.Timestamp'), use=row.get('Use', 'Yes'))
+        for row in instrument['Points'])
+
+
+def block_conventions(instrument, seed=None, curve=''):
+    """The `CurveConventions` a block DECLARES - what a strip re-rolled on a later date is authored
+    under, read off the block rather than off whatever seeded it.
+
+    `front` is the deposit row the strip is fronted by and `notional` its principal, both read off
+    the rows. `quote_scale` is the one convention a block does not declare, being a property of the
+    FEED and not of the curve, so it comes off the seed's entry where one names this curve.
+    """
+    rows = instrument['Points']
+    front = next(('overnight' if row['Tenor'] == 'ON' else 'fixings/' + row['Tenor']
+                  for row in rows if row['DealType'] == 'DepositDeal'), 'overnight')
+    principal = next((row['Deal'].get('Principal', row['Deal'].get('Amount')) for row in rows), None)
+    declared = ((seed or {}).get('rates', {}).get(curve) or {}).get('conventions') or {}
+    return CurveConventions(
+        curve_day_count=instrument['Day_Count'], spot_days=instrument['Spot_Days'], front=front,
+        front_day_count=instrument['Front_Day_Count'], compounding=instrument['Compounding'],
+        fixed_frequency=read_period(instrument['Fixed_Frequency']),
+        float_frequency=read_period(instrument['Float_Frequency']),
+        fixed_day_count=instrument['Fixed_Day_Count'],
+        float_day_count=instrument['Float_Day_Count'],
+        notional=principal or OPTIONAL_CONVENTIONS['notional'],
+        quote_scale=declared.get('quote_scale', OPTIONAL_CONVENTIONS['quote_scale']),
+        calendar=instrument.get('Calendar', ''),
+        near_interpolation=instrument.get('Near_Interpolation', ''),
+        near_tenor=read_period(instrument.get('Near_Tenor')))
+
+
+def seeded_rows(seed, curve):
+    """The rows a desk could set a seeded curve up with: `strip_candidates`' own labels and
+    tickers, the declared front among them and every other fixing left out. NONE of them is
+    verified - `strip_entries` is this same walk against a workstation's own map."""
+    front = curve_conventions(seed, curve).front
+    rows = []
+    for candidate in discover.strip_candidates(curve, seed['rates'][curve]):
+        path = '/'.join(candidate.path[2:])
+        if path == front:
+            rows.append({'tenor': front_tenor(front), 'security': candidate.security})
+        elif candidate.path[2] in KINDS:
+            rows.append({'tenor': candidate.path[-1], 'security': candidate.security})
+    return rows
 
 
 def reauthor(market_prices, name, block):

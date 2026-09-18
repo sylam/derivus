@@ -82,11 +82,12 @@ from itertools import count
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import Context, bootstrappers, content_hash, solve_deal_field, spine, structures
-from .schema import (mapping, deal_at, job_children, remove_deal, sniff_indent, splice_deal,
-                      tables_of, update_market_quote, walk_job_deals)
+from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
+               structures)
+from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sniff_indent,
+                      splice_deal, tables_of, update_market_quote, walk_job_deals)
 from ._version import __version__
-from .config import as_json
+from .config import Config, as_json
 from .spine import replay
 
 LOG = logging.getLogger(__name__)
@@ -1539,6 +1540,13 @@ CONFIGURED_SECTIONS = {'Bootstrapper Configuration': bootstrapper_entry,
                        'Price Factor Interpolation': interpolation_entry}
 
 
+def rewrote(before, market):
+    """The price factors a re-bootstrap CHANGED - what a verb that re-solves the market answers
+    with, where `market_edit`'s `new_factors` names only the ones that were not there at all."""
+    return sorted(name for name, block in market['Price Factors'].items()
+                  if before.get(name) != block)
+
+
 def configure_edit(document, section, entry, fields):
     """One configuration entry amended as an edit closure for `Book.mutate`, then the whole market
     re-bootstrapped through `market_edit` - so a bootstrap error writes NOTHING and comes back as
@@ -1554,8 +1562,7 @@ def configure_edit(document, section, entry, fields):
     if not write:
         return write, refusal
     return True, {'written': True, 'section': section, 'entry': key, 'dials': dials,
-                  'rewrote': sorted(name for name, block in market['Price Factors'].items()
-                                    if before.get(name) != block)}
+                  'rewrote': rewrote(before, market)}
 
 
 @app.post('/book/configure', summary='Set one bootstrapping dial - validated, then re-bootstrapped')
@@ -1582,10 +1589,247 @@ def book_configure(request: dict):
         raise HTTPException(422, str(error))
 
 
+#: What a curve request states about the CURVE. Everything else it carries is a convention, which
+#: the seed's entry completes and `curve_conventions` refuses by name where nothing reads it.
+CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows')
+
+#: The quote blocks a curve verb and the tick both read, and the `Bootstrapper Configuration` entry
+#: that solves one - the family's own declarations, so neither can drift from what it writes.
+CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
+CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
+
+
+def book_base_date(document):
+    """The book's own base date as a `datetime.date` - what a curve's benchmarks are rolled off. A
+    block authored on it moves its values alone; one authored before it re-rolls."""
+    import datetime
+
+    stamp = document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Date']
+    return datetime.date.fromisoformat(
+        str(stamp['.Timestamp'] if isinstance(stamp, dict) else stamp)[:10])
+
+
+def curve_holidays(document, calendar):
+    """The dates a block's `Calendar` names, off the book's own calendar file - the holiday set the
+    emitter rolls against. No file, or a location it does not carry, is the weekday rule."""
+    import datetime
+
+    path = document['Calc'].get('CalendDataFile')
+    if not (calendar and path and os.path.isfile(path)):
+        return ()
+    calendars = Config()
+    calendars.parse_calendar_file(path)
+    return {datetime.date.fromisoformat(day)
+            for day in calendars.holidays.get(calendar, {}).get('holidays', ())}
+
+
+def live_rows(rows, as_of, conventions):
+    """Every unquoted row priced off THIS workstation's terminal. A row the request quoted is left
+    alone - a number a desk states is an authoring act and no print overrules it - and a terminal
+    that is not there refuses BY NAME rather than authoring a block with holes in it."""
+    from derivus_bloomberg.errors import BloombergFXError, InvalidQuote
+    from derivus_bloomberg.ir_curve import price_rows
+    from derivus_bloomberg.session import BloombergSession
+
+    blank = [row for row in rows if row.use == 'Yes' and row.value is None and row.security]
+    if not blank:
+        return rows
+    try:
+        with BloombergSession(timeout_ms=30000) as session:
+            priced = {row.label: row for row in price_rows(session, blank, as_of, conventions)}
+    except BloombergFXError as error:
+        raise InvalidQuote(
+            'no quote was stated for {} and this workstation has no terminal to price them off '
+            '({}) - state a `quote` on every row, or set the curve up on the workstation whose '
+            'terminal prices the securities they name'.format(
+                ', '.join(row.label for row in blank), error))
+    return tuple(priced.get(row.label, row) for row in rows)
+
+
+def authored_curve(document, request):
+    """`(Market Prices name, block)` for the curve a request DECLARES - the seed completing the
+    conventions it leaves out, the book's own calendar rolling the dates, and the terminal asked
+    for any row it did not quote.
+
+    `derivus_bloomberg` is imported HERE for the reason `BloombergJob` imports it inside `run_job`,
+    and its refusals are re-raised as the `ValueError` every /book verb answers 422 on.
+    """
+    try:
+        from derivus_bloomberg import ir_curve, security_map
+        from derivus_bloomberg.errors import BloombergFXError
+    except ImportError as error:
+        raise ValueError('a curve is authored by `derivus_bloomberg`, which is not importable '
+                         '({}) - install the `desk` extra'.format(error))
+    curve, as_of = request['curve'], book_base_date(document)
+    try:
+        conventions = ir_curve.curve_conventions(
+            security_map.curve_seed(curve), curve,
+            {name: value for name, value in request.items() if name not in CURVE_FIELDS})
+        rows = tuple(ir_curve.RatePrint(
+            label=row['tenor'], kind='', security=row.get('security', ''),
+            value=row.get('quote'), use=row.get('use', 'Yes')) for row in request['rows'])
+        return ir_curve.author_block(
+            {'curve': curve, 'currency': request['currency'], 'conventions': conventions,
+             'rows': live_rows(rows, as_of, conventions),
+             'discount_rate': request.get('discount_rate')},
+            as_of, curve_holidays(document, conventions.calendar))
+    except BloombergFXError as error:
+        raise ValueError(str(error))
+
+
+def curve_edit(document, curves, quotes={}):
+    """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
+    bootstrapped through `market_edit`.
+
+    A block whose PLAN moved - a rolled date, a row held out - is dropped and re-installed, a
+    structural change never being a value tick; one whose plan stands moves its values alone, so
+    the written factors keep their identity through a tick. `quotes` is whatever else rides the
+    same atomic write, which is what makes a tick's surfaces and its curves one write and one
+    bootstrap.
+    """
+    from derivus_bloomberg.ir_curve import reauthor
+
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    prices = market.setdefault('Market Prices', {})
+    reauthored = [name for name in sorted(curves)
+                  if name in prices and quote_plan(prices[name]) != quote_plan(curves[name])]
+    for name in reauthored:
+        reauthor(prices, name, curves[name])
+    before = dict(market.get('Price Factors', {}))
+    write, outcome = market_edit(document, dict(quotes, **curves), {}, 'Yes')
+    return write, (dict(outcome, reauthored=reauthored, rewrote=rewrote(before, market))
+                   if write else outcome)
+
+
+def curve_quotes(source, document):
+    """Every `InterestRatePrices` block the book carries, re-authored at the book's base date with
+    its used rows re-priced off the terminal - `(blocks, held out)`.
+
+    THE BLOCK IS THE CURVE'S DEFINITION, so its own conventions are what a rolled date is re-rolled
+    under and nothing is read off the seed but the print scale. A row whose print the screen
+    refuses keeps the number it had, is held out with `Use` No and is NAMED - one dead ticker is
+    one knot fewer where a refused strip is no curve at all - and `POST /book/curve` is what puts
+    it back. A block this emitter cannot read, an older book's among them, is named and left
+    exactly as it stands rather than taking the tick down with it.
+    """
+    from derivus_bloomberg import ir_curve, security_map
+    from derivus_bloomberg.errors import BloombergFXError
+
+    as_of, quotes, held = book_base_date(document), {}, []
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    for name in sorted(prices):
+        if not name.startswith(CURVE_FAMILY + '.'):
+            continue
+        curve = name.split('.', 1)[1]
+        try:
+            instrument = prices[name]['instrument']
+            conventions = ir_curve.block_conventions(
+                instrument, security_map.curve_seed(curve), curve)
+            rows = ir_curve.price_rows(source, ir_curve.block_rows(instrument), as_of, conventions)
+            held += ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict)
+                     for row in rows if row.verdict]
+            quotes[name] = ir_curve.author_block(
+                {'curve': curve, 'currency': instrument['Currency'], 'conventions': conventions,
+                 'rows': ir_curve.hold_out(rows), 'discount_rate': instrument['Discount_Rate']},
+                as_of, curve_holidays(document, conventions.calendar))[1]
+        except (BloombergFXError, KeyError) as error:
+            # a block authored before the conventions rode beside the quotes declares no
+            # `Spot_Days` to re-roll under, and neither does one this emitter did not write
+            held.append('{} left as it stands - {}'.format(name, error))
+    return quotes, held
+
+
+@app.post('/book/curve', summary='Set a curve up from its benchmark rows - solved, then written')
+def book_curve(request: dict):
+    """`{curve, currency, rows: [{tenor, security?, quote?, use?}], discount_rate?}`, plus any
+    convention the seed's entry for that curve does not already state - `calendar`, `spot_days`,
+    `compounding`, both leg frequencies, the three day counts, `near_interpolation`, `near_tenor`.
+
+    THE ROWS ARE THE BENCHMARKS and a tenor says what each one IS: `ON` and the curve's declared
+    front are deposits, `1Mx4M` a FRA, `6M1M` a swap starting in six months, anything else a spot
+    swap, all of them rolled against the book's own calendar file. A row carries its own `quote`,
+    or a `security` this workstation's terminal prices it off; an unquoted row refuses by name,
+    since a benchmark with no number identifies no knot.
+
+    The block is AUTHORED and never ticked - dropped and re-installed, the `InterestRate`
+    bootstrapper entry added where the book configures none - and the whole market is then
+    re-bootstrapped in the same atomic write, so a bootstrap that complains writes NOTHING and
+    answers 422 in its own words. The answer names the block, the knots it solved on, and the
+    price factors the run rewrote.
+    """
+    live = live_book()
+    document, _ = live.read()
+    try:
+        name, block = authored_curve(document, request)
+
+        def edit(document):
+            # a book that has never carried a curve configures the family that solves one
+            bootstrapper_entry(document['Calc']['MergeMarketData']['ExplicitMarketData'],
+                               CURVE_BOOTSTRAPPER, {})
+            return curve_edit(document, {name: block})
+
+        written = live.mutate(edit)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+    if not written['written']:
+        raise HTTPException(422, '; '.join(written['refused']))
+    return dict(written, block=name, knots=[row['Tenor'] for row in block['instrument']['Points']
+                                            if row['Use'] == 'Yes'])
+
+
+@app.get('/book/curve', summary="The book's curves as definitions, and the ones a desk can set up")
+def book_curves(curve: str = None):
+    """Every `InterestRatePrices` block the book carries, read back as the definition it is: the
+    rows as `POST /book/curve` takes them, the conventions they were authored under, and the
+    interpolation the solved factor carries - the book's `Price Factor Interpolation` entry, or the
+    engine's own fallback where it states none. `curve` narrows the answer to one.
+
+    With no curve named the answer also carries `seeded` - the curve entries this workstation's
+    seed declares, the desk's own file completed by the packaged one, each with its conventions and
+    the tenor/security rows it could be set up with. NONE of those is verified against a terminal;
+    the map is what verifies, and a quote is what a row needs to reach a curve.
+    """
+    from derivus_bloomberg import ir_curve, security_map
+    from derivus_bloomberg.errors import BloombergFXError
+
+    document, etag = live_book().read()
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    methods = (market.get('Price Factor Interpolation', {}).get('.ModelParams', {})
+               .get('modeldefaults', {}))
+    seed = {'rates': security_map.seeded_rates()}
+    answer = {'etag': etag, 'curves': {}}
+    for name in sorted(market.get('Market Prices', {})):
+        named = name.split('.', 1)[1] if name.startswith(CURVE_FAMILY + '.') else None
+        if named is None or curve not in (None, named):
+            continue
+        instrument = market['Market Prices'][name]['instrument']
+        conventions = ir_curve.block_conventions(instrument, seed, named)
+        answer['curves'][name] = {
+            'curve': named, 'currency': instrument['Currency'],
+            'discount_rate': instrument['Discount_Rate'],
+            'interpolation': methods.get(CURVE_BOOTSTRAPPER, riskfactors.INTERPOLATION_DEFAULT),
+            'conventions': conventions.__dict__,
+            'rows': [{'tenor': row['Tenor'], 'security': row.get('Security', ''),
+                      'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
+                     for row in instrument['Points']]}
+    if curve is not None:
+        return answer
+    answer['seeded'] = {}
+    for name, spec in sorted(seed['rates'].items()):
+        try:
+            answer['seeded'][name] = {'currency': spec.get('currency', name),
+                                      'conventions': spec.get('conventions', {}),
+                                      'rows': ir_curve.seeded_rows(seed, name)}
+        except BloombergFXError as error:
+            answer['seeded'][name] = {'refused': str(error)}
+    return answer
+
+
 class BloombergJob:
     """A terminal round trip as ONE unit of queued work: the security map provisioned, every
-    requested surface fetched and checked, and the whole lot installed and bootstrapped in one
-    atomic write.
+    requested surface fetched and checked, every curve block the book carries re-valued off its own
+    rows, and the whole lot installed and bootstrapped in one atomic write.
 
     `derivus_bloomberg` is imported INSIDE `run_job`: blpapi lives only on a terminal workstation
     and the service must serve every other verb on a machine that has never heard of it.
@@ -1619,6 +1863,7 @@ class BloombergJob:
 
         started = time.perf_counter()
         surface = {key: self.scope[key] for key in ('expiries', 'pillars') if key in self.scope}
+        document, _ = self.book.read()
         try:
             if self.routine and discover.provisioned() is None:
                 return self.outcome(started, written=False, refused=[UNPROVISIONED.format(
@@ -1631,7 +1876,7 @@ class BloombergJob:
                 map_document, created = discover.provision(
                     session, datetime.date.today(), on_batch=on_batch)
                 pairs = self.scope.get('pairs') or sorted(map_document['blocks']['fx_vol'])
-                quotes, late = {}, {}
+                quotes, late, curves, held = {}, {}, {}, []
                 for index, pair in enumerate(pairs, 1):
                     self.note('fetching {} {}/{}'.format(pair, index, len(pairs)),
                               index - 1, len(pairs))
@@ -1644,6 +1889,9 @@ class BloombergJob:
                         snapshot = fetch_fx_vol(session, definition)
                         quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
                             to_market_prices_block(snapshot))
+                if not late:
+                    self.note('valuing the curve rows', len(pairs), len(pairs))
+                    curves, held = curve_quotes(session, document)
             if late:
                 return self.outcome(started, written=False, refused=[
                     '{} is stale - {}'.format(name, why) for name, why in sorted(late.items())])
@@ -1651,13 +1899,13 @@ class BloombergJob:
             self.note('installing and bootstrapping', len(pairs), len(pairs))
             try:
                 written = self.book.mutate(
-                    lambda document: market_edit(document, quotes, {}, 'Yes'))
+                    lambda document: curve_edit(document, curves, quotes))
             except (ValueError, KeyError) as error:
                 # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
                 # the metronome's failed-beat handling reads `refused` off these Stats, where
                 # raising would reach it as an unhandled job error
                 return self.outcome(started, written=False, refused=[str(error)])
-            return self.outcome(started, provisioned=created, **written)
+            return self.outcome(started, provisioned=created, held_out=held, **written)
         finally:
             PROGRESS.pop(self.result_id, None)
 
@@ -1686,7 +1934,7 @@ def submit_bloomberg(scope, routine=False):
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
-@app.post('/book/bloomberg', summary="Fetch the desk's FX vol surfaces off Bloomberg and tick the book")
+@app.post('/book/bloomberg', summary="Fetch the desk's surfaces and curve rows and tick the book")
 def book_bloomberg(request: dict):
     """`{pairs?: [PAIR], expiries?: [LABEL], pillars?: [DELTA]}` - the whole tick, terminal to
     book, as one queued job.
@@ -1701,6 +1949,11 @@ def book_bloomberg(request: dict):
     and what came back is installed and bootstrapped through the seam `/book/market` uses, in ONE
     atomic write. A quote whose last print is late refuses the whole tick BY NAME and writes
     nothing: a dead series keeps answering with a plausible number.
+
+    THE CURVES RIDE THE SAME TRIP. Every `InterestRatePrices` block the book carries has its used
+    rows re-priced off the securities they name and moved as VALUES; a block whose base date has
+    rolled is re-authored from its own rows and conventions first, and a row the screen refuses is
+    held out by name in `held_out` rather than refusing the tick.
 
     Answers `{result_id, status}` like `/execute`, a terminal round trip being minutes of work:
     `/results/{result_id}` carries `progress` while it runs and the outcome under `stats.Bloomberg`.

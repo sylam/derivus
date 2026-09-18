@@ -866,6 +866,122 @@ def test_an_interpolation_the_engine_routes_nowhere_refuses_by_name(tmp_path):
         service.BOOK = None
 
 
+#: A ZAR curve as a desk states it: a 3M JIBAR deposit at the front, a FRA beside it and the swap
+#: strip beyond, each row naming the security it is quoted off. The LEVELS are invented and only
+#: have to be plausibly shaped - what is asserted is the authoring, never the market.
+CURVE_ROWS = [{'tenor': '3M', 'security': 'JIBA3M Index', 'quote': 7.41},
+              {'tenor': '1Mx4M', 'security': 'SAFR0AD Curncy', 'quote': 7.35},
+              {'tenor': '1Y', 'security': 'SASW1 BGN Curncy', 'quote': 7.62},
+              {'tenor': '2Y', 'security': 'SASW2 BGN Curncy', 'quote': 7.94},
+              {'tenor': '5Y', 'security': 'SASW5 BGN Curncy', 'quote': 8.55},
+              {'tenor': '10Y', 'security': 'SASW10 BGN Curncy', 'quote': 8.83}]
+
+CURVE_BLOCK = 'InterestRatePrices.ZAR'
+
+
+def set_up_curve(rows=None, **request):
+    return CLIENT.post('/book/curve', content=dump(dict(
+        {'curve': 'ZAR', 'currency': 'ZAR', 'rows': CURVE_ROWS if rows is None else rows},
+        **request)), headers=JSON)
+
+
+def curve_block(path, curve='ZAR'):
+    return json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['InterestRatePrices.{}'.format(curve)]['instrument']
+
+
+def par_residuals(path, curve='ZAR'):
+    """Every benchmark of the written block repriced off the curve the bootstrap solved - the par
+    vector, which is zero iff the knot grid is square and the dates the emitter rolled are the ones
+    the solve used. A million of notional, so 1e-6 is a thousandth of a basis point of principal."""
+    import copy
+
+    import torch
+    from derivus.bootstrappers import BenchmarkInstruments, author_quote, quote_node
+    from derivus.config import Config, ModelParams
+
+    market = Config().read_json(str(path))['Calc']['MergeMarketData']['ExplicitMarketData']
+    block = market['Market Prices']['InterestRatePrices.{}'.format(curve)]['instrument']
+    nodes = []
+    for point in block['Points']:
+        if point['Use'] != 'Yes':      # a held-out row was not solved for and never reprices
+            continue
+        deal = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
+        author_quote(deal, point['Quoted_Market_Value'], curve)
+        nodes.append(quote_node(deal, {}))
+    return BenchmarkInstruments(nodes, market['Price Factors'], ModelParams(), BASE,
+                                block['Currency'], {}, [], torch.device('cpu'))({}).detach().numpy()
+
+
+def test_a_curve_set_up_from_its_rows_solves_at_par(book):
+    """THE VERB IS THE AUTHORING ACT. A desk states a tenor, the security it is quoted off and a
+    number; the block is authored from the seed's conventions for that curve, the `InterestRate`
+    bootstrapper entry is added because this book configures none, and the whole market is
+    re-bootstrapped in ONE write - so the file carries the solved curve and the block that made it.
+
+    THE BLOCK IS THE CURVE'S DEFINITION, so the conventions ride beside the quotes and every row
+    carries its tenor and its security; and EVERY BENCHMARK REPRICES AT PAR off what the run wrote,
+    which is what says the knot grid is square and the rolled dates are the ones that were solved.
+    """
+    answer = set_up_curve()
+    outcome = answer.json()
+    market = json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    block = curve_block(book)
+
+    assert answer.status_code == 200, outcome
+    assert outcome['written'] is True and outcome['block'] == CURVE_BLOCK
+    assert outcome['knots'] == [row['tenor'] for row in CURVE_ROWS]
+    assert outcome['rewrote'] == ['InterestRate.ZAR']
+    assert market['Bootstrapper Configuration']['InterestRate']['Prices'] == 'InterestRate'
+    assert block['Spot_Days'] == 0 and block['Compounding'] == 'None'
+    assert block['Fixed_Frequency'] == {'.DateOffset': '3M'} and block['Day_Count'] == 'ACT_365'
+    assert [row['Tenor'] for row in block['Points']] == [row['tenor'] for row in CURVE_ROWS]
+    assert [row['Security'] for row in block['Points']] == [row['security'] for row in CURVE_ROWS]
+    # the shape of each row came off its own TENOR - nothing in the request said `deposit`
+    assert [row['DealType'] for row in block['Points']] == [
+        'DepositDeal', 'FRADeal'] + ['SwapInterestDeal'] * 4
+    assert abs(par_residuals(book)).max() < 1e-6, 'a benchmark the solved curve does not reprice'
+
+
+def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
+    """THREE REFUSALS, each naming the thing to fix, each writing nothing.
+
+    An unquoted row and no terminal to price it off - `BloombergSession` is the seam and a
+    workstation without one is what `BloombergUnavailable` says. A tenor the emitter's grammar
+    cannot read, which is the one thing a desk can spell wrong that no convention would catch. And
+    a bootstrap that complains, which refuses the WHOLE write the way a tick's does: the
+    `HullWhite2FactorModelParameters` entry configured beside the curve has no block to fit.
+    """
+    from derivus_bloomberg import session
+    from derivus_bloomberg.errors import BloombergUnavailable
+
+    def absent(**options):
+        raise BloombergUnavailable('no blpapi module on this workstation')
+
+    monkeypatch.setattr(session, 'BloombergSession', absent)
+    before = book.read_bytes()
+
+    unquoted = set_up_curve(rows=[dict(CURVE_ROWS[0], quote=None)] + CURVE_ROWS[1:])
+    assert unquoted.status_code == 422
+    assert '3M' in unquoted.json()['detail'] and 'no terminal' in unquoted.json()['detail']
+    assert book.read_bytes() == before
+
+    unreadable = set_up_curve(rows=[dict(row, tenor='3Q') if row['tenor'] == '5Y' else row
+                                    for row in CURVE_ROWS])
+    assert unreadable.status_code == 422 and "'3Q'" in unreadable.json()['detail']
+    assert book.read_bytes() == before
+
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        'HullWhite2FactorModelParameters': {}}
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+    before = book.read_bytes()
+
+    complained = set_up_curve()
+    assert complained.status_code == 422 and 'wrote no' in complained.json()['detail']
+    assert book.read_bytes() == before, 'a bootstrap that complained still wrote the block'
+
+
 #: A `NettingCollateralSet` authored as a DEAL compiles like any other and has no `Deal.generate`,
 #: so `Deal.calculate` logs CRITICAL and marks it at nothing - a real book whose PRICING talks on
 #: the channel `CapturedErrors` listens to.
@@ -1384,7 +1500,7 @@ class FakeTerminal:
         return False
 
 
-def bloomberg_seams(monkeypatch, provision=None, stale=None):
+def bloomberg_seams(monkeypatch, provision=None, stale=None, terminal=None):
     """Every seam between the verb and the terminal, replaced. The lazy imports inside
     `BloombergJob.run_job` are what lets a patch reach the job: each name is bound off the package
     when the WORKER runs. Returns the definitions the fetch was handed."""
@@ -1397,7 +1513,7 @@ def bloomberg_seams(monkeypatch, provision=None, stale=None):
         asked.append(definition)
         return fx_vol_snapshot()
 
-    monkeypatch.setattr(session, 'BloombergSession', FakeTerminal)
+    monkeypatch.setattr(session, 'BloombergSession', terminal or FakeTerminal)
     monkeypatch.setattr(derivus_bloomberg, 'fetch_fx_vol', fetch_fx_vol)
     monkeypatch.setattr(security_map, 'stale', stale or (lambda source, securities: {}))
     monkeypatch.setattr(discover, 'provision', provision or (
@@ -1589,6 +1705,137 @@ def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
     assert len(warned) == 1 and str(home) in warned[0]
     assert metronome.failures == 1
     assert desk.read_bytes() == before
+
+
+class CannedTerminal:
+    """A terminal answering `reference_data_report` in the shape a discovery run records - one row
+    per security carrying `ok`, `error` and `fields`, the mid with both sides and the print's own
+    date. It is the SESSION as well, so the job's `BloombergSession(...)` lands on it and blpapi is
+    never reached; `asked` is every security it was handed, batch by batch."""
+
+    def __init__(self, prints, dead=()):
+        self.prints, self.dead, self.asked = prints, set(dead), []
+
+    def __call__(self, **options):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *error):
+        return False
+
+    def reference_data_report(self, securities, fields):
+        self.asked += list(securities)
+        return {name: {'ok': name not in self.dead, 'error': None,
+                       'fields': {} if name in self.dead else {
+                           'PX_LAST': self.prints[name], 'PX_BID': self.prints[name] - 0.01,
+                           'PX_ASK': self.prints[name] + 0.01, 'LAST_UPDATE_DT': '2024-06-27'}}
+                for name in securities}
+
+
+def curve_map():
+    """A verified map carrying no `fx_vol` pair at all, so the only work a tick has is the book's
+    own curve blocks - which is what makes this reachable with one canned answer."""
+    return dict(canned_map(), blocks={'fx_vol': {}})
+
+
+def curve_tick(monkeypatch, terminal):
+    bloomberg_seams(monkeypatch, terminal=terminal,
+                    provision=lambda source, as_of, on_batch=None: (curve_map(), False))
+    return ticked()
+
+
+@pytest.fixture
+def curve_desk(book):
+    """A live book carrying a solved ZAR curve - the verb's own output, which is what a tick keeps
+    valued."""
+    assert set_up_curve().status_code == 200
+    return book
+
+
+def test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out(curve_desk, monkeypatch):
+    """THE TICK COVERS THE CURVES, through the same queued job the metronome beats. It asks the
+    terminal about the securities the book's OWN rows name, moves the numbers as VALUES - the plan
+    standing, so the block is `updated` and nothing is re-authored - and the curve is re-solved in
+    the same atomic write, which is why the benchmarks still reprice at par afterwards.
+
+    A security the screen refuses is a different act: the row keeps the number it had, is held out
+    with `Use` No and is NAMED in `held_out`, and THAT is a re-authoring, because `Use` is
+    structure and no tick may move it. The rest of the strip still solves, one dead ticker being
+    one knot fewer where a refused strip would be no curve at all.
+    """
+    prints = {row['security']: row['quote'] + 0.1 for row in CURVE_ROWS}
+    terminal = CannedTerminal(prints)
+    before = service.quote_plan(json.loads(curve_desk.read_text())['Calc']['MergeMarketData'][
+        'ExplicitMarketData']['Market Prices'][CURVE_BLOCK])
+
+    result, outcome = curve_tick(monkeypatch, terminal)
+    block = curve_block(curve_desk)
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['updated'] == [CURVE_BLOCK] and outcome['reauthored'] == []
+    assert outcome['held_out'] == [] and outcome['rewrote'] == ['InterestRate.ZAR']
+    assert sorted(terminal.asked) == sorted(prints), 'the rows name what the tick asks about'
+    assert [row['Quoted_Market_Value'] for row in block['Points']] == list(prints.values())
+    assert all(row['Timestamp'] == {'.Timestamp': '2024-06-27'} for row in block['Points'])
+    assert service.quote_plan({'instrument': block}) == before, 'a value tick moved the plan'
+    assert abs(par_residuals(curve_desk)).max() < 1e-6
+
+    dead = CannedTerminal(prints, dead=['SASW5 BGN Curncy'])
+    result, outcome = curve_tick(monkeypatch, dead)
+    block = curve_block(curve_desk)
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['reauthored'] == [CURVE_BLOCK]
+    assert any('SASW5 BGN Curncy' in message and 'invalid' in message
+               for message in outcome['held_out']), outcome
+    assert [(row['Tenor'], row['Use']) for row in block['Points']] == [
+        (row['tenor'], 'No' if row['tenor'] == '5Y' else 'Yes') for row in CURVE_ROWS]
+    assert outcome['rewrote'] == ['InterestRate.ZAR'], 'the strip without it did not re-solve'
+
+    # a block this emitter cannot read - an older book's, authored before the conventions rode
+    # beside the quotes - is NAMED and left standing rather than taking the whole tick down
+    values = [row['Quoted_Market_Value'] for row in block['Points']]
+    document = json.loads(curve_desk.read_text())
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][
+        CURVE_BLOCK]['instrument']['Spot_Days']
+    curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    moved = CannedTerminal({security: value + 1.0 for security, value in prints.items()})
+    result, outcome = curve_tick(monkeypatch, moved)
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['held_out'] == ["{} left as it stands - 'Spot_Days'".format(CURVE_BLOCK)]
+    assert moved.asked == [], 'a block with no conventions to re-roll under was still asked about'
+    assert [row['Quoted_Market_Value'] for row in curve_block(curve_desk)['Points']] == values
+
+
+def test_a_rolled_base_date_re_authors_the_curve_rather_than_refusing(curve_desk, monkeypatch):
+    """A TICK CANNOT CARRY A ROLLED DATE. `Effective_Date` and `Maturity_Date` are structure, so
+    the value guard refuses them - rightly, since it cannot tell a rolled date from a mis-authored
+    one - and the block is RE-AUTHORED from its own rows and conventions instead, which is what
+    putting the conventions on the block bought. The strip three days later is the same benchmarks
+    on new dates, and it solves.
+    """
+    document = json.loads(curve_desk.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    before = [row['Deal']['Maturity_Date'] for row in market['Market Prices'][
+        CURVE_BLOCK]['instrument']['Points']]
+    market['System Parameters']['Base_Date'] = {'.Timestamp': '2024-07-01'}
+    document['Calc']['Calculation']['Base_Date'] = {'.Timestamp': '2024-07-01'}
+    curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    result, outcome = curve_tick(monkeypatch, CannedTerminal(
+        {row['security']: row['quote'] for row in CURVE_ROWS}))
+    block = curve_block(curve_desk)
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['reauthored'] == [CURVE_BLOCK] and outcome['held_out'] == []
+    assert [row['Deal']['Maturity_Date'] for row in block['Points']] != before
+    assert [row['Deal']['Effective_Date'] for row in block['Points'][2:]] == [
+        {'.Timestamp': '2024-07-01'}] * 4, 'a spot swap that did not re-roll onto the new base date'
+    assert outcome['rewrote'] == ['InterestRate.ZAR']
 
 
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):

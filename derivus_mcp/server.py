@@ -472,6 +472,53 @@ def configure_book(section: str, entry: str, fields: dict) -> dict:
                           json={'section': section, 'entry': entry, 'fields': fields})
 
 
+@MCP.tool(annotations=READ_ONLY)
+def describe_curve(curve: str = None) -> dict:
+    """The book's interest-rate curves as DEFINITIONS - what each one is bootstrapped from, and
+    what a desk could set up.
+
+    `curves` is one entry per `InterestRatePrices` block the book carries: its currency, the curve
+    it discounts on, the interpolation the solved factor carries, the conventions its benchmarks
+    were authored under (the calendar, the settlement lag, both legs' frequency and day count,
+    whether the swap rows compound overnight, and any near-end scheme), and the rows themselves -
+    tenor, the security each quote came off, the number, and whether the curve uses it.
+
+    With no `curve` named the answer also carries `seeded`: the curve entries this workstation's
+    seed declares, each with its conventions and the tenor/security rows it could be set up with.
+    That is the menu - pick the rows a desk quotes, put them through `configure_curve`, and the
+    book solves the curve from them."""
+    return service().call('GET', '/book/curve',
+                          params={'curve': curve} if curve is not None else None)
+
+
+@MCP.tool()
+def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = None,
+                    conventions: dict = None) -> dict:
+    """Set a curve up in the live book from its BENCHMARK INSTRUMENTS, and solve it.
+
+    `rows` are the benchmarks, `[{"tenor": "3M", "security": "JIBA3M Index", "quote": 7.41}, ...]`,
+    and the TENOR says what each instrument is: `ON` and the curve's declared front are deposits,
+    `1Mx4M` is a FRA, `6M1M` a swap starting in six months, anything else a spot swap ending at
+    that tenor. A row states its own `quote` in percent, or a `security` this workstation's
+    terminal prices it off; `use: "No"` holds a benchmark out without deleting it. An unquoted row
+    is refused by name - a benchmark with no number identifies no knot.
+
+    `conventions` completes what the seed's entry for this curve does not state - `calendar`,
+    `spot_days`, `compounding` (`OIS` for an overnight benchmark), `fixed_frequency`,
+    `float_frequency`, `fixed_day_count`, `float_day_count`, `front_day_count`, `curve_day_count`,
+    `near_interpolation` and `near_tenor`. `describe_curve` shows what the seed already declares;
+    a curve nothing seeds needs the whole set. `discount_rate` names the curve the quotes discount
+    on, blank being the self-discounting single curve.
+
+    The block is AUTHORED, not ticked: it is re-installed whole and the market re-bootstrapped in
+    one atomic write, so a bootstrap that complains writes nothing and names what it complained
+    about. The answer names the block, the knots it solved on and the price factors that moved.
+    Afterwards `tick_market_from_bloomberg` keeps these rows valued off the terminal."""
+    return service().call('POST', '/book/curve', json=dict(
+        conventions or {}, curve=curve, currency=currency, rows=rows,
+        **({} if discount_rate is None else {'discount_rate': discount_rate})))
+
+
 @MCP.tool()
 def patch_market_values(patch: dict) -> dict:
     """Move market VALUES in the live book - `{factor: {field: value}}`, e.g.
@@ -487,8 +534,13 @@ def patch_market_values(patch: dict) -> dict:
 async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
                                      pillars: list = None, wait_seconds: float = 360.0,
                                      ctx: Context = None) -> dict:
-    """Tick the live book's FX market off THIS workstation's Bloomberg terminal - the whole "get
-    me today's market" move, and on a fresh machine the call that PROVISIONS the desk.
+    """Tick the live book's market off THIS workstation's Bloomberg terminal - the whole "get me
+    today's market" move, and on a fresh machine the call that PROVISIONS the desk.
+
+    IT COVERS THE CURVES TOO: every `InterestRatePrices` block the book carries has its rows
+    re-priced off the securities they name and re-solved, beside the FX surfaces. A row whose
+    print the terminal refuses is held out by name in `held_out` rather than refusing the tick,
+    and `configure_curve` is what puts it back.
 
     WHEN THE SERVICE RUNS WITH `--tick`, THE MARKET REFRESHES ITSELF on a cadence, through this
     same job - so call this verb only to FORCE a refresh between beats, or to provision on first

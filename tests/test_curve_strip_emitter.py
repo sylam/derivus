@@ -23,6 +23,10 @@ WHAT IS HELD:
                    the print rides in `Quoted_Market_Value`, which is why a re-tick is a tick
   the knot rule    one knot per used quote at its last cashflow date; two benchmarks maturing on one
                    day refuse by name rather than reaching the solve as a singular Jacobian
+  the definition   every emitted block, read back through `block_conventions` and `block_rows` and
+                   authored again at its own date, is the SAME BYTES - nothing off the seed
+  the grammar      a DECLARED row's shape comes off its own tenor, a held-out row drops its knot
+                   and keeps its place, and a used row with no number refuses by name
   the round trip   `update_market_quote` installs and UPDATES a value-only re-tick; a moved
                    convention refuses as a new plan, and a ROLLED DATE goes through `reauthor`
   the fields       every authored deal key is a field the COMMITTED instrument schema declares -
@@ -50,7 +54,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_bloomberg import discover, ir_curve
 from derivus_bloomberg.errors import (BloombergConfigurationError, BloombergFXError,
-                                      BloombergRequestError, BloombergUnavailable, IncompleteStrip)
+                                      BloombergRequestError, BloombergUnavailable, IncompleteStrip,
+                                      InvalidQuote)
 from derivus_bloomberg.ir_curve import (CurveScreen, curve_conventions, fetch_curve_strip,
                                         ir_curve_block, reauthor, screen_strip)
 from derivus_bloomberg.session import BloombergSession
@@ -1145,6 +1150,85 @@ def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
 
     assert 'reauthor' in derivus_bloomberg.__all__ and 'reauthor' in dir(derivus_bloomberg)
     assert derivus_bloomberg.reauthor is reauthor
+
+
+def declared_of(block, curve, as_of=AS_OF, seed=None):
+    """A block read back as the definition it is and authored again - the round trip a rolled date
+    takes, and the one a desk's own rows take when it sets a curve up."""
+    instrument = block['instrument']
+    return ir_curve.author_block(
+        {'curve': curve, 'currency': instrument['Currency'],
+         'conventions': ir_curve.block_conventions(instrument, seed or SEED, curve),
+         'rows': ir_curve.block_rows(instrument),
+         'discount_rate': instrument['Discount_Rate']}, as_of)
+
+
+def test_a_block_carries_everything_it_would_be_re_authored_from():
+    """THE BLOCK IS THE CURVE'S DEFINITION, and this is the claim measured: every block the fetch
+    emits, read back through `block_conventions` and `block_rows` and authored again at its OWN
+    date, is the SAME BYTES. Nothing is read off the seed but the print scale, which is a property
+    of the feed and not of the curve.
+
+    That is what makes a rolled date a re-roll rather than a guess: at a later date the same rows
+    and the same conventions produce the same benchmarks on new dates, which is what
+    `update_market_quote` refuses and `reauthor` then installs.
+    """
+    for curve in CURVES:
+        name, block = block_of(curve)
+        assert declared_of(block, curve) == (name, block), curve
+
+    name, block = block_of('ZAR')
+    rolled = declared_of(block, 'ZAR', as_of=AS_OF + datetime.timedelta(days=1))[1]
+    dates = lambda item: [row['Deal']['Maturity_Date'] for row in item['instrument']['Points']]
+
+    assert dates(rolled) != dates(block)
+    assert [row['Tenor'] for row in rolled['instrument']['Points']] == [
+        row['Tenor'] for row in block['instrument']['Points']]
+    # the conventions came off the BLOCK, so a seed that no longer names the curve changes nothing
+    assert declared_of(block, 'ZAR', seed={'rates': {}}) == (name, block)
+
+
+def test_a_declared_row_reads_its_shape_off_its_own_tenor():
+    """A DESK STATES A TENOR AND A NUMBER, never an instrument. The declared front and `ON` author
+    a deposit, an `x` a FRA, two tenors run together a forward-starting swap and anything else a
+    spot swap - the same four shapes the map's own grammar reaches, off the label alone.
+
+    A row held out with `Use` No keeps its place in the block and drops its KNOT with it, so two
+    held-out benchmarks on one maturity are no clash; a used row with no number refuses BY NAME,
+    carrying the verdict where a print was asked for and not believed, because an unquoted
+    benchmark identifies no knot and the block cannot bootstrap.
+    """
+    def rows(*declared):
+        return [ir_curve.RatePrint(label=label, kind='', security='', value=value, use=use)
+                for label, value, use in declared]
+
+    def author(declared, front='fixings/3M'):
+        conventions = ir_curve.CurveConventions(**dict(SHIPPED['ZAR'], front=front))
+        return ir_curve.author_block(
+            {'curve': 'ZAR', 'currency': 'ZAR', 'conventions': conventions, 'rows': declared},
+            AS_OF)[1]['instrument']
+
+    block = author(rows(('3M', 7.41, 'Yes'), ('1Mx4M', 7.35, 'Yes'), ('6M1M', 7.5, 'Yes'),
+                        ('3Y', 8.21, 'Yes')))
+    overnight = author(rows(('ON', 7.02, 'Yes'), ('3Y', 8.21, 'Yes')), front='overnight')
+
+    assert [row['DealType'] for row in block['Points']] == [
+        'DepositDeal', 'FRADeal', 'SwapInterestDeal', 'SwapInterestDeal']
+    assert block['Points'][2]['Deal']['Effective_Date'] != block['Points'][3]['Deal'][
+        'Effective_Date'], 'a forward-starting swap that started at spot'
+    assert overnight['Points'][0]['DealType'] == 'DepositDeal'
+    assert overnight['Points'][0]['Deal']['Payment_Frequency'] == {'.DateOffset': '1D'}
+    # no security, so no parenthetical - and the authoring date is the row's own stamp
+    assert overnight['Points'][0]['Descriptor'] == 'ZAR ON'
+    assert overnight['Points'][0]['Timestamp'] == {'.Timestamp': AS_OF.isoformat()}
+
+    held = author(rows(('3M', 7.41, 'Yes'), ('1Y', 7.62, 'Yes'), ('4W', 7.3, 'No')))
+    assert [row['Use'] for row in held['Points']] == ['No', 'Yes', 'Yes']
+
+    with pytest.raises(InvalidQuote, match=r'2Y'):
+        author(rows(('3M', 7.41, 'Yes'), ('1Y', 7.62, 'Yes'), ('2Y', None, 'Yes')))
+    with pytest.raises(BloombergConfigurationError, match="'3Q'"):
+        author(rows(('3M', 7.41, 'Yes'), ('3Q', 7.62, 'Yes')))
 
 
 def test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip():

@@ -817,6 +817,17 @@ def remove_deal(document, deal_path):
         raise ValueError('no deal at path {!r}'.format(deal_path))
 
 
+def quote_plan(block):
+    """A `Market Prices` block less its value plane - the half a tick may NOT move, and what two
+    blocks are compared on to tell a re-quote from a re-authoring."""
+    instrument = dict(block['instrument'])
+    container, points = quote_rows(instrument)
+    if container is not None:
+        instrument[container] = [{key: value for key, value in point.items()
+                                  if key not in MARKET_QUOTE_VALUES} for point in points]
+    return instrument
+
+
 def update_market_quote(document, name, block):
     """Install or update one `Market Prices` block in a wire-form job document, in place.
 
@@ -833,16 +844,7 @@ def update_market_quote(document, name, block):
     prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
         'Market Prices', {})
     if name in prices:
-        def structure(b):
-            instrument = dict(b['instrument'])
-            container, points = quote_rows(instrument)
-            if container is not None:
-                instrument[container] = [
-                    {key: value for key, value in point.items()
-                     if key not in MARKET_QUOTE_VALUES}
-                    for point in points]
-            return instrument
-        if structure(prices[name]) != structure(block):
+        if quote_plan(prices[name]) != quote_plan(block):
             raise ValueError('{}: structure differs from the installed block - a moved node is a '
                              'new plan; re-author it deliberately'.format(name))
         prices[name] = block

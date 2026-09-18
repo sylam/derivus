@@ -168,6 +168,22 @@ run rewrote. `Price Factor Interpolation` is the second section the verb writes 
 routed curve type, held to `Interpolation_factor_map`, which is also what the store names rather
 than restating.
 
+**A curve is set up the same way, from its instruments.** `POST /book/curve` (`{curve, currency,
+rows: [{tenor, security?, quote?, use?}], discount_rate?}`) authors an `InterestRatePrices` block
+from the benchmark rows a desk states: the TENOR is what says what each instrument is — `ON` and the
+curve's declared front are deposits, `1Mx4M` a FRA, `6M1M` a swap starting in six months, anything
+else a spot swap ending there — and the conventions it accrues under are completed from the
+workstation's seed entry for that curve, the desk's own file where it declares them and the packaged
+one otherwise, which is read and never written. A row states its own `quote` or the `security` this
+workstation's terminal prices it off; an unquoted row refuses by name. The block is dropped and
+re-installed rather than ticked, the `InterestRate` entry added where the book configures none, and
+the whole market re-bootstrapped in the same atomic write, so a bootstrap that complains writes
+NOTHING. The Bloomberg tick then keeps those rows valued: the used rows' securities are re-priced
+and moved as VALUES, a row whose print the screen refuses keeps its number and is held out with
+`Use` No by name — the verb is what puts it back — and a block whose base date has rolled is
+RE-AUTHORED from its own rows and conventions first, because the dates are structure and no tick may
+move them.
+
 **Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
 every dial at what the entry states or the declaration's default otherwise, edited in place, and
 offers the families the book does not configure yet: adding one posts an empty entry, which the verb

@@ -71,7 +71,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'describe_factor_type', 'describe_configuration', 'job_skeleton', 'read_book',
                 'read_deal', 'book_deal', 'amend_deal', 'delete_deal', 'price_candidate',
                 'solve_deal', 'execute_book', 'validate_book', 'describe_book', 'poll_result',
-                'fetch_table', 'deal_values', 'configure_book',
+                'fetch_table', 'deal_values', 'configure_book', 'describe_curve', 'configure_curve',
                 'update_market_quotes', 'patch_market_values', 'tick_market_from_bloomberg',
                 'describe_structure', 'solve_structure', 'book_quote', 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva'}
@@ -83,7 +83,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'recalc_xva', 'calibrate_spot_model', 'configure_book'}
+                       'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve'}
 
 
 def test_the_progress_tool_does_not_advertise_its_context():
@@ -337,6 +337,45 @@ def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
         assert path.read_bytes() == before
     finally:
         service.BOOK = None
+
+
+def test_a_curve_is_described_set_up_and_read_back(book):
+    """The two curve tools end to end through the in-process service, which is the whole move the
+    ruling asks for: a desk reads what it could set up, states the benchmark rows, and the book
+    solves the curve off them.
+
+    `describe_curve` with nothing named carries the SEEDED menu - the curves this workstation's
+    seed declares, each with its conventions and its tenor/security rows - and after the set-up it
+    carries the book's own block read back as the definition it is, in the same row shape
+    `configure_curve` takes. Neither tool owns any of that: both are one call each.
+    """
+    from test_service import CURVE_ROWS
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    assert set(tools['describe_curve'].input_schema['properties']) == {'curve'}
+    assert set(tools['configure_curve'].input_schema['properties']) == {
+        'curve', 'currency', 'rows', 'discount_rate', 'conventions'}
+
+    menu = mcp_server.describe_curve()
+    assert menu['curves'] == {} and 'ZAR' in menu['seeded']
+    assert menu['seeded']['ZAR']['conventions']['front'] == 'fixings/3M'
+    assert {'tenor': '3M', 'security': 'JIBA3M Index'} in menu['seeded']['ZAR']['rows']
+
+    outcome = mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
+    described = mcp_server.describe_curve('ZAR')
+    definition = described['curves']['InterestRatePrices.ZAR']
+
+    assert outcome['written'] is True and outcome['rewrote'] == ['InterestRate.ZAR']
+    assert outcome['knots'] == [row['tenor'] for row in CURVE_ROWS]
+    assert 'seeded' not in described, 'a named curve is not the menu'
+    # the book states no `Price Factor Interpolation`, so the readout says what the curve gets
+    assert definition['currency'] == 'ZAR' and definition['interpolation'] == 'Linear'
+    assert definition['conventions']['fixed_frequency'] == '3M'
+    assert definition['rows'] == [dict(row, use='Yes') for row in CURVE_ROWS]
+
+    with pytest.raises(ToolError, match='3Q'):
+        mcp_server.configure_curve('ZAR', 'ZAR', [dict(row, tenor='3Q') if row['tenor'] == '5Y'
+                                                  else row for row in CURVE_ROWS])
 
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
