@@ -6,6 +6,7 @@ import type { ComponentType } from 'react';
 import { BlotterView } from './views/BlotterView';
 import { BootstrapperView } from './views/BootstrapperView';
 import { CalculationView } from './views/CalculationView';
+import { CurvesView } from './views/CurvesView';
 import { MarketDataView } from './views/MarketDataView';
 import { MarketPricesView } from './views/MarketPricesView';
 import { PortfolioView } from './views/PortfolioView';
@@ -22,9 +23,10 @@ export const WORKSPACES: Workspace[] = [
   // it moves with, then what it costs per counterparty
   { id: 'risk', label: 'Risk', view: RiskView },
   { id: 'xva', label: 'XVA', view: XvaView },
-  // the market, in the order it is built: the quotes, the dials that turn them into factors, the
-  // factors themselves
+  // the market, in the order it is built: the quotes, the benchmark rows a curve is set up from,
+  // the dials that turn them into factors, the factors themselves
   { id: 'prices', label: 'Market Prices', view: MarketPricesView },
+  { id: 'curves', label: 'Curves', view: CurvesView },
   { id: 'bootstrap', label: 'Bootstrapper', view: BootstrapperView },
   { id: 'market', label: 'Market Data', view: MarketDataView },
   { id: 'calculation', label: 'Calculation', view: CalculationView },

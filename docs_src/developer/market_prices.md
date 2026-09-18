@@ -195,7 +195,12 @@ each block's ladder under the columns its family declares, and edits the VALUE c
 moves what the tick guard admits without spelling one of the four names, and finds a block's ladder by
 the predicate `quote_containers` uses — the declared row carrying them all. An edit posts the WHOLE
 block back through `/book/market`, which value-updates it and bootstraps in one atomic write, and a
-structural change refuses by name.
+structural change refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
+per block — the rows under the four keys the verb takes, the conventions as a panel over the
+family's declarations whose lower-case spellings the answer names, and the solved factor beside
+them — and a form that sets another up, a seeded entry pre-filling its rows and conventions and
+`POST /book/curve` carrying only the ones a desk moved off them, the verb completing the rest from
+the seed.
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 

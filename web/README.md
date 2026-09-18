@@ -3,9 +3,10 @@
 A client over the derivus HTTP service: the portfolio tree, the **blotter** (the same tree read
 as a desk list — one row per deal, containers holding their legs, sorted by days-to-roll against
 the book's `Base_Date`, with a roll-off window filter), the blotter's two data views — **risk**
-and **XVA** — the **market prices** (the quote ladders, edited and ticked), the **bootstrapper**
-(the dials each price family is fitted with), the market data (curves plotted, a vol surface read
-four ways), the calculation, and a run's results.
+and **XVA** — the **market prices** (the quote ladders, edited and ticked), the **curves** (the
+benchmark rows one is set up from), the **bootstrapper** (the dials each price family is fitted
+with), the market data (curves plotted, a vol surface read four ways), the calculation, and a
+run's results.
 **View + run + scalar edit**: over the live book,
 declared scalar fields (amounts, dates, rates, dropdowns) edit in place — saved through the
 service's validate-before-write `amend` verb, refusals rendered verbatim, the etag poll doing the
@@ -19,6 +20,18 @@ A `Surface`-shaped price factor renders as four views over one pure module (`src
 **surface**, a rotatable 3-D mesh whose `echarts-gl` code is a lazy chunk the base bundle does not
 carry; and the **heatmap**, on numeric axes. The axis names are the factor's own declaration — the
 tuple its descriptor opens with — so nothing here knows what a moneyness is.
+
+**Curves** is a quote ladder one level up: the instruments a curve is solved from. One card per
+curve block the service reads back as the definition it is — the rows under `tenor / security /
+quote / use`, the conventions they were authored under as a descriptor panel off the family's own
+declarations, the interpolation the solved factor carries, and that factor beside them where the
+market data store holds it. The other pane sets one up: a seeded curve pre-fills the rows and the
+conventions, rows edit in place (add, remove, hold out, state a quote), the conventions edit
+through the Bootstrapper screen's panel, and one button posts `/book/curve` — which authors the
+block, solves it and bootstraps the market in one atomic write, answering with the knots and the
+price factors the run rewrote, or refusing in its own words with the file untouched. The row
+edits and the request — the rows, plus only the conventions the desk moved off the seeded ones,
+since the verb completes the rest — are `src/curves.ts`, checked by `scripts/curves_check.mjs`.
 
 **The two data views are reads, and neither has a run button.** *Risk* is `GET /book/risk`: the
 book's consolidated mark and its whole-book gradient, counterparty-blind — a headline strip, the

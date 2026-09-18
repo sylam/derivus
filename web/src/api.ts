@@ -2,8 +2,8 @@
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
 import type {
-  BookResponse, BookRisk, BookXva, DescribeResult, JobDoc, ResultSummary, Schema, TablePage,
-  ValidateResult,
+  BookResponse, BookRisk, BookXva, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
+  ResultSummary, Schema, TablePage, ValidateResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -65,6 +65,12 @@ export const tickBloomberg = () =>
 // the bootstrap's own dials: merged into one declared entry, then the market re-bootstrapped
 export const configureBook = (section: string, entry: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/configure', { section, entry, fields });
+// the curves: the book's blocks read back as the definitions they are beside the ones this
+// workstation's seed could set up, and one request that authors a curve from its benchmark rows,
+// solves it and bootstraps - or refuses in its own words with the file untouched
+export const getCurves = () => call<CurvesAnswer>('GET', '/book/curve');
+export const configureCurve = (request: Record<string, unknown>) =>
+  call<CurveOutcome>('POST', '/book/curve', request);
 // the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and
 // answers from the cache afterwards, and the XVA verb never runs anything at all - a recalc is
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.

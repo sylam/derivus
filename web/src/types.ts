@@ -178,3 +178,51 @@ export type BookXva = {
   path: string;
   sets: XvaSet[];
 };
+
+// ---- the curves half of the market: /book/curve -------------------------------------------------
+// The book's curve BLOCKS read back as the definitions they are, and the curves this workstation's
+// seed could set one up from. The conventions travel in the verb's own spelling - the declared
+// field name in lower case - and none of the seeded rows is verified against a terminal.
+
+/** One benchmark: the tenor says which instrument, the security where the number came from, the
+ * quote is the number a desk states and `use` whether it enters the solve. */
+export type CurveRow = { tenor: string; security: string; quote: number | null; use: string };
+
+export type CurveBlock = {
+  curve: string;
+  currency: string;
+  discount_rate: string;
+  /** The scheme the solved factor carries - the book's own bootstrapper entry, or the engine's
+   * fallback where it states none. Not a field of the block, and read-only here. */
+  interpolation: string;
+  /** Absent on a block authored before it carried its definition, which `note` then explains. */
+  conventions?: Record<string, unknown>;
+  note?: string;
+  rows: CurveRow[];
+};
+
+/** A curve the seed declares. An entry it states too little of carries the emitter's refusal in
+ * place of the rows, which is the answer to what is missing. */
+export type SeededCurve = {
+  currency?: string;
+  conventions?: Record<string, unknown>;
+  rows?: { tenor: string; security: string }[];
+  refused?: string;
+};
+
+/** `seeded` is absent when the answer was narrowed to one curve. */
+export type CurvesAnswer = {
+  etag: string;
+  curves: Record<string, CurveBlock>;
+  seeded?: Record<string, SeededCurve>;
+};
+
+/** What a write answered: the block it installed, the knots it solved on and the price factors
+ * the bootstrap rewrote. A refusal is an `ApiError`, never a shape. */
+export type CurveOutcome = {
+  written: boolean;
+  block?: string;
+  knots?: string[];
+  rewrote?: string[];
+  installed?: string[];
+};
