@@ -330,7 +330,7 @@ DV_Service --port 8000
 | `GET` | `/results/{result_id}/{table}` | one table, `?offset=&limit=` |
 | `GET` | `/ui` | a built web UI - the wheel's own by default, or the `DV_Service --ui <dir>` build |
 | `GET` | `/book` | the live job document the service serves — `DV_HOME/book.json` by default (a missing file starts blank), `DV_Service --book <file>` for another, `--no-book` to serve none and 404 every `/book` verb — with the etag naming its state |
-| `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
+| `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing. A `reference` beside the `deal_path` of an amendment or a delete names the deal the client read there, and a path another host's write has moved refuses by name |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing, and the candidate is validated BEFORE it queues, a 422 naming any market data the book lacks rather than a run that drops it |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
 | `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains. A values tick bootstraps the blocks it moved and every block that reads one of them, named back under `bootstrapped`; the whole market where a block arrived authored, where the patch names a factor a family reads, or where nothing moved at all |
@@ -360,8 +360,8 @@ next etag poll. Deals are addressed by positional `deal_path` (`"0/2/1"`), becau
 not unique in a book. A write is read-edit-write AGAINST THE ETAG IT READ, and the edit runs
 outside the book's lock: a read or a booking never waits behind a tick's bootstrap, and a write
 that lands in between costs the edit a redo on the document that now stands rather than costing
-the other client its wait — three passes, then a 422 saying the book is being written faster than
-it can be read.
+the other client its wait — three passes, the last of them under the lock, so an edit that keeps
+losing to shorter ones still lands.
 
 `mapping['Instrument']` also publishes `containers` — the deal types that accept `Children`
 (`Deal.accepts_children` emitted into the store), so a client can tell a leaf from a structure

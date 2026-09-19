@@ -399,13 +399,9 @@ class ComputeExecutor:
             self.queue.task_done()
 
 
-#: How many times a `mutate` re-runs its edit on a book that moved under it before it refuses. An
-#: edit is redone because something else landed, so a third redo is a book nobody can write.
+#: How many passes a `mutate` gives its edit: outside the lock, re-run where the book moved
+#: underneath, and the last one under the lock, so an edit that keeps losing to shorter ones lands.
 REDOS = 3
-
-#: What a `mutate` refuses with when it never got a quiet moment to write in.
-BUSY = ('the book was rewritten by something else {} times running while this edit ran - it is '
-        'being written faster than it can be read; post it again')
 
 
 class Book:
@@ -463,28 +459,33 @@ class Book:
         the write and nothing in between. The write lands only if the file still carries the etag
         the edit ran against; otherwise the edit is re-run on the document as it now stands, which
         is what makes a booking landing mid-tick cost the tick one redo rather than costing the
-        booking the whole tick.
+        booking the whole tick. The last pass runs under the lock, so an edit that keeps losing
+        to shorter ones lands rather than refusing.
         """
-        for _ in range(REDOS):
+        for attempt in range(REDOS):
             with self.lock:
                 document, etag = self._read()
+                if attempt == REDOS - 1:
+                    return self._land(document, etag, *edit(document, etag))
             write, outcome = edit(document, etag)
-            # the verdict the edit took, where the document it validated is the one being written
-            validated = outcome.pop('_validated', None)
-            if not write:
-                return dict(outcome, etag=etag)
             with self.lock:
-                if self._current() != etag:
-                    continue
-                text = json.dumps(document, indent=sniff_indent(self._cache[2]))
-                temporary = self.path + '.tmp'
-                with open(temporary, 'w', encoding='utf-8', newline='') as handle:
-                    handle.write(text)
-                os.replace(temporary, self.path)
-                self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
-                self._verdict = (self._cache[1], validated) if validated is not None else (None, None)
-                return dict(outcome, etag=self._cache[1])
-        raise ValueError(BUSY.format(REDOS))
+                if not write or self._current() == etag:
+                    return self._land(document, etag, write, outcome)
+
+    def _land(self, document, etag, write, outcome):
+        """An edit's outcome, its document written where it asked for a write - under the lock."""
+        # the verdict the edit took, where the document it validated is the one being written
+        validated = outcome.pop('_validated', None)
+        if not write:
+            return dict(outcome, etag=etag)
+        text = json.dumps(document, indent=sniff_indent(self._cache[2]))
+        temporary = self.path + '.tmp'
+        with open(temporary, 'w', encoding='utf-8', newline='') as handle:
+            handle.write(text)
+        os.replace(temporary, self.path)
+        self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
+        self._verdict = (self._cache[1], validated) if validated is not None else (None, None)
+        return dict(outcome, etag=self._cache[1])
 
 
 #: The live book: `DV_HOME/book.json` by default, another file where `DV_Service --book` names one,
@@ -842,6 +843,16 @@ def spine_amendment(document, deal_path, before, actor=None):
         book_name=book_name(document))}
 
 
+def expected_reference(document, request):
+    """Refuse a positional path that no longer holds the deal the client named in `reference`."""
+    if 'reference' in request:
+        found = deal_at(document, request['deal_path'])['Instrument']['.Deal'].get('Reference')
+        if found != request['reference']:
+            raise ValueError('deal_path {!r} holds {!r}, not {!r} - the book moved under the '
+                             'path, and read_book says where it stands now'.format(
+                                 request['deal_path'], found, request['reference']))
+
+
 @app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
 def book_deals(request: dict):
     """`{action: 'add', deal, parent_reference?}`, `{action: 'amend', deal_path, fields}` or
@@ -862,6 +873,10 @@ def book_deals(request: dict):
     must sit under a `NettingCollateralSet` naming a counterparty; each of the three refuses by
     name. A `delete` records nothing: what ends a trade is an election, an expiry observation or a
     status transition, filed through `Context.apply_lifecycle`. Without a home this is inert.
+
+    A `reference` beside a `deal_path` names the deal the client read there: another host's write
+    moves every position under a path, so an amendment or a delete that would act on whoever now
+    sits at it refuses by name instead.
     """
     action = request.get('action', 'add')
     if action not in ('add', 'amend', 'delete'):
@@ -869,10 +884,12 @@ def book_deals(request: dict):
 
     def edit(document, etag):
         if action == 'delete':
+            expected_reference(document, request)
             removed = remove_deal(document, request['deal_path'])
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
         if action == 'amend':
+            expected_reference(document, request)
             baseline = live_book().baseline(document, etag)
             node = deal_at(document, request['deal_path'])
             before = instrument_of(node)

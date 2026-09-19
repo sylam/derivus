@@ -94,7 +94,11 @@ that compiles it instead of making the whole book unpriceable.
     tool signature passes none of them. Everything here is the pre-spine contract.
 
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere, as in the
-web UI's tree, because references are not unique in a book.
+web UI's tree, because references are not unique in a book. Another host's booking moves every
+position under a path, so `amend_deal` and `delete_deal` take the `reference` the model read at
+that path and refuse by name when it no longer holds it, rather than acting on whoever sits there
+now — measured under three hosts booking at once, where a delete by position alone removed other
+hosts' deals.
 
 **Answers are summaries and pointers; the model's context is a budget.** A run comes back as its
 replay tuple, its stats and one line per table (`"250 rows x 4 columns"`); a booking outcome is about

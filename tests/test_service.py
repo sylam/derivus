@@ -1274,6 +1274,74 @@ def test_a_booking_landing_mid_tick_costs_the_tick_a_redo_and_both_edits_land(de
                        moved['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']]
 
 
+def test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass(desk_curves):
+    """AN EDIT THAT KEEPS LOSING TO SHORTER ONES LANDS. Three hosts booking and deleting as fast as
+    the service answers rewrite the file faster than a curve solve can re-run, so the tick's write
+    is refused by its etag pass after pass; the last pass runs under the lock and lands, with every
+    booking landed beside it - measured under three concurrent hosts, where a tick refused after
+    three open passes.
+
+    Each host deletes by the path its booking answered WITH THE REFERENCE beside it: the other
+    hosts move that position under it, and a path that no longer holds the deal refuses by name
+    rather than deleting whoever sits there, so the host reads the book and deletes where the deal
+    now stands. The file ends with the one deal it started with.
+
+    Killing mutations: the last pass run outside the lock like the others - the tick refuses after
+    its passes and the moved quotes never reach the file; the reference guard dropped - a delete
+    removes whichever deal now sits at the path, and fifty of the hosts' own deals are left behind.
+    """
+    def delete(deal_path, reference):
+        # a path that moved refuses (or points past the end): read where the deal stands now, and
+        # a deal nobody can find any more was deleted by someone else
+        while True:
+            answer = CLIENT.post('/book/deals', content=dump(
+                {'action': 'delete', 'deal_path': deal_path, 'reference': reference}),
+                headers=JSON)
+            if answer.status_code == 200:
+                return answer.json()['deleted']
+            assert answer.status_code == 422, answer.text
+            children = CLIENT.get('/book').json()['document']['Calc']['Deals']['Deals']['Children']
+            deal_path = next((str(position) for position, node in enumerate(children)
+                              if node['Instrument']['.Deal'].get('Reference') == reference), None)
+            if deal_path is None:
+                return None
+
+    def hammer(host, tally):
+        deadline = time.perf_counter() + 6.0
+        try:
+            while time.perf_counter() < deadline:
+                reference = 'H{}_{}'.format(host, tally[host])
+                booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': dict(
+                    BOOKED, Reference=reference)}), headers=JSON).json()
+                tally[host] += 1
+                if booked.get('written') and delete(booked['deal_path'], reference) != reference:
+                    tally['wrong'] += 1
+        except Exception as error:  # a thread's failure is the gate's, not the log's
+            tally['errors'].append(repr(error))
+
+    def three_hosts():
+        tally = {0: 0, 1: 0, 2: 0, 'wrong': 0, 'errors': []}
+        threads = [threading.Thread(target=hammer, args=(host, tally)) for host in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return tally
+
+    moved = moved_quotes(desk_curves, 'ZAR-ZARONIA')
+    window, ticked, tally = under_a_tick(moved, three_hosts)
+
+    assert ticked['written'] is True, ticked
+    assert ticked['bootstrapped'] == ['InterestRatePrices.ZAR', 'InterestRatePrices.ZAR-ZARONIA']
+    assert tally[0] + tally[1] + tally[2] > 10 and tally['wrong'] == 0, tally
+    assert tally['errors'] == [], tally['errors']
+    assert [row['Quoted_Market_Value'] for row in curve_block(desk_curves, 'ZAR-ZARONIA')[
+        'Points']] == [row['Quoted_Market_Value'] for row in
+                       moved['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']]
+    assert [node['Instrument']['.Deal']['Reference'] for node in json.loads(
+        desk_curves.read_text())['Calc']['Deals']['Deals']['Children']] == ['CF1']
+
+
 def test_a_moved_curve_re_solves_what_reads_it_and_nothing_else(desk_curves):
     """A VALUE TICK RE-SOLVES WHAT IT MOVED, and what reads what it moved.
 

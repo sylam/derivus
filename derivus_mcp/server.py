@@ -400,23 +400,29 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
 
 
 @MCP.tool()
-def amend_deal(deal_path: str, fields: dict) -> dict:
+def amend_deal(deal_path: str, fields: dict, reference: str | None = None) -> dict:
     """Change one or more fields of a booked deal - "make the notional 3m", "move settlement a
     week". `fields` MERGES into the deal at `deal_path` (from `read_book`); every other field
     stands. The same validate-before-write contract as `book_deal`: a refusal comes back as
     `{written: false, refused: [messages]}` with the file untouched - read the messages, fix,
     amend again. Values wear their wire form: dates `{".Timestamp": "YYYY-MM-DD"}`, percentages
-    `{".Percent": 2.5}`, plain numbers as numbers."""
-    return _booking(service().call('POST', '/book/deals', json={
-        'action': 'amend', 'deal_path': deal_path, 'fields': fields}))
+    `{".Percent": 2.5}`, plain numbers as numbers. `reference` names the deal you read at that
+    path: another host's booking moves every position, and a path that no longer holds it refuses
+    rather than amending whoever sits there now."""
+    return _booking(service().call('POST', '/book/deals', json=dict(
+        {'action': 'amend', 'deal_path': deal_path, 'fields': fields},
+        **({} if reference is None else {'reference': reference}))))
 
 
 @MCP.tool()
-def delete_deal(deal_path: str) -> dict:
+def delete_deal(deal_path: str, reference: str | None = None) -> dict:
     """Remove the deal at `deal_path` from the live book, its children with it. The write is
-    atomic and every other client sees it on its next read."""
-    return service().call('POST', '/book/deals',
-                          json={'action': 'delete', 'deal_path': deal_path})
+    atomic and every other client sees it on its next read. `reference` names the deal you read at
+    that path, so a path another host's booking has moved refuses rather than deleting whoever
+    sits there now - always pass it when other hosts share the book."""
+    return service().call('POST', '/book/deals', json=dict(
+        {'action': 'delete', 'deal_path': deal_path},
+        **({} if reference is None else {'reference': reference})))
 
 
 # --------------------------------------------------------------------------- pricing
