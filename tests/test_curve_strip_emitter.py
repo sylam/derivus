@@ -86,29 +86,42 @@ def no_terminal_reason(error):
     return 'this workstation\'s terminal answered and refused the request ({}): {}'.format(
         type(error).__name__, error)
 
+def ois(spot_days, day_count, frequency='1Y'):
+    """One overnight-index curve's declaration: what it settles at, what its swap accrues on and
+    how often that pays, over the eleven fields every OIS entry shares."""
+    return {'curve_day_count': 'ACT_365', 'spot_days': spot_days, 'front': 'overnight',
+            'front_day_count': day_count, 'compounding': 'OIS',
+            'fixed_frequency': frequency, 'float_frequency': frequency,
+            'fixed_day_count': day_count, 'float_day_count': day_count,
+            'notional': 1000000.0, 'quote_scale': 1.0}
+
+
 #: The SHIPPED declarations as data - the gate the owner checks, since a convention is market fact.
-#: USD SOFR OIS settles T+2, annual/annual on ACT/360 against a compounded overnight index; ZAR
-#: SASW settles same day, quarterly/quarterly on ACT/365 against 3M JIBAR, whose own fixing - not
-#: ZARONIA - is the front of a JIBAR curve; the ZARONIA OIS curve is a third, annual/annual on
-#: ACT/365 and quoted monthly to a year and then at two, which is what its near split is for.
+#: USD SOFR OIS settles T+2, annual/annual on ACT/360 against a compounded overnight index and the
+#: six other OIS curves differ from it in those three facts alone; ZAR SASW settles same day,
+#: quarterly/quarterly on ACT/365 against 3M JIBAR, whose own fixing - not ZARONIA - is the front of
+#: a JIBAR curve; the ZARONIA OIS curve is a third, annual/annual on ACT/365 and quoted monthly to a
+#: year and then at two, which is what its near split is for.
 SHIPPED = {
-    'USD': {'curve_day_count': 'ACT_365', 'spot_days': 2, 'front': 'overnight',
-            'front_day_count': 'ACT_360', 'compounding': 'OIS',
-            'fixed_frequency': '1Y', 'float_frequency': '1Y',
-            'fixed_day_count': 'ACT_360', 'float_day_count': 'ACT_360',
-            'notional': 1000000.0, 'quote_scale': 1.0},
+    'USD': ois(2, 'ACT_360'),                # SOFR
+    'EUR': ois(2, 'ACT_360'),                # ESTR
+    'GBP': ois(0, 'ACT_365'),                # SONIA, dealt for same-day settlement
+    'JPY': ois(2, 'ACT_365'),                # TONA
+    'CHF': ois(2, 'ACT_360'),                # SARON
+    'CAD': ois(0, 'ACT_365', '6M'),          # CORRA, semi-annual coupons
+    'AUD': ois(1, 'ACT_365'),                # AONIA, T+1
     'ZAR': {'curve_day_count': 'ACT_365', 'spot_days': 0, 'front': 'fixings/3M',
             'front_day_count': 'ACT_365', 'compounding': 'None',
             'fixed_frequency': '3M', 'float_frequency': '3M',
             'fixed_day_count': 'ACT_365', 'float_day_count': 'ACT_365',
             'notional': 1000000.0, 'quote_scale': 1.0},
-    'ZAR-ZARONIA': {'curve_day_count': 'ACT_365', 'spot_days': 0, 'front': 'overnight',
-                    'front_day_count': 'ACT_365', 'compounding': 'OIS',
-                    'fixed_frequency': '1Y', 'float_frequency': '1Y',
-                    'fixed_day_count': 'ACT_365', 'float_day_count': 'ACT_365',
-                    'notional': 1000000.0, 'quote_scale': 1.0,
-                    'near_interpolation': 'LinearRT', 'near_tenor': '2Y'},
+    'ZAR-ZARONIA': dict(ois(0, 'ACT_365'), near_interpolation='LinearRT', near_tenor='2Y'),
 }
+
+#: The benchmarks each seeded entry spells - the ladder a set-up authors, counted so that a seed
+#: edit dropping a tenor is a diff here rather than a curve quietly short of a knot.
+LADDERS = {'USD': 24, 'EUR': 24, 'GBP': 24, 'JPY': 21, 'CHF': 21, 'CAD': 21, 'AUD': 21,
+           'ZAR': 21, 'ZAR-ZARONIA': 26, 'ZAR-ZARONIA-FWD': 24}
 
 
 def packaged_seed():
@@ -326,9 +339,9 @@ def test_importing_the_curve_emitter_lands_no_engine_and_no_blpapi():
 # =============================================================================================
 
 def test_the_shipped_conventions_are_the_declared_ones():
-    """THE OWNER'S GATE. Every convention this package will author a USD, ZAR or ZARONIA benchmark
-    in, as data off the shipped seed, so a change to a market convention is a diff here rather than
-    a number that moved inside a cashflow.
+    """THE OWNER'S GATE. Every convention this package will author a seeded benchmark in, as data
+    off the shipped seed, so a change to a market convention is a diff here rather than a number
+    that moved inside a cashflow - and every seeded entry authors its own ladder from it.
 
     The three a ticker cannot tell you: USD OIS accrues ACT/360 on both legs where the curve's
     tenors are ACT/365, the ZAR front is the 3M JIBAR fixing rather than the ZARONIA print beside
@@ -351,11 +364,16 @@ def test_the_shipped_conventions_are_the_declared_ones():
     near = curve_conventions(packaged_seed(), 'ZAR-ZARONIA')
     assert (near.near_interpolation, near.near_tenor) == ('LinearRT', '2Y')
     assert curve_conventions(packaged_seed(), 'ZAR-ZARONIA-FWD').near_interpolation == ''
-    # currencies the seed maps but does NOT declare conventions for must refuse rather than inherit
-    # a neighbour's
-    for currency in ('EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD'):
-        with pytest.raises(BloombergConfigurationError, match='carries no `conventions` block'):
-            curve_conventions(packaged_seed(), currency)
+    # EVERY seeded entry AUTHORS, which is what makes a currency set-up-able at all: its own
+    # vocabulary's rows, read off the seed and emitted at a flat quote, with no terminal anywhere
+    seed = packaged_seed()
+    for curve, points in LADDERS.items():
+        rows = [ir_curve.RatePrint(label=row['tenor'], kind='', security=row['security'],
+                                   value=7.0) for row in ir_curve.seeded_rows(seed, curve)]
+        _, block = ir_curve.author_block(
+            {'curve': curve, 'currency': shipped[curve].get('currency', curve),
+             'conventions': curve_conventions(seed, curve), 'rows': rows}, AS_OF)
+        assert len(block['instrument']['Points']) == points, curve
 
 
 def test_the_interpolation_menu_cannot_drift_from_the_engines_declaration():

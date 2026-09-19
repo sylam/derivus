@@ -2736,6 +2736,53 @@ def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
     assert terminal.asked == ['GATE2 BGN Curncy'], 'a named ticker grew the map'
 
 
+def test_a_rejected_ticker_is_asked_again_and_a_revived_one_lands_in_the_map(
+        vocabulary, monkeypatch):
+    """A REJECTION IS ONE DAY'S ANSWER AND NOT A RETIREMENT - a terminal that priced nothing that
+    morning, or a name since fixed on its own side, would otherwise never be asked about again.
+
+    So the ledger is re-probed beside the map's own entries, in the same scope: a name that prices
+    now moves off the ledger into `blocks` under the path its seed spells, carrying the evidence
+    that put it there and named under `revived`, and one that still fails keeps its row rewritten
+    from the FRESH answer rather than the one it was rejected on.
+
+    Killing mutations: the recheck scoped to `entries(document)` alone, which leaves `revived`
+    empty and the ticker on the ledger; the ledger asked UNSCOPED, which the ZAR row outside the
+    scope measures.
+    """
+    import datetime
+
+    from derivus_bloomberg import session
+
+    today = datetime.date.today().isoformat()
+    stale = {'verdict': 'invalid', 'name': None, 'last_update': None, 'error': 'nothing that day'}
+    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    assert CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
+                                                 'entry': GATE_CURVE}).status_code == 200
+    author_map(vocabulary, {'rates/GATE/strip/1Y': 'GATE1 BGN Curncy'},
+               rejected={'GATE2 BGN Curncy': dict(stale), 'GATEON Index': dict(stale),
+                         'SASW30 BGN Curncy': dict(stale)})
+    terminal = NamingTerminal({'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9},
+                              dead=['GATEON Index'], stamp=today)
+    monkeypatch.setattr(session, 'BloombergSession', terminal)
+    result, outcome = verified({'block': 'rates', 'key': 'GATE'})
+    document = json.loads((vocabulary / 'security_map.json').read_text())
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['revived'] == {'rates/GATE/strip/2Y': 'GATE2 BGN Curncy'}
+    assert document['blocks']['rates']['GATE']['strip']['2Y'] == {
+        'security': 'GATE2 BGN Curncy', 'name': 'GATE2 BGN Curncy',
+        'last_update': today, 'verified': today}
+    assert 'GATE2 BGN Curncy' not in document['rejected'], 'revived and still rejected'
+    assert document['rejected']['GATEON Index'] == {
+        'verdict': 'invalid', 'name': 'GATEON Index', 'last_update': None,
+        'error': None}, 'a stale ledger row survived its own probe'
+    assert document['rejected']['SASW30 BGN Curncy'] == stale
+    assert 'SASW30 BGN Curncy' not in terminal.asked, 'the ledger was asked outside the scope'
+    # the entry half is quiet while the ledger moves, and a revived name is not then grown again
+    assert outcome['drifted'] == {} and outcome['added'] == {}
+
+
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):
     """Solve a cashflow's Amount to a target. A secant is exact where the value is affine in the
     field, so the pricing count is small, the residual is inside tolerance, and the tables are the

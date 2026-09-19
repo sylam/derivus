@@ -41,7 +41,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
 | `GET /book/securities` | the desk's ticker vocabulary and its terminal evidence - the seed's candidates, the verified map and its rejection ledger, and the IPV join: every curve row with the print behind it |
 | `POST /book/securities` | set one entry of the desk's own seed - validated by spelling the candidates it now names, written atomically with the file it replaces kept beside it |
-| `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the seed's new names probed once and ledgered, the map rewritten |
+| `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the rejected asked again, the seed's new names probed once and ledgered, the map rewritten |
 | `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
@@ -2577,8 +2577,9 @@ class VerifyJob:
     a FILE write rather than tables, so it rides the run's Stats under `Securities`, and progress
     rides `PROGRESS` under the result id the way a tick's does.
 
-    NOTHING ALREADY VERIFIED IS RE-ASKED by the growing half - the incremental rule a map is grown
-    under - so a seed that gains a curve costs the terminal that curve's names and no more.
+    THE LEDGER IS RE-ASKED and nothing already verified is: a rejection is one day's answer from
+    one terminal, so every rejected name in scope is probed again and one that prices now lands in
+    the map, while a seed that gains a curve costs the terminal that curve's new names and no more.
     """
 
     def __init__(self, scope, result_id):
@@ -2599,21 +2600,26 @@ class VerifyJob:
         try:
             mapped, _ = desk_map()
             scoped = scoped_map(mapped, block, key, named)
+            seeded = scoped_seed(desk_seed(), block, key)
             covered = sorted(entry['security'] for entry in scoped['blocks'].values())
             self.note('re-verifying {} entries'.format(len(covered)))
             with BloombergSession(timeout_ms=30000) as session:
                 drifted = discover.recheck(
                     scoped, session, as_of,
                     on_batch=lambda done, total: self.note('re-verifying the map', done, total))
+                revived = discover.reprobe_rejected(
+                    mapped, seeded, session, as_of, securities=named,
+                    on_batch=lambda done, total: self.note('re-asking the ledger', done, total))
                 verdicts = []
                 if not named:
                     mapped, verdicts = discover.extend(
-                        mapped, scoped_seed(desk_seed(), block, key), session, as_of,
+                        mapped, seeded, session, as_of,
                         on_batch=lambda done, total: self.note('probing new names', done, total))
             mapped['generated'] = mapped.get('generated') or as_of.isoformat()
             return None, {'Results': {}, 'Stats': {'Securities': {
                 'written': True, 'map': write_desk_file('security_map.json', mapped),
-                'verified': covered, 'drifted': drifted, 'unknown': sorted(named - set(covered)),
+                'verified': covered, 'drifted': drifted, 'revived': revived,
+                'unknown': sorted(named - set(covered)),
                 'added': {item.candidate.security: item.verdict for item in verdicts},
                 'seconds': round(time.perf_counter() - started, 2)}}}
         finally:
@@ -2629,8 +2635,11 @@ def book_securities_verify(request: dict):
     anything that has DRIFTED - renamed, unpriced, gone stale, gone entirely - named under
     `drifted` by its own path in the map. Every candidate the scope's seed spells that the map has
     never heard of is probed once and lands under `added` with its verdict, the live ones as
-    entries and the rest on the ledger; nothing already verified is re-asked, so a seed that gained
-    a curve costs the terminal that curve's names alone. The map is rewritten atomically.
+    entries and the rest on the ledger. Every REJECTED name in scope is asked again too - a
+    rejection is one day's answer - and one that prices now moves off the ledger into the map under
+    `revived`, by the path its seed spells; nothing already VERIFIED is re-asked, so a seed that
+    gained a curve costs the terminal that curve's names and its own ledger alone. The map is
+    rewritten atomically.
 
     The scope is a `block`, a `key` inside it - a curve, a currency or a pair - or the `securities`
     to re-ask about by name, which re-verifies those entries and grows nothing; a ticker the map

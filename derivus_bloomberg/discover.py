@@ -243,6 +243,19 @@ def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     return build_map(seed, verdicts, as_of.isoformat()), verdicts
 
 
+def _graft(document, grown):
+    """Every live entry of a freshly built map merged into an existing one under its own path -
+    the one merge growing and reviving both take. `{path: security}` for what landed."""
+    landed = {}
+    for path, entry in entries(grown):
+        node = document['blocks']
+        for part in path[:-1]:
+            node = node.setdefault(part, {})
+        node[path[-1]] = entry
+        landed['/'.join(path)] = entry['security']
+    return landed
+
+
 def extend(document, seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     """Grow an existing map by the seed's candidates it has never heard of, probed alone - a
     seed that gains a curve costs the terminal that curve's names, not the whole vocabulary. An
@@ -255,13 +268,33 @@ def extend(document, seed, session, as_of, stale_days=STALE_DAYS, on_batch=None)
     report = probe(session, [item.security for item in candidates], on_batch=on_batch)
     verdicts = verify(candidates, report, as_of, stale_days)
     grown = build_map(seed, verdicts, as_of.isoformat())
-    for path, entry in entries(grown):
-        node = document['blocks']
-        for part in path[:-1]:
-            node = node.setdefault(part, {})
-        node[path[-1]] = entry
+    _graft(document, grown)
     document.setdefault('rejected', {}).update(grown['rejected'])
     return document, verdicts
+
+
+def reprobe_rejected(document, seed, session, as_of, stale_days=STALE_DAYS, on_batch=None,
+                     securities=()):
+    """Ask the terminal AGAIN about the ledger: a rejection is what one day's terminal answered,
+    not a retirement, so every rejected candidate the seed still spells is re-probed.
+
+    One that now verifies moves off the ledger into `blocks` under the path its seed spells,
+    carrying the evidence that put it there; one that still fails keeps its row with the fresh
+    error. `securities`, where given, narrows the ledger to those names. `{path: security}` for
+    what moved, the document updated in place.
+    """
+    ledger = document.setdefault('rejected', {})
+    asked = [item for item in candidates_from_seed(seed) if item.security in ledger
+             and (not securities or item.security in securities)]
+    if not asked:
+        return {}
+    report = probe(session, [item.security for item in asked], on_batch=on_batch)
+    grown = build_map(seed, verify(asked, report, as_of, stale_days), as_of.isoformat())
+    revived = _graft(document, grown)
+    ledger.update(grown['rejected'])
+    for security in revived.values():
+        ledger.pop(security, None)
+    return revived
 
 
 def provisioned(home=None):

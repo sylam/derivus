@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { failure, getBook, getBookRisk, getBookXva, getSchema, postDescribe } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
@@ -31,6 +31,14 @@ export function App() {
       .catch(() => undefined);
   }, []);
 
+  // a hidden window is nobody looking - the one thing the tab does not say
+  const [visible, setVisible] = useState(document.visibilityState === 'visible');
+  useEffect(() => {
+    const onVisibility = () => setVisible(document.visibilityState === 'visible');
+    addEventListener('visibilitychange', onVisibility);
+    return () => removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
   // the etag poll: a deal booked by ANY client (MCP, Excel, an editor on the file) appears here
   // within a tick, the user's place preserved
   useEffect(() => {
@@ -53,11 +61,10 @@ export function App() {
   // The desk's two data views ride the SAME etag: the poll above is the only clock in the client,
   // and a booking, an amendment or a market tick moves the book here and the numbers follow.
   //
-  // The risk verb RUNS the book on a miss, so it is fetched for a desk that is looking at it -
-  // the open tab, or a tab it has already been on this session - and never speculatively for a
-  // user who has not asked. `state.source` is a new object only when the etag moved, so this
-  // fires once per move rather than once per poll tick.
-  const riskWanted = state.tab === 'risk' || state.risk.data !== null;
+  // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it and only
+  // then: taking the tab prices it, every etag move under that gaze re-prices it, and a tab left
+  // behind or a window gone hidden costs nothing until it is looked at again.
+  const riskWanted = state.tab === 'risk' && visible;
   useEffect(() => {
     if (state.source?.kind !== 'book' || !riskWanted) return;
     const bookEtag = state.source.etag;

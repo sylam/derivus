@@ -227,7 +227,9 @@ file it replaced kept beside it; the packaged questionnaire is never written. Th
 `POST /book/securities/verify` (`{block?, key?, securities?}`), queued on the same executor and
 cost class as the tick: every entry in scope is re-probed for the drift its own recorded evidence
 cannot show, every name the seed spells that the map has never heard of is probed once and
-ledgered, nothing already verified is re-asked, and the map is rewritten atomically. A workstation
+ledgered, every REJECTED name in scope is asked again - a rejection is one day's answer, so one
+that prices now moves off the ledger into the map under `revived` - and the map is rewritten
+atomically. A workstation
 whose blpapi does not import refuses there by name — the map is evidence, and only a terminal
 writes one.
 
