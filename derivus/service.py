@@ -1717,14 +1717,19 @@ CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
 CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
 
 
+def wire_stamp(stated):
+    """The string inside a wire `{'.Timestamp': ...}`, or the value as it stands - the ISO stamp a
+    client reads, never the wire dict."""
+    return str((stated.get('.Timestamp') if isinstance(stated, dict) else stated) or '')
+
+
 def read_stamp(stated):
     """A date as a `datetime.date` - an ISO day, or the wire `{'.Timestamp': ...}` the book itself
     carries, so what a client read off the book is what it can hand back."""
     import datetime
 
     try:
-        return datetime.date.fromisoformat(
-            str(stated.get('.Timestamp') if isinstance(stated, dict) else stated)[:10])
+        return datetime.date.fromisoformat(wire_stamp(stated)[:10])
     except (TypeError, ValueError):
         raise ValueError('{!r} is no date - a date is YYYY-MM-DD'.format(stated))
 
@@ -2087,7 +2092,7 @@ def book_status():
                     'knots': [row['tenor'] for row in entry['rows'] if row['use'] == 'Yes'],
                     'held_out': [row['tenor'] for row in entry['rows'] if row['use'] != 'Yes']}
                    for entry in book_curves()['curves'].values()],
-        'surfaces': [{'name': name, 'snapped': factors[name].get('Quote_Timestamp') or ''}
+        'surfaces': [{'name': name, 'snapped': wire_stamp(factors[name].get('Quote_Timestamp'))}
                      for name in sorted(factors) if name.split('.')[0] in VOL_SURFACES],
         'models': [{'name': name, 'family': name.split('.')[0][:-len(MODEL_SUFFIX)]}
                    for name in sorted(factors) if name.split('.')[0].endswith(MODEL_SUFFIX)],
