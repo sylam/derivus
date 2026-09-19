@@ -182,6 +182,7 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     curves = mcp_server.desk_status()['curves']
 
     assert curves == [{'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
+                       'interpolation': 'Linear',
                        'knots': [row['tenor'] for row in CURVE_ROWS], 'held_out': []}]
 
 
@@ -503,13 +504,17 @@ def test_a_curve_is_described_set_up_and_read_back(book):
     seed declares, each with its conventions and its tenor/security rows - and after the set-up it
     carries the book's own block read back as the definition it is, in the same row shape
     `configure_curve` takes. Neither tool owns any of that: both are one call each.
+
+    `interpolation` ROUND TRIPS as the curve's own rule, which is the one thing the two tools carry
+    that lives in the section rather than on the block. Killing mutation: the tool dropping it, so
+    a model naming a scheme gets the default back and nothing says so.
     """
     from test_service import CURVE_ROWS
 
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     assert set(tools['describe_curve'].input_schema['properties']) == {'curve'}
     assert set(tools['configure_curve'].input_schema['properties']) == {
-        'curve', 'currency', 'rows', 'discount_rate', 'conventions'}
+        'curve', 'currency', 'rows', 'discount_rate', 'conventions', 'interpolation'}
 
     menu = mcp_server.describe_curve()
     assert menu['curves'] == {} and 'ZAR' in menu['seeded']
@@ -525,9 +530,16 @@ def test_a_curve_is_described_set_up_and_read_back(book):
     assert 'seeded' not in described, 'a named curve is not the menu'
     # the book states no `Price Factor Interpolation`, so the readout says what the curve gets
     assert definition['currency'] == 'ZAR' and definition['interpolation'] == 'Linear'
+    assert definition['interpolation_source'] == 'default'
     assert definition['conventions']['fixed_frequency'] == '3M'
     assert definition['rows'] == [dict(row, use='Yes') for row in CURVE_ROWS]
 
+    mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS, interpolation='HermiteRT')
+    ruled = mcp_server.describe_curve('ZAR')['curves']['InterestRatePrices.ZAR']
+    assert (ruled['interpolation'], ruled['interpolation_source']) == ('HermiteRT', 'curve')
+
+    with pytest.raises(ToolError, match='Cubic'):
+        mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS, interpolation='Cubic')
     with pytest.raises(ToolError, match='3Q'):
         mcp_server.configure_curve('ZAR', 'ZAR', [dict(row, tenor='3Q') if row['tenor'] == '5Y'
                                                   else row for row in CURVE_ROWS])

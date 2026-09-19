@@ -24,14 +24,16 @@ tuple its descriptor opens with — so nothing here knows what a moneyness is.
 **Curves** is a quote ladder one level up: the instruments a curve is solved from. One card per
 curve block the service reads back as the definition it is — the rows under `tenor / security /
 quote / use`, the conventions they were authored under as a descriptor panel off the family's own
-declarations, the interpolation the solved factor carries, and that factor beside them where the
-market data store holds it. The other pane sets one up: a seeded curve pre-fills the rows and the
+declarations plus the curve's own interpolation, which is a rule in a section rather than a column
+of the block and so comes off what the answer names, and that factor beside them where the market
+data store holds it. The other pane sets one up: a seeded curve pre-fills the rows and the
 conventions, rows edit in place (add, remove, hold out, state a quote), the conventions edit
 through the Bootstrapper screen's panel, and one button posts `/book/curve` — which authors the
 block, solves it and bootstraps the market in one atomic write, answering with the knots and the
 price factors the run rewrote, or refusing in its own words with the file untouched. The row
-edits and the request — the rows, plus only the conventions the desk moved off the seeded ones,
-since the verb completes the rest — are `src/curves.ts`, checked by `scripts/curves_check.mjs`.
+edits and the request — the rows, the curve's own scheme, and only the conventions the desk moved
+off the seeded ones, since the verb completes the rest — are `src/curves.ts`, checked by
+`scripts/curves_check.mjs`.
 
 **Securities** is the vocabulary those rows are quoted off, one read (`GET /book/securities`) in
 three panes. *The vocabulary* is what this desk CLAIMS it could quote — the packaged questionnaire

@@ -388,9 +388,10 @@ def desk_status() -> dict:
 
     The book's `base_date` (the day it is valued as of), `base_currency` and `calculation`; how
     many `deals` it holds and the `netting_sets` a client's trade can be booked under; `curves`,
-    one per bootstrapped block, with the knots it solved on, the latest print its rows carry
-    (`snapped`) and any benchmark `held_out`; `surfaces` with their own quote stamps; `models`, the
-    spot models calibrated onto this book; `xva`, the last projection per set with its `as_of`.
+    one per bootstrapped block, with the knots it solved on, the `interpolation` it is built under,
+    the latest print its rows carry (`snapped`) and any benchmark `held_out`; `surfaces` with their
+    own quote stamps; `models`, the spot models calibrated onto this book; `xva`, the last
+    projection per set with its `as_of`.
 
     `terminal` is what this desk CAN do: `present` says whether `tick_market_from_bloomberg` has a
     terminal to ask - a sandboxed desk reads False and prices on the market the book last snapped
@@ -558,10 +559,12 @@ def configure_book(section: str, entry: str, fields: dict) -> dict:
     `describe_configuration` declares, everything else in it standing.
 
     `section` is `Bootstrapper Configuration` (`entry` the price factor a family writes, or the
-    class name the book spells it by) or `Price Factor Interpolation` (`entry` `modeldefaults`,
-    `fields` one method per routed curve type). A book states each hyperparameter ONCE here and
-    every quote block of that family is read over it, so this is where a fit's box, seed or budget
-    moves - never inside a quote.
+    class name the book spells it by) or `Price Factor Interpolation` (`entry` a routed factor
+    type, `fields` `{"method": ...}` for what every factor of it is built with or `{"id": "<curve
+    name>", "method": ...}` for that one curve's own rule, a blank method clearing it - though a
+    curve's rule is ordinarily set by `configure_curve`). A book states each hyperparameter ONCE
+    here and every quote block of that family is read over it, so this is where a fit's box, seed
+    or budget moves - never inside a quote.
 
     The change is checked by building what reads it, so a malformed dial is refused by name before
     a quote is read; the whole market is then re-bootstrapped in the same atomic write, and a
@@ -578,8 +581,10 @@ def describe_curve(curve: str = None) -> dict:
     what a desk could set up.
 
     `curves` is one entry per `InterestRatePrices` block the book carries: its currency, the curve
-    it discounts on, the interpolation the solved factor carries, the conventions its benchmarks
-    were authored under (the calendar, the settlement lag, both legs' frequency and day count,
+    it discounts on, the interpolation the solved factor carries with `interpolation_source` saying
+    whether a rule names this curve (`curve`) or it takes what every curve takes (`default`), the
+    conventions its benchmarks were authored under (the calendar, the settlement lag, both legs'
+    frequency and day count,
     whether the swap rows compound overnight, and any near-end scheme), and the rows themselves -
     tenor, the security each quote came off, the number, and whether the curve uses it. `base_date`
     is the day every block on the book is authored on, and a block's `snapped` is the latest print
@@ -595,7 +600,7 @@ def describe_curve(curve: str = None) -> dict:
 
 @MCP.tool()
 def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = None,
-                    conventions: dict = None) -> dict:
+                    conventions: dict = None, interpolation: str = None) -> dict:
     """Set a curve up in the live book from its BENCHMARK INSTRUMENTS, and solve it.
 
     `rows` are the benchmarks, `[{"tenor": "3M", "security": "JIBA3M Index", "quote": 7.41}, ...]`,
@@ -612,6 +617,12 @@ def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = 
     a curve nothing seeds needs the whole set. `discount_rate` names the curve the quotes discount
     on, blank being the self-discounting single curve.
 
+    `interpolation` is THIS CURVE'S OWN SCHEME - `HermiteRT`, `Hermite`, `LinearRT` or `Linear` -
+    set as a rule in the book's `Price Factor Interpolation` in the same write, before the solve,
+    so the curve is solved under what it will be read under. Blank clears the rule and the curve
+    takes what every curve takes; leaving it out leaves the rule as it stands, so re-stating a
+    curve's rows never changes its scheme.
+
     The block is AUTHORED, not ticked: it is re-installed whole and the market re-bootstrapped in
     one atomic write, so a bootstrap that complains writes nothing and names what it complained
     about. The answer names the date the block was authored on, the block, the knots it solved on
@@ -621,7 +632,8 @@ def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = 
     these rows valued off the terminal."""
     return service().call('POST', '/book/curve', json=dict(
         conventions or {}, curve=curve, currency=currency, rows=rows,
-        **({} if discount_rate is None else {'discount_rate': discount_rate})))
+        **({} if discount_rate is None else {'discount_rate': discount_rate}),
+        **({} if interpolation is None else {'interpolation': interpolation})))
 
 
 @MCP.tool()

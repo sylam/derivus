@@ -96,7 +96,7 @@ from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sn
                      splice_deal, tables_of, update_market_quote, value_message,
                      walk_job_deals)
 from ._version import __version__
-from .config import Config, as_json
+from .config import Config, ModelParams, as_json
 from .spine import replay
 
 LOG = logging.getLogger(__name__)
@@ -1630,29 +1630,63 @@ def bootstrapper_entry(market, entry, fields):
     return key, merged
 
 
-def interpolation_entry(market, entry, fields):
-    """One half of the `Price Factor Interpolation` `ModelParams` with `fields` merged in: a routed
-    factor type against the method its own menu offers, both refused by name. Only the defaults
-    half is a dial - a filter row is a condition rule, authored rather than set."""
+def interpolation_method(factor_type, method):
+    """One method held to the routed type's own menu. A type the engine routes nowhere and a method
+    nothing implements are both refused by name, because neither raises anywhere downstream - the
+    factor is silently built the default way instead."""
+    menu = mapping[mapping['Configuration']['Price Factor Interpolation']['menu']]
+    if factor_type not in menu:
+        raise ValueError('Price Factor Interpolation: the engine routes no {} through it; it '
+                         'routes {}'.format(factor_type, ', '.join(sorted(menu))))
+    if method and method not in menu[factor_type]:
+        raise ValueError('Price Factor Interpolation: {} is no interpolation for a {} - that type '
+                         'offers {}'.format(method, factor_type, ', '.join(menu[factor_type])))
+
+
+def interpolation_rule(market, factor_type, name, method):
+    """Set or CLEAR one factor's own interpolation - a `modelfilters` rule on the dotted factor
+    name, which `ModelParams.search` resolves ahead of the type's default. One rule per name; a
+    blank method removes it, so the default applies again."""
     declared = mapping['Configuration']['Price Factor Interpolation']
-    menu = mapping[declared['menu']]
-    if entry != declared['entry']:
-        raise ValueError('Price Factor Interpolation has no {} to set - {} is the half that '
-                         'names one method per factor type'.format(entry, declared['entry']))
-    for factor_type, method in sorted(fields.items()):
-        if method not in menu.get(factor_type, ()):
-            raise ValueError(
-                'Price Factor Interpolation: {} is no interpolation for a {} - {}'.format(
-                    method, factor_type,
-                    'that type offers {}'.format(', '.join(menu[factor_type]))
-                    if factor_type in menu else
-                    'and the engine routes none to it; it routes {}'.format(
-                        ', '.join(sorted(menu)))))
-    section = market.setdefault('Price Factor Interpolation', {})
+    interpolation_method(factor_type, method)
+    stated = (market.get('Price Factor Interpolation') or {}).get('.ModelParams') or {}
+    rules = [rule for rule in (stated.get(declared['rules']) or {}).get(factor_type, [])
+             if list(rule[0]) != [declared['key'], name]]
+    if method:
+        rules.append([[declared['key'], name], method])
+    if not (rules or stated):
+        return                    # a book stating no section is left stating none
     # both halves, because the decoder reads each by direct subscript
-    params = section.setdefault('.ModelParams', {'modeldefaults': {}, 'modelfilters': {}})
-    params[entry] = dict(params.get(entry) or {}, **fields)
-    return entry, params[entry]
+    params = market.setdefault('Price Factor Interpolation', {}).setdefault(
+        '.ModelParams', {'modeldefaults': {}, 'modelfilters': {}})
+    if rules:
+        params.setdefault(declared['rules'], {})[factor_type] = rules
+    else:
+        params.setdefault(declared['rules'], {}).pop(factor_type, None)
+
+
+def interpolation_entry(market, entry, fields):
+    """One routed factor TYPE's interpolation, `entry` naming the type: `method` is what every
+    factor of it is built with, and with an `id` it is that one factor's own rule instead, cleared
+    by a blank method. The answer is what the section now states for the type."""
+    declared = mapping['Configuration']['Price Factor Interpolation']
+    method, named = fields.get('method') or '', fields.get(declared['key']) or ''
+    if named:
+        interpolation_rule(market, entry, named, method)
+    elif method:
+        interpolation_method(entry, method)
+        params = market.setdefault('Price Factor Interpolation', {}).setdefault(
+            '.ModelParams', {'modeldefaults': {}, 'modelfilters': {}})
+        params[declared['entry']] = dict(params.get(declared['entry']) or {}, **{entry: method})
+    else:
+        raise ValueError('Price Factor Interpolation: {} states no method to build its factors '
+                         'with, and no {} naming the one factor a rule would be for'.format(
+                             entry, declared['key']))
+    params = (market.get('Price Factor Interpolation') or {}).get('.ModelParams') or {}
+    return entry, {'method': (params.get(declared['entry']) or {}).get(entry, ''),
+                   'rules': {rule[0][1]: rule[1] for rule
+                             in (params.get(declared['rules']) or {}).get(entry, [])
+                             if rule[0][0] == declared['key']}}
 
 
 #: What `/book/configure` writes, per market-data section: the amendment that merges `fields` into
@@ -1691,7 +1725,9 @@ def configure_edit(document, section, entry, fields):
 def book_configure(request: dict):
     """`{section, entry, fields}` - `fields` MERGED into one entry of `Bootstrapper Configuration`
     (keyed by the price factor a family writes, or the class name an older book spells it by) or of
-    `Price Factor Interpolation` (one method per routed factor type).
+    `Price Factor Interpolation`, whose entry is a routed factor TYPE and whose fields are
+    `{method}` for what every factor of it is built with and `{id, method}` for one factor's own
+    rule, a blank method clearing it. A curve's rule is ordinarily set by `POST /book/curve`.
 
     A book states every bootstrapping hyperparameter ONCE, in that entry, and every quote block of
     the family is read over it. The change is validated by building what reads it - a malformed
@@ -1713,12 +1749,27 @@ def book_configure(request: dict):
 
 #: What a curve request states about the CURVE. Everything else it carries is a convention, which
 #: the seed's entry completes and `curve_conventions` refuses by name where nothing reads it.
-CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows')
+CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows', 'interpolation')
 
 #: The quote blocks a curve verb and the tick both read, and the `Bootstrapper Configuration` entry
 #: that solves one - the family's own declarations, so neither can drift from what it writes.
 CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
 CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
+
+
+def curve_interpolation(market, curve):
+    """`(method, source)` for one curve - the scheme it IS built under, resolved the way
+    `construct_factor` resolves it: the section's rule where one names the curve, else the routed
+    type's default, else the engine's own fallback. `source` is `curve` or `default`."""
+    declared = mapping['Configuration']['Price Factor Interpolation']
+    half = market.get('Price Factor Interpolation', {}).get('.ModelParams', {})
+    params = ModelParams((half.get(declared['entry']) or {}, half.get(declared['rules']) or {}))
+    factor = utils.Factor(CURVE_BOOTSTRAPPER, tuple(curve.split('.')))
+    method = params.search(
+        factor, market.get('Price Factors', {}).get(utils.check_tuple_name(factor), {}), True)
+    ruled = any(condition == (declared['key'], curve)
+                for condition, _ in params.modelfilters.get(CURVE_BOOTSTRAPPER, ()))
+    return method or riskfactors.INTERPOLATION_DEFAULT, 'curve' if ruled else 'default'
 
 
 def wire_stamp(stated):
@@ -1924,9 +1975,16 @@ def curve_quotes(source, document, base_date=None):
 
 @app.post('/book/curve', summary='Set a curve up from its benchmark rows - solved, then written')
 def book_curve(request: dict):
-    """`{curve, currency, rows: [{tenor, security?, quote?, use?}], discount_rate?}`, plus any
-    convention the seed's entry for that curve does not already state - `calendar`, `spot_days`,
-    `compounding`, both leg frequencies, the three day counts, `near_interpolation`, `near_tenor`.
+    """`{curve, currency, rows: [{tenor, security?, quote?, use?}], discount_rate?,
+    interpolation?}`, plus any convention the seed's entry for that curve does not already state -
+    `calendar`, `spot_days`, `compounding`, both leg frequencies, the three day counts,
+    `near_interpolation`, `near_tenor`.
+
+    `interpolation` is THIS CURVE'S OWN SCHEME, stated as a rule in `Price Factor Interpolation`
+    rather than on the block, in the same write and before the solve - so the curve is solved under
+    what it will be read under. Blank removes the rule and the routed type's own default applies;
+    a request that leaves it out leaves the rule as it stands, so re-stating a curve's rows never
+    changes the scheme it was solved under. The near split stays a convention of the block.
 
     THE ROWS ARE THE BENCHMARKS and a tenor says what each one IS: `ON` and the curve's declared
     front are deposits, `1Mx4M` a FRA, `6M1M` a swap starting in six months, anything else a spot
@@ -1953,9 +2011,13 @@ def book_curve(request: dict):
         name, block, as_of = authored_curve(document, request)
 
         def edit(document, etag):
+            market = document['Calc']['MergeMarketData']['ExplicitMarketData']
             # a book that has never carried a curve configures the family that solves one
-            bootstrapper_entry(document['Calc']['MergeMarketData']['ExplicitMarketData'],
-                               CURVE_BOOTSTRAPPER, {})
+            bootstrapper_entry(market, CURVE_BOOTSTRAPPER, {})
+            # a request that says nothing about the scheme leaves the curve's rule as it stands
+            if 'interpolation' in request:
+                interpolation_rule(market, CURVE_BOOTSTRAPPER, request['curve'],
+                                   request['interpolation'] or '')
             dated = book_base_date(document)
             if as_of < dated:
                 raise ValueError(
@@ -1980,8 +2042,10 @@ def book_curve(request: dict):
 def book_curves(curve: str = None):
     """Every `InterestRatePrices` block the book carries, read back as the definition it is: the
     rows as `POST /book/curve` takes them, the conventions they were authored under, and the
-    interpolation the solved factor carries - the book's `Price Factor Interpolation` entry, or the
-    engine's own fallback where it states none. `curve` narrows the answer to one.
+    interpolation the solved factor carries - the `Price Factor Interpolation` rule naming this
+    curve, else the routed type's default, else the engine's own fallback - with
+    `interpolation_source` saying whether a rule named it (`curve`) or it took what every curve
+    takes (`default`). `curve` narrows the answer to one.
 
     `base_date` is the day every block on the book is authored on, and each one's `snapped` is the
     latest print its own rows carry - equal to it where the curve was set up off a terminal, and
@@ -1997,8 +2061,6 @@ def book_curves(curve: str = None):
 
     document, etag = live_book().read()
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    methods = (market.get('Price Factor Interpolation', {}).get('.ModelParams', {})
-               .get('modeldefaults', {}))
     seed = {'rates': security_map.seeded_rates()}
     answer = {'etag': etag, 'base_date': book_base_date(document).isoformat(), 'curves': {}}
     for name in sorted(market.get('Market Prices', {})):
@@ -2006,17 +2068,20 @@ def book_curves(curve: str = None):
         if named is None or curve not in (None, named):
             continue
         instrument = market['Market Prices'][name]['instrument']
+        method, source = curve_interpolation(market, named)
         entry = {
             'curve': named, 'currency': instrument['Currency'],
             'discount_rate': instrument['Discount_Rate'],
-            'interpolation': methods.get(CURVE_BOOTSTRAPPER, riskfactors.INTERPOLATION_DEFAULT),
+            'interpolation': method, 'interpolation_source': source,
             'snapped': max([(row.get('Timestamp') or {}).get('.Timestamp', '')
                             for row in instrument['Points']], default=''),
             'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
                       'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
                      for row in instrument['Points']]}
         try:
-            entry['conventions'] = ir_curve.block_conventions(instrument, seed, named).__dict__
+            entry['conventions'] = dict(
+                ir_curve.block_conventions(instrument, seed, named).__dict__,
+                interpolation=method)
         except KeyError as missing:
             # a block authored before it carried its definition: its quotes read, it cannot re-roll
             entry['note'] = 'authored without {} - set it up again through POST /book/curve'.format(
@@ -2070,9 +2135,10 @@ def book_status():
     makes, and the one that says what every other verb has to work with.
 
     The book's `base_date`, `base_currency` and calculation; how many deals it holds and which
-    netting sets; each curve with the knots it solved on, the latest print its rows carry and any
-    benchmark held out; each vol surface with its own quote stamp; the spot models calibrated onto
-    it; the last XVA per set, trimmed to the columns a desk reads staleness off.
+    netting sets; each curve with the knots it solved on, the scheme it is built under, the latest
+    print its rows carry and any benchmark held out; each vol surface with its own quote stamp; the
+    spot models calibrated onto it; the last XVA per set, trimmed to the columns a desk reads
+    staleness off.
 
     ORIENTATION, NOT NUMBERS: the mark is `/book/risk`, the projection `/book/xva`, the curve
     definitions `/book/curve`. Every field here answers what is set up and how old it is. A
@@ -2092,7 +2158,7 @@ def book_status():
         'netting_sets': [node['Instrument']['.Deal'].get('Reference')
                          for _, node in netting_sets(document)],
         'curves': [{'curve': entry['curve'], 'currency': entry['currency'],
-                    'snapped': entry['snapped'],
+                    'snapped': entry['snapped'], 'interpolation': entry['interpolation'],
                     'knots': [row['tenor'] for row in entry['rows'] if row['use'] == 'Yes'],
                     'held_out': [row['tenor'] for row in entry['rows'] if row['use'] != 'Yes']}
                    for entry in book_curves()['curves'].values()],

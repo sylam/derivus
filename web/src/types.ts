@@ -21,10 +21,13 @@ export type Section = Record<string, Descriptor>;
 /** One market-data section the book states its bootstrap in, rendered by SHAPE: `types` is an
  * entry per declared key with the spellings an older book files it under, `menu` NAMES a sibling
  * store holding one list of values per key and `value` is what the engine uses where the book
- * says nothing. `entry` is what the configure verb takes for the second shape. */
+ * says nothing. `entry` and `rules` are the two halves that shape writes - one value per key, and
+ * a rule per factor named by `key` - and the configure verb takes the key itself. */
 export type ConfigSection = {
   types?: Record<string, { aliases: string[]; fields: Section }>;
   entry?: string;
+  rules?: string;
+  key?: string;
   menu?: string;
   value?: string;
 };
@@ -192,9 +195,11 @@ export type CurveBlock = {
   curve: string;
   currency: string;
   discount_rate: string;
-  /** The scheme the solved factor carries - the book's own bootstrapper entry, or the engine's
-   * fallback where it states none. Not a field of the block, and read-only here. */
+  /** The scheme the solved factor carries - the `Price Factor Interpolation` rule naming this
+   * curve, else the routed type's own method, else the engine's fallback. Not a field of the
+   * block: `interpolation_source` says whether a rule named it (`curve`) or not (`default`). */
   interpolation: string;
+  interpolation_source: string;
   /** Absent on a block authored before it carried its definition, which `note` then explains. */
   conventions?: Record<string, unknown>;
   note?: string;

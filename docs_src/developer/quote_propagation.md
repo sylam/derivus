@@ -79,7 +79,9 @@ findable by a curve it still covers.
     Parameters` and a `ModelParams`, not on the block — and a key missing one is a key two different
     curves share, with the second silently riding the first's operator. Both were measured doing exactly
     that: two jobs 45 days apart shared a slot, and a linearly-interpolated job rode a Hermite solve
-    **0.53bp** away from its own answer. Gated in both directions — the same job under the same scheme
+    **0.53bp** away from its own answer. The whole section is hashed, its `modelfilters` half with it,
+    so a curve given a scheme of its own by an `id` rule moves to its own slot while every curve still
+    on the type's method keeps theirs. Gated in both directions — the same job under the same scheme
     has to *keep* its slot, or the fix is just "never find anything".
 
 The slot is taken over the block **completed by the family's declarations**, so a block omitting

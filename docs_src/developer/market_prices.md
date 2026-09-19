@@ -172,20 +172,26 @@ one that states no `Prices` with the stem it routes on; it validates by CONSTRUC
 off the merged entry, which is where a malformed value refuses by name before a quote is read; and
 it then re-bootstraps the whole market through the tick's own path, so a bootstrap that complains
 writes NOTHING and hands its messages back, and an answer that writes names the price factors the
-run rewrote. `Price Factor Interpolation` is the second section the verb writes — one method per
-routed curve type, held to `Interpolation_factor_map`, which is also what the store names rather
-than restating.
+run rewrote. `Price Factor Interpolation` is the second section the verb writes, its entry a routed
+factor TYPE: `{method}` is what every factor of it is built with and `{id, method}` one factor's own
+rule, both held to `Interpolation_factor_map`, which is also what the store names rather than
+restating.
 
 **A curve is set up the same way, from its instruments.** `POST /book/curve` (`{curve, currency,
-rows: [{tenor, security?, quote?, use?}], discount_rate?}`) authors an `InterestRatePrices` block
+rows: [{tenor, security?, quote?, use?}], discount_rate?, interpolation?}`) authors an
+`InterestRatePrices` block
 from the benchmark rows a desk states: the TENOR is what says what each instrument is — `ON` and the
 curve's declared front are deposits, `1Mx4M` a FRA, `6M1M` a swap starting in six months, anything
 else a spot swap ending there — and the conventions it accrues under are completed from the
 workstation's seed entry for that curve, the desk's own file where it declares them and the packaged
 one otherwise, which is read and never written. A row states its own `quote` or the `security` this
-workstation's terminal prices it off; an unquoted row refuses by name. The block is dropped and
-re-installed rather than ticked, the `InterestRate` entry added where the book configures none, and
-the whole market re-bootstrapped in the same atomic write, so a bootstrap that complains writes
+workstation's terminal prices it off; an unquoted row refuses by name. `interpolation` is THIS
+CURVE'S OWN SCHEME, written as its `id` rule in `Price Factor Interpolation` in the same write and
+before the solve — so the curve is solved under what it will be read under — blank clearing
+the rule and an absent one leaving it as it stands; it is the one request field that does not
+reach the block. The block is dropped
+and re-installed rather than ticked, the `InterestRate` entry added where the book configures none,
+and the whole market re-bootstrapped in the same atomic write, so a bootstrap that complains writes
 NOTHING. The Bloomberg tick then keeps those rows valued: the used rows' securities are re-priced
 and moved as VALUES, a row whose print the screen refuses keeps its number and is held out with
 `Use` No by name — the verb is what puts it back — and a block whose base date has rolled is
@@ -238,11 +244,12 @@ the predicate `quote_containers` uses — the declared row carrying them all. An
 block back through `/book/market`, which value-updates it and bootstraps that block and whatever
 reads it in one atomic write, naming what it covered under `bootstrapped`, and a structural change
 refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
-per block — the rows under the four keys the verb takes, the conventions as a panel over the
-family's declarations whose lower-case spellings the answer names, and the solved factor beside
-them — and a form that sets another up, a seeded entry pre-filling its rows and conventions and
-`POST /book/curve` carrying only the ones a desk moved off them, the verb completing the rest from
-the seed. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
+per block — the rows under the keys the verb takes, the conventions as a panel over the family's
+declarations whose lower-case spellings the answer names plus the curve's own `interpolation`,
+which the answer names and the family declares no column for, and the solved factor beside them —
+and a form that sets another up, a seeded entry pre-filling its rows and conventions and
+`POST /book/curve` carrying its scheme and only the conventions a desk moved off them, the verb
+completing the rest from the seed. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
 files an entry by, edited in the shape it stands in and merged one entry at a time; the map's
 entries under the paths a drift is named by with the rejected ledger beside them and a verify per
 block, queued and polled like any run; and the `used` join read-only, every knot of the book under
@@ -267,11 +274,13 @@ months) and the `Security` it was quoted off. None of that is read by the solve,
 `Deal` it is handed; it is what lets a strip be **re-rolled on a later date** from the block alone
 rather than from whatever authored it, and what makes two blocks quoting the same number under
 different conventions distinguishable. The curve's interpolation comes from `Price Factor
-Interpolation`, with one exception the block owns: `Near_Interpolation` and `Near_Tenor` are
-written onto the solved factor as `Near_Interpolation` and `Near_Date`, so a curve whose near end
-is quoted in a different instrument — a ZARONIA curve is quoted monthly to the last policy meeting
-anyone has a view on and annually beyond — carries one scheme through the near half and the job's
-own over the far one. The solve reads both segments, so every benchmark still reprices at par.
+Interpolation` — the rule naming this curve where the section carries one, else the method it names
+for every `InterestRate` — with one exception the block owns: `Near_Interpolation` and `Near_Tenor`
+are written onto the solved factor as `Near_Interpolation` and `Near_Date`, so a curve whose near
+end is quoted in a different instrument — a ZARONIA curve is quoted monthly to the last policy
+meeting anyone has a view on and annually beyond — carries one scheme through the near half and the
+section's own over the far one. The solve reads both segments, so every benchmark still reprices at
+par.
 
 **The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal` or a
 `StructuredDeal` over two legs, authored exactly as it would be in `Trade Data` — plus `DealType`,
@@ -326,8 +335,9 @@ is not declared. `Zero_Rate_Grid` (there is no second output grid), and `Quote_T
 
 The curve this writes is an `InterestRate`, not a `<ClassName>` parameter block, so the class
 declares `price_factor_type` and `Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads
-it. Interpolation of a solved curve comes from `Price Factor Interpolation`, the near split aside —
-see [Conventions](conventions.md#registries-not-functions).
+it. Interpolation of a solved curve comes from `Price Factor Interpolation` — one method per routed
+factor type, and a `modelfilters` rule on a curve's own `id` where that curve is built another way —
+the near split aside; see [Conventions](conventions.md#registries-not-functions).
 
 ## Retired: the two Heston-Nandi families {#hestonnandi-retired}
 

@@ -49,8 +49,8 @@ stays the maintainer's.
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
-| `describe_curve` | the book's curves as definitions — rows, conventions, interpolation — and, with none named, the seed's own entries a desk can set up |
-| `configure_curve` | `POST /book/curve` — a curve's benchmark rows stated, the block authored from them and the curve solved |
+| `describe_curve` | the book's curves as definitions — rows, conventions, and the interpolation each is built under with the source that named it — and, with none named, the seed's own entries a desk can set up |
+| `configure_curve` | `POST /book/curve` — a curve's benchmark rows stated, its own interpolation with them, the block authored from them and the curve solved |
 | `set_base_date` | `POST /book/date` — the day the book is valued as of, both spellings of it, with every curve re-rolled onto it |
 | `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
 | `describe_securities` | `GET /book/securities` — the ticker vocabulary a desk could quote, the map of what a terminal verified, and the IPV join: every curve row with the print behind it, the verdict that rejected it, or `unmapped` |

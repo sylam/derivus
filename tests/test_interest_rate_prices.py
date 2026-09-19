@@ -461,6 +461,70 @@ def test_the_near_split_is_written_through_and_every_quote_still_reprices():
         'Property_Aliases', 'Sub_Type', 'Currency', 'Day_Count', 'Curve'}
 
 
+def test_a_curves_own_rule_builds_it_and_leaves_its_neighbour_on_the_default():
+    """TWO CURVES ON ONE BOOK UNDER TWO SCHEMES. `Price Factor Interpolation` names one method per
+    routed factor type and, in its filter half, a rule per factor `id` - the dotted curve name -
+    which `ModelParams.search` resolves FIRST. So a desk's projection curve is HermiteRT while the
+    OIS curve it discounts on stays Linear, which one method per type could not say.
+
+    The solve reads the section the pricers read, so the round trip closes on both curves at once:
+    each is recovered to 1e-10 from quotes generated under its OWN scheme, and each block reprices
+    at par read the same way.
+
+    Killing mutation: the rule ignored and the type default read alone, which builds the projection
+    curve Linear. THE PAR CHECK CANNOT SEE IT - a solve drives its own benchmarks to par under
+    whatever scheme it is using, 2.9e-11 either way - and the ROUND TRIP can: the recovered
+    projection curve then misses the one its quotes came from by **7.507e-06** against its 1e-10
+    bound, while the OIS curve beside it is untouched at 1.4e-17.
+    """
+    interp = ModelParams()
+    interp.append('InterestRate', (), 'Linear')
+    interp.append('InterestRate', ('id', 'USD-3M'), 'HermiteRT')
+    market_prices, true_factors, knots = authored_world('usd', interp)
+    solved = bootstrapped(market_prices, 'USD', 'USD-OIS', interp=interp)
+
+    built = {name: riskfactors.construct_factor(utils.Factor('InterestRate', (name.split('.')[1],)),
+                                                solved, interp, base_date=BASE) for name in knots}
+    assert [built['InterestRate.USD-3M'].interpolation[0][0],
+            built['InterestRate.USD-OIS'].interpolation[0][0]] == ['HermiteRT', 'Linear']
+    for name in knots:
+        assert np.abs(solved[name]['Curve'].array[:, 1] -
+                      true_factors[name]['Curve'].array[:, 1]).max() < 1e-10, name
+
+    for market_price, entry in market_prices.items():
+        block = entry['instrument']
+        priced = BenchmarkInstruments(
+            block_nodes(block, discount_of(market_price, block)), solved, interp, BASE, 'USD', {},
+            [], DEVICE)({}).detach().numpy()
+        assert np.abs(priced).max() < 1e-9, (market_price, priced)
+
+
+def test_the_near_splits_far_leg_is_the_curves_own_rule():
+    """THE NEAR SPLIT AND THE RULE COMPOSE. `Near_Interpolation` to `Near_Tenor` stays the block's,
+    written onto the factor as `Near_Interpolation`/`Near_Date`; the FAR leg is whatever the
+    section resolves for this curve, which is now its own rule rather than the type default. A
+    ZARONIA curve quoted monthly to the last policy meeting is LinearRT to 18M and HermiteRT
+    beyond, on a book whose every other curve is Linear.
+
+    Killing mutation: the far leg read off the type default, which builds it Linear - the round
+    trip then misses the curve its quotes came from by **7.879e-05** against its 1e-10 bound, and
+    the second segment reads `Linear` where the rule says `HermiteRT`.
+    """
+    interp = ModelParams()
+    interp.append('InterestRate', (), 'Linear')
+    interp.append('InterestRate', ('id', 'ZAR-ZARONIA'), 'HermiteRT')
+    market_prices, true_factors, _ = authored_world('zaronia', interp)
+    solved = bootstrapped(market_prices, 'ZAR', 'ZAR-ZARONIA', interp=interp)
+
+    built = riskfactors.construct_factor(
+        utils.Factor('InterestRate', ('ZAR-ZARONIA',)), solved, interp, base_date=BASE)
+    assert [segment[2][0] for segment in built.interpolation] == ['LinearRT', 'HermiteRT']
+    assert built.tenors[built.interpolation[0][1]] == pytest.approx(
+        ((BASE + pd.DateOffset(months=18)) - BASE).days / 365.0)
+    assert np.abs(solved['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1] -
+                  true_factors['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1]).max() < 1e-10
+
+
 def test_a_near_interpolation_without_its_tenor_refuses_by_name():
     """The split needs the date it stops at: a block naming the scheme and no tenor is refused
     before a quote is read, rather than dying on a date plus an empty string."""

@@ -993,32 +993,55 @@ def test_a_malformed_dial_refuses_by_name_before_a_quote_is_read(tmp_path):
 
 
 def test_an_interpolation_the_engine_routes_nowhere_refuses_by_name(tmp_path):
-    """The second section: one method per routed curve type, held to the menu the store publishes.
-    A method reaches the engine's own `ModelParams` and is what `construct_factor` then injects; a
-    type nothing routes and a method nothing implements are both refused by name, because neither
-    raises anywhere downstream - the curve is silently interpolated the default way instead.
+    """The second section, keyed by the routed factor TYPE: `method` is what every factor of it is
+    built with, and an `id` names ONE factor to carry a scheme of its own - a `modelfilters` rule
+    the engine's own `ModelParams.search` resolves AHEAD of the default, which is what lets two
+    curves be built two ways. A blank method clears the rule. A type nothing routes and a method
+    nothing implements are both refused by name, because neither raises anywhere downstream - the
+    factor is silently interpolated the default way instead.
+
+    Killing mutations: the rule written into `modeldefaults` beside the type's own method, which
+    `search` then answers for every curve; a blank method leaving the rule standing, which is a
+    curve no screen can put back onto the default; an entry stating neither, which would write an
+    empty rule nothing resolves.
     """
     path = tmp_path / 'book.json'
     configured_book(path, {'FXVolSurfaceParameters': {}})
     try:
         written = CLIENT.post('/book/configure', json={
-            'section': 'Price Factor Interpolation', 'entry': 'modeldefaults',
-            'fields': {'InterestRate': 'HermiteRT'}}).json()
+            'section': 'Price Factor Interpolation', 'entry': 'InterestRate',
+            'fields': {'method': 'HermiteRT'}}).json()
+        ruled = CLIENT.post('/book/configure', json={
+            'section': 'Price Factor Interpolation', 'entry': 'InterestRate',
+            'fields': {'id': 'ZAR-ZARONIA', 'method': 'LinearRT'}}).json()
 
-        assert written['written'] is True and written['dials'] == {'InterestRate': 'HermiteRT'}
+        assert written['written'] is True and written['dials'] == {'method': 'HermiteRT',
+                                                                   'rules': {}}
+        assert ruled['dials'] == {'method': 'HermiteRT', 'rules': {'ZAR-ZARONIA': 'LinearRT'}}
         document = json.loads(path.read_text())
         assert document['Calc']['MergeMarketData']['ExplicitMarketData'][
             'Price Factor Interpolation'] == {'.ModelParams': {
-                'modeldefaults': {'InterestRate': 'HermiteRT'}, 'modelfilters': {}}}
-        assert in_process(document).current_cfg.params['Price Factor Interpolation'].search(
-            utils.Factor('InterestRate', ('ZAR',)), {}, True) == 'HermiteRT'
+                'modeldefaults': {'InterestRate': 'HermiteRT'},
+                'modelfilters': {'InterestRate': [[['id', 'ZAR-ZARONIA'], 'LinearRT']]}}}
+        section = in_process(document).current_cfg.params['Price Factor Interpolation']
+        assert section.search(utils.Factor('InterestRate', ('ZAR',)), {}, True) == 'HermiteRT'
+        assert section.search(
+            utils.Factor('InterestRate', ('ZAR-ZARONIA',)), {}, True) == 'LinearRT'
+
+        cleared = CLIENT.post('/book/configure', json={
+            'section': 'Price Factor Interpolation', 'entry': 'InterestRate',
+            'fields': {'id': 'ZAR-ZARONIA'}}).json()
+        assert cleared['dials'] == {'method': 'HermiteRT', 'rules': {}}
+        assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Price Factor Interpolation']['.ModelParams']['modelfilters'] == {}
 
         before = path.read_bytes()
-        for fields, named in (({'FxRate': 'HermiteRT'}, 'FxRate'),
-                              ({'InterestRate': 'Cubic'}, 'Cubic')):
+        for entry, fields, named in (('FxRate', {'method': 'HermiteRT'}, 'FxRate'),
+                                     ('InterestRate', {'method': 'Cubic'}, 'Cubic'),
+                                     ('InterestRate', {'id': 'ZAR', 'method': 'Cubic'}, 'Cubic'),
+                                     ('InterestRate', {}, 'id')):
             refused = CLIENT.post('/book/configure', json={
-                'section': 'Price Factor Interpolation', 'entry': 'modeldefaults',
-                'fields': fields})
+                'section': 'Price Factor Interpolation', 'entry': entry, 'fields': fields})
             assert refused.status_code == 422 and named in refused.json()['detail']
             assert 'InterestRate' in refused.json()['detail'], 'a refusal naming no menu'
         assert path.read_bytes() == before
@@ -1055,11 +1078,14 @@ def curve_block(path, curve='ZAR'):
         'Market Prices']['InterestRatePrices.{}'.format(curve)]['instrument']
 
 
-def par_residuals(path, curve='ZAR'):
+def par_residuals(path, curve='ZAR', interp=None):
     """Every benchmark of the written block repriced off the curve the bootstrap solved, AS OF THE
     DAY THE BOOK IS DATED - the par vector, which is zero iff the knot grid is square and the dates
     the emitter rolled are the ones the solve used. A million of notional, so 1e-6 is a thousandth
-    of a basis point of principal."""
+    of a basis point of principal.
+
+    Read under the book's OWN `Price Factor Interpolation` unless `interp` names another, so a
+    curve solved under one scheme and read under a second says so in the residual."""
     import copy
 
     import torch
@@ -1075,9 +1101,11 @@ def par_residuals(path, curve='ZAR'):
         deal = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
         author_quote(deal, point['Quoted_Market_Value'], curve)
         nodes.append(quote_node(deal, {}))
-    return BenchmarkInstruments(nodes, market['Price Factors'], ModelParams(),
-                                market['System Parameters']['Base_Date'], block['Currency'], {},
-                                [], torch.device('cpu'))({}).detach().numpy()
+    return BenchmarkInstruments(
+        nodes, market['Price Factors'],
+        interp or market.get('Price Factor Interpolation') or ModelParams(),
+        market['System Parameters']['Base_Date'], block['Currency'], {}, [],
+        torch.device('cpu'))({}).detach().numpy()
 
 
 def test_a_curve_set_up_from_its_rows_solves_at_par(book):
@@ -1100,6 +1128,7 @@ def test_a_curve_set_up_from_its_rows_solves_at_par(book):
     assert outcome['knots'] == [row['tenor'] for row in CURVE_ROWS]
     assert outcome['rewrote'] == ['InterestRate.ZAR']
     assert market['Bootstrapper Configuration']['InterestRate']['Prices'] == 'InterestRate'
+    assert 'Price Factor Interpolation' not in market, 'a curve stating no scheme wrote a section'
     assert block['Spot_Days'] == 0 and block['Compounding'] == 'None'
     assert block['Fixed_Frequency'] == {'.DateOffset': '3M'} and block['Day_Count'] == 'ACT_365'
     assert [row['Tenor'] for row in block['Points']] == [row['tenor'] for row in CURVE_ROWS]
@@ -1108,6 +1137,52 @@ def test_a_curve_set_up_from_its_rows_solves_at_par(book):
     assert [row['DealType'] for row in block['Points']] == [
         'DepositDeal', 'FRADeal'] + ['SwapInterestDeal'] * 4
     assert abs(par_residuals(book)).max() < 1e-6, 'a benchmark the solved curve does not reprice'
+
+
+def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book):
+    """A CURVE'S SCHEME IS A RULE IN `Price Factor Interpolation`, not a field of its block. The
+    verb writes the rule in the same atomic write as the block and BEFORE the bootstrap, so the
+    curve is SOLVED under what it will be read under; a second curve set up beside it with no
+    scheme takes the routed type's own. The read verb resolves both the way `construct_factor`
+    does and says which of the two answered.
+
+    MEASURED, on a million of notional: the ZAR strip solved under its HermiteRT rule reprices its
+    own benchmarks to **5.82e-11** and, read under the Linear default instead, to **690.14** - the
+    swap rows, whose every coupon reads the curve between the knots the ladder carries.
+
+    Killing mutations: the rule written after the bootstrap, which leaves the curve fitted under
+    the default and off par by that second number; the read verb answering the type default alone,
+    which cannot tell the two curves apart; a blank `interpolation` leaving the rule standing.
+    """
+    from derivus.config import ModelParams
+
+    assert set_up_curve(interpolation='HermiteRT').status_code == 200
+    assert set_up_curve(rows=USD_ROWS, curve='USD', currency='USD').status_code == 200
+    market = json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    answer = CLIENT.get('/book/curve').json()['curves']
+
+    assert market['Price Factor Interpolation']['.ModelParams'] == {
+        'modeldefaults': {}, 'modelfilters': {'InterestRate': [[['id', 'ZAR'], 'HermiteRT']]}}
+    assert (answer[CURVE_BLOCK]['interpolation'],
+            answer[CURVE_BLOCK]['interpolation_source']) == ('HermiteRT', 'curve')
+    assert answer[CURVE_BLOCK]['conventions']['interpolation'] == 'HermiteRT'
+    assert (answer['InterestRatePrices.USD']['interpolation'],
+            answer['InterestRatePrices.USD']['interpolation_source']) == ('Linear', 'default')
+
+    assert abs(par_residuals(book)).max() < 1e-6, 'the rule was not what the curve was solved under'
+    assert abs(par_residuals(book, interp=ModelParams())).max() > 1e-4
+
+    # the rows re-stated with nothing said about the scheme: the rule stands (killing mutation: an
+    # absent field read as a blank one, which clears the rule under every re-statement)
+    assert set_up_curve().status_code == 200
+    standing = CLIENT.get('/book/curve', params={'curve': 'ZAR'}).json()['curves'][CURVE_BLOCK]
+    assert (standing['interpolation'], standing['interpolation_source']) == ('HermiteRT', 'curve')
+
+    assert set_up_curve(interpolation='').status_code == 200
+    assert json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factor Interpolation']['.ModelParams']['modelfilters'] == {}
+    cleared = CLIENT.get('/book/curve', params={'curve': 'ZAR'}).json()['curves'][CURVE_BLOCK]
+    assert (cleared['interpolation'], cleared['interpolation_source']) == ('Linear', 'default')
 
 
 def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monkeypatch):
@@ -1147,7 +1222,7 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
     status = CLIENT.get('/book/status').json()
 
     assert status['curves'] == [{
-        'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
+        'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28', 'interpolation': 'Linear',
         'knots': [row['tenor'] for row in CURVE_ROWS[:-1]], 'held_out': ['10Y']}]
 
 

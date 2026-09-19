@@ -13,8 +13,10 @@ import type {
 } from '../types';
 
 /** The family a curve block is - the one name this screen spells, and the one the service's own
- * answer is keyed by (`InterestRatePrices.<curve>`). Everything else here is a declaration. */
+ * answer is keyed by (`InterestRatePrices.<curve>`). Everything else here is a declaration. The
+ * factor it WRITES is its stem, which is what the interpolation menu is keyed by. */
 const FAMILY = 'InterestRatePrices';
+const FACTOR = FAMILY.replace(/Prices$/, '');
 
 /** The four row fields a request states, against the declarations that describe them - the block's
  * own quote row, which is where the quote's widget and the hold-out's two values come from. */
@@ -26,8 +28,13 @@ const TEXT: Descriptor = { widget: 'Text', description: '', value: '' };
 
 const rowCells = (row: CurveRow) => ROW_FIELDS.map(([key]) => row[key]);
 
-const panelFields = (declared: Section, fields: string[]): Section =>
-  Object.fromEntries(fields.map((key) => [key, declared[key]]));
+/** The panel's own declarations: the family's, and a menu row for a field it declares none for -
+ * the curve's own scheme, which is a rule in a section and so has no column to be declared on. */
+const panelFields = (declared: Section, fields: string[], menu: string[]): Section =>
+  Object.fromEntries(fields.map((key) => [key, declared[key] ?? {
+    widget: 'Dropdown', value: '', values: menu,
+    description: "The scheme this curve alone is built under; blank takes the type's own",
+  }]));
 
 /** One cell as the row carries it: a cleared QUOTE is not a quote of zero, and travels as the null
  * that says no number was stated - which is what sends the row to the terminal, or refuses it. */
@@ -36,16 +43,15 @@ const cleared = (key: string, wire: unknown) =>
 
 /** One block as the definition it is: what it was stated in, the rows it was solved from, and the
  * factor the bootstrap wrote where the market data store carries one. */
-function CurveCard({ schema, name, block, declared, fields, factors, onEdit }: {
-  schema: Schema; name: string; block: CurveBlock; declared: Section; fields: string[];
+function CurveCard({ schema, name, block, panel, fields, factors, onEdit }: {
+  schema: Schema; name: string; block: CurveBlock; panel: Section; fields: string[];
   factors: Record<string, unknown>; onEdit: (form: CurveForm) => void;
 }) {
   const solved = solvedFactor(factors, block.curve);
   const knots = solved && Object.values(solved[1]).map(curveOf).find(Boolean)?.data.length;
   return (
     <>
-      <DescriptorPanel title={name} fields={panelFields(declared, fields)}
-                       values={curveValues(fields, block)} />
+      <DescriptorPanel title={name} fields={panel} values={curveValues(fields, block)} />
       {block.note && <div className="error-box">{block.note}</div>}
       <section className="card">
         <h3>{name} — rows ({block.rows.length})</h3>
@@ -71,8 +77,8 @@ function CurveCard({ schema, name, block, declared, fields, factors, onEdit }: {
  * Bootstrapper screen uses. One button authors, solves and writes in one atomic request - the
  * answer names the knots and what the bootstrap rewrote, a refusal is the service's own words,
  * and the form stands as it was either way. */
-function SetUp({ declared, fields, answer, form, setForm }: {
-  declared: Section; fields: string[]; answer: CurvesAnswer;
+function SetUp({ declared, panel, fields, answer, form, setForm }: {
+  declared: Section; panel: Section; fields: string[]; answer: CurvesAnswer;
   form: CurveForm; setForm: (form: CurveForm) => void;
 }) {
   const [outcome, setOutcome] = useState<CurveOutcome | null>(null);
@@ -112,7 +118,7 @@ function SetUp({ declared, fields, answer, form, setForm }: {
         <div className="error-box">{seeded[form.curve].refused}</div>
       )}
       <DescriptorPanel
-        title="what the curve is stated in" fields={panelFields(declared, fields)}
+        title="what the curve is stated in" fields={panel}
         values={{ ...curveValues(fields, { ...form, conventions: form.stated }), ...form.edits }}
         onAmend={async (key, wire) => { setForm(edited(form, key, wire)); return null; }} />
       <section className="card">
@@ -196,6 +202,7 @@ export function CurvesView() {
 
   const declared = state.schema.MarketPrices.types[FAMILY] ?? {};
   const fields = curveFields(declared, answer);
+  const panel = panelFields(declared, fields, state.schema.Interpolation_factor_map[FACTOR] ?? []);
   const market = state.doc.Calc.MergeMarketData?.ExplicitMarketData ?? {};
   const names = Object.keys(answer.curves);
 
@@ -207,11 +214,12 @@ export function CurvesView() {
         )}
         {names.map((name) => (
           <CurveCard key={name} schema={state.schema!} name={name} block={answer.curves[name]}
-                     declared={declared} fields={fields} factors={market['Price Factors'] ?? {}}
+                     panel={panel} fields={fields} factors={market['Price Factors'] ?? {}}
                      onEdit={setForm} />
         ))}
       </div>
-      <SetUp declared={declared} fields={fields} answer={answer} form={form} setForm={setForm} />
+      <SetUp declared={declared} panel={panel} fields={fields} answer={answer} form={form}
+             setForm={setForm} />
     </div>
   );
 }

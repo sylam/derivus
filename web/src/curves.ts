@@ -10,10 +10,12 @@ import type { CurveRow, CurvesAnswer, Section } from './types';
 /** A row nothing has been said about yet. */
 const BLANK: CurveRow = { tenor: '', security: '', quote: null, use: 'Yes' };
 
-/** The declared fields a request names outright, and what it calls them: `curve` is the block's
- * name and `rows` are the ladder, so these two are what a panel shows beside the conventions. */
-const REQUEST_FIELDS: Record<string, 'currency' | 'discount_rate'> = {
-  Currency: 'currency', Discount_Rate: 'discount_rate',
+/** The fields a request names outright, and what it calls them: `curve` is the block's name and
+ * `rows` are the ladder, so these are what a panel shows beside the conventions. `Interpolation`
+ * is the curve's own scheme - a rule in a section rather than a column of the block, which is why
+ * the family declares no field of that name. */
+const REQUEST_FIELDS: Record<string, 'currency' | 'discount_rate' | 'interpolation'> = {
+  Currency: 'currency', Discount_Rate: 'discount_rate', Interpolation: 'interpolation',
 };
 
 /** The form a request is composed in: the verb's own fields, and what the SOURCE stated, so an
@@ -22,6 +24,8 @@ export type CurveForm = {
   curve: string;
   currency: string;
   discount_rate: string;
+  /** The curve's OWN scheme, blank where it takes the routed type's. */
+  interpolation: string;
   rows: CurveRow[];
   /** The conventions the seed or the block states, in the service's spelling. */
   stated: Record<string, unknown>;
@@ -41,11 +45,14 @@ export function withRow(rows: CurveRow[], index: number, patch: Partial<CurveRow
  * completed with the fields a request takes, its conventions the baseline an edit is measured
  * against. */
 export function prefill(curve: string, source: {
-  currency?: string; discount_rate?: string;
+  currency?: string; discount_rate?: string; interpolation?: string; interpolation_source?: string;
   conventions?: Record<string, unknown>; rows?: Partial<CurveRow>[];
 }): CurveForm {
   return {
     curve, currency: source.currency ?? '', discount_rate: source.discount_rate ?? '',
+    // only a scheme this curve's own RULE states comes back: one it merely resolved to is the
+    // type's, and re-stating it would write a rule where the book carried none
+    interpolation: source.interpolation_source === 'curve' ? source.interpolation ?? '' : '',
     rows: (source.rows ?? []).map((row) => ({ ...BLANK, ...row })),
     stated: source.conventions ?? {}, edits: {},
   };
@@ -56,19 +63,19 @@ export function prefill(curve: string, source: {
 export function edited(form: CurveForm, key: string, value: unknown): CurveForm {
   const own = REQUEST_FIELDS[key];
   if (own === undefined) return { ...form, edits: { ...form.edits, [key]: value } };
-  return own === 'currency'
-    ? { ...form, currency: String(value) } : { ...form, discount_rate: String(value) };
+  return { ...form, [own]: String(value) };
 }
 
 /** The request `POST /book/curve` takes: every row that names a tenor, and ONLY the conventions
- * the desk moved off what the source stated, the verb completing the rest from the seed. */
+ * the desk moved off what the source stated, the verb completing the rest from the seed. The
+ * curve's own scheme is always stated, blank clearing its rule. */
 export function curveRequest(form: CurveForm): Record<string, unknown> {
   const moved = Object.entries(form.edits)
     .filter(([key, value]) => value !== form.stated[key.toLowerCase()])
     .map(([key, value]) => [key.toLowerCase(), value]);
   return {
     curve: form.curve.trim(), currency: form.currency.trim(),
-    discount_rate: form.discount_rate.trim(),
+    discount_rate: form.discount_rate.trim(), interpolation: form.interpolation.trim(),
     rows: form.rows.filter((row) => row.tenor.trim() !== '').map((row) => ({
       tenor: row.tenor.trim(), security: row.security.trim(), quote: row.quote, use: row.use,
     })),
@@ -76,26 +83,31 @@ export function curveRequest(form: CurveForm): Record<string, unknown> {
   };
 }
 
-/** The fields a curve is stated in, in declaration order: the two the request names outright, and
+/** The fields a curve is stated in, in declaration order: the ones the request names outright, and
  * every declared field whose lower-case spelling the service answers a conventions block in.
  * Nothing else in the family is one - a solver dial is not a convention, and the verb refuses a
- * name it reads nothing of. */
+ * name it reads nothing of. A request field the family declares NO column for comes last, and only
+ * where the answer names it, which is how the curve's own scheme reaches the panel. */
 export function curveFields(declared: Section, answer: CurvesAnswer): string[] {
   const named = new Set<string>();
   for (const entry of [...Object.values(answer.curves), ...Object.values(answer.seeded ?? {})]) {
     Object.keys(entry.conventions ?? {}).forEach((key) => named.add(key));
   }
   return Object.keys(declared)
-    .filter((key) => key in REQUEST_FIELDS || named.has(key.toLowerCase()));
+    .filter((key) => key in REQUEST_FIELDS || named.has(key.toLowerCase()))
+    .concat(Object.keys(REQUEST_FIELDS)
+      .filter((key) => !(key in declared) && named.has(key.toLowerCase())));
 }
 
 /** Those fields against one block, for the panel that renders them. A field the block does not
  * state is left out, so the declaration's own default is what shows. */
 export function curveValues(keys: string[], source: {
-  currency?: string; discount_rate?: string; conventions?: Record<string, unknown>;
+  currency?: string; discount_rate?: string; interpolation?: string;
+  conventions?: Record<string, unknown>;
 }): Record<string, unknown> {
   const stated: Record<string, unknown> = {
     currency: source.currency, discount_rate: source.discount_rate, ...source.conventions,
+    interpolation: source.interpolation,
   };
   return Object.fromEntries(keys.filter((key) => stated[key.toLowerCase()] !== undefined)
     .map((key) => [key, stated[key.toLowerCase()]]));

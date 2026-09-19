@@ -45,8 +45,8 @@ function AddEntry({ missing, configure }: { missing: string[]; configure: Config
  * `types` is an entry per key the book states - the entry's own values where it has them and the
  * declared default otherwise, so an empty `{}` shows every dial at its default - plus the families
  * it does not state yet. One carrying `menu` is a single panel of that menu's choices, one row per
- * key it names, at the engine's own value where the book states none. Editable where the document
- * is the live book. */
+ * key it names, at the engine's own value where the book states none - and the key itself is the
+ * entry the verb takes. Editable where the document is the live book. */
 function ConfigurationSection({ schema, name, declared, value, configure }: {
   schema: Schema; name: string; declared: ConfigSection; value: unknown; configure?: Configure;
 }) {
@@ -78,7 +78,7 @@ function ConfigurationSection({ schema, name, declared, value, configure }: {
   return (
     <DescriptorPanel
       title={name} fields={fields} values={stated}
-      onAmend={configure && ((field, wire) => configure(half, { [field]: wire }))} />
+      onAmend={configure && ((field, wire) => configure(field, { method: wire }))} />
   );
 }
 

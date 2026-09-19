@@ -31,8 +31,10 @@ const SEEDED = {
 };
 
 const BLOCK = {
-  curve: 'ZAR', currency: 'ZAR', discount_rate: '', interpolation: 'Linear',
-  conventions: { ...SEEDED.conventions, calendar: '', near_interpolation: '', near_tenor: '' },
+  curve: 'ZAR', currency: 'ZAR', discount_rate: '',
+  interpolation: 'Linear', interpolation_source: 'default',
+  conventions: { ...SEEDED.conventions, calendar: '', near_interpolation: '', near_tenor: '',
+                 interpolation: 'Linear' },
   rows: [{ tenor: '3M', security: 'JIBA3M Index', quote: 7.41, use: 'Yes' },
          { tenor: '1Y', security: 'SASW1 BGN Curncy', quote: 7.62, use: 'No' }],
 };
@@ -40,7 +42,8 @@ const BLOCK = {
 // a block authored before it carried its definition: the read verb answers the quotes it can read,
 // blank tenors, and a note where the conventions would be
 const OLD_BLOCK = {
-  curve: 'USD', currency: 'USD', discount_rate: '', interpolation: 'Linear',
+  curve: 'USD', currency: 'USD', discount_rate: '',
+  interpolation: 'Linear', interpolation_source: 'default',
   note: "authored without 'Spot_Days' - set it up again through POST /book/curve",
   rows: [{ tenor: '', security: 'US0003M Index', quote: 5.3, use: 'Yes' },
          { tenor: '2Y', security: 'USSW2 Curncy', quote: 4.1, use: 'Yes' }],
@@ -57,6 +60,8 @@ const DECLARED = Object.fromEntries([
   'Float_Frequency', 'Fixed_Day_Count', 'Float_Day_Count', 'Front_Day_Count', 'Compounding',
   'Near_Interpolation', 'Near_Tenor', 'N_Iter', 'Tol', 'Damping_Halvings', 'Points',
 ].map((name) => [name, { widget: 'Text', description: name, value: '' }]));
+// the family declares NO `Interpolation`: a curve's own scheme is a rule in a section, so the
+// panel's row for it comes off what the ANSWER names instead
 
 const FACTORS = {
   'FxRate.ZAR': { Domestic_Currency: null, Interest_Rate: 'ZAR', Spot: 18.5 },
@@ -95,7 +100,7 @@ const seededRows = [
 check('prefill completes a seeded row with the fields a request takes',
       'the spread reversed ({...row, ...BLANK}), which blanks the quotes a block already carries',
       curves.prefill('ZAR', SEEDED), {
-        curve: 'ZAR', currency: 'ZAR', discount_rate: '', rows: seededRows,
+        curve: 'ZAR', currency: 'ZAR', discount_rate: '', interpolation: '', rows: seededRows,
         stated: SEEDED.conventions, edits: {},
       });
 check('prefill keeps a block\'s own quotes and hold-outs',
@@ -104,7 +109,15 @@ check('prefill keeps a block\'s own quotes and hold-outs',
 check('prefill on nothing is an empty form',
       'a default of the curve name for the currency, which sends a new curve a currency nobody stated',
       curves.prefill('', {}),
-      { curve: '', currency: '', discount_rate: '', rows: [], stated: {}, edits: {} });
+      { curve: '', currency: '', discount_rate: '', interpolation: '', rows: [], stated: {},
+        edits: {} });
+check('prefill carries a curve\'s own rule back and not a scheme it merely resolved to',
+      'the `interpolation_source` test dropped, after which stating any curve\'s rows again '
+      + 'writes the type\'s own method onto that curve as a rule of its own',
+      [curves.prefill('ZAR', BLOCK).interpolation,
+       curves.prefill('ZAR', { ...BLOCK, interpolation: 'HermiteRT', interpolation_source: 'curve' })
+         .interpolation],
+      ['', 'HermiteRT']);
 
 // --- withRow
 const rows = curves.prefill('ZAR', SEEDED).rows;
@@ -146,8 +159,14 @@ check('curveRequest states only the conventions the desk moved, in the verb\'s s
       + 'refuses the write) or the equality filter dropped (`spot_days` travels as a convention '
       + 'nobody stated, which is the same number today and a lie the day the seed moves)',
       Object.keys(request).filter((key) =>
-        !['curve', 'currency', 'discount_rate', 'rows'].includes(key)),
+        !['curve', 'currency', 'discount_rate', 'interpolation', 'rows'].includes(key)),
       ['calendar']);
+check('curveRequest always states the curve\'s own scheme',
+      'the field sent only where the desk moved it, after which stating a curve\'s rows again '
+      + 'clears the rule it was solved under and the curve silently drops to the type\'s method',
+      [request.interpolation, curves.curveRequest({ ...composed, interpolation: 'HermiteRT' })
+        .interpolation],
+      ['', 'HermiteRT']);
 check('curveRequest leaves out the row nobody named, and trims the rest',
       'the blank-tenor filter dropped: an empty row a desk added and left behind reaches the '
       + 'emitter, whose grammar refuses `` by name and writes nothing',
@@ -169,7 +188,7 @@ check('curveFields is the declaration crossed with the spellings the service ans
       fields,
       ['Currency', 'Discount_Rate', 'Calendar', 'Spot_Days', 'Fixed_Frequency', 'Float_Frequency',
        'Fixed_Day_Count', 'Float_Day_Count', 'Front_Day_Count', 'Compounding',
-       'Near_Interpolation', 'Near_Tenor']);
+       'Near_Interpolation', 'Near_Tenor', 'Interpolation']);
 check('curveFields reads the seeded entries too',
       'the union taken over `curves` alone, which leaves a desk with a book carrying no curve yet '
       + 'nothing to state at all. A seed stating no `calendar` is why that field is the one '
@@ -186,6 +205,7 @@ check('curveValues reads a block through the same lower-case spelling',
         Currency: 'ZAR', Discount_Rate: '', Calendar: '', Spot_Days: 0, Fixed_Frequency: '3M',
         Float_Frequency: '3M', Fixed_Day_Count: 'ACT_365', Float_Day_Count: 'ACT_365',
         Front_Day_Count: 'ACT_365', Compounding: 'None', Near_Interpolation: '', Near_Tenor: '',
+        Interpolation: 'Linear',
       });
 check('curveValues leaves out what the source does not state',
       'a `?? \'\'` fallback, which paints a blank over the declaration\'s own default and sends it '
@@ -200,7 +220,8 @@ check('the block with a note in place of its conventions still reads',
       + 'answers a note for and takes the whole screen down with it',
       [curves.curveFields(DECLARED, OLD_BOOK), curves.curveValues(fields, OLD_BLOCK),
        curves.prefill('USD', OLD_BLOCK).stated],
-      [['Currency', 'Discount_Rate'], { Currency: 'USD', Discount_Rate: '' }, {}]);
+      [['Currency', 'Discount_Rate'],
+       { Currency: 'USD', Discount_Rate: '', Interpolation: 'Linear' }, {}]);
 check('its rows are stated again by the ones that name a tenor',
       'the blank-tenor filter dropped, which sends the emitter a row whose instrument nothing '
       + 'names - the note says that is what is missing',

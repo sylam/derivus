@@ -464,9 +464,10 @@ def emit_configuration(module, interpolation_default):
     the instrument definitions), never the section's. `aliases` is what else the registry answers
     to for that family, so an older book's class-name key files under the right entry.
 
-    `Price Factor Interpolation` REFERENCES the menu beside it rather than restating it, names the
-    `ModelParams` half an entry is, and states what a routed factor is built with where the section
-    names nothing.
+    `Price Factor Interpolation` REFERENCES the menu beside it rather than restating it, names both
+    `ModelParams` halves - the `entry` one method per routed type is written in and the `rules` one
+    factor's own scheme is, keyed by `key` off its dotted name - and states what a routed factor is
+    built with where the section names neither.
     """
     entries = {}
     for cls in module.FAMILIES:
@@ -481,8 +482,8 @@ def emit_configuration(module, interpolation_default):
                               if family is cls and name != cls.price_factor_type),
             'fields': dials}
     return {'Bootstrapper Configuration': {'types': entries},
-            'Price Factor Interpolation': {'entry': 'modeldefaults',
-                                           'menu': 'Interpolation_factor_map',
+            'Price Factor Interpolation': {'entry': 'modeldefaults', 'rules': 'modelfilters',
+                                           'key': 'id', 'menu': 'Interpolation_factor_map',
                                            'value': interpolation_default}}
 
 
