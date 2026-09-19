@@ -3,7 +3,7 @@
 
 import type {
   BookResponse, BookRisk, BookXva, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
-  ResultSummary, Schema, TablePage, ValidateResult,
+  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -71,6 +71,14 @@ export const configureBook = (section: string, entry: string, fields: Record<str
 export const getCurves = () => call<CurvesAnswer>('GET', '/book/curve');
 export const configureCurve = (request: Record<string, unknown>) =>
   call<CurveOutcome>('POST', '/book/curve', request);
+// the ticker vocabulary: the candidates this desk could quote, what a terminal verified about
+// them and every knot's own print in one read; one entry of the desk's own seed merged; and the
+// terminal round trip that rewrites the map, queued and polled like an execute
+export const getSecurities = () => call<SecuritiesAnswer>('GET', '/book/securities');
+export const configureSecurities = (request: Record<string, unknown>) =>
+  call<SeedOutcome>('POST', '/book/securities', request);
+export const verifySecurities = (scope: Record<string, unknown>) =>
+  call<{ result_id: string; status: string }>('POST', '/book/securities/verify', scope);
 // the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and
 // answers from the cache afterwards, and the XVA verb never runs anything at all - a recalc is
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.

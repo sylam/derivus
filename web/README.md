@@ -33,6 +33,21 @@ price factors the run rewrote, or refusing in its own words with the file untouc
 edits and the request — the rows, plus only the conventions the desk moved off the seeded ones,
 since the verb completes the rest — are `src/curves.ts`, checked by `scripts/curves_check.mjs`.
 
+**Securities** is the vocabulary those rows are quoted off, one read (`GET /book/securities`) in
+three panes. *The vocabulary* is what this desk CLAIMS it could quote — the packaged questionnaire
+with the desk's own file over it — one card per key each block files an entry by, every field
+edited in the shape it already stands in and merged by one button, a refusal rendered verbatim with
+the form standing. *The evidence* is what a terminal ANSWERED: each verified entry under the path a
+drift is named by, the ledger of what was rejected and why, and a verify button per block and one
+for the whole map, the queued job's progress off the results poll and its verdicts rendered where
+it lands; a workstation with no terminal refuses at submission, and that sentence is a notice
+rather than an error, since the vocabulary reads perfectly well without one. *Every knot* is the
+IPV read: one row per quote row the book carries — tenor, security, quote and the print's own
+timestamp — with the name a terminal gave that security and when it was verified, the verdict that
+rejected it, or `unmapped`, coloured by the service's word and never by a rule of the client's. The
+entry edits, the two requests and the join are `src/securities.ts`, checked by
+`scripts/securities_check.mjs`.
+
 **The two data views are reads, and neither has a run button.** *Risk* is `GET /book/risk`: the
 book's consolidated mark and its whole-book gradient, counterparty-blind — a headline strip, the
 aggregate greeks (sortable by size of exposure or read in curve order), and the per-deal marks,

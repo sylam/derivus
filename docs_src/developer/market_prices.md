@@ -242,8 +242,11 @@ per block — the rows under the four keys the verb takes, the conventions as a 
 family's declarations whose lower-case spellings the answer names, and the solved factor beside
 them — and a form that sets another up, a seeded entry pre-filling its rows and conventions and
 `POST /book/curve` carrying only the ones a desk moved off them, the verb completing the rest from
-the seed. The ticker vocabulary those rows are quoted off has no screen yet; the three verbs above
-are what one renders from.
+the seed. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
+files an entry by, edited in the shape it stands in and merged one entry at a time; the map's
+entries under the paths a drift is named by with the rejected ledger beside them and a verify per
+block, queued and polled like any run; and the `used` join read-only, every knot of the book under
+the print it was solved from with that security's evidence, verdict or `unmapped` beside it.
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 

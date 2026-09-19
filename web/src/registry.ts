@@ -11,6 +11,7 @@ import { MarketDataView } from './views/MarketDataView';
 import { MarketPricesView } from './views/MarketPricesView';
 import { PortfolioView } from './views/PortfolioView';
 import { RiskView } from './views/RiskView';
+import { SecuritiesView } from './views/SecuritiesView';
 import { SettingsView } from './views/SettingsView';
 import { XvaView } from './views/XvaView';
 
@@ -28,6 +29,9 @@ export const WORKSPACES: Workspace[] = [
   { id: 'prices', label: 'Market Prices', view: MarketPricesView },
   { id: 'curves', label: 'Curves', view: CurvesView },
   { id: 'bootstrap', label: 'Bootstrapper', view: BootstrapperView },
+  // the tickers underneath all of it: what this desk could quote, what a terminal verified about
+  // those claims, and which print every knot was solved from
+  { id: 'securities', label: 'Securities', view: SecuritiesView },
   { id: 'market', label: 'Market Data', view: MarketDataView },
   { id: 'calculation', label: 'Calculation', view: CalculationView },
   { id: 'settings', label: 'Settings', view: SettingsView },

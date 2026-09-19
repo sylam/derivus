@@ -226,3 +226,78 @@ export type CurveOutcome = {
   rewrote?: string[];
   installed?: string[];
 };
+
+// ---- the ticker vocabulary and its evidence: /book/securities -----------------------------------
+// The seed is the CANDIDATES a desk could quote, the map is what a terminal VERIFIED, and `used` is
+// the join between the two and the book. None of the three is declared by `/schema` - the seed is
+// the desk's own JSON file - so this screen renders by SHAPE, and a ticker is a string throughout.
+
+/** What the map ever said about one security: an entry's evidence (the name a terminal answered
+ * and when it was verified), a rejection's `verdict`, or the `{verdict: 'unmapped'}` the service
+ * answers where the map has never heard of the ticker. */
+export type Evidence = {
+  name?: string | null;
+  last_update?: string | null;
+  verified?: string;
+  verdict?: string;
+  error?: string | null;
+};
+
+/** One quote row the book carries, with that evidence beside it - the IPV join. */
+export type UsedRow = {
+  curve: string;
+  tenor: string;
+  security: string;
+  quote: number | null;
+  /** The print's OWN timestamp, off the quote row - not when the map verified the ticker. */
+  timestamp: string;
+  use: string;
+  evidence: Evidence;
+};
+
+/** One verified leaf of the map. `security` is what MAKES a leaf; everything above it is the path
+ * a drift is reported by. */
+export type MapEntry = {
+  security: string;
+  name: string;
+  last_update: string | null;
+  verified: string;
+};
+
+export type SecuritiesAnswer = {
+  etag: string;
+  home: string;
+  /** Whether this home carries a map at all. False reads as an EMPTY map, never a refusal. */
+  provisioned: boolean;
+  seed: Record<string, Record<string, unknown>>;
+  used: UsedRow[];
+  map: {
+    generated: string | null;
+    blocks: Record<string, unknown>;
+    /** Keyed by TICKER: a candidate that never became an entry has no path in the map. */
+    rejected: Record<string, Evidence>;
+  };
+};
+
+/** What a merge answered: the tickers that block now spells, and the file the write kept. */
+export type SeedOutcome = {
+  written: boolean;
+  block: string;
+  key: string;
+  candidates: string[];
+  backup: string | null;
+  seed: string;
+};
+
+/** What a verification answered, under its run's own `stats.Securities`. */
+export type VerifyOutcome = {
+  written?: boolean;
+  map?: string;
+  verified?: string[];
+  /** Keyed by the entry's path in the map, which is what a drift is named by. */
+  drifted?: Record<string, { security: string; drift: string }>;
+  unknown?: string[];
+  /** The names the map had never heard of, each with the verdict it was probed to. */
+  added?: Record<string, string>;
+  seconds?: number;
+};
