@@ -6753,6 +6753,39 @@ def bootstrap_order(section):
                           for name, edges in sorted(unresolved.items()))))
 
 
+def bootstrap_dependents(market_prices, moved):
+    """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
+    numbers: those blocks, plus every block that reads what one of them writes, closed over.
+
+    A block is read two ways and both are the families' own declarations. `reads` names the price
+    factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
+    curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
+    (`benchmark_curves`), so a tick of one curve re-solves the curves discounting on it and no
+    others. A block of a type no family reads is nobody's dependency.
+    """
+    writer = {cls.market_factor_type: cls for cls in FAMILIES}
+    blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
+              if utils.check_rate_name(name)[0] in writer}
+    curves = InterestRateCurveParameters
+    named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
+             for name, cls in blocks.items() if cls is curves
+             for block in [market_prices[name].get('instrument', {})]}
+    readers = {}
+    for reader, cls in blocks.items():
+        for written, wrote in blocks.items():
+            if written != reader and wrote.price_factor_type in cls.reads and (
+                    cls is not curves or wrote is not curves
+                    or '.'.join(utils.check_rate_name(written)[1:]) in named[reader]):
+                readers.setdefault(written, []).append(reader)
+    covered, pending = set(moved), list(moved)
+    while pending:
+        for reader in readers.get(pending.pop(), ()):
+            if reader not in covered:
+                covered.add(reader)
+                pending.append(reader)
+    return covered
+
+
 def market_prices_for(btype, market_prices, declared=None):
     """The `Market Prices` blocks the family named by one `Bootstrapper Configuration` entry reads.
 

@@ -333,7 +333,7 @@ DV_Service --port 8000
 | `POST` | `/book/deals` | book, amend or delete one deal — validated BEFORE an atomic write; a refusal is `{"written": false, "refused": […]}` and touches nothing |
 | `POST` | `/book/price` | price the book plus an optional candidate deal — a what-if; writes nothing, and the candidate is validated BEFORE it queues, a 422 naming any market data the book lacks rather than a run that drops it |
 | `POST` | `/book/solve` | solve one field of a candidate deal to a target value — a root find over base valuations; the solved coordinates arrive under the result's `stats.Solved` |
-| `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains |
+| `POST` | `/book/market` | tick the book's market: quote blocks installed or value-updated (structure refused), a `patch_market`-shaped values patch, the bootstrap run — one atomic write, refused whole if the bootstrap complains. A values tick bootstraps the blocks it moved and every block that reads one of them, named back under `bootstrapped`; the whole market where a block arrived authored, where the patch names a factor a family reads, or where nothing moved at all |
 | `POST` | `/book/curve` | set a curve up from its benchmark rows — `{curve, currency, rows: [{tenor, security?, quote?, use?}]}` plus any convention the seed's entry leaves out; each tenor says what its instrument IS (`ON` and the declared front a deposit, `1Mx4M` a FRA, `6M1M` a forward-starting swap, anything else a spot swap), the block is re-authored whole and the market re-bootstrapped in one atomic write, and the answer names the date it was authored on, the block, its knots and the factors the run rewrote. THE SNAP SETS THE DATE: a row priced off the terminal carries the print's own clock, and where that is later than the day the book stands at the book rolls onto it and every other curve block is re-authored there too |
 | `GET` | `/book/curve` | the book's curve blocks read back as definitions — rows, conventions and interpolation, in the shape the POST takes — with `base_date`, the day every block is authored on, and each block's own `snapped`, the latest print its rows carry; and, with no `?curve=`, the seed's own curve entries a desk could set up |
 | `POST` | `/book/date` | set the book's calculation date — `{base_date}`, an ISO day or the wire stamp; both spellings of the date move together, every `InterestRatePrices` block is re-authored on the new day from its own rows and conventions with no terminal asked, and the whole market is re-bootstrapped in one atomic write, refused whole if the bootstrap complains. The tick and the curve verb roll the date FORWARD onto the day their quotes were snapped; this is the one that goes anywhere |
@@ -357,7 +357,11 @@ the rows it names, and staleness is data rather than a failure.
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their
 next etag poll. Deals are addressed by positional `deal_path` (`"0/2/1"`), because references are
-not unique in a book.
+not unique in a book. A write is read-edit-write AGAINST THE ETAG IT READ, and the edit runs
+outside the book's lock: a read or a booking never waits behind a tick's bootstrap, and a write
+that lands in between costs the edit a redo on the document that now stands rather than costing
+the other client its wait — three passes, then a 422 saying the book is being written faster than
+it can be read.
 
 `mapping['Instrument']` also publishes `containers` — the deal types that accept `Children`
 (`Deal.accepts_children` emitted into the store), so a client can tell a leaf from a structure

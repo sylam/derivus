@@ -27,9 +27,9 @@ import pandas as pd
 from ._version import __version__
 from . import utils
 from . import schema
-from .bootstrappers import (bootstrap_order, construct_bootstrapper, family_class,
-                            market_prices_for, InterestRateCurveParameters, FAMILIES,
-                            PRICES_KEY)
+from .bootstrappers import (bootstrap_dependents, bootstrap_order, construct_bootstrapper,
+                            family_class, market_prices_for, InterestRateCurveParameters,
+                            FAMILIES, PRICES_KEY)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -611,9 +611,14 @@ class Config(object):
 
         return {'present': model_factor, 'absent': remaining_factor}
 
-    def bootstrap(self):
+    def bootstrap(self, only=None):
         """Runs all the bootstrappers in one process. For multiprocessing
         bootstrapping, call `construct_bootstrapper` directly.
+
+        `only` NARROWS THE RUN to the `Market Prices` blocks whose numbers moved: those and every
+        block that reads one of them (`bootstrappers.bootstrap_dependents`) are covered and the
+        rest are left exactly as they stand, so a tick of one curve re-solves that curve and what
+        discounts on it rather than the whole market. None is every block.
 
         THE CONFIGURATION DRIVES THE LOOP: each `Bootstrapper Configuration` entry names a family,
         `bootstrappers.market_prices_for` selects the blocks that family reads, and the family is
@@ -644,6 +649,7 @@ class Config(object):
         entries = self.params['Bootstrapper Configuration']
         # every entry names a class before any of them runs, and the order is what it reads
         section = [(name, entries[name]) for name in bootstrap_order(entries)]
+        selected = None if only is None else bootstrap_dependents(prices, only)
         claimed = {family_class(name).market_factor_type for name, _ in section}
         unclaimed = sorted({utils.check_rate_name(x)[0] for x in prices} - claimed)
         if unclaimed:
@@ -663,6 +669,10 @@ class Config(object):
                         family_class(bootstrapper_name).market_factor_type[:-len('Prices')]))
             blocks = market_prices_for(
                 bootstrapper_name, self.params['Market Prices'], declared=stem)
+            if selected is not None:
+                blocks = {name: block for name, block in blocks.items() if name in selected}
+                if not blocks:
+                    continue
             if not blocks:
                 family = family_class(bootstrapper_name).market_factor_type
                 logging.warning('Bootstrapper {} is configured and the book carries no {} block '
@@ -685,13 +695,16 @@ class Config(object):
                                    self.holidays)
 
             # a family that kept its calibration on the tape hands the leaves over here, for
-            # `_build_factor_state`. Its OWN keys are dropped first, so a run that stops publishing
-            # leaves no stale connected tensor standing.
+            # `_build_factor_state`. A WHOLE run drops its OWN keys first, so one that stops
+            # publishing leaves no stale connected tensor standing; a narrowed run replaces what it
+            # covered and leaves every block it did not look at standing.
             written, block = bootstrapper.price_factor_type, bootstrapper.market_factor_type
-            self.calibrated_factors = {factor: theta for factor, theta
-                                       in self.calibrated_factors.items() if factor.type != written}
-            self.quote_leaves = {name: leaf for name, leaf in self.quote_leaves.items()
-                                 if utils.check_rate_name(name)[0] != block}
+            if selected is None:
+                self.calibrated_factors = {
+                    factor: theta for factor, theta in self.calibrated_factors.items()
+                    if factor.type != written}
+                self.quote_leaves = {name: leaf for name, leaf in self.quote_leaves.items()
+                                     if utils.check_rate_name(name)[0] != block}
             self.calibrated_factors.update(getattr(bootstrapper, 'calibrated', {}))
             self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
 

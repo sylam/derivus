@@ -120,6 +120,14 @@ it writes orders only its own blocks; a cycle refuses by name; independent entri
 order. Each family is handed only its own blocks, and both empty cases are logged: a configured
 family the book carries no block for, and a block type no configured family claims.
 
+**A run narrows to what moved.** `Config.bootstrap(only=…)` names the `Market Prices` blocks whose
+numbers moved and covers those plus every block that READS one of them —
+`bootstrappers.bootstrap_dependents`, closed over the same declarations the order is taken from: a
+family's `reads` for a surface or a spot model, and for the curve family the very curve a block
+names, in `Discount_Rate` or inside its benchmark deals, which is per block rather than per type. A
+family left with no selected block is neither constructed nor run and its factors stand exactly as
+they are. `None` is every block, which is what every caller but a values tick passes.
+
 Three entry points are reachable without `bootstrap` — the swaption residual closure (`calc_loss`,
 `calc_loss_on_ir_curve`), which a gate builds off a hand-authored block, and the curve ride
 (`propagate`, `plan_key`), which runs at EXECUTE off a document carrying no bootstrapper. Each
@@ -208,8 +216,9 @@ each block's ladder under the columns its family declares, and edits the VALUE c
 `mapping['MarketPrices']['values']` publishes `MARKET_QUOTE_VALUES` beside the types, so a client
 moves what the tick guard admits without spelling one of the four names, and finds a block's ladder by
 the predicate `quote_containers` uses — the declared row carrying them all. An edit posts the WHOLE
-block back through `/book/market`, which value-updates it and bootstraps in one atomic write, and a
-structural change refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
+block back through `/book/market`, which value-updates it and bootstraps that block and whatever
+reads it in one atomic write, naming what it covered under `bootstrapped`, and a structural change
+refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
 per block — the rows under the four keys the verb takes, the conventions as a panel over the
 family's declarations whose lower-case spellings the answer names, and the solved factor beside
 them — and a form that sets another up, a seeded entry pre-filling its rows and conventions and

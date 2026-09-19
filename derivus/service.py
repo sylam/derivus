@@ -83,7 +83,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
-               structures)
+               structures, utils)
 from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sniff_indent,
                      splice_deal, tables_of, update_market_quote, value_message,
                      walk_job_deals)
@@ -399,14 +399,24 @@ class ComputeExecutor:
             self.queue.task_done()
 
 
+#: How many times a `mutate` re-runs its edit on a book that moved under it before it refuses. An
+#: edit is redone because something else landed, so a third redo is a book nobody can write.
+REDOS = 3
+
+#: What a `mutate` refuses with when it never got a quiet moment to write in.
+BUSY = ('the book was rewritten by something else {} times running while this edit ran - it is '
+        'being written faster than it can be read; post it again')
+
+
 class Book:
     """One live job document on disk - the FILE is the source of truth.
 
     The state MCP, the SPA and Excel meet in: a booking lands as a file write and every client sees
     it on its next read. Reads check mtime and re-parse on change, so an external edit is picked up
     too; the etag is a hash of the text, so a client polls one small GET. Writes are atomic
-    (write-temp-then-replace) in the file's own indent, and `mutate` holds one lock across
-    read-edit-validate-write. Every read parses fresh, so an abandoned edit never reaches the cache.
+    (write-temp-then-replace) in the file's own indent, and `mutate` holds the lock for its read and
+    for its write and NEVER across the edit. Every read parses fresh, so an abandoned edit never
+    reaches the cache.
     """
 
     def __init__(self, path):
@@ -415,7 +425,8 @@ class Book:
         self._cache = (None, None, None)  # (mtime_ns, etag, text)
         self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
 
-    def _read(self):
+    def _current(self):
+        """The etag of the file as it stands, the cached text re-read where the file moved."""
         stamp = os.stat(self.path).st_mtime_ns
         if stamp != self._cache[0]:
             # utf-8 named on both sides: Windows' locale default is cp1252, which misreads any
@@ -423,31 +434,48 @@ class Book:
             with open(self.path, encoding='utf-8') as handle:
                 text = handle.read()
             self._cache = (stamp, content_hash(text), text)
-        return json.loads(self._cache[2]), self._cache[1]
+        return self._cache[1]
+
+    def _read(self):
+        etag = self._current()
+        return json.loads(self._cache[2]), etag
 
     def read(self):
         """`(wire document, etag)` - a fresh parse, safe for the caller to mutate."""
         with self.lock:
             return self._read()
 
-    def baseline(self, document):
+    def baseline(self, document, etag):
         """The WHOLE verdict the book already carries - every deal's messages and the factors it
-        lacks - cached against the etag, a booking's before and after being the same walk where
-        nothing has changed the file between them. Read under `mutate`'s lock, which is what makes
-        the cached etag the one just parsed."""
-        if self._verdict[0] != self._cache[1]:
-            self._verdict = (self._cache[1], load(document).validate())
+        lacks - cached against the ETAG THE DOCUMENT WAS READ AT, a booking's before and after
+        being the same walk where nothing has changed the file between them. Keyed by what the
+        caller read rather than by what the file now says, an edit running outside the lock."""
+        if self._verdict[0] != etag:
+            self._verdict = (etag, load(document).validate())
         return self._verdict[1]
 
     def mutate(self, edit):
-        """Read-modify-write under one lock. `edit(document)` returns `(write, outcome)`; a False
-        first half leaves the file untouched - a refused booking is a read, not a write."""
-        with self.lock:
-            document, _ = self._read()
-            write, outcome = edit(document)
+        """Read-modify-write, the EDIT RUNNING OUTSIDE THE LOCK. `edit(document, etag)` returns
+        `(write, outcome)`; a False first half leaves the file untouched - a refused booking is a
+        read, not a write.
+
+        A bootstrap is seconds and a read is milliseconds, so the lock is held for the read and for
+        the write and nothing in between. The write lands only if the file still carries the etag
+        the edit ran against; otherwise the edit is re-run on the document as it now stands, which
+        is what makes a booking landing mid-tick cost the tick one redo rather than costing the
+        booking the whole tick.
+        """
+        for _ in range(REDOS):
+            with self.lock:
+                document, etag = self._read()
+            write, outcome = edit(document, etag)
             # the verdict the edit took, where the document it validated is the one being written
             validated = outcome.pop('_validated', None)
-            if write:
+            if not write:
+                return dict(outcome, etag=etag)
+            with self.lock:
+                if self._current() != etag:
+                    continue
                 text = json.dumps(document, indent=sniff_indent(self._cache[2]))
                 temporary = self.path + '.tmp'
                 with open(temporary, 'w', encoding='utf-8', newline='') as handle:
@@ -455,7 +483,8 @@ class Book:
                 os.replace(temporary, self.path)
                 self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
                 self._verdict = (self._cache[1], validated) if validated is not None else (None, None)
-            return dict(outcome, etag=self._cache[1])
+                return dict(outcome, etag=self._cache[1])
+        raise ValueError(BUSY.format(REDOS))
 
 
 #: The live book: `DV_HOME/book.json` by default, another file where `DV_Service --book` names one,
@@ -838,13 +867,13 @@ def book_deals(request: dict):
     if action not in ('add', 'amend', 'delete'):
         raise HTTPException(422, 'action must be add, amend or delete, not {!r}'.format(action))
 
-    def edit(document):
+    def edit(document, etag):
         if action == 'delete':
             removed = remove_deal(document, request['deal_path'])
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
         if action == 'amend':
-            baseline = live_book().baseline(document)
+            baseline = live_book().baseline(document, etag)
             node = deal_at(document, request['deal_path'])
             before = instrument_of(node)
             node['Instrument']['.Deal'].update(request['fields'])
@@ -857,7 +886,7 @@ def book_deals(request: dict):
                                                  request.get('actor')))
             return written, outcome
         written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'),
-                                     live_book().baseline(document))
+                                     live_book().baseline(document, etag))
         if written:
             outcome = dict(outcome, _validated=outcome['validate'], **spine_fill(
                 document, outcome['deal_path'], request.get('quantity'),
@@ -914,12 +943,12 @@ def book_price(request: dict):
     THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
-    document, _ = live_book().read()
+    document, etag = live_book().read()
     try:
         if request.get('deal') is not None:
             written, outcome = deal_edit(document, request['deal'],
                                          request.get('parent_reference'),
-                                         live_book().baseline(document))
+                                         live_book().baseline(document, etag))
             if not written:
                 raise HTTPException(422, '; '.join(outcome['refused']))
         with_overrides(document, request.get('calculation_overrides', {}))
@@ -1454,6 +1483,23 @@ UNPROVISIONED = ('no security map in {} - a routine tick never provisions. Run '
                  "workstation's securities, and the cadence picks up from the next beat")
 
 
+def bootstrap_selection(market, outcome, patch):
+    """The `Market Prices` blocks this edit's bootstrap covers, or None - every block.
+
+    A VALUE TICK RE-SOLVES WHAT IT MOVED: the blocks it value-updated and, off the families' own
+    declarations, every block that reads one of them. The whole market re-solves where the READ
+    side moved instead - a block arriving authored is a new plan, a patched factor a family prices
+    on is a new input to every block of that family, and a bootstrap asked for with nothing moved
+    at all is a dial change.
+    """
+    read = {kind for family in bootstrappers.FAMILIES for kind in family.reads}
+    if outcome['installed'] or not outcome['updated'] or any(
+            utils.check_rate_name(name)[0] in read for name in patch):
+        return None
+    return bootstrappers.bootstrap_dependents(market.get('Market Prices', {}),
+                                              outcome['updated'])
+
+
 def market_edit(document, quotes, patch, bootstrap=None):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
     installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
@@ -1467,6 +1513,10 @@ def market_edit(document, quotes, patch, bootstrap=None):
     `patch` is the `Price Factors` half of `patch_market` here and nothing else: a quote IS a
     patchable value to the engine, but on the live book it moves through `quotes`, which
     bootstraps. See `QUOTE_NOT_A_PATCH`.
+
+    THE BOOTSTRAP COVERS WHAT MOVED (`bootstrap_selection`) and names it under `bootstrapped`
+    where it was narrowed, so a tick of one curve costs that curve and its dependents rather than
+    the whole market.
     """
     outcome = {'installed': [], 'updated': []}
     for name in sorted(quotes):
@@ -1485,11 +1535,12 @@ def market_edit(document, quotes, patch, bootstrap=None):
     context = load(document)
     context.patch_market(patch)
     before = set(market.get('Price Factors', {}))
+    only = bootstrap_selection(market, outcome, patch) if wants_bootstrap else None
     if wants_bootstrap:
         captured = CapturedErrors()
         logging.getLogger().addHandler(captured)
         try:
-            context.bootstrap()
+            context.bootstrap(only)
         finally:
             logging.getLogger().removeHandler(captured)
         if captured.messages:
@@ -1498,7 +1549,8 @@ def market_edit(document, quotes, patch, bootstrap=None):
     market['Price Factors'] = as_json(params['Price Factors'])
     market['Market Prices'] = as_json(params['Market Prices'])
     return True, dict(outcome, written=True, patched=sorted(patch),
-                      new_factors=sorted(set(market['Price Factors']) - before))
+                      new_factors=sorted(set(market['Price Factors']) - before),
+                      **({} if only is None else {'bootstrapped': sorted(only)}))
 
 
 @app.post('/book/market', summary="Tick the book's market - quotes in, values patched, bootstrapped")
@@ -1510,14 +1562,16 @@ def book_market(request: dict):
     re-authoring, refused by name. `patch` is the values delta as `patch_market` takes it, less the
     `Market Prices` half. The bootstrap (default: run iff quotes arrived) turns the quotes into the
     price factors the pricers read, all in one atomic write - a bootstrap that reports an error
-    writes NOTHING and hands the messages back.
+    writes NOTHING and hands the messages back. It covers the blocks that moved and every block
+    that READS one of them, answered under `bootstrapped`; a block arriving authored, a patch
+    naming a factor a family reads, or nothing moved at all re-solves the whole market.
 
     A `patch` naming a `Market Prices` block is refused with the remedy, the one place the book is
     stricter than the engine: see `QUOTE_NOT_A_PATCH`.
     """
     live = live_book()
 
-    def edit(document):
+    def edit(document, etag):
         return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
                            request.get('bootstrap'))
 
@@ -1622,7 +1676,7 @@ def book_configure(request: dict):
     """
     live = live_book()
 
-    def edit(document):
+    def edit(document, etag):
         return configure_edit(document, request['section'], request['entry'],
                               request.get('fields', {}))
 
@@ -1868,7 +1922,7 @@ def book_curve(request: dict):
     try:
         name, block, as_of = authored_curve(document, request)
 
-        def edit(document):
+        def edit(document, etag):
             # a book that has never carried a curve configures the family that solves one
             bootstrapper_entry(document['Calc']['MergeMarketData']['ExplicitMarketData'],
                                CURVE_BOOTSTRAPPER, {})
@@ -1979,7 +2033,7 @@ def book_date(request: dict):
     live = live_book()
     try:
         base_date = read_stamp(request['base_date'])
-        written = live.mutate(lambda document: date_edit(document, base_date))
+        written = live.mutate(lambda document, etag: date_edit(document, base_date))
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     if not written['written']:
@@ -2060,7 +2114,7 @@ class BloombergJob:
             self.note('installing and bootstrapping', len(pairs), len(pairs))
             try:
                 written = self.book.mutate(
-                    lambda document: curve_edit(document, curves, snapped, quotes))
+                    lambda document, etag: curve_edit(document, curves, snapped, quotes))
             except (ValueError, KeyError) as error:
                 # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
                 # the metronome's failed-beat handling reads `refused` off these Stats, where
@@ -2235,7 +2289,7 @@ class SpotModelJob:
                 self.pair, self.family)}
         try:
             outcome = self.book.mutate(
-                lambda document: spot_model_edit(document, self.pair, self.family))
+                lambda document, etag: spot_model_edit(document, self.pair, self.family))
         finally:
             PROGRESS.pop(self.result_id, None)
         return None, {'Results': {}, 'Stats': {'SpotModel': dict(
@@ -2447,7 +2501,7 @@ def book_solve(request: dict):
     """
     document, etag = live_book().read()
     try:
-        baseline = live_book().baseline(document)
+        baseline = live_book().baseline(document, etag)
         job_children(document)[:] = []
         written, outcome = deal_edit(document, request['deal'], None, baseline)
     except ValueError as error:
@@ -2922,10 +2976,10 @@ def book_quote(request: dict):
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
 
-    def approve(book):
+    def approve(book, etag):
         # no _validated: pin_models edits the book after the verdict, so the verdict is not its
         written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent,
-                                     live_book().baseline(book))
+                                     live_book().baseline(book, etag))
         # the model rides the SAME write as the deal - never a second one that could half-land
         if written and pinned:
             structures.pin_models(book, pending['deal'], pinned)

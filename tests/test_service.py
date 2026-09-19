@@ -1149,6 +1149,167 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     assert book.read_bytes() == before, 'a bootstrap that complained still wrote the block'
 
 
+#: The OIS strip the three gates below tick: long enough that its solve is seconds rather than
+#: milliseconds, which is what a desk's own curve costs and what makes a bootstrap worth not
+#: holding a lock across.
+OIS_ROWS = ([{'tenor': 'ON', 'quote': 7.30}]
+            + [{'tenor': tenor, 'quote': 7.35 + 0.01 * n}
+               for n, tenor in enumerate(('1M', '2M', '3M', '6M', '9M'), 1)]
+            + [{'tenor': tenor, 'quote': 7.55 + 0.03 * n}
+               for n, tenor in enumerate(('1Y', '2Y', '3Y', '4Y', '5Y', '6Y', '7Y', '8Y', '9Y',
+                                          '10Y', '12Y', '15Y', '20Y', '25Y', '30Y'), 1)])
+
+#: What a verb answers inside while a bootstrap runs beside it. A blotter polls the book on a
+#: cadence a person can feel, and the solve it polls beside is measured in seconds.
+LOCK_BUDGET = 0.2
+
+
+@pytest.fixture
+def desk_curves(book, monkeypatch):
+    """A desk-shaped curve set on one book: `ZAR-ZARONIA` off the OIS strip, `ZAR` discounting on
+    it - `CURVE_ROWS` without its deposit, which a foreign discount curve does not identify - and
+    `USD`, which nothing here reads. Every row is quoted by hand and `DV_HOME` is the gate's own
+    tmp, so neither a terminal nor a desk file is in the picture."""
+    monkeypatch.setenv('DV_HOME', str(book.parent))
+    assert set_up_curve(rows=OIS_ROWS, curve='ZAR-ZARONIA', currency='ZAR').status_code == 200
+    assert set_up_curve(rows=CURVE_ROWS[1:], discount_rate='ZAR-ZARONIA').status_code == 200
+    assert set_up_curve(rows=USD_ROWS, curve='USD', currency='USD').status_code == 200
+    return book
+
+
+def moved_quotes(path, curve, by=0.005):
+    """One `InterestRatePrices` block as it stands in the book with every quote moved - the body of
+    a values tick, which is the one thing a desk posts between authorings."""
+    block = {'instrument': curve_block(path, curve)}
+    for point in block['instrument']['Points']:
+        point['Quoted_Market_Value'] = round(point['Quoted_Market_Value'] + by, 6)
+    return {'InterestRatePrices.{}'.format(curve): block}
+
+
+def written_factors(path):
+    """Every price factor of the book as the BYTES it stands in the file as."""
+    return {name: json.dumps(block, sort_keys=True) for name, block in json.loads(
+        path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Price Factors'].items()}
+
+
+def under_a_tick(quotes, during):
+    """Post a values tick from another thread and run `during` while it bootstraps: the tick's
+    `(start, end)`, its answer, and whatever `during` gave back.
+
+    The window is what the callers assert the overlap against, so a tick too fast to overlap fails
+    the gate rather than passing it vacuously. The sleep is the tick's head start and nothing is
+    asserted on it.
+    """
+    window, answered = [], []
+
+    def tick():
+        start = time.perf_counter()
+        posted = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON)
+        window.append((start, time.perf_counter()))
+        answered.append(posted.json())
+
+    thread = threading.Thread(target=tick)
+    thread.start()
+    time.sleep(0.4)
+    ran = during()
+    thread.join()
+    return window[0], answered[0], ran
+
+
+def test_a_read_and_a_booking_answer_while_a_tick_bootstraps(desk_curves):
+    """A READ NEVER WAITS BEHIND A BOOTSTRAP. `Book.mutate` reads under the lock, runs the edit
+    outside it and takes the lock again only to write, so the seconds a curve solve costs are not
+    seconds every other verb waits: a `GET /book` and a `POST /book/deals` issued while the tick is
+    bootstrapping both answer inside the budget, and both are asserted to have run INSIDE the
+    tick's own window - a tick that answered first fails this gate rather than passing it.
+
+    Killing mutation: the lock held across the edit again - the read waits the whole solve out,
+    0.86s against the 0.007s and the booking's 0.022s here, and both miss the tick's window.
+    """
+    def read_and_book():
+        started = time.perf_counter()
+        read = CLIENT.get('/book')
+        halfway = time.perf_counter()
+        booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
+                             headers=JSON)
+        return started, halfway, time.perf_counter(), read, booked
+
+    window, ticked, (started, halfway, done, read, booked) = under_a_tick(
+        moved_quotes(desk_curves, 'ZAR-ZARONIA'), read_and_book)
+
+    assert ticked['written'] is True and read.status_code == 200
+    assert booked.json()['written'] is True
+    assert halfway - started < LOCK_BUDGET, 'the read waited on the bootstrap'
+    assert done - halfway < LOCK_BUDGET, 'the booking waited on the bootstrap'
+    assert window[0] < started and done < window[1], 'the calls did not overlap the bootstrap'
+
+
+def test_a_booking_landing_mid_tick_costs_the_tick_a_redo_and_both_edits_land(desk_curves):
+    """TWO EDITS, ONE FILE, BOTH LANDING. The booking lands inside the tick's window, so the tick's
+    edit ran against a document that no longer stands: its write is refused by the etag it read and
+    the edit RE-RUNS on the document the booking wrote. The file carries both afterwards - the
+    booked deal and the moved quotes - and the tick's answer names the etag the book now has.
+
+    Killing mutation: the etag check dropped in `Book.mutate` - the tick writes the document it
+    read and the deal booked inside its window is gone from the file it lands in.
+    """
+    def book_a_deal():
+        started = time.perf_counter()
+        answer = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
+                             headers=JSON)
+        return started, time.perf_counter(), answer.json()
+
+    moved = moved_quotes(desk_curves, 'ZAR-ZARONIA')
+    window, ticked, (started, done, booked) = under_a_tick(moved, book_a_deal)
+    document = json.loads(desk_curves.read_text())
+
+    assert window[0] < started and done < window[1], 'the booking did not land inside the tick'
+    assert booked['written'] is True and ticked['written'] is True
+    assert booked['etag'] != ticked['etag'] == CLIENT.get('/book').json()['etag']
+    assert [node['Instrument']['.Deal']['Reference']
+            for node in document['Calc']['Deals']['Deals']['Children']] == ['CF1', 'CF2']
+    assert [row['Quoted_Market_Value'] for row in curve_block(desk_curves, 'ZAR-ZARONIA')[
+        'Points']] == [row['Quoted_Market_Value'] for row in
+                       moved['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']]
+
+
+def test_a_moved_curve_re_solves_what_reads_it_and_nothing_else(desk_curves):
+    """A VALUE TICK RE-SOLVES WHAT IT MOVED, and what reads what it moved.
+
+    The OIS curve's quotes move: it re-solves, and so does the projection curve naming it in
+    `Discount_Rate` - the coupling read off the block itself, never a list kept beside it. The
+    third curve is left exactly as it stands, asserted on the BYTES of its price factor while its
+    own quotes stand moved and UNSOLVED, posted with `bootstrap: 'No'`: a run that covered it would
+    solve those quotes and move the factor. Ticking that block then re-solves it alone.
+
+    Killing mutation: the selection dropped at either end - `market_edit` not narrowing, or
+    `Config.bootstrap` running its whole section - and the deferred curve re-solves under the OIS
+    tick, so its bytes move and `bootstrapped` names all three blocks.
+    """
+    deferred = CLIENT.post('/book/market', content=dump(
+        {'quotes': moved_quotes(desk_curves, 'USD'), 'bootstrap': 'No'}), headers=JSON).json()
+    standing = written_factors(desk_curves)
+    ticked = CLIENT.post('/book/market', content=dump(
+        {'quotes': moved_quotes(desk_curves, 'ZAR-ZARONIA')}), headers=JSON).json()
+    after = written_factors(desk_curves)
+
+    assert deferred['updated'] == ['InterestRatePrices.USD'] and 'bootstrapped' not in deferred
+    assert ticked['bootstrapped'] == ['InterestRatePrices.ZAR', 'InterestRatePrices.ZAR-ZARONIA']
+    assert after['InterestRate.USD'] == standing['InterestRate.USD'], 'a curve nothing reads solved'
+    assert after['InterestRate.ZAR'] != standing['InterestRate.ZAR'], 'what discounts on it stood'
+    assert after['InterestRate.ZAR-ZARONIA'] != standing['InterestRate.ZAR-ZARONIA']
+
+    standing = written_factors(desk_curves)
+    alone = CLIENT.post('/book/market', content=dump(
+        {'quotes': moved_quotes(desk_curves, 'USD')}), headers=JSON).json()
+    after = written_factors(desk_curves)
+
+    assert alone['bootstrapped'] == ['InterestRatePrices.USD']
+    assert after.pop('InterestRate.USD') != standing.pop('InterestRate.USD')
+    assert after == standing, 'a tick of one curve rewrote another'
+
+
 #: A `NettingCollateralSet` authored as a DEAL compiles like any other and has no `Deal.generate`,
 #: so `Deal.calculate` logs CRITICAL and marks it at nothing - a real book whose PRICING talks on
 #: the channel `CapturedErrors` listens to.

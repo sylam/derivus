@@ -565,11 +565,12 @@ class Context:
     def describe(self):
         return self.current_cfg.describe()
 
-    def bootstrap(self):
+    def bootstrap(self, only=None):
         """Run every configured bootstrapper - quotes in `Market Prices` become the price factors
         and model parameters the pricers read. Delegates to the loaded config, so the harvested
-        calibration tensors (`Quote_Sensitivity`) land where `_build_factor_state` reads them."""
-        return self.current_cfg.bootstrap()
+        calibration tensors (`Quote_Sensitivity`) land where `_build_factor_state` reads them.
+        `only` narrows the run to the blocks whose numbers moved and what reads them."""
+        return self.current_cfg.bootstrap(only)
 
     def market_patch(self):
         """The VALUES half of the market data: `{name: {field: content}}` over both market sections.
