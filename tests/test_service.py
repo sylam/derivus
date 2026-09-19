@@ -2449,6 +2449,218 @@ def test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_r
     assert curve_block(curve_desk)['Points'] == points
 
 
+#: A curve nothing packaged seeds, so a gate's own scope is its own: two swap years and an
+#: overnight fixing, each spelled the way the strip grammar spells one.
+GATE_CURVE = {'prefix': 'GATE', 'expect': 'GATE', 'currency': 'ZAR', 'years': [1, 2],
+              'overnight': {'security': 'GATEON Index', 'expect': 'GATEON'}}
+
+
+@pytest.fixture
+def vocabulary(tmp_path, monkeypatch):
+    """A `DV_HOME` of the gate's own carrying neither seed nor map - so what is read is the
+    PACKAGED questionnaire and an unverified home, never this workstation's own files."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    return tmp_path / 'home'
+
+
+def author_map(home, verified, rejected={}):
+    """A security map the gate authors: `{path: security}` entered under its own path carrying its
+    evidence, and a ledger keyed by ticker - the shape `discover.build_map` writes."""
+    document = {'schema': 'derivus-bloomberg-map/1', 'generated': '2024-06-28',
+                'blocks': {}, 'rejected': rejected}
+    for path, security in verified.items():
+        node = document['blocks']
+        for part in path.split('/')[:-1]:
+            node = node.setdefault(part, {})
+        node[path.rsplit('/', 1)[-1]] = {'security': security, 'name': security,
+                                         'last_update': '2024-06-27', 'verified': '2024-06-28'}
+    os.makedirs(home, exist_ok=True)
+    (home / 'security_map.json').write_text(json.dumps(document, indent=1), newline='\n')
+    return document
+
+
+def test_the_vocabulary_reads_back_on_a_home_that_has_never_been_verified(book, vocabulary):
+    """THE VOCABULARY IS READABLE WITHOUT A TERMINAL. A home carrying neither file reads the
+    packaged questionnaire completed the way a curve's conventions are, an EMPTY map rather than a
+    refusal, and `provisioned` False - which is what says the candidates are a desk's claim and
+    nothing has evidenced them.
+
+    Killing mutations: `provisioned` read off the seed rather than off the map on disk, which a
+    packaged-only home then reads as verified; the seed read off the desk's own file alone, which
+    a home with none answers empty.
+    """
+    answer = CLIENT.get('/book/securities').json()
+
+    assert answer['provisioned'] is False and answer['home'] == str(vocabulary)
+    assert answer['map'] == {'generated': None, 'blocks': {}, 'rejected': {}}
+    assert answer['used'] == [], 'a book with no curve block has no knot to evidence'
+    assert answer['seed']['rates']['ZAR']['conventions']['front'] == 'fixings/3M'
+    assert 'ZAR-ZARONIA' in answer['seed']['rates'] and 'USDZAR' in answer['seed']['fx_vol']['pairs']
+
+    narrowed = CLIENT.get('/book/securities', params={'block': 'rates'}).json()
+
+    assert set(narrowed['seed']) == {'rates'} and set(narrowed['map']['blocks']) == {'rates'}
+    assert narrowed['seed']['rates'] == answer['seed']['rates']
+
+
+def test_every_knot_names_the_print_it_was_solved_from(book, vocabulary):
+    """THE IPV JOIN: a curve set up from hand-quoted rows, read back against a map authored here,
+    so each knot carries the security it is quoted off, the print's own timestamp and whatever the
+    terminal ever answered about that security - an entry's evidence, the verdict that rejected it,
+    or `unmapped` where the map has never heard of it.
+
+    Killing mutations: the join keyed by tenor rather than by security, which the rejected ledger
+    then cannot reach since it is keyed by ticker; `unmapped` collapsed into an empty evidence
+    block, which reads as a verified quote with nothing recorded.
+    """
+    assert set_up_curve().status_code == 200
+    author_map(vocabulary,
+               {'rates/ZAR/fixings/3M': 'JIBA3M Index', 'rates/ZAR/strip/1Y': 'SASW1 BGN Curncy'},
+               {'SASW5 BGN Curncy': {'verdict': 'dead', 'name': 'ZAR SWAP QTR (VS 3M) 5Y',
+                                     'last_update': '2007-03-26', 'error': None}})
+    answer = CLIENT.get('/book/securities').json()
+    used = {row['security']: row for row in answer['used']}
+
+    assert answer['provisioned'] is True
+    assert [row['tenor'] for row in answer['used']] == [row['tenor'] for row in CURVE_ROWS]
+    assert used['JIBA3M Index'] == {
+        'curve': 'ZAR', 'tenor': '3M', 'security': 'JIBA3M Index', 'quote': 7.41,
+        'timestamp': '2024-06-28', 'use': 'Yes',
+        'evidence': {'name': 'JIBA3M Index', 'last_update': '2024-06-27',
+                     'verified': '2024-06-28'}}
+    assert used['SASW5 BGN Curncy']['evidence'] == {
+        'verdict': 'dead', 'name': 'ZAR SWAP QTR (VS 3M) 5Y', 'last_update': '2007-03-26',
+        'error': None}
+    assert used['SASW10 BGN Curncy']['evidence'] == {'verdict': 'unmapped'}
+    assert answer['map']['blocks']['rates']['ZAR']['strip']['1Y']['security'] == 'SASW1 BGN Curncy'
+
+
+def test_a_vocabulary_entry_is_merged_kept_and_refused_by_name(vocabulary):
+    """A SEED ENTRY IS AN AUTHORING ACT on the desk's own file: the packaged questionnaire is the
+    base a desk with none starts from, the entry is merged into it, and the answer carries the
+    tickers that block now spells. The file a write replaces is kept beside it, and a spec the
+    grammar cannot spell refuses BY NAME with the file untouched.
+
+    Killing mutations: the merge validated by json alone, which lets `{'prefix': 'X'}` through and
+    breaks the next verification instead; the write landing on the packaged file, which the second
+    read then answers as the desk's own.
+    """
+    written = CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
+                                                    'entry': GATE_CURVE}).json()
+    seed = json.loads((vocabulary / 'seed.json').read_text())
+
+    assert written['written'] is True and written['backup'] is None
+    assert {'GATE1 BGN Curncy', 'GATE2 BGN Curncy', 'GATEON Index'} <= set(written['candidates'])
+    assert seed['rates']['GATE'] == GATE_CURVE
+    assert seed['rates']['ZAR']['prefix'] == 'SASW', 'the packaged questionnaire is the base'
+
+    moved = CLIENT.post('/book/securities', json={'block': 'fx_vol', 'key': 'pillars',
+                                                  'entry': [0.25]}).json()
+    kept = json.loads(open(moved['backup'], encoding='utf-8').read())
+
+    assert json.loads((vocabulary / 'seed.json').read_text())['fx_vol']['pillars'] == [0.25]
+    assert kept['rates']['GATE'] == GATE_CURVE and kept['fx_vol']['pillars'] == [0.1, 0.25]
+
+    before = (vocabulary / 'seed.json').read_bytes()
+    malformed = CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'BAD',
+                                                      'entry': {'prefix': 'X', 'years': [1]}})
+    unknown = CLIENT.post('/book/securities', json={'block': 'curves', 'key': 'ZAR', 'entry': {}})
+    nameless = CLIENT.post('/book/securities', json={'entry': {}})
+
+    assert malformed.status_code == 422 and 'rates/BAD' in malformed.json()['detail']
+    assert "'expect'" in malformed.json()['detail'], 'a refusal naming no field'
+    assert unknown.status_code == 422 and 'fx_vol' in unknown.json()['detail']
+    assert nameless.status_code == 422 and '`block`' in nameless.json()['detail']
+    assert (vocabulary / 'seed.json').read_bytes() == before
+
+    removed = CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE'}).json()
+
+    assert 'GATE' not in json.loads((vocabulary / 'seed.json').read_text())['rates']
+    assert not [name for name in removed['candidates'] if name.startswith('GATE')]
+
+
+class NamingTerminal(CannedTerminal):
+    """The canned terminal answering `NAME` beside the price - what a VERIFICATION reads a drift
+    off, where a tick reads the number alone. `names` renames one security, which is the drift a
+    recorded entry cannot see for itself."""
+
+    def __init__(self, prints, names={}, **rest):
+        super().__init__(prints, **rest)
+        self.names = names
+
+    def reference_data_report(self, securities, fields):
+        return {name: dict(row, fields=dict(row['fields'], NAME=self.names.get(name, name)))
+                for name, row in super().reference_data_report(securities, fields).items()}
+
+
+def verified(request={}):
+    """POST the verify verb, drain the worker, read the outcome off the result the way a poller
+    does - the map write rides the run's own Stats, as a tick's book write does."""
+    submitted = CLIENT.post('/book/securities/verify', json=request).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    return result, result.get('stats', {}).get('Securities', {})
+
+
+def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
+        vocabulary, monkeypatch):
+    """ONLY A TERMINAL WRITES THE MAP, so a workstation whose blpapi does not import refuses at
+    submission naming the read that still works - no session, no queue, no file.
+
+    With one answering, the scope is the whole act: the entry the map already carries is re-probed
+    and its DRIFT named by its own path, the two names the seed spells that the map has never heard
+    of are probed once and entered with their evidence, and nothing outside the scope is asked
+    about at all. A second run naming securities re-asks about those and grows nothing.
+
+    Killing mutations: the scope dropped, and the whole packaged vocabulary is re-probed - which
+    `asked` measures; the recheck reading the entry's own recorded name rather than the terminal's,
+    which then never drifts.
+    """
+    import datetime
+
+    from derivus_bloomberg import session
+    from derivus_bloomberg.errors import BloombergUnavailable
+
+    def absent():
+        raise BloombergUnavailable('no blpapi on this workstation')
+
+    monkeypatch.setattr(session, 'blpapi_module', absent)
+    refused = CLIENT.post('/book/securities/verify', json={'block': 'rates'})
+
+    assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
+    assert 'GET /book/securities' in refused.json()['detail']
+    assert not (vocabulary / 'security_map.json').exists()
+
+    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    assert CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
+                                                 'entry': GATE_CURVE}).status_code == 200
+    author_map(vocabulary, {'rates/GATE/strip/1Y': 'GATE1 BGN Curncy'})
+    terminal = NamingTerminal({'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9,
+                               'GATEON Index': 7.3}, names={'GATE1 BGN Curncy': 'GATE 1Y RENAMED'},
+                              stamp=datetime.date.today().isoformat())
+    monkeypatch.setattr(session, 'BloombergSession', terminal)
+    result, outcome = verified({'block': 'rates', 'key': 'GATE'})
+    document = json.loads((vocabulary / 'security_map.json').read_text())
+    strip = document['blocks']['rates']['GATE']
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is True and outcome['verified'] == ['GATE1 BGN Curncy']
+    assert outcome['added'] == {'GATE2 BGN Curncy': 'live', 'GATEON Index': 'live'}
+    assert 'renamed' in outcome['drifted']['rates/GATE/strip/1Y']['drift']
+    assert sorted(terminal.asked) == ['GATE1 BGN Curncy', 'GATE2 BGN Curncy', 'GATEON Index']
+    assert strip['strip']['2Y']['name'] == 'GATE2 BGN Curncy'
+    assert strip['strip']['2Y']['verified'] == datetime.date.today().isoformat()
+    assert strip['strip']['1Y']['name'] == 'GATE1 BGN Curncy', 'a recheck rewrote the evidence'
+    assert outcome['map'] == str(vocabulary / 'security_map.json')
+
+    terminal.asked.clear()
+    result, outcome = verified({'securities': ['GATE2 BGN Curncy', 'NOPE Index']})
+
+    assert result['status'] == 'done' and outcome['added'] == {}
+    assert outcome['verified'] == ['GATE2 BGN Curncy'] and outcome['unknown'] == ['NOPE Index']
+    assert terminal.asked == ['GATE2 BGN Curncy'], 'a named ticker grew the map'
+
+
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):
     """Solve a cashflow's Amount to a target. A secant is exact where the value is affine in the
     field, so the pricing count is small, the residual is inside tolerance, and the tables are the

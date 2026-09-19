@@ -76,7 +76,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'price_candidate', 'solve_deal', 'execute_book', 'validate_book', 'describe_book',
                 'poll_result', 'fetch_table', 'deal_values', 'configure_book',
                 'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
-                'patch_market_values',
+                'patch_market_values', 'describe_securities', 'configure_securities',
+                'verify_securities',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
                 'recalc_xva'}
@@ -89,7 +90,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
-                       'set_base_date'}
+                       'set_base_date', 'configure_securities', 'verify_securities'}
 
 
 def read_resource(uri):
@@ -205,7 +206,8 @@ def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
 
 #: The tools that sit on a run and therefore have to speak while they sit.
 WAITING = ('price_candidate', 'execute_book', 'solve_deal', 'solve_structure',
-           'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg')
+           'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg',
+           'verify_securities')
 
 
 def test_no_tool_advertises_the_context_the_sdk_injects():
@@ -560,6 +562,47 @@ def test_the_date_is_set_by_name_and_the_curve_follows_it(book):
 
     with pytest.raises(ToolError, match='no date'):
         mcp_server.set_base_date('the thirtieth')
+
+
+def test_the_ticker_vocabulary_and_its_evidence_are_one_read(book, tmp_path, monkeypatch):
+    """The three vocabulary tools against the in-process service, which is the whole move an IPV
+    reader needs: read what this desk could quote, say what it quotes, and read every knot back with
+    the print behind it. `DV_HOME` is the gate's own tmp, so the seed is the packaged questionnaire
+    and the map is this gate's, never the workstation's; no terminal is reached either way.
+
+    Killing mutations: `describe_securities` answering the seed alone, so a knot's evidence needs
+    the map file opened beside it; `configure_securities` posting the entry anywhere but under its
+    block and key, which the read then answers unchanged.
+    """
+    from test_service import CURVE_ROWS
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    bare = mcp_server.describe_securities('rates')
+
+    assert set(tools['describe_securities'].input_schema['properties']) == {'block'}
+    assert set(tools['configure_securities'].input_schema['properties']) == {
+        'block', 'key', 'entry'}
+    assert set(tools['verify_securities'].input_schema['properties']) == {
+        'block', 'key', 'securities', 'wait_seconds'}
+    assert bare['provisioned'] is False and set(bare['seed']) == {'rates'}
+    assert bare['used'] == [] and bare['seed']['rates']['ZAR']['prefix'] == 'SASW'
+
+    mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
+    written = mcp_server.configure_securities('fx_vol', 'pairs', ['USDZAR'])
+    answer = mcp_server.describe_securities()
+    used = {row['security']: row for row in answer['used']}
+
+    assert written['written'] is True and written['key'] == 'pairs'
+    assert 'USDZARV3M BGN Curncy' in written['candidates']
+    assert not [name for name in written['candidates'] if name.startswith('EURZAR')]
+    assert answer['seed']['fx_vol']['pairs'] == ['USDZAR']
+    assert [row['tenor'] for row in answer['used']] == [row['tenor'] for row in CURVE_ROWS]
+    assert used['SASW1 BGN Curncy']['quote'] == 7.62 and used['SASW1 BGN Curncy']['use'] == 'Yes'
+    assert used['JIBA3M Index']['evidence'] == {'verdict': 'unmapped'}, 'an unverified knot'
+
+    with pytest.raises(ToolError, match='vocabulary block'):
+        mcp_server.configure_securities('curves', 'ZAR', {})
 
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):

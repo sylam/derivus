@@ -39,6 +39,9 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
+| `GET /book/securities` | the desk's ticker vocabulary and its terminal evidence - the seed's candidates, the verified map and its rejection ledger, and the IPV join: every curve row with the print behind it |
+| `POST /book/securities` | set one entry of the desk's own seed - validated by spelling the candidates it now names, written atomically with the file it replaces kept beside it |
+| `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the seed's new names probed once and ledgered, the map rewritten |
 | `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
@@ -75,6 +78,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import threading
 import time
 
@@ -2276,6 +2280,315 @@ def book_bloomberg(request: dict):
     """
     return submit_bloomberg(
         {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
+
+
+#: What a verification refuses on where this workstation cannot reach a terminal at all: the map is
+#: EVIDENCE and only a terminal writes one, so a sandboxed desk reads its map and never verifies.
+NO_TERMINAL = ('this workstation has no terminal (blpapi does not import) and only a terminal '
+               'writes the security map - read the vocabulary with GET /book/securities, and '
+               'verify it on the workstation whose terminal answers for these securities')
+
+#: A curve row quoted off a security no entry and no rejection carries - the join's third answer,
+#: beside an entry's own evidence and a rejection's verdict.
+UNMAPPED = {'verdict': 'unmapped'}
+
+
+def desk_seed():
+    """The ticker vocabulary this workstation reads: the packaged questionnaire with the desk's own
+    file over it, block by block and curve by curve - a curve entry that declares only a spelling
+    keeps the packaged conventions under it, the rule a curve's conventions are read by."""
+    from derivus_bloomberg import security_map
+
+    packaged = security_map.read_seed(security_map.packaged_seed())
+    desk = security_map.read_seed()
+    rates = dict(packaged.get('rates', {}))
+    for curve, spec in desk.get('rates', {}).items():
+        rates[curve] = dict(rates.get(curve, {}), **spec)
+    seed = dict(packaged, **desk)
+    seed['rates'] = rates
+    return seed
+
+
+def desk_map():
+    """`(the verified map, its path)` - the path None where this home has never been verified,
+    which reads as an EMPTY map rather than a refusal: the vocabulary is still readable, and the
+    verify verb is what fills it."""
+    from derivus_bloomberg import discover, security_map
+
+    path = discover.provisioned()
+    return ({'schema': security_map.SCHEMA, 'generated': None, 'blocks': {}, 'rejected': {}}
+            if path is None else security_map.load(path)), path
+
+
+def curve_securities(document, mapped):
+    """Every `InterestRatePrices` row the book carries with the map's evidence for the security it
+    is quoted off - the IPV join, so which print a knot was solved from and whether a terminal ever
+    answered for it read off one list."""
+    from derivus_bloomberg.security_map import entries
+
+    evidence = {entry['security']: {key: entry.get(key)
+                                    for key in ('name', 'last_update', 'verified')}
+                for _, entry in entries(mapped)}
+    evidence.update(mapped.get('rejected', {}))
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    return [{'curve': name.split('.', 1)[1], 'tenor': row.get('Tenor', ''),
+             'security': row.get('Security', ''), 'quote': row.get('Quoted_Market_Value'),
+             'timestamp': (row.get('Timestamp') or {}).get('.Timestamp', ''),
+             'use': row.get('Use', 'Yes'),
+             'evidence': evidence.get(row.get('Security', ''), UNMAPPED)}
+            for name in sorted(prices) if name.startswith(CURVE_FAMILY + '.')
+            for row in prices[name]['instrument']['Points']]
+
+
+@app.get('/book/securities', summary="The ticker vocabulary, its evidence, and every knot's print")
+def book_securities(block: str = None):
+    """The desk's vocabulary and what a terminal answered about it, in ONE read.
+
+    `seed` is the CANDIDATES this desk could quote - the packaged questionnaire with the desk's own
+    file over it, block by block - and `map` is what a terminal VERIFIED: `blocks` of entries each
+    carrying the NAME it answered, its last print and when it was verified, and a `rejected` ledger
+    keyed by ticker carrying why a candidate did not make it. `provisioned` says whether this home
+    carries a map at all, and `home` is where both files live.
+
+    `used` IS THE IPV JOIN: every `InterestRatePrices` row the book carries - the curve, the tenor,
+    the security, the quote and the print's own timestamp - with that security's evidence beside
+    it, the verdict that rejected it, or `unmapped` where the map has never heard of it. That is
+    where the print a knot was solved from is read, without opening either file.
+
+    `?block=` narrows the seed and the map's blocks to one of `fx_vol`, `fx_spot`, `rates` and
+    `swaption`; the ledger is keyed by ticker rather than by block and is answered whole.
+    """
+    from derivus_bloomberg import security_map
+    from derivus_bloomberg.errors import BloombergFXError
+
+    document, etag = live_book().read()
+    try:
+        seed, (mapped, path) = desk_seed(), desk_map()
+    except (BloombergFXError, ValueError) as error:
+        raise HTTPException(422, str(error))
+    blocks = mapped['blocks']
+    if block is not None:
+        seed, blocks = {block: seed.get(block, {})}, {block: blocks.get(block, {})}
+    return {'etag': etag, 'home': security_map.home(), 'provisioned': path is not None,
+            'seed': seed, 'used': curve_securities(document, mapped),
+            'map': {'generated': mapped.get('generated'), 'blocks': blocks,
+                    'rejected': mapped.get('rejected', {})}}
+
+
+def seed_entry(block, key, entry):
+    """One vocabulary entry merged into the desk's own seed, validated by SPELLING what the merged
+    file now names - `(the seed, the candidates that block spells)`. A malformed curve spec or pair
+    list refuses HERE, before anything is written."""
+    from derivus_bloomberg import discover, security_map
+
+    packaged = security_map.read_seed(security_map.packaged_seed())
+    if block not in packaged:
+        raise ValueError('{!r} is no vocabulary block - a seed carries {}'.format(
+            block, ', '.join(sorted(packaged))))
+    seed = security_map.read_seed()
+    section = dict(seed.get(block) or {})
+    if entry is None:
+        section.pop(key, None)
+    else:
+        section[key] = entry
+    seed[block] = section
+    try:
+        return seed, sorted({candidate.security for candidate
+                             in discover.candidates_from_seed(seed)
+                             if candidate.path[0] == block})
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError('{}/{} spells no vocabulary a terminal can be asked about ({}: {}) - read'
+                         ' the block back with GET /book/securities and post that shape'.format(
+                             block, key, type(error).__name__, error))
+
+
+def keep_seed():
+    """The seed a write is about to replace, kept beside it as `seed.json.bak_<stamp>` - a desk
+    that cut its vocabulary too far has the file it cut back. None where there was none."""
+    from derivus_bloomberg import security_map
+
+    path = os.path.join(security_map.home(), 'seed.json')
+    if not os.path.isfile(path):
+        return None
+    backup = '{}.bak_{}'.format(path, time.strftime('%Y%m%d%H%M%S'))
+    shutil.copyfile(path, backup)
+    return backup
+
+
+def write_desk_file(name, document):
+    """One of the desk's own JSON files written atomically - write-temp-then-replace, the `Book`
+    discipline, in `DV_HOME` and created on first use. Answers where it landed."""
+    from derivus_bloomberg import security_map
+
+    os.makedirs(security_map.home(), exist_ok=True)
+    path = os.path.join(security_map.home(), name)
+    temporary = path + '.tmp'
+    with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
+        json.dump(document, handle, indent=1)
+    os.replace(temporary, path)
+    return path
+
+
+@app.post('/book/securities', summary="Set one entry of the desk's ticker vocabulary")
+def book_securities_entry(request: dict):
+    """`{block, key, entry}` - one entry of the desk's own seed, written atomically.
+
+    `block` is one of `fx_vol`, `fx_spot`, `rates` and `swaption`; `key` is what that block is
+    keyed by - the curve or the currency for `rates` and `swaption`, the field a desk edits
+    (`pairs`, `expiries`, `pillars`, `leverage_prior`) for the two FX blocks - and `entry` is what
+    stands under it, null removing it. The merged seed is validated by SPELLING every candidate it
+    now names, so a malformed curve spec refuses by name with the file untouched, and the answer
+    carries the tickers that block now spells.
+
+    The desk's file is `DV_HOME/seed.json`, and a desk that has none starts from the packaged
+    questionnaire, which is never written; the file this replaces is kept beside it as
+    `seed.json.bak_<stamp>`. A SEED NAMES CANDIDATES AND NOTHING MORE - the map is what a terminal
+    verified, and `POST /book/securities/verify` is the only thing that writes one.
+    """
+    from derivus_bloomberg.errors import BloombergFXError
+
+    block, key = request.get('block'), request.get('key')
+    if not block or not key:
+        raise HTTPException(422, 'a vocabulary entry is named by its `block` and its `key` - '
+                                 'GET /book/securities reads back what this desk carries')
+    try:
+        seed, candidates = seed_entry(block, key, request.get('entry'))
+    except (BloombergFXError, ValueError) as error:
+        raise HTTPException(422, str(error))
+    backup = keep_seed()
+    return {'written': True, 'block': block, 'key': key, 'candidates': candidates,
+            'backup': backup, 'seed': write_desk_file('seed.json', seed)}
+
+
+def scoped_map(mapped, block, key, securities):
+    """The map entries one verification covers, as the document `recheck` walks: an entry's path is
+    `(block, key, ...)` in every family, so a block, one curve or pair inside it, and a list of
+    tickers are one predicate. Each is keyed by its own path, which is what a drift is named by."""
+    from derivus_bloomberg.security_map import entries
+
+    return {'blocks': {'/'.join(path): entry for path, entry in entries(mapped)
+                       if (block is None or path[0] == block)
+                       and (key is None or path[1:2] == (key,))
+                       and (not securities or entry['security'] in securities)}}
+
+
+def scoped_seed(seed, block, key):
+    """The seed narrowed the same way - one block, and inside it the curve or currency it is keyed
+    by, or the single pair where that block's vocabulary is a pair list."""
+    if block is None:
+        return seed
+    section = seed.get(block) or {}
+    if key is None:
+        return {block: section}
+    return {block: dict(section, pairs=[key]) if 'pairs' in section else {key: section[key]}}
+
+
+def verify_scope(request):
+    """What one verification covers, refused by name where this desk's vocabulary does not carry
+    it - `{block?, key?, securities?}` trimmed to what was stated."""
+    block, key = request.get('block'), request.get('key')
+    seed = desk_seed()
+    if block is not None and block not in seed:
+        raise ValueError('{!r} is no vocabulary block - this desk seeds {}'.format(
+            block, ', '.join(sorted(seed))))
+    if key is not None and block is None:
+        raise ValueError('{!r} names one entry of a block - name the block it is in too'.format(
+            key))
+    named = seed.get(block) or {}
+    if key is not None and key not in (named.get('pairs') or named):
+        raise ValueError('{!r} is nothing the seed names under {} - it carries {}'.format(
+            key, block, ', '.join(sorted(map(str, named.get('pairs') or named)))))
+    return {name: request[name] for name in ('block', 'key', 'securities')
+            if request.get(name) is not None}
+
+
+class VerifyJob:
+    """The vocabulary re-verified against the terminal as ONE unit of queued work: every map entry
+    in scope re-probed for the drift its own evidence cannot show, every seed name the map has
+    never heard of probed once and ledgered, and the map rewritten atomically.
+
+    `derivus_bloomberg` is imported INSIDE `run_job`, the `BloombergJob` precedent. The outcome is
+    a FILE write rather than tables, so it rides the run's Stats under `Securities`, and progress
+    rides `PROGRESS` under the result id the way a tick's does.
+
+    NOTHING ALREADY VERIFIED IS RE-ASKED by the growing half - the incremental rule a map is grown
+    under - so a seed that gains a curve costs the terminal that curve's names and no more.
+    """
+
+    def __init__(self, scope, result_id):
+        self.scope, self.result_id = scope, result_id
+
+    def note(self, note, done=0, total=0):
+        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
+
+    def run_job(self):
+        import datetime
+
+        from derivus_bloomberg import discover
+        from derivus_bloomberg.session import BloombergSession
+
+        started, as_of = time.perf_counter(), datetime.date.today()
+        block, key = self.scope.get('block'), self.scope.get('key')
+        named = set(self.scope.get('securities') or ())
+        try:
+            mapped, _ = desk_map()
+            scoped = scoped_map(mapped, block, key, named)
+            covered = sorted(entry['security'] for entry in scoped['blocks'].values())
+            self.note('re-verifying {} entries'.format(len(covered)))
+            with BloombergSession(timeout_ms=30000) as session:
+                drifted = discover.recheck(
+                    scoped, session, as_of,
+                    on_batch=lambda done, total: self.note('re-verifying the map', done, total))
+                verdicts = []
+                if not named:
+                    mapped, verdicts = discover.extend(
+                        mapped, scoped_seed(desk_seed(), block, key), session, as_of,
+                        on_batch=lambda done, total: self.note('probing new names', done, total))
+            mapped['generated'] = mapped.get('generated') or as_of.isoformat()
+            return None, {'Results': {}, 'Stats': {'Securities': {
+                'written': True, 'map': write_desk_file('security_map.json', mapped),
+                'verified': covered, 'drifted': drifted, 'unknown': sorted(named - set(covered)),
+                'added': {item.candidate.security: item.verdict for item in verdicts},
+                'seconds': round(time.perf_counter() - started, 2)}}}
+        finally:
+            PROGRESS.pop(self.result_id, None)
+
+
+@app.post('/book/securities/verify', summary='Re-verify the ticker vocabulary against the terminal')
+def book_securities_verify(request: dict):
+    """`{block?, key?, securities?}` - the named scope re-verified against THIS workstation's
+    terminal, as one queued job.
+
+    Every entry the map already carries in that scope is re-probed and answered under `verified`,
+    anything that has DRIFTED - renamed, unpriced, gone stale, gone entirely - named under
+    `drifted` by its own path in the map. Every candidate the scope's seed spells that the map has
+    never heard of is probed once and lands under `added` with its verdict, the live ones as
+    entries and the rest on the ledger; nothing already verified is re-asked, so a seed that gained
+    a curve costs the terminal that curve's names alone. The map is rewritten atomically.
+
+    The scope is a `block`, a `key` inside it - a curve, a currency or a pair - or the `securities`
+    to re-ask about by name, which re-verifies those entries and grows nothing; a ticker the map
+    does not carry is answered under `unknown`. With nothing stated the whole vocabulary is
+    re-verified, which is minutes of terminal time.
+
+    Answers `{result_id, status}` like `/execute`: `/results/{result_id}` carries `progress` while
+    it runs and the outcome under `stats.Securities`. A workstation with no terminal refuses by
+    name HERE - the map is evidence and only a terminal writes one.
+    """
+    from derivus_bloomberg.errors import BloombergFXError
+
+    if not terminal_status()['present']:
+        raise HTTPException(422, NO_TERMINAL)
+    try:
+        scope = verify_scope(request)
+    except (BloombergFXError, ValueError) as error:
+        raise HTTPException(422, str(error))
+    # a verification is an ACT against the terminal rather than a function of the files, so the
+    # submission clock names it: two verifications of one scope are two trips
+    result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
+    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY)
+    return {'result_id': result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
 def spot_model_family(family):

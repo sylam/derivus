@@ -206,6 +206,25 @@ re-bootstraps the whole market in one atomic write, naming a block too old to ca
 and leaving it exactly as it stands. Because the strip is a function of its own tenors, a roll that
 leaves the year fractions alone leaves the solved factor alone with them.
 
+**The ticker vocabulary is served the same way, and every knot names its print.** Which securities
+a desk could quote is a SEED file it owns (`$DV_HOME/seed.json`, completed by the packaged
+questionnaire block by block and curve by curve); what a terminal answered about them is the
+verified MAP (`$DV_HOME/security_map.json`), every entry carrying the NAME the terminal gave, the
+quote's last print and when it was verified, beside a `rejected` ledger keyed by ticker.
+`GET /book/securities` reads both, says whether this home has been verified at all, and JOINS them
+onto the book: `used` is every `InterestRatePrices` row with its tenor, security, quote and
+timestamp and that security's evidence beside it — the verdict that rejected it, or `unmapped` — so
+which print a knot was solved from is one read rather than two files. `POST /book/securities`
+(`{block, key, entry}`, a null entry removing it) merges one entry into the desk's own seed,
+validated by SPELLING every candidate the merged file now names, and written atomically with the
+file it replaced kept beside it; the packaged questionnaire is never written. The terminal half is
+`POST /book/securities/verify` (`{block?, key?, securities?}`), queued on the same executor and
+cost class as the tick: every entry in scope is re-probed for the drift its own recorded evidence
+cannot show, every name the seed spells that the map has never heard of is probed once and
+ledgered, nothing already verified is re-asked, and the map is rewritten atomically. A workstation
+whose blpapi does not import refuses there by name — the map is evidence, and only a terminal
+writes one.
+
 **Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
 every dial at what the entry states or the declaration's default otherwise, edited in place, and
 offers the families the book does not configure yet: adding one posts an empty entry, which the verb
@@ -223,7 +242,8 @@ per block — the rows under the four keys the verb takes, the conventions as a 
 family's declarations whose lower-case spellings the answer names, and the solved factor beside
 them — and a form that sets another up, a seeded entry pre-filling its rows and conventions and
 `POST /book/curve` carrying only the ones a desk moved off them, the verb completing the rest from
-the seed.
+the seed. The ticker vocabulary those rows are quoted off has no screen yet; the three verbs above
+are what one renders from.
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 

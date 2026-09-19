@@ -85,8 +85,10 @@ the whole batch and names it.
 
 THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
 configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
-needs a terminal on the service's own workstation. Bootstrapping dials, Bloomberg ticker codes
-and curve set-ups are normally configured once in the web UI - ask before changing them here."""
+needs a terminal on the service's own workstation, and describe_securities reads the ticker
+vocabulary behind it with the print every curve knot was solved from. Bootstrapping dials,
+Bloomberg ticker codes and curve set-ups are normally configured once in the web UI - ask
+before changing them here."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -703,6 +705,82 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     # a provisioning answer is what installed and what was refused, so this one is not summarised
     return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
                                hint='; the provisioning carries on service-side either way')
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_securities(block: str = None) -> dict:
+    """The desk's TICKER VOCABULARY and the terminal evidence behind it - what each curve knot was
+    actually priced off, in one read.
+
+    `seed` is what this desk could quote, block by block: `rates` keyed by curve, each entry naming
+    the `prefix` its swap strip is spelled from, the NAME fragment it is checked against (`expect`),
+    which `weeks`/`months`/`years` it carries, its `overnight` fixing and its `conventions`;
+    `swaption` the same per currency; `fx_vol` the `pairs`, `expiries`, delta `pillars` and the
+    `leverage_prior` per pair; `fx_spot` the `pairs`. `map` is what a TERMINAL answered: every
+    candidate it verified, each carrying the `name` it answered with, its `last_update` and when it
+    was `verified`, and a `rejected` ledger saying why a candidate did not make it (`invalid`,
+    `mismatch`, `unpriced`, `dead`). The seed is a desk's claim; the map is evidence, and only a
+    terminal writes one.
+
+    `used` IS WHERE A KNOT'S PRINT IS READ - the IPV join: every curve row the book carries with
+    its tenor, security, quote and the print's own timestamp, and that security's evidence beside
+    it, or the verdict that rejected it, or `unmapped` where the map has never heard of it. `block`
+    narrows the read to one of `fx_vol`, `fx_spot`, `rates`, `swaption`."""
+    return service().call('GET', '/book/securities',
+                          params={'block': block} if block is not None else None)
+
+
+@MCP.tool()
+def configure_securities(block: str, key: str, entry: dict | list | None = None) -> dict:
+    """Set one entry of the desk's own ticker vocabulary - the seed `describe_securities` reads
+    back, in the same shape.
+
+    `block` is `rates`, `swaption`, `fx_vol` or `fx_spot`; `key` is what that block is keyed by -
+    the curve for `rates` (`"ZAR-ZARONIA"`), the currency for `swaption`, and for the two FX blocks
+    the field itself (`pairs`, `expiries`, `pillars`, `leverage_prior`). `entry` is what stands
+    under it and NULL REMOVES IT. A `rates` entry takes `prefix`, `expect` (the fragment the
+    terminal's own NAME must carry), `currency`, `source`, `weeks`/`months`/`long_months` (true or
+    the labels wanted), `years`, `overnight`, `fixings`, `fras`, `forwards` and `conventions`; an
+    `fx_vol` entry is one of `pairs` (`["USDZAR", ...]`), `expiries` (`{"3M": 0.2493, ...}`),
+    `pillars` (`[0.1, 0.25]`) and `leverage_prior` (`{"USDZAR": -0.4}`).
+
+    The merged seed is validated by SPELLING every candidate it now names, so a malformed entry is
+    refused before anything is written and the answer carries the tickers that block now spells.
+    THIS CHANGES NO NUMBER: a seed names candidates, and `verify_securities` is what asks the
+    terminal about them and writes the map a curve is then set up off."""
+    return service().call('POST', '/book/securities',
+                          json={'block': block, 'key': key, 'entry': entry})
+
+
+@MCP.tool()
+async def verify_securities(block: str = None, key: str = None, securities: list = None,
+                            wait_seconds: float = 600.0, ctx: Context = None) -> dict:
+    """Re-verify the desk's ticker vocabulary against THIS workstation's terminal, and write what
+    it answered into the security map.
+
+    Every entry the map already carries in scope is re-probed and any DRIFT named by its path -
+    renamed, unpriced, gone stale, gone entirely - which is the check a dead benchmark needs: a
+    retired series keeps quoting a plausible price and only its update date says so. Every
+    candidate the seed spells that the map has never heard of is probed once and lands under
+    `added` with its verdict. Nothing already verified is re-asked, so a seed that just gained a
+    curve costs the terminal that curve's names alone.
+
+    Scope it with `block`, a `key` inside it (a curve, a currency or a pair) or `securities` to
+    re-ask about by name - the last re-verifies those entries and grows nothing, answering a ticker
+    the map does not carry under `unknown`. With nothing named the WHOLE vocabulary is re-verified,
+    which is minutes of terminal time. A workstation with no terminal refuses by name: a sandboxed
+    desk reads its map through `describe_securities` and never verifies.
+
+    Call it after `configure_securities` adds an entry, and when a curve row reads `unmapped` or
+    carries a verdict in `used`. Past `wait_seconds` the id and the way forward travel in `hint`
+    and the verification carries on service-side."""
+    request = {name: value for name, value in (('block', block), ('key', key),
+                                               ('securities', securities)) if value is not None}
+    submitted = await asyncio.to_thread(
+        service().call, 'POST', '/book/securities/verify', json=request)
+    # a verification's answer is the drift and the verdicts, so this one is not summarised
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
+                               hint='; the verification carries on service-side either way')
 
 
 @MCP.tool()

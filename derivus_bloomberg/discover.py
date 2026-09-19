@@ -299,12 +299,13 @@ def provision(session, as_of, home=None, stale_days=STALE_DAYS, on_batch=None):
     return document, True
 
 
-def recheck(document, session, as_of, stale_days=STALE_DAYS):
+def recheck(document, session, as_of, stale_days=STALE_DAYS, on_batch=None):
     """Re-verify an existing map against the terminal standing now: each entry is expected to
     still BE what its recorded evidence says. Drift - renamed, unpriced, gone stale, gone
-    entirely - is reported per entry; a quiet map is exit 0, so this runs from cron."""
+    entirely - is reported per entry; a quiet map is exit 0, so this runs from cron. `on_batch` is
+    the probe's own progress, passed through untouched."""
     recorded = list(entries(document))
-    report = probe(session, [entry['security'] for _, entry in recorded])
+    report = probe(session, [entry['security'] for _, entry in recorded], on_batch=on_batch)
     drifted = {}
     for path, entry in recorded:
         row = report.get(entry['security'], {'ok': False, 'error': 'not probed', 'fields': {}})
