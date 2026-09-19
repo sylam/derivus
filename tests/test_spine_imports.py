@@ -53,8 +53,9 @@ FORBIDDEN = {'derivus', 'torch', 'numpy', 'pandas', 'scipy', 'requests', 'duckdb
 
 
 def spine_sources():
-    """Every module of the package as it stands right now - the glob is the point."""
-    return sorted(glob.glob(os.path.join(SPINE, '*.py')))
+    """Every module of the package as it stands right now, at any depth - the glob is the
+    point: a subpackage cannot smuggle an import past a gate that descends into it."""
+    return sorted(glob.glob(os.path.join(SPINE, '**', '*.py'), recursive=True))
 
 
 def spine_has(name):

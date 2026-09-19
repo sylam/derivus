@@ -1,0 +1,49 @@
+{
+  "fixings": [
+    {
+      "date": "2026-08-26",
+      "effective_time": "2026-08-26T08:00:00.000000Z",
+      "index": "EURUSD-ECB",
+      "lsn": 16,
+      "source": "ECB",
+      "supersedes": [
+        {
+          "lsn": 14,
+          "value": 1.0851
+        }
+      ],
+      "value": 1.0857
+    }
+  ],
+  "instruments": [
+    {
+      "determinations": [
+        {
+          "actor": "subject-desk-one",
+          "lsn": 11,
+          "ruling": "the barrier was touched at 14:02"
+        }
+      ],
+      "elections": [],
+      "instrument": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc"
+    },
+    {
+      "determinations": [],
+      "elections": [
+        {
+          "choice": "exercise",
+          "lsn": 8
+        }
+      ],
+      "instrument": "e3d93128a1eb379ecf1ee4b60f87849d34b7e2d32abed682c918c42ead5a3201"
+    }
+  ],
+  "transitions": [
+    {
+      "effective_time": "2026-08-25T08:00:00.000000Z",
+      "lsn": 12,
+      "status": "confirmed",
+      "subject": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc"
+    }
+  ]
+}

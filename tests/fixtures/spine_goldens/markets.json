@@ -1,0 +1,27 @@
+{
+  "closes": [
+    {
+      "effective_time": "2026-08-26T16:30:00.000000Z",
+      "lsn": 17,
+      "market": "official",
+      "supersedes_lsn": 15,
+      "values_hash": "b4713768088f9a06140c71ff366d33a029b7115abc9ba5de2ac0772db0f35c35"
+    }
+  ],
+  "names": [
+    {
+      "actor": "subject-desk-one",
+      "effective_time": "2026-08-26T08:00:00.000000Z",
+      "lsn": 13,
+      "name": "official",
+      "values_hash": "7e1686c9e58a275388d47e83fbff93387fe821a74dbfff4a954e69b925546967"
+    }
+  ],
+  "snapshots": [
+    {
+      "blob": "70305a91ff4aa328681392c441ad488bd75903b062e3be550c04089a75da9408",
+      "book": "FX-VANILLA",
+      "lsn": 20
+    }
+  ]
+}

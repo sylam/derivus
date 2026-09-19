@@ -42,6 +42,7 @@ from .errors import (
 )
 from .store import BlobStore
 from .log import SpineLog
+from . import projections
 from .checkpoint import write_checkpoint
 from .genesis import init_home
 from .verify import verify_home
@@ -53,6 +54,7 @@ __all__ = [
     'content_hash',
     'BlobStore',
     'SpineLog',
+    'projections',
     'init_home',
     'verify_home',
     'write_checkpoint',

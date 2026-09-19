@@ -273,9 +273,9 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   the put barrier, and the autocall pricer's barrier-hit read (it tests for presence, so it fires
   on a declared `'No'`) retires with it. The TARF's and accumulator's decisions-remain arm: folded
   parameters, not a substituted deal.
-- **Spine increments 4–7** — projections and the diary, tier policy, the doorbell, the generated
-  binding; the book file rehomed as an LSN-pinned projection and the plan compiler as a fold over
-  fixings supersession are increment 4's ([The Spine](spine.md)).
+- **Spine increments 4–7** — the folds are built; what remains of 4 is the diary, the book file
+  carrying the LSN it was hydrated at, and the plan compiler as a fold over fixings supersession,
+  then tier policy, the doorbell and the generated binding ([The Spine](spine.md)).
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,

@@ -1,0 +1,24 @@
+[
+  {
+    "amended_to": "e3d93128a1eb379ecf1ee4b60f87849d34b7e2d32abed682c918c42ead5a3201",
+    "book": "FX-VANILLA",
+    "clips": 0,
+    "counterparty": "LEI-5493001KJTIIGC8Y1R12",
+    "first_lsn": 5,
+    "instrument": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc",
+    "last_lsn": 7,
+    "netting_set": "CSA-0007",
+    "quantity": 0.0
+  },
+  {
+    "amended_to": null,
+    "book": "FX-VANILLA",
+    "clips": 2,
+    "counterparty": "LEI-5493001KJTIIGC8Y1R12",
+    "first_lsn": 7,
+    "instrument": "e3d93128a1eb379ecf1ee4b60f87849d34b7e2d32abed682c918c42ead5a3201",
+    "last_lsn": 7,
+    "netting_set": "CSA-0007",
+    "quantity": 2000000.0
+  }
+]

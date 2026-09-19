@@ -1,0 +1,38 @@
+{
+  "plans": [
+    {
+      "plan_hash": "2df4c2b2409f7a725af697d633231d669c4040275c14f1844b8b4ae9584906c8",
+      "verdicts": [
+        {
+          "actor": "subject-desk-one",
+          "lsn": 9,
+          "reason": null,
+          "verdict": "approval"
+        },
+        {
+          "actor": "subject-desk-two",
+          "lsn": 10,
+          "reason": "the booker and the approver are one seat",
+          "verdict": "rejection"
+        }
+      ]
+    }
+  ],
+  "policies": [
+    {
+      "blob": null,
+      "lsn": 2,
+      "policy": "break_glass"
+    },
+    {
+      "blob": "minted at genesis",
+      "lsn": 3,
+      "policy": "checkpoint_verifying_key"
+    },
+    {
+      "blob": null,
+      "lsn": 1,
+      "policy": "genesis"
+    }
+  ]
+}

@@ -11,7 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The tolerance and firmness policy documents, and the fold that finds the one in force.
+"""The tolerance, firmness and fixings policy documents, and the fold that finds the one in force.
 
 Policy is data: hashed into the blob store and declared through the ordinary writer, as the
 capabilities document is. Nothing here is a constant edited in a release - a deployment that wants a
@@ -27,7 +27,9 @@ default this module picked.
 
 A firmness policy is optional where a tolerance policy is not: a home that declares none is quoting
 off its own book rather than making a claim about somebody else's numbers, so it runs on the stated
-`FIRMNESS_DEFAULTS` below.
+`FIRMNESS_DEFAULTS` below. A fixings policy is the authority an observation is read under, and it
+names one source order per index: a home declaring none has said which administrator it believes
+about nothing, so every index it is asked for refuses by name.
 """
 import json
 
@@ -39,10 +41,15 @@ from .vocabulary import is_hash, is_number, is_text
 #: declaration under one of these names is read by a verb, so this module owns its shape.
 TOLERANCE_POLICY = 'tolerance'
 FIRMNESS_POLICY = 'firmness'
+FIXINGS_POLICY = 'fixings'
 
 #: The tolerance document's one section: result class -> the absolute epsilon a replay of that
 #: class may differ by. Closed at the field level, like an event body.
 TOLERANCE_SECTION = 'tolerances'
+
+#: The fixings document's one section: index -> the ordered administrators its prints are resolved
+#: across, the first one holding a print winning.
+FIXINGS_SECTION = 'sources'
 
 #: The firmness windows, in seconds, that a home declaring no firmness policy runs on.
 #: `values_seconds` is one beat of `DV_Service --tick`, the cadence a market pin is refreshed on;
@@ -114,9 +121,48 @@ def parse_firmness(document, where):
     return read
 
 
+def parse_fixings(document, where):
+    """Check `document` as a fixings policy and return it parsed. `where` names it in refusals.
+
+    One section, an index and the ordered administrators its prints are resolved across:
+    `{"sources": {"FxRate.ZAR": ["ECB", "BFIX"]}}`. The order IS the authority - the first named
+    source holding a print is the fixing in force - so it is a list and never a set.
+    """
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+
+    if not isinstance(document, dict):
+        refuse('a fixings policy is {}, not a JSON object - it is {{"{}": {{index: [source, ...]}}}}'
+               .format(type(document).__name__, FIXINGS_SECTION))
+    surplus = sorted(set(document) - {FIXINGS_SECTION})
+    if surplus:
+        refuse('a fixings policy carries {} beyond {} - the document is closed at the field level; '
+               'drop the key or version the document shape'.format(
+                   ', '.join(surplus), FIXINGS_SECTION))
+    entries = document.get(FIXINGS_SECTION)
+    if not isinstance(entries, dict):
+        refuse('{} is {}, not an object of index -> source order - a policy naming no index says so '
+               'with an empty object, so that silence is never mistaken for absence'.format(
+                   FIXINGS_SECTION, type(entries).__name__))
+    for index, order in sorted(entries.items()):
+        if not is_text(index):
+            refuse('{} is keyed by {!r}, and an index that names nothing is not an index'.format(
+                FIXINGS_SECTION, index))
+        if not isinstance(order, list) or not order or not all(is_text(name) for name in order):
+            refuse('the sources for {!r} are {!r}: an order is a non-empty LIST of administrator '
+                   'names, and an index resolved across nobody is an index the policy should not '
+                   'name'.format(index, order))
+        elif len(set(order)) != len(order):
+            refuse('the sources for {!r} name {} twice, so the order does not say which print '
+                   'wins'.format(index, ', '.join(
+                       sorted(name for name in set(order) if order.count(name) > 1))))
+    return {FIXINGS_SECTION: dict((index, list(order)) for index, order in entries.items())}
+
+
 #: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
 #: than store a document nobody could read back.
-PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness}
+PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness,
+           FIXINGS_POLICY: parse_fixings}
 
 
 def canonical_policy(policy, document, where=None):
@@ -131,7 +177,7 @@ def canonical_policy(policy, document, where=None):
             '{!r} is not a policy this module reads - it owns {}, and a document declared under a '
             'name no reader knows is a decision nobody can ever apply. Declare it under one of '
             'those names, or through the ordinary open-bodied `policy_declared` if it is a policy '
-            'this increment does not implement'.format(policy, ' and '.join(sorted(PARSERS))))
+            'this increment does not implement'.format(policy, ', '.join(sorted(PARSERS))))
     return canonical_bytes(parse(document, where or 'this {} policy'.format(policy)))
 
 

@@ -2,11 +2,12 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1, 2 and 3**: the log, the blob store and the chain
-(riding on them: identity, capability enforcement and key custody), and on top of those the booking
-verbs, the attestation lanes and the two-dimensional firmness check. No projections, no network — a
-library, a CLI, five delegators on `Context`, and 225 gates. Nothing here imports the engine, and
-exactly one module under `derivus/` imports `derivus_spine`: `derivus/spine.py`.
+page documents what is BUILT, which is **increments 1, 2, 3 and the folds of 4**: the log, the blob
+store and the chain (riding on them: identity, capability enforcement and key custody), on top of those
+the booking verbs, the attestation lanes and the two-dimensional firmness check, and over all of it the
+projections. No diary, no network — a library, a CLI, five delegators on `Context`, and 237 gates.
+Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
+`derivus/spine.py`.
 
 ## The package, and the one dependency
 
@@ -25,12 +26,14 @@ DV_SPINE_HOME/
   log/segment-00000001.jsonl   append-only frames, fsync per append, roll at 64 MiB
   blobs/ab/cd/<sha256>         content-addressed, write-once: tmp + fsync + os.replace
   keys/                        blind.key, class_firm.key, the Ed25519 checkpoint pair
+  seeds/<projector>-<v>-<lsn>  a fold cached at a close: derivable, and deletable
 ```
 
 The manifest is a PROJECTION — presence is the tree itself, and `verify` rebuilds what it needs by
-walking it — so "the record never trusts what it can re-derive" holds from day one. DuckDB belongs to
-the reading plane and arrives with increment 4. A blob whose bytes do not match its hash refuses on
-read; a put colliding with different bytes at the same hash is a NAMED REFUSAL, never a dedup; and the
+walking it — so "the record never trusts what it can re-derive" holds from day one. DuckDB belongs to a
+reading plane this package does not have and is forbidden inside it by name; the projections of
+increment 4 fold the log itself. A blob whose bytes do not match its hash refuses on read; a put
+colliding with different bytes at the same hash is a NAMED REFUSAL, never a dedup; and the
 store has **no verb for forgetting** — retention arrives later as a logged event, and the absence of a
 delete method is gated as the increment-1 form of that law.
 
@@ -102,7 +105,7 @@ channel into the record.
 ## The gates
 
 103 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider nine-file set worth the 225 above),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth the 237 above),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -250,15 +253,78 @@ zero-second windows in the record rather than a sleep; and the in-flight coalesc
 the one worker up behind a barrier job so that "a standing submission observed while the same tuple is
 still queued" is a fact rather than a timing window.
 
+## Increment 4a — the folds, the seeds, and the fixings policy
+
+**A projection is a pure fold, and a consequence is never a fact.** `derivus_spine/projections.py` is
+seven projectors and one driver: `fold(log, projector, lsn=None, seed=None)` streams the frames a
+projector NAMES, opens only those bodies, and answers state nobody edited. `positions`, `blotter`,
+`lifecycle`, `markets`, `attestations`, `decisions` and `activity` each carry three members and no
+state of their own — `initial`, `apply`, `rows` — so what a reader sees is sorted canonicalisable JSON
+and a golden replay is a byte comparison. A knock, an expiry and an accrual are read OFF that state
+(`knocked` is the first crossing over `fixings_at`'s answer, with the terms handed in by the caller),
+because a record holding one would be a second source of truth about whether the barrier fired.
+An amendment carries the position FORWARD onto the instrument the amended
+terms hash to, the old row standing at zero naming where it went, because that is the hash the book
+file's deal node now has; and a row is never dropped, since a position closed out is a fact about the
+book rather than an absence. `lifecycle` files a status transition under the subject its body names
+and nowhere else — an instrument hash today, a cashflow key when the diary has one — so a status is
+read where it was filed rather than inferred. `activity` opens no body at all and reads EVERY type:
+its summary is a declared table of type to one sentence, and a type the table does not know renders
+its own name, so the strip renders complete on a replica holding no key, including one replicating a
+newer hub.
+
+**Nothing here caches, and a seed is verified rather than trusted.** The caller holds
+`(head_lsn, state)` and advances it, and a SEED is that pair written down: `seed_at` mints one only AT
+an `official_close_declared` — the position where the desk already agrees what the day was, located on
+the PLATTER rather than in a handle's own index — as canonical JSON at
+`seeds/<projector>-<version>-<lsn>.json` beside `log/` and `blobs/`, written scratch-fsync-rename the
+way the store writes. It carries that close's event hash AND its state's own address, so a seed
+minted over another home's history, one of another projector or version, a torn file, and one whose
+state was edited beneath an intact close each refuse BY NAME where they are read, and the projector
+and version again where the state is folded. The fold is pure in it: the state is copied before it is
+advanced, the caller's seed is left where it was, and a position BEHIND the seed refuses rather than
+answering the state in front of it. A seed is derivable and disposable: both verification modes
+answer exactly what they answered before one was minted, and deleting the directory costs one refold.
+A caller seeds `positions` and `blotter`, never the `activity` strip, whose state IS its history —
+copying that state costs 219 ms where folding it from genesis costs 38. Seed equivalence is gated
+byte for byte on every projector, at a close the synthetic book restates AFTER.
+
+**Supersession is `(effective_time, lsn)` under the whole key.** A republished print of one
+`(index, date, source)` wins by its as-of key rather than by arriving last, and the print it beat stays
+on the row — the record holds it, so the projection may not hide it. A second administrator's print of
+the same index and date is a second row, never a supersession, and `fixings_at` resolves ACROSS sources
+by a declared order: the third reserved policy name, `fixings`, is `{"sources": {"FxRate.ZAR": ["ECB",
+"BFIX"]}}`, one ordered list per index, validated at the declaration like the other two. The first
+named source holding a print is the fixing in force. A home declaring no policy at all has named an
+authority for nothing and resolves nothing; once one is declared, an index it does not name REFUSES BY
+NAME where the caller asked for that index — a fixing whose authority nobody declared is not a fixing
+a plan may use — and is left alone where it did not, so one stray print cannot refuse a whole compile.
+The prints are the `lifecycle` fold's rather than a second walk for them; the policy itself is read
+the way every policy is, by `in_force`.
+
+**Twelve gates** (`tests/test_spine_projections.py`), eleven on the design's own synthetic book,
+imported rather than written again: a committed golden per projector and for the strip's table of
+sentences, seed equivalence with the fold pure in its seed, the seeded fold seeing the restatement
+behind it, supersession in both directions and under the whole key, a knock derived while
+`apply_lifecycle` refuses to file one, LSN order under a shared truth-time, a v2 projector folding v1
+bodies while a seed of another version, another home or a torn file refuses, a fold that never claims
+the home and sees the writer's next frame, the fixings refusal and the declared order, `seeds/`
+invisible to verification, and the import surface with the gate's glob widened to every `.py` at any
+depth so a subpackage cannot smuggle one past it. The twelfth is a second fixture for what the first
+cannot say: a position closed to zero, one replay tuple attested twice (the FIRST stands, as
+`verbs.attestation` answers), one policy declared twice (the LAST stands, as `policy.in_force`
+answers), a print superseded twice, and two verdicts read in the order they were filed.
+
 ## What is not built yet
 
-No projections, no diary, no DuckDB — **increment 4**, which is also where the book file becomes a
-fold-and-hydrate projection pinned to its LSN, and where the plan compiler becomes a FOLD over fixings
-supersession rather than a recompile of the document that was submitted. No tier policy, no doorbell, no
-generated MCP binding — **5 through 7**. No network anywhere yet: tokens are verified, never fetched,
-and no write path is exposed beyond localhost. No class-key rotation (rewrap adds recipients; rotation
-is a later logged event). The external anchor hook is the checkpoint pair on `DV_Spine status`; wiring
-it to an anchor target is deployment data, out of scope by the design's own sentence.
+No diary and no DuckDB — the rest of **increment 4**, which is also where the book file gains the LSN
+it was hydrated at and a verb naming where it and the record disagree, and where the plan compiler
+becomes a FOLD over fixings supersession rather than a recompile of the document that was submitted.
+No tier policy, no doorbell, no generated MCP binding — **5 through 7**. No network anywhere yet:
+tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
+rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
+checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope
+by the design's own sentence.
 
 Two boundaries of increment 3's own, declared rather than discovered. `pin_result` reads its tolerance
 policy and re-executes BEFORE the writer adjudicates the append, so an unscoped actor can make the hub

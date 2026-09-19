@@ -1,0 +1,191 @@
+[
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "policy_declared",
+    "lsn": 1,
+    "record_time": "the writer stamped this",
+    "summary": "a policy document was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "policy_declared",
+    "lsn": 2,
+    "record_time": "the writer stamped this",
+    "summary": "a policy document was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "policy_declared",
+    "lsn": 3,
+    "record_time": "the writer stamped this",
+    "summary": "a policy document was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "checkpoint",
+    "lsn": 4,
+    "record_time": "the writer stamped this",
+    "summary": "the head was signed"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-26T08:00:00.000000Z",
+    "event_type": "fill",
+    "lsn": 5,
+    "record_time": "the writer stamped this",
+    "summary": "a clip was booked"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-24T08:00:00.000000Z",
+    "event_type": "fill",
+    "lsn": 6,
+    "record_time": "the writer stamped this",
+    "summary": "a clip was booked"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-24T08:00:00.000000Z",
+    "event_type": "amendment",
+    "lsn": 7,
+    "record_time": "the writer stamped this",
+    "summary": "terms were restruck under a new instrument"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-25T08:00:00.000000Z",
+    "event_type": "election",
+    "lsn": 8,
+    "record_time": "the writer stamped this",
+    "summary": "a holder made its choice"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-25T08:00:00.000000Z",
+    "event_type": "approval",
+    "lsn": 9,
+    "record_time": "the writer stamped this",
+    "summary": "a plan was approved"
+  },
+  {
+    "actor": "subject-desk-two",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-25T08:00:00.000000Z",
+    "event_type": "rejection",
+    "lsn": 10,
+    "record_time": "the writer stamped this",
+    "summary": "a plan was rejected"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-25T08:00:00.000000Z",
+    "event_type": "determination",
+    "lsn": 11,
+    "record_time": "the writer stamped this",
+    "summary": "a ruling was made"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": "2026-08-25T08:00:00.000000Z",
+    "event_type": "status_transition",
+    "lsn": 12,
+    "record_time": "the writer stamped this",
+    "summary": "a state was moved"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": "2026-08-26T08:00:00.000000Z",
+    "event_type": "market_declared",
+    "lsn": 13,
+    "record_time": "the writer stamped this",
+    "summary": "a market name was pointed at a values vector"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": "2026-08-26T08:00:00.000000Z",
+    "event_type": "fixing_observed",
+    "lsn": 14,
+    "record_time": "the writer stamped this",
+    "summary": "an observation was printed"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": "2026-08-26T16:30:00.000000Z",
+    "event_type": "official_close_declared",
+    "lsn": 15,
+    "record_time": "the writer stamped this",
+    "summary": "the official close was declared"
+  },
+  {
+    "actor": "subject-administrator",
+    "book": null,
+    "effective_time": "2026-08-26T08:00:00.000000Z",
+    "event_type": "fixing_observed",
+    "lsn": 16,
+    "record_time": "the writer stamped this",
+    "summary": "an observation was printed"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": "2026-08-26T16:30:00.000000Z",
+    "event_type": "official_close_declared",
+    "lsn": 17,
+    "record_time": "the writer stamped this",
+    "summary": "the official close was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "retention_declared",
+    "lsn": 18,
+    "record_time": "the writer stamped this",
+    "summary": "a retention policy was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "rehash_declared",
+    "lsn": 19,
+    "record_time": "the writer stamped this",
+    "summary": "a hash algorithm was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": null,
+    "event_type": "snapshot_registered",
+    "lsn": 20,
+    "record_time": "the writer stamped this",
+    "summary": "a snapshot was registered"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "break_glass_used",
+    "lsn": 21,
+    "record_time": "the writer stamped this",
+    "summary": "the recovery seat was used"
+  }
+]

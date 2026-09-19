@@ -591,7 +591,7 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
 
     with pytest.raises(MalformedEvent) as refusal:
         policy.declare(log, MINT, 'liquidity', {'anything': 1})
-    assert 'firmness and tolerance' in str(refusal.value)
+    assert 'firmness, fixings, tolerance' in str(refusal.value)
 
     assert log.head()[0] == 4, 'a refused declaration wrote something'
     # an empty tolerance document is a policy that tolerates nothing, and it is legal - silence is
