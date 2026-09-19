@@ -46,10 +46,49 @@ import time
 import requests
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp_types import ToolAnnotations
 
-MCP = MCPServer('derivus', instructions=__doc__)
+#: What a host shows the MODEL before it calls anything - the desk's orientation, not this
+#: module's maintenance notes. A host reads it once per session, so it says what the desk IS,
+#: where to start, the wire forms, the one axis a model gets wrong, and what a refusal means.
+INSTRUCTIONS = """\
+derivus desk - one trading book with its market, priced by the derivus engine and served by
+DV_Service. You are a dealer's assistant on this desk: everything you do goes through these
+tools, the book on disk is the record, and every write is validated before it lands.
+
+START WITH desk_status: the book's date and currency, its curves and surfaces with when each
+was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a
+terminal is present. A sandboxed desk has no terminal - the snapped market is what prices, and
+set_base_date is how the book is valued as of another day.
+
+A WORKING DAY: read_book to see what is held; describe_instrument_type before booking a type
+you have not booked; book_deal for a plain instrument; for FX options solve_structure and then
+book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
+its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
+strike to a target; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
+
+THE WIRE FORMS a deal is written in: dates {".Timestamp": "YYYY-MM-DD"}, periods
+{".DateOffset": "3M"}, percentages {".Percent": 2.5}, numbers as numbers; a curve or a surface
+is named by the Price Factors block it must match, which desk_status lists. An FX option's
+Strike_Price is on the ENGINE axis - the book's reporting currency per unit of
+Underlying_Currency, so a USDZAR strike of 17.50 on a USD book is 1/17.50 - which is why FX
+options are quoted through solve_structure, where strikes are market terms. Structures are
+declared: describe_structure lists them with the parameters they take; never compose a collar
+or a seagull from legs by hand.
+
+REFUSALS ARE ANSWERS: {written: false, refused: [...]} names what to fix - fix that one thing
+and post again. Deals are addressed by deal_path, which is positional, so pass the reference
+you read at a path whenever you amend or delete. A legacy book imports as one
+NettingCollateralSet carrying its deals as Children, through book_deal; one bad deal refuses
+the whole batch and names it.
+
+THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
+configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
+needs a terminal on the service's own workstation. Bootstrapping dials, Bloomberg ticker codes
+and curve set-ups are normally configured once in the web UI - ask before changing them here."""
+
+MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 SERVICE = None
@@ -69,7 +108,7 @@ class Service:
         self.session = session if session is not None else requests.Session()
         self.transport = {} if session is not None else {'timeout': timeout}
 
-    def call(self, method, path, **kwargs):
+    def request(self, method, path, **kwargs):
         try:
             response = self.session.request(method, self.base_url + path,
                                             **dict(self.transport, **kwargs))
@@ -81,7 +120,10 @@ class Service:
         if response.status_code >= 400:
             raise ToolError('DV_Service answered {} for {} {}: {}'.format(
                 response.status_code, method, path, response.text[:500]))
-        return response.json()
+        return response
+
+    def call(self, method, path, **kwargs):
+        return self.request(method, path, **kwargs).json()
 
 
 def configure(base_url=None, session=None):
@@ -104,6 +146,21 @@ MAX_TABLE_COLUMNS = 60
 #: How many gradient rows a risk summary carries - the biggest by absolute size. The whole vector
 #: is reached through `execute_book({"Greeks": "First"})` and `fetch_table`.
 MAX_GREEK_ROWS = 15
+
+
+#: What a quote sheet IS on the wire, so a host offers it as the spreadsheet a client is sent.
+#: The service names it too - the import gate is what keeps this module from reading it off there.
+SHEET_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def _resource(path, binary=False):
+    """A service GET for a RESOURCE: the same call, with the refusal wearing the exception a
+    resource refuses by, so a host reads the service's own words rather than a generic crash."""
+    try:
+        answer = service().request('GET', path)
+    except ToolError as error:
+        raise ResourceError(str(error))
+    return answer.content if binary else answer.json()
 
 
 def _raw_result(result_id):
@@ -323,6 +380,29 @@ def job_skeleton() -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
+def desk_status() -> dict:
+    """START HERE. What this desk is set up with, in one call - what every other verb has to work
+    with, and how old each piece of it is.
+
+    The book's `base_date` (the day it is valued as of), `base_currency` and `calculation`; how
+    many `deals` it holds and the `netting_sets` a client's trade can be booked under; `curves`,
+    one per bootstrapped block, with the knots it solved on, the latest print its rows carry
+    (`snapped`) and any benchmark `held_out`; `surfaces` with their own quote stamps; `models`, the
+    spot models calibrated onto this book; `xva`, the last projection per set with its `as_of`.
+
+    `terminal` is what this desk CAN do: `present` says whether `tick_market_from_bloomberg` has a
+    terminal to ask - a sandboxed desk reads False and prices on the market the book last snapped
+    - `ticking` the cadence the service refreshes itself on, and `provisioned` whether the desk's
+    ticker vocabulary has been verified against a terminal at all.
+
+    Names come back exactly as the book spells them, so a curve or surface named here is the
+    string a deal's `Discount_Rate` or `FX_Volatility` must match. Numbers are elsewhere:
+    `book_risk_summary` for the mark, `xva_view` for the projection, `describe_curve` for the rows.
+    """
+    return service().call('GET', '/book/status')
+
+
+@MCP.tool(annotations=READ_ONLY)
 def read_book() -> dict:
     """The live book, summarised one row per deal: `deal_path` (the positional identity every
     verb uses - references are NOT unique), type, reference, currency, whether it is ignored, and
@@ -387,7 +467,8 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
     The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
     carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
     'USDZAR call', the option paid when ZAR weakens, is authored as a PUT on ZAR with
-    `Underlying_Currency` ZAR.
+    `Underlying_Currency` ZAR. Quote an FX option through `solve_structure` instead and the strike
+    stays in market terms: the runner crosses the axis and `book_quote` books what it composed.
 
     On success the answer carries the new `deal_path`, and every other client (the web UI, Excel)
     sees the deal on its next read. The answer is about THIS booking; anything else outstanding in
@@ -794,7 +875,9 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
-        return quote
+        return dict(quote, resources={
+            'quote': 'derivus://quote/{}'.format(quote['quote_id']),
+            'sheet': 'derivus://quote/{}/sheet'.format(quote['quote_id'])})
     # No quote: the run summary is the answer, and its poll pointer follows up on the stats rather
     # than on a table.
     if 'hint' in outcome:
@@ -983,6 +1066,96 @@ def deal_values(result_id: str) -> dict:
         result_id, shape['rows']))
     reference, value = page['columns'].index('Reference'), page['columns'].index('Value')
     return {row[reference] if row[reference] else 'Total': row[value] for row in page['data']}
+
+
+# --------------------------------------------------------------------------- prompts
+
+
+@MCP.prompt()
+def quote_a_structure(structure: str, pair: str, notional: str, notional_currency: str,
+                      expiry: str, client: str = None) -> str:
+    """Quote one declared structure for a client - its own parameters, its legs at market terms,
+    booked only on the user's word."""
+    return (
+        '1. describe_structure({0!r}) - the parameters it declares and the legs it books.\n'
+        '2. solve_structure({0!r}, params) filling ONLY those parameters: pair {1}, notional {2} '
+        '{3}, expiry {4}, strikes in MARKET terms{5}.\n'
+        '3. Report every leg - role, buy/sell, strike, premium - then the net, the net_mid the '
+        'book will mark it at, and the edge between them.\n'
+        '4. book_quote(quote_id) ONLY on the user\'s word. A quote is firm for a window; past '
+        'it, re-quote.'.format(structure, pair, notional, notional_currency, expiry,
+                               ', netting_set {!r}'.format(client) if client else ''))
+
+
+@MCP.prompt()
+def import_a_legacy_book(counterparty: str) -> str:
+    """Load a counterparty's existing trades into the book as one netting set, and mark them."""
+    return (
+        '1. Take the deals the user supplies in derivus form and wrap them as ONE node: '
+        '{{"Object": "NettingCollateralSet", "Reference": "{0}", "Netted": "True", '
+        '"Collateralized": "False", "Children": [{{"Instrument": {{".Deal": deal}}}}, ...]}}.\n'
+        '2. book_deal(that node) - one call. One bad deal refuses the WHOLE batch and names it: '
+        'fix that child and post the batch again.\n'
+        '3. execute_book, then book_risk_summary for the mark and the gradient.\n'
+        '4. recalc_xva(["{0}"]) only if the user asks for it - it is minutes.'.format(
+            counterparty))
+
+
+@MCP.prompt()
+def morning_desk_check() -> str:
+    """Open the desk for the day: what it is set up with, today's market, the mark, and what is
+    stale."""
+    return (
+        '1. desk_status - the book\'s date, its curves and surfaces with when each was snapped, '
+        'and whether a terminal is present.\n'
+        '2. Where terminal.present: tick_market_from_bloomberg for today\'s market. Where it is '
+        'not, say what date the market was snapped and price on it.\n'
+        '3. book_risk_summary - the mark and the biggest gradient rows.\n'
+        '4. xva_view - name every set whose as_of is older than today; recalc_xva is minutes, so '
+        'ask before running it.\n'
+        '5. set_base_date ONLY on the user\'s word - a tick already rolls the book onto the day '
+        'its prints came from.')
+
+
+# --------------------------------------------------------------------------- resources
+
+
+#: The stores `/schema` publishes, which is the menu `derivus://schema/{store}` serves and the
+#: refusal names.
+SCHEMA_STORES = ('Instrument', 'Structure', 'Calculation', 'Factor', 'Process', 'MarketPrices',
+                 'Configuration')
+
+
+@MCP.resource('derivus://book', mime_type='application/json')
+def book_document() -> dict:
+    """The live book as the job document itself - every deal and all its market data, verbatim.
+    `read_book` is the summary a model should normally hold; this is the file."""
+    return _resource('/book')['document']
+
+
+@MCP.resource('derivus://schema/{store}', mime_type='application/json')
+def schema_store(store: str) -> dict:
+    """One store of the engine's declarations, whole - what every describe_* tool reads one entry
+    out of, for a host that wants the vocabulary in front of it."""
+    if store not in SCHEMA_STORES:
+        raise ResourceError('{!r} is not a schema store - one of: {}'.format(
+            store, ', '.join(SCHEMA_STORES)))
+    return _resource('/schema')[store]
+
+
+@MCP.resource('derivus://quote/{quote_id}', mime_type='application/json')
+def quote_pending(quote_id: str) -> dict:
+    """The pending trade a quote filed: what was quoted, the deal that books it, and when. It
+    stands after the approval too, being the audit trail of why the book carries what it does."""
+    return _resource('/book/quote/{}'.format(quote_id))
+
+
+@MCP.resource('derivus://quote/{quote_id}/sheet', mime_type=SHEET_MIME)
+def quote_sheet(quote_id: str) -> bytes:
+    """The quote sheet itself, as the spreadsheet a client is sent - so a host hands over the file
+    rather than a path on the service's own disk. A quote given where the sheet writer was not
+    installed refuses by name, and is still approvable."""
+    return _resource('/book/quote/{}/sheet'.format(quote_id), binary=True)
 
 
 def main():

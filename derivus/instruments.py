@@ -26,6 +26,14 @@ import torch
 import torch.nn.functional as Fn
 
 
+#: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
+#: quote - said on every FX field that carries one, since the declarations are what a model reads
+#: before it books.
+FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying_Currency, so a '
+           'USDZAR level of 17.50 on a USD book is authored as 1/17.50. solve_structure takes FX '
+           'strikes in market terms and crosses the axis itself')
+
+
 def get_business_day_offsets(calendar_names, calendars, business_days=2):
 
     def calendar_business_day(calendar_name, calendars):
@@ -3439,7 +3447,8 @@ class FXDiscreteExplicitAsianOption(Deal):
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Underlying_Currency', 'Text', default=''),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Is_Digital', 'Text', default='No', values=['Yes', 'No']),
         F('Underlying_Amount', 'Float', default=0.0),
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
@@ -3524,7 +3533,8 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Underlying_Currency', 'Text', default=''),
         F('Underlying_Amount', 'Float', default=0.0),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Strike_Multiplier', 'Float', default=1.0),
         F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Sampling_Multiplier_1', 'Float', default=1.0),
@@ -5489,7 +5499,8 @@ class FXOneTouchOption(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
-        F('Barrier_Price', 'Float', default=0),
+        F('Barrier_Price', 'Float', default=0,
+          description=FX_AXIS.format('Barrier price')),
         F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
         F('Payment_Timing', 'Text', default='Expiry', values=['Touch', 'Expiry']),
         F('Expiry_Date', 'Date', default=''),
@@ -5611,9 +5622,11 @@ class FXBarrierOption(Deal):
         F('Underlying_Amount', 'Float', default=0.0),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', obj='Period'),
         F('Payoff_Currency', 'Text', default=''),
-        F('Barrier_Price', 'Float', default=0),
+        F('Barrier_Price', 'Float', default=0,
+          description=FX_AXIS.format('Barrier price')),
         F('Cash_Rebate', 'Float', default=0),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -5735,8 +5748,10 @@ class FXPartialTimeBarrierOption(Deal):
         F('Underlying_Currency', 'Text', default=''),
         F('Underlying_Amount', 'Float', default=0.0),
         F('Payoff_Currency', 'Text', default=''),
-        F('Strike_Price', 'Float', default=0.0),
-        F('Barrier_Price', 'Float', default=0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
+        F('Barrier_Price', 'Float', default=0,
+          description=FX_AXIS.format('Barrier price')),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_At_Start', 'Text', default='No', values=['Yes', 'No']),
         F('Barrier_Limit_Date', 'Date', default=''),
@@ -5855,7 +5870,8 @@ class FXTARFOptionDeal(Deal):
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
         F('Option_Style', 'Text', default='European', values=['European', 'American']),
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
@@ -6030,11 +6046,13 @@ class FXAccumulatorOptionDeal(Deal):
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Underlying_Amount', 'Float', default=0.0),
         F('LeverageNotional', 'Float', default=0.0),
         F('Barrier_Type', 'Text', default='Up_And_Out', values=['Up_And_Out', 'Down_And_Out']),
-        F('Barrier_Price', 'Float', default=REQUIRED),
+        F('Barrier_Price', 'Float', default=REQUIRED,
+          description=FX_AXIS.format('Barrier price')),
         # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
         # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
@@ -6210,7 +6228,8 @@ class FXExtendableForwardDeal(Deal):
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=REQUIRED),
+        F('Strike_Price', 'Float', default=REQUIRED,
+          description=FX_AXIS.format('Strike price')),
         F('Extension_Strike', 'Float', default=REQUIRED),
         F('Extension_Date', 'Date', default=REQUIRED),
         F('Extension_Style', 'Text', default='Strip', values=['Strip', 'Rolling']),
@@ -6415,7 +6434,8 @@ class FXOptionDeal(Deal):
     fields = [ADMIN, FX_ADMIN, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0),
         F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -6507,7 +6527,8 @@ class FXBinaryOption(FXOptionDeal):
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
         F('Cash_Payoff', 'Float', default=REQUIRED),
         F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
-        F('Strike_Price', 'Float', default=0.0),
+        F('Strike_Price', 'Float', default=0.0,
+          description=FX_AXIS.format('Strike price')),
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),

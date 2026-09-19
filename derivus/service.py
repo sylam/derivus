@@ -32,6 +32,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /results/{result_id}/{table}` | one table, paged |
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
 | `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state |
+| `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
@@ -41,6 +42,8 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
 | `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
+| `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
+| `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
 | `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
 | `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
@@ -81,6 +84,7 @@ from itertools import count
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
@@ -2022,6 +2026,76 @@ def book_curves(curve: str = None):
     return answer
 
 
+#: The price factor types that ARE a vol surface, read off the engine's own declarations - so a new
+#: asset class's surface reaches the desk read by being declared a `VolatilityGrid`.
+VOL_SURFACES = tuple(name for name, declared in vars(riskfactors).items()
+                     if isinstance(declared, type)
+                     and issubclass(declared, riskfactors.VolatilityGrid))
+
+#: The suffix a calibrated spot model's price factor wears (`LogVar2FJModelParameters.ZAR`) - the
+#: one thing that says a factor is a FITTED model rather than quoted market data.
+MODEL_SUFFIX = 'ModelParameters'
+
+#: The metronome `DV_Service --tick` is beating on, or None where nothing ticks this book.
+TICKER = None
+
+
+def terminal_status():
+    """Whether this workstation can reach a terminal at all, what cadence it is ticked on, and
+    whether its vocabulary has been verified - all three WITHOUT opening a session: `present` is
+    an import, `provisioned` a file on disk."""
+    from derivus_bloomberg import discover, session
+    from derivus_bloomberg.errors import BloombergUnavailable
+    try:
+        session.blpapi_module()
+        present = True
+    except (BloombergUnavailable, ImportError):
+        present = False
+    return {'present': present, 'ticking': TICKER.interval if TICKER else None,
+            'provisioned': discover.provisioned() is not None}
+
+
+@app.get('/book/status', summary='The desk in one read - book, market, models, terminal')
+def book_status():
+    """What this desk is set up with, composed from the readers beside it - the first call a client
+    makes, and the one that says what every other verb has to work with.
+
+    The book's `base_date`, `base_currency` and calculation; how many deals it holds and which
+    netting sets; each curve with the knots it solved on, the latest print its rows carry and any
+    benchmark held out; each vol surface with its own quote stamp; the spot models calibrated onto
+    it; the last XVA per set, trimmed to the columns a desk reads staleness off.
+
+    ORIENTATION, NOT NUMBERS: the mark is `/book/risk`, the projection `/book/xva`, the curve
+    definitions `/book/curve`. Every field here answers what is set up and how old it is. A
+    sandboxed desk reads `terminal.present` False and prices on the market it last snapped.
+    """
+    document, etag = live_book().read()
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    factors = market.get('Price Factors', {})
+    calculation = document['Calc']['Calculation']
+    return {
+        'etag': etag,
+        'base_date': book_base_date(document).isoformat(),
+        'base_currency': market.get('System Parameters', {}).get('Base_Currency'),
+        'calculation': {'Object': calculation.get('Object'),
+                        'Currency': calculation.get('Currency')},
+        'deals': sum(1 for _ in walk_job_deals(document)),
+        'netting_sets': [node['Instrument']['.Deal'].get('Reference')
+                         for _, node in netting_sets(document)],
+        'curves': [{'curve': entry['curve'], 'currency': entry['currency'],
+                    'snapped': entry['snapped'],
+                    'knots': [row['tenor'] for row in entry['rows'] if row['use'] == 'Yes'],
+                    'held_out': [row['tenor'] for row in entry['rows'] if row['use'] != 'Yes']}
+                   for entry in book_curves()['curves'].values()],
+        'surfaces': [{'name': name, 'snapped': factors[name].get('Quote_Timestamp') or ''}
+                     for name in sorted(factors) if name.split('.')[0] in VOL_SURFACES],
+        'models': [{'name': name, 'family': name.split('.')[0][:-len(MODEL_SUFFIX)]}
+                   for name in sorted(factors) if name.split('.')[0].endswith(MODEL_SUFFIX)],
+        'xva': [{key: row[key] for key in ('reference', 'status', 'as_of', 'cva', 'fva')}
+                for row in book_xva_view()['sets']],
+        'terminal': terminal_status()}
+
+
 def date_edit(document, base_date):
     """The book's calculation date moved as ONE edit closure for `Book.mutate`: both stamps set,
     every curve block re-authored on the new date from its own rows and conventions with no
@@ -2464,6 +2538,8 @@ class Metronome:
                 self.failed(getattr(error, 'detail', None) or error)
 
     def start(self):
+        global TICKER
+        TICKER = self
         threading.Thread(target=self.run, daemon=True).start()
         return self
 
@@ -2570,6 +2646,51 @@ def quote_dir():
     after the booking, being the audit trail of why the book carries what it carries.
     """
     return os.path.join(dv_home(), 'tmp')
+
+
+#: What a quote sheet IS on the wire, so a host offers it as the spreadsheet a client is sent.
+QUOTE_SHEET_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def pending_quote(quote_id, suffix='.json'):
+    """The file a quote id names under `DV_HOME/tmp`, refused by name where the id is not one or
+    nothing stands under it. A quote id names a file in the desk's own tmp and NEVER a path out of
+    it, which is what the basename check is."""
+    if not quote_id:
+        raise HTTPException(422, 'a quote is addressed by the quote_id it was filed under')
+    if quote_id != os.path.basename(quote_id):
+        raise HTTPException(422, '{!r} is not a quote id'.format(quote_id))
+    path = os.path.join(quote_dir(), quote_id + suffix)
+    if not os.path.isfile(path):
+        raise HTTPException(404, 'Unknown quote {} - nothing under that id in {}'.format(
+            quote_id, quote_dir()))
+    return path
+
+
+@app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
+def book_quote_pending(quote_id: str):
+    """The pending trade exactly as the runner filed it: the `quote` it answered with, the `deal`
+    that books it, `quoted_at` and any pins. It stays after the approval, being the audit trail of
+    why the book carries what it carries, so this reads a quote given and a quote booked alike."""
+    with open(pending_quote(quote_id), encoding='utf-8') as handle:
+        return json.load(handle)
+
+
+@app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')
+def book_quote_sheet(quote_id: str):
+    """The sheet beside the pending trade, streamed as the spreadsheet itself - so a client of this
+    service hands a salesperson the file rather than a path on the service's own disk.
+
+    The sheet is the `quote` extra's and genuinely optional: where `xlsxwriter` was not installed
+    when the quote was given, this is a 404 carrying the quote's own `sheet_note`, which names the
+    install. The quote is still there and still approvable."""
+    pending = book_quote_pending(quote_id)
+    path = os.path.join(quote_dir(), quote_id + '.xlsx')
+    if not os.path.isfile(path):
+        raise HTTPException(404, 'quote {} has no sheet: {}'.format(
+            quote_id, (pending.get('quote', {}).get('files') or {}).get('sheet_note')
+            or 'nothing was written beside the pending trade'))
+    return FileResponse(path, media_type=QUOTE_SHEET_MIME, filename=os.path.basename(path))
 
 
 def quote_stamp():
@@ -2949,15 +3070,7 @@ def book_quote(request: dict):
     """
     live = live_book()
     quote_id = request.get('quote_id')
-    if not quote_id:
-        raise HTTPException(422, 'an approval names the quote_id it books')
-    # a quote id names a file in the desk's own tmp - never a path out of it
-    if quote_id != os.path.basename(quote_id):
-        raise HTTPException(422, '{!r} is not a quote id'.format(quote_id))
-    path = os.path.join(quote_dir(), quote_id + '.json')
-    if not os.path.isfile(path):
-        raise HTTPException(404, 'Unknown quote {} - nothing under that id in {}'.format(
-            quote_id, quote_dir()))
+    path = pending_quote(quote_id)
     with open(path, encoding='utf-8') as handle:
         pending = json.load(handle)
 

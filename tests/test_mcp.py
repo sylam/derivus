@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 
 import derivus
 from derivus_mcp import server as mcp_server
@@ -71,11 +71,12 @@ def test_every_tool_is_registered_and_carries_its_contract():
     the read-only hints are what let a host run discovery without asking permission to write."""
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
-                'describe_factor_type', 'describe_configuration', 'job_skeleton', 'read_book',
-                'read_deal', 'book_deal', 'amend_deal', 'delete_deal', 'price_candidate',
-                'solve_deal', 'execute_book', 'validate_book', 'describe_book', 'poll_result',
-                'fetch_table', 'deal_values', 'configure_book', 'describe_curve', 'configure_curve',
-                'set_base_date', 'update_market_quotes', 'patch_market_values',
+                'describe_factor_type', 'describe_configuration', 'job_skeleton', 'desk_status',
+                'read_book', 'read_deal', 'book_deal', 'amend_deal', 'delete_deal',
+                'price_candidate', 'solve_deal', 'execute_book', 'validate_book', 'describe_book',
+                'poll_result', 'fetch_table', 'deal_values', 'configure_book',
+                'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
+                'patch_market_values',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
                 'recalc_xva'}
@@ -89,6 +90,117 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date'}
+
+
+def read_resource(uri):
+    """One of the server's documents the way a HOST opens it - by URI through the registry, never
+    by calling the function behind it. Text comes back as text and the sheet as bytes."""
+    return [chunk.content for chunk in asyncio.run(mcp_server.MCP.read_resource(uri))][0]
+
+
+def test_the_instructions_a_host_shows_are_the_desks_orientation():
+    """A desktop host reads the server's instructions once and shows them to the MODEL before it
+    calls anything, so they have to be the desk's orientation - where to start, what a deal is
+    written in, and the one axis a model gets wrong - rather than this module's maintenance notes.
+
+    Killing mutation: the module docstring installed again, which opens by telling the reader
+    which packages this file is allowed to import and never names the strike axis.
+    """
+    instructions = mcp_server.MCP.instructions
+
+    assert instructions == mcp_server.INSTRUCTIONS != mcp_server.__doc__
+    assert 'RF_SERVICE_URL' not in instructions, "the maintainer's docstring, not the desk's"
+    for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
+                 '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
+                 '{written: false, refused: [...]}'):
+        assert said in instructions, said
+
+
+def test_the_host_is_offered_three_walks_and_four_documents():
+    """A host renders prompts as commands and resources as documents to open, so both are contract
+    the same way a tool schema is: exactly the three walks a desk runs, each taking the arguments
+    it needs filled, and the four documents - the book, one schema store, a pending quote, and the
+    sheet that goes to the client.
+
+    Killing mutations: a prompt argument dropped or made optional, which offers a host a command
+    it cannot fill; the sheet declared `application/json`, which hands a host a zip to render as
+    text.
+    """
+    prompts = {prompt.name: [(argument.name, argument.required)
+                             for argument in (prompt.arguments or [])]
+               for prompt in asyncio.run(mcp_server.MCP.list_prompts())}
+
+    assert prompts == {
+        'quote_a_structure': [('structure', True), ('pair', True), ('notional', True),
+                              ('notional_currency', True), ('expiry', True), ('client', False)],
+        'import_a_legacy_book': [('counterparty', True)],
+        'morning_desk_check': []}
+    assert [(str(found.uri), found.mime_type)
+            for found in asyncio.run(mcp_server.MCP.list_resources())] == [
+        ('derivus://book', 'application/json')]
+    assert [(found.uri_template, found.mime_type)
+            for found in asyncio.run(mcp_server.MCP.list_resource_templates())] == [
+        ('derivus://schema/{store}', 'application/json'),
+        ('derivus://quote/{quote_id}', 'application/json'),
+        ('derivus://quote/{quote_id}/sheet', mcp_server.SHEET_MIME)]
+
+
+def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
+    """The call the instructions say to start with, against the in-process service: one answer
+    carrying everything the next verb needs - the day the book is valued as of, what it holds,
+    every curve with the knots it solved on and the latest print its rows carry, and whether this
+    desk can fetch a market at all. The tool is one `service().call`; the composition is the
+    verb's.
+
+    `DV_HOME` is the gate's own tmp and `blpapi` is made absent, so a workstation that happens to
+    carry a terminal and a provisioned map reads the same as a sandboxed one. No session is opened
+    either way.
+
+    Killing mutation: `snapped` read off the book's base date rather than off the rows, which a
+    curve set up on a later print then reads as the day the book stands at.
+    """
+    from derivus_bloomberg import session
+    from derivus_bloomberg.errors import BloombergUnavailable
+    from test_service import CURVE_ROWS
+
+    def absent():
+        raise BloombergUnavailable('no blpapi on this workstation')
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr(session, 'blpapi_module', absent)
+    bare = mcp_server.desk_status()
+
+    assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
+                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'terminal'}
+    assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
+    assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
+    assert (bare['deals'], bare['netting_sets'], bare['curves']) == (1, [], [])
+    assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
+
+    mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
+    curves = mcp_server.desk_status()['curves']
+
+    assert curves == [{'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
+                       'knots': [row['tenor'] for row in CURVE_ROWS], 'held_out': []}]
+
+
+def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
+    """A model books off `describe_instrument_type`, so the axis belongs ON the declaration: the
+    field a desk gets wrong is the one that has to say which way round it is and where market
+    terms are taken instead. The engine reads no description, so this moves no number.
+
+    Killing mutation: the description left to default to the field name, which is what a model
+    then reads as 'the strike' and fills in with 17.50 - and the equity barrier beside it, which
+    is NOT on this axis, is what says the sweep did not describe every strike in the file.
+    """
+    strike = mcp_server.describe_instrument_type('FXOptionDeal')['fields']['Strike_Price']
+    barrier = mcp_server.describe_instrument_type('FXBarrierOption')['fields']['Barrier_Price']
+    equity = mcp_server.describe_instrument_type('EquityBarrierOption')['fields']['Barrier_Price']
+
+    assert 'reporting currency per unit of Underlying_Currency' in strike['description']
+    assert '1/17.50' in strike['description'] and 'solve_structure' in strike['description']
+    assert barrier['description'].startswith('Barrier price on the ENGINE axis')
+    assert equity['description'] == 'Barrier Price', 'an equity barrier is not on the FX axis'
 
 
 #: The tools that sit on a run and therefore have to speak while they sit.
@@ -319,6 +431,17 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         assert quote['files']['sheet'] or quote['files']['sheet_note']
         with open(pending, encoding='utf-8') as handle:
             assert json.load(handle)['deal'], 'the pending file is not the trade it stands for'
+
+        # what a host is handed is a URI it can open, not a path on the service's disk
+        assert quote['resources'] == {
+            'quote': 'derivus://quote/{}'.format(quote['quote_id']),
+            'sheet': 'derivus://quote/{}/sheet'.format(quote['quote_id'])}
+        assert json.loads(read_resource(quote['resources']['quote']))['deal'] == quote['deal']
+        if quote['files']['sheet']:
+            assert read_resource(quote['resources']['sheet'])[:2] == b'PK'
+        else:
+            with pytest.raises(ResourceError, match='derivus'):
+                read_resource(quote['resources']['sheet'])
 
         booked = mcp_server.book_quote(quote['quote_id'])
         assert booked['written'] is True and 'validate' not in booked

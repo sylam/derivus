@@ -22,10 +22,18 @@ claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- DV_MCP
 There is deliberately no tracked `.mcp.json`: it would pin one machine's paths into the repo, and
 `DV_MCP` takes the path out of the command altogether.
 
+**The server's instructions are the desk's orientation.** A host reads them once per session and
+shows them to the model before it calls anything, so they are `INSTRUCTIONS` in
+`derivus_mcp/server.py`: what the desk is, to start with `desk_status`, the shape of a working
+day, the wire forms a deal is written in, the FX strike axis, what a refusal means, and that
+bootstrapping dials and ticker codes are configured once in the web UI. The module docstring
+stays the maintainer's.
+
 ## The tools
 
 | | |
 | --- | --- |
+| `desk_status` | `GET /book/status` — the desk in ONE read: the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a terminal is present |
 | `list_instrument_types` | every bookable type, the create-menu grouping, and `containers` |
 | `describe_instrument_type` | one type's fields as declared — required, defaults, valid values |
 | `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs, the recipe |
@@ -50,6 +58,21 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 | `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
+
+## Prompts and resources
+
+A host offers **prompts** as commands a user picks and **resources** as documents it can open, so
+both are contract the way a tool schema is. Three prompts, each a short numbered walk the model
+follows with the tools: `quote_a_structure` (describe, solve, report the legs at market terms,
+book only on the user's word), `import_a_legacy_book` (the deals wrapped as one
+`NettingCollateralSet` and booked in one call, then marked), and `morning_desk_check` (status,
+tick where there is a terminal, the mark, and every XVA row older than today).
+
+Four resources, each one `service().call`: `derivus://book` is the live job document itself
+(`read_book` stays the summary a model should hold); `derivus://schema/{store}` is one store of
+`/schema` whole, an unknown one refused naming the seven; `derivus://quote/{quote_id}` is the
+pending trade a quote filed; and `derivus://quote/{quote_id}/sheet` is the sheet as the `.xlsx`
+itself. A quote answers with those last two URIs under `resources`, beside the `files` paths.
 
 **The blotter's two data views, said out loud in the docstrings.** Risk is whole-book and
 counterparty-blind: one base valuation with first-order Greeks, cached service-side on the book's
@@ -118,12 +141,17 @@ last.
 served off `/schema` by `describe_structure`, so a model reads what a zero-cost collar IS instead of
 inventing it. It fills the structure's own parameters, strikes in **market terms** (a USDZAR strike
 is 15.50; the runner puts it on the engine's axis, and that inversion is the one thing never done by
-hand). `solve_structure` runs the recipe server-side and answers with the composed deal, the per-leg
+hand). Every FX `Strike_Price` and `Barrier_Price` declaration carries the axis it lives on, so
+`describe_instrument_type` says it before a model books an FX option directly instead.
+`solve_structure` runs the recipe server-side and answers with the composed deal, the per-leg
 premiums and the net — plus, where the book's `FXVolPrices` carries a two-way, each leg's
 `vol_spread`, the `net_mid` the trade will mark at and the `edge` between them (`spread_note` says so
 where there is no two-way). It writes nothing into the book: the quote lands in
 `DV_HOME/tmp/<quote_id>.json` as one pending trade, its sheet beside it when the `quote` extra is
 installed (a missing `xlsxwriter` names the install in `files.sheet_note` and never refuses a quote).
+Both read back by id — `GET /book/quote/{id}` and the `/sheet` beside it, offered to a host as
+`derivus://quote/<id>` and `derivus://quote/<id>/sheet` — so the workbook a client is sent travels
+as the file rather than as a path only the service's own machine can open.
 A quote prices on the LIVE spot when this workstation's terminal is up and the book's last ticked one
 when it is not, the outcome's `spot` block naming which and why; surface and curves are always the
 book's. `book_quote(quote_id)` is the approval that makes it a trade, booking the MIRROR of the

@@ -1110,6 +1110,47 @@ def test_a_curve_set_up_from_its_rows_solves_at_par(book):
     assert abs(par_residuals(book)).max() < 1e-6, 'a benchmark the solved curve does not reprice'
 
 
+def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monkeypatch):
+    """The read a client opens with, composed out of the readers beside it: the book's date and
+    currency, what it holds, every curve with the knots it solved on, the latest print its rows
+    carry and any benchmark held out, and what this workstation could fetch if asked.
+
+    `DV_HOME` is the gate's own tmp, so `provisioned` and the XVA rows are this book's and not
+    the workstation's, and `blpapi` is made ABSENT - no session is opened either way, the import
+    being the whole question.
+
+    Killing mutations: `held_out` partitioning on the rows in USE, which the read-back block
+    carries either way so only the split says which; `terminal.present` reading anything but this
+    workstation's own import, which the absent module then does not move.
+    """
+    from derivus_bloomberg import session
+    from derivus_bloomberg.errors import BloombergUnavailable
+
+    def absent():
+        raise BloombergUnavailable('no blpapi on this workstation')
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr(session, 'blpapi_module', absent)
+    bare = CLIENT.get('/book/status').json()
+
+    assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
+                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'terminal'}
+    assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
+    assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
+    assert (bare['deals'], bare['netting_sets']) == (1, [])
+    assert (bare['curves'], bare['surfaces'], bare['models'], bare['xva']) == ([], [], [], [])
+    assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
+    assert bare['etag'] == CLIENT.get('/book').json()['etag']
+
+    held = [dict(row, use='No') if row['tenor'] == '10Y' else row for row in CURVE_ROWS]
+    assert set_up_curve(held).status_code == 200
+    status = CLIENT.get('/book/status').json()
+
+    assert status['curves'] == [{
+        'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
+        'knots': [row['tenor'] for row in CURVE_ROWS[:-1]], 'held_out': ['10Y']}]
+
+
 def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
     """THREE REFUSALS, each naming the thing to fix, each writing nothing.
 
@@ -3092,6 +3133,54 @@ def test_the_quote_sheet_lands_beside_the_pending_trade(quoting, tmp_path):
     assert quote['files']['sheet'] == str(sheet)
     assert 'sheet_note' not in quote['files']
     assert zipfile.is_zipfile(str(sheet))
+
+
+def test_a_pending_quote_and_its_sheet_are_read_back_by_id(quoting, tmp_path):
+    """A quote is filed as a FILE on the service's disk, so a client that is not on that machine
+    needs the two reads: the pending trade as JSON, and the sheet as the spreadsheet itself rather
+    than a path nothing else can open.
+
+    Killing mutations: the sheet verb answering the JSON's bytes (the zip signature is what says
+    it is a workbook); the id checked by anything but a basename, which the backslashed path then
+    reads out of the desk's own tmp.
+    """
+    pytest.importorskip('derivus.quote_sheet',
+                        reason='the quote extra is not installed - there is no sheet to read')
+    quote = quote_of('ZeroCostCollar', COLLAR)
+
+    pending = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
+    sheet = CLIENT.get('/book/quote/{}/sheet'.format(quote['quote_id']))
+
+    assert pending == json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+    assert pending['deal'] == quote['deal'] and pending['quoted_at']
+    assert sheet.status_code == 200 and sheet.content[:2] == b'PK'
+    assert sheet.headers['content-type'] == service.QUOTE_SHEET_MIME
+
+    unknown = CLIENT.get('/book/quote/nosuchquoteid')
+    assert unknown.status_code == 404 and str(tmp_path / 'tmp') in unknown.json()['detail']
+    escaping = CLIENT.get('/book/quote/..%5C..%5Cbook')
+    assert escaping.status_code == 422 and 'is not a quote id' in escaping.json()['detail']
+
+
+def test_a_quote_given_with_no_sheet_writer_names_the_install(quoting, tmp_path):
+    """A sheet is the `quote` extra's and a quote never fails for want of one, so the read refuses
+    404 carrying the quote's OWN `sheet_note` - the install, not a bare miss. Authored here
+    because that is the only way to reach the branch on a workstation that has the writer.
+
+    Killing mutation: the refusal saying 'no sheet' without the note, which leaves a desk with
+    nothing to do about it.
+    """
+    filed = tmp_path / 'tmp'
+    filed.mkdir(parents=True, exist_ok=True)
+    (filed / 'sheetless.json').write_text(json.dumps({'quote': {'files': {
+        'sheet': None, 'sheet_note': 'no quote sheet - pip install derivus[quote]'}}}),
+        newline='\n')
+
+    answer = CLIENT.get('/book/quote/sheetless/sheet')
+
+    assert answer.status_code == 404
+    assert 'pip install derivus[quote]' in answer.json()['detail']
+    assert CLIENT.get('/book/quote/sheetless').json()['quote']['files']['sheet'] is None
 
 
 def test_a_composed_candidate_prices_its_legs_not_an_empty_container(book):
