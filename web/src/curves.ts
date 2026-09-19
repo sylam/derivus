@@ -1,8 +1,8 @@
 // The Curves screen's arithmetic - pure, free of React, the way `vols.ts` and `desk.ts` are for
-// theirs. A curve here is a list of ROWS and the block of conventions they were stated in: nothing
-// knows what a tenor means, only that the service reads one, and the fields a request may state
-// are the schema's own declarations crossed with the spellings the service answers in - the same
-// name in lower case, one for one.
+// theirs. A curve here is a list of ROWS and the conventions they were stated in: nothing knows
+// what a tenor means, only that the service reads one, and the fields a request may state are the
+// schema's own declarations crossed with the spellings the service answers in - the same name in
+// lower case, one for one.
 
 import { curveOf, isObject } from './tokens';
 import type { CurveRow, CurvesAnswer, Section } from './types';
@@ -10,76 +10,134 @@ import type { CurveRow, CurvesAnswer, Section } from './types';
 /** A row nothing has been said about yet. */
 const BLANK: CurveRow = { tenor: '', security: '', quote: null, use: 'Yes' };
 
-/** The fields a request names outright, and what it calls them: `curve` is the block's name and
- * `rows` are the ladder, so these are what a panel shows beside the conventions. `Interpolation`
+/** The fields a request names outright, and what it calls them: `rows` are the ladder and
+ * everything else is a convention, so these are what a panel shows beside them. `Interpolation`
  * is the curve's own scheme - a rule in a section rather than a column of the block, which is why
  * the family declares no field of that name. */
-const REQUEST_FIELDS: Record<string, 'currency' | 'discount_rate' | 'interpolation'> = {
-  Currency: 'currency', Discount_Rate: 'discount_rate', Interpolation: 'interpolation',
+const REQUEST_FIELDS: Record<string, 'curve' | 'currency' | 'discount_rate' | 'interpolation'> = {
+  Curve: 'curve', Currency: 'currency', Discount_Rate: 'discount_rate',
+  Interpolation: 'interpolation',
 };
 
-/** The form a request is composed in: the verb's own fields, and what the SOURCE stated, so an
- * edit can be told from a value that merely came along. */
+/** How long a burst of edits settles for before the card posts. The verb re-solves the whole
+ * market, so a desk typing through a ladder pays for one solve rather than one per field. */
+export const QUIET_MS = 500;
+
+/** The curve a card stands in: the fields the request names outright, and the conventions under
+ * the DECLARED spelling the panel names them by. */
 export type CurveForm = {
   curve: string;
   currency: string;
   discount_rate: string;
-  /** The curve's OWN scheme, blank where it takes the routed type's. */
+  /** The curve's OWN rule, blank where it takes the scheme every factor of its type takes. */
   interpolation: string;
   rows: CurveRow[];
-  /** The conventions the seed or the block states, in the service's spelling. */
-  stated: Record<string, unknown>;
-  /** What the desk moved, keyed by the DECLARED spelling. */
-  edits: Record<string, unknown>;
+  conventions: Record<string, unknown>;
 };
 
-/** One row edit: a patch at an index. Past the end appends a blank row, `null` removes one, and
- * the list handed in is never touched. */
-export function withRow(rows: CurveRow[], index: number, patch: Partial<CurveRow> | null) {
-  if (patch === null) return rows.filter((_, i) => i !== index);
-  if (index >= rows.length) return [...rows, { ...BLANK, ...patch }];
-  return rows.map((row, i) => (i === index ? { ...row, ...patch } : row));
-}
+/** One commit: a row's cell, a row added past the end or removed by index, or a field the panel
+ * names. */
+export type CurveEdit =
+  | { row: number; patch: Record<string, unknown> | null }
+  | { field: string; value: unknown };
 
-/** A seeded curve, or one the book carries, as the form that would author it: its own rows
- * completed with the fields a request takes, its conventions the baseline an edit is measured
- * against. */
+/** What a card has in hand: the curve as the desk has edited it, when the last commit landed, the
+ * clock of the last one POSTED, and whether that post is still in flight. */
+export type Editing = { form: CurveForm; at: number; posted: number; saving: boolean };
+
+/** A seeded curve, or one the book carries, as the form that would author it: the panel's own
+ * fields filled in from what it states, its rows completed with the ones a request takes. */
 export function prefill(curve: string, source: {
   currency?: string; discount_rate?: string; interpolation?: string; interpolation_source?: string;
   conventions?: Record<string, unknown>; rows?: Partial<CurveRow>[];
-}): CurveForm {
+}, fields: string[] = []): CurveForm {
+  const stated = source.conventions ?? {};
   return {
     curve, currency: source.currency ?? '', discount_rate: source.discount_rate ?? '',
     // only a scheme this curve's own RULE states comes back: one it merely resolved to is the
     // type's, and re-stating it would write a rule where the book carried none
     interpolation: source.interpolation_source === 'curve' ? source.interpolation ?? '' : '',
     rows: (source.rows ?? []).map((row) => ({ ...BLANK, ...row })),
-    stated: source.conventions ?? {}, edits: {},
+    // a field the source does not state is left out, so the declaration's own default is what
+    // shows and nothing the desk never touched travels as a convention it stated
+    conventions: Object.fromEntries(fields
+      .filter((key) => !(key in REQUEST_FIELDS) && stated[key.toLowerCase()] !== undefined)
+      .map((key) => [key, stated[key.toLowerCase()]])),
   };
 }
 
-/** One field of the form: the two a request names outright are its own, and everything else is a
- * convention, held until the request is built. */
-export function edited(form: CurveForm, key: string, value: unknown): CurveForm {
-  const own = REQUEST_FIELDS[key];
-  if (own === undefined) return { ...form, edits: { ...form.edits, [key]: value } };
-  return { ...form, [own]: String(value) };
+/** One commit folded into the card, the form handed in left standing. A cleared QUOTE is not a
+ * quote of zero and travels as the null that says no number was stated - which is what sends the
+ * row to the terminal, or refuses it. A cleared `Near_Tenor` clears the near scheme with it: a
+ * near scheme is a scheme AND where it stops, and the emitter refuses half of one. */
+export function commit(form: CurveForm, edit: CurveEdit): CurveForm {
+  if ('field' in edit) {
+    const own = REQUEST_FIELDS[edit.field];
+    if (own !== undefined) return { ...form, [own]: String(edit.value ?? '') };
+    const paired = edit.field === 'Near_Tenor' && !edit.value ? { Near_Interpolation: '' } : {};
+    return { ...form, conventions: { ...form.conventions, [edit.field]: edit.value, ...paired } };
+  }
+  if (edit.patch === null) return { ...form, rows: form.rows.filter((_, i) => i !== edit.row) };
+  const cell = (edit.patch.quote === ''
+    ? { ...edit.patch, quote: null } : edit.patch) as Partial<CurveRow>;
+  if (edit.row >= form.rows.length) return { ...form, rows: [...form.rows, { ...BLANK, ...cell }] };
+  return { ...form, rows: form.rows.map((row, i) => (i === edit.row ? { ...row, ...cell } : row)) };
 }
 
-/** The request `POST /book/curve` takes: every row that names a tenor, and ONLY the conventions
- * the desk moved off what the source stated, the verb completing the rest from the seed. The
- * curve's own scheme is always stated, blank clearing its rule. */
-export function curveRequest(form: CurveForm): Record<string, unknown> {
-  const moved = Object.entries(form.edits)
-    .filter(([key, value]) => value !== form.stated[key.toLowerCase()])
-    .map(([key, value]) => [key.toLowerCase(), value]);
+/** Whether a card is due to post: something committed since the last post, the burst quiet for
+ * `QUIET_MS`, no post in flight - one curve solves at a time and whatever lands meanwhile rides
+ * the next one - and the curve complete enough to BE one. A name, a currency and a row naming a
+ * tenor are what the verb requires, which is what makes the commit completing a new card the
+ * commit that creates the curve. */
+export function due(edit: Editing, now: number, quiet: number = QUIET_MS): boolean {
+  const { curve, currency, rows } = edit.form;
+  return !edit.saving && edit.at > edit.posted && now - edit.at >= quiet
+    && curve.trim() !== '' && currency.trim() !== '' && rows.some((row) => row.tenor.trim() !== '');
+}
+
+/** The near half of a curve as ONE pair, against the scheme the whole curve is built under. With
+ * no `Near_Tenor` the near scheme is not the desk's to state and the whole curve's shows through;
+ * stating a tenor makes that scheme the near one until the desk says otherwise. Applied before the
+ * post, so the pairing the emitter refuses half of is never posted. */
+export function nearPair(form: CurveForm, typeScheme: string):
+{ tenor: string; scheme: string; stated: boolean } {
+  const whole = form.interpolation || typeScheme;
+  const tenor = String(form.conventions.Near_Tenor ?? '').trim();
+  return tenor === ''
+    ? { tenor: '', scheme: whole, stated: false }
+    : { tenor, scheme: String(form.conventions.Near_Interpolation ?? '') || whole, stated: true };
+}
+
+/** The values a card's panel renders, held to the fields it shows: the conventions the curve
+ * stands in, the ones the request names outright beside them, the curve's own scheme as the method
+ * it RESOLVES to, and the near pair as one. */
+export function panelValues(fields: string[], form: CurveForm, typeScheme: string):
+Record<string, unknown> {
+  const near = nearPair(form, typeScheme);
+  const shown: Record<string, unknown> = {
+    ...form.conventions, Currency: form.currency, Discount_Rate: form.discount_rate,
+    Interpolation: form.interpolation || typeScheme,
+    Near_Interpolation: near.scheme, Near_Tenor: near.tenor,
+  };
+  return Object.fromEntries(fields.filter((key) => shown[key] !== undefined)
+    .map((key) => [key, shown[key]]));
+}
+
+/** The request `POST /book/curve` takes: every row that names a tenor, the conventions the card
+ * shows in the verb's own spelling - the block IS the curve's definition, so what it stands in is
+ * re-stated rather than completed from the seed - and the curve's own scheme, blank clearing its
+ * rule. The near pair travels only where a tenor states one. */
+export function curveRequest(form: CurveForm, typeScheme: string): Record<string, unknown> {
+  const near = nearPair(form, typeScheme);
   return {
     curve: form.curve.trim(), currency: form.currency.trim(),
     discount_rate: form.discount_rate.trim(), interpolation: form.interpolation.trim(),
     rows: form.rows.filter((row) => row.tenor.trim() !== '').map((row) => ({
       tenor: row.tenor.trim(), security: row.security.trim(), quote: row.quote, use: row.use,
     })),
-    ...Object.fromEntries(moved),
+    ...Object.fromEntries(Object.entries(form.conventions)
+      .map(([key, value]) => [key.toLowerCase(), value])),
+    ...(near.stated ? { near_interpolation: near.scheme, near_tenor: near.tenor } : {}),
   };
 }
 
@@ -97,20 +155,6 @@ export function curveFields(declared: Section, answer: CurvesAnswer): string[] {
     .filter((key) => key in REQUEST_FIELDS || named.has(key.toLowerCase()))
     .concat(Object.keys(REQUEST_FIELDS)
       .filter((key) => !(key in declared) && named.has(key.toLowerCase())));
-}
-
-/** Those fields against one block, for the panel that renders them. A field the block does not
- * state is left out, so the declaration's own default is what shows. */
-export function curveValues(keys: string[], source: {
-  currency?: string; discount_rate?: string; interpolation?: string;
-  conventions?: Record<string, unknown>;
-}): Record<string, unknown> {
-  const stated: Record<string, unknown> = {
-    currency: source.currency, discount_rate: source.discount_rate, ...source.conventions,
-    interpolation: source.interpolation,
-  };
-  return Object.fromEntries(keys.filter((key) => stated[key.toLowerCase()] !== undefined)
-    .map((key) => [key, stated[key.toLowerCase()]]));
 }
 
 /** The solved factor the market data store files under a curve's name - `[name, entry]`, or null.

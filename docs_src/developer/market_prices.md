@@ -236,7 +236,10 @@ every dial at what the entry states or the declaration's default otherwise, edit
 offers the families the book does not configure yet: adding one posts an empty entry, which the verb
 completes with that family's stem and then re-bootstraps like any other change — so a family the book
 has quotes for lands and one that writes no price factor refuses in `Config.bootstrap`'s own words
-with the file untouched. *Market Prices* renders every quote block against `mapping['MarketPrices']`,
+with the file untouched. A section declaring a `menu` renders as the three-column table it has
+always been edited in — `Risk_Factor.Method | Where | Equals` — a row per routed type with the two
+columns blank and a row per rule with the attribute a single factor is named by and the name it
+must equal, so a per-curve scheme set from a Curves card and one set here are the same row. *Market Prices* renders every quote block against `mapping['MarketPrices']`,
 each block's ladder under the columns its family declares, and edits the VALUE columns alone:
 `mapping['MarketPrices']['values']` publishes `MARKET_QUOTE_VALUES` beside the types, so a client
 moves what the tick guard admits without spelling one of the four names, and finds a block's ladder by
@@ -247,9 +250,10 @@ refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
 per block — the rows under the keys the verb takes, the conventions as a panel over the family's
 declarations whose lower-case spellings the answer names plus the curve's own `interpolation`,
 which the answer names and the family declares no column for, and the solved factor beside them —
-and a form that sets another up, a seeded entry pre-filling its rows and conventions and
-`POST /book/curve` carrying its scheme and only the conventions a desk moved off them, the verb
-completing the rest from the seed. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
+and the card is the editor, every commit posting the whole curve back through `POST /book/curve`
+once the burst has gone quiet, with no set-up button on it. The card states the conventions it
+shows, the block being the curve's definition; `Near_Interpolation` travels only where a
+`Near_Tenor` stops it, and the last card is a new curve the commit completing it creates. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
 files an entry by, edited in the shape it stands in and merged one entry at a time; the map's
 entries under the paths a drift is named by with the rejected ledger beside them and a verify per
 block, queued and polled like any run; and the `used` join read-only, every knot of the book under
