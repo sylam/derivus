@@ -2,10 +2,11 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1, 2, 3 and the folds of 4**: the log, the blob
-store and the chain (riding on them: identity, capability enforcement and key custody), on top of those
-the booking verbs, the attestation lanes and the two-dimensional firmness check, and over all of it the
-projections. No diary, no network — a library, a CLI, five delegators on `Context`, and 237 gates.
+page documents what is BUILT, which is **increments 1, 2, 3 and 4**: the log, the blob store and the
+chain (riding on them: identity, capability enforcement and key custody), on top of those the booking
+verbs, the attestation lanes and the two-dimensional firmness check, and over all of it the
+projections, the diary and the book file's pin. No network — a library, a CLI, five delegators on
+`Context`, three read verbs on the service, and 253 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -105,7 +106,8 @@ channel into the record.
 ## The gates
 
 103 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth the 237 above),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth 237 of the 253
+above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -315,12 +317,117 @@ cannot say: a position closed to zero, one replay tuple attested twice (the FIRS
 `verbs.attestation` answers), one policy declared twice (the LAST stands, as `policy.in_force`
 answers), a print superseded twice, and two verdicts read in the order they were filed.
 
+## Increment 4b — the diary, the LSN pin, and the plan as a fold
+
+**The diary is the compile's own schedule, re-emitted.** `derivus/diary.py`'s `schedule_of(context)`
+runs the COMPILE half of a base valuation — the market built, every deal constructed and its
+schedules bound — and stops before the structure resolves; then it reads what it just bound through
+`utils.walk_schedules`, which is the walk `utils.bind_schedules` itself takes. One walk, so the leg
+names a settlement reference is built from cannot drift from the binding.
+
+**ONE SPELLING OF A PAYMENT.** A row is one payment per `(leg, pay day)`, never one per schedule
+row, and its amount is `pricing.fixed_payments` — the line `pv_fixed_cashflows` discounts, factored
+out so the two cannot be two numbers: the rate coupon and the fixed amount of every row sharing that
+day, summed, and compounded where the leg's own terms compound. A bond repaying its principal with
+its last coupon announces the sum, and two accrual sub-periods paying on one day announce one
+payment. A schedule carrying RESETS determines nothing — its amount is a floating pricer's and the
+diary does not spell a second one — so its rows read `amount: null, determined: false`: **a null
+amount is never written as 0.0**, and `export_settlements(rows, official_values_hash, due_before)` —
+which takes the diary, one market hash and the day the file settles, and reaches nothing else —
+refuses an undetermined row, and a row naming no currency, BY NAME rather than instructing a wrong
+payment. `due_before` has no default: a settlement file is struck FOR a day.
+
+An `expiry` row carries `needs`, which is `election` where the deal type's terms vest an exercise in
+an actor and null where a fixing determines the payoff. A deal whose compile announces no payment at
+all pays on the settlement date its TYPE declares in the deal-type table, falling back to its
+expiry: `get_settlement_currencies()` is the reval-date accumulator — a barrier registers its
+monitoring days in it — so it is not a payment ladder and is never read as one. AN OPTION WAITS FOR
+TWO THINGS after its expiry, and the table names both: a `fixing` row on the underlying, because a
+European option compiles no reset schedule and its payoff is that day's print; and a `payment` row
+at its settlement date with `amount: null`, because no field holds `Units × max(S−K, 0)` and the
+money still moves. A close does not pass over an unsettled payoff.
+
+**The derived key is the row's own DATE, and position was refused.**
+`derivus/spine.py`'s `cashflow_key(instrument_hash, leg, kind, date)` is the content hash of those
+four through the record's own canonicaliser, so it is 64 lowercase hex and passes
+`vocabulary.is_hash`: a `status_transition` names one settlement with NO new field kind, and the
+vocabulary does not grow for it. The four are unique because a row IS one `(leg, kind, date)`. The
+POSITION was refused: a schedule drops the rows it has paid as the book rolls, so positions renumber
+under the settlement references already filed and a transition settling February would read, after
+the roll, as settling August. A date does not move. `derivus/diary.py` asks the seam for the key and
+imports nothing of the record itself, so on a box without the extra a row carries `key: null` and
+everything else. A book rolled PAST a coupon keeps every surviving row's key and loses only the row
+that was paid.
+
+**The book file is the fold's SUBJECT, not its output.** It keeps its content — the market data is
+not in the fold at all, and a hand edit is the desk's own act — and gains `Spine: {lsn, head,
+hydrated_at}`, a sibling of `Calc` stamped by `Book._land` under a configured home and written
+nowhere without one. `Context.load_json` reads `Calc` alone and `Context.plan_hash` hashes `params`
+and `deals`, so the pin cannot move a plan; `risk_etag` reads the three `Calc` sections, so it does
+not bust the risk cache; `Book._current` hashes the whole text, so it does move the poll etag, which
+is right — a new LSN is a new state of the book. `GET /book` answers the `lsn` beside the etag,
+`GET /book/status` gains a `spine` block with the pin and how far the record has moved since — in
+events, and in the fills and amendments among them — and NOTHING that folds: counting a divergence
+is linear in the history and that is the verb a client starts with. `GET /book/reconcile` is where a
+desk asks, and it pays in full: a trade the record holds
+that the file lost, a deal the file holds that nobody booked, and an instrument the two count a
+different number of clips of — the file carries terms and never a signed quantity, which lives only
+in the record, so clips are what the two can disagree about and the record's own quantity is
+reported beside them, compared as VALUES rather than as types since a seed round-trips a float to
+an int. **A divergence is a READING and never a refusal** — the desk books what
+it books at this stage, and the rules tighten when the spine is full. Every comparison is by
+instrument address rather than by reference, so a renamed deal is two divergences rather than a clean
+reconcile, an amendment chain is compared at its head, and a node the engine is told to `Ignore` is
+still a node somebody booked. **The fold is taken AT THE HEAD**, never at the pin: a booking whose
+file write did not land is the one failure this verb exists to name and it lives entirely past the
+pin. `events_behind` counts every event since the file was written and `positions_behind` the fills
+and amendments among them — a policy or an attestation moves the first and no row here.
+
+**The plan is terms plus the observations the record holds.** `spine.compiled_job(document, lsn)`
+walks the job's deals, and for each one whose type declares an observation table — the deal-type
+table in `derivus/diary.py`, read by the compiler and the diary alike and never spelled twice —
+writes the fixing in force at `lsn` into the cell that type declares it in, for a day ON OR BEFORE
+the job's own base date: a print carries its date as text, so a forward-dated one is a legal fact
+and writing it would price a barrier as observed on a day that has not happened. `/execute` and
+`/prepare` both compile before they hash, so a plan named once and ticked as a delta is the plan
+that runs; without a home, and for a document whose deals declare no observation table, `compiled_job`
+returns its argument and the edge is what it always was. Which source is authoritative is POLICY:
+`fixings_at` resolves across sources by the order the reserved `fixings` policy declares, and an
+index A PLAN COMPILES AGAINST that the policy does not name refuses by name — a fixing whose
+authority nobody vouched for is not a fixing a plan may use, and the refusal reaches a desk as a 422
+in the record's own words. A READING refuses nothing, its COMPILE HALF INCLUDED: `compiled_job` takes a
+`strict` flag, and the two read verbs pass it false — the book is compiled as written plus whatever
+the declared orders can fill, an index the policy does not order reads unresolved with the reason on
+the row and is outstanding, and a print for an index no deal here names is nothing to them at all.
+A read that cannot compile at all answers its refusal ONCE: the result store keeps successes only,
+so a desk that declares the missing order is answered on its next ask rather than told the same
+thing until the book file moves.
+
+**The close check is the catch-up rule as a read.** `GET /book/close/check?date=` answers whether a
+close on that day is legal and what it waits on: a `fixing` row no declared source has printed, a
+`payment` row no settlement transition was filed against its key, and an `expiry` row whose terms
+vest a choice nobody has elected. An expiry a fixing determines never blocks a close — the fixing
+and payment rows already carry it. Nothing is declared here; declaring the close stays a verb.
+`?date=` is PARSED to a calendar day — a time, a year or a garbage string refuses 422 by name, since
+a string compare would answer `legal` for an empty one. `GET /book/diary` serves the rows, cached
+under the etag of what a COMPILE reads — the deals and the calculation, not the market, so a tick
+that moves every value keeps the compile — and computed as a job on the compute queue at a base
+valuation's cost class, so a diary never rides the poll path and two asks over an unmoved book are
+one compile. Both verbs compile the book through `compiled_job` first, so a barrier the record makes
+priceable is readable. The three reads are `book_reconcile`, `book_diary` and `close_check` in the
+MCP binding.
+
+**Two boundaries, declared rather than discovered.** `xva.json` is NOT a fold and does not become
+one here: `run_completed`'s body carries no netting set, the vocabulary does not grow in this
+increment, and a row that cannot name its set is not a projection. And FULL HYDRATION — the deal tree
+regenerated from the positions fold rather than compared against it — waits until a netting set's own
+node is in the record, its CSA terms being what no fact carries today; until then the file is the
+materialisation and reconcile is how it is checked.
+
 ## What is not built yet
 
-No diary and no DuckDB — the rest of **increment 4**, which is also where the book file gains the LSN
-it was hydrated at and a verb naming where it and the record disagree, and where the plan compiler
-becomes a FOLD over fixings supersession rather than a recompile of the document that was submitted.
-No tier policy, no doorbell, no generated MCP binding — **5 through 7**. No network anywhere yet:
+No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
+a fold. No tier policy, no doorbell, no generated MCP binding — **5 through 7**. No network anywhere yet:
 tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
 rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
 checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope

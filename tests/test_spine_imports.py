@@ -87,6 +87,28 @@ def imported_names(source):
     return names
 
 
+def test_one_module_under_derivus_imports_the_spine_and_it_is_the_seam():
+    """THE ONE-IMPORTER LAW, as a machine-checked fact rather than a promise. `derivus/spine.py` is
+    the whole seam: no other module under `derivus/` may name `derivus_spine`, so an engine tree
+    without the extra keeps working and the record's vocabulary has one door.
+
+    Read off the SOURCE, at any depth, so an import that never executes still counts - and a
+    lazy import inside a function counts exactly as much as one at the top of the file.
+    """
+    importers = set()
+    for source in sorted(glob.glob(os.path.join(ROOT, 'derivus', '**', '*.py'), recursive=True)):
+        with open(source, encoding='utf-8') as handle:
+            tree = ast.parse(handle.read(), filename=source)
+        for node in ast.walk(tree):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module or ''] if isinstance(node, ast.ImportFrom) and not node.level
+                     else [])
+            if any(name.split('.')[0] == 'derivus_spine' for name in names):
+                importers.add(os.path.relpath(source, ROOT).replace(os.sep, '/'))
+
+    assert importers == {'derivus/spine.py'}, importers
+
+
 def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
     """The dependency budget, read off the source of every module the package has. `cryptography`
     is in - bodies are sealed and checkpoints signed from genesis; the engine, torch and the HTTP

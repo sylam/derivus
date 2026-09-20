@@ -109,7 +109,8 @@ def package():
     """
     try:
         import derivus_spine
-        from derivus_spine import firmness, policy, verbs  # noqa: F401  attribute access below
+        from derivus_spine import (firmness, policy, projections,  # noqa: F401  attribute
+                                   verbs)                      # noqa: F401  access below
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -200,6 +201,139 @@ def canonical(obj):
     """
     return json.dumps(obj, sort_keys=True, separators=(',', ':'),
                       cls=CustomJsonEncoder).encode('utf-8')
+
+
+def cashflow_key(instrument_hash, leg, kind, date):
+    """The stable id of one diary row: the content hash of `{instrument, leg, kind, date}`.
+
+    Taken through the record's own canonicaliser, so it is 64 lowercase hex and passes
+    `vocabulary.is_hash` - a `status_transition` naming one settlement needs no new field kind and
+    the vocabulary does not grow for it. A row IS one `(leg, kind, date)`, so the four are unique;
+    and the date is the thing the terms fixed, so a book rolled past a coupon renumbers nothing.
+    """
+    return package().content_hash(
+        {'instrument': instrument_hash, 'leg': leg, 'kind': kind, 'date': date})
+
+
+def pin():
+    """The record's head as the book file's pin - `{lsn, head, hydrated_at}` - or None where no
+    home is configured.
+
+    A SIBLING of `Calc` and never inside it: `Context.load_json` reads `Calc` alone and
+    `Context.plan_hash` hashes `params` and `deals`, so what is stamped here cannot move a plan.
+    """
+    import datetime
+
+    lsn, head = folded(lambda log: log.head())
+    return {'lsn': lsn, 'head': head, 'hydrated_at': datetime.datetime.now(
+        datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')}
+
+
+def fixings(lsn=None, indices=None):
+    """`{(index, date): {value, source, effective_time, lsn}}` - the fixing in force per index and
+    date at `lsn`, resolved across sources by the order the `fixings` policy declares.
+
+    `indices` are the names the caller is COMPILING against, and the only ones an undeclared source
+    order refuses for - a plan may not read a fixing nobody vouched for. A READ asks `observations`
+    instead, which refuses nothing.
+    """
+    return folded(lambda log: package().projections.fixings_at(log, lsn=lsn, indices=indices))
+
+
+def observations(lsn=None, indices=None):
+    """`(resolved, unresolved)` for `indices` at `lsn` - what a READ of the book gets.
+
+    A read refuses NOTHING: the policy in force is asked for first and only the indices it orders
+    are resolved, so an index whose authority nobody declared comes back under `unresolved` and the
+    row that names it reads due rather than taking the verb down. A print for an index nothing here
+    names is nothing to this read at all.
+    """
+    def fold(log):
+        spine = package()
+        blob, document = spine.policy.in_force(log, spine.policy.FIXINGS_POLICY, lsn)
+        ordered = {} if blob is None else document[spine.policy.FIXINGS_SECTION]
+        named = set(indices or ())
+        return (spine.projections.fixings_at(log, lsn=lsn, sources=ordered,
+                                             indices=named & set(ordered)),
+                sorted(named - set(ordered)))
+
+    return folded(fold)
+
+
+def compiled_job(document, lsn=None, strict=True):
+    """The job the plan hashes, with every declared observation filled from the record at `lsn`.
+    Unchanged where no home is configured.
+
+    `strict` is what separates a PLAN from a READ. A plan may not read a fixing nobody vouched for,
+    so an index it compiles against that no `fixings` policy orders refuses by name. A read fills
+    what the declared orders can fill and leaves the rest of the document as the desk wrote it -
+    the row that named the unresolved index says so on itself, and no GET fails for it.
+
+    The plan is terms PLUS the observations the record holds, so an auditor recompiles from what
+    was printed rather than from what somebody typed. A deal type's own table is where its
+    observations live and `derivus.diary` is the one table saying which - a fixing the record holds
+    for a date the deal names overwrites the cell, and a date it holds nothing for is left standing.
+
+    NOTHING AFTER THE BASE DATE is filled. A `fixing_observed` carries its date as text, so a print
+    dated forward is a legal fact; writing one onto a monitoring row would price a barrier as
+    already observed on a day that has not happened.
+    """
+    import copy
+
+    from .diary import index_named
+
+    if not configured() or not _observing(document):
+        return document
+    filled = copy.deepcopy(document)
+    observing = [(deal, terms, index_named(deal, terms)) for deal, terms in _observing(filled)]
+    named = {index for _, _, index in observing if index}
+    observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
+    base = _base_day(filled)
+    for deal, terms, index in observing:
+        deal[terms.table] = [_observed(row, terms, observed.get((index, _day(row)))
+                                       if _day(row) <= base else None)
+                             for row in deal[terms.table]]
+    return filled
+
+
+def _base_day(document):
+    """The ISO day this job is valued as of - what a print may not be dated after."""
+    return _day([document['Calc']['Calculation']['Base_Date']])
+
+
+def _observing(document):
+    """Every `(deal block, terms)` of this job whose type declares an observation table the
+    document actually carries rows in. A document that is not a job observes nothing."""
+    from .diary import TERMS
+    from .schema import walk_job_deals
+
+    try:
+        nodes = list(walk_job_deals(document))
+    except (KeyError, TypeError, ValueError):
+        return []
+    deals = [node['Instrument']['.Deal'] for _, node in nodes]
+    return [(deal, TERMS[deal['Object']]) for deal in deals
+            if TERMS.get(deal.get('Object')) is not None
+            and TERMS[deal['Object']].table and deal.get(TERMS[deal['Object']].table)]
+
+
+def _day(row):
+    """The ISO day a table row is dated at, whatever wire form the date arrived in."""
+    date = row[0] if isinstance(row, (list, tuple)) else row
+    if isinstance(date, dict):
+        date = next(iter(date.values()))
+    return (date if isinstance(date, str) else date.strftime('%Y-%m-%d'))[:10]
+
+
+def _observed(row, terms, fixing):
+    """One table row with the record's print written into the column that deal type declares it in.
+    A row the record holds no print for is left exactly as the desk wrote it."""
+    if fixing is None:
+        return row
+    cells = list(row) if isinstance(row, (list, tuple)) else [row]
+    cells.extend([None] * (terms.column + 1 - len(cells)))
+    cells[terms.column] = fixing['value']
+    return cells
 
 
 def replay(context):

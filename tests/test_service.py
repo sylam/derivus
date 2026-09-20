@@ -1209,7 +1209,9 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
     bare = CLIENT.get('/book/status').json()
 
     assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
-                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'terminal'}
+                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'spine',
+                         'terminal'}
+    assert bare['spine'] is None, 'a box that records nothing has no position to report'
     assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
     assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
     assert (bare['deals'], bare['netting_sets']) == (1, [])

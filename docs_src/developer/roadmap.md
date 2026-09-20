@@ -265,17 +265,27 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   24 GiB card in either direction (the draws alone are 3 × 7.95 GiB), which is what the per-block
   checkpointing exists for; no coarser chain is licensed (a 5-day gap read 3.4 SE on the coupon
   leg).
-- **Barrier state as a fold over fixings, the remaining half.** Continuous monitoring reads daily
+- **Barrier state as a fold over fixings, what remains.** `Barrier_Dates` and `Price_Fixing` are
+  filled from the record at compile; still terms-only are continuous monitoring, which reads daily
   `(low, high)` bars under `(index, date, source)` — `utils.bars_touched` is the predicate and is
-  gated; the SOURCE is spine increment 4's, so the one-touch and partial-time barriers still price
-  from terms alone. The autocall's `Barrier_Dates` ride `Price_Fixing`'s observed value; a called
-  autocall is its coupon at that fixing's settlement, folding the coupon and threshold ladders with
-  the put barrier, and the autocall pricer's barrier-hit read (it tests for presence, so it fires
-  on a declared `'No'`) retires with it. The TARF's and accumulator's decisions-remain arm: folded
-  parameters, not a substituted deal.
-- **Spine increments 4–7** — the folds are built; what remains of 4 is the diary, the book file
-  carrying the LSN it was hydrated at, and the plan compiler as a fold over fixings supersession,
-  then tier policy, the doorbell and the generated binding ([The Spine](spine.md)).
+  gated — so the one-touch and partial-time barriers price from terms alone. The autocall's coupon
+  and threshold ladders fold with the put barrier and the pricer's barrier-hit read (it tests for
+  presence, so it fires on a declared `'No'`) retires with them; the TARF's and accumulator's
+  decisions-remain arm is folded parameters, not a substituted deal.
+- **Spine increments 5–7** — tier policy, the doorbell, the generated binding and the reading plane
+  ([The Spine](spine.md)).
+- **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
+  `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing
+  and the payoff read together, which is a pricer's answer rather than a schedule's. Two smaller
+  rows beside it: a swap's `Fixed_Compounding` is injected into a copy of `Factor_dep` at pricing
+  time, so the diary reads `False` whatever the deal says — harmless today, both branches
+  coinciding on a one-row-per-pay-day leg, and wrong the day that stops being true; and the diary's
+  cache key covers the deals and the calculation but not the record its compile now reads, so a
+  print filed after a read does not recompile (the rows stay right, `answered` resolving prints per
+  request).
+- **The deal tree hydrated from the fold** rather than reconciled against it. The record holds no
+  netting set's own node — its CSA terms are not a fact yet — so the book file stays the
+  materialisation and `/book/reconcile` is how it is checked.
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,

@@ -97,6 +97,7 @@ from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sn
                      walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json
+from . import diary
 from .spine import replay
 
 LOG = logging.getLogger(__name__)
@@ -345,6 +346,18 @@ class ComputeExecutor:
         with self.lock:
             return self.results.get(result_id)
 
+    def forget(self, result_id):
+        """Drop a stored result so the next submission of it RUNS again.
+
+        For a job whose failure is not a property of its inputs: a diary refused because the record
+        was missing a declaration re-runs the moment one is made, rather than answering the stale
+        refusal until the book file moves. A `done` result is never dropped - content addressing is
+        the point of the store.
+        """
+        with self.lock:
+            if (self.results.get(result_id) or {}).get('status') == 'error':
+                del self.results[result_id]
+
     def note(self, result_id, **fields):
         """Add to a stored result from another thread. Answers the result as it now stands.
 
@@ -411,6 +424,10 @@ class ComputeExecutor:
 #: underneath, and the last one under the lock, so an edit that keeps losing to shorter ones lands.
 REDOS = 3
 
+#: Where the book file says which LSN it was hydrated at. Beside `Calc` and never inside it, and
+#: written only under a configured home - without one the file is what it always was, to the byte.
+SPINE_PIN = 'Spine'
+
 
 class Book:
     """One live job document on disk - the FILE is the source of truth.
@@ -449,6 +466,13 @@ class Book:
         with self.lock:
             return self._read()
 
+    def pinned(self):
+        """`{lsn, head}` the file was last hydrated at, or None where nothing pinned it - a file
+        written on a box that records nothing carries no pin at all."""
+        document, _ = self.read()
+        pin = document.get(SPINE_PIN) or {}
+        return {'lsn': pin['lsn'], 'head': pin['head']} if 'lsn' in pin else None
+
     def baseline(self, document, etag):
         """The WHOLE verdict the book already carries - every deal's messages and the factors it
         lacks - cached against the ETAG THE DOCUMENT WAS READ AT, a booking's before and after
@@ -486,6 +510,10 @@ class Book:
         validated = outcome.pop('_validated', None)
         if not write:
             return dict(outcome, etag=etag)
+        if spine.configured():
+            # the pin is a SIBLING of `Calc`: the engine reads `Calc` alone and the plan hash is
+            # taken of its params and deals, so nothing written here can move a plan
+            document[SPINE_PIN] = spine.pin()
         text = json.dumps(document, indent=sniff_indent(self._cache[2]))
         temporary = self.path + '.tmp'
         with open(temporary, 'w', encoding='utf-8', newline='') as handle:
@@ -570,7 +598,14 @@ def prepare(job: dict):
 
     `/execute` then takes `{"plan_id": ..., "Patch": {...}}` in place of the document, which is what
     a client streaming market values wants: the plan is sent once and a tick is a delta.
+
+    The job is COMPILED against the record first, exactly as `/execute` compiles it, so a plan named
+    here and run there is one plan rather than two.
     """
+    try:
+        job = spine.compiled_job(job)
+    except spine.SpineRefused as refused:
+        raise HTTPException(422, str(refused))
     context = load(job)
     return {'plan_id': PLANS.put(context), 'values_hash': context.values_hash(),
             'engine_version': __version__}
@@ -608,6 +643,12 @@ def execute(job: dict):
     A STANDING run must post its DOCUMENT: an attestation carries the job the plan recompiles from
     and `Context.save_json` is not a complete round trip, so a `plan_id` refuses with the remedy.
     """
+    try:
+        # the PLAN is terms plus the observations the record holds, so what runs and what an
+        # auditor recompiles are one document. Without a home this is the document as posted
+        job = spine.compiled_job(job)
+    except spine.SpineRefused as refused:
+        raise HTTPException(422, str(refused))
     context = context_for(job)
     context.patch_market(job.get('Patch', {}))
     stamp = replay(context)
@@ -691,7 +732,9 @@ def book():
     the document and then polls only the etag question - re-fetching when it moves - so a deal
     booked by any other client appears within a poll tick."""
     document, etag = live_book().read()
-    return {'document': document, 'etag': etag, 'path': live_book().path}
+    answer = {'document': document, 'etag': etag, 'path': live_book().path}
+    pinned = live_book().pinned()
+    return answer if pinned is None else dict(answer, lsn=pinned['lsn'])
 
 
 def booked_node(deal):
@@ -1122,6 +1165,362 @@ def book_risk():
         BOOK_RISK_CACHE[etag] = answer
     BOOK_RISK_CACHE.move_to_end(etag)
     return dict(BOOK_RISK_CACHE[etag], etag=etag)
+
+
+# ------------------------------------------------------------------------------------------------
+# The record's own readings. Every verb below is a READ: nothing here appends, and a divergence
+# between the file and the log is a reading the desk acts on rather than a refusal that blocks it.
+
+#: The diary keyed by everything a compile reads - `/book/risk`'s own key - and the wall the cache
+#: is bounded at. A standing book pays for ONE deal setup and every later ask is a dict lookup.
+BOOK_DIARY_CACHE = OrderedDict()
+BOOK_DIARY_LIMIT = 8
+
+#: How long a diary request waits on the one worker before it says so instead of hanging a client.
+DIARY_SECONDS = 300.0
+
+#: What a caller with no home configured is told by a verb that reads the record. The book verbs
+#: still answer: this is the deployment recording nothing, not a failure.
+NO_RECORD = ('this box records nothing, so there is no record to read against: set {} to the home '
+             '`DV_Spine init` minted, or leave it unset and the book file is the whole truth here')
+
+#: What a row whose index no `fixings` policy orders says instead of a source. A reading never
+#: refuses, so the row stands due and names why the record cannot answer it.
+UNRESOLVED = ('the fixings policy in force orders no source for {}, so the record cannot say which '
+              'print is in force: declare the order and this row answers itself')
+
+#: What a close check is asked for: one day, and nothing that is not one.
+NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date, so ?date= takes exactly '
+             'YYYY-MM-DD - no time, no partial year')
+
+
+class DiaryJob:
+    """The compile half as ONE unit of queued work: the book's deals constructed, their schedules
+    bound and read, and nothing priced.
+
+    It rides the same single-worker queue at a base valuation's cost class, so a diary jumps a
+    simulation among the jobs still waiting and never sits behind one - and never runs on the poll
+    path, a deal setup over the whole market being seconds rather than milliseconds.
+    """
+
+    def __init__(self, document, instruments):
+        self.document, self.instruments = document, instruments
+
+    def run_job(self):
+        # a READ never refuses: the book is compiled as written plus whatever the declared source
+        # orders can fill, and an index nobody ordered reads unresolved on its own rows
+        return None, {'Results': {}, 'Stats': {'Diary': {
+            'as_of': as_of(), 'rows': diary.schedule_of(
+                load(spine.compiled_job(self.document, strict=False)), self.instruments)}}}
+
+
+def booked_instruments(document):
+    """`{Reference: instrument address}` for every deal the file holds - the address a fill names,
+    so a diary row and the record's position are the same instrument. A reference two deals share
+    maps to neither: the address is the identity, and guessing it mis-labels a row."""
+    found = {}
+    for _, node in walk_job_deals(document):
+        reference = node['Instrument']['.Deal'].get('Reference')
+        found[reference] = None if reference in found else content_hash(instrument_of(node))
+    return found
+
+
+def file_positions(document, known):
+    """`{instrument address: [{deal_path, reference}]}` for what the FILE holds.
+
+    A node the record already names is a position and the walk stops there - a structure is ONE
+    instrument and its legs ride inside its own hash. A CONTAINER the record never booked is walked
+    through rather than reported: a netting set is the book's frame rather than a trade nobody
+    booked, and an empty one is still a frame.
+    """
+    containers = mapping['Instrument']['containers']
+    found = {}
+
+    def walk(children, path=()):
+        for position, node in enumerate(children):
+            address = content_hash(instrument_of(node))
+            if address not in known and node['Instrument']['.Deal'].get(
+                    'Object') in containers:
+                walk(node.get('Children', []), path + (position,))
+                continue
+            found.setdefault(address, []).append(
+                {'deal_path': '/'.join(map(str, path + (position,))),
+                 'reference': node['Instrument']['.Deal'].get('Reference')})
+
+    walk(job_children(document))
+    return found
+
+
+#: The two event types a position is made of - what `positions_behind` counts past the pin.
+POSITION_EVENTS = ('fill', 'amendment')
+
+
+def record_positions(lsn=None):
+    """The record's positions at `lsn`, or AT THE HEAD where none is named, each amendment chain
+    collapsed onto its HEAD.
+
+    A deal whose terms were restruck is the deal the file now holds, so the chain's clips and its
+    signed quantity are answered under the instrument it was amended INTO - which reconciles clean
+    whichever end of the link the quantity is carried on.
+    """
+    projections = spine.package().projections
+    rows = spine.folded(lambda log: projections.PROJECTORS['positions'].rows(
+        projections.fold(log, projections.PROJECTORS['positions'], lsn=lsn)))
+    at = {row['instrument']: row for row in rows}
+    heads = {}
+    for row in rows:
+        instrument, seen = row['instrument'], set()
+        while at.get(instrument, {}).get('amended_to') and instrument not in seen:
+            seen.add(instrument)
+            instrument = at[instrument]['amended_to']
+        head = heads.setdefault(instrument, {'instrument': instrument, 'quantity': 0.0,
+                                             'clips': 0, 'netting_set': None, 'last_lsn': 0})
+        head['quantity'] += row['quantity']
+        head['clips'] += row['clips']
+        head['netting_set'] = row['netting_set'] or head['netting_set']
+        head['last_lsn'] = max(head['last_lsn'], row['last_lsn'])
+    return heads
+
+
+def reconciled(document, pinned):
+    """Where the book file and the record disagree, the record read AT ITS HEAD.
+
+    THE FILE IS THE SUBJECT rather than the output: it keeps its content - the market data is not
+    in the fold at all, and a hand edit is the desk's own act - and the fold says what the two
+    disagree about. A trade the record holds and the file lost, a trade the file holds that nobody
+    booked, and an instrument they count a different number of clips of: the file carries terms and
+    never a signed quantity, so what the two can disagree about is HOW MANY clips stand, with the
+    record's own quantity beside it, compared as VALUES rather than as types.
+
+    THE FOLD IS AT THE HEAD and never at the pin. A booking whose file write did not land is the
+    one failure this verb exists to name, and it lives entirely past the pin; folding there would
+    make it invisible by construction.
+    """
+    record = record_positions()
+    held = file_positions(document, record)
+    return {
+        'in_record_not_in_file': [
+            {key: row[key] for key in ('instrument', 'netting_set', 'quantity', 'last_lsn')}
+            for instrument, row in sorted(record.items())
+            if row['quantity'] and instrument not in held],
+        'in_file_not_in_record': [
+            dict(node, instrument=instrument) for instrument in sorted(held)
+            if instrument not in record for node in held[instrument]],
+        'quantity_mismatch': [
+            {'instrument': instrument, 'record_clips': record[instrument]['clips'],
+             'file_nodes': len(held[instrument]),
+             'record_quantity': record[instrument]['quantity']}
+            for instrument in sorted(held) if instrument in record
+            and len(held[instrument]) != record[instrument]['clips']]}
+
+
+def behind(pinned):
+    """How far the record has moved since the file was written: every event, and the FILLS AND
+    AMENDMENTS among them, which are the only ones a position can be made of.
+
+    Two numbers because one will not do: a policy, a fixing or an attestation moves `events_behind`
+    and changes no position, so it is not a signal that the file has drifted.
+    """
+    def counted(log):
+        head = log.head()[0]
+        return {'events_behind': head - pinned['lsn'],
+                'positions_behind': sum(1 for frame in log.frames(start_lsn=pinned['lsn'] + 1)
+                                        if frame['event_type'] in POSITION_EVENTS)}
+
+    return spine.folded(counted)
+
+
+def spine_block(document):
+    """The record's position beside the file's, for the one read a client starts with: the LSN the
+    file was hydrated at and how far the log has moved since.
+
+    NO DIVERGENCE HERE. Counting it means folding the whole log, which is linear in the history and
+    this is the verb a client starts with, the MCP tool's first call and the web's poll; the two
+    behind counts are a walk from the pin and cost what the walk costs. `/book/reconcile` is where
+    a desk asks what the two disagree about, and it pays in full on demand.
+    """
+    if not spine.configured():
+        return None
+    pinned = document.get(SPINE_PIN) or {}
+    block = {'lsn': pinned.get('lsn'), 'head': pinned.get('head'),
+             'events_behind': None, 'positions_behind': None}
+    return block if 'lsn' not in pinned else dict(block, **behind(pinned))
+
+
+def answered(rows, lsn=None):
+    """Every diary row as the RECORD answers it: a payment whose key a status transition moved
+    reads `settled`, a fixing the declared sources hold a print for carries the administrator that
+    printed it, and an expiry whose choice somebody elected needs nothing.
+
+    ONE fold and one resolution for the whole diary, never one per row, and it asks for exactly the
+    indices its own rows name. A READ REFUSES NOTHING: an index no `fixings` policy orders comes
+    back unresolved and its rows read due with the reason on them, rather than taking the verb down;
+    a print for an index no deal here names is nothing to this read. Unchanged where no home is
+    configured - the compile's own answers are then the only ones there are.
+    """
+    if not spine.configured():
+        return rows
+    projections = spine.package().projections
+    state = spine.folded(lambda log: projections.PROJECTORS['lifecycle'].rows(
+        projections.fold(log, projections.PROJECTORS['lifecycle'], lsn=lsn)))
+    moved = {row['subject']: row['status'] for row in state['transitions']}
+    elections = {row['instrument']: row['elections'] for row in state['instruments']}
+    observed, unresolved = spine.observations(
+        lsn, {row['index'] for row in rows if row['index']})
+    answers = []
+    for row in rows:
+        printed = observed.get((row['index'], row['due_date']))
+        answers.append(dict(
+            row, state=moved.get(row['key']) or row['state'],
+            needs=None if elections.get(row['instrument']) else row['needs'],
+            source=printed['source'] if printed else row['source'],
+            reason=UNRESOLVED.format(row['index']) if row['index'] in unresolved else row['reason'],
+            observed=printed['value'] if printed and row['observed'] is None else row['observed']))
+    return answers
+
+
+def diary_etag(document):
+    """What a DIARY compile reads, hashed - its cache key and the etag the answer carries.
+
+    The deals and the calculation, which is where the base date is. NOT the market: a schedule is
+    built from terms and a day, so a tick that moves every value moves no row, and keying on the
+    market would throw the compile away on every beat of the cadence.
+    """
+    return content_hash({'deals': document['Calc']['Deals'],
+                         'calculation': document['Calc']['Calculation']})
+
+
+def diary_of(document):
+    """The book's diary, computed on a MISS and cached under the etag of everything a compile
+    reads - the `/book/risk` discipline with the compile on the QUEUE rather than on the request
+    thread. Two asks over an unmoved book are ONE job: the result id is that etag's own, so the
+    second submission coalesces onto the first and both are served the id they share."""
+    etag = diary_etag(document)
+    result_id = content_hash({'diary': etag})
+    if etag not in BOOK_DIARY_CACHE:
+        submitted = Job(result_id, DiaryJob(document, booked_instruments(document)), {},
+                        spine.TELEMETRY)
+        EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])
+        stored = waited(result_id)
+        if stored['status'] != 'done':
+            # SUCCESSES ONLY, the `/book/risk` discipline: a compile that failed for a reason
+            # outside the book - a policy not yet declared - must re-run when the desk fixes it,
+            # and the store would otherwise answer the same refusal until the file moved
+            EXECUTOR.forget(result_id)
+            raise HTTPException(422, 'the book will not compile a diary: {}'.format(
+                stored.get('error')))
+        if len(BOOK_DIARY_CACHE) >= BOOK_DIARY_LIMIT:
+            BOOK_DIARY_CACHE.popitem(last=False)
+        BOOK_DIARY_CACHE[etag] = dict(stored['stats']['Diary'], etag=etag, result_id=result_id)
+    BOOK_DIARY_CACHE.move_to_end(etag)
+    return BOOK_DIARY_CACHE[etag]
+
+
+def waited(result_id):
+    """The stored result once the worker publishes it. A diary is asked for interactively, so the
+    request waits on the one worker rather than handing back an id to poll."""
+    deadline = time.monotonic() + DIARY_SECONDS
+    while time.monotonic() < deadline:
+        stored = EXECUTOR.result(result_id)
+        if stored is not None and stored['status'] in ('done', 'error'):
+            return stored
+        time.sleep(0.02)
+    raise HTTPException(504, 'the diary did not compile within {:.0f}s - it is queued behind the '
+                             'work this book is already doing'.format(DIARY_SECONDS))
+
+
+def read_day(date):
+    """`?date=` as the calendar day it names, or the 422 anything else earns.
+
+    A string compare against a row's `due_date` answers `legal` for an empty string and for a
+    garbage one, which is a wrong answer to the only question the verb exists to ask. The day has
+    to round-trip exactly: a time on it names an instant rather than a close, and `2024` names a
+    year rather than a day.
+    """
+    import datetime
+
+    try:
+        day = datetime.date.fromisoformat(date).isoformat()
+    except (ValueError, TypeError):
+        raise HTTPException(422, NOT_A_DAY.format(date))
+    if day != date:
+        raise HTTPException(422, NOT_A_DAY.format(date))
+    return day
+
+
+def recording():
+    """The live book under a configured home, or the 404 a box that records nothing answers."""
+    live = live_book()
+    if not spine.configured():
+        raise HTTPException(404, NO_RECORD.format(spine.SPINE_HOME))
+    return live
+
+
+@app.get('/book/reconcile', summary='Where the book file and the record disagree')
+def book_reconcile():
+    """The record's positions AT ITS HEAD, against the deals the book file holds.
+
+    A READING and never a refusal: the desk books what it books and the record says where the copy
+    has drifted - a hand edit, or a booking whose file write failed after the event landed, becomes
+    visible instead of silent, the fold being taken AT THE HEAD. `events_behind` counts every event
+    since the file was written and `positions_behind` the fills and amendments among them, which
+    are the only ones that can move a row here. 404 where no home is configured, and a file nothing
+    has pinned answers `lsn: null` with nothing to compare.
+    """
+    document, _ = recording().read()
+    pinned = live_book().pinned()
+    if pinned is None:
+        return {'lsn': None, 'events_behind': None, 'positions_behind': None,
+                'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': []}
+    return dict(reconciled(document, pinned), lsn=pinned['lsn'], **behind(pinned))
+
+
+@app.get('/book/diary', summary='Every payment, fixing and expiry the book announces')
+def book_diary(due_before: str = None):
+    """The book's own schedule as rows - `{as_of, etag, result_id, rows}`, `?due_before=YYYY-MM-DD`
+    trimming it to what is due by a day.
+
+    THE COMPILE'S SCHEDULE, not a second one: the deals are constructed and their schedules bound
+    exactly as a valuation binds them, and then read. A row carries the leg it sits on, its due
+    date, its currency, its notional, its amount where the compile determines one and `null` where
+    it does not, and the derived key a settlement fact names it by. Under a home each row also
+    carries what the record answers: `settled` where a transition moved its key, and the
+    administrator whose print satisfied a fixing.
+    """
+    document, _ = live_book().read()
+    answer = diary_of(document)
+    rows = answered(answer['rows'])
+    if due_before:
+        day = read_day(due_before)
+        rows = [row for row in rows if row['due_date'] and row['due_date'] <= day]
+    return dict(answer, rows=rows)
+
+
+@app.get('/book/close/check', summary='Whether a close on this date is legal, and what it waits on')
+def book_close_check(date: str):
+    """`?date=YYYY-MM-DD` - THE CATCH-UP RULE as a read: a close is legal on a day when every diary
+    entry due on or before it has its fact.
+
+    Outstanding is exactly four things: a `fixing` row no declared source holds a print for, a
+    `payment` row no settlement transition was filed against its key, an `expiry` row whose terms
+    vest a choice nobody has elected, and - on every day, having no date of its own - an
+    `unreadable` row, a deal the compile could not read at all. An expiry a fixing determines never
+    blocks a close: the fixing and payment rows already carry it.
+
+    Nothing is DECLARED here. Declaring the close is `Context.declare_market`'s act and stays a
+    verb; this says whether the record is ready for one. 404 where no home is configured.
+    """
+    day = read_day(date)
+    document, _ = recording().read()
+    rows = answered(diary_of(document)['rows'])
+    due = [row for row in rows if row['due_date'] and row['due_date'] <= day]
+    # a deal nobody could read is outstanding on EVERY day: it has no date, and a close declared
+    # over a book the engine could not read is a clean bill nobody earned
+    outstanding = [row for row in rows if row['kind'] == diary.UNREADABLE] + [row for row in due if
+                   (row['kind'] == diary.FIXING and row['source'] is None) or
+                   (row['kind'] == diary.PAYMENT and row['state'] != diary.SETTLED) or
+                   (row['kind'] == diary.EXPIRY and row['needs'] is not None)]
+    return {'date': day, 'legal': not outstanding, 'due': len(due), 'outstanding': outstanding}
 
 
 #: The desk PROJECTION's own file, beside the book in `DV_HOME`. A file rather than memory because
@@ -2140,6 +2539,10 @@ def book_status():
     spot models calibrated onto it; the last XVA per set, trimmed to the columns a desk reads
     staleness off.
 
+    Under a configured home `spine` says which LSN the file was hydrated at and how far the record
+    has moved since - in events, and in the fills and amendments among them. What the two disagree
+    ABOUT is `/book/reconcile`, which folds the record and is asked for on purpose.
+
     ORIENTATION, NOT NUMBERS: the mark is `/book/risk`, the projection `/book/xva`, the curve
     definitions `/book/curve`. Every field here answers what is set up and how old it is. A
     sandboxed desk reads `terminal.present` False and prices on the market it last snapped.
@@ -2168,6 +2571,7 @@ def book_status():
                    for name in sorted(factors) if name.split('.')[0].endswith(MODEL_SUFFIX)],
         'xva': [{key: row[key] for key in ('reference', 'status', 'as_of', 'cva', 'fva')}
                 for row in book_xva_view()['sets']],
+        'spine': spine_block(document),
         'terminal': terminal_status()}
 
 

@@ -1486,19 +1486,32 @@ class DualArray:
         return DualArray(self.tn[x], self.np[x])
 
 
+def walk_schedules(compiled, path=()):
+    """Every `TensorSchedule` in a deal's compiled `Factor_dep`, as `(dotted path, schedule)`.
+
+    A deal files its schedules under whatever key it likes and nests them, so this reads the
+    compiled output rather than a list of key names, and the dotted path it was reached at is the
+    LEG's name. One walk: the binding and the diary both take this one, so a settlement reference
+    and the schedule it names cannot drift apart.
+    """
+    if isinstance(compiled, TensorSchedule):
+        yield '.'.join(path), compiled
+    elif isinstance(compiled, dict):
+        for key, value in compiled.items():
+            yield from walk_schedules(value, path + (str(key),))
+    elif isinstance(compiled, (list, tuple)):
+        for position, value in enumerate(compiled):
+            yield from walk_schedules(value, path + (str(position),))
+
+
 def bind_schedules(compiled, unit):
     """Bind every `TensorSchedule` reachable in a deal's compiled `Factor_dep`, and return it.
 
-    A deal files its schedules under whatever key it likes and nests them, so this reads the
-    compiled output rather than a list of key names. It WRAPS `calc_dependencies` on the walk that
-    already builds the deal tree: binding is part of compiling, not a second pass over it.
+    It WRAPS `calc_dependencies` on the walk that already builds the deal tree: binding is part of
+    compiling, not a second pass over it.
     """
-    if isinstance(compiled, TensorSchedule):
-        compiled.bind(unit)
-    else:
-        for value in (compiled.values() if isinstance(compiled, dict) else
-                      compiled if isinstance(compiled, (list, tuple)) else ()):
-            bind_schedules(value, unit)
+    for _, schedule in walk_schedules(compiled):
+        schedule.bind(unit)
     return compiled
 
 

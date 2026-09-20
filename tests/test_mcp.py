@@ -80,7 +80,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'verify_securities',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
-                'recalc_xva'}
+                'recalc_xva', 'book_reconcile', 'book_diary', 'close_check'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -113,7 +113,7 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
     assert 'RF_SERVICE_URL' not in instructions, "the maintainer's docstring, not the desk's"
     for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
-                 '{written: false, refused: [...]}'):
+                 '{written: false, refused: [...]}', 'book_diary', 'close_check'):
         assert said in instructions, said
 
 
@@ -172,7 +172,9 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     bare = mcp_server.desk_status()
 
     assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
-                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'terminal'}
+                         'netting_sets', 'curves', 'surfaces', 'models', 'xva', 'spine',
+                         'terminal'}
+    assert bare['spine'] is None, 'a box that records nothing has no position to report'
     assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
     assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
     assert (bare['deals'], bare['netting_sets'], bare['curves']) == (1, [], [])
@@ -184,6 +186,64 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     assert curves == [{'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
                        'interpolation': 'Linear',
                        'knots': [row['tenor'] for row in CURVE_ROWS], 'held_out': []}]
+
+
+def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeypatch):
+    """The tool is one `service().call` over the book the service already serves, so what a model
+    reads is the verb's own rows - the leg, the day, the amount where the compile determines one,
+    and `null` where it does not.
+
+    Killing mutation: the tool composing or rounding the rows, which puts a second reading of the
+    schedule between the model and the engine's own.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    answer = mcp_server.book_diary()
+
+    assert set(answer) >= {'as_of', 'etag', 'result_id', 'rows'}
+    assert answer['rows'], 'the one-cashflow book announces nothing'
+    assert {row['kind'] for row in answer['rows']} <= {'payment', 'fixing', 'expiry', 'barrier'}
+    for row in answer['rows']:
+        assert set(row) == {'key', 'instrument', 'leg', 'schedule_index', 'kind', 'due_date',
+                            'currency', 'amount', 'determined', 'notional', 'index', 'source',
+                            'observed', 'needs', 'reason', 'state'}
+        assert row['amount'] is None or row['determined'] is True
+
+    day = min(row['due_date'] for row in answer['rows'])
+    assert mcp_server.book_diary(due_before=day)['rows'] == [
+        row for row in answer['rows'] if row['due_date'] <= day]
+
+
+def test_the_two_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
+    """`book_reconcile` and `close_check` read the RECORD, and a deployment that keeps none answers
+    a 404 the tool turns into the service's own sentence rather than an empty reconcile a model
+    would read as agreement.
+
+    Killing mutation: either tool answering `{}` where no home is configured, which tells a model
+    the file and the record agree on a box that has no record.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    for tool, arguments in ((mcp_server.book_reconcile, {}),
+                            (mcp_server.close_check, {'date': '2030-01-01'})):
+        with pytest.raises(ToolError) as refusal:
+            tool(**arguments)
+        assert 'DV_SPINE_HOME' in str(refusal.value) and '404' in str(refusal.value)
+
+
+def test_the_three_record_reads_are_read_only_and_say_what_they_read(book):
+    """A host runs discovery without asking permission to write, so the three reads carry the
+    read-only hint; and each docstring is the model's whole contract for a verb it cannot try out
+    on a box with no record.
+
+    Killing mutation: any of the three annotated as a writer, which makes a host prompt before a
+    model may ask what the book owes.
+    """
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    for name, said in (('book_diary', 'determined'), ('close_check', 'legal'),
+                       ('book_reconcile', 'record')):
+        assert tools[name].annotations.read_only_hint is True, name
+        assert said in tools[name].description, name
+    assert 'book_diary' in mcp_server.INSTRUCTIONS
+    assert 'close_check' in mcp_server.INSTRUCTIONS
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

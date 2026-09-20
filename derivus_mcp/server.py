@@ -88,7 +88,11 @@ configure_book and set_base_date change structure and re-solve; tick_market_from
 needs a terminal on the service's own workstation, and describe_securities reads the ticker
 vocabulary behind it with the print every curve knot was solved from. Bootstrapping dials,
 Bloomberg ticker codes and curve set-ups are normally configured once in the web UI - ask
-before changing them here."""
+before changing them here.
+
+THE RECORD, where this desk keeps one: book_diary is everything the book owes or is owed with
+the fact each row waits on, close_check says whether a close on a day is legal and names what
+is outstanding, and book_reconcile says where the book file and the record disagree."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -1114,6 +1118,59 @@ async def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600
 
 
 @MCP.tool(annotations=READ_ONLY)
+def book_reconcile() -> dict:
+    """Where the book file and the book of record disagree - the record read AT ITS HEAD.
+
+    A READING, never a refusal. The file is the desk's working copy and the record is what is true,
+    so this names three things: a trade the record holds that the file has lost
+    (`in_record_not_in_file`), a deal the file holds that nobody booked (`in_file_not_in_record`),
+    and an instrument the two count a different number of clips of (`quantity_mismatch`) - the file
+    carrying terms and never a signed quantity, which lives only in the record.
+
+    The record is folded AT ITS HEAD, so a booking whose file write never landed is exactly what
+    shows up here. `events_behind` counts every event since the file was written and
+    `positions_behind` the fills and amendments among them; an empty answer with both at 0 is a
+    desk whose copy is exactly the record. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/reconcile')
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_diary(due_before: str | None = None) -> dict:
+    """Everything the book OWES or is owed: every payment, fixing and expiry its deals carry.
+
+    The compile's own schedule, so the diary and the pricer cannot disagree about a payment. A row
+    names its deal's instrument, the leg it sits on, its due date, its currency, its notional, and
+    its amount where the compile determines one - one PAYMENT per leg and pay day, spelled by the
+    pricer's own line, and a floating coupon reads `amount: null` and `determined: false` until its
+    resets fix, which is not the same as owing nothing. `state` is `due`, `observed`, `settled` or
+    `expired`, `reason` says why the record cannot answer a row, and `key` is what a settlement
+    fact names the row by.
+
+    `due_before='YYYY-MM-DD'` trims it to what falls due by a day. Cached on the book's own content
+    and computed on the compute queue, so asking again after nothing moved costs nothing.
+    """
+    return service().call('GET', '/book/diary',
+                          params={} if due_before is None else {'due_before': due_before})
+
+
+@MCP.tool(annotations=READ_ONLY)
+def close_check(date: str) -> dict:
+    """Whether a close on `date` is legal, and what it is waiting on - the catch-up rule as a read.
+
+    A close is legal when every diary entry due on or before that day has its fact. Outstanding is
+    exactly three things: a fixing no declared source has printed, a payment no settlement was
+    filed against, and an expiry whose terms leave a choice nobody has elected. `legal: false`
+    comes with the rows - each one names the deal, the leg and the day - so what has to happen
+    before the close is a list rather than a verdict.
+
+    THIS DECLARES NOTHING. Declaring the close is a separate act; this says whether the record is
+    ready for one. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/close/check', params={'date': date})
+
+
+@MCP.tool(annotations=READ_ONLY)
 def poll_result(result_id: str) -> dict:
     """Where a run got to: `queued`/`running`, or `done` with the replay tuple, the run's stats
     and each table's SHAPE as one line (fetch cells with `fetch_table`), or `error` with the
@@ -1203,7 +1260,10 @@ def morning_desk_check() -> str:
         '3. book_risk_summary - the mark and the biggest gradient rows.\n'
         '4. xva_view - name every set whose as_of is older than today; recalc_xva is minutes, so '
         'ask before running it.\n'
-        '5. set_base_date ONLY on the user\'s word - a tick already rolls the book onto the day '
+        '5. Where desk_status carries a spine block: book_reconcile - it folds the record and '
+        'names any trade the file and the record disagree about, which is the one check the '
+        'status read deliberately does not pay for.\n'
+        '6. set_base_date ONLY on the user\'s word - a tick already rolls the book onto the day '
         'its prints came from.')
 
 

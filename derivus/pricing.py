@@ -5622,6 +5622,34 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     return torch.cat(mtm_list, dim=0)
 
 
+def fixed_payments(interest, nominal, fixed_amt, cash_index, cash_counts, compounding=False,
+                   pad=lambda column: np.append(column, 0.0)):
+    """What a fixed leg PAYS on each of its pay days: the rate coupon and the fixed amount of every
+    schedule row sharing that day, summed, and COMPOUNDED where the leg's terms compound.
+
+    ONE SPELLING of a payment. `pv_fixed_cashflows` calls it with the schedule's tensor half and the
+    diary with its numpy half, so what a desk is told it is owed and what the engine discounts
+    cannot be two numbers. `cash_index` and `cash_counts` are `np.unique`'s on the pay-day column,
+    and `pad` appends the zero row a group shorter than the longest one reads in its place.
+    """
+    if cash_counts.min() != cash_counts.max():
+        interest, nominal, fixed_amt = pad(interest), pad(nominal), pad(fixed_amt)
+
+    default_offst = np.ones(cash_index.size, dtype=np.int32) * (len(interest) - 1)
+    payments = 0.0
+    for i in range(cash_counts.max()):
+        offst = default_offst.copy()
+        offst[cash_counts > i] = i + cash_index[cash_counts > i]
+        int_i = interest[offst]
+
+        if compounding:
+            payments += (payments + nominal[offst]) * int_i + fixed_amt[offst]
+        else:
+            payments += int_i * nominal[offst] + fixed_amt[offst]
+
+    return payments
+
+
 def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, settle_cash=True):
     """The fixed leg. `ignore_fixed_rate` prices it at a unit rate, which is what a par-rate solve
     divides by; `Settlement_Amount` makes it a forward, carried to the settlement date on repo and
@@ -5680,30 +5708,10 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
         payment_key = ('Payments', start_index[index], ignore_fixed_rate)
 
         if schedule.derived.get(payment_key) is None:
-            payments = 0.0
-
-            if cash_counts.min() != cash_counts.max():
-                interest = F.pad(all_int, [0, 1])
-                nominal = F.pad(cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal], [0, 1])
-                fixed_amt = F.pad(cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt], [0, 1])
-            else:
-                interest = all_int
-                nominal = cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal]
-                fixed_amt = cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt]
-
-            default_offst = np.ones(cash_index.size, dtype=np.int32) * (len(interest) - 1)
-
-            for i in range(cash_counts.max()):
-                offst = default_offst.copy()
-                offst[cash_counts > i] = i + cash_index[cash_counts > i]
-                int_i = interest[offst]
-
-                if factor_dep.get('Compounding', False):
-                    payments += (payments + nominal[offst]) * int_i + fixed_amt[offst]
-                else:
-                    payments += int_i * nominal[offst] + fixed_amt[offst]
-
-            schedule.derived[payment_key] = payments
+            schedule.derived[payment_key] = fixed_payments(
+                all_int, cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal],
+                cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt], cash_index, cash_counts,
+                factor_dep.get('Compounding', False), lambda column: F.pad(column, [0, 1]))
 
         mtm_list.append(
             (torch.sum(

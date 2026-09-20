@@ -59,6 +59,9 @@ stays the maintainer's.
 | `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
 | `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
 | `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
+| `book_diary` | `GET /book/diary` — every payment, fixing and expiry the book carries, with the amount where the compile determines one and the key a settlement fact names the row by |
+| `close_check` | `GET /book/close/check` — whether a close on a day is legal, and the rows it waits on |
+| `book_reconcile` | `GET /book/reconcile` — where the book file and the book of record disagree, named by instrument |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

@@ -1023,3 +1023,354 @@ def test_the_record_and_the_desk_file_disagree_only_in_the_order_they_were_writt
     entitled = verify_home(recorded)
     assert entitled['events'] == head(recorded) and entitled['checkpoints_verified'] == 1
     assert verify_home(recorded, entitled=False)['head_hash'] == entitled['head_hash']
+
+
+# --------------------------------------------------------------------------------------------
+# The book file's pin, and the record read against it.
+
+@pytest.fixture
+def booking(tmp_path):
+    """A book that is one client's netting set and nothing else - the least book a fill can land
+    against, a fill carrying a counterparty and a netting set on the row, and the least the
+    reconcile gates can read, every deal in it being one somebody booked."""
+    document = job(deals=())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    yield path
+    service.BOOK = None
+
+
+def head_hash(home):
+    log = opened(home)
+    try:
+        return log.head()[1]
+    finally:
+        log.close()
+
+
+def book_one(reference, amount=250_000.0):
+    """Book one cashflow under the client's set and answer the outcome."""
+    return CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': dict(CASHFLOW, Reference=reference, Amount=amount),
+         'parent_reference': CLIENT_SET, 'quantity': amount,
+         'execution_reference': 'EXEC-' + reference}), headers=JSON).json()
+
+
+def rewritten(path, edit):
+    """The book file edited BY HAND, the way a desk with a text editor edits it - the divergence
+    every reconcile gate is about."""
+    document = json.loads(path.read_text())
+    edit(document['Calc']['Deals']['Deals']['Children'][0])
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def test_with_no_home_the_book_file_carries_no_pin_at_all(unrecorded, desk):
+    """GATE 1, the pin's half of the regression bar: a booking on a box that records nothing writes
+    the file it always wrote. No key, and the word nowhere in the bytes.
+
+    Killing mutation: the `Spine` key written unconditionally in `_land`, which puts an LSN from
+    nowhere into every book file on every desk that records nothing.
+    """
+    assert spine.configured() is False
+    booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': dict(
+        CASHFLOW, Reference='NOPIN', Amount=250_000.0)}), headers=JSON).json()
+    assert booked['written'] is True
+
+    text = desk.read_text()
+    assert service.SPINE_PIN not in text, 'a box that records nothing wrote an LSN'
+    assert set(json.loads(text)) == {'Calc'}
+    assert 'lsn' not in CLIENT.get('/book').json()
+    assert CLIENT.get('/book/status').json()['spine'] is None
+    assert service.BOOK.pinned() is None
+
+
+def test_the_pin_cannot_move_the_plan_hash(recorded, booking):
+    """GATE 2. The pin is a SIBLING of `Calc`: `Context.load_json` reads `Calc` alone and
+    `plan_hash` hashes `params` and `deals`, so the file carrying an LSN prices as the same plan.
+
+    Killing mutation: the pin written inside `Calc`, which moves the plan hash on every booking and
+    takes the disjointness gate with it.
+    """
+    assert book_one('PINNED')['written'] is True
+    document = json.loads(booking.read_text())
+    assert set(document) == {'Calc', service.SPINE_PIN}
+    assert set(document[service.SPINE_PIN]) == {'lsn', 'head', 'hydrated_at'}
+
+    pinned = derivus.Context().load_json((json.dumps(document), 'pinned'))
+    bare = derivus.Context().load_json((json.dumps({'Calc': document['Calc']}), 'bare'))
+    assert pinned.plan_hash() == bare.plan_hash(), 'the pin moved the plan'
+    assert pinned.values_hash() == bare.values_hash()
+    assert service.risk_etag(document) == service.risk_etag({'Calc': document['Calc']})
+
+
+def test_the_pin_moves_with_the_append(recorded, booking):
+    """GATE 3. The file says which LSN it was hydrated at, and after each booking that is the
+    record's own head - the event goes first and the file follows it.
+
+    Killing mutation: the pin stamped from a head read BEFORE the append, which leaves every file
+    one event behind the record it claims to be a copy of.
+    """
+    seen = []
+    for reference in ('FIRST', 'SECOND'):
+        assert book_one(reference)['written'] is True
+        document = json.loads(booking.read_text())
+        seen.append(document[service.SPINE_PIN]['lsn'])
+        assert seen[-1] == head(recorded), reference
+        assert document[service.SPINE_PIN]['head'] == head_hash(recorded)
+
+    assert seen == [5, 6] and CLIENT.get('/book').json()['lsn'] == seen[-1]
+    status = CLIENT.get('/book/status').json()['spine']
+    assert status['lsn'] == seen[-1] and status['events_behind'] == 0
+    assert status['positions_behind'] == 0
+    assert 'divergence' not in status, 'the status read folded the record'
+    assert CLIENT.get('/book/reconcile').json()['in_record_not_in_file'] == []
+
+
+def test_reconcile_names_a_divergence_by_its_instrument(recorded, booking):
+    """GATE 4. A hand edit to the file is visible instead of silent, and it is named by the
+    INSTRUMENT ADDRESS rather than by a reference - a renamed deal is different terms, so both
+    halves of a rename are divergences.
+
+    Killing mutations: comparing references instead of instrument hashes, which reconciles a renamed
+    deal clean and hides the one edit a desk is most likely to make by hand; and skipping the
+    subtree of a node marked `Ignore`, which is a node somebody booked whether or not the engine
+    prices it.
+    """
+    assert book_one('RECONCILE')['written'] is True
+    clean = CLIENT.get('/book/reconcile').json()
+    assert clean['events_behind'] == clean['positions_behind'] == 0
+    assert clean['lsn'] == head(recorded)
+    assert clean['in_record_not_in_file'] == clean['in_file_not_in_record'] == []
+    assert clean['quantity_mismatch'] == []
+
+    booked = deal_at(json.loads(booking.read_text()), '0/0')
+    address = derivus.content_hash(service.instrument_of(booked))
+
+    # a node the desk told the engine to ignore is still a node somebody booked
+    rewritten(booking, lambda node: node['Children'][0].update({'Ignore': 'True'}))
+    ignored = CLIENT.get('/book/reconcile').json()
+    assert ignored['in_file_not_in_record'] == ignored['in_record_not_in_file'] == []
+    rewritten(booking, lambda node: node['Children'][0].pop('Ignore'))
+
+    rewritten(booking, lambda node: node['Children'].clear())
+    lost = CLIENT.get('/book/reconcile').json()
+    assert [row['instrument'] for row in lost['in_record_not_in_file']] == [address]
+    assert lost['in_record_not_in_file'][0]['netting_set'] == CLIENT_SET
+    assert lost['in_file_not_in_record'] == [] and lost['quantity_mismatch'] == []
+
+    rewritten(booking, lambda node: node['Children'].append(
+        {'Instrument': {'.Deal': dict(json.loads(dump(CASHFLOW)), Reference='BY_HAND')}}))
+    added = CLIENT.get('/book/reconcile').json()
+    assert [row['reference'] for row in added['in_file_not_in_record']] == ['BY_HAND']
+    assert [row['instrument'] for row in added['in_record_not_in_file']] == [address]
+
+    renamed_node = {'Instrument': {'.Deal': dict(booked['Instrument']['.Deal'],
+                                                 Reference='RENAMED')}}
+    rewritten(booking, lambda node: node.update({'Children': [renamed_node]}))
+    renamed = CLIENT.get('/book/reconcile').json()
+    assert [row['instrument'] for row in renamed['in_record_not_in_file']] == [address]
+    assert [row['reference'] for row in renamed['in_file_not_in_record']] == ['RENAMED']
+    status = CLIENT.get('/book/status').json()['spine']
+    assert 'divergence' not in status and status['events_behind'] == 0
+
+
+def test_a_fill_the_file_never_took_is_what_reconcile_is_for(recorded, booking):
+    """THE FOLD IS AT THE HEAD. A fill the record took and the file did not is the one failure this
+    verb advertises, and it lives entirely past the pin - `events_behind` and `positions_behind`
+    explain how far, and the row itself says which trade.
+
+    Killing mutations: the fold taken at the file's own pin, under which every event after the pin
+    is invisible by construction and the verb reports nothing while the record is a trade ahead;
+    and `positions_behind` counting every event, which makes a policy declaration read as drift -
+    the two numbers exist precisely so it does not.
+    """
+    assert book_one('KEPT')['written'] is True
+    assert CLIENT.get('/book/reconcile').json()['in_record_not_in_file'] == []
+
+    lost = spine.book(json.loads(dump(dict(CASHFLOW, Reference='LOST', Amount=500_000.0))),
+                      500_000.0, 'CPTY_A', CLIENT_SET, 'EXEC-LOST')
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['instrument'] for row in answer['in_record_not_in_file']] == [
+        lost['body']['instrument'] if 'body' in lost else answer[
+            'in_record_not_in_file'][0]['instrument']]
+    assert len(answer['in_record_not_in_file']) == 1
+    assert answer['in_record_not_in_file'][0]['quantity'] == 500_000.0
+    assert answer['events_behind'] == answer['positions_behind'] == 1
+    assert answer['in_file_not_in_record'] == [] and answer['quantity_mismatch'] == []
+
+    # a POLICY past the pin is not drift: it moves the events and no position
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
+    after = CLIENT.get('/book/reconcile').json()
+    assert (after['events_behind'], after['positions_behind']) == (2, 1)
+    assert len(after['in_record_not_in_file']) == 1, 'a policy moved a position'
+
+
+# --------------------------------------------------------------------------------------------
+# The plan compiler as a fold over fixings supersession.
+
+EQUITY = {
+    'EquityPrice.EQ': {'Spot': 100.0, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
+                       'Respect_Default': 'No', 'Jump_Level': 0.0},
+    'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
+                        'Curve': utils.Curve([], [[0.0, 0.02], [5.0, 0.02]])},
+    'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+                          'Surface': utils.Curve([], [[m, t, 0.25] for m in (0.6, 1.0, 1.4)
+                                                      for t in (0.02, 2.0)])}}
+WATCHED = BASE - pd.DateOffset(days=30)
+INDEX = 'EquityPrice.EQ'
+
+
+def barrier_book(observed=''):
+    """A book whose one deal declares its observations in `Barrier_Dates` - one monitoring date
+    already past, blank unless the desk typed a close into it."""
+    return job(deals=({
+        'Object': 'EquityBarrierOption', 'Reference': 'BR', 'Currency': 'USD',
+        'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
+        'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+        'Strike_Price': 100.0, 'Units': 1.0, 'Cash_Rebate': 0.0,
+        'Expiry_Date': BASE + pd.DateOffset(days=365), 'Barrier_Type': 'Up_And_Out',
+        'Barrier_Price': 115.0, 'Barrier_Monitoring_Frequency': pd.DateOffset(days=0),
+        'Barrier_Dates': [[WATCHED, observed]]},), factors=dict(FACTORS, **EQUITY))
+
+
+def observe(home, value, effective_time=None, index=INDEX, date=WATCHED):
+    """One administrator's print of a day, filed as the fact it is."""
+    log = opened(home)
+    try:
+        return log.append('fixing_observed', {
+            'index': index, 'date': date.strftime('%Y-%m-%d'), 'source': 'EXCHANGE',
+            'value': value}, actor=ACTOR, effective_time=effective_time)
+    finally:
+        log.close()
+
+
+def watched_row(document):
+    return document['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
+        'Barrier_Dates']
+
+
+def plan_of(document):
+    return derivus.Context().load_json((dump(document), 'compiled')).plan_hash()
+
+
+def test_the_plan_compiles_from_the_fold_rather_than_from_what_was_typed(recorded, desk):
+    """GATE 10. The plan is terms PLUS the observations the record holds: the fold writes the
+    watched day's close onto the deal's own `Barrier_Dates` row, and that is a different program
+    from the one whose cell is blank - and the same program the close typed by hand compiles to.
+
+    Killing mutation: `compiled_job` returning its argument under a configured home, which leaves
+    the plan the desk typed and the record's own observations disagreeing in silence.
+    """
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    observe(recorded, 108.5)
+
+    terms = barrier_book()
+    compiled = spine.compiled_job(terms)
+    assert watched_row(compiled) == [[WATCHED, 108.5]]
+    assert watched_row(terms) == [[WATCHED, '']], 'the submitted document was edited in place'
+    assert plan_of(compiled) != plan_of(terms), 'the fold did not move the plan'
+    assert plan_of(compiled) == plan_of(barrier_book(108.5)), \
+        'the folded plan is not the plan the same close typed by hand compiles to'
+
+    # and the standing lane still recompiles to its own recorded hash out of the stored blob
+    standing = drained(submit(own_job('FOLD-PROVENANCE'), lane=spine.STANDING))
+    _, _, body = facts(recorded, 'run_completed')[0]
+    recompiled = derivus.Context().load_json(
+        (blob(recorded, body['job']).decode('utf-8'), 'recompiled'))
+    recompiled.patch_market(spine.read_values(blob(recorded, body['values_hash'])))
+    assert recompiled.plan_hash() == body['plan_hash'] == standing['plan_hash']
+
+
+def test_a_republished_fixing_moves_the_plan_and_each_lsn_keeps_its_own(recorded, desk):
+    """GATE 11. Two prints of one `(index, date, source)`: the plan compiled at the earlier LSN is
+    the earlier print's and the plan compiled now is the restatement's, so an auditor recompiles AT
+    an LSN and gets that day's answer rather than today's.
+
+    Killing mutation: `fixings_at` ordering by LSN alone, so a print backdated behind the one in
+    force wins merely by arriving last and every plan ever recompiled moves with it.
+    """
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    first = observe(recorded, 108.5, effective_time='2024-06-27T16:00:00.000000Z')['lsn']
+    observe(recorded, 111.25, effective_time='2024-06-27T17:30:00.000000Z')
+
+    terms = barrier_book()
+    earlier, later = spine.compiled_job(terms, lsn=first), spine.compiled_job(terms)
+    assert watched_row(earlier) == [[WATCHED, 108.5]]
+    assert watched_row(later) == [[WATCHED, 111.25]]
+    assert plan_of(earlier) != plan_of(later)
+    assert plan_of(earlier) == plan_of(barrier_book(108.5))
+    assert plan_of(later) == plan_of(barrier_book(111.25))
+
+
+def test_a_plan_named_and_a_plan_run_are_one_plan(recorded, desk):
+    """`/prepare` names a parse and `/execute` runs one, so both compile the job against the record
+    first: a client that streams a plan once and ticks a delta runs the plan the record makes, not
+    the one that was typed.
+
+    Killing mutation: `/prepare` loading the raw document, under which the plan id it hands back
+    names the terms-only program and the two routes to one job are two runs.
+    """
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    observe(recorded, 108.5)
+
+    terms = barrier_book()
+    named = CLIENT.post('/prepare', content=dump(terms), headers=JSON).json()
+    assert named['plan_id'] == plan_of(spine.compiled_job(terms))
+    assert named['plan_id'] != plan_of(terms), 'the record holds a close this plan did not read'
+
+    posted = CLIENT.post('/execute', content=dump(terms), headers=JSON).json()
+    streamed = CLIENT.post('/execute', content=dump({'plan_id': named['plan_id']}),
+                           headers=JSON).json()
+    assert posted['result_id'] == streamed['result_id'], 'two routes, two runs'
+    service.EXECUTOR.queue.join()
+
+
+def test_a_print_dated_after_the_base_date_is_left_standing(recorded, desk):
+    """A `fixing_observed` carries its date as text, so a forward-dated print is a legal fact. The
+    compiler fills a monitoring row only where its day is ON OR BEFORE the book's own.
+
+    Killing mutation: the fold written into every row the record holds a print for, which prices a
+    barrier as already observed on a day that has not happened.
+    """
+    ahead = BASE + pd.DateOffset(days=30)
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    observe(recorded, 108.5)
+    observe(recorded, 133.75, date=ahead)
+
+    both = job(deals=(dict(barrier_book()['Calc']['Deals']['Deals']['Children'][0][
+        'Instrument']['.Deal'], Barrier_Dates=[[WATCHED, ''], [ahead, '']]),),
+        factors=dict(FACTORS, **EQUITY))
+    filled = watched_row(spine.compiled_job(both))
+    assert filled[0][1] == 108.5, 'the day behind the base date was not filled'
+    assert filled[1][1] == '', 'a print dated after the base date was written onto the row'
+
+
+def test_a_fixing_whose_authority_nobody_declared_refuses_by_name(recorded, desk):
+    """GATE 12. A plan may not read a fixing nobody vouched for: an index THIS PLAN COMPILES
+    AGAINST that the `fixings` policy does not name refuses BY NAME, and the refusal reaches a desk
+    as a 422 carrying the spine's own sentence rather than a paraphrase of it. An index the log
+    holds prints of that no deal here names is left alone, because the compiler asks for exactly
+    the indices its deals declare.
+
+    Killing mutation: the compiler asking for every index the log holds prints of rather than its
+    own, which refuses a plan over an administrator nobody involved in it ever chose.
+    """
+    stranger = 'FxRate.ZAR'
+    observe(recorded, 108.5)
+    observe(recorded, 18.5, index=stranger)
+
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {stranger: ['ECB']}})
+    with pytest.raises(spine.SpineRefused) as refusal:
+        spine.compiled_job(barrier_book())
+    assert INDEX in str(refusal.value) and 'EXCHANGE' in str(refusal.value)
+
+    refused = CLIENT.post('/execute', content=dump(dict(barrier_book(), lane=spine.CURIOSITY)),
+                          headers=JSON)
+    assert refused.status_code == 422
+    assert str(refusal.value) == refused.json()['detail'], 'the desk read a paraphrase'
+
+    # the deal's own index declared and the stranger's still not: the plan compiles regardless
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    assert watched_row(spine.compiled_job(barrier_book())) == [[WATCHED, 108.5]]
