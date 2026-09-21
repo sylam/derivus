@@ -23,6 +23,11 @@ no logic at all:
     ARE the leg's field schema, so a leg restates no deal fields
   - `recipe`, an ordered list of `Price` and `Solve` steps
 
+A structure dealt MORE THAN ONE WAY declares `variations` in place of `legs` - an exporter flooring
+the pair and an importer capping it are one product and two bookings - each with the side of the
+pair its client buys, the parameters only it takes and its own legs. `variation_for` is one rule
+for every structure: it selects the one variation everything the ticket states is consistent with.
+
 `quote()` is the runner, and it owns every conversion, once.
 
 MARKET AXIS vs ENGINE AXIS. A desk quotes USDZAR 15.50 - ZAR per USD - while `FXOptionDeal` prices
@@ -147,6 +152,14 @@ DAYS_IN_YEAR = 365.0
 BARRIER_FLIP = {'Up_And_In': 'Down_And_In', 'Down_And_In': 'Up_And_In',
                 'Up_And_Out': 'Down_And_Out', 'Down_And_Out': 'Up_And_Out'}
 
+#: The option SENSE, read twice: crossing to the engine axis (a market Call is the right to buy the
+#: base currency, so it is a Put on the quote one) and reflecting a variation into the trade the
+#: other side of the pair deals.
+OPTION_FLIP = {'Call': 'Put', 'Put': 'Call'}
+
+#: The other side of the pair, which is the side a variation's mirror image serves.
+OPPOSITE = {'base': 'quote', 'quote': 'base'}
+
 #: The parameters every FX structure quotes in, shared as module constants for the reason the
 #: schema's field groups are: a copy per class is a copy that drifts.
 PAIR = F('pair', 'Text', default=REQUIRED,
@@ -159,6 +172,16 @@ NOTIONAL_CURRENCY = F('notional_currency', 'Text', default=REQUIRED,
                       description='Which side of the pair the notional is in; it becomes the '
                                   'option underlying, and naming the quote currency is what '
                                   'inverts the strike axis')
+
+#: WHICH WAY a structure with more than one variation is dealt, stated as the client's own two
+#: cashflows. They are SELECTORS rather than parameters - they choose a form instead of filling a
+#: leg - so they are optional to state and never defaulted: `variation_for` reads them beside the
+#: level a ticket names, which selects on its own wherever the variations differ in one.
+SELL_CURRENCY = F('sell_currency', 'Text',
+                  description='Currency the client sells: one side of pair')
+BUY_CURRENCY = F('buy_currency', 'Text',
+                 description='Currency the client buys: the other side of pair')
+SELECTORS = (SELL_CURRENCY, BUY_CURRENCY)
 
 #: What a strike-like parameter means, said once. A structure's strikes are the client's numbers.
 MARKET_STRIKE = 'In MARKET terms, as the pair is quoted (USDZAR 15.50)'
@@ -191,6 +214,28 @@ class Leg(object):
     def descriptor(self):
         """This leg as a `mapping['Structure'][...]['legs']` entry."""
         return {'deal_type': self.deal_type, 'pinned': dict(self.pinned), 'slots': dict(self.slots)}
+
+
+class Variation(object):
+    """One way a structure is dealt: whose side of the pair it serves, the parameters only it
+    takes, and its legs.
+
+    A forward extra is one structure and two BOOKINGS - an exporter flooring the pair and an
+    importer capping it - so a structure dealt more than one way declares `variations` in place of
+    `legs` and keeps `fields` for what every form shares. `buys` is 'base' or 'quote', the side the
+    CLIENT buys, which is what a stated direction selects on; a variation's own `fields` are
+    required exactly as the shared ones are.
+    """
+    __slots__ = ('buys', 'fields', 'legs')
+
+    def __init__(self, buys, fields, legs):
+        self.buys, self.fields, self.legs = buys, list(fields), list(legs)
+
+    def descriptor(self):
+        """This variation as a `mapping['Structure'][...]['variations']` entry."""
+        return {'buys': self.buys,
+                'fields': {f.key: f.descriptor() for f in self.fields},
+                'legs': {leg.role: leg.descriptor() for leg in self.legs}}
 
 
 class Premium(object):
@@ -264,6 +309,32 @@ class Solve(object):
             str(self.target) if isinstance(self.target, Premium) else '{:g}'.format(self.target))
 
 
+def reflected(variation, rename, fields):
+    """`variation`'s mirror image: the same structure dealt for the other side of the pair.
+
+    Every leg's `Option_Type` swaps and every `Barrier_Type` crosses through `BARRIER_FLIP`, a
+    level said about the pair reading the other way round for a client standing the other side of
+    it. Two things do NOT move: In and Out describe what the payoff does on touch and mean the same
+    to either client, and `Buy_Sell` is the CLIENT's side on both sheets - an importer buys their
+    protection exactly as an exporter buys theirs - so paper becoming the bank's position stays
+    `mirror`'s one seam.
+
+    `rename` is the variation's own parameters under their mirror names (`{'floor': 'cap'}`),
+    applied to the leg slots that fill from them, and `fields` is those mirror parameters as the
+    declarer writes them: prose says what a level MEANS to the client on that side, which is not
+    something a rename can derive.
+    """
+    legs = []
+    for leg in variation.legs:
+        pinned = dict(leg.pinned)
+        for field, flip in (('Option_Type', OPTION_FLIP), ('Barrier_Type', BARRIER_FLIP)):
+            if field in pinned:
+                pinned[field] = flip[pinned[field]]
+        legs.append(Leg(leg.role, leg.deal_type, pinned,
+                        {field: rename.get(slot, slot) for field, slot in leg.slots.items()}))
+    return Variation(OPPOSITE[variation.buys], fields, legs)
+
+
 class Straddle:
     """Both wings at one strike, both bought - the way volatility itself is traded."""
     vernacular = 'straddle, at-the-money volatility, vol trade'
@@ -291,32 +362,45 @@ class Strangle:
 
 
 class ZeroCostCollar:
-    """Protection paid for by giving up the other side. The client names the floor they want; the
-    cap is whatever strike makes the sold call fund the bought put exactly, which is why it is
-    solved rather than quoted."""
+    """Protection paid for by giving up the other side. The client names the level they want; the
+    other one is whatever strike makes the sold wing fund the bought one exactly, which is why it
+    is solved rather than quoted.
+
+    An exporter floors the pair and an importer caps it, so the level the ticket names IS which of
+    the two is being dealt.
+    """
     vernacular = 'zero-cost collar, range forward, cylinder'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              strike('floor', 'The protected level, bought as a put on the pair')]
-    legs = [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'floor'}),
-            Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))]
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    variations = {'floor': Variation(
+        'quote', [strike('floor', 'The protected level; the cap is solved to fund it')],
+        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
+             {'Strike_Price': 'floor'}),
+         Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))])}
+    variations['cap'] = reflected(
+        variations['floor'], {'floor': 'cap'},
+        [strike('cap', 'The protected level; the floor is solved to fund it')])
     recipe = [Price('protection'),
               Solve('financing', 'Strike_Price', -Premium('protection'))]
 
 
 class Seagull:
-    """A collar cheapened by selling a second wing. The client names the floor they want and the
-    level below which they are willing to be unprotected again; the cap is solved so the three
-    legs sum to nothing."""
+    """A collar cheapened by selling a second wing. The client names the level they want protected
+    and the one past which they are willing to be unprotected again; the third strike is solved so
+    the three legs sum to nothing."""
     vernacular = 'seagull, three-way, participating collar'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              strike('floor', 'The protected level, bought as a put on the pair'),
-              strike('lower_floor', 'Where protection stops, sold as a put on the pair')]
-    legs = [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'floor'}),
-            Leg('participation', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Sell'),
-                {'Strike_Price': 'lower_floor'}),
-            Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))]
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    variations = {'floor': Variation(
+        'quote', [strike('floor', 'The protected level; the cap is solved against it'),
+                  strike('lower_floor', 'Where protection stops, sold back against the floor')],
+        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
+             {'Strike_Price': 'floor'}),
+         Leg('participation', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Sell'),
+             {'Strike_Price': 'lower_floor'}),
+         Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))])}
+    variations['cap'] = reflected(
+        variations['floor'], {'floor': 'cap', 'lower_floor': 'upper_cap'},
+        [strike('cap', 'The protected level; the floor is solved against it'),
+         strike('upper_cap', 'Where protection stops, sold back against the cap')])
     recipe = [Price('protection'), Price('participation'),
               Solve('financing', 'Strike_Price', -Premium('protection', 'participation'))]
 
@@ -330,55 +414,21 @@ class ForwardExtra:
     knocks in, either form reverts to a forward at the named cap or floor.
     """
     vernacular = 'forward extra, forward plus, at-worst forward'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              F('sell_currency', 'Text', default=REQUIRED,
-                description='Currency the client sells: one side of pair'),
-              F('buy_currency', 'Text', default=REQUIRED,
-                description='Currency the client buys: the other side of pair'),
-              F('cap', 'Float', default='',
-                description='Maximum pair rate when selling the quote currency and buying the base'),
-              F('floor', 'Float', default='',
-                description='Minimum pair rate when selling the base currency and buying the quote')]
-    legs = [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'floor'}),
-            Leg('reversion', 'FXBarrierOption',
-                {'Option_Type': 'Call', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Up_And_In'},
-                {'Strike_Price': 'floor'})]
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    variations = {'floor': Variation(
+        'quote', [strike('floor', 'The floor: the rate the client is protected at, and the '
+                                  'forward the structure reverts to once the barrier trades')],
+        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
+             {'Strike_Price': 'floor'}),
+         Leg('reversion', 'FXBarrierOption',
+             {'Option_Type': 'Call', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Up_And_In'},
+             {'Strike_Price': 'floor'})])}
+    variations['cap'] = reflected(
+        variations['floor'], {'floor': 'cap'},
+        [strike('cap', 'The cap: the rate the client is protected at, and the forward the '
+                       'structure reverts to once the barrier trades')])
     recipe = [Price('protection'),
               Solve('reversion', 'Barrier_Price', -Premium('protection'))]
-
-    @classmethod
-    def legs_for(cls, params):
-        base, quote_ccy = split_pair(params['pair'])
-        sell = str(params['sell_currency']).upper()
-        buy = str(params['buy_currency']).upper()
-        cap, floor = params.get('cap'), params.get('floor')
-        has_cap = cap not in (None, '')
-        has_floor = floor not in (None, '')
-        if {sell, buy} != {base, quote_ccy} or sell == buy:
-            raise ValueError(
-                'sell_currency {!r} and buy_currency {!r} must be opposite sides of {}'.format(
-                    sell, buy, params['pair']))
-        if sell == quote_ccy:
-            if not has_cap or has_floor:
-                raise ValueError(
-                    '{}: selling {} and buying {} requires cap and no floor'.format(
-                        cls.__name__, quote_ccy, base))
-            level, protection = 'cap', 'Call'
-            reversion, barrier = 'Put', 'Down_And_In'
-        else:
-            if not has_floor or has_cap:
-                raise ValueError(
-                    '{}: selling {} and buying {} requires floor and no cap'.format(
-                        cls.__name__, base, quote_ccy))
-            level, protection = 'floor', 'Put'
-            reversion, barrier = 'Call', 'Up_And_In'
-        return [Leg('protection', 'FXOptionDeal',
-                    dict(VANILLA, Option_Type=protection, Buy_Sell='Buy'),
-                    {'Strike_Price': level}),
-                Leg('reversion', 'FXBarrierOption',
-                    {'Option_Type': reversion, 'Buy_Sell': 'Sell', 'Barrier_Type': barrier},
-                    {'Strike_Price': level})]
 
 
 class TargetRedemptionForward:
@@ -395,9 +445,13 @@ class TargetRedemptionForward:
     `notional` is PER FIXING here - a 1M notional on a 1M-fixing 1Y TARF deals a million twelve
     times - and always in the pair's BASE currency, since a target has no reading on the reciprocal
     axis. `furnish_accrual` refuses the other side by name.
+
+    It is dealt BOTH WAYS, and neither is a level a ticket could name it by: the client buying the
+    base at every fixing accrues as the pair rises and the one selling it accrues as the pair
+    falls, so the direction is the only thing that tells the two apart and a TARF states one.
     """
     vernacular = 'tarf, target redemption forward, target forward'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY,
               F('fixing_frequency', 'Period', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
@@ -407,10 +461,12 @@ class TargetRedemptionForward:
               F('leverage', 'Float', default=2.0,
                 description='The loss-side gearing: how many notionals the client deals on an '
                             'unfavourable fixing, against one on a favourable one')]
-    legs = [Leg('tarf', 'FXTARFOptionDeal',
-                {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
-                 'Settlement_Style': 'Cash', 'Option_Style': 'European'},
-                {'TargetLevel': 'target'})]
+    variations = {'buy': Variation('base', [], [
+        Leg('tarf', 'FXTARFOptionDeal',
+            {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
+             'Settlement_Style': 'Cash', 'Option_Style': 'European'},
+            {'TargetLevel': 'target'})])}
+    variations['sell'] = reflected(variations['buy'], {}, [])
     recipe = [Solve('tarf', 'Strike_Price', 0.0)]
 
 
@@ -425,9 +481,13 @@ class Accumulator:
 
     The knock-out is observed ON THE FIXING DATES rather than continuously -
     `FXAccumulatorOptionDeal`'s own declaration.
+
+    The DECUMULATOR is the same strip sold: the client deals the base away at each fixing, accrues
+    as the pair falls and knocks out below. Both forms name their level `knockout`, so like the
+    TARF it is the DIRECTION that says which is being dealt.
     """
-    vernacular = 'accumulator, accumulator forward, accu'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
+    vernacular = 'accumulator, decumulator, accumulator forward, accu'
+    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY,
               F('fixing_frequency', 'Period', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
@@ -435,10 +495,11 @@ class Accumulator:
               F('leverage', 'Float', default=2.0,
                 description='The loss-side gearing: how many notionals the client deals on an '
                             'unfavourable fixing, against one on a favourable one')]
-    legs = [Leg('accumulator', 'FXAccumulatorOptionDeal',
-                {'Option_Type': 'Call', 'Buy_Sell': 'Buy',
-                 'Barrier_Type': 'Up_And_Out'},
-                {'Barrier_Price': 'knockout'})]
+    variations = {'buy': Variation('base', [], [
+        Leg('accumulator', 'FXAccumulatorOptionDeal',
+            {'Option_Type': 'Call', 'Buy_Sell': 'Buy', 'Barrier_Type': 'Up_And_Out'},
+            {'Barrier_Price': 'knockout'})])}
+    variations['sell'] = reflected(variations['buy'], {}, [])
     recipe = [Solve('accumulator', 'Strike_Price', 0.0)]
 
 
@@ -556,20 +617,129 @@ def fixing_grid(base_date, expiry, frequency):
     return rows
 
 
+def stated(params, key):
+    """Whether a ticket STATES a parameter - ONE predicate, for selecting a variation and for
+    completing the parameters alike.
+
+    A blank is not a statement. A front end round-tripping an unfilled Float sends 0.0 and the
+    store publishes `"value": ""` for every required field, so a level arriving empty is a level
+    nobody named rather than a level contradicting the one that was; and a rate of zero is not a
+    rate. Two predicates twenty lines apart make a ticket stated for one and unstated for the other.
+    """
+    return bool(params.get(key))
+
+
+def client_buys(params, side):
+    """Which side of the pair the ticket says the CLIENT buys - 'base', 'quote', or `None` where it
+    states no direction at all.
+
+    A stated currency is one of the pair's two sides or it is not a direction on this pair, and the
+    two stated together ARE the two sides: buying and selling one currency is not a trade.
+    """
+    sides = {currency: name for name, currency in side.items()}
+    buys = None
+    for field, bought in ((BUY_CURRENCY, True), (SELL_CURRENCY, False)):
+        if not stated(params, field.key):
+            continue
+        # read as `split_pair` reads the pair it is checked against, off the same ticket
+        currency = str(params[field.key]).strip().upper()
+        if currency not in sides:
+            raise ValueError('{} {!r} is not a side of {}{} - the client deals the two currencies '
+                             'of the pair being quoted'.format(
+                                 field.key, currency, side['base'], side['quote']))
+        named = sides[currency] if bought else OPPOSITE[sides[currency]]
+        if buys is not None and buys != named:
+            raise ValueError('a client cannot buy {0} and sell {0} - buy_currency and '
+                             'sell_currency are the two sides of {1}{2}'.format(
+                                 currency, side['base'], side['quote']))
+        buys = named
+    return buys
+
+
+def variation_for(structure, params):
+    """Which variation of `structure` a ticket means, as `(name, Variation)` - `(None, None)` for a
+    structure declaring one form only.
+
+    ONE rule for every structure: the variation is the UNIQUE one consistent with everything the
+    ticket states. A stated direction fixes which side of the pair the client buys and admits the
+    variations serving it; a stated parameter that is some variation's OWN admits the variations
+    declaring it. So a level word alone selects where the forms differ in one, a direction alone
+    selects where they do not, and stating both means stating them consistently. NOTHING consistent
+    refuses naming what contradicts what and MORE than one refuses naming what to state, a
+    structure quoted on the desk's guess of which way round it went being a booking nobody agreed.
+    """
+    variations = getattr(structure, 'variations', None)
+    if not variations:
+        return None, None
+    side = dict(zip(('base', 'quote'), split_pair(params['pair'])))
+    buys = client_buys(params, side)
+    own = {name: {f.key for f in variation.fields} for name, variation in variations.items()}
+    given = {key for keys in own.values() for key in keys if stated(params, key)}
+    found = [name for name, variation in variations.items()
+             if (buys is None or variation.buys == buys) and given <= own[name]]
+    if len(found) == 1:
+        return found[0], variations[found[0]]
+    if found:
+        levels = sorted(set().union(set(), *(own[name] for name in found)))
+        raise ValueError('{}: state {}which currency the client buys, {} or {} - it deals as '
+                         '{}'.format(structure.__name__,
+                                     'the {}, or '.format(' or the '.join(levels)) if levels
+                                     else '', side['base'], side['quote'], ' or '.join(found)))
+    if buys is None:
+        raise ValueError('{}: no variation of it states {} together - {}'.format(
+            structure.__name__, ' and '.join(sorted(given)),
+            ', '.join('{} states {}'.format(name, ', '.join(sorted(keys)) or 'no level of its own')
+                      for name, keys in own.items())))
+    dealt = [name for name, variation in variations.items() if variation.buys == buys]
+    takes = sorted(set().union(set(), *(own[name] for name in dealt)))
+    raise ValueError(
+        '{}: a client selling {} and buying {} deals {}, which states {}, not {}. buy_currency and '
+        'sell_currency are the CLIENT\'s own side of the trade - not the desk\'s, and not the side '
+        'the notional is quoted in'.format(
+            structure.__name__, side[OPPOSITE[buys]], side[buys],
+            ' or '.join(dealt) or 'nothing at all', ', '.join(takes) or 'no level of its own',
+            ', '.join(sorted(given.difference(takes)))))
+
+
 def declared(structure, params):
     """`params` completed by the structure's OWN declared defaults, or a refusal naming what is
     missing beside everything the structure takes.
 
     Almost every parameter is `REQUIRED` - a strike a client did not name is a strike nobody
-    agreed. A market CONVENTION is the exception, and the number belongs on the `F` descriptor
-    where `describe_structure` publishes it rather than in a `.get` inside the runner.
+    agreed - and the SELECTED variation's own are required exactly as the shared ones are, here,
+    before a quote is hashed or a leg is built. A market CONVENTION is the exception, and the
+    number belongs on the `F` descriptor where `describe_structure` publishes it rather than in a
+    `.get` inside the runner. A SELECTOR is neither: it chooses a form rather than filling a leg,
+    so it is never defaulted into the parameters the quote reports back.
+
+    A parameter NO form of the structure takes refuses by name against the roster it does: a
+    gearing misspelt is a strip quoted at the default gearing nobody agreed, and silence is what
+    makes that invisible. A selector is exempt only where the structure DECLARES one - there is
+    nothing to select on a structure dealt one way. One belonging to another VARIATION is not
+    unknown: stated, it is the selection rule's to refuse in its own words; blank, it is the slot a
+    front end sent back and it is DROPPED, so it rides neither the parameters the quote reports,
+    nor the id they are hashed into, nor the pending file, nor the ticket.
     """
-    missing = [f.key for f in structure.fields if f.default is REQUIRED and not params.get(f.key)]
+    fields = list(structure.fields)
+    missing = [f.key for f in fields if f.default is REQUIRED and not stated(params, f.key)]
+    if not missing:
+        variation = variation_for(structure, params)[1]
+        fields += variation.fields if variation else []
+        missing = [f.key for f in fields if f.default is REQUIRED and not stated(params, f.key)]
     if missing:
         raise ValueError('{} states no {} - a structure is quoted on its declared parameters, and '
                          'these carry no default'.format(structure.__name__, ', '.join(missing)))
-    stated = {f.key: f.default for f in structure.fields if f.default is not REQUIRED}
-    return dict(stated, **params)
+    others = {f.key for form in getattr(structure, 'variations', {}).values()
+              for f in form.fields}.difference(f.key for f in fields)
+    unknown = sorted(set(params).difference(others, (f.key for f in fields)))
+    if unknown:
+        raise ValueError('{} takes no {} - it is quoted on {}'.format(
+            structure.__name__, ', '.join(unknown),
+            ', '.join(sorted(others.union(f.key for f in fields)))))
+    declarations = {f.key: f.default for f in fields
+                    if f.default is not REQUIRED and f not in SELECTORS}
+    return {key: value for key, value in dict(declarations, **params).items()
+            if stated(params, key) or key not in others}
 
 
 def spot_model(document, deal_type, underlying, settlement):
@@ -1040,8 +1210,8 @@ def materialize(structure, params, document):
     seed = engine_spot(document, underlying, settlement)
 
     out = []
-    legs = structure.legs_for(params) if hasattr(structure, 'legs_for') else structure.legs
-    for leg in legs:
+    variation = variation_for(structure, params)[1]
+    for leg in (variation.legs if variation else structure.legs):
         if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption') + ACCRUAL_DEALS:
             raise ValueError('{}: the runner furnishes FXOptionDeal, FXBarrierOption and the '
                              'accrual deals {}, not {}'.format(
@@ -1058,11 +1228,25 @@ def materialize(structure, params, document):
         # senses and directions convert AFTER pinned and slots merge, so a structure letting the
         # client choose either still crosses the axis exactly once
         if inverted:
-            if 'Option_Type' in deal:
-                # a call on the pair is a put on the quote currency
-                deal['Option_Type'] = 'Put' if deal['Option_Type'] == 'Call' else 'Call'
-            if 'Barrier_Type' in deal:
-                deal['Barrier_Type'] = BARRIER_FLIP[deal['Barrier_Type']]
+            # a call on the pair is a put on the quote currency
+            for field, flip in (('Option_Type', OPTION_FLIP), ('Barrier_Type', BARRIER_FLIP)):
+                if field in deal:
+                    deal[field] = flip[deal[field]]
+        # a level the CLIENT stated must sit on the LIVE side of its own direction, both being on
+        # the engine axis by now, and a level ON the spot is through it already - the pricer's own
+        # survival is strict both ways. A SOLVED level is the recipe's, bracketed on that side
+        if 'Barrier_Price' in leg.slots and not (
+                deal['Barrier_Price'] > seed if deal['Barrier_Type'].startswith('Up')
+                else deal['Barrier_Price'] < seed):
+            raise ValueError(
+                '{}: a {} at {:g} is the wrong side of the market SPOT {:g}, which is what this is '
+                'checked against - an Up level is quoted above the spot and a Down one below it, '
+                'and a level on it is through already. State one the pair has to travel to, or '
+                'quote the structure the other way round'.format(
+                    leg.role, BARRIER_FLIP[deal['Barrier_Type']] if inverted
+                    else deal['Barrier_Type'],
+                    1.0 / deal['Barrier_Price'] if inverted else deal['Barrier_Price'],
+                    1.0 / seed if inverted else seed))
         # an unsolved strike still has to be a number the splice can price - the solve replaces it
         deal.setdefault('Strike_Price', seed)
         if leg.deal_type == 'FXBarrierOption':
@@ -1571,8 +1755,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
     are the client's numbers, in the market's own terms, and come back COMPLETED by the structure's
-    own declared defaults. The answer carries `quote_id`, `structure`, `params`, `netting_set`, a
-    row per leg (reference, role, deal type, side, market-terms strike and barrier, premium,
+    own declared defaults. The answer carries `quote_id`, `structure`, `params`, the `variation`
+    selected and the `client` cashflows read off it, `netting_set`, a row per leg (reference, role,
+    deal type, side, market-terms strike and barrier, premium,
     whatever was solved, the vol spread it took and any `note`), `net`, `net_mid`, `edge`, `spot`,
     `risk`, `valuation_configuration`, and `deal` - the composed `StructuredDeal` in wire form,
     ready for the booking verb. `quote_id` hashes the structure, the parameters, the market the book
@@ -1646,6 +1831,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # a declared default is part of what was quoted, so it is filled in before the id is hashed and
     # before the outcome reports the parameters, rather than inside `materialize` alone
     params = declared(structure, params)
+    variation, dealt = variation_for(structure, params)
+    side = dict(zip(('base', 'quote'), split_pair(params['pair'])))
     quote_id = content_hash({
         'structure': structure_name, 'params': params, 'netting_set': netting_set,
         'margin': margin,
@@ -1673,6 +1860,12 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
 
     outcome = {
         'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
+        # WHICH WAY it was dealt, and the client's own two cashflows read off the variation that
+        # was priced rather than off the ticket, so the booking and the account of it agree. Both
+        # null for a structure declaring one form
+        'variation': variation,
+        'client': {'buys': side[dealt.buys], 'sells': side[OPPOSITE[dealt.buys]]}
+        if dealt else None,
         # WHO the quote is for, always said: a null is the root booking, never an unanswered
         # question
         'netting_set': netting_set,

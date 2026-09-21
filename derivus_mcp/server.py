@@ -294,11 +294,25 @@ def describe_structure(name: str = None) -> dict:
 
     With no `name`: every structure with its `vernacular` - the sales names a desk actually says
     ("zero-cost collar, range forward, cylinder") - which is how a plain-language ask finds the
-    right one, and the parameters each takes. With a `name` (an exact structure name from that
+    right one, the `parameters` every form of it shares, its `variations` with the extra parameter
+    each of those takes, and `direction`: 'required' where only `buy_currency`/`sell_currency` can
+    say which variation is meant, 'optional' where naming the level says it, null where there is
+    one form.
+
+    With a `name` (an exact structure name from that
     list): `fields`, the parameters as declared - what each is, what it defaults to, whether it is
-    required, and for a choice exactly which strings are valid; `legs`, what the structure books
-    and which parameter each leg reads; and `recipe`, the steps in order - what is priced, and
-    which leg is solved to what.
+    required, and for a choice exactly which strings are valid; `recipe`, the steps in order - what
+    is priced, and which leg is solved to what; and then either `legs`, what the structure books
+    and which parameter each leg reads, or `variations`.
+
+    VARIATIONS are the ways one structure is dealt - a forward extra FLOORS the pair for an
+    exporter and CAPS it for an importer - and each carries the side of the pair its client buys,
+    the extra parameters only it takes (a `floor` or a `cap`) and its own legs. Supply the level
+    the client named, or `buy_currency` / `sell_currency`, or both: the runner selects the one
+    variation consistent with what you state and refuses rather than guessing, and the quote says
+    which it dealt. A field carrying `selector` is one of those two directions: `required` means
+    the variations name the same level and nothing else can tell them apart, `optional` means the
+    level says it on its own.
 
     STRIKES ARRIVE IN MARKET TERMS. A strike parameter is quoted the way the pair trades - a
     USDZAR strike is 15.50, never its reciprocal - and the runner puts it on the engine's axis
@@ -315,8 +329,16 @@ def describe_structure(name: str = None) -> dict:
                         'with solve_deal.')
     types = store['types']
     if name is None:
+        # a projection of the store and nothing else: the level that selects a variation is that
+        # variation's OWN parameter, so the menu carries those beside the shared ones
         return {'structures': [{'name': key, 'vernacular': declared['vernacular'],
-                                'parameters': sorted(declared['fields'])}
+                                'parameters': sorted(declared['fields']),
+                                'variations': {word: sorted(form['fields'])
+                                               for word, form in
+                                               (declared.get('variations') or {}).items()},
+                                'direction': next(
+                                    (meta['selector'] for meta in declared['fields'].values()
+                                     if meta.get('selector')), None)}
                                for key, declared in sorted(types.items())],
                 'count': len(types)}
     declared = types.get(name)

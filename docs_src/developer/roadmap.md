@@ -207,6 +207,13 @@ is recorded so a reader knows which readings rest on it.
   is in no checkout any more, so the move cannot be pinned to a line.
 - **The notebook write path** raises on three field names its hard-coded allowlist does not carry,
   and fourteen output-shaped descriptors have no widget. Superseded for viewing by the web UI.
+- **An accrual strip quotes a NEGATIVE edge at a two-way — the desk pays the client the spread**,
+  because the side a leg prices on follows its `Buy_Sell` label and a strip is one leg pinned
+  bought while a geared strip is net SHORT vega for the client. Measured: TARF −6470.73 and
+  accumulator −23227.39 (−7073.93 / −25540.97 selling) against a collar's +2001.47. And on a
+  CALIBRATED book the two-way never reaches a model-priced strip at all — it solves the mid strike,
+  captures nothing, and still reports a `vol_spread`. Pre-existing; the remedy is ruled — charge the
+  two-way signed by the vega per quote pillar — and the measurement is in the commit.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

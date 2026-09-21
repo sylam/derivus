@@ -262,6 +262,21 @@ def test_the_sales_names_ride_the_ticket_when_the_outcome_carries_them(tmp_path)
     assert 'zero-cost collar, range forward, cylinder' in said(named, 'Quote')
 
 
+def test_the_ticket_says_which_way_round_the_trade_was_dealt(tmp_path):
+    """A structure dealt more than one way books two different trades, and the ticket is what the
+    desk sends the client: the VARIATION and the client's own two cashflows ride it under their own
+    labels, rather than leaving a level in the parameter table as the only clue. Absent - a
+    structure with one form - the rows are left out, in the vernacular row's own shape."""
+    plain = written(tmp_path, 'plain.xlsx')
+    dealt = written(tmp_path, 'dealt.xlsx', variation='floor',
+                    client={'buys': 'ZAR', 'sells': 'USD'})
+    text = said(dealt, 'Quote')
+
+    assert 'Variation' not in said(plain, 'Quote') and 'Client' not in said(plain, 'Quote')
+    assert 'Variation' in text and 'floor' in text
+    assert 'Client' in text and 'buys ZAR, sells USD' in text
+
+
 def test_the_ticket_quotes_the_strike_the_trade_was_negotiated_in(tmp_path):
     """A collar struck at USDZAR 15.50 is quoted at 15.50. The engine's 1/15.50 belongs to the
     deal, so it is on the Legs sheet and nowhere on the ticket."""

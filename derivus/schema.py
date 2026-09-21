@@ -508,21 +508,50 @@ def emit_structures(module):
     """The `types` of `mapping['Structure']` - each SALES structure holding what it is made of.
 
     Keyed by the class name, the registry key `structures.structure_named` dispatches on, so a menu
-    and the runner pricing the choice read the same word. All four declarations are published:
-    `vernacular`, `fields` as descriptors, `legs` as a deal type plus the block the structure pins,
-    and `recipe` as the readable step list. A leg NAMES a declared `Instrument` type rather than
+    and the runner pricing the choice read the same word. `vernacular`, `fields` as descriptors and
+    `recipe` as the readable step list are published for every structure, and then EITHER `legs`,
+    where it is dealt one way, OR `variations` - each with the side of the pair its client buys, the
+    parameters only it takes and its own legs - where it is dealt more. Never both, so a consumer
+    reads which shape it has off the entry. A leg NAMES a declared `Instrument` type rather than
     expanding its schema, so the two cannot drift.
+
+    A SELECTOR is published as one, with no `value`: it chooses which variation is being quoted
+    rather than filling a leg, so a front end must not ask a client to state it like a parameter.
+    It is the declared field OBJECT that says so and never its key, or a structure's own parameter
+    that merely shares the name would be published as a selector - stripped of its value, and
+    optional where it was declared required. Whether one MUST be stated is computed from the
+    declarations rather than listed: `"required"` where some variation's own parameters do not tell
+    it apart from another's (a strip's two forms name one level, so only the client's side can say
+    which is dealt) and `"optional"` where naming the level is enough.
 
     Own-attr only, gated on `vernacular` rather than `fields` alone, so the module's own vocabulary
     classes do not emit as empty structures.
     """
-    return {name: {'vernacular': cls.__dict__['vernacular'],
-                   'fields': {f.key: f.descriptor() for f in cls.__dict__['fields']},
-                   'legs': {leg.role: leg.descriptor() for leg in cls.__dict__['legs']},
-                   'recipe': [step.describe() for step in cls.__dict__['recipe']]}
-            for name, cls in vars(module).items()
-            if isinstance(cls, type) and 'vernacular' in cls.__dict__
-            and isinstance(cls.__dict__.get('fields'), list)}
+    entries = {}
+    for name, cls in vars(module).items():
+        if not (isinstance(cls, type) and 'vernacular' in cls.__dict__
+                and isinstance(cls.__dict__.get('fields'), list)):
+            continue
+        variations = cls.__dict__.get('variations')
+        own = [{f.key for f in variation.fields} for variation in (variations or {}).values()]
+        needed = any(one <= other for index, one in enumerate(own)
+                     for other in own[index + 1:] + own[:index])
+        fields = {}
+        for f in cls.__dict__['fields']:
+            published = f.descriptor()
+            if f in module.SELECTORS:
+                published = dict({k: v for k, v in published.items() if k != 'value'},
+                                 selector='required' if needed else 'optional')
+            fields[f.key] = published
+        entry = {'vernacular': cls.__dict__['vernacular'], 'fields': fields,
+                 'recipe': [step.describe() for step in cls.__dict__['recipe']]}
+        if 'variations' in cls.__dict__:
+            entry['variations'] = {word: variation.descriptor()
+                                   for word, variation in variations.items()}
+        else:
+            entry['legs'] = {leg.role: leg.descriptor() for leg in cls.__dict__['legs']}
+        entries[name] = entry
+    return entries
 
 
 def partition_factor(type_name, block):

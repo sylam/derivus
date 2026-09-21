@@ -22,6 +22,7 @@ import copy
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -61,6 +62,10 @@ MODEL_AXIS_TOLERANCE = 5e-4
 #: convention is the only reason a sales parameter carries a default, so this is the one place a new
 #: one has to be argued for.
 DECLARED_DEFAULTS = {'leverage': 2.0}
+
+#: The only two fields that may be published as SELECTORS - they choose which variation is being
+#: dealt rather than filling a leg, which is why they carry no value and no client states one.
+SELECTOR_KEYS = {'sell_currency', 'buy_currency'}
 
 #: A calibrated LogVar2FJ factor for the rand, as `/book/model` writes one - the JOINING side of
 #: the pair. THIS FILE'S OWN SURFACE, fitted once: the ladder `fx_surface_block` authors off the
@@ -203,9 +208,20 @@ def leg(outcome, role):
 
 
 def test_the_registry_publishes_exactly_the_declared_structures():
-    """The store is the front end's whole source: a menu, its parameters, its legs and its recipe. A
-    leg names a declared `Instrument` type and nothing else - that type's store entry IS the leg's
-    field schema, so a leg naming a type no class declares cannot be built."""
+    """The store is the front end's whole source: a menu, its parameters, its legs or its
+    VARIATIONS, and its recipe. A leg names a declared `Instrument` type and nothing else - that
+    type's store entry IS the leg's field schema, so a leg naming a type no class declares cannot
+    be built.
+
+    A structure carries `legs` where it is dealt one way and `variations` where it is dealt more,
+    never both and never neither. Each variation serves one side of the pair and takes the
+    parameters no other form of it takes, and the two together have to make it TELLABLE APART:
+    two variations with the same `buys` and the same own parameters are a structure no ticket
+    could ever select between, so the runner would be guessing.
+
+    Every rule below runs over each form's WHOLE parameter set - the shared fields plus that
+    variation's own - which is what a ticket fills in and what the runner requires.
+    """
     store = schema.mapping['Structure']['types']
     assert set(store) == ROSTER
     assert set(store) == set(structures.registry()), (
@@ -213,24 +229,69 @@ def test_the_registry_publishes_exactly_the_declared_structures():
 
     instruments = schema.mapping['Instrument']['types']
     for name, entry in store.items():
-        assert set(entry) == {'vernacular', 'fields', 'legs', 'recipe'}
-        assert entry['vernacular'] and entry['legs'] and entry['recipe']
+        # the invariant lives on the CLASS: the emitter publishes one of the two whatever is
+        # declared, so a class carrying BOTH would ship a dead `legs` nothing prices, and one
+        # carrying an empty `variations` would fail as a KeyError rather than by name
+        cls = structures.structure_named(name)
+        assert ('legs' in cls.__dict__) != bool(cls.__dict__.get('variations')), (
+            '{} is dealt ONE way or several, and says which - it declares {}'.format(
+                name, sorted(set(cls.__dict__) & {'legs', 'variations'}) or 'neither'))
+        form = {'legs', 'variations'}.intersection(entry)
+        assert form in ({'legs'}, {'variations'}), (
+            '{} publishes {} - a structure is dealt ONE way or several, and says which'.format(
+                name, sorted(form) or 'neither legs nor variations'))
+        assert set(entry) == {'vernacular', 'fields', 'recipe'} | form
+        assert entry['vernacular'] and entry['recipe']
         assert {'pair', 'expiry', 'notional', 'notional_currency'} <= set(entry['fields'])
-        for key, descriptor in entry['fields'].items():
-            # a parameter is REQUIRED unless the market has a convention for it, and a declared
-            # default must be PUBLISHED as the value or a front end makes the client state a number
-            # the desk already assumed
-            if descriptor.get('required') is not True:
-                assert key in DECLARED_DEFAULTS, (
-                    '{}.{} has a default a client cannot mean'.format(name, key))
-                assert descriptor['value'] == DECLARED_DEFAULTS[key], (name, key, descriptor)
-        for role, declared in entry['legs'].items():
-            assert declared['deal_type'] in instruments, (
-                '{}.{} is a {}, which no class declares'.format(name, role, declared['deal_type']))
-            assert set(declared) == {'deal_type', 'pinned', 'slots'}
-            unknown = set(declared['slots'].values()) - set(entry['fields'])
-            assert not unknown, '{}.{} maps slots to undeclared parameters {}'.format(
-                name, role, sorted(unknown))
+
+        # a single-form structure reads as one nameless variation taking no parameters of its own,
+        # so there is one set of rules rather than two
+        dealt = entry.get('variations') or {
+            None: {'buys': None, 'fields': {}, 'legs': entry['legs']}}
+        # a DIRECTION has to be stated where some variation's own parameters do not tell it apart
+        # from another's - the rule the store publishes, computed here from the same declarations
+        needed = any(set(one['fields']) <= set(other['fields'])
+                     for one in dealt.values() for other in dealt.values() if one is not other)
+        # and a selector is the declared field OBJECT, never a parameter sharing its name
+        selects = {f.key for f in cls.__dict__['fields'] if f in structures.SELECTORS}
+        told_apart = []
+        for word, variation in dealt.items():
+            assert variation['buys'] in (None, 'base', 'quote'), (name, word, variation['buys'])
+            assert not set(variation['fields']) & set(entry['fields']), (
+                '{}.{} restates a parameter every variation shares'.format(name, word))
+            assert (variation['buys'], sorted(variation['fields'])) not in told_apart, (
+                '{}.{} deals the same side of the pair on the same parameters as another '
+                'variation - no ticket could select between them'.format(name, word))
+            told_apart.append((variation['buys'], sorted(variation['fields'])))
+
+            fields = dict(entry['fields'], **variation['fields'])
+            assert fields and variation['legs']
+            for key, descriptor in fields.items():
+                if descriptor.get('selector'):
+                    # a selector CHOOSES a form rather than filling a leg, so it publishes no
+                    # value, and a structure with one form has nothing to choose between
+                    assert key in SELECTOR_KEYS and 'value' not in descriptor, (name, key)
+                    assert key in selects, '{}.{} is published as a selector and is not one'.format(
+                        name, key)
+                    assert word is not None, '{} selects between one form'.format(name)
+                    assert descriptor['selector'] == ('required' if needed else 'optional'), (
+                        '{}.{} publishes {!r} where its variations {} told apart by their own '
+                        'parameters'.format(name, key, descriptor['selector'],
+                                            'are not' if needed else 'are'))
+                elif descriptor.get('required') is not True:
+                    # a parameter is REQUIRED unless the market has a convention for it, and a
+                    # declared default must be PUBLISHED as the value or a front end makes the
+                    # client state a number the desk already assumed
+                    assert key in DECLARED_DEFAULTS, (
+                        '{}.{} has a default a client cannot mean'.format(name, key))
+                    assert descriptor['value'] == DECLARED_DEFAULTS[key], (name, key, descriptor)
+            for role, declared in variation['legs'].items():
+                assert declared['deal_type'] in instruments, '{}.{} is a {}, which no class '\
+                    'declares'.format(name, role, declared['deal_type'])
+                assert set(declared) == {'deal_type', 'pinned', 'slots'}
+                unknown = set(declared['slots'].values()) - set(fields)
+                assert not unknown, '{}.{}.{} maps slots to parameters {} it does not take'.format(
+                    name, word, role, sorted(unknown))
 
 
 def test_an_unknown_structure_refuses_with_the_roster():
@@ -1040,7 +1101,9 @@ def accrual_book(book):
 
 
 def accrual_params(**extra):
-    return params(fixing_frequency=FIXING_FREQUENCY, **extra)
+    """A strip is dealt BOTH ways and neither is a level, so every accrual ask states its
+    direction: `buy_currency` USD is the client buying the base at each fixing, today's form."""
+    return params(fixing_frequency=FIXING_FREQUENCY, buy_currency='USD', **extra)
 
 
 def only_leg(outcome):
@@ -1067,7 +1130,7 @@ def test_an_accumulator_crosses_both_axes_and_a_tarf_refuses_the_second(accrual_
     currency, and `InvertedTarget` is False on every leg the runner builds.
     """
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
-                 'knockout': SPOT * 1.10}
+                 'buy_currency': 'USD', 'knockout': SPOT * 1.10}
     in_rand = structures.quote(accrual_book, 'Accumulator', dict(
         both_ways, notional=NOTIONAL, notional_currency='ZAR'))
     strike = leg(in_rand, 'accumulator')['strike_market']
@@ -1203,7 +1266,7 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
     # and the quote refuses through the runner, not just the helper
     with pytest.raises(ValueError) as quoted:
         structures.quote(book, 'TargetRedemptionForward', dict(
-            params(target=TARGET, fixing_frequency='5M'), notional_currency='USD'))
+            accrual_params(target=TARGET), fixing_frequency='5M', notional_currency='USD'))
     assert '5M' in str(quoted.value)
 
 
@@ -1355,7 +1418,7 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
     """
     document = calibrated(accrual_book)
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
-                 'knockout': SPOT * 1.10}
+                 'buy_currency': 'USD', 'knockout': SPOT * 1.10}
     in_rand = structures.quote(copy.deepcopy(document), 'Accumulator', dict(
         both_ways, notional=NOTIONAL, notional_currency='ZAR'))
     strike = leg(in_rand, 'accumulator')['strike_market']
@@ -1394,7 +1457,7 @@ def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):
 
     outcome = structures.quote(document, 'TargetRedemptionForward', {
         'pair': 'EURUSD', 'expiry': '6M', 'notional': 1_000_000.0, 'notional_currency': 'EUR',
-        'fixing_frequency': FIXING_FREQUENCY, 'target': 0.10})
+        'buy_currency': 'EUR', 'fixing_frequency': FIXING_FREQUENCY, 'target': 0.10})
     assert abs(outcome['net']) <= SOLVE_TOLERANCE, outcome['net']
     assert leg(outcome, 'tarf')['strike_market'] < factors['FxRate.EUR']['Spot'] * 1.05
 
@@ -1427,3 +1490,451 @@ def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):
         'a profile with no dispersion across scenarios is a deal the run skipped')
     assert spread[-1] == 0.0, (
         'the grid deliberately outlives the strip, so the last row has nothing left to be worth')
+
+
+# --------------------------------------------------------------------------------------------
+# the variations: one structure, several BOOKINGS, and the rule that selects between them
+# --------------------------------------------------------------------------------------------
+
+#: The engine axis, written out here rather than read from the runner. A notional in the pair's
+#: QUOTE currency makes each leg an option on that currency, so a market Call is an engine Put and
+#: a barrier's DIRECTION turns over with the level it sits on, while In and Out never move.
+CROSSED_TYPE = {'Call': 'Put', 'Put': 'Call'}
+CROSSED_BARRIER = {'Up_And_In': 'Down_And_In', 'Down_And_In': 'Up_And_In',
+                   'Up_And_Out': 'Down_And_Out', 'Down_And_Out': 'Up_And_Out'}
+
+#: The coordinate the recipe MOVES, which no ticket names and no table can state.
+SOLVED = 'solved'
+
+#: What each variation BOOKS, on the PAIR's own axis, written out leg by leg rather than derived:
+#: `(role, deal type, sense, barrier direction, the CLIENT's side, the parameter the strike is
+#: struck at, the parameter the barrier sits at)`. The owner's four forward-extra bookings are the
+#: first rows - exporter paper is a bought put plus a sold up-and-in call at the one protected
+#: rate, importer paper a bought call plus a sold down-and-in put at the one capped rate.
+BOOKINGS = {
+    ('ForwardExtra', 'floor'): (
+        ('protection', 'FXOptionDeal', 'Put', None, 'Buy', 'floor', None),
+        ('reversion', 'FXBarrierOption', 'Call', 'Up_And_In', 'Sell', 'floor', SOLVED)),
+    ('ForwardExtra', 'cap'): (
+        ('protection', 'FXOptionDeal', 'Call', None, 'Buy', 'cap', None),
+        ('reversion', 'FXBarrierOption', 'Put', 'Down_And_In', 'Sell', 'cap', SOLVED)),
+    ('ZeroCostCollar', 'floor'): (
+        ('protection', 'FXOptionDeal', 'Put', None, 'Buy', 'floor', None),
+        ('financing', 'FXOptionDeal', 'Call', None, 'Sell', SOLVED, None)),
+    ('ZeroCostCollar', 'cap'): (
+        ('protection', 'FXOptionDeal', 'Call', None, 'Buy', 'cap', None),
+        ('financing', 'FXOptionDeal', 'Put', None, 'Sell', SOLVED, None)),
+    ('Seagull', 'floor'): (
+        ('protection', 'FXOptionDeal', 'Put', None, 'Buy', 'floor', None),
+        ('participation', 'FXOptionDeal', 'Put', None, 'Sell', 'lower_floor', None),
+        ('financing', 'FXOptionDeal', 'Call', None, 'Sell', SOLVED, None)),
+    ('Seagull', 'cap'): (
+        ('protection', 'FXOptionDeal', 'Call', None, 'Buy', 'cap', None),
+        ('participation', 'FXOptionDeal', 'Call', None, 'Sell', 'upper_cap', None),
+        ('financing', 'FXOptionDeal', 'Put', None, 'Sell', SOLVED, None)),
+    ('TargetRedemptionForward', 'buy'): (
+        ('tarf', 'FXTARFOptionDeal', 'Call', None, 'Buy', SOLVED, None),),
+    ('TargetRedemptionForward', 'sell'): (
+        ('tarf', 'FXTARFOptionDeal', 'Put', None, 'Buy', SOLVED, None),),
+    ('Accumulator', 'buy'): (
+        ('accumulator', 'FXAccumulatorOptionDeal', 'Call', 'Up_And_Out', 'Buy', SOLVED,
+         'knockout'),),
+    ('Accumulator', 'sell'): (
+        ('accumulator', 'FXAccumulatorOptionDeal', 'Put', 'Down_And_Out', 'Buy', SOLVED,
+         'knockout'),)}
+
+#: What each variation is quoted on, in the market's own terms: the LEVEL a client names where a
+#: level tells the two forms apart, the DIRECTION where it does not. A seller's knock-out sits
+#: below the spot as a buyer's sits above it, the strip cancelling on the move that would pay them.
+ASKS = {
+    ('ForwardExtra', 'floor'): {'floor': SPOT * 0.97},
+    ('ForwardExtra', 'cap'): {'cap': SPOT * 1.03},
+    ('ZeroCostCollar', 'floor'): {'floor': SPOT * 0.95},
+    ('ZeroCostCollar', 'cap'): {'cap': SPOT * 1.05},
+    ('Seagull', 'floor'): {'floor': SPOT * 0.98, 'lower_floor': SPOT * 0.90},
+    ('Seagull', 'cap'): {'cap': SPOT * 1.02, 'upper_cap': SPOT * 1.10},
+    ('TargetRedemptionForward', 'buy'): {'buy_currency': 'USD', 'target': TARGET,
+                                         'fixing_frequency': FIXING_FREQUENCY},
+    ('TargetRedemptionForward', 'sell'): {'sell_currency': 'USD', 'target': TARGET,
+                                          'fixing_frequency': FIXING_FREQUENCY},
+    ('Accumulator', 'buy'): {'buy_currency': 'USD', 'knockout': SPOT * 1.10,
+                             'fixing_frequency': FIXING_FREQUENCY},
+    ('Accumulator', 'sell'): {'sell_currency': 'USD', 'knockout': SPOT * 0.90,
+                              'fixing_frequency': FIXING_FREQUENCY}}
+
+#: Every variation from each side of the pair it takes. A TARF is quoted on the pair's BASE alone,
+#: a sum of differences having no reading on the reciprocal, and refuses the other side by name.
+SIDES = [(name, word, currency) for name, word in ASKS for currency in ('USD', 'ZAR')
+         if (name, currency) != ('TargetRedemptionForward', 'ZAR')]
+
+#: The structures whose legs are struck at ONE rate, which is what makes a notional on either side
+#: of the pair the same trade: the forward extra's two legs share the protected rate and a strip is
+#: one leg. A collar and a seagull are NOT - they solve across TWO strikes, so each leg's notional
+#: divides by a different level and the two orientations are genuinely different trades.
+ONE_RATE = ('ForwardExtra', 'Accumulator')
+
+#: Which way round each variation is dealt, in the client's own two cashflows. The outcome must say
+#: this, and it must be read off the VARIATION rather than off the side the notional is quoted in -
+#: the same words for every structure, since 'floor' and 'sell' are one client and 'cap' and 'buy'
+#: the other.
+CLIENT = {'floor': {'buys': 'ZAR', 'sells': 'USD'}, 'sell': {'buys': 'ZAR', 'sells': 'USD'},
+          'cap': {'buys': 'USD', 'sells': 'ZAR'}, 'buy': {'buys': 'USD', 'sells': 'ZAR'}}
+
+
+@pytest.fixture(scope='module')
+def quoted(accrual_book):
+    """Every variation of every structure that declares them, quoted once from each side of the
+    pair it takes - one sweep the gates below read, rather than a solve per claim."""
+    return {(name, word, currency): structures.quote(
+        accrual_book, name, dict(params(notional_currency=currency), **ASKS[(name, word)]))
+        for name, word, currency in SIDES}
+
+
+def solved_market(outcome):
+    """The one coordinate the recipe moved, in the market's own terms."""
+    return next(row['strike_market'] if 'Strike_Price' in row['solved'] else row['barrier_market']
+                for row in outcome['legs'] if row['solved'])
+
+
+@pytest.mark.parametrize('name,word,currency', SIDES)
+def test_every_variation_books_the_deals_it_declares(quoted, name, word, currency):
+    """THE BOOKING, leg by leg, against a table written out by hand - because two variations can
+    price alike and book wrong, and a price alone proves nothing about what was dealt.
+
+    Each leg's type, sense, barrier direction, the CLIENT's side and the currency it is an option
+    on are held to the table; the strike and the barrier are read back in MARKET terms and must be
+    the rate the ticket named, the engine block carrying its reciprocal where the notional is the
+    pair's quote currency. A reflection that flipped `Buy_Sell` too, skipped `Barrier_Type` or
+    turned In into Out lands somewhere else on every row of it.
+
+    And the MIRROR is one flip and nothing else: the bank's position is the client's paper with
+    every side turned over, so a leg that moved anything more would book a trade nobody priced.
+    """
+    outcome = quoted[(name, word, currency)]
+    inverted = currency == 'ZAR'
+    booked = [child['Instrument']['.Deal'] for child in outcome['deal']['Children']]
+    assert len(booked) == len(BOOKINGS[(name, word)])
+    # the outcome's account of which way the trade went, on every one of these - read off the
+    # variation that was priced, never off the side the notional happens to be quoted in
+    assert outcome['client'] == CLIENT[word], (name, word, currency)
+
+    for block, (role, kind, sense, barrier, side, struck, level) in zip(
+            booked, BOOKINGS[(name, word)]):
+        assert block['Object'] == kind
+        assert block['Option_Type'] == (CROSSED_TYPE[sense] if inverted else sense)
+        assert block.get('Barrier_Type') == (
+            barrier if barrier is None or not inverted else CROSSED_BARRIER[barrier])
+        assert (block['Buy_Sell'], block['Underlying_Currency']) == (side, currency)
+        row = leg(outcome, role)
+        assert row['strike_market'] == pytest.approx(
+            1.0 / block['Strike_Price'] if inverted else block['Strike_Price'], rel=1e-12)
+        for reading, stated in (('strike_market', struck), ('barrier_market', level)):
+            if stated is None:
+                assert row[reading] is None, '{} reports a {} it has not got'.format(role, reading)
+            elif stated is not SOLVED:
+                assert row[reading] == pytest.approx(outcome['params'][stated], rel=1e-12), (
+                    '{} is not struck at the {} the client named'.format(role, stated))
+
+    for block, flipped in zip(
+            booked, [child['Instrument']['.Deal']
+                     for child in structures.mirror(outcome['deal'])['Children']]):
+        assert flipped['Buy_Sell'] == {'Buy': 'Sell', 'Sell': 'Buy'}[block['Buy_Sell']]
+        assert {key: value for key, value in flipped.items() if key != 'Buy_Sell'} == {
+            key: value for key, value in block.items() if key != 'Buy_Sell'}, (
+            'the mirror moved more than a side')
+
+
+def test_each_variation_is_the_structure_it_says_it_is(quoted):
+    """What each variation is CALLED, held to what it does - the half a booking table cannot say.
+
+    Every one of them is zero cost, and the outcome names the variation it priced. The collar
+    names one level and SOLVES the other on the far side of the forward: an exporter's floor buys
+    a cap above it, an importer's cap buys a floor below it. A strip's client buying the base
+    accrues as the pair rises and strikes BELOW the forward; the one selling it accrues as the
+    pair falls and strikes ABOVE - which is not a tautology, the forward being the spot here and
+    the geared sold leg outweighing the bought one at a strike of it.
+
+    And where a structure's legs are struck at ONE rate, the two sides of the pair are one trade
+    and must solve one coordinate, travelling opposite paths through the runner to reach it.
+    """
+    for (name, word, currency), outcome in quoted.items():
+        assert abs(outcome['net']) <= SOLVE_TOLERANCE, (name, word, currency, outcome['net'])
+        assert outcome['variation'] == word, (name, word, currency)
+        # a SELECTOR chooses a form rather than filling a leg, so it is never defaulted into the
+        # parameters the quote reports, files and hashes: exactly what the ticket stated is there
+        assert SELECTOR_KEYS.intersection(outcome['params']) == SELECTOR_KEYS.intersection(
+            ASKS[(name, word)]), (name, word, currency, sorted(outcome['params']))
+
+    assert ASKS[('ZeroCostCollar', 'floor')]['floor'] < SPOT < solved_market(
+        quoted[('ZeroCostCollar', 'floor', 'USD')]), 'the floor variation solves no cap above it'
+    assert solved_market(quoted[('ZeroCostCollar', 'cap', 'USD')]) < SPOT < ASKS[
+        ('ZeroCostCollar', 'cap')]['cap'], 'the cap variation solves no floor below it'
+
+    for name in ('TargetRedemptionForward', 'Accumulator'):
+        assert solved_market(quoted[(name, 'buy', 'USD')]) < SPOT, (
+            '{}: a client buying the base is not struck better than the forward'.format(name))
+        assert solved_market(quoted[(name, 'sell', 'USD')]) > SPOT, (
+            '{}: a client selling the base is not struck above the forward'.format(name))
+
+    for name, word, currency in SIDES:
+        if currency == 'ZAR' and name in ONE_RATE:
+            assert solved_market(quoted[(name, word, 'ZAR')]) == pytest.approx(
+                solved_market(quoted[(name, word, 'USD')]),
+                rel=AXIS_TOLERANCE if name == 'Accumulator' else 1e-6), (
+                '{}.{} solved two coordinates for one trade'.format(name, word))
+
+
+def written_out(variation):
+    """A variation as plain data, for comparing against one written out by hand."""
+    return (variation.buys, [(f.key, f.description) for f in variation.fields],
+            [(leg.role, leg.deal_type, leg.pinned, leg.slots) for leg in variation.legs])
+
+
+def test_a_reflected_variation_is_the_legs_written_out_by_hand():
+    """`reflected` derives the mirror image, and this is that image spelled out instead - field for
+    field, so a rename that missed the slots or a flip that reached `Buy_Sell` shows here rather
+    than as a price.
+
+    The three shapes it has to get right: a level renamed and named again in its own prose, TWO
+    levels renamed at once without `lower_floor` reading as a `floor` inside it, and a strip with
+    no level of its own at all, where only the sense and the knock-out direction turn over.
+    """
+    assert written_out(structures.ForwardExtra.variations['cap']) == (
+        'base',
+        [('cap', 'The cap: the rate the client is protected at, and the forward the structure '
+                 'reverts to once the barrier trades. ' + structures.MARKET_STRIKE)],
+        [('protection', 'FXOptionDeal',
+          {'Option_Style': 'European', 'Option_Type': 'Call', 'Buy_Sell': 'Buy'},
+          {'Strike_Price': 'cap'}),
+         ('reversion', 'FXBarrierOption',
+          {'Option_Type': 'Put', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Down_And_In'},
+          {'Strike_Price': 'cap'})])
+
+    assert written_out(structures.Seagull.variations['cap']) == (
+        'base',
+        [('cap', 'The protected level; the floor is solved against it. '
+                 + structures.MARKET_STRIKE),
+         ('upper_cap', 'Where protection stops, sold back against the cap. '
+                       + structures.MARKET_STRIKE)],
+        [('protection', 'FXOptionDeal',
+          {'Option_Style': 'European', 'Option_Type': 'Call', 'Buy_Sell': 'Buy'},
+          {'Strike_Price': 'cap'}),
+         ('participation', 'FXOptionDeal',
+          {'Option_Style': 'European', 'Option_Type': 'Call', 'Buy_Sell': 'Sell'},
+          {'Strike_Price': 'upper_cap'}),
+         ('financing', 'FXOptionDeal',
+          {'Option_Style': 'European', 'Option_Type': 'Put', 'Buy_Sell': 'Sell'}, {})])
+
+    assert written_out(structures.Accumulator.variations['sell']) == (
+        'quote', [],
+        [('accumulator', 'FXAccumulatorOptionDeal',
+          {'Option_Type': 'Put', 'Buy_Sell': 'Buy', 'Barrier_Type': 'Down_And_Out'},
+          {'Barrier_Price': 'knockout'})])
+
+
+def test_the_selection_rule_answers_every_way_a_ticket_can_state_it(book, accrual_book):
+    """ONE rule, every arm of it, and the refusals that are the point of having a rule at all.
+
+    A LEVEL WORD ALONE selects where the forms differ in one: "a forward extra, cap 16.90" is the
+    importer's, and nobody had to say which way round it was dealt. A DIRECTION ALONE selects
+    where they do not: a strip is the same shape either way, so it is the only thing that can.
+    Both together must AGREE. A single-form structure declares none of this and answers nothing.
+
+    Then the four refusals. A cap from a client selling the base names BOTH facts, exactly as the
+    hand-written validation it replaces did. An undirected strip names what to state rather than
+    picking one. A currency outside the pair is not a direction on it, and buying and selling the
+    same currency is not a trade.
+    """
+    for structure, stated, word in (
+            (structures.ForwardExtra, {'floor': SPOT * 0.97}, 'floor'),
+            (structures.ForwardExtra, {'cap': SPOT * 1.03}, 'cap'),
+            (structures.Accumulator, {'buy_currency': 'USD'}, 'buy'),
+            (structures.Accumulator, {'sell_currency': 'USD'}, 'sell'),
+            (structures.Seagull, {'sell_currency': 'USD', 'buy_currency': 'ZAR',
+                                  'floor': SPOT * 0.98}, 'floor'),
+            (structures.ZeroCostCollar, {'buy_currency': 'USD', 'cap': SPOT * 1.05}, 'cap')):
+        assert structures.variation_for(structure, params(**stated))[0] == word, (structure, stated)
+    assert structures.variation_for(structures.Straddle, params(strike=SPOT)) == (None, None), (
+        'a structure dealt one way has nothing to select')
+
+    # a direction stated in the shape a ticket arrives in - the pair is read the same way
+    assert structures.variation_for(
+        structures.Accumulator, params(buy_currency=' usd '))[0] == 'buy'
+
+    with pytest.raises(ValueError) as contradicted:
+        structures.quote(book, 'ForwardExtra', forward_extra_params(cap=SPOT * 1.03))
+    assert 'selling USD and buying ZAR' in str(contradicted.value)
+    assert 'states floor, not cap' in str(contradicted.value), str(contradicted.value)
+    assert "CLIENT's own side of the trade" in str(contradicted.value), (
+        'a model that read "sell 10m USD" as the direction is not told which reading to fix')
+
+    # the refusal names the DIFFERENCE, never the level the dealt variation does state: a desk
+    # told "deals cap, which states cap, not cap, floor" is being told a cap is not a cap
+    with pytest.raises(ValueError) as both_and_a_side:
+        structures.quote(book, 'ForwardExtra', params(
+            buy_currency='USD', cap=SPOT * 1.03, floor=SPOT * 0.97))
+    assert 'deals cap, which states cap, not floor' in str(both_and_a_side.value), (
+        str(both_and_a_side.value))
+
+    with pytest.raises(ValueError) as undirected:
+        structures.quote(accrual_book, 'TargetRedemptionForward', dict(
+            params(fixing_frequency=FIXING_FREQUENCY, target=TARGET), notional_currency='USD'))
+    assert 'state which currency the client buys, USD or ZAR' in str(undirected.value)
+    assert 'deals as buy or sell' in str(undirected.value)
+
+    with pytest.raises(ValueError, match='not a side of USDZAR'):
+        structures.variation_for(structures.Accumulator, params(buy_currency='JPY'))
+    with pytest.raises(ValueError, match='cannot buy USD and sell USD'):
+        structures.variation_for(structures.Accumulator,
+                                 params(buy_currency='USD', sell_currency='USD'))
+    with pytest.raises(ValueError, match='states cap and floor together'):
+        structures.variation_for(structures.ForwardExtra,
+                                 params(cap=SPOT * 1.03, floor=SPOT * 0.97))
+
+
+def test_a_blank_is_not_a_statement(book):
+    """ONE predicate for "stated", and it is truthiness - for selecting a variation and for
+    completing the parameters alike.
+
+    A front end round-tripping an unfilled Float sends 0.0, and the store publishes `"value": ""`
+    for every required field, so the shape that arrives is a level with nothing in it. Read as a
+    statement it makes a perfectly good exporter ticket a CONTRADICTION because the unused slot
+    came back as a zero; read as a statement for selection and not for completion, a ticket is
+    stated for one and missing for the other twenty lines apart.
+    """
+    assert structures.variation_for(
+        structures.ForwardExtra, params(floor=SPOT * 0.97, cap=0.0))[0] == 'floor'
+    quoted = structures.quote(book, 'ForwardExtra', params(floor=SPOT * 0.97, cap=0.0))
+    assert quoted['variation'] == 'floor' and abs(quoted['net']) <= SOLVE_TOLERANCE
+
+    # and it does not RIDE the ticket either: the slot a front end sent back is not part of what
+    # was quoted, so it reaches neither the reported parameters, nor the id they are hashed into,
+    # nor the pending file, nor the sheet - two asks differing only in it are one ticket
+    assert 'cap' not in quoted['params'], quoted['params']
+    assert quoted['params'] == structures.quote(
+        book, 'ForwardExtra', params(floor=SPOT * 0.97))['params']
+
+    # and a level stated as nothing is a level nobody named, in all three shapes it arrives in
+    for blank in (0.0, '', None):
+        with pytest.raises(ValueError) as refusal:
+            structures.quote(book, 'ForwardExtra', params(cap=blank))
+        assert 'state the cap or the floor' in str(refusal.value), (blank, str(refusal.value))
+
+
+def test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses(book):
+    """`declared` is where a ticket is held to the form it selected, BEFORE a quote id is hashed,
+    a netting set is checked or a leg is built.
+
+    A variation's own parameters are required exactly as the shared ones are, so a cap variation
+    selected by the DIRECTION alone with no cap refuses by name here rather than reaching a leg and
+    coming back as "leg participation needs the 'upper_cap' parameter" from inside `materialize`.
+
+    And a parameter no form of the structure takes refuses against the roster it does: a gearing
+    misspelt is a strip quoted at the default gearing nobody agreed, and silence is what makes that
+    invisible. A parameter belonging to the OTHER variation is the selection rule's to refuse, in
+    its own words, which is a different sentence about a different mistake.
+    """
+    with pytest.raises(ValueError, match='Seagull states no upper_cap'):
+        structures.declared(structures.Seagull, params(cap=SPOT * 1.02))
+    with pytest.raises(ValueError, match='ForwardExtra states no cap'):
+        structures.quote(book, 'ForwardExtra', params(buy_currency='USD'))
+
+    with pytest.raises(ValueError) as unknown:
+        structures.quote(book, 'Accumulator', dict(
+            accrual_params(knockout=SPOT * 1.10), leverage_ratio=3.0))
+    assert 'Accumulator takes no leverage_ratio' in str(unknown.value)
+    assert 'leverage' in str(unknown.value), 'a refusal that never says what it does take'
+
+    # and the roster is the whole vocabulary, the OTHER variation's level included - a client on a
+    # floor ticket who meant the cap reads the word they wanted in the answer
+    with pytest.raises(ValueError, match='cap'):
+        structures.quote(book, 'ForwardExtra', dict(
+            params(floor=SPOT * 0.97), collar_level=1.0))
+
+    # a SELECTOR is exempt only where the structure declares one: a straddle is dealt one way and
+    # there is nothing to select, so a direction on it is a parameter it does not take
+    with pytest.raises(ValueError) as pointless:
+        structures.quote(book, 'Strangle', dict(
+            params(floor=SPOT * 0.95, cap=SPOT * 1.05), buy_currency='JPY'))
+    assert 'Strangle takes no buy_currency' in str(pointless.value)
+    assert 'floor' in str(pointless.value) and 'cap' in str(pointless.value)
+
+
+def test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses(accrual_book):
+    """A knock-out behind the spot is a strip that dies at its first fixing, and it reads as a
+    spectacular rate: a decumulator knocking out ABOVE the market solves 22.42 for a client selling
+    dollars for a year, and an accumulator knocking out BELOW it solves 14.97. Both are numbers
+    nobody can deal, quoted without a word.
+
+    The check is the runner's and GENERIC - a level the CLIENT stated sits on the live side of its
+    own `Barrier_Type`, read on the engine axis both are on by then - so it reaches the accumulator
+    either way round, the rand orientation where the level and the direction have both crossed, and
+    any later structure that lets a client state a barrier. A SOLVED level is the recipe's own and
+    is bracketed on that side already, which is why the forward extra's barrier is not checked.
+
+    It is checked against the SPOT, which the refusal says out loud: a strip observes at its
+    fixings, so on a carried pair a level through today's spot can be live at the first of them.
+    The reading fails SAFE - a live trade refused loudly rather than a dead one booked - and the
+    sentence states what was compared rather than predicting what the strip would do.
+
+    ON the spot is dead for BOTH directions, and the boundary is the half a one-sided comparison
+    gets wrong: `pv_MC_Accumulator`'s `survives` is strict either way (`s < barrier` up, `s > barrier`
+    down), so equality knocks out whichever way the barrier faces. This book's spot is exactly
+    18.50, so both arms are reachable rather than theoretical.
+    """
+    for direction, dead in (('buy_currency', SPOT * 0.90), ('sell_currency', SPOT * 1.10),
+                            ('buy_currency', SPOT), ('sell_currency', SPOT)):
+        with pytest.raises(ValueError) as refusal:
+            structures.quote(accrual_book, 'Accumulator', dict(
+                params(fixing_frequency=FIXING_FREQUENCY, notional_currency='USD'),
+                knockout=dead, **{direction: 'USD'}))
+        said = str(refusal.value)
+        assert '{} at {:g}'.format(
+            'Up_And_Out' if direction == 'buy_currency' else 'Down_And_Out', dead) in said, said
+        assert 'wrong side of the market SPOT {:g}'.format(SPOT) in said, said
+        assert 'checked against' in said and 'through already' in said, said
+
+    # the rand orientation reads the same market and SAYS so in market terms: the live level quotes
+    # and the dead one refuses naming the pair's own numbers, never the engine's reciprocals
+    live = structures.quote(accrual_book, 'Accumulator', dict(
+        params(fixing_frequency=FIXING_FREQUENCY), sell_currency='USD', knockout=SPOT * 0.90))
+    assert live['variation'] == 'sell' and abs(live['net']) <= SOLVE_TOLERANCE
+    assert only_leg(live)['Barrier_Type'] == 'Up_And_Out', 'down on the pair is up on the rand'
+    with pytest.raises(ValueError) as crossed:
+        structures.quote(accrual_book, 'Accumulator', dict(
+            params(fixing_frequency=FIXING_FREQUENCY), sell_currency='USD',
+            knockout=SPOT * 1.10))
+    assert 'Down_And_Out at {:g}'.format(SPOT * 1.10) in str(crossed.value), str(crossed.value)
+    assert 'SPOT {:g}'.format(SPOT) in str(crossed.value), 'the refusal is not in market terms'
+    assert '{:g}'.format(1.0 / SPOT) not in str(crossed.value), (
+        'the refusal quotes the engine axis at a client who never sees it')
+
+
+def test_a_selector_is_the_declared_field_itself_and_not_its_name():
+    """`emit_structures` flags a SELECTOR by the declared field OBJECT, never by its key.
+
+    A structure declaring its OWN parameter that merely shares the name is an ordinary parameter:
+    published with its value and required as it was declared, so a front end asks a client for it.
+    Flagged by name it would be stripped of its value and published as an OPTIONAL selector - a
+    required parameter nobody is ever asked for - and the registry's own roster of the two names
+    would agree with the mistake rather than catch it.
+
+    The emitter is a pure function of the module it reads, so this hands it one declared here.
+    """
+    class Impostor:
+        vernacular = 'impostor'
+        fields = [structures.PAIR, structures.SELL_CURRENCY,
+                  schema.F('buy_currency', 'Text', default=schema.REQUIRED,
+                           description='its own parameter, not the one the runner selects on')]
+        variations = {'only': structures.Variation('base', [], [
+            structures.Leg('leg', 'FXOptionDeal', {'Option_Type': 'Call'})])}
+        recipe = [structures.Price('leg')]
+
+    emitted = schema.emit_structures(SimpleNamespace(
+        SELECTORS=structures.SELECTORS, Impostor=Impostor))['Impostor']['fields']
+
+    assert emitted['sell_currency']['selector'] == 'optional'
+    assert 'value' not in emitted['sell_currency'], 'a selector has no value to offer'
+    assert 'selector' not in emitted['buy_currency'], (
+        'a parameter that only shares a selector\'s name was published as one')
+    assert emitted['buy_currency']['required'] is True and emitted['buy_currency']['value'] == ''

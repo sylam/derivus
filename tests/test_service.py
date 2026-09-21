@@ -3200,6 +3200,9 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     premium = max(abs(leg['premium']) for leg in quote['legs'])
 
     assert quote['structure'] == 'ZeroCostCollar'
+    # the level the ticket named is what says which way round a collar is dealt, and the answer
+    # reports the variation it priced rather than leaving a reader to infer it from the legs
+    assert quote['variation'] == 'floor' and quote['client'] == {'buys': 'ZAR', 'sells': 'USD'}
     assert len(quote['legs']) == 2 and premium > 0.0
     assert [leg['deal_type'] for leg in quote['legs']] == ['FXOptionDeal'] * 2
     assert {leg['buy_sell'] for leg in quote['legs']} == {'Buy', 'Sell'}
@@ -3231,6 +3234,47 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     assert marked['status'] == 'done', marked.get('error')
     assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
         0.0, abs=premium * 1e-4)
+
+
+#: The IMPORTER's forward extra as a desk asks for it: the cap the client will pay for dollars,
+#: with no direction stated at all. The level is what says which way round it is dealt, and a
+#: booking is what it has to come back as.
+IMPORTER = {'pair': 'USDZAR', 'expiry': '1Y', 'notional': AMOUNT, 'notional_currency': 'USD',
+            'cap': USDZAR * 1.03}
+
+
+def test_a_quoted_forward_extra_says_which_way_it_was_dealt_and_books_that(quoting, tmp_path):
+    """One structure, two BOOKINGS, and the whole loop on the one the ticket meant.
+
+    A cap is the importer's forward extra: the client buys the dollars, so they buy the call and
+    sell the knock-in put below it. Nothing in the ask says a direction - the level says it - and
+    the answer reports back both the `variation` it priced and the client's own two cashflows, so
+    a salesperson reading the sheet and the engine pricing the legs cannot disagree about which
+    trade this is. The pending file carries the same two facts, being the audit trail.
+
+    Then the approval books the MIRROR of exactly those legs, which is the claim a price alone
+    cannot make: the bank sells the call it was asked for and buys the down-and-in put.
+    """
+    quote = quote_of('ForwardExtra', IMPORTER)
+
+    assert quote['variation'] == 'cap'
+    assert quote['client'] == {'buys': 'USD', 'sells': 'ZAR'}
+    assert [(leg['role'], leg['deal_type'], leg['buy_sell']) for leg in quote['legs']] == [
+        ('protection', 'FXOptionDeal', 'Buy'), ('reversion', 'FXBarrierOption', 'Sell')]
+    assert quote['legs'][1]['barrier_market'] < IMPORTER['cap'], (
+        'the knock-in that reverts an importer to their cap sits BELOW it')
+
+    filed = json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+    assert (filed['quote']['variation'], filed['quote']['client']) == ('cap', quote['client'])
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    node = deal_at(json.loads(quoting.read_text()), booked['deal_path'])
+    legs = [child['Instrument']['.Deal'] for child in node['Children']]
+
+    assert booked['written'] is True
+    assert [(block['Object'], block['Option_Type'], block.get('Barrier_Type'), block['Buy_Sell'])
+            for block in legs] == [('FXOptionDeal', 'Call', None, 'Sell'),
+                                   ('FXBarrierOption', 'Put', 'Down_And_In', 'Buy')]
 
 
 #: The desk's charge through the verb, and the notional it is quoted against. This book's
@@ -3327,8 +3371,10 @@ CALIBRATED = {
 #: An accumulator on the RAND: the orientation whose underlying IS the token a spot model is keyed
 #: on, so it rides the fit as written and crosses no axis. The keying's own gates are in
 #: `test_structures.py` and `test_fx_accumulator_json.py`.
+#: An accrual strip is dealt both ways off one knock-out level, so the ask states its direction:
+#: buying USD at every fixing is the accumulator, selling it the decumulator.
 ACCUMULATOR = {'pair': 'USDZAR', 'expiry': '3M', 'notional': AMOUNT, 'notional_currency': 'ZAR',
-               'fixing_frequency': '1M', 'knockout': USDZAR * 1.10}
+               'buy_currency': 'USD', 'fixing_frequency': '1M', 'knockout': USDZAR * 1.10}
 
 
 def test_a_leg_quoted_under_a_model_books_into_a_book_that_marks_it(quoting):

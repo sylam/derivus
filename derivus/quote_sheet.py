@@ -146,6 +146,13 @@ def _quote_sheet(sheet, outcome, base_date):
     sheet.line([('Structure', 'head'), _stated(outcome.get('structure'))])
     if outcome.get('vernacular'):
         sheet.line([('Vernacular', 'head'), _stated(outcome['vernacular'])])
+    # which way round it was dealt: for a structure dealt more than one way the level in the
+    # parameters below is the only other clue, and a ticket is what the desk sends the client
+    if outcome.get('variation'):
+        sheet.line([('Variation', 'head'), _stated(outcome['variation'])])
+    if outcome.get('client'):
+        sheet.line([('Client', 'head'), 'buys {}, sells {}'.format(
+            _stated(outcome['client'].get('buys')), _stated(outcome['client'].get('sells')))])
     sheet.line([('Quote ID', 'head'), _stated(outcome.get('quote_id'))])
     sheet.line([('Base Date', 'head'), base_date.strftime('%Y-%m-%d')])
     sheet.blank()

@@ -324,10 +324,19 @@ def test_the_schema_tools_are_the_declarations():
 
 def test_the_structure_store_is_the_quoting_menu():
     """The whole menu comes off `/schema` with nothing composed here: every structure with its
-    sales names, then one opened up - parameters, legs, recipe. A name that is not a structure
-    refuses with the close match, matching on the vernacular too."""
+    sales names, then one opened up - parameters, the VARIATIONS it is dealt as with their own
+    legs, recipe. A name that is not a structure refuses with the close match, matching on the
+    vernacular too.
+
+    The LIST is a projection of the store and carries enough of it to ask with: the parameter that
+    SELECTS a variation is that variation's own, so a menu publishing the shared fields alone hides
+    `floor` and `cap` until the entry is opened. And it says whether a direction has to be stated -
+    computed from the declarations, so a strip, whose two forms name one level, reads 'required'
+    where a forward extra reads 'optional'.
+    """
     listed = mcp_server.describe_structure()
     vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
+    menu = {entry['name']: entry for entry in listed['structures']}
 
     assert [entry['name'] for entry in listed['structures']] == [
         'Accumulator', 'ForwardExtra', 'Seagull', 'Straddle', 'Strangle',
@@ -335,11 +344,22 @@ def test_the_structure_store_is_the_quoting_menu():
     assert listed['count'] == 7 and all(vernaculars.values())
     assert 'collar' in vernaculars['ZeroCostCollar']
 
+    assert menu['ForwardExtra']['variations'] == {'floor': ['floor'], 'cap': ['cap']}
+    assert menu['Seagull']['variations'] == {'floor': ['floor', 'lower_floor'],
+                                             'cap': ['cap', 'upper_cap']}
+    assert menu['Accumulator']['variations'] == {'buy': [], 'sell': []}
+    assert menu['Straddle']['variations'] == {} and menu['Straddle']['direction'] is None
+    assert menu['ForwardExtra']['direction'] == 'optional', 'the level selects a forward extra'
+    assert menu['Accumulator']['direction'] == 'required', 'nothing else can select a strip'
+    assert 'floor' not in menu['ForwardExtra']['parameters'], (
+        'a level is the variation\'s own, not a parameter every form of it shares')
+
     collar = mcp_server.describe_structure('ZeroCostCollar')
     assert collar['structure'] == 'ZeroCostCollar' and collar['vernacular']
-    assert collar['fields'] and collar['legs'] and collar['recipe']
-    assert 'protection' in str(collar['legs']), 'the leg the cap is solved against is unnamed'
-    assert 'FXOptionDeal' in str(collar['legs'])
+    assert collar['fields'] and collar['recipe'] and set(collar['variations']) == {'floor', 'cap'}
+    assert 'protection' in str(collar['variations']), 'the leg the cap is solved against is unnamed'
+    assert 'FXOptionDeal' in str(collar['variations'])
+    assert collar['variations']['floor']['buys'] == 'quote', 'a client given a floor sells the base'
 
     with pytest.raises(ToolError, match='ZeroCostCollar'):
         mcp_server.describe_structure('collar')
@@ -462,7 +482,10 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         ticked = mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))
         assert ticked['written'] is True and 'FXVol.USD.ZAR' in ticked['new_factors']
 
-        declared = mcp_server.describe_structure('ZeroCostCollar')['fields']
+        # the level a client names is the VARIATION's own parameter, and stating it is what
+        # selects the form - a floor is the exporter's collar
+        menu = mcp_server.describe_structure('ZeroCostCollar')
+        declared = dict(menu['fields'], **menu['variations']['floor']['fields'])
         assert set(declared) >= {'pair', 'expiry', 'notional', 'notional_currency', 'floor'}
         # a structure may take its expiry as a tenor or as a date - the declaration says which
         expiry = ({'.Timestamp': '2025-06-28'}

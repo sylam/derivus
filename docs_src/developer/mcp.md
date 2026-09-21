@@ -36,7 +36,7 @@ stays the maintainer's.
 | `desk_status` | `GET /book/status` — the desk in ONE read: the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a terminal is present |
 | `list_instrument_types` | every bookable type, the create-menu grouping, and `containers` |
 | `describe_instrument_type` | one type's fields as declared — required, defaults, valid values |
-| `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs, the recipe |
+| `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs or the variations each is dealt as, the recipe |
 | `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
 | `describe_configuration` | every dial the book's bootstrap can be set with, per section, at the default it stands at |
 | `job_skeleton` | the envelope, as a job that loads |
@@ -143,11 +143,16 @@ or seagull composes from 1D solves under its conventions: fix one strike, solve 
 last.
 
 **Structures are declared, not composed by the model.** A structure is a class in
-`derivus/structures.py` — its `vernacular` (the sales names a desk says), its legs, and a recipe —
+`derivus/structures.py` — its `vernacular` (the sales names a desk says), its legs or the
+[variations](structures.md#variations) it is dealt as, and a recipe —
 served off `/schema` by `describe_structure`, so a model reads what a zero-cost collar IS instead of
 inventing it. It fills the structure's own parameters, strikes in **market terms** (a USDZAR strike
 is 15.50; the runner puts it on the engine's axis, and that inversion is the one thing never done by
-hand). Every FX `Strike_Price` and `Barrier_Price` declaration carries the axis it lives on, so
+hand). Where a structure is dealt more than one way it fills the level the client named, or
+`buy_currency` / `sell_currency`, or both: the runner selects the one variation consistent with what
+was stated, refuses rather than guessing, and the quote reports which it dealt. The menu says which
+variations there are, the extra parameter each takes, and whether a direction has to be stated at all.
+Every FX `Strike_Price` and `Barrier_Price` declaration carries the axis it lives on, so
 `describe_instrument_type` says it before a model books an FX option directly instead.
 `solve_structure` runs the recipe server-side and answers with the composed deal, the per-leg
 premiums and the net — plus, where the book's `FXVolPrices` carries a two-way, each leg's

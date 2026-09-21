@@ -19,13 +19,56 @@ The class name is the registry key (`globals()` dispatch, the house pattern), an
   pattern](market_prices.md#a-quote) verbatim: a leg never restates an instrument's fields — the
   `Instrument` store's declarations ARE the leg's schema — it pins what the structure fixes and maps
   parameter slots. A gate holds every leg's type to a declared instrument.
+- **`variations`** — named ways the structure is dealt, in place of `legs` where there is more than
+  one: each carries the side of the pair its CLIENT buys, the parameters only it takes, and its own
+  legs. The `recipe` is variation-neutral, roles being the same either way.
 - **`recipe`** — the composition as data: `Price('leg')`, and `Solve('leg', 'Field', target)` where a
   target is a literal or `Premium('other_leg')` (with `__neg__` and `__add__`, so a collar's financing
   leg solves to `-Premium('protection')` and a seagull's to the negative of a sum). Steps run in order;
   each prices the leg ALONE against the book document.
 
 `mapping['Structure']` is `schema.emit_structures(structures)`, assembled with the other stores, so
-`GET /schema` publishes the vocabulary and a front end can grow a structures screen for free.
+`GET /schema` publishes the vocabulary and a front end can grow a structures screen for free. An entry
+carries `legs` or `variations` and never both, so a consumer reads which shape it has off the entry.
+
+## One structure, more than one booking {#variations}
+
+A forward extra operates two ways — an exporter FLOORS the pair and an importer CAPS it — and they are
+not two prices of one trade. **They are two different bookings**: a vanilla and a barrier each, the
+vanilla a put or a call and the barrier an up-and-in or a down-and-in, and the book holds the mirror of
+whichever was dealt. The same is true of every structure here bar the straddle and the strangle, so a
+variation is DECLARED data rather than a branch in the runner.
+
+**`reflected(variation, rename, fields)` derives the mirror image** where there is one. Every leg's
+`Option_Type` swaps and every `Barrier_Type` crosses through `BARRIER_FLIP`, a level said about the pair
+reading the other way round for a client standing the other side of it. Two things do not move: In and
+Out describe what the payoff does on touch and mean the same to either client, and `Buy_Sell` is the
+CLIENT's own side on both sheets — an importer buys their protection exactly as an exporter buys theirs
+— so client paper becoming the bank's position stays [`mirror`](#two-sided)'s one seam. `rename` carries
+the variation's own parameters under their mirror names (`{'floor': 'cap'}`), applied to the leg slots
+that fill from them, and `fields` is those parameters as the declarer WRITES them: prose says what a
+level means to the client on that side, which is not something a rename can derive.
+
+**`variation_for` is ONE selection rule for every structure.** The variation is the unique one
+consistent with everything the ticket states: a stated `buy_currency` or `sell_currency` must be a side
+of the pair and fixes which side the client buys; a stated parameter that is some variation's OWN admits
+only the variations declaring it. So "a forward extra, cap 16.90" quotes with no direction stated, a
+strip — the same shape whichever way it is dealt — must state one, and stating both means stating them
+consistently. NOTHING consistent refuses naming what contradicts what ("a client selling USD and buying
+ZAR deals floor, which states floor, not cap"); MORE than one refuses naming what to state. "Stated" is
+ONE predicate — a blank is not a statement, since a front end round-tripping an unfilled `Float` sends
+`0.0` and the store publishes `"value": ""` for every required field.
+
+The two currencies are SELECTORS rather than parameters — they choose a form instead of filling a leg —
+so they are optional to state, never defaulted, and published with no value under `selector`, which
+says whether one is `required` or `optional`. That is COMPUTED from the declarations rather than
+listed: where some variation's own parameters do not tell it apart from another's, only the direction
+can say which is meant, so the two accrual strips — whose forms name one `knockout` or one `target`
+between them — require one while a forward extra, a collar and a seagull do not. A parameter no form
+takes refuses by name against the roster that does.
+
+The outcome then says which variation it quoted and the client's own two cashflows read off it
+(`variation`, `client`), so what is reported and what was priced cannot disagree.
 
 ## The runner owns the conventions — all three of them
 
@@ -66,11 +109,22 @@ underlying, which makes "is the notional the quote currency" exactly the discrim
 needs.
 
 **What cannot be quoted refuses before a leg is built.** A parameter the structure declares REQUIRED
-and the client did not state is named against its own `fields`. A pair whose surface the book does not
-carry is named with the pairs it does, because otherwise every leg is dropped at load and the quote
-comes back `priced but reported no mtm row`. An expiry on or before the base date and a notional that
-is not positive refuse there too — a zero-day option quoted as if live, and premiums with the sign
-reversed, are both numbers a client could be handed.
+and the client did not state is named against its own `fields` — the SELECTED variation's own included,
+so a form chosen by the direction alone is held to the level it takes before a quote id is hashed. A
+pair whose surface the book does not carry is named with the pairs it does, because otherwise every leg
+is dropped at load and the quote comes back `priced but reported no mtm row`. An expiry on or before the
+base date and a notional that is not positive refuse there too — a zero-day option quoted as if live,
+and premiums with the sign reversed, are both numbers a client could be handed.
+
+**A level the client STATED sits on the live side of its own direction**, read on the engine axis both
+are on by then, so an `Up_*` is strictly above the spot and a `Down_*` strictly below it — a level ON
+it is through already, `pv_MC_Accumulator`'s own survival being strict whichever way the barrier faces.
+A decumulator knocking out ABOVE the market solves a spectacular-looking rate for a strip that is dead
+where it stands. The comparison is against the SPOT and the refusal says so, naming the level, the spot
+and the direction in the pair's own terms: a knock-out is observed on the FIXING dates, so on a carried
+pair a level through today's spot can still be live at the first of them, and this reading refuses that
+ticket rather than booking a dead one — loudly, and with the remedy. A SOLVED level is the recipe's own
+and is already bracketed on that side, so it is not checked twice.
 
 **Strike solves are BRACKETED** (brentq over `(0.25, 4.0) ×` the market spot, crossed to the engine
 axis), never the secant — `solve_deal_field`'s secant seed lands in the dead flat region for an
@@ -297,6 +351,12 @@ coordinate is a realistic two-sided quote by construction: the forward extra's b
 the spot, the collar's cap comes IN toward it, and both are the participation the client gives up for
 the spread.
 
+That sign follows a leg's LABEL, and an accrual strip is one leg pinned bought while a geared strip is
+net SHORT vega for the client — so the strips quote a negative `edge` at a two-way and the desk pays
+the spread rather than taking it, while a model-priced strip does not read the written surface at all
+and is quoted at the mid under a `vol_spread` that says otherwise. Measured, pre-existing and unchanged
+by the variations; both wait on a desk ruling and their numbers are in [the roadmap](roadmap.md).
+
 **`net` versus `net_mid`.** `net` is what the client is quoted — zero, for a zero-cost structure, at the
 two-sided vols. `net_mid` is one extra pass over the finished legs against the UNSHIFTED book: what the
 trade marks at the moment it is booked. Both are in the CLIENT's sign convention, so the desk's captured
@@ -505,14 +565,18 @@ tightening opens lands the effective charge exactly on the ticket.
 
 ## V1 scope, and the named next steps
 
-Seven structures ship: `Straddle`, `Strangle` (no SOLVE — the registry handles recipes that only price),
-`ZeroCostCollar` (floor given, cap solved to premium parity), `Seagull` (three legs, two given, one
-solved to net zero), `ForwardExtra` (the protected rate given, the BARRIER solved — protection plus a
-sold knock-in call at the same strike, so the client keeps the favourable move until the pair trades
-through the level and the structure reverts to a plain forward at the protected rate), and the two
-[accrual strips](#accrual) — `TargetRedemptionForward` (fixings to the tenor, a target cap in the pair's
-own units, the strike solved to zero upfront) and `Accumulator` (the same bargain with a knock-out LEVEL
-in place of the cap).
+Seven structures ship, five of them with [variations](#variations): `Straddle` and `Strangle` (one form
+each, and no SOLVE — the registry handles recipes that only price), `ZeroCostCollar` (`floor` given and
+the cap solved to premium parity, or `cap` given and the floor solved), `Seagull` (three legs, two given
+and one solved to net zero: `floor` + `lower_floor`, or `cap` + `upper_cap`), `ForwardExtra` (the
+protected rate given, the BARRIER solved — protection plus a sold knock-in at the same strike, so the
+client keeps the favourable move until the pair trades through the level and the structure reverts to a
+plain forward at that rate: `floor` is a bought put funded by a sold up-and-in call, for a client
+selling the base currency, and `cap` its mirror, a bought call funded by a sold down-and-in put), and
+the two [accrual strips](#accrual) — `TargetRedemptionForward` (fixings to the tenor, a target cap in
+the pair's own units, the strike solved to zero upfront) and `Accumulator` (the same bargain with a
+knock-out LEVEL in place of the cap), each dealt `buy` or `sell` and neither told apart by a level, so
+both take a direction.
 
 [Risk-impact pricing v1](#risk-impact) ships with them, and its scope is named honestly: the residual is
 measured in the VOL book only (`scope: 'vol'`, any other value refuses), in QUOTE coordinates off
