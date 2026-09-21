@@ -51,3 +51,4 @@ tests/_stepper_out*/
 /web/node_modules/
 /web/dist/
 /derivus/_ui/
+node_modules

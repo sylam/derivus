@@ -322,22 +322,63 @@ class Seagull:
 
 
 class ForwardExtra:
-    """Protection with the upside left on, paid for by a level rather than by a strike. The client
-    is protected at the rate they name and still participates in a favourable move - until the pair
-    trades through the barrier, where the sold call knocks in and the whole thing reverts to a plain
-    forward at that same protected rate. Nothing is given up at a strike, so the solved coordinate
-    is the BARRIER: the level at which the knock-in the client sells funds the put they buy."""
+    """A zero-cost forward extra, in the client's stated cashflow direction.
+
+    A client selling the pair's quote currency and buying its base currency caps the pair: they buy
+    a call and fund it by selling a down-and-in put. A client selling the base and buying the quote
+    floors the pair: they buy a put and fund it by selling an up-and-in call. Once the sold wing
+    knocks in, either form reverts to a forward at the named cap or floor.
+    """
     vernacular = 'forward extra, forward plus, at-worst forward'
     fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              strike('protected_rate', 'The protected level, bought as a put on the pair - and the '
-                                       'forward the structure reverts to if the barrier trades')]
+              F('sell_currency', 'Text', default=REQUIRED,
+                description='Currency the client sells: one side of pair'),
+              F('buy_currency', 'Text', default=REQUIRED,
+                description='Currency the client buys: the other side of pair'),
+              F('cap', 'Float', default='',
+                description='Maximum pair rate when selling the quote currency and buying the base'),
+              F('floor', 'Float', default='',
+                description='Minimum pair rate when selling the base currency and buying the quote')]
     legs = [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'protected_rate'}),
+                {'Strike_Price': 'floor'}),
             Leg('reversion', 'FXBarrierOption',
                 {'Option_Type': 'Call', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Up_And_In'},
-                {'Strike_Price': 'protected_rate'})]
+                {'Strike_Price': 'floor'})]
     recipe = [Price('protection'),
               Solve('reversion', 'Barrier_Price', -Premium('protection'))]
+
+    @classmethod
+    def legs_for(cls, params):
+        base, quote_ccy = split_pair(params['pair'])
+        sell = str(params['sell_currency']).upper()
+        buy = str(params['buy_currency']).upper()
+        cap, floor = params.get('cap'), params.get('floor')
+        has_cap = cap not in (None, '')
+        has_floor = floor not in (None, '')
+        if {sell, buy} != {base, quote_ccy} or sell == buy:
+            raise ValueError(
+                'sell_currency {!r} and buy_currency {!r} must be opposite sides of {}'.format(
+                    sell, buy, params['pair']))
+        if sell == quote_ccy:
+            if not has_cap or has_floor:
+                raise ValueError(
+                    '{}: selling {} and buying {} requires cap and no floor'.format(
+                        cls.__name__, quote_ccy, base))
+            level, protection = 'cap', 'Call'
+            reversion, barrier = 'Put', 'Down_And_In'
+        else:
+            if not has_floor or has_cap:
+                raise ValueError(
+                    '{}: selling {} and buying {} requires floor and no cap'.format(
+                        cls.__name__, base, quote_ccy))
+            level, protection = 'floor', 'Put'
+            reversion, barrier = 'Call', 'Up_And_In'
+        return [Leg('protection', 'FXOptionDeal',
+                    dict(VANILLA, Option_Type=protection, Buy_Sell='Buy'),
+                    {'Strike_Price': level}),
+                Leg('reversion', 'FXBarrierOption',
+                    {'Option_Type': reversion, 'Buy_Sell': 'Sell', 'Barrier_Type': barrier},
+                    {'Strike_Price': level})]
 
 
 class TargetRedemptionForward:
@@ -999,7 +1040,8 @@ def materialize(structure, params, document):
     seed = engine_spot(document, underlying, settlement)
 
     out = []
-    for leg in structure.legs:
+    legs = structure.legs_for(params) if hasattr(structure, 'legs_for') else structure.legs
+    for leg in legs:
         if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption') + ACCRUAL_DEALS:
             raise ValueError('{}: the runner furnishes FXOptionDeal, FXBarrierOption and the '
                              'accrual deals {}, not {}'.format(

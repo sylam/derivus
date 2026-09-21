@@ -93,6 +93,10 @@ def params(**extra):
                  'notional_currency': NOTIONAL_CURRENCY}, **extra)
 
 
+def forward_extra_params(**extra):
+    return params(sell_currency='USD', buy_currency='ZAR', **extra)
+
+
 @pytest.fixture(scope='module')
 def book():
     """`test_service`'s job document with a USDZAR spot the market would recognise, the canned FX
@@ -399,7 +403,7 @@ def test_a_forward_extra_costs_nothing_and_solves_its_barrier(book):
     reprices to the quoted net leg for leg.
     """
     protected = SPOT * 0.97
-    outcome = structures.quote(book, 'ForwardExtra', params(protected_rate=protected))
+    outcome = structures.quote(book, 'ForwardExtra', forward_extra_params(floor=protected))
     protection, reversion = leg(outcome, 'protection'), leg(outcome, 'reversion')
 
     assert abs(outcome['net']) <= SOLVE_TOLERANCE, outcome['net']
@@ -437,7 +441,7 @@ def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
     `net_mid` is the finished legs repriced at mid, which at zero spread is the same pricing twice:
     agreeing to the bit says the solve reports its root's own valuation, not a nearby iterate's.
     """
-    ask = params(protected_rate=SPOT * 0.97)
+    ask = forward_extra_params(floor=SPOT * 0.97)
     mid = structures.quote(book, 'ForwardExtra', ask)
     zero_wide = structures.quote(two_way(book, spread=0.0), 'ForwardExtra', ask)
 
@@ -476,7 +480,7 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     Also the empirical answer to "does a pricing run rebuild the surface from `Market Prices`?" - it
     does not: only each leg's own copy of the written `FXVol` surface separates these two quotes.
     """
-    ask = params(protected_rate=SPOT * 0.97)
+    ask = forward_extra_params(floor=SPOT * 0.97)
     mid, two_sided = (structures.quote(document, 'ForwardExtra', ask)
                       for document in (book, two_sided_book))
     barrier = (leg(mid, 'reversion')['barrier_market'],
@@ -928,7 +932,8 @@ def test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair(book):
     `N / SPOT` misprices by exactly the moneyness (measured 3.09% at 0.97 spot).
     """
     protected = SPOT * 0.97
-    both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'protected_rate': protected}
+    both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'sell_currency': 'USD',
+                 'buy_currency': 'ZAR', 'floor': protected}
     in_rand = structures.quote(book, 'ForwardExtra', dict(
         both_ways, notional=NOTIONAL, notional_currency='ZAR'))
     in_dollars = structures.quote(book, 'ForwardExtra', dict(
@@ -950,6 +955,29 @@ def test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair(book):
     assert booked['rand']['Barrier_Price'] < 1.0 / SPOT, 'the engine barrier is not the reciprocal'
     assert booked['rand']['Barrier_Price'] == pytest.approx(
         1.0 / leg(in_rand, 'reversion')['barrier_market'], rel=1e-12)
+
+
+def test_a_forward_extra_importer_caps_the_pair_and_solves_a_lower_barrier(book):
+    """A client selling rand to buy dollars buys the USDZAR call and sells the lower knock-in put.
+
+    The cap is the rate paid for dollars. If USDZAR drops through the solved barrier, the sold put
+    knocks in and the package becomes a forward at that cap; otherwise the client keeps the lower
+    spot. This is the forward extra's importer form, not a second product.
+    """
+    cap = SPOT * 1.03
+    outcome = structures.quote(book, 'ForwardExtra', params(
+        sell_currency='ZAR', buy_currency='USD', cap=cap))
+    protection, reversion = leg(outcome, 'protection'), leg(outcome, 'reversion')
+
+    assert abs(outcome['net']) <= SOLVE_TOLERANCE, outcome['net']
+    assert protection['premium'] > 0 > reversion['premium']
+    assert protection['strike_market'] == pytest.approx(cap, rel=1e-12)
+    assert reversion['strike_market'] == pytest.approx(cap, rel=1e-12)
+    assert reversion['barrier_market'] < SPOT
+    booked = outcome['deal']['Children'][1]['Instrument']['.Deal']
+    # A rand notional prices on reciprocal ZARUSD, so the market put/down-in crosses once.
+    assert booked['Option_Type'] == 'Call'
+    assert booked['Barrier_Type'] == 'Up_And_In'
 
 
 def test_a_quote_is_an_act_not_a_lookup(book):
