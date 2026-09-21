@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Which LogVar2FJ parameter owns which feature of a vol surface, and over which maturities.">
+
+  <style>
+    /* the reset the artifact host supplied, inlined so the file stands alone */
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; }
+    img { max-width: 100%; height: auto; }
+    [hidden] { display: none !important; }
+    @media print {
+      body { background: #fff; }
+      .panel, .tablewrap, section { break-inside: avoid; }
+      .controls { display: none; }
+    }
+  </style>
+<title>LogVar2FJ by Eye</title>
+<style>
+  :root {
+    --ground: #f5f6f9;
+    --surface: #ffffff;
+    --sunk: #eceff5;
+    --ink: #121721;
+    --ink-2: #3d4757;
+    --muted: #6a7486;
+    --line: #dce1ea;
+    --line-2: #c3cad6;
+    --fast: #bd5f1c;
+    --slow: #12706e;
+    --resid: #8a3566;
+    --solved: #8a94a6;
+    --market: #445067;
+    --warn: #a8341f;
+    --shadow: 0 1px 2px rgba(18,23,33,.05), 0 8px 24px -16px rgba(18,23,33,.25);
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0d1117;
+      --surface: #161b24;
+      --sunk: #1d2430;
+      --ink: #e7ebf2;
+      --ink-2: #bcc5d2;
+      --muted: #929cad;
+      --line: #28303c;
+      --line-2: #3a4553;
+      --fast: #e18c42;
+      --slow: #3aa8a4;
+      --resid: #c56a9c;
+      --solved: #7d8798;
+      --market: #97a3ba;
+      --warn: #e0705a;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0d1117;
+    --surface: #161b24;
+    --sunk: #1d2430;
+    --ink: #e7ebf2;
+    --ink-2: #bcc5d2;
+    --muted: #929cad;
+    --line: #28303c;
+    --line-2: #3a4553;
+    --fast: #e18c42;
+    --slow: #3aa8a4;
+    --resid: #c56a9c;
+    --solved: #7d8798;
+    --market: #97a3ba;
+    --warn: #e0705a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px; padding-left: 20px; padding-right: 20px; }
+  .prose { max-width: 66ch; }
+
+  h1 {
+    font-family: var(--serif); font-weight: 600; font-size: clamp(30px, 5vw, 42px);
+    line-height: 1.12; letter-spacing: -.015em; margin: 0 0 14px; text-wrap: balance;
+  }
+  h2 {
+    font-family: var(--serif); font-weight: 600; font-size: clamp(20px, 3vw, 25px);
+    line-height: 1.25; margin: 0 0 6px; text-wrap: balance;
+  }
+  h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  .lede { font-size: 17px; color: var(--ink-2); }
+  strong { color: var(--ink); font-weight: 600; }
+  code, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  code { font-size: .92em; background: var(--sunk); padding: 1px 5px; border-radius: 3px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 8px;
+  }
+
+  header.top { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 34px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px; padding: 3px 8px; border-radius: 3px;
+    background: var(--sunk); color: var(--ink-2); border: 1px solid var(--line);
+  }
+  .chip b { color: var(--ink); font-weight: 500; }
+
+  section { margin-bottom: 44px; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: var(--shadow); margin-top: 18px; overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    padding: 14px 18px 0;
+  }
+  .panel-head .cap { font-size: 13px; color: var(--muted); }
+  .tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 3px; white-space: nowrap; flex: none;
+  }
+  .tag.exact { background: color-mix(in srgb, var(--slow) 14%, transparent); color: var(--slow); border: 1px solid color-mix(in srgb, var(--slow) 30%, transparent); }
+  .tag.shape { background: color-mix(in srgb, var(--fast) 14%, transparent); color: var(--fast); border: 1px solid color-mix(in srgb, var(--fast) 32%, transparent); }
+  .tag.data  { background: var(--sunk); color: var(--muted); border: 1px solid var(--line); }
+
+  .figure { padding: 6px 10px 2px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 0 18px 12px; font-size: 12.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+  .swatch.dash { height: 0; border-top: 2px dashed currentColor; border-radius: 0; }
+
+  .readouts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    border-top: 1px solid var(--line); background: var(--sunk);
+  }
+  .readout { padding: 10px 14px; border-right: 1px solid var(--line); }
+  .readout:last-child { border-right: 0; }
+  .readout .k { font-size: 11px; color: var(--muted); letter-spacing: .02em; }
+  .readout .v { font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .readout .v.alert { color: var(--warn); }
+
+  .controls {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 10px 22px; padding: 14px 18px 16px; border-top: 1px solid var(--line);
+  }
+  .ctl label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+  .ctl .val { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .ctl .sym { font-family: var(--mono); }
+  input[type="range"] { width: 100%; margin: 4px 0 0; accent-color: var(--fast); height: 20px; }
+  .ctl[data-ch="slow"] input { accent-color: var(--slow); }
+  .ctl[data-ch="resid"] input { accent-color: var(--resid); }
+
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+  button {
+    font-family: var(--sans); font-size: 13px; font-weight: 500; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line-2); border-radius: 4px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--fast); outline-offset: 2px; }
+  .bar .note { font-size: 12.5px; color: var(--muted); }
+
+  .tablewrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 620px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td .sym { font-family: var(--mono); color: var(--ink); }
+  td.owner { white-space: nowrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+
+  .callout {
+    border-left: 3px solid var(--fast); background: var(--sunk); padding: 12px 16px;
+    border-radius: 0 4px 4px 0; margin: 18px 0 0;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+
+  footer { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  footer p { color: var(--muted); }
+
+  @media (max-width: 560px) {
+    .readout { border-right: 0; border-bottom: 1px solid var(--line); }
+    .panel-head { flex-direction: column; gap: 6px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">LogVar2FJ · INDEX_A · notebook 1</p>
+    <h1>LogVar2FJ by Eye</h1>
+    <p class="lede prose">A vol surface has about five things you can see in it. This model has eight numbers and a curve. Here is which number owns which feature, and — the part that does the work — <strong>over which maturities</strong> each one is allowed to act.</p>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <section>
+    <p class="eyebrow">First, delete one axis</p>
+    <h2>The at-the-money level is not a parameter</h2>
+    <div class="prose">
+      <p>The <code>ξ</code> strip is bootstrapped inside every objective evaluation, one segment per at-the-money expiry, so <em>every</em> candidate parameter set reprices the at-the-money term structure exactly — the notebook's misses are ~1e-11 relative. Whatever the eight parameters do, they cannot move the spine of the surface.</p>
+      <p>So when you look at a surface and ask what the parameters are, the level is already answered. What is left to fit is the <strong>shape across strike</strong>, and how that shape changes with maturity.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="cap">Forward variance per segment, in vol terms — the fit's own output beside the market it was solved from</span>
+        <span class="tag data">Engine output</span>
+      </div>
+      <div class="figure"><svg id="fig-xi" viewBox="0 0 900 250" role="img" aria-label="Fitted xi curve against the market ATM squared forward variance"></svg></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--solved)"></i> market ATM² forward variance</span>
+        <span><i class="swatch" style="background:var(--market)"></i> var-swap strip, replicated</span>
+        <span><i class="swatch" style="background:var(--fast)"></i> fitted ξ = E[h]</span>
+      </div>
+    </div>
+    <div class="callout prose">
+      <p>ξ sits <em>above</em> both because it is an expected variance and an at-the-money implied vol is not its square root — a variance mixture prices its at-the-money near <code>E[√V]</code>. The gap is the convexity everything below is about.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">The organising axis</p>
+    <h2>Two factors, two clocks</h2>
+    <div class="prose">
+      <p>The log-variance is driven by two Ornstein-Uhlenbeck factors, and the only thing that separates them is how fast they forget. <code>Kappa_S</code> 6 gives the fast factor a two-month memory; <code>Kappa_L</code> 0.5 gives the slow one about two years. That is the whole reason there are two.</p>
+      <p>Read the chart as a budget: how much variance each factor has accumulated by maturity <code>T</code>, measured from the base date, which is exactly the <code>Var(ℓ+s)</code> the engine derives <code>L*</code> with. The fast factor fills up and stops. Past about six months, <strong>every new unit of uncertainty is the slow factor's</strong> — and on this ladder the slow factor is a pinned class default, not a fitted number.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="cap"><code>Var(ℓ_t + s_t) = σ²(1−e<sup>−2κt</sup>)/2κ</code> per factor, stacked. Vertical marks are the ladder's five expiries.</span>
+        <span class="tag exact">Exact — engine's own formula</span>
+      </div>
+      <div class="figure"><svg id="fig-var" viewBox="0 0 900 300" role="img" aria-label="Accumulated log-variance by factor against maturity"></svg></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--fast)"></i> fast factor (Kappa_S, Sigma_S)</span>
+        <span><i class="swatch" style="background:var(--slow)"></i> slow factor (Kappa_L, Sigma_L)</span>
+        <span><i class="swatch dash" style="color:var(--muted)"></i> stationary level</span>
+      </div>
+      <div class="readouts">
+        <div class="readout"><div class="k">stationary log-vol sd</div><div class="v" id="r-sd">—</div></div>
+        <div class="readout"><div class="k">5-year log-vol sd</div><div class="v" id="r-sd5">—</div></div>
+        <div class="readout"><div class="k">slow factor's share at 1y</div><div class="v" id="r-share">—</div></div>
+        <div class="readout"><div class="k">corner Cap_A</div><div class="v" id="r-cap">—</div></div>
+      </div>
+      <div class="controls">
+        <div class="ctl" data-ch="fast"><label><span><span class="sym">Kappa_S</span> — fast reversion</span><span class="val" id="v-ks"></span></label><input type="range" id="s-ks" min="0.5" max="14" step="0.1"></div>
+        <div class="ctl" data-ch="fast"><label><span><span class="sym">Sigma_S</span> — fast vol-of-vol</span><span class="val" id="v-ss"></span></label><input type="range" id="s-ss" min="0.2" max="5" step="0.01"></div>
+        <div class="ctl" data-ch="slow"><label><span><span class="sym">Kappa_L</span> — slow reversion</span><span class="val" id="v-kl"></span></label><input type="range" id="s-kl" min="0.1" max="3" step="0.05"></div>
+        <div class="ctl" data-ch="slow"><label><span><span class="sym">Sigma_L</span> — slow vol-of-vol</span><span class="val" id="v-sl"></span></label><input type="range" id="s-sl" min="0.3" max="2.5" step="0.01"></div>
+      </div>
+    </div>
+    <div class="callout prose">
+      <p>Push <code>Kappa_S</code> down and watch the fast band keep growing past a year — that is the fast factor taking over the long end, and it is the direction a ladder with no long wing cannot argue with. It is why the two reversions are declared structure here rather than fitted.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">The short end</p>
+    <h2>The residual is a stopwatch</h2>
+    <div class="prose">
+      <p>The part of a return leverage does not explain spends a variance clock <code>A = c·∫ξ</code> and carries a normal-inverse-Gaussian increment on it. <code>Alpha</code> and <code>Beta</code> are not readable on their own — they are per unit of clock. What you can read is what they do to the <em>distribution</em>, and the two quantities below are exact NIG cumulants.</p>
+      <p>Both die as the clock runs: skewness as <code>1/√A</code>, excess kurtosis as <code>1/A</code>. At one month this residual is visibly non-Gaussian; by a year it is a rounding. <strong>So Alpha and Beta are short-dated smile parameters and nothing else</strong> — which is exactly why a ladder of one-month-and-longer vanillas struggles to pin them, and why notebook 2 goes looking for a one-month forward-start.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="cap">Skewness and excess kurtosis of the residual increment against maturity, log scale</span>
+        <span class="tag exact">Exact — NIG cumulants</span>
+      </div>
+      <div class="figure"><svg id="fig-res" viewBox="0 0 900 300" role="img" aria-label="Residual skewness and excess kurtosis against maturity"></svg></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--resid)"></i> |skewness| ∝ 1/√A</span>
+        <span><i class="swatch" style="background:var(--fast)"></i> excess kurtosis ∝ 1/A</span>
+        <span><i class="swatch dash" style="color:var(--muted)"></i> Gaussian</span>
+      </div>
+      <div class="readouts">
+        <div class="readout"><div class="k">shape α·δ<sub>A</sub> at 1m</div><div class="v" id="r-sh1">—</div></div>
+        <div class="readout"><div class="k">shape α·δ<sub>A</sub> at 1y</div><div class="v" id="r-sh12">—</div></div>
+        <div class="readout"><div class="k">skew share |β|/α</div><div class="v" id="r-share-ba">—</div></div>
+        <div class="readout"><div class="k">conditioning γ²/α²</div><div class="v" id="r-cond">—</div></div>
+      </div>
+      <div class="controls">
+        <div class="ctl" data-ch="resid"><label><span><span class="sym">Alpha</span> — tail, convexity</span><span class="val" id="v-al"></span></label><input type="range" id="s-al" min="3" max="200" step="0.5"></div>
+        <div class="ctl" data-ch="resid"><label><span><span class="sym">Beta</span> — residual skew</span><span class="val" id="v-be"></span></label><input type="range" id="s-be" min="-80" max="20" step="0.25"></div>
+      </div>
+    </div>
+    <div class="callout prose">
+      <p>Raise <code>Alpha</code> and both curves fall — a big alpha <em>is</em> a Gaussian residual, which is how a fit obeys a prior on <code>Beta</code> for free by running alpha to its ceiling. The guard that catches it reads <code>|β|/α</code>, not beta.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">The thing you actually see</p>
+    <h2>Skew is a product, and all of it decays</h2>
+    <div class="prose">
+      <p>Spot skew comes from the leverage products <code>Rho_S × Sigma_S</code> and <code>Rho_L × Sigma_L</code>: a variance shock correlated with the return tilts the smile. Each factor's contribution decays on its own clock, the fast one first. The residual's skew decays too, as <code>1/√A</code>.</p>
+      <p>That is the whole story of this fit's residual. The chart below normalises the model's total skew to 100% at the first expiry, so only the <em>shape</em> matters — and beside it is what this fixture's ladder asks for, which is a 90–110 skew of −6.02 vol points at <strong>every</strong> expiry, identical to five decimals. Nothing the model can do produces a flat line.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="cap">Leverage skew by factor, normalised to the 0.077y total. Market demand from the fixture's own quotes.</span>
+        <span class="tag shape">Shape — first order in vol-of-vol</span>
+      </div>
+      <div class="figure"><svg id="fig-skew" viewBox="0 0 900 300" role="img" aria-label="Skew term structure by factor against the fixture's flat demand"></svg></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--fast)"></i> fast leverage ρ<sub>s</sub>σ<sub>s</sub></span>
+        <span><i class="swatch" style="background:var(--slow)"></i> slow leverage ρ<sub>l</sub>σ<sub>l</sub></span>
+        <span><i class="swatch dash" style="color:var(--market)"></i> what the ladder quotes</span>
+      </div>
+      <div class="readouts">
+        <div class="readout"><div class="k">model skew at 1y ÷ at 1m</div><div class="v" id="r-decay">—</div></div>
+        <div class="readout"><div class="k">fast share at 1m</div><div class="v" id="r-f1">—</div></div>
+        <div class="readout"><div class="k">fast share at 1y</div><div class="v" id="r-f12">—</div></div>
+        <div class="readout"><div class="k">c = 1 − ρ<sub>s</sub>² − ρ<sub>l</sub>²</div><div class="v" id="r-c">—</div></div>
+      </div>
+      <div class="controls">
+        <div class="ctl" data-ch="fast"><label><span><span class="sym">Rho_S</span> — fast leverage</span><span class="val" id="v-rs"></span></label><input type="range" id="s-rs" min="-0.98" max="0" step="0.005"></div>
+        <div class="ctl" data-ch="slow"><label><span><span class="sym">Rho_L</span> — slow leverage</span><span class="val" id="v-rl"></span></label><input type="range" id="s-rl" min="-0.9" max="0" step="0.005"></div>
+      </div>
+    </div>
+    <div class="callout prose">
+      <p>Drag <code>Rho_S</code> toward −1 to buy more skew and watch <code>c</code> fall toward its 0.12 floor: the residual's share of the variance is what pays for leverage. That collision is the guard the notebook's fit is sitting on at <code>c</code> 0.170.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">The map</p>
+    <h2>What to look at, and what it is</h2>
+    <p class="prose">Read a surface in this order. Each row is a feature you can see with your eyes, the parameter that owns it, and the maturities over which that parameter has any authority at all.</p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>What you see</th><th>Owned by</th><th>Acts over</th><th>This fit</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>The at-the-money term structure</td>
+            <td class="owner"><span class="dot" style="background:var(--solved)"></span><span class="sym">Xi_Curve</span></td>
+            <td>every maturity</td>
+            <td>solved, not fitted — exact to 1e-11</td>
+          </tr>
+          <tr>
+            <td>Smile curvature at weeks to a couple of months</td>
+            <td class="owner"><span class="dot" style="background:var(--resid)"></span><span class="sym">Alpha</span></td>
+            <td>while α·δ<sub>A</sub> &lt; ~15</td>
+            <td>51.07 — prior-driven, 13.6× a quote row</td>
+          </tr>
+          <tr>
+            <td>Asymmetry at those same short maturities</td>
+            <td class="owner"><span class="dot" style="background:var(--resid)"></span><span class="sym">Beta</span></td>
+            <td>same window, as 1/√A</td>
+            <td>−18.15, share |β|/α 0.355</td>
+          </tr>
+          <tr>
+            <td>Skew from a month to about six</td>
+            <td class="owner"><span class="dot" style="background:var(--fast)"></span><span class="sym">Rho_S × Sigma_S</span></td>
+            <td>out to ~3/κ<sub>s</sub> = 0.5y</td>
+            <td>−1.582 against a −1.9 prior</td>
+          </tr>
+          <tr>
+            <td>Skew past a year, and its slow flattening</td>
+            <td class="owner"><span class="dot" style="background:var(--slow)"></span><span class="sym">Rho_L × Sigma_L</span></td>
+            <td>1y and beyond</td>
+            <td>−0.400 — pinned class default</td>
+          </tr>
+          <tr>
+            <td>How much smile survives to 2–5 years</td>
+            <td class="owner"><span class="dot" style="background:var(--slow)"></span><span class="sym">Sigma_L</span>, <span class="sym">Kappa_L</span></td>
+            <td>beyond the fast factor's memory</td>
+            <td>1.0 / 0.5 — pinned, 76% of the stationary spread</td>
+          </tr>
+          <tr>
+            <td>Where each factor's authority ends</td>
+            <td class="owner"><span class="dot" style="background:var(--market)"></span><span class="sym">Kappa_S</span>, <span class="sym">Kappa_L</span></td>
+            <td>sets the windows above</td>
+            <td>6.0 / 0.5 — declared structure, never fitted</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="bar">
+      <button id="reset" type="button">Reset to the fitted factor</button>
+      <span class="note">Every slider above writes to one shared state, which is itself the point: <span class="sym">Sigma_S</span> moves both the convexity panel and the skew panel.</span>
+    </div>
+  </section>
+
+  <footer class="prose">
+    <p><strong>What is exact here.</strong> The ξ figures are the engine's own output. The variance budget, the corner, the stationary and 5-year spreads, and the residual's skewness, excess kurtosis and α·δ<sub>A</sub> shape are closed forms taken from the engine's own spellings — at the fitted values the shape reads 1.177 at one month and 18.77 at a year, which is what the notebook's report prints.</p>
+    <p><strong>What is a shape.</strong> The skew panel plots <code>ρσ·g(κT)</code> with <code>g(x) = (1−(1−e<sup>−x</sup>)/x)/x</code>, the first-order term structure of leverage skew. It is normalised, so it says which factor owns which maturity and how fast the total decays — not how many vol points. Replacing that layer with real smiles means a parameter sweep through the pricer, one job per rung.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var FIT = { ks: 6.0, kl: 0.5, ss: 1.933223568, sl: 1.0,
+              rs: -0.8185471327, rl: -0.4, al: 51.0706293, be: -18.15203623 };
+  var P = Object.assign({}, FIT);
+
+  // the written factor's own strip: segment starts and expected forward variance on each
+  var XI_T = [0, 0.0767123, 0.249315, 0.49863, 0.747945];
+  var XI_V = [0.04236290843, 0.04656315032, 0.05056607812, 0.05424402951, 0.057893189];
+  var EXPIRY = [0.0767123, 0.249315, 0.49863, 0.747945, 0.99726];
+  // report cell 10, in vol terms
+  var MKT_ATM = [0.2008, 0.2033, 0.2074, 0.2124, 0.2173];
+  var MKT_VS  = [0.2029, 0.2075, 0.2127, 0.2183, 0.2237];
+  var C_MIN = 0.12;
+
+  function xiInt(t) {
+    var s = 0, i, lo, hi;
+    for (i = 0; i < XI_T.length; i++) {
+      lo = XI_T[i];
+      hi = (i + 1 < XI_T.length) ? XI_T[i + 1] : Infinity;
+      if (t <= lo) break;
+      s += (Math.min(t, hi) - lo) * XI_V[i];
+    }
+    return s;
+  }
+  function ouVar(sig, kap, t) { return sig * sig * (-Math.expm1(-2 * kap * t)) / (2 * kap); }
+  function stateVar(p, t) { return ouVar(p.ss, p.ks, t) + ouVar(p.sl, p.kl, t); }
+  function logVolSd(p, t) { return 0.5 * Math.sqrt(stateVar(p, t)); }
+  function cShare(p) { return 1 - p.rs * p.rs - p.rl * p.rl; }
+  function gamma2(p) { return p.al * p.al - p.be * p.be; }
+  function clock(p, t) { return Math.max(cShare(p), 1e-9) * xiInt(t); }
+  function shapeAt(p, t) {
+    var g2 = gamma2(p);
+    if (g2 <= 0) return NaN;
+    return clock(p, t) * Math.pow(g2, 1.5) / p.al;
+  }
+  function skewAt(p, t) {
+    var g2 = gamma2(p), A = clock(p, t);
+    if (g2 <= 0 || A <= 0) return NaN;
+    return 3 * p.be / (g2 * Math.sqrt(A));
+  }
+  function kurtAt(p, t) {
+    var g2 = gamma2(p), A = clock(p, t);
+    if (g2 <= 0 || A <= 0) return NaN;
+    return 3 * (p.al * p.al + 4 * p.be * p.be) / (g2 * g2 * A);
+  }
+  function gShape(x) { return x < 1e-7 ? 0.5 : (1 - (1 - Math.exp(-x)) / x) / x; }
+  function psiFast(p, T) { return p.rs * p.ss * gShape(p.ks * T); }
+  function psiSlow(p, T) { return p.rl * p.sl * gShape(p.kl * T); }
+
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    var n = document.createElementNS(NS, tag), k;
+    for (k in attrs) { if (attrs[k] !== null && attrs[k] !== undefined) n.setAttribute(k, attrs[k]); }
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
+
+  function frame(svg, box, opts) {
+    // axes, ticks and gridlines shared by every panel
+    var i, t, x, y, g = el("g", {});
+    svg.appendChild(g);
+    g.appendChild(el("line", { x1: box.l, y1: box.b, x2: box.r, y2: box.b,
+      stroke: "var(--line-2)", "stroke-width": 1 }));
+    for (i = 0; i < opts.yTicks.length; i++) {
+      t = opts.yTicks[i]; y = box.ys(t.v);
+      g.appendChild(el("line", { x1: box.l, y1: y, x2: box.r, y2: y,
+        stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": t.dash || null }));
+      g.appendChild(el("text", { x: box.l - 8, y: y + 4, "text-anchor": "end",
+        "font-family": "var(--mono)", "font-size": 11, fill: "var(--muted)" }, t.label));
+    }
+    for (i = 0; i < opts.xTicks.length; i++) {
+      t = opts.xTicks[i]; x = box.xs(t.v);
+      g.appendChild(el("text", { x: x, y: box.b + 18, "text-anchor": "middle",
+        "font-family": "var(--mono)", "font-size": 11, fill: "var(--muted)" }, t.label));
+    }
+    if (opts.xLabel) {
+      g.appendChild(el("text", { x: (box.l + box.r) / 2, y: box.b + 38, "text-anchor": "middle",
+        "font-family": "var(--sans)", "font-size": 11.5, fill: "var(--muted)" }, opts.xLabel));
+    }
+    if (opts.yLabel) {
+      g.appendChild(el("text", { x: box.l - 46, y: (box.t + box.b) / 2,
+        "text-anchor": "middle", "font-family": "var(--sans)", "font-size": 11.5,
+        fill: "var(--muted)", transform: "rotate(-90 " + (box.l - 46) + " " + ((box.t + box.b) / 2) + ")" }, opts.yLabel));
+    }
+    return g;
+  }
+  function scales(l, r, t, b, x0, x1, y0, y1) {
+    return { l: l, r: r, t: t, b: b,
+      xs: function (v) { return l + (v - x0) / (x1 - x0) * (r - l); },
+      ys: function (v) { return b - (v - y0) / (y1 - y0) * (b - t); } };
+  }
+  function path(box, pts, close) {
+    var d = "", i;
+    for (i = 0; i < pts.length; i++) { d += (i ? "L" : "M") + box.xs(pts[i][0]).toFixed(2) + " " + box.ys(pts[i][1]).toFixed(2); }
+    return close ? d + "Z" : d;
+  }
+  function sample(x0, x1, n, fn) {
+    var out = [], i, x;
+    for (i = 0; i <= n; i++) { x = x0 + (x1 - x0) * i / n; out.push([x, fn(x)]); }
+    return out;
+  }
+  function expiryMarks(g, box, y0, y1) {
+    for (var i = 0; i < EXPIRY.length; i++) {
+      g.appendChild(el("line", { x1: box.xs(EXPIRY[i]), y1: box.ys(y0), x2: box.xs(EXPIRY[i]), y2: box.ys(y1),
+        stroke: "var(--line-2)", "stroke-width": 1, "stroke-dasharray": "2 4" }));
+    }
+  }
+
+  // ---- panel: the xi strip (static, engine output) -------------------------
+  function drawXi() {
+    var svg = document.getElementById("fig-xi");
+    clear(svg);
+    var box = scales(56, 880, 22, 196, 0, 1.0, 0.195, 0.246);
+    var g = frame(svg, box, {
+      yTicks: [{ v: 0.20, label: "20%" }, { v: 0.22, label: "22%" }, { v: 0.24, label: "24%" }],
+      xTicks: [{ v: 0.0767123, label: "1m" }, { v: 0.249315, label: "3m" }, { v: 0.49863, label: "6m" },
+               { v: 0.747945, label: "9m" }, { v: 0.99726, label: "1y" }],
+      xLabel: "segment end", yLabel: "vol"
+    });
+    var series = [
+      { v: MKT_ATM, c: "var(--solved)" },
+      { v: MKT_VS, c: "var(--market)" },
+      { v: XI_V.map(function (x) { return Math.sqrt(x); }), c: "var(--fast)" }
+    ];
+    for (var s = 0; s < series.length; s++) {
+      var pts = [], i;
+      for (i = 0; i < 5; i++) {
+        pts.push([XI_T[i], series[s].v[i]]);
+        pts.push([i + 1 < XI_T.length ? XI_T[i + 1] : 1.0, series[s].v[i]]);
+      }
+      g.appendChild(el("path", { d: path(box, pts), fill: "none", stroke: series[s].c,
+        "stroke-width": s === 2 ? 2.5 : 1.75, "stroke-linejoin": "round" }));
+    }
+    g.appendChild(el("text", { x: box.xs(0.86), y: box.ys(0.2406) - 8,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--fast)" }, "ξ 24.06%"));
+    g.appendChild(el("text", { x: box.xs(0.86), y: box.ys(0.2173) + 15,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--solved)" }, "ATM 21.73%"));
+  }
+
+  // ---- panel: the variance budget ----------------------------------------
+  function drawVar() {
+    var svg = document.getElementById("fig-var");
+    clear(svg);
+    var T = 2.0;
+    var top = Math.max(stateVar(P, T) * 1.12, 0.4);
+    var box = scales(56, 880, 20, 240, 0, T, 0, top);
+    var yt = [], step = top > 3 ? 1 : (top > 1.2 ? 0.5 : 0.1), v;
+    for (v = 0; v <= top; v += step) { yt.push({ v: v, label: v.toFixed(step < 1 ? 1 : 0) }); }
+    var g = frame(svg, box, {
+      yTicks: yt,
+      xTicks: [{ v: 0.25, label: "3m" }, { v: 0.5, label: "6m" }, { v: 1, label: "1y" },
+               { v: 1.5, label: "18m" }, { v: 2, label: "2y" }],
+      xLabel: "maturity", yLabel: "Var(ℓ+s)"
+    });
+    expiryMarks(g, box, 0, top);
+    var fast = sample(0, T, 160, function (t) { return ouVar(P.ss, P.ks, t); });
+    var both = sample(0, T, 160, function (t) { return stateVar(P, t); });
+    var area1 = fast.concat([[T, 0], [0, 0]]);
+    var area2 = both.concat(fast.slice().reverse());
+    g.appendChild(el("path", { d: path(box, area2, true), fill: "var(--slow)", "fill-opacity": .22, stroke: "none" }));
+    g.appendChild(el("path", { d: path(box, area1, true), fill: "var(--fast)", "fill-opacity": .3, stroke: "none" }));
+    g.appendChild(el("path", { d: path(box, fast), fill: "none", stroke: "var(--fast)", "stroke-width": 2 }));
+    g.appendChild(el("path", { d: path(box, both), fill: "none", stroke: "var(--slow)", "stroke-width": 2 }));
+    var stat = P.ss * P.ss / (2 * P.ks) + P.sl * P.sl / (2 * P.kl);
+    if (stat <= top) {
+      g.appendChild(el("line", { x1: box.l, y1: box.ys(stat), x2: box.r, y2: box.ys(stat),
+        stroke: "var(--muted)", "stroke-width": 1, "stroke-dasharray": "5 4" }));
+    }
+    var half = Math.log(2) / P.ks;
+    if (half < T) {
+      g.appendChild(el("line", { x1: box.xs(half), y1: box.ys(0), x2: box.xs(half), y2: box.ys(top * .82),
+        stroke: "var(--fast)", "stroke-width": 1, "stroke-dasharray": "3 3" }));
+      g.appendChild(el("text", { x: box.xs(half) + 6, y: box.ys(top * .82) - 4,
+        "font-family": "var(--mono)", "font-size": 11, fill: "var(--fast)" },
+        "fast half-life " + (half * 12).toFixed(1) + "m"));
+    }
+  }
+
+  // ---- panel: the residual ------------------------------------------------
+  function drawRes() {
+    var svg = document.getElementById("fig-res");
+    clear(svg);
+    var T = 1.0, lo = 0.02;
+    var box = scales(56, 880, 20, 240, lo, T, -1.4, 1.2); // y is log10
+    var g = frame(svg, box, {
+      yTicks: [{ v: 1, label: "10" }, { v: 0.4771, label: "3" }, { v: 0, label: "1", dash: "4 4" },
+               { v: -0.5229, label: "0.3" }, { v: -1, label: "0.1" }],
+      xTicks: [{ v: 0.0767123, label: "1m" }, { v: 0.249315, label: "3m" }, { v: 0.49863, label: "6m" },
+               { v: 0.747945, label: "9m" }, { v: 0.99726, label: "1y" }],
+      xLabel: "maturity", yLabel: "log scale"
+    });
+    expiryMarks(g, box, -1.4, 1.2);
+    function clampLog(v) { return Math.max(-1.4, Math.min(1.2, Math.log(Math.max(v, 1e-6)) / Math.LN10)); }
+    var sk = sample(lo, T, 160, function (t) { return clampLog(Math.abs(skewAt(P, t))); });
+    var ku = sample(lo, T, 160, function (t) { return clampLog(kurtAt(P, t)); });
+    g.appendChild(el("path", { d: path(box, ku), fill: "none", stroke: "var(--fast)", "stroke-width": 2 }));
+    g.appendChild(el("path", { d: path(box, sk), fill: "none", stroke: "var(--resid)", "stroke-width": 2.5 }));
+    var k1 = kurtAt(P, EXPIRY[0]), s1 = Math.abs(skewAt(P, EXPIRY[0]));
+    g.appendChild(el("circle", { cx: box.xs(EXPIRY[0]), cy: box.ys(clampLog(k1)), r: 3.5, fill: "var(--fast)" }));
+    g.appendChild(el("circle", { cx: box.xs(EXPIRY[0]), cy: box.ys(clampLog(s1)), r: 3.5, fill: "var(--resid)" }));
+    g.appendChild(el("text", { x: box.xs(EXPIRY[0]) + 8, y: box.ys(clampLog(k1)) - 6,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--fast)" },
+      "kurt " + (isFinite(k1) ? k1.toFixed(2) : "—") + " at 1m"));
+    g.appendChild(el("text", { x: box.xs(EXPIRY[0]) + 8, y: box.ys(clampLog(s1)) + 15,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--resid)" },
+      "skew " + (isFinite(s1) ? (-s1).toFixed(2) : "—") + " at 1m"));
+    if (gamma2(P) <= 0) {
+      g.appendChild(el("text", { x: (box.l + box.r) / 2, y: (box.t + box.b) / 2, "text-anchor": "middle",
+        "font-family": "var(--mono)", "font-size": 14, fill: "var(--warn)" }, "|β| ≥ α — not an admissible NIG"));
+    }
+  }
+
+  // ---- panel: the skew term structure ------------------------------------
+  function drawSkew() {
+    var svg = document.getElementById("fig-skew");
+    clear(svg);
+    var T = 1.6, T0 = EXPIRY[0];
+    var base = Math.abs(psiFast(P, T0) + psiSlow(P, T0));
+    if (!(base > 1e-9)) { base = 1e-9; }
+    var box = scales(56, 880, 20, 240, 0.02, T, 0, 1.35);
+    var g = frame(svg, box, {
+      yTicks: [{ v: 0, label: "0" }, { v: 0.5, label: "50%" }, { v: 1, label: "100%", dash: "4 4" }],
+      xTicks: [{ v: 0.0767123, label: "1m" }, { v: 0.249315, label: "3m" }, { v: 0.49863, label: "6m" },
+               { v: 0.99726, label: "1y" }, { v: 1.5, label: "18m" }],
+      xLabel: "maturity", yLabel: "skew ÷ skew at 1m"
+    });
+    expiryMarks(g, box, 0, 1.35);
+    var f = sample(0.02, T, 160, function (t) { return Math.min(Math.abs(psiFast(P, t)) / base, 1.35); });
+    var tot = sample(0.02, T, 160, function (t) { return Math.min(Math.abs(psiFast(P, t) + psiSlow(P, t)) / base, 1.35); });
+    g.appendChild(el("path", { d: path(box, tot.concat(f.slice().reverse()), true),
+      fill: "var(--slow)", "fill-opacity": .22, stroke: "none" }));
+    g.appendChild(el("path", { d: path(box, f.concat([[T, 0], [0.02, 0]]), true),
+      fill: "var(--fast)", "fill-opacity": .3, stroke: "none" }));
+    g.appendChild(el("path", { d: path(box, tot), fill: "none", stroke: "var(--slow)", "stroke-width": 2.5 }));
+    g.appendChild(el("path", { d: path(box, f), fill: "none", stroke: "var(--fast)", "stroke-width": 2 }));
+    g.appendChild(el("line", { x1: box.xs(0.02), y1: box.ys(1), x2: box.xs(T), y2: box.ys(1),
+      stroke: "var(--market)", "stroke-width": 2, "stroke-dasharray": "7 4" }));
+    g.appendChild(el("text", { x: box.xs(1.06), y: box.ys(1) - 8,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--market)" }, "ladder: −6.02 vp at every expiry"));
+    var at1y = Math.abs(psiFast(P, EXPIRY[4]) + psiSlow(P, EXPIRY[4])) / base;
+    g.appendChild(el("circle", { cx: box.xs(EXPIRY[4]), cy: box.ys(Math.min(at1y, 1.35)), r: 3.5, fill: "var(--slow)" }));
+    g.appendChild(el("text", { x: box.xs(EXPIRY[4]) + 8, y: box.ys(Math.min(at1y, 1.35)) + 15,
+      "font-family": "var(--mono)", "font-size": 11, fill: "var(--slow)" },
+      "model: " + (at1y * 100).toFixed(0) + "% at 1y"));
+  }
+
+  // ---- readouts and wiring -----------------------------------------------
+  function pct(x) { return (x * 100).toFixed(0) + "%"; }
+  function setText(id, text, alert) {
+    var n = document.getElementById(id);
+    if (!n) { return; }
+    n.textContent = text;
+    n.className = alert ? "v alert" : "v";
+  }
+
+  function render() {
+    drawVar(); drawRes(); drawSkew();
+
+    var sd = logVolSd(P, 1e6), sd5 = logVolSd(P, 5);
+    var capA = Math.log(XI_V[0]) + 12 * sd;
+    var slowShare = ouVar(P.sl, P.kl, 1) / Math.max(stateVar(P, 1), 1e-12);
+    setText("r-sd", sd.toFixed(3), !(sd >= 0.4 && sd <= 0.9));
+    setText("r-sd5", sd5.toFixed(3));
+    setText("r-share", pct(slowShare));
+    setText("r-cap", capA.toFixed(3));
+
+    var g2 = gamma2(P), bad = g2 <= 0;
+    var shareBA = Math.abs(P.be) / P.al;
+    setText("r-sh1", bad ? "—" : shapeAt(P, EXPIRY[0]).toFixed(3));
+    setText("r-sh12", bad ? "—" : shapeAt(P, EXPIRY[4]).toFixed(2));
+    setText("r-share-ba", shareBA.toFixed(3), shareBA >= 0.7746 - 0.05);
+    setText("r-cond", bad ? "inadmissible" : (g2 / (P.al * P.al)).toFixed(3), bad || g2 / (P.al * P.al) < 0.4);
+
+    var T0 = EXPIRY[0], T1 = EXPIRY[4];
+    var b0 = psiFast(P, T0) + psiSlow(P, T0), b1 = psiFast(P, T1) + psiSlow(P, T1);
+    setText("r-decay", Math.abs(b0) > 1e-9 ? pct(Math.abs(b1 / b0)) : "—");
+    setText("r-f1", Math.abs(b0) > 1e-9 ? pct(Math.abs(psiFast(P, T0) / b0)) : "—");
+    setText("r-f12", Math.abs(b1) > 1e-9 ? pct(Math.abs(psiFast(P, T1) / b1)) : "—");
+    var c = cShare(P);
+    setText("r-c", c.toFixed(3), c <= C_MIN + 0.05);
+
+    var fields = [["ks", 2], ["ss", 3], ["kl", 2], ["sl", 2], ["al", 2], ["be", 2], ["rs", 3], ["rl", 3]];
+    for (var i = 0; i < fields.length; i++) {
+      var k = fields[i][0], n = document.getElementById("v-" + k);
+      if (n) { n.textContent = P[k].toFixed(fields[i][1]); }
+      var s = document.getElementById("s-" + k);
+      if (s && Number(s.value) !== P[k]) { s.value = P[k]; }
+    }
+  }
+
+  function bind(key) {
+    var s = document.getElementById("s-" + key);
+    if (!s) { return; }
+    s.value = P[key];
+    s.addEventListener("input", function () { P[key] = Number(s.value); render(); });
+  }
+  ["ks", "ss", "kl", "sl", "al", "be", "rs", "rl"].forEach(bind);
+
+  document.getElementById("reset").addEventListener("click", function () {
+    P = Object.assign({}, FIT);
+    render();
+  });
+
+  var chips = [["Kappa_S", "6.0"], ["Kappa_L", "0.5"], ["Sigma_S", "1.933"], ["Sigma_L", "1.0 pinned"],
+               ["Rho_S", "−0.819"], ["Rho_L", "−0.4 pinned"], ["Alpha", "51.07"], ["Beta", "−18.15"],
+               ["c", "0.170 on guard"]];
+  var host = document.getElementById("chips");
+  chips.forEach(function (row) {
+    var d = document.createElement("span");
+    d.className = "chip";
+    d.innerHTML = "<b>" + row[0] + "</b> " + row[1];
+    host.appendChild(d);
+  });
+
+  drawXi();
+  render();
+})();
+</script>
+</body>
+</html>
