@@ -132,6 +132,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
             </div>
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
+                      stated={values[key] !== undefined && values[key] !== null}
                       declared={!!descriptor || !undeclared.includes(key)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
                         ? onAmend : undefined} />
@@ -142,8 +143,15 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
   );
 }
 
-function FieldRow({ name, descriptor, value, declared, onAmend }: {
-  name: string; descriptor?: Descriptor; value: unknown; declared: boolean; onAmend?: AmendField;
+/** `stated` is whether the DOCUMENT says this key, which is not whether the row has a value: a
+ * field that must be stated shows what it would default to, and the red `*` is the difference
+ * between a term the author wrote and a placeholder standing in for one. A `null` is what a form
+ * round-trips for nothing, so it is not a statement here either - which is what the engine's own
+ * booking verdict says. `required` is the Instrument store's reading, MUST BE STATED; on every
+ * other store it is still `default=REQUIRED`, and this panel renders both. */
+function FieldRow({ name, descriptor, value, stated, declared, onAmend }: {
+  name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
+  onAmend?: AmendField;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
@@ -151,7 +159,7 @@ function FieldRow({ name, descriptor, value, declared, onAmend }: {
     <>
       <div className="k">
         {descriptor?.description ?? name}
-        {descriptor?.required && !value && <span className="required"> *</span>}
+        {descriptor?.required && !stated && <span className="required"> *</span>}
         {!declared && <span className="hint">(not declared)</span>}
       </div>
       <div className="v">

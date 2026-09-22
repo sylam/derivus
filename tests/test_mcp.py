@@ -779,6 +779,41 @@ def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
     assert book.read_bytes() == before
 
 
+def test_the_store_names_what_must_be_stated_and_a_missing_term_refuses_by_name(book):
+    """WHAT A HOST ASKS is what must be STATED, so `required` is the terms - the fields whose
+    declared default is a blank panel's value - and `convention` marks every field whose default IS
+    what leaving it out means. A model booking the `required` list alone books a live swap; drop
+    one of them and the binding answers the engine's own sentence with the file untouched.
+
+    KILLING MUTATION: `required` published as `default is REQUIRED` alone, which is what it was.
+    `SwapInterestDeal` then lists NOTHING - not its currency, not its dates, not its rate - and a
+    model reading the store books an empty block that prices at whatever the panel would show.
+    """
+    swap = mcp_server.describe_instrument_type('SwapInterestDeal')
+    assert sorted(swap['required']) == ['Currency', 'Effective_Date', 'Maturity_Date', 'Object',
+                                        'Pay_Rate_Type', 'Principal', 'Swap_Rate']
+    assert swap['fields']['Pay_Timing']['convention'] is True
+    assert 'convention' not in swap['fields']['Swap_Rate']
+    assert 'required' not in swap['fields']['Pay_Timing']
+
+    before = book.read_bytes()
+    terms = {'Object': 'SwapInterestDeal', 'Reference': 'SW1', 'Currency': 'ZAR',
+             'Discount_Rate': 'ZAR', 'Interest_Rate': 'ZAR',
+             'Effective_Date': {'.Timestamp': '2024-06-28'},
+             'Maturity_Date': {'.Timestamp': '2026-06-28'}, 'Pay_Rate_Type': 'Fixed',
+             'Swap_Rate': 8.0, 'Principal': 1_000_000.0}
+    # a host with nothing to say for a field sends `null` as readily as it omits the key, and
+    # `Pay_Rate_Type: null` is the expensive one - the pricer's `== 'Fixed'` takes the else branch
+    # and the swap becomes receive-fixed, the same notional with the other sign
+    for key in ('Swap_Rate', 'Pay_Rate_Type', 'Principal'):
+        for said in ({k: v for k, v in terms.items() if k != key}, dict(terms, **{key: None})):
+            refused = mcp_server.book_deal(said)
+            assert refused['written'] is False, (key, refused)
+            assert '{} is not stated'.format(key) in refused['refused'], refused['refused']
+            assert book.read_bytes() == before
+    assert mcp_server.book_deal(terms)['written'] is True
+
+
 def test_what_a_model_actually_mistypes_comes_back_as_data(book):
     """The four a model sends unprompted - a misspelt type, no type at all, an amount as text and a
     date as a bare string - reach it as `{written: false, refused: [...]}` with the file untouched,

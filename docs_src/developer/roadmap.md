@@ -227,6 +227,52 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
+- **Six declared fields carry stated values nothing reads** (2026-09-22). `DealDefaultSwap`'s
+  `Is_Digital` and `Digital_Recovery` select a branch that was never wired; its `Upfront` is a real
+  payment no pricer discounts; `QEDI_CustomAutoCallSwap`'s `Units` is the deal's notional and
+  neither the V1 nor the V2 pricer reads it, the strip being unitless today; `Rate_Currency` on
+  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path;
+  and `Averaging_Method` on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader
+  in the tree is a cashflow LIST's own container key, falling back to `None` on another class.
+  A desk that states one is silently ignored, which is the opposite failure to the one the
+  convention/placeholder split closes: UNMEASURED, because there is no reading to compare against.
+  Each is either wired to the branch it names or deleted with the branch.
+- **A deal the compile could not read still lets the job report success** (2026-09-22). A
+  placeholder a document does not say — the key absent, or carrying a `null` — is refused by name
+  at booking, so it cannot reach a pricer through
+  `POST /book/deals`; a document loaded from disk, an emitter's benchmark or a legacy file can
+  still carry one, and `DealStructure.add_deal_to_structure` logs `<type> <reference> <key> -
+  Skipped`, counts it under `Deals Skipped` and the run finishes green. `Stats` carries the count
+  and the diary files the deal as unreadable, but nothing makes the run itself fail:
+  `System Parameters.Exclude_Deals_With_Missing_Market_Data` is declared `Yes`/`No` and documented
+  as raising on `No`, and no module reads it.
+- **A blank table has two wire spellings and they are not one value** (2026-09-22). A widget writes
+  an empty Table as JSON `null`, which the loader reads as `None`; the same table written as its
+  own container (`{".DateList": []}`) reads as an empty `DateList`, and a `utils` container defines
+  no `__bool__`, so an empty one is TRUTHY. Every `if self.field['<table>']:` guard therefore
+  branches differently on two documents that say the same nothing, and a convention completed from
+  its declaration takes the container arm. Live example, pre-existing: `EquitySwapLeg`'s dividend
+  read takes that arm and calls `DateEqualList.sum_range` with two of its three arguments
+  (`instruments.py:5437`), so no equity swap leg whose dividends are a table compiles at all.
+  The fix is one rule for the blank — either the loader's `None` or an empty container that is
+  falsy — and the arity bug goes with it. UNMEASURED in price, and nothing in the tree can measure
+  it: no document carries an `EquitySwapLeg`, and no deal in any fixture or job file states a blank
+  table in either spelling.
+- **Every book carrying a netting set moves its plan hash once, at this landing** (2026-09-22).
+  `NettingCollateralSet.__init__` used to `setdefault` `Settlement_Period`, `Liquidation_Period`
+  and `Opening_Balance` INTO the authored block, and the plan hashes the block; the declaration
+  says all three, so the same set is three keys shorter and the same program hashes differently.
+  Nothing priced moves — `commodity_aps_world.json` is 65,584 reported floats and 0 mismatches
+  across the move, and its factor universe is unchanged. What moves is a PIN: under a spine every
+  booked deal sits beneath a netting set, and a pending quote pins `plan_hash` beside
+  `values_hash`, so a quote pinned before the deploy and approved after is refused on the plan
+  dimension — the book moved under the solve, which is what that dimension is for. The remedy is
+  the ordinary one: drain the pending quotes before deploying, or re-quote. `/book/status`
+  publishes no plan hash, so nothing else surfaces it.
+- **The deal panel shows every convention beside the terms** (2026-09-22). A web panel renders all
+  48 declared keys of a swap where 7 are the trade, the other 41 being conventions the store now
+  marks as such (`convention` on the descriptor). A fold would hide them by default; it is not
+  built because nothing under `web/scripts` drives `FieldView`, so it would ship ungated.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

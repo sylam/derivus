@@ -62,6 +62,12 @@ was snapped, the calibrated models, the netting sets and the last XVA per set, a
 terminal is present. A sandboxed desk has no terminal - the snapped market is what prices, and
 set_base_date is how the book is valued as of another day.
 
+A DEAL IS BOOKED BY STATING WHAT MUST BE STATED - the terms: what it is, in what currency, on
+what dates, at what strike and for how much. Everything else is a CONVENTION the declaration
+already says, and leaving it out means exactly that default. describe_instrument_type lists the
+two, and a term left unsaid - the key absent, or sent as null, which says the same nothing - is
+refused by name rather than priced at a placeholder.
+
 A WORKING DAY: read_book to see what is held; describe_instrument_type before booking a type
 you have not booked; book_deal for a plain instrument; for FX options solve_structure and then
 book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
@@ -265,12 +271,16 @@ def describe_instrument_type(deal_type: str) -> dict:
     type you have not booked before.
 
     `fields` is keyed by the JSON key you write in the deal. Each entry says what the field is
-    (`description`), what it defaults to (`value`), whether you must supply it (`required` - also
-    summarised in the top-level `required` list), and for a choice exactly which strings are valid
-    (`values` - a field with `values` accepts nothing else). Dates are `{".Timestamp":
-    "YYYY-MM-DD"}`, percentages `{".Percent": 2.5}` (already in percent), rate curves are named by
-    a string that must match a `Price Factors` block. `accepts_children` says whether this type
-    can hold other deals.
+    (`description`), what it defaults to (`value`), whether you must STATE it (`required` - also
+    summarised in the top-level `required` list), whether leaving it out MEANS that default
+    (`convention`), and for a choice exactly which strings are valid (`values` - a field with
+    `values` accepts nothing else). State every `required` field: the rest are conventions and an
+    omitted one is read as its `value`, while a required one left out - or sent as `null` - is
+    refused by name, because its default is what a blank panel shows rather than a term anybody
+    meant. Dates are
+    `{".Timestamp": "YYYY-MM-DD"}`, percentages `{".Percent": 2.5}` (already in percent), rate
+    curves are named by a string that must match a `Price Factors` block. `accepts_children` says
+    whether this type can hold other deals.
 
     `deal_type` is one of the names `list_instrument_types` returns, spelled exactly.
     """
@@ -489,8 +499,10 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
     an answer, not an error.
 
     `deal` is a flat field dict: `Object` (a name from `list_instrument_types`), `Reference`
-    (your trade id), and the fields `describe_instrument_type` declares. `parent_reference` books
-    it INSIDE a container deal (a structure, a netting set).
+    (your trade id), and every field `describe_instrument_type` marks `required` - the terms.
+    A convention you leave out is read as its declared value; a term you leave out, or send as
+    `null`, is refused by name - send the number, not a placeholder for one. `parent_reference`
+    books it INSIDE a container deal (a structure, a netting set).
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that

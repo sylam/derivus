@@ -363,7 +363,9 @@ out without being deleted. `Quoted_Bid`, `Quoted_Ask` and `Timestamp` are declar
 reads none of them: they are this family's share of `schema.MARKET_QUOTE_VALUES`, the value plane a
 tick may move without touching the plan. `DealType` supplies the block's `Object`, and the family
 stamps `Discount_Rate` — what an instrument *projects* off is authored in its own deal, what the
-quote set *discounts* on belongs to the curve set and is stated once.
+quote set *discounts* on belongs to the curve set and is stated once. A row's `Deal` states its
+terms and only the conventions that *differ* from what the instrument declares — a benchmark is a
+deal and completes its own reads like one.
 
 `Quoted_Market_Value` is read in its own `DealType`'s unit, and where it lands is a property of the
 instrument TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a fixed leg's

@@ -5,7 +5,11 @@ export type Descriptor = {
   widget: string;
   description: string;
   value: unknown;
+  /** Inside the `Instrument` store this is MUST BE STATED - a term, whose `value` is only what a
+   * blank panel shows; on every other store it is still `default=REQUIRED`. */
   required?: boolean;
+  /** Instrument only: leaving this field out MEANS `value`, so an author may say nothing. */
+  convention?: boolean;
   values?: string[];
   min?: number;
   max?: number;

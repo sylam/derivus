@@ -25,7 +25,7 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
-from .schema import (F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, declared_defaults,
+from .schema import (DealFields, F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, declared_defaults,
                      partition_market_price, quote_table)
 from ._version import __version__
 
@@ -5670,10 +5670,24 @@ def quote_nodes(points, discount_rate, shift=0.0):
     """
     nodes = []
     for point in points:
-        authored = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
+        authored = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
         author_quote(authored, point['Quoted_Market_Value'] + shift, discount_rate)
         nodes.append(quote_node(authored, {}))
     return nodes
+
+
+def completed(deal):
+    """A benchmark block that answers a read by name the way a priced deal's does, legs included.
+
+    A quote WRITER runs before the deal is constructed and reads the block's own conventions -
+    `_pin_deposit_schedule` wants the payment frequency - so a benchmark stating only its terms is
+    completed through the one seam a `default=` reaches a deal by. Completion answers a read, so
+    the block still holds exactly the keys the family authored.
+    """
+    node = DealFields(deal, getattr(instruments, deal['Object'], None))
+    if deal.get('Children'):
+        node['Children'] = [completed(child) for child in deal['Children']]
+    return node
 
 
 def _pin_deposit_schedule(deal, quote):

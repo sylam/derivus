@@ -707,6 +707,46 @@ def wire_date_list(pairs):
 # authoring an instrument
 # ---------------------------------------------------------------------------------------------
 
+#: The CONVENTIONS these blocks would otherwise state, in the wire spelling this module writes
+#: them: what an omitted key already means to the engine. A benchmark deal is no different from a
+#: booked one, so a block states a convention only where its value DIFFERS - the terms, and nothing
+#: the declaration repeats. Spelled here because the emitter carries no engine; a gate reads every
+#: row back against the declarations it stands for.
+DECLARED = {
+    'Accrual_Calendars': None, 'Accrual_Day_Count': 'ACT_365', 'Amortisation': None,
+    'Calendars': None, 'Compounding': 'No', 'Compounding_Method': 'None',
+    'Day_Count': 'ACT_365', 'Discount_Rate_Volatility': '', 'First_Coupon_Date': None,
+    'Fixed_Compounding': 'No', 'Floating_Margin': 0.0, 'FX_Reset_Offset': 0,
+    'Index_Calendars': None, 'Index_Day_Count': 'ACT_365', 'Index_Frequency': {'.DateOffset': '0M'},
+    'Index_Offset': 0, 'Index_Publication_Calendars': None, 'Index_Tenor': {'.DateOffset': '3M'},
+    'Interest_Frequency': {'.DateOffset': '3M'}, 'Interest_Rate_Volatility': '',
+    'Known_FX_Rates': None, 'Known_Rate': 0.0, 'Known_Rates': None,
+    'Pay_Accrual_Calendars': None, 'Pay_Day_Count': 'ACT_365', 'Pay_First_Coupon_Date': None,
+    'Pay_Frequency': {'.DateOffset': '3M'}, 'Pay_Interest_Frequency': {'.DateOffset': '3M'},
+    'Pay_Payment_Calendars': None, 'Pay_Payment_Offset': 0, 'Pay_Penultimate_Coupon_Date': None,
+    'Pay_Timing': 'End', 'Payment_Calendars': None, 'Payment_Frequency': {'.DateOffset': '3M'},
+    'Payment_Offset': 0, 'Payment_Timing': 'End', 'Penultimate_Coupon_Date': None,
+    'Rate_Constant': {'.Percent': 0.0}, 'Rate_Currency': '', 'Rate_Multiplier': 1.0,
+    'Receive_Accrual_Calendars': None, 'Receive_Day_Count': 'ACT_365',
+    'Receive_First_Coupon_Date': None, 'Receive_Frequency': {'.DateOffset': '3M'},
+    'Receive_Interest_Frequency': {'.DateOffset': '3M'}, 'Receive_Payment_Calendars': None,
+    'Receive_Payment_Offset': 0, 'Receive_Penultimate_Coupon_Date': None, 'Receive_Timing': 'End',
+    'Reset_Type': 'Standard', 'Use_Known_Rate': 'No',
+}
+
+
+def declared_only(deal):
+    """`deal` without the conventions that agree with the declaration, wire form against wire form.
+
+    Everything an author must state - the terms, the dates, the amounts, the type - stands whatever
+    it carries, a placeholder declaring nothing to agree with. `Interest_Rate_Schedule` is authored
+    empty rather than dropped: it is the plan half `QUOTE_WRITERS['DepositDeal']` moves the quote
+    into, and a block that never names it has nothing for a re-tick to compare.
+    """
+    return {key: value for key, value in deal.items()
+            if key not in DECLARED or value != DECLARED[key]}
+
+
 def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, notional,
              calendar):
     """A money-market deposit - the strip's FRONT point.
@@ -836,7 +876,8 @@ def author_point(item, as_of, currency, curve, conventions, holidays=()):
 
     `Deal` carries the block with neither `Object` nor `Discount_Rate` on it - the point names the
     type in `DealType` and the family stamps the discount curve from the block it belongs to, so
-    neither is authored twice. `Use` is Yes and `Quote_Type` is `Par_Rate`.
+    neither is authored twice - and with `declared_only` over it, so what it states is what the
+    declaration does not already say. `Use` is Yes and `Quote_Type` is `Par_Rate`.
 
     `Quoted_Bid`, `Quoted_Ask` and `Timestamp` ride BESIDE the mid where the terminal answered
     them. They are `schema.MARKET_QUOTE_VALUES` - the value plane `schema.update_market_quote` lets
@@ -863,7 +904,7 @@ def author_point(item, as_of, currency, curve, conventions, holidays=()):
         'Security': item.security,
         'Descriptor': '{} {}{}'.format(currency, item.label,
                                        ' ({})'.format(item.security) if item.security else ''),
-        'Deal': {key: value for key, value in deal.items() if key != 'Object'},
+        'Deal': declared_only({key: value for key, value in deal.items() if key != 'Object'}),
     }
     if item.bid is not None:
         row['Quoted_Bid'] = item.bid

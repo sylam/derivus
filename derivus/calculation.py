@@ -98,7 +98,8 @@ class DealStructure(object):
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
         except Exception as e:
-            logging.error('{0} {1} - Skipped'.format(deal.field['Object'], e.args))
+            logging.error('{0} {1} {2} - Skipped'.format(
+                deal.field['Object'], deal.field.get('Reference'), e.args))
             if utils.is_fatal_pricing_error(e):
                 raise
             stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
@@ -116,7 +117,8 @@ class DealStructure(object):
                                        Calc_res={} if self.store_results else None))
                 stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
             except Exception as e:
-                logging.error('{0} {1} - Skipped'.format(deal.field['Object'], e.args))
+                logging.error('{0} {1} {2} - Skipped'.format(
+                    deal.field['Object'], deal.field.get('Reference'), e.args))
                 if utils.is_fatal_pricing_error(e):
                     raise
                 stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1

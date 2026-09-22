@@ -35,8 +35,10 @@ from derivus import riskfactors, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
                                    author_quote,
+                                   completed,
                                    quote_knots,
-                                   quote_node)
+                                   quote_node,
+                                   quote_nodes)
 from derivus.utils import damped_newton
 from derivus.config import Config, ModelParams
 
@@ -167,10 +169,13 @@ def curve_of(market_price):
 
 def block_nodes(block, discount_rate, quote=None):
     """The block's benchmarks as deal-tree nodes: all authored at `quote` percent, or each at its
-    own `Quoted_Market_Value` when `quote` is None."""
+    own `Quoted_Market_Value` when `quote` is None.
+
+    `completed` first, as `quote_nodes` does it: a quote WRITER reads the block's own conventions
+    and a benchmark states only what differs from its declaration."""
     nodes = []
     for point in block['Points']:
-        deal = copy.deepcopy(dict(point['Deal'], Object=point['DealType']))
+        deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
         author_quote(deal, point['Quoted_Market_Value'] if quote is None else quote, discount_rate)
         nodes.append(quote_node(deal, {}))
     return nodes
@@ -566,6 +571,37 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
                                               DEVICE)({}).detach().numpy()[0])
                    for node in (listed, term)]
             assert pvs[0] == pytest.approx(pvs[1], abs=1e-8), (label, months, pvs)
+
+
+def test_a_benchmarks_LEGS_complete_their_conventions_before_the_quote_is_written():
+    """A BENCHMARK IS A DEAL AND SO IS EVERY LEG OF ONE. `quote_nodes` builds the block through
+    `DealFields` before `author_quote` runs, because a quote WRITER reads the block's own
+    conventions: `QUOTE_WRITERS['DepositDeal']` pins the schedule off `Payment_Frequency`, which a
+    strip that states only its terms does not carry. The container half of that is `completed`'s
+    recursion into `Children` - a two-leg benchmark whose leg is the one the writer reads.
+
+    The leg here states its terms and NOTHING ELSE: currency, curve, the two dates, the amount.
+
+    KILLING MUTATION: `completed` stops recursing (`if deal.get('Children') and False`). The leg
+    reaches `_pin_deposit_schedule` as the raw block the author wrote and it dies
+    `KeyError: 'Payment_Frequency'` - the failure the whole seam exists to end, one level down.
+    """
+    terms = {key: value for key, value in deposit('LEG', 'USD', 'USD', 6, 4.0).items()
+             if key in ('Object', 'Reference', 'Currency', 'Discount_Rate', 'Interest_Rate',
+                        'Effective_Date', 'Maturity_Date', 'Amount')}
+    container = {'Object': 'StructuredDeal', 'Reference': 'PAIR', 'Currency': 'USD',
+                 'Children': [terms]}
+
+    node = quote_nodes([{'Deal': container, 'DealType': 'StructuredDeal',
+                         'Quoted_Market_Value': 4.0}], 'USD')[0]
+    leg = node['Children'][0]['Instrument']
+
+    # the writer reached the leg and pinned every accrual start at the quote, off a frequency the
+    # leg never stated - and the completion did not enter the block
+    schedule = leg.field['Interest_Rate_Schedule']
+    assert set(leg.field) == set(terms) | {'Discount_Rate', 'Interest_Rate_Schedule'}
+    assert schedule.data and set(schedule.data.values()) == {4.0}
+    assert leg.field['Payment_Frequency'].kwds == Config().parse_period('3M').kwds
 
 
 def test_a_tighter_tolerance_still_converges_to_the_same_curve():

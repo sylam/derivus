@@ -21,7 +21,7 @@ the create-deal menu are the only hand-written stores.
 Authoring-time metadata for the UI, the docs generator and the Excel add-in - a type's entry IS its
 descriptors, keyed by the JSON key an author writes. `default=` is the exception the engine reads:
 `declared_defaults` completes a calculation's params from it and `DealFields` answers a deal's read
-by name, for `COMPLETABLE` fields only. `bind=` says which fields a job may change without
+by name, for `convention=True` fields only. `bind=` says which fields a job may change without
 recompiling - see `partition_factor`.
 
 `mapping` is assembled at the bottom, because the declaring modules import `F` from here.
@@ -113,6 +113,11 @@ class F(object):
     descriptor is filed under. A Table declares its columns as a `Row`; `tag` names the utils
     container the wire form uses, absent for a plain array of rows.
 
+    `convention` says the declared default is what OMISSION MEANS - `Pay_Timing: End`, a null
+    calendar, a blank `Rate_Currency` - so a deal completes it on a read by name. Unflagged, a
+    default is a PLACEHOLDER: a number the panel shows that nobody means by leaving it out, and a
+    deal missing one is refused by name rather than priced at it.
+
     `bind` is STRUCTURAL by default. `bind='value'` says the engine reads this field's CONTENT and
     that nothing about discovery, tenor grids, process wiring, correlation or the code paths depends
     on it - see `partition_factor`. Declare it only from the consumption site: a wrong structural
@@ -129,10 +134,11 @@ class F(object):
               'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
-                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind')
+                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind', 'convention')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
-                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None):
+                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None,
+                 convention=False):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
@@ -147,6 +153,8 @@ class F(object):
         # (min, max) on a Float the author cannot sensibly exceed - a recovery rate is a fraction
         self.bounds = bounds
         self.bind = bind
+        # the declared default is what omission MEANS, rather than what a blank panel shows
+        self.convention = convention
 
     @property
     def key(self):
@@ -166,6 +174,8 @@ class F(object):
              'value': '' if self.default is REQUIRED else self.default}
         if self.default is REQUIRED:
             d['required'] = True
+        if self.convention:
+            d['convention'] = True
         if self.values is not None:
             d['values'] = self.values
         if self.bounds is not None:
@@ -243,13 +253,6 @@ BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
 #: `{deal class: {key: engine-form default}}`, filled by `deal_defaults`.
 _DEAL_DEFAULTS = {}
 
-#: The fields a DEAL completes from its declaration, by name. A `default=` is what a blank panel
-#: shows, NOT an economic statement: answering `FXBarrierOption.Strike_Price` 0.0 turns a
-#: schema-invalid block into a plausible wrong number - 741.53 against the 78.93 the author meant.
-#: So completion is an ALLOWLIST of fields whose declared value IS the engine's own fallback; every
-#: other omission keeps its `KeyError` and the named skip that makes it visible.
-COMPLETABLE = frozenset(['Barrier_Monitoring_Frequency', 'Barrier_Observation', 'Cash_Rebate'])
-
 
 def engine_default(field):
     """One declared default in the form the ENGINE reads, not the form a widget shows.
@@ -270,26 +273,27 @@ def engine_default(field):
 
 
 def deal_defaults(cls):
-    """Every field a deal class declares a default for, in engine form.
+    """Every CONVENTION a deal class declares, in engine form - what a read by name completes from.
 
-    Built once per class and never handed out directly - `DealFields` copies what it reads.
+    A placeholder is absent here: its declared default is what a blank panel shows, and answering
+    `FXBarrierOption.Strike_Price` 0.0 turns a schema-invalid block into a plausible wrong number -
+    741.53 against the 78.93 the author meant. Built once per class and never handed out directly.
     """
     if cls not in _DEAL_DEFAULTS:
         _DEAL_DEFAULTS[cls] = {f.key: engine_default(f)
                                for group in getattr(cls, 'fields', []) or []
-                               for f in group.fields
-                               if f.default is not REQUIRED and f.default is not None}
+                               for f in group.fields if f.convention}
     return _DEAL_DEFAULTS[cls]
 
 
 class DealFields(dict):
     """A deal's authored block, completed on a READ BY NAME from its own class's declarations.
 
-    `field[key]` falls through to `deal_defaults` for a `COMPLETABLE` key the author omitted. Every
-    other omission still raises, because completing one silently prices a schema-invalid block.
-    Everything else is exactly what the author wrote - `get`, `in`, iteration, `len`, the JSON round
-    trip, and therefore `plan_hash` and the factor universe. A default answers a read; it does not
-    enter the program.
+    `field[key]` falls through to `deal_defaults` for a CONVENTION the author omitted. A placeholder
+    still raises, because completing one silently prices a schema-invalid block - which is what
+    `validate_instrument` refuses by name at booking instead. Everything else is exactly what the
+    author wrote - `get`, `in`, iteration, `len`, the JSON round trip, and therefore `plan_hash` and
+    the factor universe. A default answers a read; it does not enter the program.
     """
 
     def __init__(self, params=(), cls=None):
@@ -298,7 +302,7 @@ class DealFields(dict):
         self.furnished = {}
 
     def __missing__(self, key):
-        if key not in COMPLETABLE or key not in self.declared:
+        if key not in self.declared:
             raise KeyError(key)
         # deep-copied on first read, so a mutable default is this deal's own and never the class's
         return self.furnished.setdefault(key, copy.deepcopy(self.declared[key]))
@@ -339,23 +343,42 @@ def unreadable(deal):
 def validate_instrument(deal):
     """Authoring-time messages for one constructed deal; empty when it has nothing to say.
 
-    The declarations give the REQUIRED fields and what every authored value has to BE; a rule
-    spanning several fields is code in the class's own `validate()`. Missing means FALSY, not
-    absent - optional fields declare an empty default and every fallback tests the value rather
-    than the key - and a falsy value is checked against nothing else, having nothing to state.
-    `validate` is looked up normally rather than own-attr-only, unlike `fields`, so an alias
-    subclass inherits the rules. Nothing in the valuation path calls this; a message never stops a
-    deal.
+    The declarations give the fields an author MUST STATE and what every authored value has to BE;
+    a rule spanning several fields is code in the class's own `validate()`. A REQUIRED field is
+    missing when FALSY, having no default to be confused with; a PLACEHOLDER - any other declared
+    default the class does not call a convention - is missing when it is ABSENT OR NULL, because
+    `Swap_Rate: 0.0` is a rate a benchmark states while a null is what a front end round-trips for
+    nothing at all, and `Swap_Rate` unsaid is a swap with no fixed leg. A falsy value is checked
+    against nothing else, having nothing to state. `validate` is looked up normally rather than
+    own-attr-only, unlike `fields`, so an alias subclass inherits the rules. Nothing in the
+    valuation path calls this; a message never stops a deal.
     """
     messages = []
     for key, field in declared_fields(type(deal)).items():
         value = deal.field.get(key)
-        message = ('{} is required'.format(key) if not value and field.default is REQUIRED
-                   else value_message(field, value))
+        if not value and field.default is REQUIRED:
+            message = '{} is required'.format(key)
+        elif value is None and field.default is not None and not field.convention:
+            message = '{} is not stated'.format(key)
+        else:
+            message = value_message(field, value)
         if message:
             messages.append(message)
     own = getattr(deal, 'validate', None)
     return messages + (list(own()) if own else [])
+
+
+def deal_descriptor(field):
+    """One deal field's descriptor, carrying `required` for everything an author MUST STATE.
+
+    A CONVENTION folds, so what is left - REQUIRED, and every default the declaration does not call
+    one - is the question a host and a panel both ask. Deals only: no other store classifies its
+    defaults, and none is completed by name.
+    """
+    d = field.descriptor()
+    if field.default is not None and not field.convention:
+        d['required'] = True
+    return d
 
 
 def emit_instrument(module):
@@ -376,7 +399,7 @@ def emit_instrument(module):
         if getattr(cls, 'accepts_children', False):
             containers.append(deal_type)
         for g in groups:
-            sections.setdefault(g.name, {f.key: f.descriptor() for f in g.fields})
+            sections.setdefault(g.name, {f.key: deal_descriptor(f) for f in g.fields})
     return types, sections, sorted(containers)
 
 
@@ -705,80 +728,83 @@ def apply_market_values(structural, values):
 
 # Shared field blocks - the groups a class lists rather than inherits.
 CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
-    F('Repo_Rate', 'Text', default='', obj='Tuple'),
-    F('Recovery_Rate', 'Text', default='', obj='Tuple'),
-    F('Description', 'Text', default=''),
-    F('Survival_Probability', 'Text', default='', obj='Tuple'),
+    F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Recovery_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Description', 'Text', default='', convention=True),
+    F('Survival_Probability', 'Text', default='', convention=True, obj='Tuple'),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
-    F('Settlement_Date', 'Date', default=''),
-    F('Settlement_Rate', 'Text', default=''),
+    F('Settlement_Date', 'Date', default='', convention=True),
+    F('Settlement_Rate', 'Text', default='', convention=True),
     F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', obj='Tuple'),
-    F('Investment_Horizon', 'Date', default=''),
-    F('Issuer', 'Text', default='', obj='Tuple')
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Investment_Horizon', 'Date', default='', convention=True),
+    F('Issuer', 'Text', default='', convention=True, obj='Tuple')
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
     F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', obj='Tuple'),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
     F('Equity', 'Text', default='', obj='Tuple'),
     F('Equity_Volatility', 'Text', default='', obj='Tuple'),
     F('Expiry_Date', 'Date', default=''),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-    F('Payoff_Currency', 'Text', default=''),
+    F('Payoff_Currency', 'Text', default='', convention=True),
     F('Strike_Price', 'Float', default=0.0),
-    F('Dividends', 'Text', default='', obj='Tuple')
+    F('Dividends', 'Text', default='', convention=True, obj='Tuple')
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Settlement_Style', 'Text', default='Physical', values=['Physical', 'Cash']),
-    F('Option_On_Forward', 'Text', default='No', values=['Yes', 'No']),
-    F('Barrier', 'Float', default=0),
-    F('Option_Style', 'Text', default='European', values=['European', 'American']),
+    F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
+    F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
+    F('Barrier', 'Float', default=0, convention=True),
+    F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
     F('Units', 'Float', default=0.0),
-    F('Barrier_Dates', 'Table', default='null', row=Row([F('Date', 'Date')])),
+    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
     F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Coupon_Observations', 'Table', default='null',
+    F('Coupon_Observations', 'Table', default='null', convention=True,
       row=Row([F('Coupon', 'Date'), F('Observation', 'Date')]),
       description='Which price fixing each coupon is observed on, one row per coupon. Absent - '
                   'the default - the pairing is DERIVED from the schedule: a coupon observes '
                   'every fixing after its predecessor up to and including its own date'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
-    F('Payoff_Type', 'Text', default='Standard', values=['Standard', 'Quanto', 'Compo']),
-    F('Barrier_Observation', 'Text', default='Spot', values=['Spot', 'Average'],
+    F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+    F('Barrier_Observation', 'Text', default='Spot', convention=True, values=['Spot', 'Average'],
       description="Where the put barrier is observed - the barrier date's own spot, or the "
                   "arithmetic average of the coupon window it falls in")
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple'),
-    F('Floating_Margin', 'Float', default=0.0),
-    F('Reset_Frequency', 'Text', default='3M', obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
+    F('Floating_Margin', 'Float', default=0.0, convention=True),
+    F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
+    F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
 ])
 
 ADMIN = Group('Admin', [
-    F('Object', 'Text', default=''),
-    F('Reference', 'Text', default=''),
-    F('Tags', 'Text', default=''),
-    F('MtM', 'Text', default=''),
-    F('Sales_Margin', 'Float', default=0,
+    F('Object', 'Text', default=REQUIRED,
+      description='The deal TYPE this block is, spelled as the engine names it. The loader '
+                  'dispatches on it and refuses a block that names none, so it is the one field '
+                  'nothing can stand in for'),
+    F('Reference', 'Text', default='', convention=True),
+    F('Tags', 'Text', default='', convention=True),
+    F('MtM', 'Text', default='', convention=True),
+    F('Sales_Margin', 'Float', default=0, convention=True,
       description='What the desk charged for this ticket over the mid, in Sales_Margin_Currency '
                   'and positive when the desk earns it. A RECORD of what was agreed: the charge '
                   'is already inside the terms, so nothing is priced off this field. Every deal '
                   'declares it, a margin being a property of the ticket rather than of an asset '
                   'class'),
-    F('Sales_Margin_Currency', 'Text', default='',
+    F('Sales_Margin_Currency', 'Text', default='', convention=True,
       description='The currency Sales_Margin is stated in. A margin is an AMOUNT rather than a '
                   'rate, and it need not be a currency this deal settles or discounts in')
 ])
 
 FX_ADMIN = Group('FXAdmin', [
-    F('Trade_Date', 'Date', default=''),
-    F('Delivery_Date', 'Date', default=''),
-    F('Structure_Reference', 'Text', default='')
+    F('Trade_Date', 'Date', default='', convention=True),
+    F('Delivery_Date', 'Date', default='', convention=True),
+    F('Structure_Reference', 'Text', default='', convention=True)
 ])
 
 #: The columns every option quote carries, whatever the family.

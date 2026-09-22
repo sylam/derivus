@@ -511,7 +511,7 @@ def test_both_leg_frequencies_are_read_on_every_swap_row():
     for curve, fixed in (('ZAR', '3M'), ('USD', '1Y')):
         swapped = copy.deepcopy(SEED)
         swapped['rates'][curve]['conventions']['float_frequency'] = '6M'
-        deal = points_of(block_of(curve, seed=swapped)[1])['2Y' if curve == 'USD' else '1Y']['Deal']
+        deal = read_of(block_of(curve, seed=swapped)[1], '2Y' if curve == 'USD' else '1Y')
         assert deal['Pay_Frequency'] == {'.DateOffset': fixed}
         assert deal['Receive_Frequency'] == {'.DateOffset': '6M'}
     assert curve_conventions(SEED, 'USD').float_frequency == '1Y'
@@ -596,6 +596,14 @@ def points_of(block):
     return {row['Tenor']: row for row in block['instrument']['Points']}
 
 
+def read_of(block, tenor):
+    """One row's deal as the ENGINE reads it: what the block STATES over what its own declarations
+    already say. A block states its terms and only the conventions that differ from the schema's,
+    so a gate on a convention reads it here - `ir_curve.DECLARED` is the other half, and
+    `test_a_convention_the_block_leaves_unsaid_reads_as_the_declaration` holds it to the engine."""
+    return dict(ir_curve.DECLARED, **points_of(block)[tenor]['Deal'])
+
+
 def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
     """AN OIS BENCHMARK IS ONE `SwapInterestDeal`, `Compounding_Method` OIS, with `Index_Tenor` and
     `Receive_Interest_Frequency` at zero months - ONE RESET SPANNING EACH COUPON.
@@ -639,7 +647,7 @@ def test_a_fra_row_is_a_fradeal_spanning_the_two_tenors_its_label_names():
     # 2027-02-28 is a Sunday AND the end of February, so Modified Following goes BACK to the 26th
     assert row['Deal']['Effective_Date'] == {'.Timestamp': '2027-02-26'}
     assert row['Deal']['Maturity_Date'] == {'.Timestamp': '2027-05-31'}
-    deal = points_of(block_of('ZAR')[1])['1Mx4M']['Deal']
+    deal = read_of(block_of('ZAR')[1], '1Mx4M')
     assert deal['Effective_Date'] == {'.Timestamp': '2026-09-30'}
     assert deal['Maturity_Date'] == {'.Timestamp': '2026-12-31'}
     assert deal['Reset_Date'] == deal['Effective_Date']
@@ -721,7 +729,7 @@ def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
     its own accrual - which for a quarterly leg IS 3M JIBAR."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert row['DealType'] == 'SwapInterestDeal'
-    deal = row['Deal']
+    deal = read_of(block_of('ZAR')[1], '1Y')
     assert deal['Pay_Frequency'] == {'.DateOffset': '3M'}
     assert deal['Receive_Frequency'] == {'.DateOffset': '3M'}
     assert deal['Pay_Day_Count'] == 'ACT_365' and deal['Receive_Day_Count'] == 'ACT_365'
@@ -741,8 +749,8 @@ def test_the_front_point_is_the_one_the_seed_declared():
     zar = points_of(block_of('ZAR')[1])
     assert 'JIBA3M Index' in zar['3M']['Descriptor']
     assert zar['3M']['DealType'] == 'DepositDeal'
-    assert zar['3M']['Deal']['Accrual_Day_Count'] == 'ACT_365'
-    assert zar['3M']['Deal']['Payment_Frequency'] == {'.DateOffset': '3M'}
+    assert read_of(block_of('ZAR')[1], '3M')['Accrual_Day_Count'] == 'ACT_365'
+    assert read_of(block_of('ZAR')[1], '3M')['Payment_Frequency'] == {'.DateOffset': '3M'}
     assert all('ZARONIA' not in row['Descriptor'] for row in zar.values())
 
     # USD declares the overnight one: an O/N deposit is T+0 to the NEXT BUSINESS DAY, so its payment
@@ -905,13 +913,14 @@ def _committed(path, at='HEAD'):
                           encoding='utf-8').stdout
 
 
-#: `{deal type: declared JSON keys}`, parsed once - `git show` is a process per file.
+#: `{deal type: {declared JSON key: convention}}`, parsed once.
 _DEAL_FIELDS = {}
 
 
-def committed_deal_fields(deal_type):
-    """The JSON keys one INSTRUMENT type declares, off the committed `instruments.py` and
-    `schema.py`, parsed as an AST - never imported.
+def declared_deal_fields(deal_type):
+    """`{JSON key: whether its default is a CONVENTION}` for one INSTRUMENT type, read off
+    `instruments.py` and `schema.py` as an AST - never imported, which is the point: the emitter is
+    compared against the DECLARATION rather than against the engine's own reading of it.
 
     `json_name` IS HONOURED where a field declares one: both cashflow legs declare their container
     as `Fixed_Cashflows` / `Float_Cashflows` and write it as `Cashflows`, so a comparison on
@@ -920,11 +929,11 @@ def committed_deal_fields(deal_type):
     """
     if not _DEAL_FIELDS:
         groups = {}
-        for node in ast.parse(_committed('derivus/schema.py')).body:
+        for node in ast.parse(_committed('derivus/schema.py', None)).body:
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
                     and getattr(node.value.func, 'id', None) == 'Group':
                 groups[node.targets[0].id] = _json_names(node.value.args[1])
-        for node in ast.walk(ast.parse(_committed('derivus/instruments.py'))):
+        for node in ast.walk(ast.parse(_committed('derivus/instruments.py', None))):
             if not isinstance(node, ast.ClassDef):
                 continue
             for statement in node.body:
@@ -932,29 +941,31 @@ def committed_deal_fields(deal_type):
                         getattr(target, 'id', None) == 'fields' for target in statement.targets):
                     _DEAL_FIELDS[node.name] = _declared_keys(statement.value, groups)
     assert deal_type in _DEAL_FIELDS, \
-        '{} declares no `fields` in the committed instruments'.format(deal_type)
+        '{} declares no `fields` in the instruments'.format(deal_type)
     return _DEAL_FIELDS[deal_type]
 
 
 def _declared_keys(node, groups):
-    """One `fields = [ADMIN, own('X', [...])]` declaration flattened to the JSON keys it names."""
-    names = set()
+    """One `fields = [ADMIN, own('X', [...])]` declaration flattened to `{JSON key: convention}`."""
+    names = {}
     for entry in node.elts:
         if isinstance(entry, ast.Name):
-            names |= groups[entry.id]
+            names.update(groups[entry.id])
         elif getattr(entry.func, 'id', None) == 'own':
-            names |= _json_names(entry.args[1])
+            names.update(_json_names(entry.args[1]))
         else:
-            names |= _json_names(ast.List(elts=[entry]))
+            names.update(_json_names(ast.List(elts=[entry])))
     return names
 
 
 def _json_names(node):
-    names = set()
+    """`{JSON key: whether the declaration calls its default a convention}` for one field list."""
+    names = {}
     for entry in node.elts:
         declared = {keyword.arg: keyword.value for keyword in entry.keywords}
         json_name = declared.get('json_name')
-        names.add(json_name.value if json_name is not None else entry.args[0].value)
+        key = json_name.value if json_name is not None else entry.args[0].value
+        names[key] = getattr(declared.get('convention'), 'value', False) is True
     return names
 
 
@@ -965,14 +976,18 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
     produce a knot under a default nobody chose. Only a comparison against the DECLARATION catches
     that.
 
-    WHAT IS MISSING IS AS DECLARED AS WHAT IS EXTRA:
+    WHAT IS MISSING IS AS DECLARED AS WHAT IS EXTRA - three things the block never carries, and
+    otherwise only fields the COMMITTED schema calls conventions:
 
       Object              named in `DealType` instead, on the top-level deal - the child legs DO
                           carry it, being deal-tree nodes rather than Points rows
-      Tags, MtM, Sales_Margin, Sales_Margin_Currency
-                          the ADMIN group: a position's bookkeeping, not a benchmark's
       Discount_Rate       stamped by `author_quote`. What an instrument PROJECTS off is its own
                           business; what the quote set DISCOUNTS on is the curve set's
+      a convention        the declaration already says it, so the block states only what DIFFERS -
+                          the ADMIN bookkeeping a benchmark has none of, the null calendars, the
+                          3M frequencies a quarterly strip does not restate. A PLACEHOLDER can
+                          never be missing here: the terms, the dates and the amounts are what a
+                          benchmark IS.
 
     Every one of the three authored types is covered, which is what the closing set says.
     """
@@ -980,11 +995,12 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
     for curve in ('USD', 'ZAR', 'ZAR-ZARONIA-FWD'):
         for row in block_of(curve)[1]['instrument']['Points']:
             deal_type, node = row['DealType'], row['Deal']
-            declared = committed_deal_fields(deal_type)
-            assert not set(node) - declared, (curve, deal_type, sorted(set(node) - declared))
-            missing = declared - set(node)
-            assert missing == {'MtM', 'Tags', 'Sales_Margin', 'Sales_Margin_Currency',
-                               'Object', 'Discount_Rate'}, (curve, deal_type, sorted(missing))
+            declared = declared_deal_fields(deal_type)
+            assert not set(node) - set(declared), (
+                curve, deal_type, sorted(set(node) - set(declared)))
+            stated = [key for key in set(declared) - set(node)
+                      if key not in ('Object', 'Discount_Rate') and not declared[key]]
+            assert not stated, (curve, deal_type, stated)
             seen.add(deal_type)
     assert seen == {'DepositDeal', 'FRADeal', 'SwapInterestDeal'}, sorted(seen)
 
@@ -1056,11 +1072,20 @@ def test_the_same_canned_strip_emits_the_same_bytes():
 CURVES = {'USD': 3, 'ZAR': 5, 'ZAR-ZARONIA': 6, 'ZAR-ZARONIA-FWD': 4}
 
 
-def decoded_blocks(curves):
+def decoded_blocks(curves, restated=False):
     """Every named curve's block through the ENGINE'S OWN JSON reader - the wire timestamps,
-    periods and percents turned into what a pricer indexes."""
+    periods and percents turned into what a pricer indexes.
+
+    `restated` writes every convention back onto each row's deal before decoding, which is the
+    block the emitter used to author - the one a completed read has to agree with."""
     from derivus.config import Config
     blocks = dict(block_of(curve) for curve in curves)
+    if restated:
+        for block in blocks.values():
+            for row in block['instrument']['Points']:
+                declared = declared_deal_fields(row['DealType'])
+                row['Deal'] = dict({key: value for key, value in ir_curve.DECLARED.items()
+                                    if key in declared}, **row['Deal'])
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_strip_probe.json')
     try:
         with open(path, 'w', encoding='utf-8', newline='\n') as handle:
@@ -1084,6 +1109,48 @@ def job_document(market_prices=None):
                                   'Base_Date': {'.Timestamp': AS_OF.isoformat()}},
             'Price Factors': {}, 'Bootstrapper Configuration': {},
             'Market Prices': market_prices or {}}}}}
+
+
+def test_a_convention_the_block_leaves_unsaid_reads_as_the_declaration():
+    """THE EMITTER'S RULE, held against the engine it cannot import. A benchmark is a deal, so it
+    states its terms and only the conventions that DIFFER from the declaration - and `ir_curve` has
+    no engine to ask, so `DECLARED` is its own spelling of what an omitted key already means.
+
+    Held by READING, not by comparing spellings: every row is constructed twice, once off the block
+    as emitted and once with every convention written back on, and the two deals answer every key
+    the type declares the same. A wrong row in `DECLARED` drops a key whose meaning moved, and one
+    of the two reads changes. Each dropped key is also checked to be a field the schema declares a
+    convention, so nothing an author must state can be folded away here.
+
+    THE SAME means as a READER sees it - a scaled rate by its amount, a table by its rows - and
+    equal or both NOTHING. This module writes `None` where a declaration writes `''`, an empty
+    table or a zero percent: an unstated calendar reaches `calendars.get(...)` as either, and
+    `TensorCashFlows.periods` reads `amort.data.items() if amort else []`, the same empty array for
+    a null and for an empty `DateList`.
+    """
+    from derivus.instruments import construct_instrument
+
+    def read(value):
+        return getattr(value, 'amount', getattr(value, 'data', value))
+
+    def same(one, other):
+        return read(one) == read(other) or not (read(one) or read(other))
+
+    emitted, restated = decoded_blocks(CURVES), decoded_blocks(CURVES, restated=True)
+    checked = 0
+    for name, block in emitted.items():
+        rows = zip(block['instrument']['Points'], restated[name]['instrument']['Points'])
+        for row, full in rows:
+            declared = declared_deal_fields(row['DealType'])
+            for key in set(declared) - set(row['Deal']):
+                assert declared[key] or key in ('Object', 'Discount_Rate'), (name, key)
+            lean = construct_instrument(dict(row['Deal'], Object=row['DealType']), {})
+            whole = construct_instrument(dict(full['Deal'], Object=row['DealType']), {})
+            for key in declared:
+                if key in whole.field:
+                    assert same(lean.field[key], whole.field[key]), (name, row['Tenor'], key)
+                    checked += 1
+    assert checked > 200, checked
 
 
 def test_the_block_installs_and_a_value_only_retick_updates():
@@ -1124,6 +1191,35 @@ def test_the_block_installs_and_a_value_only_retick_updates():
 
     with pytest.raises(ValueError, match='a Market Prices block is'):
         update_market_quote(document, name, block['instrument'])
+
+
+def test_a_standing_block_stating_every_convention_is_reauthored_once():
+    """THE ONE THING THAT MOVES. A book written before a block stated only what differs
+    carries every convention on every row; the same strip emitted now is the same instruments in
+    fewer keys, and the plan guard cannot tell that from a mis-authoring - so the first tick drops
+    and re-installs the block, and every tick after it is a tick again.
+
+    Nothing priced moves across that re-authoring: `test_a_convention_the_block_leaves_unsaid_reads
+    _as_the_declaration` is the reading, and this is the WRITE side of the same fact.
+    """
+    from derivus.schema import update_market_quote
+
+    name, block = block_of('ZAR')
+    standing = copy.deepcopy(block)
+    for row in standing['instrument']['Points']:
+        declared = declared_deal_fields(row['DealType'])
+        row['Deal'] = dict({key: value for key, value in ir_curve.DECLARED.items()
+                            if key in declared}, **row['Deal'])
+    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 133
+    assert sum(len(row['Deal']) for row in block['instrument']['Points']) == 45
+
+    document = job_document()
+    assert update_market_quote(document, name, standing) == 'installed'
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices']
+    with pytest.raises(ValueError, match='structure differs'):
+        update_market_quote(document, name, block)
+    assert reauthor(prices, name, block) == 'reauthored'
+    assert update_market_quote(document, name, block_of('ZAR')[1]) == 'updated'
 
 
 def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
@@ -1347,7 +1443,7 @@ def test_every_authored_shape_solves_to_par():
     import pandas as pd
     import torch
     from derivus.bootstrappers import (BenchmarkInstruments, InterestRateCurveParameters,
-                                       author_quote, quote_node)
+                                       author_quote, completed, quote_node)
     from derivus.config import ModelParams
 
     base, device = pd.Timestamp(AS_OF), torch.device('cpu')
@@ -1365,7 +1461,7 @@ def test_every_authored_shape_solves_to_par():
 
         nodes = []
         for point in block['Points']:
-            deal = copy.deepcopy(dict(point['Deal'], Object=point['DealType']))
+            deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
             author_quote(deal, point['Quoted_Market_Value'], curve)
             nodes.append(quote_node(deal, {}))
         priced = BenchmarkInstruments(nodes, price_factors, ModelParams(), base, currency, {}, [],

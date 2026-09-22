@@ -144,12 +144,22 @@ because a surface quoted over moneyness `[0.8, 1.2]` does not extrapolate to 0.2
 Measured on that fixture: NaN at 0.28, and flat at 99,697.57 — the redeemed target to the cent — from
 0.30 through 0.50.
 
-One furnishing that looks like a default and is not: a deal block IS the field dict the pricer reads
-(`Deal.__init__` takes it verbatim), so a DECLARED default never reaches it. `pv_barrier_option` asks
-for `Barrier_Monitoring_Frequency` and `Cash_Rebate` by name, so `materialize` writes both onto a
-barrier leg — `{'.DateOffset': '0M'}`, continuous monitoring in the wire form a Period field decodes
-from, and a zero rebate. Without them the deal is SKIPPED at load: an ERROR line in the log, a leg
-priced at nothing, and a quote that still returns.
+**A declared default is a CONVENTION or a PLACEHOLDER, and the declaration says which.** `F(...,
+convention=True)` says the default is what omission MEANS — `Pay_Timing: End`, a null calendar, a
+blank `Rate_Currency` — and `schema.DealFields` completes it on a read by name, so the runner writes
+no barrier leg's `Barrier_Monitoring_Frequency` or `Cash_Rebate`: `pv_barrier_option` asks for both
+by name and the declaration answers, continuous monitoring and a zero rebate. Unflagged, a default is
+a placeholder — `Swap_Rate: 0.0`, `Strike_Price: 0.0`, a blank date — what a panel shows and nobody
+means by leaving it out, so a deal that does not SAY one — the key absent, or carrying the `null` a
+form round-trips for nothing — is refused BY NAME at booking (`"Swap_Rate is not stated"`,
+`POST /book/deals` and `book_deal` alike) while a stated `0.0` is a rate a benchmark means; and if a
+placeholder ever reaches a pricer anyway it keeps its `KeyError` and the loader's named skip. A completion answers a READ and
+never enters the block: `in`, iteration, `len`, the JSON round trip, `plan_hash` and the factor
+universe see exactly what the author wrote, which is why seven equity types can still decide the
+quanto wiring on `'Payoff_Type' in self.field`. The rule is one rule for every deal: an emitter
+authoring a benchmark — `derivus_bloomberg.ir_curve`'s deposit, FRA and swap — writes the terms and
+the REQUIRED fields always and a convention only where its value differs from the declaration, wire
+form against wire form, so a curve strip states what it IS and nothing the schema already says.
 
 ## An accrual leg is one leg and a SCHEDULE {#accrual}
 

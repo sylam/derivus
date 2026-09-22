@@ -1148,11 +1148,6 @@ def materialize(structure, params, document):
             # read off the ENGINE axis the type now sits on
             deal.setdefault('Barrier_Price',
                             seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
-            # a deal block IS the field dict the pricer reads, so a declared default never reaches
-            # it: the two fields `pv_barrier_option` asks for by name are written out, or the deal
-            # is SKIPPED at load and the leg prices at nothing
-            deal.setdefault('Barrier_Monitoring_Frequency', {'.DateOffset': '0M'})
-            deal.setdefault('Cash_Rebate', 0.0)
         note = furnish_accrual(deal, params, document, base_date, underlying, inverted) \
             if leg.deal_type in ACCRUAL_DEALS else None
         out.append(Materialized(leg.role, deal, inverted, note))

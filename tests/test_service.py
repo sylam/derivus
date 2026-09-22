@@ -364,6 +364,71 @@ def test_a_rejected_booking_touches_nothing(book):
     assert CLIENT.get('/book').json()['etag'] == etag
 
 
+#: A ZAR swap on the book's own curve, stating its TERMS and no convention at all: what it is, in
+#: which currency, between which dates, which way round, at what rate and for how much.
+SWAP = {'Object': 'SwapInterestDeal', 'Reference': 'SW1', 'Currency': 'ZAR',
+        'Discount_Rate': 'ZAR', 'Interest_Rate': 'ZAR', 'Effective_Date': BASE,
+        'Maturity_Date': BASE + pd.DateOffset(years=2), 'Pay_Rate_Type': 'Fixed',
+        'Swap_Rate': 8.0, 'Principal': 1_000_000.0}
+
+
+@pytest.mark.parametrize('key', ['Swap_Rate', 'Pay_Rate_Type', 'Principal'])
+def test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not(book, key):
+    """A DECLARED DEFAULT IS A CONVENTION OR A PLACEHOLDER, and the booking is where the difference
+    is paid. A swap states seven things and inherits forty-one; drop one of the seven and the
+    booking refuses BY NAME, the file untouched - and a `null` under that key says the same
+    nothing, which is what a form and a host both round-trip for one. Drop every convention and it
+    books and prices, because the declaration says what each one means.
+
+    KILLING MUTATION: the absence check dropped from `schema.validate_instrument`. The swap books
+    with no fixed rate, compiles, prices at 0% and the job reports success - which is the failure
+    the whole flag exists to end. The swap that states its rate marks -2,168,937.57 here and the
+    same swap at a zero rate marks +725,395.38, so a completed placeholder does not even keep its
+    sign.
+
+    SECOND KILLING MUTATION: the check reading FALSITY rather than what the document says
+    (`not deal.field.get(key)`). Every refusal above still fires, and the benchmark below stops
+    booking - `Swap_Rate: 0.0` is the rate every curve strip's swap carries, so a verdict that
+    refuses it refuses the bootstrap's own instruments.
+    """
+    before = book.read_bytes()
+    for absent in ({k: v for k, v in SWAP.items() if k != key}, dict(SWAP, **{key: None})):
+        outcome = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': absent}),
+                              headers=JSON).json()
+        assert outcome['written'] is False, outcome
+        assert '{} is not stated'.format(key) in outcome['refused'], outcome['refused']
+        assert book.read_bytes() == before
+
+    # a STATED zero is a statement: it is what a benchmark's fixed leg carries, and it books
+    zero = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': dict(SWAP, Reference='SW0', Swap_Rate=0.0)}), headers=JSON).json()
+    assert zero['written'] is True, zero
+
+    # and an AMENDMENT cannot put the nothing back that the booking refused
+    amended = CLIENT.post('/book/deals', json={
+        'action': 'amend', 'deal_path': zero['deal_path'], 'reference': 'SW0',
+        'fields': {key: None}}).json()
+    assert amended['written'] is False
+    assert '{} is not stated'.format(key) in amended['refused'], amended['refused']
+
+    CLIENT.post('/book/deals', json={'action': 'delete', 'deal_path': zero['deal_path'],
+                                     'reference': 'SW0'})
+    assert book.read_bytes() == before
+
+    # and the same swap stating its terms alone - every convention left unsaid - books and prices
+    booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': SWAP}),
+                         headers=JSON).json()
+    assert booked['written'] is True
+    assert json.loads(book.read_text())['Calc']['Deals']['Deals']['Children'][1][
+        'Instrument']['.Deal'].keys() == SWAP.keys()
+
+    submitted = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    priced = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    assert priced['status'] == 'done', priced
+    assert mtm(submitted['result_id'])['SW1'] == pytest.approx(-2_168_937.571277)
+
+
 def test_a_booking_naming_market_data_the_book_lacks_is_refused(book):
     """A deal naming a curve the book has no block for would load and then be silently DROPPED by
     discovery, so the DELTA of missing factors refuses it by name. The book's pre-existing gaps do
@@ -1097,7 +1162,7 @@ def par_residuals(path, curve='ZAR', interp=None):
     import copy
 
     import torch
-    from derivus.bootstrappers import BenchmarkInstruments, author_quote, quote_node
+    from derivus.bootstrappers import (BenchmarkInstruments, author_quote, completed, quote_node)
     from derivus.config import Config, ModelParams
 
     market = Config().read_json(str(path))['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -1106,7 +1171,9 @@ def par_residuals(path, curve='ZAR', interp=None):
     for point in block['Points']:
         if point['Use'] != 'Yes':      # a held-out row was not solved for and never reprices
             continue
-        deal = dict(copy.deepcopy(point['Deal']), Object=point['DealType'])
+        # `completed` because a quote WRITER reads the block's conventions and a benchmark states
+        # only what differs from its declaration - the same seam `quote_nodes` builds through
+        deal = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
         author_quote(deal, point['Quoted_Market_Value'], curve)
         nodes.append(quote_node(deal, {}))
     return BenchmarkInstruments(
