@@ -939,11 +939,11 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
     `margin` is the SALES MARGIN, and it is how a desk actually quotes: `{'amount': 50000.0,
     'currency': 'ZAR'}` - an amount in the currency it was agreed in, which need not be a currency
     of the pair. It crosses to the book's pricing currency at the book's own spots and is charged
-    by moving the coordinate the recipe already solves, so the cap of a collar comes in and the
-    strike of a strip moves against the client by exactly that much. A currency the book carries no
-    rate for refuses by name rather than being crossed at a rate somebody guessed, and so does a
-    structure whose recipe SOLVES nothing - a strangle is quoted at the client's own two strikes,
-    so there is no coordinate to charge on.
+    where the two-way's own charge is: on the coordinate the recipe solves, so the cap of a collar
+    comes in and the strike of a strip moves against the client by exactly that much, or on the
+    PREMIUM where the recipe solves nothing and the client simply pays more. `charged_on` says
+    which. A currency the book carries no rate for refuses by name rather than being crossed at a
+    rate somebody guessed.
 
     The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
     buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
@@ -957,12 +957,18 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
     ticked one - with the reason named - when it is not; the outcome's `spot` block says which was
     used (`value_market`, the pair as quoted, with `source` and `note`).
 
-    Where the book's vol quotes carry a two-way, the legs are priced on the sides of it a desk
-    would deal - each leg's `vol_spread` is the signed vol shift it took, in the surface's own
-    units - and `net_mid` is the same legs marked at MID, which is what the trade will be worth on
-    the book once booked. Read in the client's sign convention like every premium here, so the
-    desk's edge on a zero-cost structure is `net` less `net_mid`. With no two-way in the book
-    every shift is zero, `net_mid` equals `net`, and `spread_note` says so.
+    Where the book's vol quotes carry a two-way, every leg is still priced at the MID and what the
+    market charges for the spread is levied where the margin is - on the coordinate the recipe
+    solves, or on the PREMIUM where it solves nothing, `charged_on` naming which. Each leg's vega is
+    read per quoted pillar and charged that pillar's own half, so `spread_charge` is what that leg
+    cost the client, `spread` is the pillar rows behind it and `spread_source` says whether the
+    vega came off the surface or off a lognormal reading of a leg priced under a fitted model.
+    `net_mid` is the legs at mid - what the trade will be worth on the book once booked - and the
+    desk's `edge` is the charge, never negative. A pillar's `half` is always the MARKET's own
+    half-spread; where a `Quote Policy` tightens, the scale is said once under `risk.scale` and the
+    money carries it. With no two-way in the book nothing is charged, `net_mid` equals `net`, and
+    `spread_note` says so; a leg no vega reaches carries a null `spread_charge` with a note, never
+    a zero, and so does `risk.charge_full` where no leg could be read.
 
 The `risk` block says what the trade does to the BOOK and what that was worth to the client. Where
 the book declares a `Quote Policy`, the candidate is measured against the book with and without it

@@ -151,10 +151,11 @@ and `book_quote(quote_id)`, so this is a sentence:
 
 > quote a one-year zero-cost collar on 1m USD ZAR with the floor at 17.50
 
-A quote is **client paper**. Where the book's `FXVolPrices` carry `Quoted_Bid`/`Quoted_Ask` each
-leg prices at the side of the two-way it deals on — what the client buys at the ask vol, what they
-sell at the bid — and the outcome carries `net` (the two-sided price quoted), `net_mid` (what the
-trade marks at once booked), the `edge` between them, each leg's `vol_spread`, and a `spread_note`
+A quote is **client paper**. Every leg prices at the mid, and where the book's `FXVolPrices` carry
+`Quoted_Bid`/`Quoted_Ask` what the market charges for that spread is levied on the coordinate the
+recipe solves — each leg's vega read per quoted pillar and charged that pillar's own half. The
+outcome carries `net` (the price quoted), `net_mid` (what the trade marks at once booked), the
+`edge` between them, each leg's `spread_charge` and the pillar rows behind it, and a `spread_note`
 where the book quotes no two-way at all. The quote prices on this workstation's **live** spot when
 the terminal is up and on the book's last ticked one, with the reason named, when it is not — the
 `spot` block says which was used. `book_quote` books the **mirror** of the pending deal, the

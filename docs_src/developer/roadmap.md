@@ -207,13 +207,21 @@ is recorded so a reader knows which readings rest on it.
   is in no checkout any more, so the move cannot be pinned to a line.
 - **The notebook write path** raises on three field names its hard-coded allowlist does not carry,
   and fourteen output-shaped descriptors have no widget. Superseded for viewing by the web UI.
-- **An accrual strip quotes a NEGATIVE edge at a two-way — the desk pays the client the spread**,
-  because the side a leg prices on follows its `Buy_Sell` label and a strip is one leg pinned
-  bought while a geared strip is net SHORT vega for the client. Measured: TARF −6470.73 and
-  accumulator −23227.39 (−7073.93 / −25540.97 selling) against a collar's +2001.47. And on a
-  CALIBRATED book the two-way never reaches a model-priced strip at all — it solves the mid strike,
-  captures nothing, and still reports a `vol_spread`. Pre-existing; the remedy is ruled — charge the
-  two-way signed by the vega per quote pillar — and the measurement is in the commit.
+- **A model-priced leg's two-way charge is read off its LOGNORMAL vega, not the fit's own**
+  (2026-09-21). A leg walking a fitted law publishes no FX vol quote sensitivity at all, so the
+  charge comes from the same leg at the same terms read as a lognormal — a real vega, and the one a
+  desk would hedge in, but not the sensitivity of the price that was quoted. UNMEASURED, and it
+  cannot be measured from a quote: the fit's own `dV/dq` needs `Quote_Sensitivity` published through
+  `LogVar2FJModelParameters`, which means the calibration live in the same session rather than a
+  factor read off the book. Until then the substitution is named on every leg it is made for
+  (`spread_source`).
+- **The legs of one package are not netted against each other** (2026-09-21). Each leg pays its own
+  spread, so a collar's bought put and sold call are charged as two tickets rather than as the one
+  position the desk actually has to deal. Measured on the gate's 1m USD collar: netting the legs
+  per pillar before charging takes the edge from 1,985.57 to 297.25, an 85% cut — the ATM row from
+  1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
+  legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
+  dial on this charge.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

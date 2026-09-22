@@ -363,6 +363,10 @@ def test_a_zero_cost_collar_costs_nothing(book):
 MARGIN = {'amount': 50_000.0, 'currency': 'ZAR'}
 MARGIN_NOTIONAL = 20_000_000.0
 
+#: The same quarter of a percent against the file's OWN notional, for the gates quoted at it - a
+#: margin a 1m collar's solved cap can actually fund.
+SMALL_MARGIN = {'amount': 0.0025 * NOTIONAL, 'currency': 'ZAR'}
+
 
 def test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book(book):
     """The sign of a sales margin, taken from the client-paper convention and read from BOTH ends.
@@ -397,6 +401,38 @@ def test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book(book)
             outcome['deal']['Sales_Margin_Currency']) == (50_000.0, 'ZAR')
 
 
+def test_a_margin_and_a_two_way_compose_on_one_coordinate(book, two_sided_book):
+    """Two charges, one coordinate, and neither displaces the other.
+
+    A sales margin and the two-way's own charge are the same shape - money the desk takes, levied
+    on the coordinate the recipe solves - so the cap funds the bought put, the margin AND the
+    spread. What the client is QUOTED is still minus the margin alone, the spread being inside the
+    terms rather than on the ticket, while what the trade MARKS at is minus both. The mirror the
+    bank books holds the two together, read off the engine rather than off the runner.
+
+    And the cap comes in further than either charge moves it alone, which is what says they add.
+    """
+    asked = params(notional=MARGIN_NOTIONAL, floor=SPOT * 0.95)
+    priced = structures.quote(two_sided_book, COLLAR, dict(asked), margin=MARGIN)
+    spread_only = structures.quote(two_sided_book, COLLAR, dict(asked))
+    margin_only = structures.quote(book, COLLAR, dict(asked), margin=MARGIN)
+    charge = priced['margin']['value']
+
+    assert priced['edge'] > 0.0
+    assert priced['edge'] == pytest.approx(
+        sum(row['spread_charge'] for row in priced['legs']), rel=1e-12)
+    assert priced['net'] == pytest.approx(-charge, abs=SOLVE_TOLERANCE), (
+        'the client was quoted something other than the margin they agreed')
+    assert priced['net_mid'] == pytest.approx(-(charge + priced['edge']), abs=SOLVE_TOLERANCE)
+    assert cap_of(priced) < min(cap_of(spread_only), cap_of(margin_only)), (
+        'the two charges did not add on one coordinate')
+
+    marked = values(book, [structures.mirror(priced['deal'])])
+    assert marked[priced['deal']['Reference']] == pytest.approx(
+        charge + priced['edge'], abs=SOLVE_TOLERANCE), (
+        'the bank is not marked at the margin and the spread together')
+
+
 def test_a_quote_with_no_margin_is_the_quote_it_always_was(book):
     """The compatibility contract, stated twice. Absent, the feature is not there at all: no
     `margin` block in the answer and no `Sales_Margin` on the deal it books. And a margin of ZERO
@@ -414,25 +450,66 @@ def test_a_quote_with_no_margin_is_the_quote_it_always_was(book):
     assert zero['deal']['Sales_Margin'] == 0.0, 'a zero margin is still what was agreed'
 
 
-def test_a_margin_refuses_where_it_cannot_be_valued_or_cannot_be_charged(book):
-    """Three refusals, each by name. A currency the book carries no `FxRate` for cannot be crossed
-    into the price, and a quote is not struck at a rate somebody guessed. A recipe that SOLVES
-    nothing has no coordinate to charge on - a strangle is two strikes the client named - and a
-    margin quietly dropped is a margin the desk never earns. And a bare number is not a margin: an
-    amount with no currency is exactly the ambiguity this form exists to remove."""
+def test_a_margin_refuses_where_it_cannot_be_valued(book):
+    """Two refusals, each by name. A currency the book carries no `FxRate` for cannot be crossed
+    into the price, and a quote is not struck at a rate somebody guessed. And a bare number is not
+    a margin: an amount with no currency is exactly the ambiguity this form exists to remove.
+
+    What is NOT refused any more is a recipe that solves nothing: it charges the PREMIUM instead,
+    the way a solving one charges its coordinate, and the gate below holds that. A recipe solving
+    MORE than one coordinate still refuses - the charge would be levied once per solve - and the
+    registry declares no such structure, so the refusal stands on its own statement.
+    """
     with pytest.raises(ValueError) as unpriced:
         structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95),
                          margin={'amount': 50_000.0, 'currency': 'JPY'})
     assert 'FxRate.JPY' in str(unpriced.value)
 
-    with pytest.raises(ValueError) as uncharged:
-        structures.quote(book, 'Strangle', params(floor=SPOT * 0.95, cap=SPOT * 1.05),
-                         margin=MARGIN)
-    assert 'Strangle' in str(uncharged.value) and 'solves nothing' in str(uncharged.value)
-
     with pytest.raises(ValueError) as shapeless:
         structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95), margin=50_000.0)
     assert "'currency'" in str(shapeless.value)
+
+
+@pytest.mark.parametrize('currency', ('ZAR', 'USD'))
+def test_a_structure_that_solves_nothing_charges_its_premium(book, two_sided_book, currency):
+    """ONE convention, not two. A recipe with a coordinate charges the coordinate; a recipe with
+    none charges the PREMIUM, and the outcome says which under `charged_on`.
+
+    A straddle is two bought wings at a strike the client named - there is nothing to move - so the
+    margin and the two-way are levied on what the client PAYS. What they pay moves against them by
+    both, the booked legs stay at MID and the mirror marks there, `edge` is still the two-way charge
+    and still the sum of the legs' own, and the desk's whole take is the cash difference
+    `net - net_mid`.
+
+    There is no branch on the package's sign: `net` is `net_mid` plus the margin plus the edge
+    whichever way round the legs are booked, so a sold form - which the registry does not declare -
+    would move the client's receipt by the same amount in the same direction. Both sides of the
+    PAIR are quoted here, which is the axis the runner can get wrong.
+    """
+    ask = params(strike=SPOT, notional_currency=currency,
+                 notional=NOTIONAL if currency == 'ZAR' else NOTIONAL / SPOT)
+    at_mid = structures.quote(book, 'Straddle', dict(ask))
+    charged = structures.quote(two_sided_book, 'Straddle', dict(ask), margin=MARGIN)
+    value = charged['margin']['value']
+
+    assert at_mid['charged_on'] == charged['charged_on'] == 'premium'
+    assert charged['edge'] > 0.0
+    assert charged['edge'] == pytest.approx(
+        sum(row['spread_charge'] for row in charged['legs']), rel=1e-12)
+    assert charged['net_mid'] == pytest.approx(at_mid['net'], rel=1e-9), (
+        'the booked legs are not the mid ones')
+    assert charged['net'] == pytest.approx(
+        charged['net_mid'] + value + charged['edge'], rel=1e-12)
+    assert charged['net'] - charged['net_mid'] == pytest.approx(
+        value + charged['edge'], rel=1e-12), 'the desk takes something other than what it charged'
+    assert charged['net'] > charged['net_mid'] > 0.0, 'the premium moved toward the client'
+
+    # the legs book and mark at MID - the desk's take on a premium-charged structure is cash the
+    # book never sees, which is what `charged_on` is there to say
+    marked = values(book, [structures.mirror(charged['deal'])])
+    assert marked[charged['deal']['Reference']] == pytest.approx(
+        -charged['net_mid'], rel=1e-9)
+    assert charged['deal']['Sales_Margin'] == 50_000.0
 
 
 def test_a_seagull_nets_to_zero(book):
@@ -493,66 +570,77 @@ def test_a_forward_extra_costs_nothing_and_solves_its_barrier(book):
 
 def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
     """The compatibility contract as an identity. A book carrying no `Quoted_Bid`/`Quoted_Ask` has
-    no spread to charge, so every shift is zero and `with_vol_shift` hands back the document ITSELF.
+    no two-way to charge, so not one greeks run is made and the quote is the mid one.
 
     The sharp half is the comparison: a ZERO-WIDE two-way exercises the entire layer - block found,
-    ATM rows read, half-spread computed and interpolated, shift signed per leg - and must land on
-    the IDENTICAL floats. So the presence of the data cannot move a price; only a real spread can.
+    every quoted pillar's half read, a vega run per leg, the charge summed, the coordinate left
+    where it was - and must land on the IDENTICAL floats. So the presence of the data cannot move a
+    price; only a real spread can.
 
-    `net_mid` is the finished legs repriced at mid, which at zero spread is the same pricing twice:
-    agreeing to the bit says the solve reports its root's own valuation, not a nearby iterate's.
+    A QUOTE NEVER REPORTS A SPREAD IT DID NOT CHARGE, and the two books say different things. With
+    no two-way at all the three spread keys are null and `spread_note` names the absence. Zero-wide,
+    the spread was read and IS zero, and the rows say so pillar by pillar - which is a statement
+    about the market rather than about the book.
     """
     ask = forward_extra_params(floor=SPOT * 0.97)
     mid = structures.quote(book, 'ForwardExtra', ask)
     zero_wide = structures.quote(two_way(book, spread=0.0), 'ForwardExtra', ask)
 
-    assert [row['vol_spread'] for row in mid['legs']] == [None, None]
+    assert [row['spread_charge'] for row in mid['legs']] == [None, None]
+    assert [row['spread_source'] for row in mid['legs']] == [None, None]
+    assert [row['spread'] for row in mid['legs']] == [None, None]
     assert 'Quoted_Bid' in mid['spread_note'] and 'FXVolPrices.USD.ZAR' in mid['spread_note']
-    assert structures.with_vol_shift(book, 'FXVol.USD.ZAR', 0.0) is book, (
-        'a zero shift copied the book - the mid path is no longer the path it was')
+    assert mid['edge'] == 0.0 and abs(mid['net']) <= SOLVE_TOLERANCE
 
-    assert [row['vol_spread'] for row in zero_wide['legs']] == [0.0, 0.0]
+    assert [row['spread_charge'] for row in zero_wide['legs']] == [0.0, 0.0]
+    assert [row['spread_source'] for row in zero_wide['legs']] == ['surface'] * 2
+    assert all(cell['half'] == 0.0 and cell['cost'] == 0.0
+               for row in zero_wide['legs'] for cell in row['spread'])
     assert zero_wide['spread_note'] is None, 'a two-way was found; there is no fallback to name'
     for row, same in zip(mid['legs'], zero_wide['legs']):
         assert (row['premium'], row['strike_market'], row['barrier_market'], row['solved']) == (
             same['premium'], same['strike_market'], same['barrier_market'], same['solved']), row
     assert mid['net'] == zero_wide['net'] and mid['net_mid'] == zero_wide['net_mid']
-    assert mid['net_mid'] == mid['net'], 'the same legs on the same book priced two ways'
+    assert mid['edge'] == zero_wide['edge'] == 0.0
 
 
 def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, two_sided_book):
     """The ruling, priced: the spread belongs to the quote and the mid belongs to the book. Three
-    DIRECTIONS per structure - a magnitude would restate the shift rather than test it.
+    DIRECTIONS per structure - a magnitude would restate the charge rather than test it.
 
-    The structure still costs nothing: it nets to zero AT THE TWO-SIDED VOLS.
+    THE LEGS ARE PRICED AT MID, and that is asserted against the engine rather than assumed: the
+    composed two-sided deal, valued against the UNSHIFTED book, reports each leg at exactly the
+    premium the quote did. A leg priced on its own shifted copy of the surface cannot do that.
 
-    The solved coordinate lands CLIENT-WORSE. The forward extra's client buys protection at the
-    offered vol and sells the knock-in at the bid, so the financing barrier sits closer to spot than
-    the mid-solved one; the collar's cap comes in. Both strictly between the mid answer and the
-    spot, so a shift with the wrong sign, on the wrong leg, or on a copy nothing priced fails here.
+    The solved coordinate lands CLIENT-WORSE, because the charge is levied on it: the forward
+    extra's financing barrier sits closer to the spot than the mid-solved one and the collar's cap
+    comes in. Both strictly between the mid answer and the spot, so a charge with the wrong sign or
+    on the wrong side of the target fails here.
 
-    And the desk keeps the difference: `net - net_mid` is the edge, positive, in report currency. A
-    leg's `Buy_Sell` is the CLIENT's side, so the booked package marks NEGATIVE on a two-sided quote
-    and the edge is the difference rather than `net_mid` itself.
-
-    The book carries a wing two-way as well as an ATM one, so the whole spread moves the coordinate
-    here; the gates below tell the two apart against the ATM-only book.
-
-    Also the empirical answer to "does a pricing run rebuild the surface from `Market Prices`?" - it
-    does not: only each leg's own copy of the written `FXVol` surface separates these two quotes.
+    And the desk keeps exactly what it charged: `net - net_mid` is the edge, it IS the sum of the
+    legs' own charges, and the structure still costs the client nothing - `net` is zero, the price
+    of a zero-cost structure, while what it MARKS at is minus the edge. `charged_on` names the
+    coordinate that carried it, and the two structures here solve DIFFERENT fields.
     """
     ask = forward_extra_params(floor=SPOT * 0.97)
     mid, two_sided = (structures.quote(document, 'ForwardExtra', ask)
                       for document in (book, two_sided_book))
     barrier = (leg(mid, 'reversion')['barrier_market'],
                leg(two_sided, 'reversion')['barrier_market'])
+    marked = values(book, [two_sided['deal']])
 
     assert abs(two_sided['net']) <= SOLVE_TOLERANCE, two_sided['net']
-    assert leg(two_sided, 'protection')['vol_spread'] == pytest.approx(0.5 * ATM_SPREAD)
-    assert leg(two_sided, 'reversion')['vol_spread'] == pytest.approx(-0.5 * ATM_SPREAD)
+    assert [marked[row['reference']] for row in two_sided['legs']] == pytest.approx(
+        [row['premium'] for row in two_sided['legs']], rel=1e-9), (
+        'a leg was priced on something other than the mid book')
+    assert marked[two_sided['deal']['Reference']] == pytest.approx(
+        two_sided['net_mid'], abs=1e-6)
     assert SPOT < barrier[1] < barrier[0], (
         'the two-sided barrier {} is not inside the mid one {}'.format(*reversed(barrier)))
-    assert two_sided['edge'] == two_sided['net'] - two_sided['net_mid'] > 0, two_sided['net_mid']
+    assert two_sided['edge'] > 0.0, two_sided['net_mid']
+    assert two_sided['edge'] == pytest.approx(two_sided['net'] - two_sided['net_mid'], rel=1e-9)
+    assert two_sided['edge'] == pytest.approx(
+        sum(row['spread_charge'] for row in two_sided['legs']), rel=1e-12)
 
     floor = params(floor=SPOT * 0.95)
     mid_collar, two_sided_collar = (structures.quote(document, 'ZeroCostCollar', floor)
@@ -563,7 +651,113 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     assert abs(two_sided_collar['net']) <= SOLVE_TOLERANCE, two_sided_collar['net']
     assert SPOT < cap[1] < cap[0], 'the two-sided cap {} is not inside the mid one {}'.format(
         *reversed(cap))
-    assert two_sided_collar['net'] - two_sided_collar['net_mid'] > 0, two_sided_collar['net_mid']
+    assert two_sided_collar['net_mid'] == pytest.approx(
+        -two_sided_collar['edge'], rel=1e-9) and two_sided_collar['edge'] > 0.0
+
+    # a SOLVING recipe names the coordinate that carried the charge, and the two here are different
+    # fields, so a `charged_on` fixed at one string or at 'premium' fails on both
+    assert (two_sided['charged_on'], two_sided_collar['charged_on']) == (
+        'Barrier_Price', 'Strike_Price'), 'the charge is reported on a coordinate nothing solved'
+
+
+def with_pillar_moved(document, pillar, delta):
+    """The book with ONE quoted pillar's MID moved by `delta`, re-bootstrapped - so the written
+    surface is the one those quotes build and the move is the market's, not a shift."""
+    from derivus.bootstrappers import FXVolSurfaceParameters
+    out = copy.deepcopy(document)
+    points = out['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']
+    hit = [point for point in points
+           if FXVolSurfaceParameters.descriptor(point) == pillar]
+    assert len(hit) == 1, (pillar, len(hit))
+    hit[0]['Quoted_Market_Value'] = float(hit[0]['Quoted_Market_Value']) + delta
+    context = derivus.Context().load_json((json.dumps(out), 'moved'))
+    context.bootstrap()
+    market = out['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors'] = json.loads(dump(context.current_cfg.params['Price Factors']))
+    return out
+
+
+def test_each_pillars_charge_is_what_repricing_that_pillar_costs(book, two_sided_book):
+    """THE CHARGE AGAINST THE ENGINE, with `vol_risk` out of the loop entirely.
+
+    One leg - the collar's bought put, at the terms the mid pass solved. For each quoted pillar the
+    book's own MID for that pillar is moved by its half, both ways, the surface RE-BOOTSTRAPPED from
+    the moved quotes, and the leg repriced alone. `(up - down)/2` is `vega x half` with the second
+    order cancelled, and it never touches the reader the charge is built on.
+
+    Two claims per pillar. The reported cost is that reading within **2%** - measured at 0.00% to
+    1.12% across every leg of every form, the gap being second order in the spread's own width. And
+    the SIGN: the direction that hurts the client is the one `-sign(reported vega)` names, which is
+    the whole ruling the absolute value implements. A charge signed by the label instead agrees with
+    the reprice on this leg's ATM and butterfly rows and disagrees on its risk reversal.
+
+    This is the tight check `STRIP_CHARGE`'s 5% band is not: at 5% a 4% error in the charge passes.
+    """
+    solved = structures.quote(book, COLLAR, params(floor=SPOT * 0.95))
+    charged = structures.quote(two_sided_book, COLLAR, params(floor=SPOT * 0.95))
+    deal = solved['deal']['Children'][0]['Instrument']['.Deal']
+    row = leg(charged, 'protection')
+    base = structures.run_price(book, deal)
+
+    assert row['role'] == 'protection' and row['buy_sell'] == 'Buy'
+    live = [cell for cell in row['spread'] if cell['half'] > 0.0 and cell['vega']]
+    assert {cell['pillar'] for cell in live} == {'ATM 1', 'BF 0.25 1', 'RR 0.25 1'}, live
+
+    for cell in live:
+        up = structures.run_price(
+            with_pillar_moved(book, cell['pillar'], cell['half']), deal)
+        down = structures.run_price(
+            with_pillar_moved(book, cell['pillar'], -cell['half']), deal)
+        repriced = abs(0.5 * (up - down))
+        assert cell['cost'] == pytest.approx(repriced, rel=0.02), (cell, repriced)
+        assert (up > down) == (cell['vega'] > 0.0), (
+            '{} is charged on the side the reprice says pays the client'.format(cell['pillar']))
+        assert base - min(up, down) > 0.0, 'neither side of this pillar hurts the client'
+
+
+def no_quote_leaves(document):
+    """The book with its FX vol BOOTSTRAPPER dropped - the surface it already wrote stays, so every
+    leg prices, but nothing publishes a quote leaf for the two-way to be charged against."""
+    out = copy.deepcopy(document)
+    out['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {}
+    return out
+
+
+def test_a_leg_the_two_way_cannot_reach_is_charged_nothing_and_says_so(book, two_sided_book):
+    """A quote NEVER reports a spread it did not charge, and an unknown is null rather than zero.
+
+    The book here carries a real two-way on quotes that build no leaves any more: the surface is
+    written in `Price Factors` so every leg prices exactly as it did, while the bootstrapper that
+    published `dV/dq` is gone. There is then no vega to charge the spread against - neither off the
+    surface nor off a lognormal reading of it - so the leg's `spread_charge` is NULL, its `spread`
+    and `spread_source` with it, and the leg's own NOTE says the two-way could not reach it.
+
+    A zero would be a lie in the other direction: it reads as a spread the desk measured and found
+    to be nothing, and a consumer auditing the quote cannot tell that from a leg nobody priced.
+
+    Nothing else moves: an unchargeable two-way quotes the mid quote, to the float.
+    """
+    ask = params(floor=SPOT * 0.95)
+    blind = structures.quote(with_policy(no_quote_leaves(two_sided_book)), COLLAR, ask)
+    mid = structures.quote(book, COLLAR, ask)
+
+    assert [row['spread_charge'] for row in blind['legs']] == [None, None]
+    assert [row['spread_source'] for row in blind['legs']] == [None, None]
+    assert [row['spread'] for row in blind['legs']] == [None, None]
+    assert all('could not reach' in row['note'] for row in blind['legs']), blind['legs']
+    assert blind['spread_note'] is None, 'the book quotes a two-way; there is no absence to name'
+    assert blind['edge'] == 0.0
+    # the book DECLARES a policy here, so the risk step really runs and really has to answer: a
+    # charge no leg could be read for is null, not a zero somebody could mistake for a measurement
+    assert blind['risk']['policy'] is not None, 'the risk step never ran, so nothing is proved'
+    assert blind['risk']['charge_full'] is None and blind['risk']['scale'] is None
+    assert 'quote sensitivity' in blind['risk']['note'], blind['risk']['note']
+
+    for row, same in zip(blind['legs'], mid['legs']):
+        assert (row['premium'], row['strike_market'], row['solved']) == (
+            same['premium'], same['strike_market'], same['solved']), row
+    assert (blind['net'], blind['net_mid']) == (mid['net'], mid['net_mid'])
 
 
 COLLAR = 'ZeroCostCollar'
@@ -573,66 +767,30 @@ def cap_of(outcome):
     return leg(outcome, 'financing')['strike_market']
 
 
-def surface_of(document):
-    """The written `FXVol.USD.ZAR` surface as `{(moneyness, expiry): vol}` - what a leg prices on,
-    read off the document rather than off the quotes."""
-    rows = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
-        'FXVol.USD.ZAR']['Surface']['.Curve']['data']
-    return {(row[0], row[1]): row[2] for row in rows}
+#: Every pillar the gate's quote block carries a two-way on - one bucket each, and what a leg's
+#: `spread` rows are keyed by.
+PILLARS = {'ATM 0.25', 'ATM 1', 'BF 0.25 0.25', 'BF 0.25 1', 'RR 0.25 0.25', 'RR 0.25 1'}
 
 
-def test_a_wing_two_way_skews_the_smile_rather_than_shifting_it(two_sided_book):
-    """What the RR and BF rows do to a side's copy of the surface, read off the surface itself.
-
-    THE COMPOSITION. A wing vol is `ATM + BF +- RR/2`, so its offered side is the offered side of
-    every term and the SUBTRACTED one takes its bid: both wings of a pillar widen by
-    `BF_half + RR_half/2`. The risk reversal's spread reaches both wings and its SIGN does not,
-    which is why a two-way on the skew quote does not tilt the smile. That is `WING_HALF`.
-
-    THEN THE SHAPE. A flat shift moves every node by ONE number; this moves the widest quoted nodes
-    by the composed half and the money by almost nothing. Measured: the node nearest the money moves
-    5% of the wing's widening at three months and 10% at a year, against 100% at either end.
-
-    And EVERY node moves the client's way - a widening that went negative somewhere on the grid
-    would pay the client for the desk's own uncertainty about the skew.
-    """
-    wings = structures.wing_two_way(two_sided_book, 'USD.ZAR')
-    assert set(wings) == {(0.25, 0.25), (1.0, 0.25)}, wings
-    assert all(half == pytest.approx(WING_HALF, rel=1e-12) for half in wings.values()), wings
-
-    mid = surface_of(two_sided_book)
-    skewed = surface_of(structures.with_vol_shift(
-        two_sided_book, 'FXVol.USD.ZAR', 0.0,
-        structures.quote_points(two_sided_book, 'USD.ZAR'), wings))
-    shifted = surface_of(structures.with_vol_shift(
-        two_sided_book, 'FXVol.USD.ZAR', 0.5 * ATM_SPREAD))
-    skew = {node: skewed[node] - vol for node, vol in mid.items()}
-    flat = {node: shifted[node] - vol for node, vol in mid.items()}
-
-    assert min(skew.values()) > 0.0, 'the skew pays the client somewhere on the grid'
-    assert max(flat.values()) - min(flat.values()) < 1e-15 < max(skew.values()) - min(skew.values())
-    for expiry in (0.25, 1.0):
-        nodes = sorted(node for node in mid if node[1] == expiry)
-        assert skew[nodes[0]] == pytest.approx(WING_HALF, rel=1e-9), nodes[0]
-        assert skew[nodes[-1]] == pytest.approx(WING_HALF, rel=1e-9), nodes[-1]
-        money = min(nodes, key=lambda node: abs(node[0]))
-        assert skew[money] < 0.2 * WING_HALF, 'the money moved with the wings'
+def pillars_of(outcome):
+    return {row['pillar'] for leg_row in outcome['legs'] for row in leg_row['spread']}
 
 
-def test_a_wing_two_way_moves_the_solved_coordinate_further_in(book, two_sided_book):
-    """The skew, priced. A leg struck away from the money prices off the WINGS, which have moved by
-    `ATM_half + WING_HALF` where the flat shift alone moves them by `ATM_half`, signed by the
-    client's side. The widening is symmetric across a pillar, so the asymmetry between two legs
-    comes from their SIDES and never from their strikes.
+def test_the_wing_pillars_are_charged_beside_the_atm_ones(book, two_sided_book):
+    """Every quoted pillar is a bucket of its own, so a book quoting a two-way on its RR and BF rows
+    charges the leg's risk-reversal and butterfly vega as well as its ATM vega.
 
-    So every leg pushes the solved coordinate the same way: the collar's client buys the put
-    (dearer) and sells the call (cheaper), so the cap comes IN; the seagull's extra sold put
-    finances less, in further still. Three books - the mid cap, the ATM-only cap inside it, the wing
-    cap inside that, all above the forward - and a skew with the wrong sign or on the wrong leg
-    lands outside that ordering.
+    Three books order the cap: the mid one furthest out, the ATM-only one inside it, the fully
+    quoted one inside that - and the fully quoted charge is the larger by exactly the wing pillars'
+    own rows. A pillar charged at the wrong half, or dropped, lands outside that ordering.
 
-    `wing_spread` reports one composed half per quoted pillar, or None on the ATM-only book, which
-    is how a consumer tells a skewed quote from a shifted one.
+    The risk reversal does not WIDEN both wings here, which is the shape this replaces. It is a
+    bucket, charged at its own half against the leg's own `dV/d(RR)`, which is what lets a put's
+    risk reversal be charged on the side its wing puts it rather than the side its label does.
+
+    The SEAGULL is held to the same ordering, because three legs is where a per-leg charge could go
+    wrong in a way two cannot: its extra sold put finances less, so its cap comes in further still,
+    and the sum over three legs is what the coordinate has to absorb.
     """
     atm_only = two_way(book, wings=None)
     floor = params(floor=SPOT * 0.95)
@@ -640,48 +798,55 @@ def test_a_wing_two_way_moves_the_solved_coordinate_further_in(book, two_sided_b
                          for document in (two_sided_book, atm_only, book))
 
     assert abs(winged['net']) <= SOLVE_TOLERANCE, winged['net']
-    assert winged['wing_spread'] == {'0.25 0.25': pytest.approx(WING_HALF, rel=1e-12),
-                                     '0.25 1': pytest.approx(WING_HALF, rel=1e-12)}
-    assert flat['wing_spread'] is None and mid['wing_spread'] is None
-    assert leg(winged, 'protection')['vol_spread'] == leg(flat, 'protection')['vol_spread'], (
-        'the flat shift moved when the wings did')
+    assert pillars_of(winged) == PILLARS, pillars_of(winged)
+    assert pillars_of(flat) == {'ATM 0.25', 'ATM 1'}, 'the ATM-only book charged a wing pillar'
+    assert all(row['cost'] > 0.0 for leg_row in winged['legs'] for row in leg_row['spread']
+               if row['pillar'].endswith(' 1')), 'a one-year pillar was charged nothing'
+    assert winged['edge'] > flat['edge'] > 0.0, 'the wing pillars captured nothing'
     assert SPOT < cap_of(winged) < cap_of(flat) < cap_of(mid), (
-        'the skewed cap {} is not inside the ATM-only cap {}'.format(
+        'the wing-charged cap {} is not inside the ATM-only cap {}'.format(
             cap_of(winged), cap_of(flat)))
-    assert winged['edge'] > flat['edge'] > 0.0, 'the skew captured nothing'
 
     bird = params(floor=SPOT * 0.98, lower_floor=SPOT * 0.90)
     winged, flat, mid = (structures.quote(document, 'Seagull', bird)
                          for document in (two_sided_book, atm_only, book))
 
     assert abs(winged['net']) <= SOLVE_TOLERANCE, winged['net']
+    assert len(winged['legs']) == 3 and pillars_of(winged) == PILLARS
+    assert winged['edge'] == pytest.approx(
+        sum(row['spread_charge'] for row in winged['legs']), rel=1e-12)
+    assert winged['edge'] > flat['edge'] > 0.0
     assert SPOT < cap_of(winged) < cap_of(flat) < cap_of(mid), (
         'the seagull cap {} is not inside the ATM-only cap {}'.format(
             cap_of(winged), cap_of(flat)))
-    assert winged['edge'] > flat['edge'] > 0.0
 
 
 def test_a_book_with_no_wing_two_way_quotes_exactly_as_it_always_did(book):
-    """The compatibility contract for the skew, in the zero-wide precedent's shape.
+    """The compatibility contract for the wings, in the zero-wide precedent's shape.
 
     THREE books that quote no wing spread must be one quote to the float. One carries no sides on
-    its RR and BF rows. One quotes them ZERO-WIDE, exercising the whole reading, and must compose to
-    NOTHING rather than to a widening of zero - which would rebuild the smile and land on floats
-    that are merely close. One CROSSES them, and reads zero-wide because a desk must never pay a
-    client for a broken print.
+    its RR and BF rows. One quotes them ZERO-WIDE, exercising the whole reading. One CROSSES them,
+    and reads zero-wide because a desk must never pay a client for a broken print.
 
-    All three still charge the ATM spread: this is the WING layer's absence, not the two-way's.
+    What they do not agree about is what they REPORT, and that is the point. A zero-wide wing is a
+    row at a half of nothing, because it was read and it is nothing; no sides at all is NO ROW,
+    because there was nothing to read. Every number that moves a price is identical, and all three
+    still charge the ATM pillars: this is the WING layer's absence, not the two-way's.
     """
     ask = params(floor=SPOT * 0.95)
     absent, zero_wide, crossed = (structures.quote(two_way(book, wings=wings), COLLAR, ask)
                                   for wings in (None, 0.0, -WING_FRACTION))
 
-    assert [outcome['wing_spread'] for outcome in (absent, zero_wide, crossed)] == [None] * 3
     assert [outcome['spread_note'] for outcome in (absent, zero_wide, crossed)] == [None] * 3
+    assert pillars_of(absent) == {'ATM 0.25', 'ATM 1'}
+    assert pillars_of(zero_wide) == pillars_of(crossed) == PILLARS
     for outcome in (zero_wide, crossed):
         for row, same in zip(absent['legs'], outcome['legs']):
-            assert (row['premium'], row['strike_market'], row['solved'], row['vol_spread']) == (
-                same['premium'], same['strike_market'], same['solved'], same['vol_spread']), row
+            assert (row['premium'], row['strike_market'], row['solved'],
+                    row['spread_charge']) == (same['premium'], same['strike_market'],
+                                              same['solved'], same['spread_charge']), row
+            assert all(cell['cost'] == 0.0 for cell in same['spread']
+                       if not cell['pillar'].startswith('ATM')), 'a wing pillar was charged'
         assert (absent['net'], absent['net_mid'], absent['edge']) == (
             outcome['net'], outcome['net_mid'], outcome['edge'])
 
@@ -689,12 +854,12 @@ def test_a_book_with_no_wing_two_way_quotes_exactly_as_it_always_did(book):
 def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
     """`Use` is an OPTIONAL field, so its absence is a quote that counts.
 
-    The wing reader walks the block on EVERY quote - that is how it learns there is no wing two-way
+    `quote_two_way` walks the block on EVERY quote - that is how it learns which pillars there are
     to charge - so a strict `point['Use']` made a `KeyError` of a book that prices perfectly well,
     inside `quote()` rather than at a refusal seam.
 
-    The gate is the whole quote, not the reader: the same collar off the same surface, the same ATM
-    spread, the same cap to the float as the book that states the field.
+    The gate is the whole quote, not the reader: the same collar off the same surface, the same
+    pillars charged, the same cap to the float as the book that states the field.
     """
     stated = two_way(book, wings=None)
     useless = copy.deepcopy(stated)
@@ -706,9 +871,82 @@ def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
     quoted = structures.quote(useless, COLLAR, ask)
 
     assert structures.quote_points(useless, 'USD.ZAR') == points
-    assert quoted['wing_spread'] is None, 'the wing reader found sides this block does not quote'
-    assert cap_of(quoted) == pytest.approx(19.16949442549199, rel=1e-12), cap_of(quoted)
+    assert pillars_of(quoted) == {'ATM 0.25', 'ATM 1'}, 'a pillar this block does not quote'
+    # the charged pass re-solves a bracket seeded on the mid root, so the cap is pinned to the
+    # solve's own tolerance rather than to the bit
+    assert cap_of(quoted) == pytest.approx(19.171481557, rel=1e-9), cap_of(quoted)
     assert cap_of(quoted) == cap_of(structures.quote(stated, COLLAR, ask))
+
+
+def engine_runs(work):
+    """`(what work returned, how many engine runs it made)`.
+
+    Counted with `sys.monitoring` local events on `Context.run_job` itself - an OBSERVER, so the
+    run is the real one and nothing is replaced. The tool id is released either way.
+    """
+    monitor, runs = sys.monitoring, []
+    tool, code = monitor.PROFILER_ID, derivus.Context.run_job.__code__
+
+    def seen(*_):
+        runs.append(1)
+
+    monitor.use_tool_id(tool, 'engine runs')
+    try:
+        monitor.register_callback(tool, monitor.events.PY_START, seen)
+        monitor.set_local_events(tool, code, monitor.events.PY_START)
+        answer = work()
+    finally:
+        monitor.set_local_events(tool, code, 0)
+        monitor.register_callback(tool, monitor.events.PY_START, None)
+        monitor.free_tool_id(tool)
+    return answer, len(runs)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='sys.monitoring is the observer')
+def test_a_seeded_solve_costs_less_and_a_missed_seed_still_answers_the_full_bracket(book):
+    """WHAT THE SEEDED BRACKET BUYS, AND WHAT A MISS COSTS - counted, not asserted in prose.
+
+    The charged pass re-solves a coordinate a spread's width from the mid one, so it brackets
+    `SEED_BRACKET` around that root and falls back to the full ends where the narrow span does not
+    straddle. Neither half of that is visible in a price, so both are counted here: the collar's
+    financing leg solved to its zero-cost target three times against the same book, once with no
+    seed, once seeded on the answer, once seeded 50% away from it.
+
+    A HIT costs under HALF the unseeded solve and lands on the same root to 1e-9 - so widening the
+    span until the seeding buys nothing fails here, and so does dropping the seed at the call site.
+
+    A MISS returns the unseeded root BIT FOR BIT at no more than two runs over it - the fall-back's
+    whole contract, since a narrow bracket that kept its own answer would be a quote off a span
+    nobody chose. Deleting the fall-back makes this raise.
+    """
+    document = copy.deepcopy(book)
+    structure = structures.structure_named(COLLAR)
+    asked = structures.declared(structure, params(floor=SPOT * 0.95))
+
+    def fresh():
+        """Legs of their own per solve - `run_solve` writes its answer back onto the leg it moved."""
+        legs = {leg.role: leg for leg in structures.materialize(structure, asked, document)}
+        for role, leg in legs.items():
+            leg.deal['Reference'] = 'bracket_{}'.format(role)
+        return legs
+
+    protection = fresh()['protection']
+    spot = structures.engine_spot(document, protection.deal['Underlying_Currency'],
+                                  protection.deal['Currency'])
+    target = -structures.run_price(document, protection.deal)
+
+    def solve(seed):
+        return engine_runs(lambda: structures.run_solve(
+            document, fresh()['financing'], 'Strike_Price', target, spot, seed))
+
+    (unseeded, _), wide = solve(None)
+    (on_the_root, _), narrow = solve(unseeded)
+    (past_it, _), over = solve(unseeded * 1.5)
+
+    assert 2 * narrow < wide, 'a seeded solve cost {} engine runs against {}'.format(narrow, wide)
+    assert on_the_root == pytest.approx(unseeded, rel=1e-9), (on_the_root, unseeded)
+    assert past_it == unseeded, 'the fall-back answered something the full bracket does not'
+    assert over <= wide + 2, 'a missed seed cost {} engine runs against {}'.format(over, wide)
 
 
 #: The desk's mandate, as a book declares one; the gates below vary one field at a time off this.
@@ -739,10 +977,11 @@ def standing(two_sided_book):
 def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_book, standing):
     """The compatibility contract for the risk-impact half: absence is the identical code path.
 
-    A book declaring no `Quote Policy` never reaches the greeks runs at all - `risk.scale` is None
-    rather than 1.0, the difference between "did not run" and "ran and decided nothing". A book
+    A book declaring no `Quote Policy` never reaches the BOOK's greeks runs at all - `risk.scale` is
+    None rather than 1.0, the difference between "did not run" and "ran and decided nothing". A book
     declaring one with `participation` at ZERO runs the WHOLE layer and must land on the identical
-    floats, so only a stated participation can move a price.
+    floats, so only a stated participation can move a price. Each leg's own vega run is made either
+    way: that is the charge, not the tightening.
 
     Both quotes are given against a book already carrying a position, so the silence is a decision
     rather than an empty book's default.
@@ -758,8 +997,8 @@ def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_b
     assert zero['risk']['policy'] == dict(POLICY, participation=0.0)
 
     for row, same in zip(plain['legs'], zero['legs']):
-        assert (row['premium'], row['strike_market'], row['solved'], row['vol_spread']) == (
-            same['premium'], same['strike_market'], same['solved'], same['vol_spread']), row
+        assert (row['premium'], row['strike_market'], row['solved'], row['spread_charge']) == (
+            same['premium'], same['strike_market'], same['solved'], same['spread_charge']), row
     assert (plain['net'], plain['net_mid'], plain['edge']) == (
         zero['net'], zero['net_mid'], zero['edge'])
 
@@ -788,8 +1027,11 @@ def test_an_offset_quotes_tighter_than_a_repeat(book, two_sided_book, standing):
     order the same way. The offset's solved cap lands strictly between the full-spread cap and the
     MID cap, the floor the policy declares. And every scale is in [0, 1].
 
-    The buckets say why: the mirror doubles `RR 0.25 1` on one book and zeroes it on the other,
-    charged at that pillar's own half-spread.
+    The buckets say why: the mirror doubles `RR 0.25 1` on one book and all but zeroes it on the
+    other, charged at that pillar's own half-spread. ALL BUT, and that residual is the declared
+    one-pass approximation's own size - the book holds the collar at the cap it was DEALT at while
+    the candidate is measured at the MID one, so the two do not cancel to the bit. Measured here at
+    4.4% of the bucket, against the 200% the repeat piles on.
     """
     ask = params(floor=SPOT * 0.95)
     short_book = with_policy(holding(two_sided_book, [structures.mirror(standing['deal'])]))
@@ -812,28 +1054,73 @@ def test_an_offset_quotes_tighter_than_a_repeat(book, two_sided_book, standing):
     skew = {row['bucket']: row for row in reducing['risk']['buckets']}['RR 0.25 1']
     piled = {row['bucket']: row for row in adding['risk']['buckets']}['RR 0.25 1']
     assert skew['before'] == pytest.approx(-piled['before'], rel=1e-9)
-    assert abs(skew['after']) < 1e-6 * abs(skew['before']), 'the offset left skew standing'
-    assert piled['after'] == pytest.approx(2.0 * piled['before'], rel=1e-9)
+    assert abs(skew['after']) < 0.05 * abs(skew['before']), 'the offset left skew standing'
+    assert abs(skew['after']) < 0.05 * abs(piled['after']), 'the two books read the same residual'
+    assert piled['after'] == pytest.approx(2.0 * piled['before'], rel=0.05)
     assert skew['half_spread'] > 0.0
 
-    # the OUTCOME describes the quote it charged, both halves. Every leg's `vol_spread` is already
-    # scaled and the composed wing halves are reported at the same scale, so a consumer reads what
-    # the client dealt on rather than the untightened two-way the book quotes
-    assert reducing['wing_spread'] == {
-        pillar: pytest.approx(WING_HALF * reducing['risk']['scale'], rel=1e-12)
-        for pillar in ('0.25 0.25', '0.25 1')}, reducing['wing_spread']
-    assert all(half < WING_HALF for half in reducing['wing_spread'].values())
-    assert adding['wing_spread'] == {pillar: pytest.approx(WING_HALF, rel=1e-12)
-                                     for pillar in ('0.25 0.25', '0.25 1')}
-    assert abs(leg(reducing, 'protection')['vol_spread']) == pytest.approx(
-        reducing['risk']['scale'] * abs(leg(adding, 'protection')['vol_spread']), rel=1e-12), (
-        'the flat half and the wing halves are not on one scale')
+    # ONE meaning per name. A pillar's `half` is the MARKET's, the same number the bucket beside it
+    # prices a residual at, and it does not move when a policy tightens; the SCALE is said once
+    # under `risk.scale` and carried in the money, so `cost` and `spread_charge` are what was
+    # charged and a consumer can read both the quote and what the desk did to it
+    scale = reducing['risk']['scale']
+    buckets = {row['bucket']: row['half_spread'] for row in reducing['risk']['buckets']}
+    assert reducing['edge'] == pytest.approx(reducing['risk']['charge_effective'], rel=1e-12)
+    assert reducing['edge'] == pytest.approx(
+        sum(row['spread_charge'] for row in reducing['legs']), rel=1e-12)
+    for row, full in zip(reducing['legs'], adding['legs']):
+        assert row['spread_charge'] == pytest.approx(scale * full['spread_charge'], rel=1e-9)
+        for cell, wide in zip(row['spread'], full['spread']):
+            assert cell['half'] == wide['half'] == buckets[cell['pillar']], cell
+            assert cell['cost'] == pytest.approx(scale * wide['cost'], rel=1e-12)
+    assert adding['edge'] == pytest.approx(adding['risk']['charge_full'], rel=1e-12)
 
     assert cap_of(adding) == cap_of(full_spread), 'the repeat is not the full-spread quote'
     assert cap_of(adding) < cap_of(reducing) < cap_of(structures.quote(book, COLLAR, ask)), (
         'the tightened cap {} is not between the full-spread cap {} and the mid one'.format(
             cap_of(reducing), cap_of(adding)))
     assert all(0.0 <= outcome['risk']['scale'] <= 1.0 for outcome in (adding, reducing))
+
+
+def test_a_margin_survives_a_policy_that_tightens_the_two_way(two_sided_book, standing):
+    """THE TWO CHARGES DO NOT SCALE TOGETHER. The policy tightens the MARKET's spread, which the
+    desk measured and can give back; it has no opinion at all about a margin the client agreed.
+
+    One book long the trade, so the policy tightens (`scale < 1`), and one short it, so it does not
+    (`scale == 1`, the market's own spread being the ceiling). On both, a quote at a 50,000 rand
+    margin has to come back at MINUS that margin exactly - not minus the scaled margin - while
+    `edge` is `scale x charge_full` and nothing else, and the bank's booked mirror holds the margin
+    and the edge together.
+
+    The margin is a quarter of a percent of THIS gate's notional, so the book already standing
+    against it is the one the trade offsets exactly. Shaving the margin by the scale would cost the
+    client 4.4% of it here, silently: every leg, every premium and every identity but this one
+    stays true.
+    """
+    asked = params(floor=SPOT * 0.95)
+    tightens = with_policy(holding(two_sided_book, [standing['deal']]))
+    stands = with_policy(holding(two_sided_book, [structures.mirror(standing['deal'])]))
+
+    for label, document in (('tightens', tightens), ('stands', stands)):
+        priced = structures.quote(document, COLLAR, dict(asked), margin=SMALL_MARGIN)
+        value, risk = priced['margin']['value'], priced['risk']
+
+        assert value == pytest.approx(SMALL_MARGIN['amount'] / SPOT, rel=1e-12)
+        assert (risk['scale'] < 1.0) == (label == 'tightens'), (label, risk['scale'])
+        assert priced['net'] == pytest.approx(-value, abs=SOLVE_TOLERANCE), (
+            '{}: the client was quoted {} against the {} they agreed'.format(
+                label, priced['net'], -value))
+        assert priced['edge'] == pytest.approx(
+            risk['scale'] * risk['charge_full'], rel=1e-12), label
+        assert priced['edge'] == pytest.approx(
+            sum(row['spread_charge'] for row in priced['legs']), rel=1e-12), label
+        assert priced['net_mid'] == pytest.approx(
+            -(value + priced['edge']), abs=SOLVE_TOLERANCE), label
+
+        marked = values(two_sided_book, [structures.mirror(priced['deal'])])
+        assert marked[priced['deal']['Reference']] == pytest.approx(
+            value + priced['edge'], abs=SOLVE_TOLERANCE), (
+            '{}: the bank is not marked at the margin and the spread together'.format(label))
 
 
 def test_the_cap_and_the_floor(two_sided_book, standing):
@@ -1594,6 +1881,147 @@ def solved_market(outcome):
     """The one coordinate the recipe moved, in the market's own terms."""
     return next(row['strike_market'] if 'Strike_Price' in row['solved'] else row['barrier_market']
                 for row in outcome['legs'] if row['solved'])
+
+
+#: Every form the two-way is charged on: the ten variations, plus the two structures dealt ONE way,
+#: whose recipes solve NOTHING - there is no coordinate for the charge to move, so the client pays
+#: it as premium instead.
+SPREAD_ASKS = ASKS | {('Straddle', None): {'strike': SPOT},
+                      ('Strangle', None): {'floor': SPOT * 0.95, 'cap': SPOT * 1.05}}
+
+#: Which forms a FITTED book can tell apart: a spot model is pinned per DEAL TYPE and only the
+#: accrual deals declare one, so a vanilla quotes identically on both books and is swept once.
+MODELLED = ('TargetRedemptionForward', 'Accumulator')
+
+#: What the vega-signed side charges each strip on the gate's own two-way book at a 1m USD ticket,
+#: MEASURED: `sum |vega| x half` over the six quoted pillars, at the mid solution. The quote's own
+#: solve then moves the coordinate under that reading, so the band is 5%; the four land at 0.5% or
+#: better. Signed by `Buy_Sell` instead, every one of them comes back NEGATIVE.
+STRIP_CHARGE = {('TargetRedemptionForward', 'buy'): 6657.26,
+                ('TargetRedemptionForward', 'sell'): 7361.99,
+                ('Accumulator', 'buy'): 22405.15,
+                ('Accumulator', 'sell'): 25294.60}
+
+
+@pytest.fixture(scope='module')
+def charged(accrual_book):
+    """Every form of every structure quoted at the MID and at a two-way, on the lognormal book and
+    on the fitted one - one sweep the four charge gates read, rather than a solve per claim.
+
+    A 1m USD ticket throughout: the side a TARF takes, and the one the charges above were measured
+    at. The fitted book is swept for the accrual deals alone, a vanilla pinning no spot model.
+    """
+    fitted = calibrated(accrual_book)
+    books = {'surface': two_way(accrual_book), 'surface mid': accrual_book,
+             'model': two_way(fitted), 'model mid': fitted}
+    return {(name, word, label): structures.quote(
+        copy.deepcopy(document), name,
+        dict(params(notional_currency='USD'), **SPREAD_ASKS[(name, word)]))
+        for name, word in SPREAD_ASKS for label, document in books.items()
+        if name in MODELLED or not label.startswith('model')}
+
+
+@pytest.mark.parametrize('name,word', sorted(SPREAD_ASKS, key=str))
+def test_every_form_charges_a_non_negative_edge_that_is_its_legs_own(charged, name, word):
+    """THE RULING as an identity over every form of every structure, on a lognormal book and on a
+    fitted one: the desk's edge IS the charge it levied, so it has no other sign.
+
+    Three claims per form. The edge is NON-NEGATIVE, a sum of `|vega| x half` having nowhere else
+    to go. It is the sum of the legs' own charges, so a quote reports exactly the spread it took and
+    no other. And it lands on the coordinate the recipe SOLVES: a zero-cost structure is quoted at
+    nothing and MARKS at minus the edge, while a structure that solves nothing has no coordinate to
+    move and the client pays the charge as premium on top of the mid.
+
+    Signing the charge by `Buy_Sell` instead - the rule this replaces - turns all four strips
+    negative here, the desk paying a client 6.6k to 25.3k on a 1m ticket to take the trade.
+    """
+    solves = [step for step in structures.structure_named(name).recipe
+              if isinstance(step, structures.Solve)]
+    for label in ('surface', 'model'):
+        outcome = charged.get((name, word, label))
+        if outcome is None:
+            continue
+        levied = sum(row['spread_charge'] for row in outcome['legs']
+                     if row['spread_charge'] is not None)
+        assert outcome['edge'] >= 0.0, (label, outcome['edge'])
+        assert outcome['edge'] == pytest.approx(levied, rel=1e-12), label
+        assert outcome['net'] == outcome['net_mid'] + outcome['edge'], label
+        if solves:
+            assert abs(outcome['net']) <= SOLVE_TOLERANCE, (label, outcome['net'])
+            assert outcome['net_mid'] == pytest.approx(-outcome['edge'], abs=SOLVE_TOLERANCE)
+        else:
+            assert outcome['net'] > outcome['net_mid'] > 0.0, label
+
+
+@pytest.mark.parametrize('name,word', sorted(STRIP_CHARGE, key=str))
+def test_a_strip_pays_the_spread_rather_than_being_paid_it(charged, name, word):
+    """A geared strip is SHORT vol at every ATM and butterfly pillar although its one leg is booked
+    `Buy`, so a side taken from the LABEL quoted the client a negative edge - the desk paying 6.5k
+    to 25.5k on a 1m ticket for the privilege of the trade. Charged per pillar on the ABSOLUTE vega
+    it is the same magnitude back, with the sign a desk needs.
+
+    And it lands the right way round. The client buying the base accrues as the pair rises, so a
+    higher strike is worse for them and the solved one comes UP; the client selling it accrues as
+    the pair falls and theirs comes DOWN. Dropping the absolute value keeps the magnitude and
+    reverses both.
+    """
+    outcome, at_mid = charged[(name, word, 'surface')], charged[(name, word, 'surface mid')]
+    solved, was = solved_market(outcome), solved_market(at_mid)
+
+    assert outcome['edge'] > 0.0, outcome['edge']
+    assert outcome['edge'] == pytest.approx(STRIP_CHARGE[(name, word)], rel=0.05)
+    assert abs(solved / was - 1.0) > AXIS_TOLERANCE, 'the charge never reached the strike'
+    assert (solved > was) == (word == 'buy'), (
+        'the solved strike moved TOWARD the client: {} against a mid {}'.format(solved, was))
+
+
+def test_a_puts_risk_reversal_is_charged_on_its_own_side(charged):
+    """Not even a vanilla is single-signed, which is the second thing one side per LEG got wrong.
+
+    A risk reversal follows the WING rather than the label: every leg holding a PUT reads a
+    `dV/d(RR)` opposite in sign to its own ATM and butterfly vega - the collar's bought put on the
+    floor and its sold put on the cap alike - while the legs holding a call agree with theirs.
+    Widening both wings on one side therefore charged about 5% of a collar's spread the wrong way.
+
+    Charged per pillar the sign does not matter: the risk reversal's row costs the client something
+    POSITIVE on all four legs, each dealt on the side its own risk puts it.
+    """
+    puts = {('floor', 'protection'), ('cap', 'financing')}
+    for word in ('floor', 'cap'):
+        for row in charged[('ZeroCostCollar', word, 'surface')]['legs']:
+            pillars = {cell['pillar']: cell for cell in row['spread']}
+            atm, reversal = pillars['ATM 1'], pillars['RR 0.25 1']
+            assert reversal['cost'] > 0.0, (word, row['role'])
+            opposite = atm['vega'] * reversal['vega'] < 0.0
+            assert opposite == ((word, row['role']) in puts), (
+                '{} {} reads its risk reversal {} its ATM vega'.format(
+                    word, row['role'], 'against' if opposite else 'with'))
+
+
+@pytest.mark.parametrize('name,word', sorted(STRIP_CHARGE, key=str))
+def test_a_model_priced_strip_is_charged_off_its_lognormal_reading(charged, name, word):
+    """A strip walking a FITTED law never reads the written FX surface, so it publishes no quote
+    sensitivity at all and the two-way had nothing to charge against: the quote solved the MID
+    strike, captured exactly nothing, and reported a vol spread all the same.
+
+    The charge comes off the LOGNORMAL reading of the same leg at the same terms - the vega a desk
+    would deal in the quotes it actually trades - and `spread_source` says so, against a `surface`
+    on the same book with no fit installed. Skipping that second run leaves the edge at 0.0 and the
+    solved strike on the mid, which is what this refuses.
+    """
+    outcome, at_mid = charged[(name, word, 'model')], charged[(name, word, 'model mid')]
+    row = outcome['legs'][0]
+    solved, was = solved_market(outcome), solved_market(at_mid)
+
+    assert row['spread_source'] == 'lognormal reading', row['spread_source']
+    assert charged[(name, word, 'surface')]['legs'][0]['spread_source'] == 'surface', (
+        'the same book with no fit read its vega somewhere else')
+    assert row['note'] is None, 'the leg is priced under the fit and must not say otherwise'
+    assert outcome['edge'] > 0.0 and row['spread_charge'] == pytest.approx(
+        outcome['edge'], rel=1e-12)
+    assert abs(solved / was - 1.0) > MODEL_AXIS_TOLERANCE, (
+        'a model-priced strip still quotes the mid strike')
+    assert (solved > was) == (word == 'buy'), (solved, was)
 
 
 @pytest.mark.parametrize('name,word,currency', SIDES)

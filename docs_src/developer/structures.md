@@ -173,8 +173,7 @@ price. `furnish_accrual` is where a leg becomes a strip:
   before the loop.
 - **the expiry.** `FXTARFOptionDeal`'s `Expiry_Date` is the LAST SETTLEMENT — a strip is not over until
   its final cashflow lands — while `FXAccumulatorOptionDeal` declares no such field, so the shared
-  block's is REMOVED rather than carried as a key nothing will read. `leg_expiry` reads the last
-  settlement where the field is absent, which is the same date either way.
+  block's is REMOVED rather than carried as a key nothing will read.
 - **the notionals.** `Underlying_Amount` is the notional PER FIXING and `LeverageNotional` is
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's own
   gearing), published as the descriptor's `value` and read through `declared()` rather than a `.get`.
@@ -326,58 +325,83 @@ the two numbers live in different places. The `FXVol` surface in `Price Factors`
 Prices](market_prices.md#fxvolprices)), which is DATA the bootstrap never reads. The runner is its only
 reader.
 
-**Where the spread enters.** The ATM rows give a half-spread `(ask − bid) / 2` per quoted expiry, in the
-surface's own vol units; a leg's tenor is placed between those pillars linearly and held FLAT past
-either end, because a spread extrapolated off the last two pillars is a number the market never quoted.
-Each SIDE gets a copy of the book with the written surface shifted flat by that half-spread, and a leg
-prices on the one its own side names — legs taking the same shift share it, and every pricing
-deep-copies again through `alone()`. Moving the written surface is what a leg prices on because a
-pricing run does not bootstrap: the block is not read again inside `run_job`, which the two-sided gate
-demonstrates rather than assumes. RR and BF rows carry their own two-way and the leg SHIFT does not
-consume it — `atm_two_way` skips every row whose `Quote_Type` is not `ATM`, because a wing spread has to
-skew the smile rather than shift it. `quote_two_way` does read the RR/BF halves: it takes every used
-pillar's `(ask − bid)/2`, which charges each risk-impact bucket at its own half.
+**The two-way is a CHARGE, not a second surface.** Every leg prices at the MID, and what the market
+charges for the spread is levied on the coordinate the recipe already solves — the shape the [sales
+margin](#margin) and the [risk-impact charge](#risk-impact) both have. `quote_two_way` reads every
+quoted pillar's `(ask − bid) / 2` off the block, keyed by the descriptor `dV/dq` publishes that quote
+under, and nothing is interpolated: a bucket IS a quoted pillar or it is not a bucket. A CROSSED print —
+a stale bid through a live offer — reads ZERO-WIDE rather than negative, `max(0.0, …)`, because the one
+thing a desk must not do with a broken print is pay a client for it.
 
-Two refusals sit in that reading, both the same rule. A CROSSED print — a stale bid through a live offer
-— reads as ZERO-WIDE rather than as a negative spread, `max(0.0, (ask − bid) / 2)`, because the one
-thing a desk must not do with a broken print is pay a client for it. And a leg carrying no `Buy_Sell`
-refuses outright wherever the book has a two-way: a leg with no side has no side of the market to be
-dealt on, and either guess charges the spread the wrong way round.
+**What is read, per leg and per pillar.** At the mid solution each leg goes through ONE first-order
+greeks run of its own — through `alone()`, so the leg is valued exactly as `run_price` values it, on the
+CLIENT's paper, with `Quote_Sensitivity` on the `FXVolPrices` block of that run's own copy. The leg's
+charge is then the sum over quoted pillars of `|dV/dq_p| × half_p`, and the structure's charge is the
+SUM OVER LEGS.
 
-**The sign rule.** A leg's `Buy_Sell` is the CLIENT's side. What the client buys is offered at the
-**ask** vol (`+half`); what they sell is taken at the **bid** (`−half`). A solve iterates its leg on
-that leg's own shifted copy against targets taken from the other legs' shifted copies, so the solved
-coordinate is a realistic two-sided quote by construction: the forward extra's barrier comes IN toward
-the spot, the collar's cap comes IN toward it, and both are the participation the client gives up for
-the spread.
+The absolute value is the whole ruling: **a pillar is dealt on the side the RISK puts it, not the side
+the leg's label does.** A geared accrual strip is one leg booked `Buy` and is net SHORT vol at every ATM
+and butterfly pillar, so signing by the label quoted a NEGATIVE edge — the desk paying a client 6.5k to
+25.5k on a 1m ticket to take the trade. Charged per pillar on the absolute vega the same magnitudes come
+back the right way round: on the gate's own two-way book at a 1m USD ticket, the TARF **+6,627.45**
+buying and **+7,316.06** selling, the accumulator **+22,415.98** and **+25,294.53**, against the collar's
+**+1,985.57**. Nor is a vanilla single-signed: a risk reversal follows the WING, so every leg holding a
+PUT reads a `dV/d(RR)` opposite in sign to its own ATM vega, and one side per leg mis-charged about 4%
+of a collar's spread and 12–14% of a strip's.
 
-That sign follows a leg's LABEL, and an accrual strip is one leg pinned bought while a geared strip is
-net SHORT vega for the client — so the strips quote a negative `edge` at a two-way and the desk pays
-the spread rather than taking it, while a model-priced strip does not read the written surface at all
-and is quoted at the mid under a `vol_spread` that says otherwise. Measured, pre-existing and unchanged
-by the variations; both wait on a desk ruling and their numbers are in [the roadmap](roadmap.md).
+**A leg priced under a fitted spot model** reads nothing off the written surface — it walks the fitted
+law — so it would publish no quote leaves at all and there would be nothing to charge against. The PIN
+therefore decides which book the run is made against: a pinned leg is read on a copy carrying NO spot
+model for its deal type, the LOGNORMAL reading of the same leg at the same terms, which is the vega a
+desk would hedge in the quotes it actually trades. `spread_source` says which answered, `'surface'` or
+`'lognormal reading'`. Reading the surface first and falling back cost a fitted strip **3.8 s** of a
+~19 s quote on a run whose emptiness the pin already predicted. Without the substitution at all, a
+model-priced strip solves the MID strike, captures exactly nothing, and reports a spread anyway.
 
-**`net` versus `net_mid`.** `net` is what the client is quoted — zero, for a zero-cost structure, at the
-two-sided vols. `net_mid` is one extra pass over the finished legs against the UNSHIFTED book: what the
-trade marks at the moment it is booked. Both are in the CLIENT's sign convention, so the desk's captured
-edge on a zero-cost structure is `net − net_mid` — measured 113.85 USD on a 1M ZAR one-year forward
-extra at a 0.4-vol-point ATM spread, against a barrier that moved from 22.401 to 22.255.
+**Each leg pays its own spread.** The legs of one package are NOT netted against each other before the
+charge — a collar's bought put and sold call are charged as two tickets rather than as the one position
+the desk has to deal. That is the desk's next dial rather than a defect: netting per pillar first takes
+the gate collar's edge from 1,985.57 to 297.25, an 85% cut, and the numbers are in [the
+roadmap](roadmap.md).
 
-Each leg reports the signed shift it took as `vol_spread` (0.002 is 0.2 vol points), or `None` where the
-book quotes no two-way. In that case every shift is zero, `with_vol_shift` hands back the document
-ITSELF rather than a copy, and the quote is bit-identical to the one the runner has always given — the
-gate compares it float for float against a book carrying a zero-wide two-way, so the presence of the
-data cannot move a price. `spread_note` names the absence.
+**`net` versus `net_mid`.** The finished legs are at mid, so `net_mid` — what they are worth — is what
+the trade marks at the moment it is booked, and `net` is that plus everything the desk charged. A
+zero-cost structure is quoted at zero, or at minus the margin where one was agreed, and MARKS at minus
+the margin and the edge together. A recipe that solves NOTHING — a straddle, a strangle — has no
+coordinate to move, so the PREMIUM carries both instead: the client's payment moves against them by the
+margin and the charge, the legs book and mark at mid, and the desk's take lives in the cash rather than
+on the coordinate. `charged_on` names which it was, the solved field or `premium`, so one convention
+covers every structure and a reader never has to infer it. Both readings are in the CLIENT's sign
+convention, `edge` is the two-way charge alone, and it is non-negative by construction.
 
-**The mirror.** Everything above is CLIENT paper and a trading book holds the BANK's position, so
-`structures.mirror` is the one seam where paper becomes position: every leg's `Buy_Sell` flipped,
-nothing else touched, no charge added or removed. `/book/quote` books the mirror, so a two-sided
-quote's `edge` lands on the book as positive day-one P&L, and the risk-impact step prices the book PLUS
-the same mirror — the risk measured and the trade booked are one object, and a sign cannot disagree
-between them. The pending file keeps the client frame it was quoted in; the flip is the booking's act,
-by the owner's ruling: quote client-frame, mirror once, book the mirror.
+Per leg the outcome carries `spread_charge` (money, in the pricing currency), `spread_source`, and
+`spread` — one row per quoted pillar, `{pillar, vega, half, cost}`. **One meaning per name**: `half` is
+always the MARKET's own half-spread, the same number `risk.buckets` prices a residual at, while `cost`
+and `spread_charge` are money the desk charged — so a policy's tightening is stated once, under
+`risk.scale`, and carried in the money rather than in the quote it is a fraction of. A leg no reading
+reaches carries `spread_charge` NULL with a note saying so, never a zero, and so does the structure's own
+`risk.charge_full` where NO leg could be read: a zero reads as a spread the desk measured and found to be
+nothing, which a consumer auditing the quote could not tell from a leg nobody priced. Where
+the book quotes no two-way at all, not one greeks run is made, the three keys are null, `spread_note`
+names the absence, and the quote is bit-identical to the one the runner has always given — the gate
+compares it float for float against a book carrying a ZERO-WIDE two-way, which exercises the whole
+layer, so the presence of the data cannot move a price.
 
-## The sales margin moves the coordinate the recipe solves {#margin}
+**Two passes, and the second is the quote.** Pass 0 solves at the mid against the margin alone; the
+vegas are read there; pass 1 re-solves against the margin plus the charge. So the vegas are the MID
+solution's while the quote sits at the charged coordinate — the same declared one-pass approximation the
+risk-impact step carries, one step earlier. The solved coordinate lands CLIENT-WORSE by construction:
+the forward extra's barrier comes IN toward the spot, the collar's cap comes IN, a buyer's strip strikes
+UP and a seller's DOWN.
+
+Pass 1 is SEEDED on pass 0's root rather than searching the whole bracket again: a charge moves a
+coordinate by a spread's width — under half a percent on every form here — so the second solve brackets
+±2% around the first answer and falls back to the full ends where that does not straddle. Measured, the
+same root to nine significant figures and **7 engine runs against 16** on a collar's cap, **9 against
+16** on a TARF's strike and **6.1 s of a ~12 s** fitted one. Pass 0 takes no seed, which is what keeps
+every no-two-way quote bit-identical to the one the runner has always given.
+
+## The sales margin rides the same coordinate the two-way does {#margin}
 
 The two-way is what the market charges and the risk-impact step below is what the residual costs. What
 the DESK adds on top is a sales margin, and it is quoted the way a client agrees one: `margin` on
@@ -392,17 +416,23 @@ currency the book carries no `FxRate` for refuses BY NAME at the verb (422), wit
 the phone. The answer states both halves: `margin` carries the amount as declared and its `value` in the
 `pricing_currency`.
 
-**The charge, and its sign.** There is exactly one place for it to go: the coordinate the recipe already
-SOLVES. A financing leg's target becomes the premiums it finances plus the charge; a single-solve strip
-targets minus the charge instead of zero. A recipe that solves nothing — a straddle, a strangle — has no
-coordinate to charge on and refuses by name rather than dropping the margin silently. Because the quote
-is client paper, `net` reads the margin back NEGATIVE: the client holds a structure worth minus what
-they paid for it, and the mirror the approval books marks the bank at plus it. Both readings are gated
-on the same quote — `net` converted at the quote's own spot, and the mirror priced against the book. A
-collar's cap comes IN and a TARF's strike moves UP, each by more than any solve tolerance.
+**The charge, and its sign.** It goes where the [two-way's own charge](#two-sided) goes, which is the
+ONE coordinate the quote has. Where the recipe SOLVES: a financing leg's target becomes the premiums it
+finances plus the charge, and a single-solve strip targets minus the charge instead of zero. Where it
+solves nothing — a straddle, a strangle — the PREMIUM carries it instead: the client simply pays more,
+the legs book and mark at mid, and `charged_on` says which coordinate it was. ONE convention, so a
+margin is never refused for want of a strike to move it onto; a recipe solving MORE than one coordinate
+still refuses by name, since the charge would be levied once per solve.
 
-`edge` is left alone: it measures `net − net_mid`, a spread, and the margin sits on both sides of that
-difference. The composed `StructuredDeal` records `Sales_Margin` and `Sales_Margin_Currency` — declared
+Because the quote is client paper, a solving structure's `net` reads the margin back NEGATIVE: the
+client holds a structure worth minus what they paid for it, and the mirror the approval books marks the
+bank at plus the margin and the edge together. Both readings are gated on the same quote — `net`
+converted at the quote's own spot, and the mirror priced against the book. A collar's cap comes IN and a
+TARF's strike moves UP, each by more than any solve tolerance.
+
+`edge` is left alone: it is the two-way's charge and nothing else, so a policy that tightens the
+MARKET's spread scales `edge` and leaves an agreed margin exactly where the client agreed it. The
+composed `StructuredDeal` records `Sales_Margin` and `Sales_Margin_Currency` — declared
 on the shared `Admin` group, since a margin is a property of a TICKET rather than of an asset class, so
 the container, an FX leg and a cashflow solved to a margin target all record it one way. Nothing prices
 off the field; the charge is already inside the terms. With no `margin` asked for there is no `margin`
@@ -415,8 +445,8 @@ RESIDUAL that trade leaves on its book — a measurement, priced at the market's
 a bp-per-skew number somebody invented. A trade that nets the book down is quoted tighter; a trade that
 piles risk on is quoted at the full spread and no wider.
 
-**The measurement.** The base pass is unchanged — quote two-sided, full half-spread per leg. Then the
-composed candidate goes through `structures.mirror` and the book's vol risk is read twice: the book
+**The measurement.** The base pass is the MID solve, the same one the charge's own vegas are read at.
+Its composed candidate goes through `structures.mirror` and the book's vol risk is read twice: the book
 alone, and the book with the mirror spliced in through `book_node`. Both are `BaseValuation` with
 `Greeks: 'First'` — one backward off the ROOT netting set, so a leaf's `.grad` is the whole portfolio's.
 
@@ -429,14 +459,14 @@ Descriptors are summed across every published block, which is the [collision
 rule](quote_sensitivities.md#the-attachment). The switch is worth exactly zero forward, so turning it on
 cannot move a price.
 
-**The charge.** `quote_two_way` reads EVERY pillar's half-spread off the same block, keyed by the same
-descriptor the leaves are published under (`FXVolSurfaceParameters.descriptor`, reused rather than
-re-derived — a second copy of the naming rule is a copy that drifts into pricing no bucket at all). A
-bucket's cost is the move in ABSOLUTE risk times that bucket's own half: `dV/dq` is already a vega in
-report currency per unit of quote, so the product is money and nothing converts it. Summed, a NEGATIVE
-total is a saving. On the gate's book — a desk holding one collar, quoted the same collar back — the
-offset moves `ATM 1` by −613.86 at a 0.002 half, `BF 0.25 1` by −626.38 at 0.001 and `RR 0.25 1` by
-−8748.99 at 0.001, for a measured saving of **10.6031 USD** against a full charge of **81.2194 USD**.
+**The residual's cost.** The buckets are the ones [the two-way](#two-sided) is quoted in and they are
+priced the same way, off the same `quote_two_way` read: a bucket's cost is the move in ABSOLUTE risk
+times that bucket's own half, `dV/dq` being a vega in report currency per unit of quote, so the product
+is money and nothing converts it. What differs is the quantity — the two-way charges a LEG's own vega
+while this charges what the trade leaves on the BOOK. Summed, a NEGATIVE total is a saving. On the
+gate's 1m ZAR collar, a desk holding one and quoted the same one back, the offset moves `ATM 1` by
+−456.19 at a 0.002 half, `BF 0.25 1` by −45.48 at 0.001 and `RR 0.25 1` by −8281.52 at 0.001, for a
+measured saving of **9.2394 USD** against a full charge of **105.9701 USD**.
 
 **The policy** is a declared `Quote Policy` block on `Calc`, beside `Calculation` and `MergeMarketData`
 — not inside `ExplicitMarketData`, because `Context.load_json` does `cfg.params[section].update(...)`
@@ -457,11 +487,15 @@ read with `.get`:
 `firm_seconds` is the one field this module carries rather than acts on: the mandate is ONE block a desk
 states, and the approval verb reads the clock against the pending file's `quoted_at`.
 
+**Five ways out leave `scale` null with the reason named**, rather than a scale of 1 nobody can tell
+from a decision: no policy; no two-way at all; NO leg readable, where `charge_full` stays null too;
+a charge that is not positive; and no vol quote leaves published at all.
+
 **The ABSENCE of the block is the off switch**, the same compatibility contract as the two-sided one: a
-book declaring no policy never reaches the greeks runs at all and its `risk.scale` is `None` rather than
-`1.0` — the difference between "the feature did not run" and "it ran and decided nothing", which a
-consumer auditing a quote has to be able to tell apart. A block declaring `participation: 0` runs the
-WHOLE layer and lands on the identical floats.
+book declaring no policy never reaches the BOOK's greeks runs at all and its `risk.scale` is `None`
+rather than `1.0` — the difference between "the feature did not run" and "it ran and decided
+nothing", which a consumer auditing a quote has to be able to tell apart. A block declaring
+`participation: 0` runs the WHOLE layer and lands on the identical floats.
 
 **The scale, and the ceiling.** `charge_effective = min(charge_full, max(min_ticket, max(0,
 charge_full − participation × saving)))`, and `scale = charge_effective / charge_full`. Two rulings sit
@@ -470,17 +504,17 @@ v1 — so a positive residual cost is simply no saving and `scale` is exactly 1.
 ops floor UNDER the tightening, not a second ceiling over it: a ticket above the full spread leaves the
 scale at 1 and the REPORTED charge at `charge_full`, rather than lifting the quote through the two-way.
 
-**ONE pass, not a fixed point.** The recipe is re-run once with every leg's half-spread multiplied by
-`scale`, threaded through the same two-sided machinery. But the risk was measured on the FULL-SPREAD
-candidate and the re-solve moves the solved coordinate, so the tightened structure's residual is not
-exactly the one that was priced. The miss is second order and measured on the gate's book at **0.0196
-USD on 75.92**, 0.026%: `charge_effective` 75.9178 against a realised `edge` of 75.8983. Iterating to a
-fixed point would pay a greeks run per iterate to chase that. The `risk` block is honest about which
-candidate it measured: its buckets are the full-spread candidate's.
+**ONE pass, not a fixed point.** `scale` multiplies the charge, and the one solve that levies it targets
+`−(margin + charge_effective)`, so the effective charge and the realised `edge` are now the SAME number
+— measured 0.0000 on the gate's book against the 0.026% the two-reprice scheme carried. The
+approximation did not go away; it moved. Both the legs' vegas and the book's buckets are read at the MID
+solution while the quote sits at the charged coordinate, so what is charged is a first-order reading of
+a structure one step away. The `risk` block is honest about which candidate it measured: its buckets are
+the mid candidate's. Iterating to a fixed point would pay a greeks run per leg per iterate to chase it.
 
 **What it does to a quote.** Same book, same collar, same policy, opposite sign of the standing
-position: the repeat quotes a cap of 19.16949443 (the full-spread cap, to the bit) and the offset quotes
-19.17396280 — 6.5% of the way back from the full spread toward the mid cap of 19.23862842.
+position: the repeat quotes a cap of 19.14881898 (the full-charge cap, to the bit) and the offset quotes
+19.15266449 — 4.3% of the way back from the full charge toward the mid cap of 19.23862842.
 Client-better, and never through the mid.
 
 **The cache.** The book-alone half of the measurement does not depend on what is being quoted and moves
@@ -554,14 +588,47 @@ strike of the forward the geared sold leg outweighs the bought one — and that 
 as a `CreditMonteCarlo` reports an exposure profile that is finite, multi-row and DISPERSED, which a
 skipped deal cannot be because zero has no spread.
 
+**The two-way is gated on what it CHARGED, not on a shift.** The sharpest of these puts `vol_risk` out
+of the loop entirely: for the collar's bought put, each quoted pillar's own MID is moved by its half
+both ways, the surface RE-BOOTSTRAPPED from the moved quotes and the leg repriced alone, and the
+reported cost has to be that central difference within **2%**, with the side that hurts the client the
+one `−sign(vega)` names. Measured across every leg of every form: 0.00% to 1.12%, and 0 sign
+disagreements in 48 non-zero pillar rows.
+
+The edge is held non-negative and equal to
+the sum of the legs' own `spread_charge` over every form of every structure, on a lognormal book and on
+a fitted one — twelve forms, the ten variations and the two structures that solve nothing. The four
+strips are held to the vega-signed readings within 5% (+6,627.45 / +7,316.06 / +22,415.98 / +25,294.53
+at a 1m USD ticket; signed by `Buy_Sell` instead, all four come back negative), and the solved strike
+must move AGAINST the client in each. Each of the collar's two put legs must read a risk reversal
+opposite in sign to its own ATM vega and still be charged a POSITIVE cost there. On the fitted book each
+strip's `spread_source` is `'lognormal reading'` where the same book without the fit reads `'surface'`,
+and its solved strike differs from the mid one — skipping that second run leaves the edge at 0.0. The
+legs are proved to be at MID by valuing the composed two-sided deal against the unshifted book and
+matching each leg's premium. And a book that carries a two-way but publishes no quote leaves — the
+bootstrapper dropped, the surface it wrote left standing — charges NOTHING and says so per leg, while
+quoting the mid quote to the float — and where such a book DECLARES a policy, so the risk step really
+runs, `risk.charge_full` is null too rather than a zero nobody measured.
+
+**The margin is gated against a policy**, because the two charges do not scale together: on a book whose
+policy tightens and one whose policy does not, a quote at an agreed margin comes back at minus exactly
+that margin while `edge` is `scale × charge_full`, and the booked mirror holds both. Shaving the margin
+by the scale is otherwise silent — every other identity stays true. A structure that solves NOTHING is
+gated from both sides of the pair: `charged_on` reads `premium`, what the client pays moves against them
+by the margin and the edge together, and the booked legs still mark at mid. And a FITTED strip is booked
+end to end through the service, which is the one path where the pin is load-bearing for the mark: only
+once `/book/quote` merges the quote's own `valuation_configuration` does the book report the bank at
+plus the margin and the edge.
+
 The risk-impact gates are three. A book with no `Quote Policy` and one with `participation: 0` quote
 float for float identically. The registry has no sell-side collar, so the opposite SIDE goes on the BOOK
 rather than into the quote: one book short the trade and one long it, the offset coming out tighter
-while the repeat comes out at exactly the full-spread cap, with the `RR 0.25 1` bucket read from both
-sides (`before` equal and opposite, `after` doubled on one and zero on the other), which no sign error
-survives. And both limits are made to BIND on a book holding two of the trade: a `bucket_limit` under
-the residual suspends the tightening and names the bucket, and a `min_ticket_bp` inside the band the
-tightening opens lands the effective charge exactly on the ticket.
+while the repeat comes out at exactly the full-charge cap, with the `RR 0.25 1` bucket read from both
+sides (`before` equal and opposite, `after` doubled on one and all but zero on the other — 4.4%, the
+one-pass approximation's own size, since the book holds the collar at the cap it was dealt at while the
+candidate is measured at the mid one). And both limits are made to BIND on a book holding two of the
+trade: a `bucket_limit` under the residual suspends the tightening and names the bucket, and a
+`min_ticket_bp` inside the band the tightening opens lands the effective charge exactly on the ticket.
 
 ## V1 scope, and the named next steps
 

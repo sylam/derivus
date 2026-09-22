@@ -3320,6 +3320,107 @@ def test_a_collar_quoted_at_a_margin_books_the_bank_at_plus_it(quoting, tmp_path
         charge['value'], abs=1.0), 'the book does not hold the margin the desk charged'
 
 
+#: The desk's two-way as a book carries one: 0.4 vol points on the ATM rows and half that on the
+#: wings, written around each quote's own mid. The bootstrap never reads these sides - the surface
+#: stays the one the mid built - so what they buy is the quote's own CHARGE.
+QUOTE_SPREAD = 0.004
+
+
+@pytest.fixture
+def quoting_two_way(quoting):
+    """The same desk, quoting a two-way: bid and ask around every quote's mid on the served book."""
+    document = json.loads(quoting.read_text())
+    points = document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']
+    for point in points:
+        half = 0.5 * QUOTE_SPREAD * (1.0 if point['Quote_Type'] == 'ATM' else 0.5)
+        point['Quoted_Bid'] = point['Quoted_Market_Value'] - half
+        point['Quoted_Ask'] = point['Quoted_Market_Value'] + half
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(quoting))
+    return quoting
+
+
+def test_a_two_way_quote_books_the_mirror_at_the_margin_and_the_spread(quoting_two_way):
+    """The quoting day on a book that quotes a two-way, with the desk's whole take read off the
+    ENGINE rather than off the runner.
+
+    Every leg is priced at the mid and what the market charges for the spread is levied on the
+    coordinate the recipe solves, so the client is quoted minus the MARGIN alone - the spread being
+    inside the terms rather than on the ticket - while the trade MARKS at minus the margin and the
+    edge together. The book holds the bank's side of that paper, so once the approval books the
+    mirror a base valuation of the book reports plus both, to the solve's own tolerance.
+
+    And `edge` is the charge and nothing else: the sum of the legs' own `spread_charge`, each of
+    them a number rather than a null, each saying where its vega was read.
+    """
+    quote = quote_of('ZeroCostCollar', MARGIN_COLLAR, margin=MARGIN)
+    charge = quote['margin']['value']
+
+    assert quote['edge'] > 0.0
+    assert quote['edge'] == pytest.approx(
+        sum(leg['spread_charge'] for leg in quote['legs']), rel=1e-12)
+    assert {leg['spread_source'] for leg in quote['legs']} == {'surface'}
+    assert quote['spread_note'] is None, 'the book quotes a two-way; there is no absence to name'
+    assert quote['net'] == pytest.approx(-charge, abs=0.01)
+    assert quote['net_mid'] == pytest.approx(-(charge + quote['edge']), abs=0.01)
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    on_disk = json.loads(quoting_two_way.read_text())
+    node = deal_at(on_disk, booked['deal_path'])
+    assert booked['written'] is True
+
+    marked_id, marked = run(on_disk)
+    assert marked['status'] == 'done', marked.get('error')
+    assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
+        charge + quote['edge'], abs=1.0), (
+        'the book does not hold the margin and the spread the desk charged')
+
+
+def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting_two_way):
+    """The one path where the PIN is load-bearing for the mark, walked end to end.
+
+    A strip quoted on a fitted book prices under the fitted law, and its two-way charge comes off
+    the lognormal reading of the same leg because a fitted leg publishes no quote sensitivity. Book
+    it, and the book has to mark it the way it was dealt: `/book/quote` merges the quote's own
+    `valuation_configuration` inside the same edit closure that splices the deal, and only then
+    does a base valuation of the book report the bank at plus the margin and the edge.
+
+    Without that merge the mirror is marked as a lognormal and the number is not the desk's take at
+    all - a plausible mark on a trade nobody dealt at it.
+    """
+    document = json.loads(quoting_two_way.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
+    document['Calc']['Calculation']['MCMC_Simulations'] = 1024
+    quoting_two_way.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(quoting_two_way))
+
+    quote = quote_of('Accumulator', ACCUMULATOR, margin=MARGIN)
+    charge = quote['margin']['value']
+    take = charge + quote['edge']
+
+    assert quote['legs'][0]['note'] is None, 'the leg did not join the calibration'
+    assert quote['legs'][0]['spread_source'] == 'lognormal reading'
+    assert quote['valuation_configuration'] == {
+        'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
+    assert quote['edge'] > 0.0 and quote['charged_on'] == 'Strike_Price'
+    assert quote['net'] == pytest.approx(-charge, abs=0.01)
+
+    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
+    on_disk = json.loads(quoting_two_way.read_text())
+    node = deal_at(on_disk, booked['deal_path'])
+
+    assert booked['written'] is True
+    assert on_disk['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Valuation Configuration'] == quote['valuation_configuration']
+
+    marked_id, marked = run(on_disk)
+    assert marked['status'] == 'done', marked.get('error')
+    assert mtm(marked_id)[node['Instrument']['.Deal']['Reference']] == pytest.approx(
+        take, rel=1e-3), 'the fitted book does not hold the margin and the spread it charged'
+
+
 def test_a_margin_in_a_currency_the_book_cannot_cross_refuses_at_the_verb(quoting):
     """A margin nobody can value is a price nobody can quote, and the salesperson finds out on the
     call rather than off a failed job: the verb refuses 422, naming the rate the book would need."""

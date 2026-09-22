@@ -45,7 +45,7 @@ stays the maintainer's.
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals` |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
-| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the client's side of a two-way, strikes solved, the mid and the edge said, the pending trade filed under its id |
+| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the MID, strikes solved with the two-way charged on them, the mid and the edge said, the pending trade filed under its id |
 | `book_quote` | `POST /book/quote` — approve a quote by id and book its mirror, refused exactly as a booking is |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
@@ -156,8 +156,9 @@ Every FX `Strike_Price` and `Barrier_Price` declaration carries the axis it live
 `describe_instrument_type` says it before a model books an FX option directly instead.
 `solve_structure` runs the recipe server-side and answers with the composed deal, the per-leg
 premiums and the net — plus, where the book's `FXVolPrices` carries a two-way, each leg's
-`vol_spread`, the `net_mid` the trade will mark at and the `edge` between them (`spread_note` says so
-where there is no two-way). It writes nothing into the book: the quote lands in
+`spread_charge` with the pillar rows it was levied on, the `net_mid` the trade will mark at and the
+`edge` between them, which IS that charge (`spread_note` says so where there is no two-way, and a leg
+no vega reaches carries a null rather than a zero). It writes nothing into the book: the quote lands in
 `DV_HOME/tmp/<quote_id>.json` as one pending trade, its sheet beside it when the `quote` extra is
 installed (a missing `xlsxwriter` names the install in `files.sheet_note` and never refuses a quote).
 Both read back by id — `GET /book/quote/{id}` and the `/sheet` beside it, offered to a host as
