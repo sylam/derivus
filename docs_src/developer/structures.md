@@ -631,9 +631,17 @@ with nothing to solve, an amount with no currency).
 **The accrual tolerance is measured, not chosen.** A strip is Monte Carlo priced, so its zero-cost
 strike is a root find over an ESTIMATOR — deterministic for a fixed seed, which is what lets `brentq`
 own it, but converging on the true root only as the paths grow: the accumulator's two orientations
-solve strikes 4.8e-4 apart at 1024 inner paths, 1.3e-4 at 4096, 2.5e-5 at 16384, 3.9e-5 at 65536. The
-gates quote at 16384 (about a second) and allow **2e-4**. They pin the axis finding (the accumulator
-solves one strike from both sides of the pair while the TARF refuses the second side by name), that
+solve strikes 4.8e-4 apart at 1024 inner paths, 1.3e-4 at 4096, 2.5e-5 at 16384, 3.9e-5 at 65536.
+**The count is DECLARED, and a quote's job floors onto it** (`priced_job`, `declared_paths`):
+`Base_Revaluation` states 16384, a book stating more keeps more, and a book stating fewer is quoted
+on the declaration with `notes` saying so — because the mark of a booked strip is an ordinary base
+valuation of that same book and the two readings have to be one estimator. A strip walking a FITTED
+spot model needs every path: its solved strike carries 2.8e-2 of spread per path against a lognormal
+strip's thirtieth of that, so the two orientations of one zero-cost forward strip land 7.3e-2 apart at
+a single path and 1.1e-4 at the declared count, where a fitted accumulator quotes in about two
+seconds. `/book/status` names a served book that states fewer. The gates allow **2e-4**. They pin
+the axis finding (the accumulator solves one strike from both sides of the pair while the TARF
+refuses the second side by name), that
 both strips net to zero and land BELOW the forward through `book_node` — not a tautology, since at a
 strike of the forward the geared sold leg outweighs the bought one — and that the composed TARF booked
 as a `CreditMonteCarlo` reports an exposure profile that is finite, multi-row and DISPERSED, which a

@@ -170,8 +170,9 @@ is recorded so a reader knows which readings rest on it.
   observed-spot branch the latch lives in, so it declares no such field.
 - **The boundary correction's bandwidth plateau holds at 16,384 to 20,480 paths** over bandwidths
   of 0.005 to 0.08, the correction spreading 2.4% to 3.9% and the CVA delta 0.6% to 0.2%; at 2,048
-  paths the correction falls monotonically by 24%. Acceptance names 32,768 paths and that re-read
-  is pending. The correction's scoping has no public seam a mutation gate could reach.
+  paths the correction falls monotonically by 24%. The declared default now sits at 16,384, the
+  bottom of that plateau, and the acceptance re-read at 32,768 is pending. The correction's scoping
+  has no public seam a mutation gate could reach.
 - **The accumulator's latch is measured OUTSIDE the recompute node, and no gate holds it there.**
   Dropping every node cotangent but the marks' reproduces the corrected CVA gradient bit for bit
   while suppressing the correction moves it 2.52% — the barrier's side, not the autocall's, the

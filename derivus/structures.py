@@ -1198,6 +1198,34 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
     return spot_model(document, deal['Object'], underlying, deal['Currency'])
 
 
+def declared_paths():
+    """The inner path count a base valuation DECLARES - one number, read where it is stated."""
+    from .calculation import Base_Revaluation
+    return int(schema.declared_defaults(Base_Revaluation, {})['MCMC_Simulations'])
+
+
+def thin_paths(calculation):
+    """Why a stated inner path count cannot price a simulated leg, or None where it can.
+
+    A block stating nothing takes the declaration's own count and has nothing to answer; one
+    stating fewer prices every accumulator, TARF, barrier and autocall on a draw.
+    """
+    stated, declared = calculation.get('MCMC_Simulations'), declared_paths()
+    if stated is None or int(stated) >= declared:
+        return None
+    return ('Calculation.MCMC_Simulations is {:,} against the {:,} a base valuation declares - at '
+            'that count a simulated leg answers a draw rather than a price. A quote prices on the '
+            'declared count; the book marks on its own until the field is raised'.format(
+                int(stated), declared))
+
+
+def priced_job(calculation, **edits):
+    """A quote's own calculation block: a base valuation at the count the declaration states, or
+    the book's own where the book states more."""
+    return dict(calculation, Object='BaseValuation', MCMC_Simulations=max(
+        int(calculation.get('MCMC_Simulations') or 0), declared_paths()), **edits)
+
+
 def alone(document, deal):
     """A deep copy of the book carrying only `deal`, plus that deal's path.
 
@@ -1207,7 +1235,7 @@ def alone(document, deal):
     """
     iterate = copy.deepcopy(document)
     schema.job_children(iterate)[:] = []
-    iterate['Calc']['Calculation']['Object'] = 'BaseValuation'
+    iterate['Calc']['Calculation'] = priced_job(iterate['Calc']['Calculation'])
     return iterate, schema.splice_deal(iterate, deal)
 
 
@@ -1396,10 +1424,10 @@ def read_policy(document):
 def risk_document(document, nodes, surface):
     """The book as a GREEKS run, with `nodes` added to its deal tree and the vol quotes connected.
 
-    Three edits and no others: the calculation becomes a `BaseValuation` with `Greeks: 'First'` -
-    one backward off the ROOT netting set, so a leaf's `.grad` is the whole portfolio's - the
-    candidate's nodes are appended, and `Quote_Sensitivity` goes to Yes on the `FXVolPrices` block,
-    which is what leaves the surface connected to the quotes it was built from.
+    Three edits and no others: the calculation becomes a quote's own (`priced_job`) with
+    `Greeks: 'First'` - one backward off the ROOT netting set, so a leaf's `.grad` is the whole
+    portfolio's - the candidate's nodes are appended, and `Quote_Sensitivity` goes to Yes on the
+    `FXVolPrices` block, which is what leaves the surface connected to the quotes it was built from.
 
     That switch is worth exactly zero in the forward pass, so turning it on cannot move a price.
 
@@ -1408,8 +1436,7 @@ def risk_document(document, nodes, surface):
     mid-only block that quotes must also be one the quote's own greeks run can read.
     """
     run = copy.deepcopy(document)
-    run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
-                                      Object='BaseValuation', Greeks='First')
+    run['Calc']['Calculation'] = priced_job(run['Calc']['Calculation'], Greeks='First')
     schema.job_children(run).extend(nodes)
     block = run['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Market Prices'][FX_VOL_PRICES.format(surface)]
@@ -1637,8 +1664,10 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     selected and the `client` cashflows read off it, `netting_set`, a row per leg (reference, role,
     deal type, side, market-terms strike and barrier, premium, whatever was solved, the two-way
     `spread_charge` levied on it with its `spread_source` and pillar rows, and any `note`), `net`,
-    `net_mid`, `edge`, `charged_on`, `spot`, `risk`, `valuation_configuration`, and `deal` - the
-    composed `StructuredDeal` in wire form, ready for the booking verb. `quote_id` hashes the structure, the
+    `net_mid`, `edge`, `charged_on`, `spot`, `risk`, `notes` - what the runner did that the book
+    did not say, a book stating too few inner paths for a simulated leg among them -
+    `valuation_configuration`, and `deal` - the composed `StructuredDeal` in wire form, ready for
+    the booking verb. `quote_id` hashes the structure, the
     parameters, the market the book was carrying AND a submission clock: a quote is an ACT, so two
     identical asks minutes apart are two quotes.
 
@@ -1794,6 +1823,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         'is the mid'.format(FX_VOL_PRICES.format(surface),
                             'carries no Quoted_Bid/Quoted_Ask'
                             if quote_points(document, surface) else 'is not on this book'),
+        # what the RUNNER did to this job that the book did not say - the quote prices a simulated
+        # leg on the declared count whatever the book states, and a thinner book is told so here
+        'notes': [x for x in [thin_paths(document['Calc']['Calculation'])] if x] or None,
         # what the residual this trade leaves on the book costs to hedge, and what the policy did
         # with it. `scale` is None where the feature never ran; the note says why
         'risk': risk,

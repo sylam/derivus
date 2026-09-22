@@ -47,7 +47,7 @@ ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra',
 #: zero-cost solve is a root find over an estimator, converging on the true root only as the paths
 #: grow. MEASURED: the accumulator's two orientations solve strikes 4.8e-4 apart at 1024 paths,
 #: 1.3e-4 at 4096, 2.5e-5 at 16384, 3.9e-5 at 65536. 16384 keeps the identity sharp at ~1 s a quote.
-ACCRUAL_SIMS = 16384
+ACCRUAL_SIMS = structures.declared_paths()
 
 #: The cross-axis band: eight times the measured 2.5e-5, which no axis error survives (the smallest
 #: of them, a barrier level inverted twice, moves the solved strike by percent).

@@ -1288,7 +1288,16 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
                          'terminal'}
     assert bare['spine'] is None, 'a box that records nothing has no position to report'
     assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
-    assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
+    assert {key: bare['calculation'][key] for key in ('Object', 'Currency', 'paths')} == {
+        'Object': 'BaseValuation', 'Currency': 'USD', 'paths': 1}
+    # a served book whose count cannot price a simulated deal is NAMED, with the field, the number
+    # the declaration states and where a desk sets it - never healed behind the desk
+    assert 'MCMC_Simulations is 1' in bare['calculation']['paths_note']
+    assert '{:,}'.format(structures.declared_paths()) in bare['calculation']['paths_note']
+    assert 'marks on its own' in bare['calculation']['paths_note']
+    assert structures.thin_paths({}) is None, 'a book stating nothing takes the declaration'
+    assert structures.thin_paths(
+        {'MCMC_Simulations': structures.declared_paths()}) is None
     assert (bare['deals'], bare['netting_sets']) == (1, [])
     assert (bare['curves'], bare['surfaces'], bare['models'], bare['xva']) == ([], [], [], [])
     assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
@@ -4692,11 +4701,17 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
 
     Without that merge the mirror is marked as a lognormal and the number is not the desk's take at
     all - a plausible mark on a trade nobody dealt at it.
+
+    THE BOOK STATES THE DECLARED PATH COUNT, because the mark is an ordinary base valuation of the
+    book and a strip walking a fitted law solves a strike 2.8e-2 per path wide: the identity below
+    holds when the two readings share a count and a seed, and a book stating fewer than the quote
+    is floored onto marks its own trade on a different estimator - at 1,024 paths this mark lands
+    4.6% off the take it was quoted at, which is what `/book/status` names.
     """
     document = json.loads(quoting_two_way.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
-    document['Calc']['Calculation']['MCMC_Simulations'] = 1024
+    document['Calc']['Calculation']['MCMC_Simulations'] = structures.declared_paths()
     quoting_two_way.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(quoting_two_way))
 
@@ -4800,7 +4815,7 @@ def test_a_leg_quoted_under_a_model_books_into_a_book_that_marks_it(quoting):
     document = json.loads(quoting.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
-    document['Calc']['Calculation']['MCMC_Simulations'] = 1024
+    document['Calc']['Calculation']['MCMC_Simulations'] = structures.declared_paths()
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(quoting))
 

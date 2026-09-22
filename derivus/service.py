@@ -145,7 +145,7 @@ ORIGINS = ['*']
 #: token in `Deals.Deals.Children[].Instrument`. A complete job that loads, prices and validates.
 JOB_SKELETON = {'Calc': {
     'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': '2024-06-28'},
-                    'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
+                    'Currency': 'USD', 'Random_Seed': 1},
     'Deals': {'Tag_Titles': '', 'Reference': 'skeleton', 'Deals': {'Children': [
         {'Instrument': {'.Deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'USD',
@@ -2646,11 +2646,12 @@ def book_status():
     """What this desk is set up with, composed from the readers beside it - the first call a client
     makes, and the one that says what every other verb has to work with.
 
-    The book's `base_date`, `base_currency` and calculation; how many deals it holds and which
-    netting sets; each curve with the knots it solved on, the scheme it is built under, the latest
-    print its rows carry and any benchmark held out; each vol surface with its own quote stamp; the
-    spot models calibrated onto it; the last XVA per set, trimmed to the columns a desk reads
-    staleness off.
+    The book's `base_date`, `base_currency` and calculation - which names the inner path count a
+    simulated deal is priced on and, where the book states fewer than the declaration, says so with
+    the remedy; how many deals it holds and which netting sets; each curve with the knots it solved
+    on, the scheme it is built under, the latest print its rows carry and any benchmark held out;
+    each vol surface with its own quote stamp; the spot models calibrated onto it; the last XVA per
+    set, trimmed to the columns a desk reads staleness off.
 
     Under a configured home `spine` says which LSN the file was hydrated at and how far the record
     has moved since - in events, and in the fills and amendments among them. What the two disagree
@@ -2668,8 +2669,12 @@ def book_status():
         'etag': etag,
         'base_date': book_base_date(document).isoformat(),
         'base_currency': market.get('System Parameters', {}).get('Base_Currency'),
+        # the inner path count is the one number a quote and a mark share, so a book stating too
+        # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
         'calculation': {'Object': calculation.get('Object'),
-                        'Currency': calculation.get('Currency')},
+                        'Currency': calculation.get('Currency'),
+                        'paths': calculation.get('MCMC_Simulations') or structures.declared_paths(),
+                        'paths_note': structures.thin_paths(calculation)},
         'deals': sum(1 for _ in walk_job_deals(document)),
         'netting_sets': [node['Instrument']['.Deal'].get('Reference')
                          for _, node in netting_sets(document)],
@@ -4788,7 +4793,10 @@ def blank_book():
     first booking has market data to validate against (bare market data would refuse every deal on
     the missing-factor delta); the dates are stamped to today, unlike the skeleton's own fixed one,
     which is a gated contract; and the two bootstrapper families are declared so a fresh desk's
-    first market tick finds something able to turn quotes into price factors."""
+    first market tick finds something able to turn quotes into price factors.
+
+    NO INNER PATH COUNT, here or in the skeleton: the calculation's own declaration is the one
+    number a quote and a mark share, and a book that states one states it on purpose."""
     import datetime
 
     document = json.loads(json.dumps(JOB_SKELETON))

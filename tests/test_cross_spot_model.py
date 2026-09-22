@@ -89,7 +89,7 @@ KNOCKOUT, TARGET = EURZAR * 1.10, 1.5
 
 #: Inner paths. MEASURED here, the cross accumulator's two orientations under the fitted law:
 #: 1.2e-4 apart at 16384 and 4.4e-5 at 65536 - the two shocks' estimator error.
-ACCRUAL_SIMS, AXIS_SIMS = 16384, 65536
+ACCRUAL_SIMS, AXIS_SIMS = structures.declared_paths(), 65536
 #: 4.5x the measured 4.4e-5. The smallest axis error - a law read on the reciprocal with no
 #: measure change - lands at 1.0e-3 on this world.
 AXIS_TOLERANCE = 2e-4
@@ -671,8 +671,8 @@ def test_a_key_that_cannot_resolve_skips_the_deal_and_never_kills_the_job(caplog
     """
     document = fitted('USD')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    good = dict(only_leg(accrual(document, 'Accumulator', 'EUR', paths=64,
-                                 knockout=KNOCKOUT)), Reference='GOOD')
+    good = dict(only_leg(accrual(document, 'Accumulator', 'EUR', knockout=KNOCKOUT)),
+                Reference='GOOD')
     bad = dict(good, Reference='BAD', Underlying_Currency='EUR.SPREAD')
     rates = dict(market['Price Factors'],
                  **{'ObservedBasis.EUR.SPREAD': {'Spot': 0.0, 'Chained_Basis': '',
@@ -800,11 +800,16 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     KILLING MUTATION - `name[:1]`: the key the kit forms becomes `FxRate.ZAR`, which the outer DOES
     publish, so every row starts from the outer's ZAR-in-USD state instead of its own level and the
     banked exposure moves. The bank is this device's, as every banked float here is.
+
+    THE BANK WAS RE-TAKEN when a quote stopped pricing on the book's own count: the deal below is
+    built from a quoted strip, whose strike is now solved on the count a base valuation declares
+    rather than the 64 paths this document states. The claim is unmoved - only the strike the
+    exposure is measured at.
     """
     document = fitted('USD')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     law = market['Price Factors'][CROSS_FACTOR]
-    deal = dict(only_leg(accrual(document, 'Accumulator', 'EUR', paths=64, knockout=KNOCKOUT)),
+    deal = dict(only_leg(accrual(document, 'Accumulator', 'EUR', knockout=KNOCKOUT)),
                 Reference='XO1')
     # a LogVar2FJ outer on an FxRate reads `Domestic_Currency` for its own discount leg, and each
     # base-priced rate needs a one-token law of its own for the outer to walk
@@ -831,7 +836,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-16702.31073277692, 99205.97112847844), rel=1e-9), (
+        (-4595.635822228079, 97754.94903504862), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
     # the run above did not skip, so the deal DID resolve the pair-keyed factor; the kit drops that

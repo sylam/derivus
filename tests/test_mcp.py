@@ -178,7 +178,9 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
                          'terminal'}
     assert bare['spine'] is None, 'a box that records nothing has no position to report'
     assert bare['base_date'] == '2024-06-28' and bare['base_currency'] == 'USD'
-    assert bare['calculation'] == {'Object': 'BaseValuation', 'Currency': 'USD'}
+    assert {key: bare['calculation'][key] for key in ('Object', 'Currency', 'paths')} == {
+        'Object': 'BaseValuation', 'Currency': 'USD', 'paths': 1}
+    assert 'MCMC_Simulations is 1' in bare['calculation']['paths_note']
     assert (bare['deals'], bare['netting_sets'], bare['curves']) == (1, [], [])
     assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
 
