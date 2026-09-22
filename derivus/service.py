@@ -3091,14 +3091,18 @@ def spot_model_factor(family, block_name):
     return structures.SPOT_MODEL_FACTOR.format(family, block_name.split('.', 1)[1])
 
 
-def desk_leverage_prior(pair):
-    """The desk's own leverage prior for `pair` off the seed it owns, or `None` where this
-    workstation has no `derivus_bloomberg` and no seed to read - a prior undeclared is the asset
-    class default, which the calibrator supplies. Imported inside, as every other use of that
-    package here is."""
+def desk_leverage_prior(pair, underlying):
+    """The desk's own leverage prior for `pair` ON THE AXIS THE FIT WILL DESCRIBE, or `None` where
+    this workstation has no `derivus_bloomberg` and no seed to read - a prior undeclared is the
+    asset class default, which the calibrator supplies.
+
+    `underlying` is the token the law prices, which the seed turns its own number onto: a view is
+    about one rate and reads the other sign on the reciprocal. The engine stays seed-agnostic and
+    the seed owns its own convention. Imported inside, as every other use of that package here is.
+    """
     try:
         from derivus_bloomberg import security_map
-        return security_map.leverage_prior(pair)
+        return security_map.leverage_prior(pair, underlying=underlying)
     except (ImportError, OSError, ValueError):
         return None
 
@@ -3125,9 +3129,12 @@ def spot_model_edit(document, pair, family):
     params = load(document).current_cfg.params
     # the section is keyed by what a family writes, and its entry names the stem it routes on
     entry = calibrator.price_factor_type
+    # the seed turns its own number onto the axis the fit will describe, which is the pair's rule
+    fitted = utils.spot_model_pair(
+        *structures.split_pair(pair), params['System Parameters'].get('Base_Currency', 'USD'))[0]
     name, block = calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], desk_leverage_prior(pair),
+        params['Price Factor Interpolation'], desk_leverage_prior(pair, fitted),
         market['Bootstrapper Configuration'].get(entry))
     market.get('Market Prices', {}).pop(name, None)
     borrowed = entry not in market['Bootstrapper Configuration']
@@ -3160,9 +3167,10 @@ class SpotModelJob:
     Fourier inversion of a daily recursion, and it takes MINUTES - 205 s for LogVar2FJ on a
     22-contract ladder reaching a year - so it is queued at `HEAVY` and must not sit in front of a salesperson's quote.
 
-    No second file and no projection: the fitted `<family>ModelParameters.<underlying>` block lands
-    in the book's own `Price Factors`, which every read of the book already serves and an accrual
-    leg resolves by naming convention. The outcome rides the run's `Stats` under `SpotModel`.
+    No second file and no projection: the fitted `<family>ModelParameters.<pair key>` block - the
+    pair's non-base token, or `<later>.<earlier>` alphabetically for a cross - lands in the book's
+    own `Price Factors`, which every read of the book already serves and an accrual leg resolves by
+    naming convention. The outcome rides the run's `Stats` under `SpotModel`.
     """
 
     def __init__(self, book, pair, family, result_id):

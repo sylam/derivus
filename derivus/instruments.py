@@ -552,9 +552,9 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     """A non-GBM spot model's parameter factor, by NAMING CONVENTION off the factor whose law it
     describes: `<spot_model>ModelParameters.<name>`. Model-agnostic.
 
-    An equity deal names its equity; an FX deal names the pair's NON-BASE token
-    (`utils.spot_model_currency`), the only leg the engine simulates and the one the calibration
-    writes.
+    An equity deal names its equity; an FX deal names the pair's key
+    (`utils.spot_model_currency`) - its NON-BASE token, or `<underlying>.<priced in>` for a cross,
+    the same key the calibration writes.
 
     Returns the SVI-shaped index `[(stoch, [per-parameter sub-factors], spot_model,
     {curve parameter: knots})]`, subtype tagged with spot_model for the pricer's branch, or None for
@@ -606,25 +606,29 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     """Does this FX deal pay on the RECIPROCAL of the axis its spot model was fitted on - and, for a
     family that cannot be carried there, the refusal.
 
-    An `FxRate` is a currency priced in the BASE, so a deal whose underlying IS the base pays on
-    `1/s` and settles in the other currency. LogVar2FJ transports to that numeraire as a measure
-    change inside its walk (`utils.LogVar2FJ.walk`).
+    A pair's law describes one token PRICED IN another (`utils.spot_model_pair`), so a deal whose
+    underlying IS that second token pays on `1/s` and settles in the other currency. It is the base
+    for a pair with a base leg and the alphabetically earlier token for a cross - one question
+    either way. LogVar2FJ transports to that numeraire as a measure change inside its walk
+    (`utils.LogVar2FJ.walk`).
 
     An ALLOW-LIST, so a family added without a carry refuses rather than pricing a fit on the
     wrong axis. Compared on `check_rate_name` tuples, the same spelling-blind test
     `utils.spot_model_currency` makes, or a mixed call misses the inversion.
     """
-    if utils.check_rate_name(underlying) != utils.check_rate_name(base):
+    priced_in = utils.spot_model_pair(underlying, currency, base)[1] or base
+    if utils.check_rate_name(underlying) != utils.check_rate_name(priced_in):
         return False
     if spot_model != 'LogVar2FJ':
         raise utils.UnpriceableSchedule(
-            '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the book\'s base '
-            'currency. The fit describes {3} - an FxRate is priced in the base, so the base leg '
-            'has no law of its own - and this deal pays on its reciprocal, settled in {3}. '
-            'LogVar2FJ carries to that numeraire with a measure change inside its walk '
+            '{0}: SpotModel={1!r} on a deal whose Underlying_Currency {2} IS the currency its '
+            'pair\'s law is priced in. The fit describes {3} priced in {2} - the token a rate is '
+            'priced in has no law of its own - and this deal pays on that reciprocal, settled in '
+            '{3}. LogVar2FJ carries to that numeraire with a measure change inside its walk '
             '(utils.LogVar2FJ.walk); {1} carries no such derivation. Declare LogVar2FJ, or quote the pair '
             'the other way up so the deal is written on {3} and no axis is crossed'.format(
-                reference, spot_model, '.'.join(underlying), '.'.join(currency)))
+                reference, spot_model, '.'.join(utils.check_rate_name(underlying)),
+                '.'.join(utils.check_rate_name(currency))))
     return True
 
 
@@ -5925,10 +5929,12 @@ class FXTARFOptionDeal(Deal):
             'or `LogVar2FJ`, which drives the OSS fixing-to-fixing simulation, walking its own INTERNAL',
             'step and handing each fixing interval one Gaussian block law that the PnL-cap survival and',
             'the integrated knock-in tail both read. Parameters are resolved by naming convention from',
-            'the `<SpotModel>ModelParameters.<non-base token>` price factor — the leg of the pair that is',
-            'not the book\'s base currency, that being the only one which IS an `FxRate` and the only',
-            'one the calibration writes (e.g. `LogVar2FJModelParameters.EUR` for an EURUSD leg on a',
-            'USD book, whichever side the deal is written from). Switching the model on without that',
+            'the `<SpotModel>ModelParameters.<pair key>` price factor, which is what the calibration',
+            'writes: the pair\'s NON-BASE token where one leg is the book\'s base currency (e.g.',
+            '`LogVar2FJModelParameters.EUR` for an EURUSD leg on a USD book), and',
+            '`<later>.<earlier>` alphabetically for a CROSS - `LogVar2FJModelParameters.ZAR.EUR`, the',
+            'rand priced in the euro, for an EURZAR leg on a USD book - whichever side the deal is',
+            'written from. Switching the model on without that',
             'factor in the market data is a loud skip, never a silent lognormal fallback.',
             '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not to',
             'the deal - a Valuation Configuration declaring one that differs from the fitted',
@@ -6005,9 +6011,9 @@ class FXTARFOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in spot model, by naming convention off the pair's non-base token. The
-        # token resolves only under the switch: it needs the book's base, and a GBM deal is priced
-        # on compile paths that never knew one
+        # opt-in spot model, by naming convention off the pair's key. It resolves only under the
+        # switch: it needs the book's base, and a GBM deal is priced on compile paths that never
+        # knew one
         spot_model = self.options.get('SpotModel', 'None')
         hn = None if spot_model == 'None' else get_spot_model_params_factor(
             spot_model,
@@ -6095,8 +6101,9 @@ class FXAccumulatorOptionDeal(Deal):
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
             '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface) or',
-            '`LogVar2FJ`, resolved by naming convention from',
-            '`<SpotModel>ModelParameters.<non-base token>` exactly as for the FX TARF; it walks',
+            '`LogVar2FJ`, resolved by naming convention from the',
+            '`<SpotModel>ModelParameters.<pair key>` price factor exactly as for the FX TARF - the',
+            'non-base token, or `<later>.<earlier>` alphabetically for a cross; it walks',
             'its own INTERNAL step and hands each fixing interval the block law this loop truncates at.',
             '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not to',
             'the deal - a Valuation Configuration declaring one that differs from the fitted',
@@ -6189,9 +6196,9 @@ class FXAccumulatorOptionDeal(Deal):
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
 
-        # opt-in spot model, by naming convention off the pair's non-base token. The
-        # token resolves only under the switch: it needs the book's base, and a GBM deal is priced
-        # on compile paths that never knew one
+        # opt-in spot model, by naming convention off the pair's key. It resolves only under the
+        # switch: it needs the book's base, and a GBM deal is priced on compile paths that never
+        # knew one
         spot_model = self.options.get('SpotModel', 'None')
         hn = None if spot_model == 'None' else get_spot_model_params_factor(
             spot_model,

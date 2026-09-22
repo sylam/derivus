@@ -180,9 +180,9 @@ price. `furnish_accrual` is where a leg becomes a strip:
 - **the model.** Both deals declare `spot_models = ('None', 'LogVar2FJ')`, and the runner pins
   `LogVar2FJ` (`structures.SPOT_MODEL`). The switch is a `Valuation Configuration` entry per deal
   TYPE resolved by naming
-  convention off the pair's NON-BASE token — `LogVar2FJModelParameters.ZAR` for a USDZAR leg on a USD
-  book, whichever side the notional is on, because the base currency is a numeraire and can name no
-  block. `spot_model` checks the book for that exact key and pins the model only where it is there: the
+  convention off [the pair's key](#the-join) — `LogVar2FJModelParameters.ZAR` for a USDZAR leg on a
+  USD book, whichever side the notional is on, because the base currency is a numeraire and can name
+  no block. `spot_model` checks the book for that exact key and pins the model only where it is there: the
   switch on with the factor absent raises inside the engine's dependency loop, which SKIPS the deal and
   logs an ERROR, so a structure that pinned it unconditionally would quote ZERO on every uncalibrated
   book. Where it is absent the leg carries a `note` naming that factor and the verb that installs it.
@@ -204,15 +204,35 @@ price. `furnish_accrual` is where a leg becomes a strip:
 
 ### The join: one law per pair, and the reader learns the axis {#the-join}
 
-Three keyings met at an accrual leg and did not agree. **They are one rule now**: the pair's NON-BASE
-token (`utils.spot_model_currency`, which the engine's lookup, the runner's presence check and the
-dependency discovery all call).
+Three keyings met at an accrual leg and did not agree. **They are one rule now**: the pair's key
+(`utils.spot_model_currency`, which the engine's lookup, the runner's presence check and the
+dependency discovery all call) — its NON-BASE token where the pair has a leg on the base, and for a
+CROSS the alphabetically LATER token priced in the EARLIER.
 
-| who | keys off | on a USD-base book, for USDZAR |
-|---|---|---|
-| the engine (`get_spot_model_params_factor`) | the pair's non-base token | `…ModelParameters.ZAR` |
-| the calibration (`fx_surface_block`) | the pair's non-base token — the only leg that IS an `FxRate` | writes `…ModelParameters.ZAR` |
-| `furnish_accrual` | still forces a TARF onto the pair's BASE, since a target has no reading on the reciprocal | `Underlying_Currency` = USD |
+| who | keys off | USDZAR on a USD book | EURZAR on a USD book |
+|---|---|---|---|
+| the engine (`get_spot_model_params_factor`) | the pair's key | `…ModelParameters.ZAR` | `…ModelParameters.ZAR.EUR` |
+| the calibration (`fx_surface_block`) | the same key, which is what it writes | writes `…ModelParameters.ZAR` | writes `…ModelParameters.ZAR.EUR` |
+| `furnish_accrual` | still forces a TARF onto the pair's BASE, since a target has no reading on the reciprocal | `Underlying_Currency` = USD | `Underlying_Currency` = EUR |
+
+**The cross's axis is a property of the two CURRENCIES and of nothing else** — not of the deal's
+orientation, and not of the order a desk happens to store its surface in. `EUR/ZAR` is the rand
+priced in the euro whether the book carries `FXVol.EUR.ZAR` or `FXVol.ZAR.EUR`, and the fit finds
+the surface in whichever order it is stored and lets `Invert_Moneyness` absorb the difference,
+exactly as it already does for a base-leg pair quoted the other way up. Keying off the stored
+spelling instead is what that costs: measured on one economy, a EUR-in-ZAR fit against the ZAR-in-EUR
+one the other spelling gave read **1.0e+00** apart at `Rho_S` — the sign of the skew — and the two
+books priced the same trade **1.0e-3** apart, five times the solve's own axis band, with both books
+pinning the model and neither noting anything.
+
+The second token is the currency the law is PRICED IN, and it is a token on the parameter block's own
+name rather than on an `FxRate`'s: a two-token `FxRate` name is a primary spot plus an
+`ObservedBasis` tail in discovery (`config.nested_fields`), which is a different object entirely, so
+a cross is never spelled that way. A pair with a base leg keeps the one-token key, so no document or
+factor written before this moves. A name that is not ONE currency has no pair to be a leg of and
+REFUSES by name — and because discovery runs outside the per-deal guard, `conditional_fields`
+answers `[]` rather than letting that refusal out: the engine's own lookup raises the `KeyError` the
+dependency loop turns into one skipped deal, which is the contract a portfolio of thousands survives.
 
 The base currency is a NUMERAIRE, never a rate: `FxRate.<ccy>` is that currency priced in the base, so
 `FxRate.USD` is identically one on a USD book and no fit describes it. A USDZAR TARF therefore used to
@@ -245,9 +265,30 @@ residual and the gap did not close with the path count; carried, they solve insi
 The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
 intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the
 reciprocal axis REFUSES by name rather than pricing off a law nobody fitted; `spot_model_reciprocal_axis`
-is the allow-list (`LogVar2FJ`) a family joins. A CROSS pair (neither leg the base)
-keeps the underlying's own read: both tokens are simulated factors there and the composed spot's
-law is out of the ruling's scope.
+is the allow-list (`LogVar2FJ`) a family joins. A CROSS asks the same question with the token its
+law is priced in standing in for the base, so a EURZAR strip whose `Underlying_Currency` is EUR is
+carried exactly as a USDZAR one whose underlying is USD.
+
+**A CROSS is fitted and keyed exactly as the pair would be on a book whose base is its EARLIER
+token.** `EUR/ZAR` is the rand priced in the euro — the orientation USDZAR has on a USD book — so
+every existing "the domestic is in the name" path is reused with `EUR` standing in for the domestic:
+the underlying is ZAR, the moneyness inverts, the discount curve is the euro's and the carry the
+rand's, each read off its own `FxRate`'s `Interest_Rate` as the pricer reads them. What a cross adds
+is the SPOT: a ratio of the two base-priced rates, declared as `Priced_In`. Before the key was the
+pair's, a USD book that had calibrated EURUSD answered `…ModelParameters.EUR` for a EURZAR strip,
+found it, pinned the model and priced the cross off the other pair's law with no note — measured
+**+2.56%** on the solved strike of a six-month accumulator whose whole model effect is a sixth of
+that. The OUTER is untouched: each base-priced rate simulates under whatever the book's `Model
+Configuration` says, and the pricer re-seeds the pair's law at each node exactly as it does for any
+pair with no process of its own (`LogVar2FJKit.carried` looking for `FxRate.ZAR.EUR`, which nothing
+publishes, and finding nothing).
+
+**WHAT THIS DOES NOT REMOVE, and did not introduce: a base-leg pair is fitted on the `FxRate`'s own
+axis.** EURZAR on a EUR book is the rand priced in the euro and on a ZAR book it is the euro priced
+in the rand, because that is what an `FxRate` IS on each of them — so two books of DIFFERENT bases
+fit reciprocal laws of one pair, and their strikes agree only to the family's own reciprocal-axis
+difference, measured **1.0e-3** on one economy against a solve band of 2e-4. Only the CROSS case is
+canonical; a pair with a leg on the base follows its book. Two books of the same base agree exactly.
 
 ### What the model is worth, and what it is not {#model-worth}
 

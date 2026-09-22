@@ -85,23 +85,54 @@ def seeded_rates(path=None):
                 **{curve: spec for curve, spec in desk.items() if spec.get('conventions')})
 
 
-def leverage_prior(pair, path=None):
-    """The desk's declared LogVar2FJ leverage prior for `pair`, or `None` where the seed states
-    none - `$DV_HOME/seed.json` unless named, falling back to the packaged questionnaire.
+def pair_name(pair):
+    """A quoted pair as the seed keys one: six letters, upper case, however the caller spelled the
+    separator - `EUR/ZAR`, `EUR.ZAR`, `EUR-ZAR` and `EURZAR` are one pair."""
+    return pair.replace('/', '').replace('.', '').replace('-', '').upper()
+
+
+def prior_axis(pair):
+    """Which token of `pair` the seed's own number is stated about: the NON-USD one for a pair with
+    a dollar leg, since the seed is a USD desk's book, and the alphabetically LATER one otherwise,
+    which is the axis a cross is fitted on wherever it is not a base leg."""
+    name = pair_name(pair)
+    tokens = [name[:3], name[3:]]
+    return next((x for x in tokens if x != 'USD'), tokens[1]) if 'USD' in tokens else max(tokens)
+
+
+def leverage_prior(pair, *, underlying=None, path=None):
+    """The desk's declared LogVar2FJ leverage prior for `pair` ON THE AXIS WHOSE PRICED TOKEN IS
+    `underlying`, or `None` where the seed states none - `$DV_HOME/seed.json` unless named, falling
+    back to the packaged questionnaire.
 
     A prior is a VIEW and not a quote, so it lives in the seed the desk owns and never in the
-    verified map: there is no terminal evidence for it. It is stated on the ENGINE'S axis - the
-    `FxRate` priced in the domestic currency - which is the opposite sign to the market's
-    USD-per-currency quoting on a USD-first pair. The desk's seed is AUTHORITATIVE where it
-    exists, packaged numbers included: a desk whose seed predates this field declares no prior and
-    gets the calibrator's asset-class default, which is what a view nobody wrote should be.
+    verified map: there is no terminal evidence for it. What it is a view ABOUT is one rate, and
+    the rate the SEED states it on is `prior_axis` - so the same view is the other SIGN on the
+    reciprocal, and asking for the axis a book actually fits NEGATES it there. `-0.4` on USDZAR is
+    vol rising as the rand weakens: `-0.4` on the rand priced in the dollar or in the euro, `+0.4`
+    on the dollar or the euro priced in the rand. `underlying` left out answers the seed's own axis
+    unturned, which is what a reader of the file wants. Both are KEYWORD-ONLY: this is a package's
+    public surface and a `path` passed positionally would have flipped a sign.
+
+    THE LOOKUP IS SPELLING-BLIND. A view is about the PAIR, so the separator and the token order are
+    the caller's business and neither may lose it: `ZAREUR` reads the `EURZAR` the seed states, and
+    a prior silently dropped is a fit that runs with no desk view and says nothing.
+
+    The desk's seed is AUTHORITATIVE where it exists, packaged numbers included: a desk whose seed
+    predates this field declares no prior and gets the calibrator's asset-class default, which is
+    what a view nobody wrote should be.
     """
     for candidate in (path or os.path.join(home(), 'seed.json'), packaged_seed()):
         if os.path.isfile(candidate):
             with open(candidate, encoding='utf-8') as handle:
                 priors = (json.load(handle).get('fx_vol') or {}).get('leverage_prior') or {}
-            value = priors.get(pair.replace('.', '').replace('-', '').upper())
-            return None if value is None else float(value)
+            name = pair_name(pair)
+            value = priors.get(name, priors.get(name[3:] + name[:3]))
+            if value is None:
+                return None
+            # `not value` keeps a declared zero off the negative zero a flip would print
+            turned = underlying is not None and str(underlying).upper() != prior_axis(name)
+            return -float(value) if turned and value else float(value)
     return None
 
 

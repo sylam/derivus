@@ -107,7 +107,7 @@ ACCRUAL_DEALS = ('FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
 SCHEDULE_FIELD = {'FXTARFOptionDeal': 'TARF_ExpiryDates',
                   'FXAccumulatorOptionDeal': 'Accumulator_ExpiryDates'}
 
-#: `<SpotModel>ModelParameters.<non-base token>`, the naming convention
+#: `<SpotModel>ModelParameters.<the pair's key>`, the naming convention
 #: `get_spot_model_params_factor` resolves the parameters by (`utils.spot_model_currency` picks the
 #: token) - so the presence check here and the engine's own lookup are one key.
 SPOT_MODEL_FACTOR = '{}ModelParameters.{}'
@@ -758,8 +758,8 @@ def spot_model(document, deal_type, underlying, settlement):
     here: the switch on with the factor absent raises inside the engine's dependency loop, which
     SKIPS the deal and logs an ERROR, so the quote would return its only leg priced at nothing.
 
-    A CROSS keeps the underlying's name and is out of the ruling's scope, both legs being simulated
-    factors whose composed law nothing fits. A book declaring no `Base_Currency` REFUSES rather
+    A CROSS is keyed `<later>.<earlier>` alphabetically, one law per pair of currencies however
+    a desk spells its surface. A book declaring no `Base_Currency` REFUSES rather
     than guessing a token, since the engine would then look the switch up under the other name.
 
     THE BOOK'S OWN SWITCH WINS. A book that already declares `SpotModel` for this deal type is
@@ -780,7 +780,7 @@ def spot_model(document, deal_type, underlying, settlement):
         market.setdefault('Valuation Configuration', {}).setdefault(
             deal_type, {})['SpotModel'] = model
         return None
-    return ('{} - a spot model is keyed off the pair\'s non-base token, so this leg looked up {}, '
+    return ('{} - a spot model is keyed off the pair, so this leg looked up {}, '
             'which this book does not carry. Calibrate {} under {} (/book/model)'.format(
                 'SKIPPED, this book pinning {} itself'.format(standing) if standing
                 else 'priced GBM', factor, token, model))

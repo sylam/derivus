@@ -1600,7 +1600,7 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
     assert 'LogVar2FJModelParameters.ZAR' in note, 'the factor looked up is unnamed'
     assert 'LogVar2FJModelParameters.USD' not in note, (
         'the base currency is a numeraire, never a rate - it can name no block')
-    assert 'non-base' in note and '/book/model' in note, 'a note without a remedy'
+    assert 'keyed off the pair' in note and '/book/model' in note, 'a note without a remedy'
     assert tarf['valuation_configuration'] is None, 'a model was pinned that cannot be resolved'
 
     # and on the fitted book BOTH orientations join: the TARF forced onto the base currency, and
@@ -1631,9 +1631,15 @@ def test_the_token_rule_answers_the_same_token_in_either_spelling():
         token = utils.spot_model_currency(underlying, currency, base)
         assert utils.check_rate_name(token) == ('ZAR',), (underlying, currency, base, token)
 
-    # a CROSS keeps the underlying, in every spelling and byte for byte
-    assert utils.spot_model_currency('EUR', 'GBP', 'USD') == 'EUR'
-    assert utils.spot_model_currency(('EUR',), ('GBP',), ('USD',)) == ('EUR',)
+    # a CROSS is keyed on the two CURRENCIES - the later priced in the earlier - so one pair has
+    # one law whichever way the deal is written and whichever way a desk spells its surface
+    for underlying, currency in (('EUR', 'GBP'), ('GBP', 'EUR')):
+        assert utils.spot_model_currency(underlying, currency, 'USD') == 'GBP.EUR'
+        assert utils.spot_model_currency(
+            (underlying,), (currency,), ('USD',)) == ('GBP', 'EUR')
+    # and a name that is not one currency has no pair to be a leg of
+    with pytest.raises(ValueError, match='ONE rate of a pair'):
+        utils.spot_model_currency(('EUR', 'BASIS'), ('GBP',), ('USD',))
 
 
 def test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning(accrual_book):

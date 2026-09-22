@@ -2123,7 +2123,10 @@ def test_a_tick_a_bootstrapper_refuses_lands_refused_rather_than_raising(desk, m
     document = json.loads(desk.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Bootstrapper Configuration']['LogVar2FJModelParameters'] = {}
-    market.setdefault('Market Prices', {})['LogVar2FJModelPrices.USD.ZAR'] = {
+    # a ONE-TOKEN name, the rand priced in this book's base: a two-token block name says what its
+    # underlying is priced in and is refused where its `Priced_In` does not say the same, which
+    # would refuse before the Quote_Type this gate is about
+    market.setdefault('Market Prices', {})['LogVar2FJModelPrices.ZAR'] = {
         'instrument': {'Quote_Type': 'Nonsense', 'Underlying': 'ZAR', 'Discount_Rate': 'USD',
                        'Volatility': 'USD.ZAR', 'European_Options': []}}
     desk.write_text(json.dumps(document, indent=2), newline='\n')
@@ -2135,7 +2138,7 @@ def test_a_tick_a_bootstrapper_refuses_lands_refused_rather_than_raising(desk, m
     assert result['status'] == 'done', result
     assert 'error' not in result, result
     assert outcome['written'] is False
-    assert any('Nonsense' in message and 'LogVar2FJModelPrices.USD.ZAR' in message
+    assert any('Nonsense' in message and 'LogVar2FJModelPrices.ZAR' in message
                for message in outcome['refused']), outcome
     assert desk.read_bytes() == before, 'a refused tick moved the book'
 

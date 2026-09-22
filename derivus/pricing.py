@@ -103,8 +103,9 @@ class LogVar2FJKit(object):
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.steps_per_year = float(structural['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
-        # where an OUTER LogVar2FJ process publishes its carried state: keyed by the underlying's
-        # own factor, whose type this deal does not name, and read on the DEAL's own day count
+        # where an OUTER LogVar2FJ process publishes its carried state: keyed by the PARAMETER
+        # factor's own name, read on the DEAL's own day count. A cross keys `FxRate.<later>.
+        # <earlier>`, which nothing publishes, so its row re-seeds and inherits no leg's state
         name = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Offset][0].name[:-1]
         self.state_keys = [utils.Factor(x, name) for x in ('EquityPrice', 'FxRate')]
         self.daycount = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]

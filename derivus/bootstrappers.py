@@ -409,6 +409,7 @@ class OptionQuoteFamily(ImpliedCalibration):
     # candidate types per input: any spot (0D) factor, any (moneyness, expiry) surface - so one
     # instrument definition serves FX, equity and commodity underlyings
     factor_types = {'Underlying': ['FxRate', 'EquityPrice', 'CommodityPrice', 'FuturesPrice'],
+                    'Priced_In': ['FxRate'],
                     'Volatility': utils.TwoDimensionalFactors,
                     'Discount_Rate': ['InterestRate'],
                     'Yield': ['DividendRate', 'InterestRate'],
@@ -428,10 +429,15 @@ class OptionQuoteFamily(ImpliedCalibration):
     #: The carry references, read whenever named and required by no quote type: no `Yield` is no
     #: carry, no `Funding_Rate` is a forward funded by `Discount_Rate`. A fit reads these plus what
     #: its quote type requires; a reference in neither list is not looked at.
-    optional_references = ('Yield', 'Funding_Rate')
+    optional_references = ('Priced_In', 'Yield', 'Funding_Rate')
 
     #: What an optional reference's absence means, appended to its declared description.
     reference_notes = {
+        'Priced_In': '. The currency the Underlying is priced in where that is not the book\'s '
+                     'base: the spot is read as the RATIO of the two, so a CROSS is fitted on the '
+                     'pair\'s own axis rather than on either leg\'s base-priced one. Blank is the '
+                     'base, whose own rate is identically one. Never a two-token FxRate name, '
+                     'which discovery reads as a spot plus an ObservedBasis tail',
         'Volatility': '. REQUIRED under Quote_Type Implied_Volatility, which prices its target '
                       'premium off it; INERT under Premium, where the quote IS the premium and no '
                       'surface is read at all',
@@ -744,10 +750,10 @@ class OptionQuoteFamily(ImpliedCalibration):
         exactly the pair `utils.calc_fx_forward` builds the priced forward from, so the calibrated
         forward already grows at the curve the pricer grows it on.
 
-        THE DESK'S LEVERAGE PRIOR, where one is handed in and this family declares the field, is
-        written on THE ENGINE'S AXIS - the `FxRate` fitted, priced in the domestic currency - which
-        is the axis `derivus_bloomberg`'s seed states it on and the opposite of the market's
-        USD-per-currency quoting for half the pairs. `Quote_Source` records that it came from there.
+        THE DESK'S LEVERAGE PRIOR arrives ALREADY ON THE AXIS THIS FITS, where one is handed in and
+        this family declares the field: what a seed states its number about is the seed's own
+        business, and the caller is what knows both. This writes it as given and `Quote_Source`
+        records which token the axis prices in what, so a number on the wrong axis is readable.
 
         ORIENTATION. An `FXVol.A.B` x-axis is `log(F/K)` for `A` priced in `B`, while the `FxRate`
         fitted is priced in the DOMESTIC currency - so the underlying is whichever token is not
@@ -755,18 +761,40 @@ class OptionQuoteFamily(ImpliedCalibration):
         it. Inverting flips the sign of Gamma_Star's skew, so what is written describes the rate the
         pricer simulates, orientation included.
 
-        Refuses by name, with the remedy, on: no built surface, a surface type no strike can be
-        looked up on, a ladder below `Minimum_Contracts`, a cross against the reporting currency,
-        and a missing spot or discount curve.
+        THE AXIS IS THE PAIR'S AND THE SURFACE IS THE BOOK'S. Which rate is fitted comes from
+        `utils.spot_model_pair`, the rule a deal's own lookup takes - the non-base token priced in
+        the base, or for a CROSS the alphabetically later token priced in the earlier - so one pair
+        has one law however a desk spells its surface. The surface itself is found in whichever
+        order the book stores it and `invert` absorbs the difference; a cross declares the quote
+        leg as `Priced_In`, reads its spot as the ratio of the two base-priced rates and is filed
+        under `<later>.<earlier>`, while a pair with a base leg declares no `Priced_In`, keeps its
+        one-token name and reads a denominator of exactly one.
+
+        Refuses by name, with the remedy, on: a pair the book carries neither spelling of or both,
+        a surface type no strike can be looked up on, a ladder below `Minimum_Contracts`, and a
+        missing spot or discount curve.
         """
         ladder = cls.fx_ladder(section)
-        name = utils.check_rate_name(pair)
-        vol_name = utils.check_tuple_name(utils.Factor('FXVol', name))
-        if vol_name not in price_factors:
+        asked = utils.check_rate_name(pair)
+        # a surface is a property of the PAIR and a book stores it one way round; the fitted axis
+        # is not the stored order's (`utils.spot_model_pair`) and `invert` absorbs the difference,
+        # exactly as it already does for a base leg quoted the other way up
+        orders = [utils.check_tuple_name(utils.Factor('FXVol', order))
+                  for order in dict.fromkeys((asked, tuple(reversed(asked))))]
+        # the spelling ASKED FOR first, so a book carrying both is fitted off the one named and no
+        # refusal is added where there was none
+        vol_name = next((order for order in orders if order in price_factors), None)
+        if vol_name is None:
             raise ValueError(
                 'no {} in the book\'s Price Factors - there is no built surface to read {} off. '
                 'Tick the pair\'s FXVolPrices block first (/book/market or /book/bloomberg), '
-                'which bootstraps it'.format(vol_name, pair))
+                'which bootstraps it'.format(' or '.join(orders), pair))
+        name = utils.check_rate_name(vol_name)[1:]
+        if len(name) != 2:
+            raise ValueError(
+                '{} names {} currenc{} - a pair\'s law is one rate priced in another, so the '
+                'surface this reads is quoted on exactly two. Name the pair itself'.format(
+                    vol_name, len(name), 'y' if len(name) == 1 else 'ies'))
 
         surface = riskfactors.construct_factor(
             utils.Factor('FXVol', name), price_factors, factor_interp)
@@ -786,40 +814,42 @@ class OptionQuoteFamily(ImpliedCalibration):
                 'expiry'.format(vol_name, surface.expiry.size, surface.moneyness.size))
 
         base_date = sys_params['Base_Date']
-        domestic = sys_params.get('Base_Currency', 'USD')
-        # the underlying is whichever token is not domestic; the moneyness inverts exactly where
-        # FXOptionDeal inverts it, on the surface's first token being the domestic
-        if domestic not in name:
-            raise ValueError(
-                '{} is a cross against the reporting currency {} - neither leg is an FxRate this '
-                'family can fit, because an FxRate is priced in the domestic currency. Author '
-                'the {} block by hand, naming the Underlying and its Discount_Rate/Yield '
-                'explicitly'.format(pair, domestic, cls.market_factor_type))
-        underlying = name[1] if name[0] == domestic else name[0]
+        base = sys_params.get('Base_Currency', 'USD')
+        # THE FITTED AXIS IS THE PAIR'S, never the stored order's: the deal's own rule, so a fit
+        # and a lookup cannot pick different laws off a spelling
+        underlying, priced_in = utils.spot_model_pair(name[0], name[1], base)
+        domestic = priced_in or base
+        priced_in = priced_in or ''
         invert = name[0] == domestic
 
-        spot_name = utils.check_tuple_name(utils.Factor('FxRate', (underlying,)))
-        if spot_name not in price_factors:
-            raise ValueError('no {} in the book\'s Price Factors - a smile is quoted around a '
-                             'spot, and the parameters this writes describe that rate\'s own '
-                             'dynamics. Add the FxRate block for {}'.format(
-                                 spot_name, underlying))
-        spot_block = price_factors[spot_name]
-        # the carry legs: the FxRate's own foreign curve and the one it is priced in - the pair the
-        # FX forward is built from
-        carry_name = spot_block.get('Interest_Rate') or underlying
-        discount_name = spot_block.get('Domestic_Currency') or domestic
-        for curve in (discount_name, carry_name):
+        rates = {}
+        for currency in dict.fromkeys((underlying, domestic)):
+            spot_name = utils.check_tuple_name(utils.Factor('FxRate', (currency,)))
+            if spot_name not in price_factors:
+                raise ValueError(
+                    'no {} in the book\'s Price Factors - a smile is quoted around a spot, and '
+                    'the parameters this writes describe {} priced in {}, which is the ratio of '
+                    'those two rates. Add the FxRate block for {}'.format(
+                        spot_name, underlying, domestic, currency))
+            rates[currency] = riskfactors.construct_factor(
+                utils.Factor('FxRate', (currency,)), price_factors, factor_interp)
+        # ONE read per leg, and it is the PRICER'S: `calc_fx_forward` grows each rate on the curve
+        # its own `FxRate` names, so the fit's forward is the forward the deal is priced on
+        curve_of = lambda currency: price_factors[utils.check_tuple_name(
+            utils.Factor('FxRate', (currency,)))].get('Interest_Rate') or currency
+        carry_name, discount_name = curve_of(underlying), curve_of(domestic)
+        for currency, curve in ((underlying, carry_name), (domestic, discount_name)):
             if utils.check_tuple_name(
                     utils.Factor('InterestRate', utils.check_rate_name(curve))) not in price_factors:
                 raise ValueError(
                     'no InterestRate.{0} in the book\'s Price Factors - the strikes hang off the '
                     'forward, and the forward is this pair\'s two curves. Add the {0} curve, or '
-                    'point {1}\'s Interest_Rate / Domestic_Currency at curves the book '
-                    'carries'.format(curve, spot_name))
+                    'point FxRate.{1}\'s Interest_Rate at a curve the book '
+                    'carries'.format(curve, currency))
 
-        spot = float(riskfactors.construct_factor(
-            utils.Factor('FxRate', (underlying,)), price_factors, factor_interp).current_value()[0])
+        spot = cls.spot_priced_in(
+            float(rates[underlying].current_value()[0]),
+            rates[domestic] if priced_in else None)
         discount = riskfactors.construct_factor(
             utils.Factor('InterestRate', utils.check_rate_name(discount_name)),
             price_factors, factor_interp)
@@ -928,12 +958,14 @@ class OptionQuoteFamily(ImpliedCalibration):
         desk = {} if leverage_prior is None or 'Leverage_Prior' not in declared else {
             'Leverage_Prior': float(leverage_prior)}
         if desk:
-            source += '; Leverage_Prior {:+g} on FxRate.{}\'s own axis, off the desk seed'.format(
-                float(leverage_prior), underlying)
-        return utils.check_tuple_name(utils.Factor(cls.market_factor_type, (underlying,))), {
+            source += ('; Leverage_Prior {:+g} on FxRate.{}\'s own axis priced in {}, off the '
+                       'desk seed'.format(float(leverage_prior), underlying, domestic))
+        return utils.check_tuple_name(utils.Factor(
+            cls.market_factor_type,
+            (underlying,) + ((priced_in,) if priced_in else ()))), {
             'instrument': {
                 **desk,
-                'Underlying': underlying, 'Underlying_Type': 'FxRate',
+                'Underlying': underlying, 'Underlying_Type': 'FxRate', 'Priced_In': priced_in,
                 'Volatility': '.'.join(name), 'Volatility_Type': 'FXVol',
                 'Discount_Rate': discount_name, 'Discount_Rate_Type': 'InterestRate',
                 'Yield': carry_name, 'Yield_Type': 'InterestRate',
@@ -965,13 +997,47 @@ class OptionQuoteFamily(ImpliedCalibration):
         return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
 
     @classmethod
+    def spot_priced_in(cls, spot, priced_in):
+        """`spot` re-priced in the `Priced_In` FACTOR, which is the ratio of the two base-priced
+        rates.
+
+        An `FxRate` is its currency in the book's BASE, so `B` priced in `A` is `FxRate.B` over
+        `FxRate.A`. `None` is the base itself, whose own rate is identically one, so the read is
+        `spot / 1.0` and a pair with a base leg is bit-identical.
+        """
+        return spot / (1.0 if priced_in is None else float(priced_in.current_value()[0]))
+
+    @classmethod
     def resolve_block(cls, market_price, instrument, price_factors, factor_interp, sys_params):
         """`({field: constructed factor}, spot)` - everything a block names, resolved before an
         option is looked at, so a book carrying two ladders fails on the one that is wrong.
 
+        The spot is the `Underlying`'s rate priced in the block's `Priced_In` - one read, a
+        denominator of exactly one where the block names none.
+
+        THE BLOCK'S NAME AND ITS `Priced_In` ARE ONE FACT and must agree, because the factor is
+        named off the NAME and the axis is fitted off the FIELD: a cross-keyed block declaring none
+        would file the base-priced law under the key a cross deal reads. A `Priced_In` of more than
+        one token refuses with them - a composed rate is a spot plus a basis tail, never a cross.
+
         A missing reference refuses by name (`resolve_references`), and so does a surface whose vol
         is not a table lookup at a strike: a mis-looked-up vol converges to the wrong answer.
         """
+        priced_in = instrument.get('Priced_In') or ''
+        declared = utils.check_rate_name(priced_in) if priced_in else ()
+        tail = utils.check_rate_name(market_price)[2:]
+        # an equity or commodity name tail is a basis chain, not a currency the underlying is
+        # priced in, so only an FxRate underlying is held to the cross rule
+        if instrument.get('Underlying_Type', 'FxRate') == 'FxRate' and (
+                len(declared) > 1 or declared != tail):
+            raise ValueError(
+                '{0}: the block is filed under a name saying its underlying is priced in {1} and '
+                'declares Priced_In {2!r}. The name and the field are one fact - the factor is '
+                'named off the name and the axis is fitted off the field - and a currency is ONE '
+                'token. File a cross as {3}.<underlying>.<priced in> declaring that same token, '
+                'or drop both for a rate priced in the base'.format(
+                    market_price, '.'.join(tail) or 'the base', priced_in,
+                    cls.market_factor_type))
         factors = cls.resolve_references(market_price, instrument, price_factors, factor_interp)
         surface = factors.get('Volatility')
         if surface is not None:
@@ -986,7 +1052,8 @@ class OptionQuoteFamily(ImpliedCalibration):
                     '(Quote_Type Premium) instead'.format(
                         market_price, instrument['Volatility'], subtype[0], subtype[1],
                         '/'.join(cls.tabular_surfaces)))
-        return factors, float(factors['Underlying'].current_value()[0])
+        return factors, cls.spot_priced_in(
+            float(factors['Underlying'].current_value()[0]), factors.get('Priced_In'))
 
     def prepare_quotes(self, sys_params, instrument, factors, spot, market_price=None):
         """Each `European_Options` row as `(option, t, r, q, forward, sign, strike, sigma,
@@ -2058,10 +2125,12 @@ class LVFit(utils.Residual):
         `Sigma_S_Reference`; a history's product carries the delta method's own standard error off
         the two the estimator writes.
 
-        THE PRIOR IS ON THE ENGINE'S AXIS. An `FxRate` is priced in the domestic currency, so
-        `FxRate.ZAR` in a USD book is USD per rand and a desk's `+0.4` on an EM cross quoted
-        USD-per-currency is `-0.4` here. The emitter writes the desk's own number off its seed;
-        this reads what the block carries, and the report prints the number and where it came from.
+        THE PRIOR IS ON THE AXIS THIS BLOCK FITS - `Underlying` priced in `Priced_In`, or in the
+        base where that is blank. So `FxRate.ZAR` on a USD book is USD per rand and a desk's `+0.4`
+        on an EM cross quoted USD-per-currency is `-0.4` here, while the same view on the rand
+        priced in the euro is `-0.4` and on the euro priced in the rand `+0.4`. The emitter is
+        handed the desk's number already turned onto that axis; this reads what the block carries,
+        and the report prints the number and where it came from.
         """
         rho, rho_sd = self.declared('Leverage_Prior'), self.declared('Leverage_Prior_SE')
         product, product_sd = (self.declared('Leverage_Product_Prior'),
@@ -4092,10 +4161,14 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         block for this underlying, read by the shape `utils.LogVar2FJ.SLOW_HISTORY` declares
         for both lanes - the slow pair, `Alpha`, `Beta` and `Rho_S`, each with its own standard
         error, because every one of them enters as a SOFT ROW weighted by that error and none of
-        them is pinned. The estimator is the calibration's; this is its reader."""
+        them is pinned. The estimator is the calibration's; this is its reader.
+
+        A history is the FITTED AXIS's, so a block declaring `Priced_In` reads its own pair key and
+        never the underlying priced in the base, which is a different rate."""
         model, keys = utils.LogVar2FJ.SLOW_HISTORY
-        block = price_models.get(utils.check_tuple_name(utils.Factor(
-            model, utils.check_rate_name(instrument['Underlying']))))
+        axis = utils.check_rate_name(instrument['Underlying']) + (
+            (instrument['Priced_In'],) if instrument.get('Priced_In') else ())
+        block = price_models.get(utils.check_tuple_name(utils.Factor(model, axis)))
         shape = [name for key in keys for name in (key, key + '_SE')]
         missing = [] if block is None else [
             name for name in shape if name not in block
@@ -4107,8 +4180,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                 'its POSITIVE standard error ({}), the error being what the row is weighted by - '
                 're-run the calibration, or drop the block and the declared and class-default '
                 'priors stand'.format(
-                    market_price, model, instrument['Underlying'], '/'.join(missing),
-                    '/'.join(shape)))
+                    market_price, model, '.'.join(axis), '/'.join(missing), '/'.join(shape)))
         return block
 
     def event_knots(self, fit, sys_params):

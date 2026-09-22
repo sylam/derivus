@@ -5225,17 +5225,21 @@ def check_fx_name(fx_correlation):
     return (1.0, (ccy1, ccy2)) if ccy1 < ccy2 else (-1.0, (ccy2, ccy1))
 
 
-def spot_model_currency(underlying, currency, base):
-    """The leg of an FX pair a spot model's parameters are named for: the NON-BASE one.
+def spot_model_pair(underlying, currency, base):
+    """`(the token a spot model's law describes, the token it is priced in)` for an FX pair, the
+    second `None` where that is the base and so names no block of its own.
 
-    An `FxRate` is that currency priced in the base, so the base leg is the numeraire and has no law
-    of its own; a CROSS - neither leg the base - keeps the underlying. The answer comes back in the
-    caller's own spelling, but the comparison is on `check_rate_name` tuples, so a flat name and a
-    checked one cannot disagree.
+    An `FxRate` is a currency priced in the base, so a pair with a BASE LEG is its non-base token
+    priced in the base. A CROSS - neither leg the base - is the ALPHABETICALLY LATER token priced in
+    the EARLIER: EUR/ZAR is the rand priced in the euro whichever way the deal is written and
+    whichever way the book stores the surface. The axis is a property of the two CURRENCIES, so one
+    pair has one law on every book that is not based on a leg of it, and a fit and a deal cannot
+    pick different ones off a spelling.
 
-    An UNKNOWN base REFUSES: the token is not resolvable without it, and answering the underlying
-    anyway is the defect - a runner would pin a model the engine looks up under the other name, and
-    the deal marks at nothing.
+    The comparison is on `check_rate_name` tuples, so a flat name and a checked one cannot disagree.
+
+    An UNKNOWN base REFUSES, and so does a name that is not one currency: a composed rate has no
+    pair to be the later token of, and a key built from three tokens is a factor nothing writes.
     """
     if base is None:
         raise ValueError(
@@ -5244,7 +5248,35 @@ def spot_model_currency(underlying, currency, base):
             'Parameters.Base_Currency (in the ExplicitMarketData block a quote reads); a deal is '
             'stamped with it by Calculation.set_deal_structures'.format(
                 '.'.join(check_rate_name(underlying)), '.'.join(check_rate_name(currency))))
-    return currency if check_rate_name(underlying) == check_rate_name(base) else underlying
+    pair = check_rate_name(underlying) + check_rate_name(currency)
+    if len(pair) != 2:
+        raise ValueError(
+            'a spot model describes ONE rate of a pair of currencies, and {} / {} is {} tokens. A '
+            'composed rate - a spot plus an ObservedBasis tail - has no pair to be a leg of, and '
+            'the key would name a factor nothing writes'.format(
+                '.'.join(check_rate_name(underlying)), '.'.join(check_rate_name(currency)),
+                len(pair)))
+    if pair[0] == check_rate_name(base)[0]:
+        return currency, None
+    if pair[1] == check_rate_name(base)[0]:
+        return underlying, None
+    return max(pair), min(pair)
+
+
+def spot_model_currency(underlying, currency, base):
+    """The KEY an FX pair's spot-model parameters are filed under: the pair's NON-BASE token, or
+    `<later>.<earlier>` for a cross - `...Parameters.ZAR` is ZAR priced in the base and
+    `...Parameters.ZAR.EUR` is ZAR priced in EUR.
+
+    A pair with a base leg keeps the one-token key, so no existing document or factor moves. The
+    answer comes back in the caller's own spelling - a dotted name for a flat call, a tuple for a
+    checked one - since the engine, discovery and the calibration speak tuples and the runner reads
+    flat names off a document.
+    """
+    law, priced_in = spot_model_pair(underlying, currency, base)
+    if priced_in is None:
+        return law
+    return '{}.{}'.format(law, priced_in) if isinstance(underlying, str) else (law, priced_in)
 
 
 def implied_correlation(factor, sign=1.0):

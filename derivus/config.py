@@ -420,20 +420,33 @@ conditional_fields = {
           sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
      if instrument.field.get('Equity_Volatility') is not None
      and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
-    # FX analogue, keyed on the pair's NON-BASE token - the leg the engine simulates, by the
-    # same `utils.spot_model_currency` rule the deal's own lookup takes, or discovery loads
-    # a block the compile will not ask for. getattr-guarded: FxRate is also visited with {}
-    'FxRate': lambda instrument, factor_fields, params:
-    [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                  utils.spot_model_currency(
-                      utils.check_rate_name(instrument.field['Underlying_Currency']),
-                      utils.check_rate_name(instrument.field['Currency']),
-                      utils.check_rate_name(
-                          params['System Parameters']['Base_Currency'])))]
-    if getattr(instrument, 'options', {}).get('SpotModel', 'None') != 'None'
-    and getattr(instrument, 'field', {}).get('Underlying_Currency') is not None
-    and getattr(instrument, 'field', {}).get('Currency') is not None else [],
+    # FX analogue, keyed on the pair by the same `utils.spot_model_currency` rule the deal's own
+    # lookup takes, or discovery loads a block the compile will not ask for
+    'FxRate': lambda instrument, factor_fields, params: spot_model_factors(instrument, params),
 }
+
+
+def spot_model_factors(instrument, params):
+    """The `<SpotModel>ModelParameters` factor this deal's pair keys, or `[]`.
+
+    NEVER REFUSES. `discover_factors` runs OUTSIDE `DealStructure`'s per-deal guard, so a refusal
+    here takes the whole job down where the contract is one skipped deal; a key that will not
+    resolve is left to `instruments.get_spot_model_params_factor`, whose `KeyError` the dependency
+    loop logs and skips BY NAME. getattr-guarded: `FxRate` is also visited with a bare `{}`.
+    """
+    field = getattr(instrument, 'field', {})
+    if getattr(instrument, 'options', {}).get('SpotModel', 'None') == 'None' or None in (
+            field.get('Underlying_Currency'), field.get('Currency')):
+        return []
+    try:
+        return [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
+                             utils.spot_model_currency(
+                                 utils.check_rate_name(field['Underlying_Currency']),
+                                 utils.check_rate_name(field['Currency']),
+                                 utils.check_rate_name(
+                                     params['System Parameters']['Base_Currency'])))]
+    except (ValueError, KeyError):
+        return []
 
 
 def filter_data_frame(df, from_date, to_date, rate=None):

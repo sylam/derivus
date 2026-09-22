@@ -121,6 +121,11 @@ is recorded so a reader knows which readings rest on it.
 
 ### The autocall, TARF and barrier pricers
 
+- **A structure's TICKET must spell its pair the way the book stores the surface.** A spot model's
+  key and the fit that writes it are spelling-blind - one pair, one law, `FXVol.EUR.ZAR` or
+  `FXVol.ZAR.EUR` - but `structures.materialize` looks the surface up under the ticket's own order
+  and refuses `EURZAR` on a book carrying `ZAREUR`, naming what the book does quote. So a desk
+  quoting a cross states the pair as its own market data spells it.
 - **A parametric FX surface never mints its parameter sub-factors** (2026-09-15). The equity
   surface lookup has a branch for a surface declared by its skew or by its SVI parameters and the
   FX surface lookup has none, so an FX surface declared that way fails at the lookup with an

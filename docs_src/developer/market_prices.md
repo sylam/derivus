@@ -788,6 +788,46 @@ prior and gets the class default — `/book/model` hands it to `fx_surface_block
 block carries it with `Quote_Source` naming the seed. A block declaring `Leverage_Prior` overrides
 all of that and the report says *from the declared Leverage_Prior*.
 
+**A CROSS is fitted as the pair would be on a book based at its ALPHABETICALLY EARLIER token.** For
+`EUR/ZAR` that is the euro: the `Underlying` is ZAR, the moneyness inverts, and the discount curve
+is the euro's and the carry the rand's, each read off its own `FxRate`'s `Interest_Rate` — which is
+the curve `utils.calc_fx_forward` grows that leg on, so the fit's forward is the deal's. The axis is
+a property of the two CURRENCIES: the book may store the surface either way round and the fit finds
+it and sets `Invert_Moneyness` against the canonical axis, so one pair has one law however a desk
+spells its quotes. What a cross adds is one declared field, `Priced_In` — a resolved `FxRate`
+reference like every other, refusing by name where the book carries no rate for it — and one read:
+the spot is `FxRate.<Underlying> / FxRate.<Priced_In>`, blank being the base, whose own rate is
+identically one, so the ratio is the ONLY spelling and a pair with a base leg is bit-identical by
+`x / 1.0 == x` rather than by a second branch. The block is filed as
+`LogVar2FJModelPrices.<later>.<earlier>` and writes the same key as a `LogVar2FJModelParameters`
+factor; it is never a two-token `FxRate` name, which discovery reads as a spot plus an
+`ObservedBasis` tail.
+
+BASE INVARIANCE is what gates it, on a world with nothing free in it: one economy on a EUR-base and
+a USD-base document — the euro book primitive and the dollar book's rates DERIVED from it, so the
+cross fit's ratio is a real division; every `FxRate` naming a curve that is not its own currency
+with a decoy 200bp away under the bare token; different day counts — authors the same eleven
+contracts and fits the same parameters to **0.0e+00** relative, and the same accumulator and TARF
+solve the same strikes off them. And the desk's prior is a view about ONE RATE: the seed turns its
+own number onto the axis the book fits (`security_map.leverage_prior`, which is spelling-blind about
+the pair), so `-0.4` on EURZAR reaches a EUR or USD book's fit as `-0.4` on the rand priced in the
+euro and a ZAR book's as `+0.4` on the euro priced in the rand, and the fitted `Rho_S` comes back
+with the sign of the prior in force.
+
+**TWO RESIDUES, both stated with their size.** The same market stored the other way round fits the
+same law under the same key to **8.0e-2** at the derived `Cap_A` and 1.7% at `Rho_S`, and that is
+the DELTA-NEUTRAL STRADDLE not being self-inverse: `K = F exp(-sigma^2 T/2)` is placed on whichever
+axis the surface is stored on, so the two books' ATM strikes differ by `exp(sigma^2 T)` — on a flat
+surface with no wings at all the residue is there and tracks `sigma^2 T` to nothing, while the
+25-delta rungs agree to 7.8e-04 in strike. The FITTED parameters move by **2.4e-02** at most on the
+re-quoted mirror and 9.7e-03 on an exact one, and the derived corner amplifies that; at the price it
+is **8.1e-05** of the solved strike, inside the 2e-4
+axis band and a twentieth of what the model itself is worth. And a base-leg pair keeps the
+`FxRate`'s own axis, which none of this changes: EURZAR on a EUR book is the rand priced in the euro
+and on a ZAR book the euro priced in the rand, so two books of different BASES fit reciprocal laws
+of one pair and their strikes agree only to the family's reciprocal-axis difference — measured
+**1.0e-3** against the same band. Only the cross case is canonical.
+
 **With a prior the box is SYMMETRIC.** `ρ_s ∈ [−ρ_max, +ρ_max]`, `ρ_max = √(1 − ρ_ℓ² − c_min)`,
 re-derived as `ρ_ℓ` moves. Half a box is an assertion about which way a smile leans, and the prior
 is where that assertion belongs; the seed is `sign(prior)·0.75` and a zero prior seeds −0.75 and lets
