@@ -1,9 +1,12 @@
-import { patchMarket } from '../api';
+import { useEffect, useState } from 'react';
+import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree } from '../components/Tree';
+import { stampText } from '../desk';
+import { marketsView } from '../spine';
 import { useApp, written } from '../state';
 import { isObject } from '../tokens';
-import type { Schema } from '../types';
+import type { BookMarkets, Schema } from '../types';
 
 /** `ModelParams.search` ported (config.py): a `Price Models` block keyed exactly wins; else the
  * first matching Model Configuration filter row; else the type's default; else static. */
@@ -73,6 +76,7 @@ export function MarketDataView() {
         />
       </div>
       <div className="panel">
+        <RecordMarkets />
         {marketFile ? (
           <div className="banner">
             This document overlays a server-side market data file (<b>{String(marketFile)}</b>) —
@@ -105,6 +109,82 @@ export function MarketDataView() {
         )}
       </div>
     </div>
+  );
+}
+
+/** What the RECORD says about this market, above what the book carries of it: the official close
+ * standing per market with the close it restated, the names a values vector was declared under,
+ * and the snapshots registered.
+ *
+ * Read-only, and invisible where this desk records nothing - which is why it heads the screen
+ * rather than hiding under it: a close is what an IPV reader comes here for, and a desk with no
+ * record sees exactly the screen it saw before. A `values_hash` IS the address of the vector, so
+ * two rows carrying one hash are one market marked twice.
+ */
+function RecordMarkets() {
+  const { state } = useApp();
+  const [markets, setMarkets] = useState<BookMarkets | null>(null);
+  const source = state.source;
+  const records = state.record.spine !== null;
+
+  // the record's own read, on the etag the whole screen rides: a close declared by any client
+  // lands here on the next beat, and a desk that keeps no record is not asked at all
+  useEffect(() => {
+    if (source?.kind !== 'book' || !records) return;
+    let live = true;
+    getBookMarkets()
+      .then((answer) => { if (live) setMarkets(answer); })
+      .catch(() => { if (live) setMarkets(null); });
+    return () => { live = false; };
+  }, [source, records]);
+
+  if (markets === null) return null;
+  const { closes, names, snapshots } = marketsView(markets);
+
+  return (
+    <section className="card">
+      <h3>the record · LSN {markets.lsn}</h3>
+      <table className="data">
+        <thead>
+          <tr>
+            <th>Market</th><th>Official close</th><th>Values</th><th>Stands over</th>
+            <th className="n">LSN</th>
+          </tr>
+        </thead>
+        <tbody>
+          {closes.map((close) => (
+            <tr key={close.lsn}>
+              <td>{close.market}</td>
+              <td>{stampText(close.effective_time)}</td>
+              <td className="mono" title={close.values_hash}>{close.values_hash.slice(0, 12)}</td>
+              <td>{close.supersedes}</td>
+              <td className="n">{close.lsn}</td>
+            </tr>
+          ))}
+          {names.map((name) => (
+            <tr key={`name-${name.lsn}`}>
+              <td>{name.name}</td>
+              <td>declared by {name.actor}</td>
+              <td className="mono" title={name.values_hash}>{name.values_hash.slice(0, 12)}</td>
+              <td>a market name pointed at a values vector</td>
+              <td className="n">{name.lsn}</td>
+            </tr>
+          ))}
+          {snapshots.map((snapshot) => (
+            <tr key={`snapshot-${snapshot.lsn}`}>
+              <td>{snapshot.book ?? ''}</td>
+              <td>a registered snapshot</td>
+              <td className="mono" title={snapshot.blob}>{snapshot.blob.slice(0, 12)}</td>
+              <td />
+              <td className="n">{snapshot.lsn}</td>
+            </tr>
+          ))}
+          {!closes.length && !names.length && !snapshots.length && (
+            <tr><td colSpan={5}>this record holds no market declaration yet.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </section>
   );
 }
 

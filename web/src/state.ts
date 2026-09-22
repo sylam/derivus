@@ -4,8 +4,10 @@
 
 import { createContext, useContext, type Dispatch } from 'react';
 import { getBook, type BookDealOutcome } from './api';
+import { readRecord, reconciledRecord, type RecordHeld } from './spine';
 import type {
-  BookRisk, BookXva, DescribeResult, JobDoc, ResultSummary, Schema, TablePage, ValidateResult,
+  ActivityPage, BookRisk, BookXva, DescribeResult, JobDoc, Reconcile, ResultSummary, Schema,
+  SpineBlock, TablePage, ValidateResult,
 } from './types';
 
 export type Source =
@@ -38,6 +40,12 @@ export type Fetched<T> = {
  * different thing, and comparing the two would always read stale. */
 export type RiskState = Fetched<BookRisk> & { bookEtag: string | null };
 
+/** What the RECORD answers this client, off the one poll the app already runs. The slice and both
+ * its transitions live in `web/src/spine.ts`, where they are arithmetic a node check drives:
+ * `spine` null is a desk that records nothing - not an empty record - and every reader of this
+ * renders nothing at all under it. */
+export type RecordState = RecordHeld;
+
 export type AppState = {
   schema: Schema | null;
   schemaError: string | null;
@@ -51,6 +59,7 @@ export type AppState = {
   run: RunState;
   risk: RiskState;
   xva: Fetched<BookXva>;
+  record: RecordState;
 };
 
 export const IDLE_RUN: RunState = {
@@ -62,11 +71,15 @@ const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false 
 
 export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
 export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
+export const NO_RECORD: RecordState = {
+  spine: null, rows: [], reconcile: null, reconciledAt: null,
+};
 
 export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
   tab: 'portfolio', selection: { deal: null, factor: null },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
+  record: NO_RECORD,
 };
 
 export type Action =
@@ -92,7 +105,11 @@ export type Action =
   | { type: 'RISK_FAILED'; error: string; status: number | null }
   | { type: 'XVA_FETCHING' }
   | { type: 'XVA_LOADED'; xva: BookXva }
-  | { type: 'XVA_FAILED'; error: string; status: number | null };
+  | { type: 'XVA_FAILED'; error: string; status: number | null }
+  // the record, read on the book poll's own beat: where the file stands, and the strip's next
+  // page; then the reconcile answer, under the file etag it was folded against
+  | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
+  | { type: 'RECONCILED'; reconcile: Reconcile; etag: string | null };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -170,6 +187,16 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         xva: { data: null, error: action.error, status: action.status, loading: false },
       };
+    // both transitions are `web/src/spine.ts`'s, and both answer the record they were handed
+    // where nothing moved - the beat is two seconds and most beats of it bring nothing at all
+    case 'RECORD_READ': {
+      const record = readRecord(state.record, action.spine, action.page);
+      return record === state.record ? state : { ...state, record };
+    }
+    case 'RECONCILED': {
+      const record = reconciledRecord(state.record, action.reconcile, action.etag);
+      return record === state.record ? state : { ...state, record };
+    }
   }
 }
 

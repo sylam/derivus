@@ -273,6 +273,12 @@ is recorded so a reader knows which readings rest on it.
   48 declared keys of a swap where 7 are the trade, the other 41 being conventions the store now
   marks as such (`convention` on the descriptor). A fold would hide them by default; it is not
   built because nothing under `web/scripts` drives `FieldView`, so it would ship ungated.
+- **A desk's poll of the record costs the whole record, per beat** (2026-09-22). `/book/activity`
+  parses every segment whatever `?since=` says and `/book/status`'s behind counts walk the log from
+  the pin, so one two-second beat is 10 ms at 5 events, 17 ms at 405 and 47 ms at 2,005, and an
+  append-only record never shrinks. The remedy is a seek by LSN inside the log's own reader -
+  `SpineLog.frames` already holds a byte offset per LSN in `_at` and skips by comparison instead -
+  which is a change in `derivus_spine/`.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

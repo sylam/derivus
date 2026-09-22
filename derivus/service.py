@@ -91,7 +91,7 @@ from itertools import count
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
@@ -1208,6 +1208,10 @@ UNRESOLVED = ('the fixings policy in force orders no source for {}, so the recor
 NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date, so ?date= takes exactly '
              'YYYY-MM-DD - no time, no partial year')
 
+#: What a strip is asked to read from: a position, and nothing that is not one.
+NOT_AN_LSN = ('{!r} is not a position: ?since= takes the `lsn` the last page answered, or nothing '
+              'at all for the newest page')
+
 
 class DiaryJob:
     """The compile half as ONE unit of queued work: the book's deals constructed, their schedules
@@ -1463,12 +1467,44 @@ def read_day(date):
     return day
 
 
+def read_lsn(since):
+    """`?since=` as the position it names, or None where it names NONE - unstated or empty, which
+    is what a strip's first paint and a hand-typed URL both leave.
+
+    `0` is a position and not an absence: it walks from genesis. Anything that is not a whole
+    number refuses by name rather than reading as one in silence.
+    """
+    if since is None or since == '':
+        return None
+    try:
+        return int(since)
+    except ValueError:
+        raise HTTPException(422, NOT_AN_LSN.format(since))
+
+
+def recorded():
+    """The 404 a box that records nothing answers, asked WITHOUT a book: a replica carrying a home
+    and no book still reads the record, and a fold that opens no document needs none."""
+    if not spine.configured():
+        raise HTTPException(404, NO_RECORD.format(spine.SPINE_HOME))
+
+
 def recording():
     """The live book under a configured home, or the 404 a box that records nothing answers."""
     live = live_book()
-    if not spine.configured():
-        raise HTTPException(404, NO_RECORD.format(spine.SPINE_HOME))
+    recorded()
     return live
+
+
+@app.exception_handler(spine.SpineRefused)
+def unreadable_record(request, refusal):
+    """A record read that cannot open what the record holds - a crypto-shredded home, a key this
+    seat was never wrapped for - answers the spine's own sentence as a 422.
+
+    A READING NEVER 500s: the home is intact and the answer is unavailable to this reader, which
+    is a fact about entitlement rather than a fault in the verb.
+    """
+    return JSONResponse(status_code=422, content={'detail': str(refusal)})
 
 
 @app.get('/book/reconcile', summary='Where the book file and the record disagree')
@@ -1488,6 +1524,64 @@ def book_reconcile():
         return {'lsn': None, 'events_behind': None, 'positions_behind': None,
                 'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': []}
     return dict(reconciled(document, pinned), lsn=pinned['lsn'], **behind(pinned))
+
+
+@app.get('/book/activity', summary="The record's own strip - one line per event")
+def book_activity(since: str = None, limit: int = 200):
+    """`{lsn, rows}` - one line per event, newest last, beside the cursor to ask again from.
+
+    THE STRIP OPENS NO BODY: the `activity` fold reads envelopes alone and every type in the
+    vocabulary, so it costs the length of the history rather than the price of a key, and a type
+    the declared table has no sentence for renders its own name rather than dropping out of the
+    sequence.
+
+    A PAGE WALKS THE RECORD FORWARD. With `?since=` it is the OLDEST `limit` rows after that
+    position and the cursor is THE LAST ROW DELIVERED, so a reader asking again with the cursor it
+    was given reaches every event in turn and steps over none; with no `?since=` it is the NEWEST
+    `limit` rows - the first paint of a strip - and the cursor is the head the fold reached. That
+    fold advances the strip's own `(lsn, state)` pair, the pair a fold takes, a strip's state being
+    its history, and never a seed FILE, which is minted at a close and is not what a page wants;
+    it applies only what came after, though the log still parses its segments to reach that
+    position, so a PAGE SAVES THE ROWS AND NOT THE READ.
+
+    An empty `?since=` is no `since` at all - a strip's first paint sends one - while `?since=0`
+    is a position and walks from genesis; one past the head answers the head with no rows, and a
+    `?limit=` of zero or less answers no rows and hands the cursor back unmoved, so a walker
+    never steps over what it did not read. 404 where no home is configured.
+    """
+    recorded()
+    projections = spine.package().projections
+    projector = projections.PROJECTORS['activity']
+    start, wanted = read_lsn(since), max(limit, 0)
+    seed = None if not start else {'projector': projector.name, 'version': projector.version,
+                                   'lsn': start, 'state': projector.initial()}
+
+    def read(log):
+        rows = projector.rows(projections.fold(log, projector, seed=seed))
+        rows = rows[:wanted] if start is not None else rows[max(len(rows) - wanted, 0):]
+        # an empty page under a cursor keeps the cursor, so a walker never skips what it did not
+        # read; a cursor past the head answers the head
+        head = log.head()[0]
+        cursor = min(start, head) if start is not None else head
+        return {'lsn': rows[-1]['lsn'] if rows else cursor, 'rows': rows}
+
+    return spine.folded(read)
+
+
+@app.get('/book/markets', summary="The record's markets - the closes, the names, the snapshots")
+def book_markets():
+    """`{lsn, names, closes, snapshots}` - the `markets` fold at the head.
+
+    The official close standing per market carries the LSN of the close it RESTATED, a close being
+    superseded by a new close rather than corrected in place, so what a market was marked at before
+    is still readable; beside them the names a values vector was declared under and the snapshots
+    registered against a book. 404 where no home is configured.
+    """
+    recorded()
+    projections = spine.package().projections
+    projector = projections.PROJECTORS['markets']
+    return spine.folded(lambda log: dict(
+        projector.rows(projections.fold(log, projector)), lsn=log.head()[0]))
 
 
 @app.get('/book/diary', summary='Every payment, fixing and expiry the book announces')

@@ -80,7 +80,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
-                'recalc_xva', 'book_reconcile', 'book_diary', 'close_check'}
+                'recalc_xva', 'book_reconcile', 'book_diary', 'close_check', 'book_activity',
+                'book_markets'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -214,37 +215,80 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
         row for row in answer['rows'] if row['due_date'] <= day]
 
 
-def test_the_two_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
-    """`book_reconcile` and `close_check` read the RECORD, and a deployment that keeps none answers
-    a 404 the tool turns into the service's own sentence rather than an empty reconcile a model
-    would read as agreement.
+def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
+    """The four reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
+    turns into the service's own sentence rather than an empty answer a model would read as
+    agreement, or as a record holding nothing.
 
-    Killing mutation: either tool answering `{}` where no home is configured, which tells a model
+    Killing mutation: any of them answering `{}` where no home is configured, which tells a model
     the file and the record agree on a box that has no record.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     for tool, arguments in ((mcp_server.book_reconcile, {}),
-                            (mcp_server.close_check, {'date': '2030-01-01'})):
+                            (mcp_server.close_check, {'date': '2030-01-01'}),
+                            (mcp_server.book_activity, {}), (mcp_server.book_markets, {})):
         with pytest.raises(ToolError) as refusal:
             tool(**arguments)
         assert 'DV_SPINE_HOME' in str(refusal.value) and '404' in str(refusal.value)
 
 
-def test_the_three_record_reads_are_read_only_and_say_what_they_read(book):
-    """A host runs discovery without asking permission to write, so the three reads carry the
+def test_the_record_reads_are_read_only_and_say_what_they_read(book):
+    """A host runs discovery without asking permission to write, so every record read carries the
     read-only hint; and each docstring is the model's whole contract for a verb it cannot try out
     on a box with no record.
 
-    Killing mutation: any of the three annotated as a writer, which makes a host prompt before a
-    model may ask what the book owes.
+    Killing mutation: any of them annotated as a writer, which makes a host prompt before a model
+    may ask what the book owes.
     """
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     for name, said in (('book_diary', 'determined'), ('close_check', 'legal'),
-                       ('book_reconcile', 'record')):
+                       ('book_reconcile', 'record'), ('book_activity', 'strip'),
+                       ('book_markets', 'close')):
         assert tools[name].annotations.read_only_hint is True, name
         assert said in tools[name].description, name
-    assert 'book_diary' in mcp_server.INSTRUCTIONS
-    assert 'close_check' in mcp_server.INSTRUCTIONS
+        assert name in mcp_server.INSTRUCTIONS, name
+
+
+def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book, tmp_path,
+                                                                            monkeypatch):
+    """Each tool is one `service().call`, so what a model reads is the fold's own rows: the strip
+    newest last with the head to page from, and the close standing per market with the LSN of the
+    one it restated.
+
+    Killing mutation: either tool composing an answer of its own - a `since` it keeps, or the rows
+    reversed - which puts a second reading of the record between the model and the log.
+    """
+    from derivus_spine import SpineLog, init_home
+
+    actor, home = 'subject-desk-one', tmp_path / 'spine'
+    init_home(home, actor)
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    log = SpineLog(home)
+    try:
+        genesis = log.head()[0]
+        vector = log.store.put(b'{"EURUSD":1.0851}')
+        log.append('market_declared', {'name': 'official', 'values_hash': vector}, actor=actor)
+        first = log.append('official_close_declared',
+                           {'market': 'official', 'values_hash': vector}, actor=actor)['lsn']
+        log.append('official_close_declared',
+                   {'market': 'official', 'values_hash': log.store.put(b'{"EURUSD":1.0857}')},
+                   actor=actor)
+    finally:
+        log.close()
+
+    strip = mcp_server.book_activity()
+    assert [row['lsn'] for row in strip['rows']] == list(range(1, first + 2))
+    assert strip['lsn'] == first + 1
+    assert strip['rows'][-1]['summary'] == 'the official close was declared'
+    assert mcp_server.book_activity(since=genesis)['rows'] == strip['rows'][genesis:]
+    assert mcp_server.book_activity(limit=1)['rows'] == strip['rows'][-1:]
+
+    markets = mcp_server.book_markets()
+    assert markets['lsn'] == strip['lsn']
+    assert [close['supersedes_lsn'] for close in markets['closes']] == [first]
+    assert [name['name'] for name in markets['names']] == ['official']
+    assert markets['snapshots'] == []
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

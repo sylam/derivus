@@ -1,7 +1,11 @@
-import { useEffect, useReducer, useState } from 'react';
-import { failure, getBook, getBookRisk, getBookXva, getSchema, postDescribe } from './api';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import {
+  failure, getBook, getBookActivity, getBookRisk, getBookStatus, getBookXva, getSchema,
+  postDescribe,
+} from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
+import { ActivityStrip, ReconcileBanner } from './components/Record';
 import { WORKSPACES } from './registry';
 import { AppContext, INITIAL, reducer } from './state';
 
@@ -39,6 +43,10 @@ export function App() {
     return () => removeEventListener('visibilitychange', onVisibility);
   }, []);
 
+  // Where the record's strip has read up to. A ref rather than state: the beat below is
+  // recreated whenever the book moves, and a cursor that reset with it would re-read the history.
+  const since = useRef(0);
+
   // the etag poll: a deal booked by ANY client (MCP, Excel, an editor on the file) appears here
   // within a tick, the user's place preserved
   useEffect(() => {
@@ -53,6 +61,14 @@ export function App() {
             source: { kind: 'book', etag: live.etag, path: live.path },
           });
         }
+        // THE RECORD RIDES THE SAME BEAT: the pin and how far the record has moved past it, then
+        // the events after the cursor. `spine` is read fresh each beat, so a service restarted
+        // with a home appears without a reload and a box that keeps none is never read twice.
+        const status = await getBookStatus();
+        const page = status.spine === null
+          ? null : await getBookActivity(since.current || '');
+        if (page) since.current = page.lsn;
+        dispatch({ type: 'RECORD_READ', spine: status.spine, page });
       } catch { /* the poll outlives a service restart */ }
     }, BOOK_POLL_MS);
     return () => clearInterval(timer);
@@ -124,6 +140,7 @@ export function App() {
           {state.schema && <span className="version">engine {state.schema.engine_version}</span>}
         </header>
         <JobHeader />
+        <ReconcileBanner />
         <nav className="tabs">
           {WORKSPACES.map((workspace) => (
             <button
@@ -149,6 +166,7 @@ export function App() {
         ) : (
           <Active />
         )}
+        <ActivityStrip />
       </div>
     </AppContext.Provider>
   );

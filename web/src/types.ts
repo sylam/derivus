@@ -186,6 +186,85 @@ export type BookXva = {
   sets: XvaSet[];
 };
 
+// ---- the record's readings: the spine block, /book/activity, /book/markets, /book/reconcile -----
+// Every one is a READING: it refuses nothing, and a desk that records nothing answers `spine: null`
+// and 404s the three verbs - which is a state of the screen rather than an error on it.
+
+/** Where the book FILE stands against the record: the LSN it was last hydrated at, and how far the
+ * record has moved since - in events, and in the fills and amendments among them. Null throughout
+ * on a file nothing has pinned, which is a file with nothing to compare. */
+export type SpineBlock = {
+  lsn: number | null;
+  head: string | null;
+  events_behind: number | null;
+  positions_behind: number | null;
+};
+
+/** `GET /book/status`. It carries the desk's whole orientation; this client renders the rest off
+ * the document it already holds and reads only the record's block here. */
+export type BookStatus = { etag: string; spine: SpineBlock | null };
+
+/** One line of the strip, envelope only - which is why it renders on a replica holding no key.
+ * `record_time` is the writer's clock; `effective_time` is when the fact is TRUE and is null where
+ * the fact carries no truth-time of its own. `summary` is the declared sentence for the type, or
+ * the type's own name where this hub's table has none. */
+export type ActivityRow = {
+  lsn: number;
+  record_time: string;
+  effective_time: string | null;
+  actor: string;
+  event_type: string;
+  book: string | null;
+  summary: string;
+};
+
+/** `GET /book/activity`: the rows newest last, and the head the fold reached - the `since` a
+ * client polls with next. */
+export type ActivityPage = { lsn: number; rows: ActivityRow[] };
+
+/** The official close standing on a market. `supersedes_lsn` is the close this one restated, null
+ * on the first - a close is superseded by a NEW close rather than corrected in place. */
+export type MarketClose = {
+  market: string;
+  values_hash: string;
+  supersedes_lsn: number | null;
+  effective_time: string | null;
+  lsn: number;
+};
+
+export type MarketName = {
+  name: string;
+  values_hash: string;
+  actor: string;
+  effective_time: string | null;
+  lsn: number;
+};
+
+export type MarketSnapshot = { blob: string; book: string | null; lsn: number };
+
+export type BookMarkets = {
+  lsn: number;
+  names: MarketName[];
+  closes: MarketClose[];
+  snapshots: MarketSnapshot[];
+};
+
+/** `GET /book/reconcile` - where the file and the record disagree, the record folded AT ITS HEAD.
+ * The file carries terms and never a signed quantity, so what the two can disagree about is how
+ * many CLIPS stand, with the record's own quantity beside them. */
+export type Reconcile = {
+  lsn: number | null;
+  events_behind: number | null;
+  positions_behind: number | null;
+  in_record_not_in_file: {
+    instrument: string; netting_set: string | null; quantity: number; last_lsn: number;
+  }[];
+  in_file_not_in_record: { instrument: string; deal_path: string; reference: string | null }[];
+  quantity_mismatch: {
+    instrument: string; record_clips: number; file_nodes: number; record_quantity: number;
+  }[];
+};
+
 // ---- the curves half of the market: /book/curve -------------------------------------------------
 // The book's curve BLOCKS read back as the definitions they are, and the curves this workstation's
 // seed could set one up from. The conventions travel in the verb's own spelling - the declared

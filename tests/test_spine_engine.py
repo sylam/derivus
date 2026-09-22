@@ -55,7 +55,7 @@ from derivus import service, spine, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at
 from derivus_spine import SpineLog, init_home, verify_home
-from derivus_spine import policy, verbs
+from derivus_spine import policy, projections, verbs
 
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
@@ -1205,6 +1205,293 @@ def test_a_fill_the_file_never_took_is_what_reconcile_is_for(recorded, booking):
     after = CLIENT.get('/book/reconcile').json()
     assert (after['events_behind'], after['positions_behind']) == (2, 1)
     assert len(after['in_record_not_in_file']) == 1, 'a policy moved a position'
+
+
+# --------------------------------------------------------------------------------------------
+# The record's own readings - the strip, the markets, and the verdict a banner reads off them.
+
+#: Every field one line of the strip carries. The envelope and nothing else, which is what lets a
+#: replica holding no key render the sequence.
+STRIP_FIELDS = {'lsn', 'record_time', 'effective_time', 'actor', 'event_type', 'book', 'summary'}
+
+
+def strip(**params):
+    answer = CLIENT.get('/book/activity', params=params)
+    assert answer.status_code == 200, answer.text
+    return answer.json()
+
+
+def merged(held, page):
+    """The strip's merge, mirrored from `web/src/spine.ts`: LSN order and no row twice, since a
+    page is what came after a cursor and a cursor answered off a fold that moved repeats one."""
+    rows = dict((row['lsn'], row) for row in held)
+    rows.update((row['lsn'], row) for row in page['rows'])
+    return [rows[lsn] for lsn in sorted(rows)]
+
+
+#: A reconcile answer's three lists where none has been fetched - what the banner knows before it
+#: asks, which is nothing about what the two hold.
+NO_LISTS = {'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': []}
+
+
+def verdict(pinned, answer):
+    """The banner's verdict, mirrored from `web/src/spine.ts`.
+
+    THE LISTS DECIDE AND THE COUNTS NEVER DO: every write to the book file re-pins it at the head,
+    the write that is the other half of a divergence included, so a verdict gated on the counts is
+    told `clean` about a trade the desk deleted through its own verb. DRIFT IS WHAT THE RECORD
+    MOVING FORWARD CANNOT EXPLAIN - a deal the file holds that nobody booked, a clip count the two
+    disagree on, or a trade the record holds and the file has LOST under a pin that has seen every
+    position there is.
+    """
+    if pinned is None:
+        return 'none'
+    lists = answer or NO_LISTS
+    lost = len(lists['in_record_not_in_file'])
+    if lists['in_file_not_in_record'] or lists['quantity_mismatch'] \
+            or (lost and not (pinned['positions_behind'] or 0) > 0):
+        return 'drifted'
+    return 'behind' if lost else 'clean'
+
+
+def stored(home, values):
+    """`values` in the blob store - where a close's vector and a snapshot live, the writer
+    refusing a fact that cites bytes nobody put first."""
+    log = opened(home)
+    try:
+        return log.store.put(values)
+    finally:
+        log.close()
+
+
+def filed(home, event_type, body, book=None):
+    """One fact through the ordinary writer, the way any other client files one."""
+    log = opened(home)
+    try:
+        return log.append(event_type, body, actor=ACTOR, book=book)['lsn']
+    finally:
+        log.close()
+
+
+def test_the_strip_is_every_event_and_a_page_is_what_came_after(recorded, booking):
+    """The activity read is the record's own sequence with nothing left out: the fold
+    opens no body, so every type is a line and the summary is the declared sentence for it.
+
+    `?since=` answers what came after, and merging that page onto the rows already held reproduces
+    the whole strip - the rule `web/src/spine.ts` renders by, mirrored here. With no `?since=`
+    `?limit=` keeps the NEWEST rows, which is a strip's first paint.
+
+    Killing mutation: the first page taken from the START instead of the end (`rows[:limit]`),
+    which paints a strip with the four genesis events and never what just happened.
+    """
+    for reference in ('ONE', 'TWO'):
+        assert book_one(reference)['written'] is True
+
+    whole = strip()
+    assert [row['lsn'] for row in whole['rows']] == list(range(1, head(recorded) + 1))
+    assert whole['lsn'] == head(recorded)
+    assert [row['event_type'] for row in whole['rows'][-2:]] == ['fill', 'fill']
+    assert all(set(row) == STRIP_FIELDS for row in whole['rows'])
+    assert all(row['summary'] == projections.SUMMARIES[row['event_type']] for row in whole['rows'])
+    assert [row['lsn'] for row in strip(limit=3)['rows']] == [row['lsn'] for row
+                                                              in whole['rows'][-3:]]
+
+    assert book_one('THREE')['written'] is True
+    page = strip(since=whole['lsn'])
+    assert [row['lsn'] for row in page['rows']] == [head(recorded)]
+    assert page['lsn'] == head(recorded)
+    assert merged(whole['rows'], page) == strip()['rows']
+    assert strip(since=head(recorded)) == {'lsn': head(recorded), 'rows': []}
+
+    # a type this hub has no sentence for renders its own NAME rather than dropping out of the
+    # sequence, which is what lets a replica of a newer hub still show every LSN
+    activity = projections.PROJECTORS['activity']
+    state = activity.initial()
+    activity.apply(state, dict(page['rows'][0], event_type='a_type_from_a_newer_hub'), None)
+    assert activity.rows(state)[0]['summary'] == 'a_type_from_a_newer_hub'
+
+
+def test_a_page_walks_the_record_forward_one_event_at_a_time(recorded, booking):
+    """A PAGE UNDER A CAP WALKS. With `?since=` the page is the OLDEST rows after it and the
+    cursor is the last row delivered, so a reader given that cursor reaches every event in turn
+    and steps over none; the walk ends at the head with an empty page rather than at a cursor that
+    was never true. `?limit=1` is the smallest walk there is, and the whole record is its ten LSNs.
+
+    Killing mutations: the page capped from the END under a `since` (the oldest rows are dropped
+    and no later call can reach them, since the cursor is already past them); and the cursor
+    answered as the handle's OPEN-TIME head rather than the last row delivered, under which the
+    first step of the walk jumps to the end of the record.
+    """
+    for reference in ('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX'):
+        assert book_one(reference)['written'] is True
+    assert head(recorded) == 10
+
+    walked, cursor = [], 0
+    for _ in range(11):
+        page = strip(since=cursor, limit=1)
+        walked.extend(row['lsn'] for row in page['rows'])
+        cursor = page['lsn']
+    assert walked == list(range(1, 11)), 'a page under a cap lost an event'
+    assert strip(since=cursor, limit=1) == {'lsn': 10, 'rows': []}
+
+    # and the empty edges: an unstated `since`, one past the head, and a limit of nothing
+    assert strip(since='', limit=2)['rows'] == strip(limit=2)['rows']
+    assert strip(since=99) == {'lsn': 10, 'rows': []}
+    assert strip(limit=-3) == {'lsn': 10, 'rows': []}
+    # an empty page under a cursor hands the cursor back, so a walker with a limit of nothing
+    # is not teleported past what it has not read
+    assert strip(since=3, limit=0) == {'lsn': 3, 'rows': []}
+    assert strip(since=3, limit=-3) == {'lsn': 3, 'rows': []}
+    assert CLIENT.get('/book/activity', params={'since': 'yesterday'}).status_code == 422
+
+
+def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
+    """The markets read is the fold's own answer: the close standing per market carrying
+    the LSN of the close it RESTATED - a close is superseded by a new close rather than corrected
+    in place - beside the names a values vector was declared under and the snapshots registered.
+
+    Killing mutation: the superseded LSN dropped, after which a restated close is indistinguishable
+    from a first one and nothing on the screen says the day was marked twice.
+    """
+    vector = stored(recorded, b'{"EURUSD":1.0851}')
+    restated = stored(recorded, b'{"EURUSD":1.0857}')
+    filed(recorded, 'market_declared', {'name': 'official', 'values_hash': vector})
+    first = filed(recorded, 'official_close_declared',
+                  {'market': 'official', 'values_hash': vector})
+    second = filed(recorded, 'official_close_declared',
+                   {'market': 'official', 'values_hash': restated})
+    snapshot = stored(recorded, b'{"surface":"the vol cube"}')
+    filed(recorded, 'snapshot_registered', {'blob': snapshot}, book=CLIENT_SET)
+
+    answer = CLIENT.get('/book/markets').json()
+    assert answer['lsn'] == head(recorded)
+    assert answer['closes'] == [{'market': 'official', 'values_hash': restated,
+                                 'supersedes_lsn': first, 'effective_time': None, 'lsn': second}]
+    assert answer['names'] == [{'name': 'official', 'values_hash': vector, 'actor': ACTOR,
+                                'effective_time': None, 'lsn': first - 1}]
+    assert answer['snapshots'] == [{'blob': snapshot, 'book': CLIENT_SET, 'lsn': head(recorded)}]
+
+
+def test_the_record_reads_are_a_404_on_a_box_that_records_nothing(unrecorded, desk):
+    """A reading refuses nothing and a desk that records nothing is a STATE rather than an
+    error: the two reads 404 in the service's own sentence naming the variable, the status block
+    is null, and the banner's verdict is `none`.
+
+    Killing mutation: either read answering an empty strip or an empty markets list, which tells a
+    desk that keeps no record that its record holds nothing.
+    """
+    assert spine.configured() is False
+    for path in ('/book/activity', '/book/markets'):
+        answer = CLIENT.get(path)
+        assert answer.status_code == 404, path
+        assert spine.SPINE_HOME in answer.json()['detail'], path
+    assert CLIENT.get('/book/status').json()['spine'] is None
+    assert verdict(None, None) == 'none'
+
+
+def test_the_banner_reads_clean_then_behind_then_drifted(recorded, booking):
+    """What the reconcile banner says, through the answers it says it from: a file written
+    under the record is CLEAN; fills the record took and the file never saw are the record being
+    AHEAD, by two counts that are not one number; and a deal the file holds that nobody booked is
+    DRIFT, which no beat of the poll closes.
+
+    Killing mutation: `positions_behind` counted as every event, after which the fixings policy
+    filed past the pin reads as a third trade the file has lost.
+    """
+    assert book_one('CLEAN')['written'] is True
+    pinned = CLIENT.get('/book/status').json()['spine']
+    assert (pinned['events_behind'], pinned['positions_behind']) == (0, 0)
+    assert verdict(pinned, CLIENT.get('/book/reconcile').json()) == 'clean'
+
+    for reference, amount in (('AHEAD_ONE', 100_000.0), ('AHEAD_TWO', 200_000.0)):
+        spine.book(json.loads(dump(dict(CASHFLOW, Reference=reference, Amount=amount))),
+                   amount, 'CPTY_A', CLIENT_SET, 'EXEC-' + reference)
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
+    pinned = CLIENT.get('/book/status').json()['spine']
+    assert (pinned['events_behind'], pinned['positions_behind']) == (3, 2)
+    answer = CLIENT.get('/book/reconcile').json()
+    assert len(answer['in_record_not_in_file']) == 2
+    assert answer['in_file_not_in_record'] == answer['quantity_mismatch'] == []
+    assert verdict(pinned, answer) == 'behind'
+
+    rewritten(booking, lambda node: node['Children'].append(
+        {'Instrument': {'.Deal': dict(json.loads(dump(CASHFLOW)), Reference='BY_HAND')}}))
+    drifted = CLIENT.get('/book/reconcile').json()
+    assert [row['reference'] for row in drifted['in_file_not_in_record']] == ['BY_HAND']
+    assert verdict(CLIENT.get('/book/status').json()['spine'], drifted) == 'drifted'
+
+
+def test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position(recorded, booking):
+    """THE COUNTS NEVER DECIDE, and this is why: a deal deleted through the desk's own verb
+    records nothing and re-pins the file AT THE HEAD, so the record holds a live position the file
+    has lost while both counts read zero; and a hand edit already shown as drift is re-pinned over
+    by the next booking, which moves the counts back to zero with both lists still standing.
+
+    Killing mutation: the verdict gated on the counts - `clean` where they are zero - under which
+    a deleted trade is invisible on every screen forever, nothing ever moving those counts again.
+    """
+    assert book_one('DELETED')['written'] is True
+    dropped = CLIENT.post('/book/deals', content=dump(
+        {'action': 'delete', 'deal_path': '0/0', 'reference': 'DELETED'}), headers=JSON).json()
+    assert dropped['written'] is True
+
+    pinned = CLIENT.get('/book/status').json()['spine']
+    assert (pinned['events_behind'], pinned['positions_behind']) == (0, 0)
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['quantity'] for row in answer['in_record_not_in_file']] == [250_000.0]
+    assert answer['in_file_not_in_record'] == answer['quantity_mismatch'] == []
+    assert verdict(pinned, answer) == 'drifted'
+
+    # the other half: a hand edit, then a booking that re-pins over it - both lists standing and
+    # both counts back at zero, which is the answer a desk must not be told is clean
+    rewritten(booking, lambda node: node['Children'].append(
+        {'Instrument': {'.Deal': dict(json.loads(dump(CASHFLOW)), Reference='BY_HAND')}}))
+    assert book_one('AFTER')['written'] is True
+    pinned = CLIENT.get('/book/status').json()['spine']
+    assert (pinned['events_behind'], pinned['positions_behind']) == (0, 0)
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['reference'] for row in answer['in_file_not_in_record']] == ['BY_HAND']
+    assert len(answer['in_record_not_in_file']) == 1
+    assert verdict(pinned, answer) == 'drifted'
+
+
+def test_a_home_with_no_book_at_all_still_reads_the_record(recorded):
+    """The strip and the markets open no DOCUMENT, so they answer on a box serving no book - the
+    replica posture the strip exists for, where the record is the whole of what there is to read.
+    Reconcile is the one that compares against a file, and says so in the book verb's own words.
+
+    Killing mutation: the two reads asking for the live book first, which 404s `No book is being
+    served` at a box whose only job is to read the record.
+    """
+    assert service.BOOK is None
+    assert CLIENT.get('/book/activity').json()['lsn'] == head(recorded)
+    assert CLIENT.get('/book/markets').json()['lsn'] == head(recorded)
+    refused = CLIENT.get('/book/reconcile')
+    assert refused.status_code == 404 and 'No book is being served' in refused.json()['detail']
+
+
+def test_a_shredded_home_answers_the_records_own_words_and_never_a_500(recorded, booking):
+    """A home whose class key is gone is CRYPTO-SHREDDED, which is an entitlement fact rather than
+    a fault: the strip still reads, opening no body, and every read that opens one answers the
+    spine's own sentence as a 422.
+
+    Killing mutation: the handler dropped, after which a reading takes the verb down and a desk
+    meets a stack trace where the record's own words belong.
+    """
+    assert book_one('SHREDDED')['written'] is True
+    filed(recorded, 'official_close_declared',
+          {'market': 'official', 'values_hash': stored(recorded, b'{"EURUSD":1.0851}')})
+    key = recorded / 'keys' / 'class_firm.key'
+    shredded = key.with_suffix('.gone')
+    key.rename(shredded)
+    try:
+        assert CLIENT.get('/book/activity').status_code == 200
+        for path in ('/book/markets', '/book/reconcile'):
+            refused = CLIENT.get(path)
+            assert refused.status_code == 422, path
+            assert 'class_firm.key' in refused.json()['detail'], path
+    finally:
+        shredded.rename(key)
 
 
 # --------------------------------------------------------------------------------------------

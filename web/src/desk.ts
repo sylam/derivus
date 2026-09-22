@@ -37,7 +37,7 @@ export function stampText(stamp: string | null | undefined): string {
   return `${parts[1]}-${parts[2]}-${parts[3]} ${parts[4]}:${parts[5]}:${parts[6]}`;
 }
 
-function plural(count: number, unit: string): string {
+export function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? '' : 's'}`;
 }
 

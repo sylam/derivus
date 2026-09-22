@@ -101,7 +101,9 @@ before changing them here.
 
 THE RECORD, where this desk keeps one: book_diary is everything the book owes or is owed with
 the fact each row waits on, close_check says whether a close on a day is legal and names what
-is outstanding, and book_reconcile says where the book file and the record disagree."""
+is outstanding, book_reconcile says where the book file and the record disagree, book_activity
+is one line per event with the head to page from, and book_markets the official close standing
+per market with the close each superseded."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -1300,6 +1302,35 @@ def close_check(date: str) -> dict:
     ready for one. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/close/check', params={'date': date})
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_activity(since: int | None = None, limit: int = 200) -> dict:
+    """The record's own strip: one line per event - where it sits, when it was recorded and when
+    it is TRUE, who said it, and the declared sentence for what it was.
+
+    Newest last, beside the `lsn` to ask again from. A PAGE WALKS FORWARD: with `since` it is the
+    OLDEST `limit` rows after that position and the `lsn` is the last row delivered, so asking
+    again with the one you were given reaches every event in turn - that is how a whole record is
+    read without holding it at once; with no `since` it is the NEWEST `limit` rows and the `lsn`
+    is the head. The strip opens no body, so it reads EVERY type - including one this hub has no
+    sentence for, which renders its own name rather than dropping out of the sequence. 404 on a
+    box that records nothing.
+    """
+    return service().call('GET', '/book/activity', params=dict(
+        {} if since is None else {'since': since}, limit=limit))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_markets() -> dict:
+    """The record's markets: the official close standing per market, the names a values vector was
+    declared under, and the snapshots registered against a book.
+
+    A close carries the LSN of the close it RESTATED - a close is superseded by a new one rather
+    than corrected in place - so what a market was marked at before is still readable, and the
+    `values_hash` on a row is the address of the vector itself. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/markets')
 
 
 @MCP.tool(annotations=READ_ONLY)

@@ -2,8 +2,9 @@
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
 import type {
-  BookResponse, BookRisk, BookXva, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
-  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult,
+  ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CurveOutcome,
+  CurvesAnswer, DescribeResult, JobDoc, Reconcile, ResultSummary, Schema, SecuritiesAnswer,
+  SeedOutcome, TablePage, ValidateResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -84,6 +85,16 @@ export const verifySecurities = (scope: Record<string, unknown>) =>
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.
 export const getBookRisk = () => call<BookRisk>('GET', '/book/risk');
 export const getBookXva = () => call<BookXva>('GET', '/book/xva');
+// the record's four readings. `status` carries the pin and how far the record has moved since,
+// which is a walk; `reconcile` says what the two disagree ABOUT and folds at the head, so it is
+// asked for when the counts say there is something and never on the poll's own beat
+export const getBookStatus = () => call<BookStatus>('GET', '/book/status');
+// an EMPTY cursor is no `since` at all - the newest page, which is a strip's first paint - and
+// the `lsn` a page answers is the cursor the next one is asked with
+export const getBookActivity = (since: number | '') =>
+  call<ActivityPage>('GET', `/book/activity?since=${since}`);
+export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
+export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

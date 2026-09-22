@@ -5,8 +5,8 @@ box is the edge of. The full seven-increment design lives in the owner's brief o
 page documents what is BUILT, which is **increments 1, 2, 3 and 4**: the log, the blob store and the
 chain (riding on them: identity, capability enforcement and key custody), on top of those the booking
 verbs, the attestation lanes and the two-dimensional firmness check, and over all of it the
-projections, the diary and the book file's pin. No network — a library, a CLI, five delegators on
-`Context`, three read verbs on the service, and 253 gates.
+projections, the diary, the book file's pin and the desk's own readers of them. No network — a
+library, a CLI, five delegators on `Context`, five read verbs on the service, and 281 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -105,8 +105,8 @@ channel into the record.
 
 ## The gates
 
-103 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth 237 of the 253
+104 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth 256 of the 281
 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
@@ -423,6 +423,60 @@ increment, and a row that cannot name its set is not a projection. And FULL HYDR
 regenerated from the positions fold rather than compared against it — waits until a netting set's own
 node is in the record, its CSA terms being what no fact carries today; until then the file is the
 materialisation and reconcile is how it is checked.
+
+## Increment 4c — the record's readers on the desk
+
+**Two reads, one seam each, and both are READINGS.** `GET /book/activity` is the strip: one line
+per event, newest last, beside the `lsn` to ask again from. **A page walks the record FORWARD**:
+with `?since=` it is the OLDEST `?limit=` rows after that position and the cursor is THE LAST ROW
+DELIVERED, so a reader asking again with the cursor it was given reaches every event in turn and a
+capped page loses none; with no `?since=` it is the NEWEST rows — a strip's first paint — and the
+cursor is the head the fold reached, never the head the handle opened at, so an append during the
+fold cannot make a client skip an event. The fold advances the strip's own `(lsn, state)` pair —
+the pair `fold` takes, a strip's state being its history, and never a seed FILE, which is minted at
+a close and is not what a page wants. **A page saves the rows and not the read**: `Log.frames`
+reaches `start_lsn` by skipping LSNs rather than by seeking to a byte offset, so the log parses its
+segments either way. At the design's synthetic home — 21 events — the fold is 0.24 ms whole and
+0.25 ms from the head, against 0.41 ms to open the handle at all; at 2,004 events one HTTP read is
+25 ms and 40 KB for the capped strip against 21 ms and 22 bytes for a page that answers nothing
+new, and one beat of the web's poll is 47 ms at 2,005 events. Seeking would be a change inside the
+log's own reader, and is not one this made. `GET /book/markets` is the `markets` fold at the head —
+the official close standing per market with the LSN of the close it restated, the declared names,
+the snapshots. **Neither asks for a book**: a replica carrying a home and no book file at all is
+exactly the posture a strip that opens no body is for, so the two check the home and never
+`DV_HOME/book.json`, where `/book/reconcile` compares against the file and needs one. A home whose
+class key is gone answers the record's own sentence as a 422 on every read that opens a body — a
+crypto-shredded home is an entitlement fact, not a fault in the verb. The binding gains
+`book_activity` and `book_markets` beside `book_reconcile`, `book_diary` and `close_check`.
+
+**Three consumers on the desk, one pure module.** `web/src/spine.ts` holds the arithmetic and
+`web/scripts/spine_check.mjs` drives it: the strip's merge of a page onto the rows already held
+(LSN order, no row twice, the newest 200 kept), the banner's verdict and what it asks a fold for,
+the markets panel's shaping, and the two predicates the store repaints on — so what decides
+whether a desk repaints is checkable without a browser. THE RECORD RIDES THE BOOK POLL'S OWN
+BEAT — the status block for the pin and the two behind counts, then the events after the cursor,
+on the one timer the client has — and `spine` is read fresh on every beat, so a desk that records
+nothing renders nothing and a service restarted with a home appears without a reload; the price of
+that is one `/book/status` per beat on every desk, the whole desk-status composition, about 3 ms on
+a box that records nothing. The strip is
+a collapsible line at the foot of the app frame; the banner sits under the book's own header, so it
+reaches the blotter and every other screen at once; the markets panel heads the Market Data screen,
+where a reader comes for a close. A document opened from a file renders none of the three: the
+record is the live book's and says nothing about a copy on somebody's disk.
+
+**THE LISTS DECIDE AND THE COUNTS NEVER DO.** `events_behind` and `positions_behind` say how far
+the record has moved past the file's PIN, and every write to the file re-pins it at the head — the
+write that is the other half of a divergence included — so a banner gated on them is told `clean`
+about a trade the desk deleted through its own verb, and un-shows a drift it has already shown as
+soon as the next booking lands. The verdict is read off `/book/reconcile`'s three lists: `drifted`
+where the file holds a deal nobody booked, where the two count a different number of clips, or
+where the record holds more positions the file lacks than `positions_behind` can account for — a
+trade the file has LOST, beside a lagging fill or alone; `behind` where the record holds rows
+`positions_behind` accounts for; `clean` only where all
+three lists are empty, so a fixings policy past the pin lights nothing. The fold itself costs the
+head, so it is asked for where `positions_behind` is above zero or the FILE has moved since the
+answer in hand — never on the beat, never on `events_behind`, and an answer once fetched stands
+until another replaces it.
 
 ## What is not built yet
 

@@ -25,9 +25,11 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 **The server's instructions are the desk's orientation.** A host reads them once per session and
 shows them to the model before it calls anything, so they are `INSTRUCTIONS` in
 `derivus_mcp/server.py`: what the desk is, to start with `desk_status`, the shape of a working
-day, the wire forms a deal is written in, the FX strike axis, what a refusal means, and that
-bootstrapping dials and ticker codes are configured once in the web UI. The module docstring
-stays the maintainer's.
+day, the wire forms a deal is written in, the FX strike axis, what a refusal means, that
+bootstrapping dials and ticker codes are configured once in the web UI, and — where this desk
+keeps a record — the five verbs that read it: what the book owes, whether a close is legal, where
+the file and the record disagree, the strip of what has been recorded, and the official closes.
+The module docstring stays the maintainer's.
 
 ## The tools
 
@@ -64,6 +66,8 @@ stays the maintainer's.
 | `book_diary` | `GET /book/diary` — every payment, fixing and expiry the book carries, with the amount where the compile determines one and the key a settlement fact names the row by |
 | `close_check` | `GET /book/close/check` — whether a close on a day is legal, and the rows it waits on |
 | `book_reconcile` | `GET /book/reconcile` — where the book file and the book of record disagree, named by instrument |
+| `book_activity` | `GET /book/activity` — the record's strip, one line per event with the head to page from; `since` is that head and `limit` keeps the newest |
+| `book_markets` | `GET /book/markets` — the official close standing per market with the close each superseded, the declared names, the snapshots |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 
