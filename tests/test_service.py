@@ -3131,7 +3131,7 @@ def test_a_set_up_a_bootstrap_complains_about_writes_nothing(desk_setup, tmp_pat
     document = json.loads(desk_setup.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Bootstrapper Configuration']['LogVar2FJModelParameters'] = {}
-    market.setdefault('Market Prices', {})['LogVar2FJModelPrices.USD.ZAR'] = {
+    market.setdefault('Market Prices', {})['LogVar2FJModelPrices.ZAR'] = {
         'instrument': {'Quote_Type': 'Nonsense', 'Underlying': 'ZAR', 'Discount_Rate': 'USD',
                        'Volatility': 'USD.ZAR', 'European_Options': []}}
     desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
@@ -3141,14 +3141,14 @@ def test_a_set_up_a_bootstrap_complains_about_writes_nothing(desk_setup, tmp_pat
 
     assert result['status'] == 'done' and 'error' not in result, result
     assert outcome['written'] is False and outcome['installed'] == []
-    assert any('Nonsense' in message and 'LogVar2FJModelPrices.USD.ZAR' in message
+    assert any('Nonsense' in message and 'LogVar2FJModelPrices.ZAR' in message
                for message in outcome['refused']), outcome
     assert outcome['check'] == [], 'a set-up that wrote nothing told a trader to go and look'
     assert desk_setup.read_bytes() == before, 'a refused set-up moved the book'
     assert mapped.stat().st_mtime_ns == stamped, 'a map with nothing to add was rewritten'
 
     del market['Bootstrapper Configuration']['LogVar2FJModelParameters']
-    del market['Market Prices']['LogVar2FJModelPrices.USD.ZAR']
+    del market['Market Prices']['LogVar2FJModelPrices.ZAR']
     # an older book's curve block: no conventions beside the quotes and no deal under the row
     market['Market Prices']['InterestRatePrices.OLD'] = {'instrument': {
         'Currency': 'USD', 'Discount_Rate': '', 'Points': [
