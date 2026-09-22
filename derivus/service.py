@@ -38,7 +38,10 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
 | `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
-| `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal and tick the book |
+| `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal, re-cross its spots and tick the book |
+| `GET /book/dependencies` | what the book - or the deals under one node of it - needs from the market, and which seed entry would supply what is missing |
+| `POST /book/dependencies` | the same walk over a CANDIDATE deal spliced in the way a what-if splices one - writes nothing |
+| `POST /book/setup` | build the market a trade needs: discover only what is unknown, install the surface, each new currency's spot and curve, bootstrap - one atomic write |
 | `GET /book/securities` | the desk's ticker vocabulary and its terminal evidence - the seed's candidates, the verified map and its rejection ledger, and the IPV join: every curve row with the print behind it |
 | `POST /book/securities` | set one entry of the desk's own seed - validated by spelling the candidates it now names, written atomically with the file it replaces kept beside it |
 | `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the rejected asked again, the seed's new names probed once and ledgered, the map rewritten |
@@ -82,7 +85,7 @@ import shutil
 import threading
 import time
 
-from collections import namedtuple, OrderedDict
+from collections import Counter, namedtuple, OrderedDict
 from copy import deepcopy
 from itertools import count
 
@@ -757,24 +760,34 @@ def deal_references(node):
         for reference in deal_references(child)]
 
 
+def newly_said(verdict, references, baseline):
+    """Every AUTHORING message a change newly says, against `baseline` - the same walk taken before
+    it: every message against the CHANGED deals, and every deal key the book did not already carry
+    a message about - a `Reference`, or the `#position` a node that never became a deal is keyed
+    by, which is how a misspelt `Object` is caught at all.
+
+    The market-data half is `deal_verdict`'s, because only a WRITE is refused for what the book
+    lacks; the dependency walk exists to answer that instead, and runs this half alone.
+    """
+    said = [reference for reference in references if reference in verdict['deals']]
+    said += [key for key in sorted(verdict['deals'])
+             if key not in baseline['deals'] and key not in said]
+    return [message for key in said for message in verdict['deals'][key]]
+
+
 def deal_verdict(document, references, deal_path, baseline):
     """The validate-before-write verdict on a document a change has already landed on:
     `(write, outcome)` for `Book.mutate`, written iff nothing NEWLY SAID stands against it.
 
-    Newly said is one rule over the whole verdict against `baseline`, the same walk taken before
-    the change: every message against the CHANGED deals, every deal key the book did not already
-    carry - a `Reference`, or the `#position` a node that never became a deal is keyed by, which
-    is how a misspelt `Object` is caught at all - and every factor the book did not already lack.
-    So a book failing elsewhere cannot block a correct change, and nothing malformed lands.
+    Newly said is one rule over the whole verdict against `baseline` - `newly_said` - plus every
+    factor the book did not already lack. So a book failing elsewhere cannot block a correct
+    change, and nothing malformed lands.
 
     Both mutating actions of `/book/deals` and every approved quote end here, which makes a
     refusal one wording rather than three.
     """
     verdict = load(document).validate()
-    said = [reference for reference in references if reference in verdict['deals']]
-    said += [key for key in sorted(verdict['deals'])
-             if key not in baseline['deals'] and key not in said]
-    refused = [message for key in said for message in verdict['deals'][key]]
+    refused = newly_said(verdict, references, baseline)
     refused += ['no market data for {}'.format(name)
                 for name in sorted(set(verdict['factors']) - set(baseline['factors']))]
     if refused:
@@ -932,6 +945,8 @@ def book_deals(request: dict):
     action = request.get('action', 'add')
     if action not in ('add', 'amend', 'delete'):
         raise HTTPException(422, 'action must be add, amend or delete, not {!r}'.format(action))
+    if action == 'add' and not isinstance(request.get('deal'), dict):
+        raise HTTPException(422, 'a booking is a deal - post it under `deal`')
 
     def edit(document, etag):
         if action == 'delete':
@@ -2155,6 +2170,10 @@ CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows', 'interpolation')
 CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
 CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
 
+#: The entry that turns a quoted smile into a surface, read off the same declaration, so a set-up
+#: installing one configures what solves it without spelling a family name.
+VOL_BOOTSTRAPPER = bootstrappers.FXVolSurfaceParameters.price_factor_type
+
 
 def curve_interpolation(market, curve):
     """`(method, source)` for one curve - the scheme it IS built under, resolved the way
@@ -2292,7 +2311,7 @@ def authored_curve(document, request):
         raise ValueError(str(error))
 
 
-def curve_edit(document, curves, base_date, quotes={}):
+def curve_edit(document, curves, base_date, quotes={}, patch={}):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
     bootstrapped through `market_edit`.
 
@@ -2300,7 +2319,7 @@ def curve_edit(document, curves, base_date, quotes={}):
     structural change never being a value tick; one whose plan stands moves its values alone, so
     the written factors keep their identity through a tick. `quotes` is whatever else rides the
     same atomic write, which is what makes a tick's surfaces and its curves one write and one
-    bootstrap.
+    bootstrap, and `patch` the values half riding it - the book's own spots, on a tick.
 
     `base_date` is the day the blocks handed in were authored on, stamped onto the book before they
     land, so the curves and the calculation are dated together or not at all.
@@ -2315,7 +2334,7 @@ def curve_edit(document, curves, base_date, quotes={}):
     for name in reauthored:
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
-    write, outcome = market_edit(document, dict(quotes, **curves), {}, 'Yes')
+    write, outcome = market_edit(document, dict(quotes, **curves), patch, 'Yes')
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
                         rewrote=rewrote(before, market)) if write else outcome)
 
@@ -2611,10 +2630,111 @@ def book_date(request: dict):
     return written
 
 
+def engine_spots(base_currency, crosses):
+    """`{currency: one unit of it in base-currency units}` for market crosses - the ENGINE's axis.
+
+    `structures.with_live_spots` is the inversion, and this runs it over a bare factor list so the
+    arithmetic has ONE spelling: a caller that has not installed its block yet reaches it, and a
+    pair neither of whose legs is the base still refuses by name rather than being triangulated.
+    """
+    names = {'FxRate.{}'.format(currency): {}
+             for pair in crosses for currency in structures.split_pair(pair)}
+    return structures.with_live_spots(
+        {'Calc': {'MergeMarketData': {'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': base_currency},
+            'Price Factors': names}}}}, crosses)
+
+
+def spot_routes(mapped, document):
+    """`({PAIR: security}, the currencies with no route)` - the verified pair that prices each
+    `FxRate.<ccy>.Spot` the book carries against the base. A currency the map verified no pair for
+    keeps the spot it had and is named; a cross is never triangulated through a third."""
+    from derivus_bloomberg import security_map
+    from derivus_bloomberg.errors import BloombergConfigurationError
+
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    base = market['System Parameters']['Base_Currency']
+    routes, unrouted = {}, []
+    for name in sorted(market.get('Price Factors', {})):
+        currency = name.split('.', 1)[1] if name.startswith('FxRate.') else base
+        if currency == base:
+            continue
+        try:
+            pair, security = security_map.fx_spot_route(mapped, currency, base)
+        except BloombergConfigurationError as error:
+            unrouted.append(str(error))
+        else:
+            routes[pair] = security
+    return routes, unrouted
+
+
+def book_spots(source, routes, document):
+    """The values patch that moves the book's own spots: one request for every route at once,
+    crossed onto the engine's axis. The prints have already been screened for freshness with the
+    surfaces' - a spot is the number every deal in the book reprices off."""
+    from derivus_bloomberg import security_map
+
+    base = document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Currency']
+    values = security_map.fetch_fx_spot(source, routes.values())
+    return {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in engine_spots(
+        base, {pair: values[security] for pair, security in routes.items()}).items()}
+
+
+def refusal(error):
+    """A refusal a model can act on: a bootstrap that raised a bare `KeyError` NAMES the key the
+    market being written does not carry, where its repr names nothing."""
+    return ('the bootstrap asked for {} and this market does not carry it'.format(error.args[0])
+            if isinstance(error, KeyError) else str(error))
+
+
+#: What one trip to the terminal came back with: the quote blocks, the re-authored curve blocks,
+#: the spots as a values patch, the rows and blocks it could not read, the currencies it could not
+#: route, the day the prints were snapped, and the late securities that stopped it.
+Snapped = namedtuple('Snapped', 'quotes curves spots held unrouted as_of late')
+
+
+def market_fetch(source, mapped, document, pairs, surface={}, note=None):
+    """The desk's market off ONE session: every named surface, every `InterestRatePrices` block the
+    book carries re-valued off its own rows, and every routed spot re-crossed - as `Snapped`.
+
+    THE ONE FETCH BOTH JOBS TAKE. A tick IS this; a set-up whose prints would roll the book's date
+    takes it for the market the book already carries, so a book never holds two days of quotes
+    under one date and there is no second spelling of the trip to drift.
+
+    Every quote is checked for freshness before any is fetched, so `late` names every dead security
+    rather than the first one found and nothing is fetched at all when one is there.
+    """
+    from derivus_bloomberg import fetch_fx_vol, security_map, to_market_prices_block
+
+    note = note or (lambda *said, **fields: None)
+    definitions, late = [], {}
+    for index, pair in enumerate(pairs, 1):
+        note('checking {} {}/{}'.format(pair, index, len(pairs)), index - 1, len(pairs))
+        definitions.append(security_map.fx_vol_definition(mapped, pair, **surface))
+        late.update(security_map.stale(source, sorted(
+            {quote.security for quote in definitions[-1].securities.values()})))
+    routes, unrouted = spot_routes(mapped, document)
+    if routes:
+        late.update(security_map.stale(source, sorted(routes.values())))
+    if late:
+        return Snapped({}, {}, {}, [], unrouted, book_base_date(document), late)
+    quotes = {}
+    for index, definition in enumerate(definitions, 1):
+        note('fetching {} {}/{}'.format(definition.pair, index, len(pairs)), index - 1, len(pairs))
+        snapshot = fetch_fx_vol(source, definition)
+        quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
+            to_market_prices_block(snapshot))
+    note('valuing the curve rows', len(pairs), len(pairs))
+    curves, held, as_of = curve_quotes(source, document)
+    return Snapped(quotes, curves, book_spots(source, routes, document) if routes else {},
+                   held, unrouted, as_of, {})
+
+
 class BloombergJob:
     """A terminal round trip as ONE unit of queued work: the security map provisioned, every
     requested surface fetched and checked, every curve block the book carries re-valued off its own
-    rows, and the whole lot installed and bootstrapped in one atomic write.
+    rows, the book's own spots re-crossed, and the lot installed and bootstrapped in one write.
 
     `derivus_bloomberg` is imported INSIDE `run_job`: blpapi lives only on a terminal workstation
     and the service must serve every other verb on a machine that has never heard of it.
@@ -2636,14 +2756,17 @@ class BloombergJob:
 
     def outcome(self, started, **fields):
         """The write's account of itself, with the trip's wall time beside it - what a poller
-        reads off `stats.Bloomberg`, and what the metronome logs a landed tick by."""
-        return None, {'Results': {}, 'Stats': {
-            'Bloomberg': dict(fields, seconds=round(time.perf_counter() - started, 2))}}
+        reads off `stats.Bloomberg`, and what the metronome logs a landed tick by. Every answer
+        carries the same five keys; a write adds the edit's own."""
+        return None, {'Results': {}, 'Stats': {'Bloomberg': dict(
+            {'written': False, 'refused': [], 'held_out': [], 'unrouted': [], 'spots': {}},
+            **fields, seconds=round(time.perf_counter() - started, 2))}}
 
     def run_job(self):
         import datetime
 
-        from derivus_bloomberg import discover, fetch_fx_vol, security_map, to_market_prices_block
+        from derivus_bloomberg import discover, security_map
+        from derivus_bloomberg.errors import BloombergFXError
         from derivus_bloomberg.session import BloombergSession
 
         started = time.perf_counter()
@@ -2651,8 +2774,7 @@ class BloombergJob:
         document, _ = self.book.read()
         try:
             if self.routine and discover.provisioned() is None:
-                return self.outcome(started, written=False, refused=[UNPROVISIONED.format(
-                    security_map.home())])
+                return self.outcome(started, refused=[UNPROVISIONED.format(security_map.home())])
             self.note('provisioning the security map')
             with BloombergSession(timeout_ms=30000) as session:
                 def on_batch(done, total):
@@ -2661,36 +2783,28 @@ class BloombergJob:
                 map_document, created = discover.provision(
                     session, datetime.date.today(), on_batch=on_batch)
                 pairs = self.scope.get('pairs') or sorted(map_document['blocks']['fx_vol'])
-                quotes, late, curves, held, snapped = {}, {}, {}, [], book_base_date(document)
-                for index, pair in enumerate(pairs, 1):
-                    self.note('fetching {} {}/{}'.format(pair, index, len(pairs)),
-                              index - 1, len(pairs))
-                    definition = security_map.fx_vol_definition(map_document, pair, **surface)
-                    late.update(security_map.stale(session, sorted(
-                        {quote.security for quote in definition.securities.values()})))
-                    # one late quote refuses the whole tick - and the rest are still checked, so
-                    # the refusal names every dead security rather than the first one found
-                    if not late:
-                        snapshot = fetch_fx_vol(session, definition)
-                        quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
-                            to_market_prices_block(snapshot))
-                if not late:
-                    self.note('valuing the curve rows', len(pairs), len(pairs))
-                    curves, held, snapped = curve_quotes(session, document)
-            if late:
-                return self.outcome(started, written=False, refused=[
-                    '{} is stale - {}'.format(name, why) for name, why in sorted(late.items())])
+                snapped = market_fetch(session, map_document, document, pairs, surface, self.note)
+            if snapped.late:
+                return self.outcome(started, unrouted=snapped.unrouted, refused=[
+                    '{} is stale - {}'.format(name, why)
+                    for name, why in sorted(snapped.late.items())])
 
             self.note('installing and bootstrapping', len(pairs), len(pairs))
             try:
-                written = self.book.mutate(
-                    lambda document, etag: curve_edit(document, curves, snapped, quotes))
+                written = self.book.mutate(lambda document, etag: curve_edit(
+                    document, snapped.curves, snapped.as_of, snapped.quotes, snapped.spots))
             except (ValueError, KeyError) as error:
                 # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
                 # the metronome's failed-beat handling reads `refused` off these Stats, where
                 # raising would reach it as an unhandled job error
-                return self.outcome(started, written=False, refused=[str(error)])
-            return self.outcome(started, provisioned=created, held_out=held, **written)
+                return self.outcome(started, refused=[refusal(error)])
+            return self.outcome(
+                started, provisioned=created, held_out=snapped.held, unrouted=snapped.unrouted,
+                spots={name: fields['Spot'] for name, fields in snapped.spots.items()}, **written)
+        except BloombergFXError as error:
+            # a name the terminal would not answer for is a named REFUSAL, never a job error: the
+            # metronome reads `refused` off these Stats and a model reads it as the thing to fix
+            return self.outcome(started, refused=[str(error)])
         finally:
             PROGRESS.pop(self.result_id, None)
 
@@ -2735,10 +2849,13 @@ def book_bloomberg(request: dict):
     atomic write. A quote whose last print is late refuses the whole tick BY NAME and writes
     nothing: a dead series keeps answering with a plausible number.
 
-    THE CURVES RIDE THE SAME TRIP. Every `InterestRatePrices` block the book carries has its used
-    rows re-priced off the securities they name and moved as VALUES; a block whose base date has
-    rolled is re-authored from its own rows and conventions first, and a row the screen refuses is
-    held out by name in `held_out` rather than refusing the tick.
+    THE CURVES AND THE SPOTS RIDE THE SAME TRIP. Every `InterestRatePrices` block the book carries
+    has its used rows re-priced off the securities they name and moved as VALUES; a block whose
+    base date has rolled is re-authored from its own rows and conventions first, and a row the
+    screen refuses is held out by name in `held_out` rather than refusing the tick. Every
+    `FxRate.<ccy>.Spot` whose currency routes to a verified `fx_spot` pair against the base is
+    re-crossed onto the engine's axis in the same write and answered under `spots`; a currency the
+    map verified no pair for keeps the spot it had and is named under `unrouted`.
 
     THE SNAP SETS THE DATE. Where the prints came back later than the day the book stands at, both
     its dates roll onto the latest of them and every curve block is re-authored there, in the same
@@ -3066,6 +3183,641 @@ def book_securities_verify(request: dict):
     # submission clock names it: two verifications of one scope are two trips
     result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
     submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY)
+    return {'result_id': result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+
+
+#: Which vocabulary block spells the securities a missing price factor is supplied from, by the
+#: factor TYPE that names it. A type absent here is one this desk seeds nothing for.
+SUPPLY_BLOCKS = {'InterestRate': 'rates', 'FxRate': 'fx_spot', 'FXVol': 'fx_vol'}
+
+
+def supply_of(factor, base_currency, seed, mapped):
+    """`(the seed entry that would supply this factor, the note saying why none would)`.
+
+    A curve is supplied by its own `rates` entry, a spot by the `fx_spot` pair that routes its
+    currency against the book's base, a surface by the `fx_vol` pair its two currencies spell.
+    `securities` is how many names the seed spells for it and `verified` how many the map holds,
+    both read through the SCOPING a verification is asked in, so neither count can drift from what
+    `POST /book/securities/verify` would probe.
+    """
+    from derivus_bloomberg import discover
+
+    kind, _, named = factor.partition('.')
+    block = SUPPLY_BLOCKS.get(kind)
+    if block is None:
+        return None, 'this desk seeds no {} - a market for it is authored by hand'.format(kind)
+    if block == 'rates':
+        missing = 'the seed declares no rates entry for {}'.format(named)
+        key = named if named in (seed.get('rates') or {}) else None
+    elif named == base_currency:
+        return None, '{} is the base currency and prices itself - the book declares its own ' \
+                     'FxRate block'.format(named)
+    else:
+        spellings = ([named.replace('.', '')] if block == 'fx_vol' else
+                     [named + base_currency, base_currency + named])
+        key = next((pair for pair in spellings if pair in
+                    ((seed.get(block) or {}).get('pairs') or [])), None)
+        missing = 'the seed spells no {} pair for {}'.format(block, ' or '.join(spellings))
+    if key is None:
+        return None, '{} - name one with POST /book/securities and verify it'.format(missing)
+    entry = {'block': block, 'key': key,
+             'securities': sum(1 for _ in discover.candidates_from_seed(
+                 scoped_seed(seed, block, key))),
+             'verified': len(scoped_map(mapped, block, key, ())['blocks'])}
+    if block == 'rates':
+        entry['conventions'] = bool((seed['rates'][key] or {}).get('conventions'))
+    return entry, None
+
+
+def walked_factors(document, deal_path=None):
+    """`(resolved, missing)` for the deals under one node of a document - `factor_universe` over
+    that subtree against the document's own market data, with no model resolution and no pricing.
+
+    No path is the book as it stands. A path re-wraps the document around that ONE node rather
+    than copying it or editing it, so the caller's document is left exactly where it was found and
+    the market data is not duplicated to ask a question about the deals.
+    """
+    if deal_path is not None:
+        document = dict(document, Calc=dict(document['Calc'], Deals=dict(
+            document['Calc']['Deals'], Deals={'Children': [deal_at(document, deal_path)]})))
+    universe = load(document).current_cfg.factor_universe()
+    return universe['resolved'], universe['missing']
+
+
+def candidate_walk(document, deal, parent_reference, baseline):
+    """`(deal_path, resolved, missing)` for a CANDIDATE spliced into a document - the walk of that
+    subtree alone, so the answer is what this trade needs rather than what the book lacks.
+
+    The booking's own AUTHORING verdict runs first and raises: a deal whose `Object` names no type
+    would otherwise reach nothing and walk clean, and a model that misspelt a type would be told
+    the market is fine. `deal_verdict`'s market-data half is deliberately not run - it is the
+    question being asked.
+    """
+    deal_path = splice_deal(document, instrument_of(booked_node(deal)), parent_reference)
+    refused = newly_said(load(document).validate(),
+                         deal_references(deal_at(document, deal_path)), baseline)
+    if refused:
+        raise ValueError('; '.join(refused))
+    return (deal_path,) + walked_factors(document, deal_path)
+
+
+#: The candidate a pair's want-list is walked as: a vanilla option on it, which is what the desk
+#: would quote and therefore exactly what such a market has to price. `Discount_Rate` is BLANK on
+#: purpose - the settlement leg discounts on the curve its own `FxRate` block names.
+PAIR_PROBE = {'Object': 'FXOptionDeal', 'Reference': 'setup', 'Underlying_Amount': 1.0,
+              'Strike_Price': 1.0, 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+              'Option_Style': 'European', 'Discount_Rate': ''}
+
+
+def pair_factors(document, pair):
+    """`(resolved, missing)` for everything a surface on `pair` is priced off.
+
+    THE WANT-LIST IS THE WALK: a vanilla option on the pair is spliced in and the engine's own
+    discovery answers, so each leg's spot is read at the curve its OWN `FxRate` block discounts on
+    and a book carrying a ZARONIA-discounting rand gains no second rand curve. A leg the book has
+    no spot for reaches nothing through it, so the curve the seed names for that currency is added
+    by name - it is the one thing no walk can find until the block exists - unless the book already
+    carries THAT curve, which the leg's new spot discounts on rather than re-authoring it.
+    """
+    import datetime
+
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Price Factors', {})
+    left, right = structures.split_pair(pair)
+    expiry = {'.Timestamp': (book_base_date(document) + datetime.timedelta(365)).isoformat()}
+    probe = dict(PAIR_PROBE, Currency=right, Underlying_Currency=left,
+                 FX_Volatility='{}.{}'.format(left, right),
+                 Expiry_Date=expiry, Settlement_Date=expiry)
+    resolved, missing = walked_factors(dict(document, Calc=dict(
+        document['Calc'], Deals=dict(document['Calc']['Deals'],
+                                     Deals={'Children': [{'Instrument': {'.Deal': probe}}]}))))
+    unspotted = ['InterestRate.{}'.format(currency) for currency in (left, right)
+                 if 'FxRate.{}'.format(currency) not in factors
+                 and 'InterestRate.{}'.format(currency) not in factors]
+    return resolved, sorted(set(missing).union(unspotted).difference(resolved))
+
+
+def dependency_answer(document, resolved, missing, seed=None, mapped=None, **named):
+    """The walk as the JSON both dependency verbs answer: every factor with its status, and for a
+    missing one the seed entry that would supply it - `supply` null with a `note` where none
+    would, never a guess. A job that has already read the vocabulary threads it in."""
+    seed = desk_seed() if seed is None else seed
+    mapped = desk_map()[0] if mapped is None else mapped
+    base = document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
+        'System Parameters', {}).get('Base_Currency')
+    rows = []
+    for factor in missing:
+        supply, note = supply_of(factor, base, seed, mapped)
+        rows.append(dict({'factor': factor, 'status': 'missing', 'supply': supply},
+                         **({} if note is None else {'note': note})))
+    rows += [{'factor': factor, 'status': 'resolved', 'supply': None} for factor in resolved]
+    return dict(named, base_currency=base, factors=rows)
+
+
+@app.get('/book/dependencies', summary='What the book needs from the market, and what supplies it')
+def book_dependencies(deal_path: str = None):
+    """What a portfolio needs from the market, as data: `?deal_path=0/2` walks the deals under one
+    node of the live book, no path the whole book.
+
+    It is the engine's own discovery re-emitted - the factor walk over that subtree against the
+    book's market data, no model resolution, no pricing and no write - so `missing` here is exactly
+    what a booking is refused for. Each missing factor carries the `supply` that would fill it: the
+    vocabulary block and key this desk seeds it under, how many `securities` the seed spells for it
+    and how many the map has `verified`, and for a curve whether its entry declares `conventions`.
+    A factor nothing in the seed could supply carries `supply` null and a `note` saying so, an
+    equity or a commodity exactly as honestly as a currency nobody named.
+
+    `POST /book/setup` is what acts on this.
+    """
+    document, etag = live_book().read()
+    try:
+        resolved, missing = walked_factors(document, deal_path)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+    return dependency_answer(document, resolved, missing, etag=etag, deal_path=deal_path)
+
+
+@app.post('/book/dependencies', summary='What a candidate deal would need - writes nothing')
+def book_dependencies_candidate(request: dict):
+    """`{deal, parent_reference?}` - the same walk over a CANDIDATE, spliced the way the what-if
+    splices one and answered for that subtree alone, so what comes back is what THIS trade needs
+    rather than what the book happens to lack. The file never moves.
+
+    THE BOOKING'S OWN AUTHORING VERDICT RUNS FIRST and refuses 422 in its words: a deal whose
+    `Object` names no type reaches nothing, and answering "nothing is missing" to a model that
+    misspelt a type is the failure this verb exists to cure. The market-data half of that verdict
+    is not run - it is the question.
+    """
+    live = live_book()
+    document, etag = live.read()
+    if request.get('deal') is None:
+        raise HTTPException(422, 'this walk is over a CANDIDATE deal - post it under `deal`, or '
+                                 'read the live book with GET /book/dependencies')
+    if request.get('deal_path') is not None:
+        raise HTTPException(422, 'a walk names ONE thing - a `deal` here, or a `deal_path` on GET '
+                                 '/book/dependencies. This request names both')
+    try:
+        deal_path, resolved, missing = candidate_walk(
+            document, request['deal'], request.get('parent_reference'),
+            live.baseline(document, etag))
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+    return dependency_answer(document, resolved, missing, etag=etag, deal_path=deal_path)
+
+
+#: What a set-up refuses on where a request names more than one want: it builds ONE want-list, and
+#: a pair's is not a deal's.
+ONE_SETUP = ('a set-up names ONE thing to build a market for - a `pair`, a `deal` or a `deal_path` '
+             'of the live book, or none of the three for everything the book lacks. This one names '
+             '{}')
+
+
+def setup_scope(request, document, baseline):
+    """What one set-up covers, refused by name where this desk's vocabulary could not supply it or
+    the booking itself would refuse the candidate - the request trimmed to the single want it
+    names, with the pair normalised to the spelling the seed is keyed by."""
+    named = [key for key in ('pair', 'deal', 'deal_path') if request.get(key) is not None]
+    if len(named) > 1:
+        raise ValueError(ONE_SETUP.format(' and '.join(named)))
+    scope = {key: request[key] for key in ('pair', 'deal', 'parent_reference', 'deal_path')
+             if request.get(key) is not None}
+    if 'deal' in scope:
+        candidate_walk(deepcopy(document), scope['deal'], scope.get('parent_reference'), baseline)
+    if 'pair' in scope:
+        scope['pair'] = ''.join(structures.split_pair(scope['pair']))
+        spelled = (desk_seed().get('fx_vol') or {}).get('pairs') or []
+        reverse = scope['pair'][3:] + scope['pair'][:3]
+        if scope['pair'] not in spelled:
+            raise ValueError(
+                'this desk seeds {} rather than {} - ask for that'.format(reverse, scope['pair'])
+                if reverse in spelled else
+                'this desk seeds no fx_vol surface for {} - name it through POST /book/securities '
+                '(block `fx_vol`, key `pairs`), then set it up'.format(scope['pair']))
+    return scope
+
+
+def standing_pairs(document):
+    """The pairs the book already carries a quoted surface for - what a roll re-prices, since what
+    a set-up must not leave behind is the market the book was already valuing on."""
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    return sorted(name.split('.', 1)[1].replace('.', '') for name in prices
+                  if name.startswith('FXVolPrices.'))
+
+
+def unsupplied_curve(curve, rows, dated, error):
+    """Why a seeded strip yielded no curve, as a row a trader can act on.
+
+    The emitter's own words where it refused the PLAN, and the SCREEN's where it emptied the strip:
+    the emitter counts what it rejected and a held-out row is not rejected, so a book standing
+    ahead of its market reads "nothing refused" there while every row is held out. The two dates
+    and `POST /book/date` go in that case, a book valued forward being a legal state only that verb
+    cures.
+    """
+    from derivus_bloomberg.ir_curve import CurveScreen, read_date
+
+    screened = [row for row in rows if row.verdict]
+    if not screened:
+        return str(error)
+    printed = max([read_date(row.last_update) for row in rows
+                   if read_date(row.last_update)], default=None)
+    return ('{} kept {} of {} seeded benchmarks - {}. The book is dated {} and {}; roll the book '
+            'onto its market with POST /book/date where it stands ahead of one, or state the rows '
+            'by hand with POST /book/curve').format(
+                curve, len(rows) - len(screened), len(rows),
+                ', '.join('{} {}'.format(count, verdict) for verdict, count
+                          in sorted(Counter(row.verdict for row in screened).items())),
+                dated.isoformat(),
+                'the latest print it believed is {}'.format(printed.isoformat()) if printed else
+                'the screen believes no print more than {} days older than that'.format(
+                    CurveScreen().stale_days))
+
+
+def held_with(not_supplied, spots, quotes, curves, discounts, named, standing):
+    """The rows for everything a set-up must NOT land because what it depends on is not landing.
+
+    A NEW CURRENCY IS INSTALLED AS A PAIR OR NOT AT ALL. Its curve values its own benchmark deals
+    in the book's base, so the fit reads the currency's `FxRate` block exactly as that block reads
+    the curve, and a surface reads both of its legs - each at the curve its OWN block names, which
+    is not always the one this write would build. Each row names the factor it waits on, and
+    `spots`, `curves` and `quotes` are trimmed IN PLACE, so what reaches the write is what the
+    write can complete; a block the book already carries is nobody's dependant.
+
+    `discounts` is one curve per currency, as an `FxRate` block names one, and `named` one currency
+    per quote block, as its seed entry declares one: two rand curves are one currency, so neither
+    map is the other inverted. Every lookup here is a membership test or a `get` and nothing is
+    indexed, because what a queued job owes its caller is an outcome rather than a traceback.
+    """
+    unsupplied = {row['factor'] for row in not_supplied}
+    rows = []
+    for name in sorted(spots):
+        currency = name.split('.', 1)[1]
+        curve = 'InterestRate.{}'.format(discounts.get(currency, currency))
+        if curve in unsupplied:
+            unsupplied.add(name)
+            rows.append({'factor': name, 'reason': 'held with {}'.format(curve)})
+            del spots[name]
+    for name, currency in sorted(named.items()):
+        curve, spot = 'InterestRate.' + name.split('.', 1)[1], 'FxRate.' + currency
+        if name in curves and spot not in standing and spot not in spots:
+            rows.append({'factor': curve, 'reason': 'held with {}'.format(spot)})
+            del curves[name]
+    for name in sorted(quotes):
+        surface = 'FXVol.' + name.split('.', 1)[1]
+        # a leg discounts on the curve its OWN block names, and only then on the one being built
+        holding = [factor for leg in surface.split('.')[1:] for factor in
+                   ('FxRate.' + leg, 'InterestRate.' + (
+                       standing.get('FxRate.' + leg, {}).get('Interest_Rate')
+                       or discounts.get(leg, leg)))
+                   if factor in unsupplied]
+        if holding:
+            rows.append({'factor': surface, 'reason': 'held with {}'.format(holding[0])})
+            del quotes[name]
+    return rows
+
+
+def seeded_strip(source, seed, curve, conventions, as_of):
+    """The seeded benchmark rows of a curve the book does not carry, priced off the terminal, every
+    row the screen refused HELD OUT by name exactly as the curve verb holds one - so one dead
+    ticker is one knot fewer rather than a refused strip.
+
+    `seed` is the ONE reading the whole job takes, so the strip that is priced is the strip that
+    was counted, discovered and verified.
+    """
+    from derivus_bloomberg import ir_curve
+
+    return ir_curve.hold_out(ir_curve.price_rows(source, tuple(
+        ir_curve.RatePrint(label=row['tenor'], kind='', security=row['security'], value=None)
+        for row in ir_curve.seeded_rows(seed, curve)), as_of, conventions))
+
+
+class SetupJob:
+    """The market a trade needs, built as ONE unit of queued work: the want-list walked, only the
+    names the map has never heard of discovered, the surface, each new currency's spot and each new
+    curve fetched, and the lot installed and bootstrapped in one atomic write.
+
+    `derivus_bloomberg` is imported INSIDE `run_job`, the `BloombergJob` precedent. The outcome is
+    a book WRITE rather than tables, so it rides the run's Stats under `Setup`, and progress rides
+    `PROGRESS` under the result id the way a tick's does.
+
+    NOTHING IS INSTALLED THAT WAS NOT WANTED and nothing is probed that the map already holds: the
+    walk names the factors, the seed names the securities each is spelled by, and the map says
+    which of them a terminal has answered for. The install goes through the curve verb's own edit,
+    so a bootstrap that complains writes NOTHING and hands its messages back verbatim.
+
+    NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE BOOK WILL NOT CARRY AFTER THE WRITE. A curve
+    nothing can supply - no seed entry, no conventions, a strip the screen leaves under the
+    emitter's floor - is a `not_supplied` row carrying the reason; a NEW CURRENCY IS A PAIR, its
+    spot and its curve held with each other, and a surface either leg is held on is held the same
+    way. Everything whose dependencies the write completes lands, and `written` is true iff
+    something did.
+
+    THE ANSWER'S TWO LISTS MEAN DIFFERENT THINGS. `refused` is what refused the WRITE and only ever
+    travels with `written: false` - a late print, a dead ticker, the bootstrap's own words.
+    `not_supplied` is what could not be filled, reported beside a write that still lands everything
+    it could, and `installed` is exactly what was written.
+    """
+
+    def __init__(self, book, scope, result_id):
+        self.book, self.scope, self.result_id = book, scope, result_id
+
+    def note(self, note, done=0, total=0):
+        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
+
+    def outcome(self, started, **fields):
+        """The set-up's account of itself, with the trip's wall time beside it. Every answer
+        carries the same seven keys; a write adds the edit's own."""
+        return None, {'Results': {}, 'Stats': {'Setup': dict(
+            {'written': False, 'installed': [], 'refused': [], 'not_supplied': [], 'held_out': [],
+             'check': [], 'discovered': {'added': {}, 'revived': {}}},
+            **fields, seconds=round(time.perf_counter() - started, 2))}}
+
+    def want(self, document, seed, mapped):
+        """`({(block, key): the walk's row}, the wanted factors, the rows nothing seeds)` - the
+        dependency walk of whatever this set-up names, read as the supplies that would fill it."""
+        if 'pair' in self.scope:
+            resolved, missing = pair_factors(document, self.scope['pair'])
+        elif 'deal' in self.scope:
+            _, resolved, missing = candidate_walk(
+                document, self.scope['deal'], self.scope.get('parent_reference'),
+                load(document).validate())
+        else:
+            resolved, missing = walked_factors(document, self.scope.get('deal_path'))
+        rows = dependency_answer(document, resolved, missing, seed, mapped)['factors']
+        supplied = [row for row in rows if row['status'] == 'missing' and row['supply']]
+        return ({(row['supply']['block'], row['supply']['key']): row for row in supplied},
+                [row['factor'] for row in supplied],
+                [{'factor': row['factor'], 'reason': row['note']} for row in rows
+                 if row['status'] == 'missing' and not row['supply']])
+
+    def run_job(self):
+        import datetime
+
+        from derivus_bloomberg import (discover, fetch_fx_vol, ir_curve, security_map,
+                                       to_market_prices_block)
+        from derivus_bloomberg.errors import BloombergConfigurationError, BloombergFXError
+        from derivus_bloomberg.session import BloombergSession
+
+        started, today = time.perf_counter(), datetime.date.today()
+        document, _ = self.book.read()
+        dated = book_base_date(document)
+        discovered, not_supplied = {'added': {}, 'revived': {}}, []
+        seed, (mapped, _) = desk_seed(), desk_map()
+        try:
+            self.note('reading the want-list')
+            wanted, factors, not_supplied = self.want(document, seed, mapped)
+            if not wanted:
+                return self.outcome(started, not_supplied=not_supplied)
+            quotes, strips, routes, definitions, held = {}, {}, {}, {}, []
+            with BloombergSession(timeout_ms=30000) as session:
+                for step, ((block, key), _) in enumerate(sorted(wanted.items())):
+                    self.note('discovering {} {}'.format(block, key), step, len(wanted))
+                    scoped = scoped_seed(seed, block, key)
+                    # `extend` probes only what the map has never heard of and `reprobe_rejected`
+                    # only what its ledger carries, so a verified scope costs the terminal nothing
+                    discovered['added'].update(
+                        {item.candidate.security: item.verdict for item
+                         in discover.extend(mapped, scoped, session, today)[1]})
+                    discovered['revived'].update(
+                        discover.reprobe_rejected(mapped, scoped, session, today))
+                if discovered['added'] or discovered['revived']:
+                    mapped['generated'] = mapped.get('generated') or today.isoformat()
+                    write_desk_file('security_map.json', mapped)
+                for step, ((block, key), row) in enumerate(sorted(wanted.items())):
+                    self.note('reading {} {}'.format(block, key), step, len(wanted))
+                    try:
+                        if block == 'fx_vol':
+                            definitions[key] = security_map.fx_vol_definition(mapped, key)
+                        elif block == 'fx_spot':
+                            entry = (mapped['blocks'].get('fx_spot') or {}).get(key)
+                            if entry is None:
+                                raise BloombergConfigurationError(
+                                    'the map verified no spot for {} - verify it through POST '
+                                    '/book/securities/verify'.format(key))
+                            routes[key] = entry['security']
+                        else:
+                            strips[key] = ir_curve.curve_conventions(seed, key)
+                    except BloombergFXError as error:
+                        not_supplied.append({'factor': row['factor'], 'reason': str(error)})
+                # THE FRESHNESS CHECK COMES FIRST, as it does on the tick: one late print refuses
+                # the whole trip by name, so a market is never half-installed off a dead series
+                late = {}
+                for key, definition in sorted(definitions.items()):
+                    self.note('checking {}'.format(key))
+                    late.update(security_map.stale(session, sorted(
+                        {quote.security for quote in definition.securities.values()})))
+                if routes:
+                    late.update(security_map.stale(session, sorted(routes.values())))
+                if late:
+                    return self.outcome(
+                        started, not_supplied=not_supplied, discovered=discovered,
+                        refused=['{} is stale - {}'.format(name, why)
+                                 for name, why in sorted(late.items())])
+                for step, (key, definition) in enumerate(sorted(definitions.items())):
+                    self.note('fetching {}'.format(key), step, len(wanted))
+                    snapshot = fetch_fx_vol(session, definition)
+                    quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
+                        to_market_prices_block(snapshot))
+                curves = {}
+                for curve, conventions in sorted(strips.items()):
+                    self.note('valuing the {} strip'.format(curve))
+                    # the same `as_of` the tick screens its own rows against, so a book standing
+                    # ahead of its market behaves here exactly as it does under a tick
+                    curves[curve] = (conventions, seeded_strip(
+                        session, seed, curve, conventions, dated))
+                values = security_map.fetch_fx_spot(session, routes.values()) if routes else {}
+                as_of = snap_date([row for _, rows in curves.values() for row in rows], dated)
+                # WHEN THE PRINTS MOVE THE DATE the market the book already carries is re-priced in
+                # this same session and lands in the same write, so it never holds two days at once
+                rolled = market_fetch(session, mapped, document, standing_pairs(document),
+                                      note=self.note) if as_of > dated else None
+            if rolled is not None and rolled.late:
+                return self.outcome(
+                    started, not_supplied=not_supplied, discovered=discovered,
+                    refused=['{} is stale - {}'.format(name, why)
+                             for name, why in sorted(rolled.late.items())])
+            held += ['{} {} ({}): {}'.format(curve, row.label, row.security, row.verdict)
+                     for curve, (_, rows) in sorted(curves.items()) for row in rows if row.verdict]
+            return self.install(started, document, seed, dated, factors, quotes, curves,
+                                {pair: values[name] for pair, name in routes.items()},
+                                discovered, not_supplied, held, rolled)
+        except BloombergFXError as error:
+            # a print the terminal would not answer for is a named REFUSAL, never a job error -
+            # `Metronome.cause` and a polling model both read `refused` off these Stats
+            return self.outcome(started, refused=[str(error)], not_supplied=not_supplied,
+                                discovered=discovered)
+        finally:
+            PROGRESS.pop(self.result_id, None)
+
+    def install(self, started, document, seed, dated, factors, quotes, strips, crosses,
+                discovered, not_supplied, held, rolled=None):
+        """Everything fetched, landed in ONE atomic write: each new currency's `FxRate` block on
+        the engine's axis, each new `InterestRatePrices` block authored on the day the write is
+        dated - the latest print the whole trip came back with, a roll's own among them - the
+        surface's quote block, the entries that solve them, and - where the prints rolled the date -
+        the market the book already carried, re-priced in the same session.
+
+        NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE WRITE WILL NOT CARRY: a curve that cannot be
+        authored is `not_supplied` with the screen's own account of it, a new currency's spot and
+        curve are HELD with each other because each fit reads the other's block, and a surface is
+        held with whichever leg is not coming. What is left lands, and a bootstrap that complains
+        still writes nothing and comes back verbatim.
+        """
+        from derivus_bloomberg import ir_curve
+        from derivus_bloomberg.errors import BloombergFXError
+
+        carried = document['Calc']['MergeMarketData']['ExplicitMarketData']
+        base = carried['System Parameters']['Base_Currency']
+        rates = seed['rates']
+        as_of = snap_date([row for _, rows in strips.values() for row in rows],
+                          dated if rolled is None else max(dated, rolled.as_of))
+        discounts = {rates[curve].get('currency', curve): curve for curve in sorted(strips)}
+        named = {ir_curve.market_price_name(curve): rates[curve].get('currency', curve)
+                 for curve in sorted(strips)}
+        curves = {}
+        for curve, (conventions, rows) in sorted(strips.items()):
+            try:
+                name, block = ir_curve.author_block(
+                    {'curve': curve, 'currency': rates[curve].get('currency', curve),
+                     'conventions': conventions, 'rows': rows},
+                    as_of, curve_holidays(document, conventions.calendar))
+                curves[name] = block
+            except BloombergFXError as error:
+                not_supplied.append({'factor': 'InterestRate.' + curve,
+                                     'reason': unsupplied_curve(curve, rows, dated, error)})
+        spots = {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot
+                 in engine_spots(base, crosses).items()} if crosses else {}
+        not_supplied += held_with(not_supplied, spots, quotes, curves, discounts, named,
+                                  carried.get('Price Factors', {}))
+        own, repriced = dict(curves), []
+        if rolled is not None:
+            held, repriced = held + rolled.held, sorted(rolled.curves) + sorted(rolled.quotes)
+            curves, quotes, spots = (dict(rolled.curves, **curves), dict(rolled.quotes, **quotes),
+                                     dict(rolled.spots, **spots))
+        if not (curves or quotes or spots):
+            return self.outcome(started, not_supplied=not_supplied, discovered=discovered,
+                                held_out=held)
+        self.note('installing and bootstrapping', len(factors), len(factors))
+
+        def edit(document, etag):
+            market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+            standing = book_base_date(document)
+            if as_of < standing:
+                raise ValueError(
+                    'the book rolled to {} while the terminal priced these rows, which are '
+                    'authored as of {} - a curve is never dated behind its own book, so post the '
+                    'set-up again'.format(standing.isoformat(), as_of.isoformat()))
+            for name, value in sorted(spots.items()):
+                currency = name.split('.', 1)[1]
+                if name in factors:
+                    market.setdefault('Price Factors', {})[name] = {
+                        'Domestic_Currency': None, 'Spot': value['Spot'],
+                        'Interest_Rate': discounts.get(currency, currency)}
+            for entry in ([CURVE_BOOTSTRAPPER] if curves else []) + (
+                    [VOL_BOOTSTRAPPER] if quotes else []):
+                bootstrapper_entry(market, entry, {})
+            # every standing block is re-rolled onto the new day off its own rows, and the ones the
+            # roll re-priced overlay it - a block the terminal would not answer for is still dated
+            # with the book rather than left behind it
+            standing_blocks = {} if as_of == standing else curve_quotes(None, document, as_of)[0]
+            write, outcome = curve_edit(
+                document, dict(standing_blocks, **curves), as_of, quotes,
+                {name: value for name, value in spots.items() if name not in factors})
+            if not write:
+                return write, outcome
+            return True, dict(outcome, installed=sorted(
+                set(factors) & set(market['Price Factors'])))
+
+        try:
+            answer = dict({'installed': [], 'refused': []}, **self.book.mutate(edit))
+        except (ValueError, KeyError) as error:
+            # what `/book/market` turns into a 422, turned into the refusal a queued JOB lands as
+            answer = {'written': False, 'installed': [], 'refused': [refusal(error)]}
+        return self.outcome(started, discovered=discovered, held_out=held,
+                            not_supplied=not_supplied,
+                            check=self.check(base, answer, own, held, repriced), **answer)
+
+    def check(self, base_currency, answer, curves, held, repriced=()):
+        """What a trader should look at after a set-up: a curve nobody on this desk declared the
+        conventions for, the benchmarks the screen held out, every standing block the roll
+        re-priced, and a surface the book's base currency is neither leg of. Empty where a set-up
+        wrote nothing."""
+        from derivus_bloomberg import security_map
+
+        if not answer.get('written'):
+            return []
+        # the desk's OWN file, never the packaged questionnaire `read_seed` falls back to: a curve
+        # nobody here declared is one a desk should read back before it prices off it
+        own = os.path.join(security_map.home(), 'seed.json')
+        declared = (security_map.read_seed(own).get('rates') or {}) if os.path.isfile(own) else {}
+        rows = ['{} was set up on the conventions this build ships - read them back on the Curves '
+                'screen'.format(name.split('.', 1)[1]) for name in sorted(curves)
+                if not (declared.get(name.split('.', 1)[1]) or {}).get('conventions')]
+        rows += ['{} benchmark rows were held out - the Securities screen names the print behind '
+                 'each'.format(len(held))] if held else []
+        # the roll re-prices the market the book already carried, and a block whose quotes moved
+        # under a desk's feet is the first thing that desk should read back
+        rows += ['{} was re-priced onto {} with this set-up'.format(name, answer['base_date'])
+                 for name in repriced]
+        return rows + ['{} is a cross - {} is neither leg, so its spot model is fitted for the '
+                       'pair through POST /book/model'.format(name, base_currency)
+                       for name in answer.get('installed', [])
+                       if name.startswith('FXVol.') and base_currency not in name.split('.')]
+
+
+@app.post('/book/setup', summary='Build the market a trade needs - discovered, installed, solved')
+def book_setup(request: dict):
+    """`{pair?, deal?, parent_reference?, deal_path?}` - one of the three, or none of them for
+    everything the book lacks, built end to end as one queued job.
+
+    THE WANT-LIST IS `GET /book/dependencies`. For a `pair` it is that surface, both legs' spots
+    and the curve each discounts on; for a `deal` or a `deal_path` it is the walk of that subtree.
+    Nothing missing writes nothing and asks no terminal.
+
+    Then, in one trip: every supplying seed entry is DISCOVERED SCOPED - only the names the map has
+    never heard of, with its rejected ledger asked again - and the map rewritten atomically. THE
+    MAP IS EVIDENCE AND IS WRITTEN AS IT IS GATHERED, before the book write, so a refused set-up
+    leaves a grown map and an unmoved book; the "one atomic write" below is the BOOK's. Then every
+    wanted print is checked for freshness FIRST, one late or dead security refusing the whole trip
+    by name with nothing fetched and nothing written, as the tick refuses one; then the surface is
+    fetched, each new currency's spot is fetched and crossed onto the ENGINE's axis, one unit of it
+    in the book's base, and each new curve's seeded benchmarks are priced, a row the screen refuses
+    held out by name.
+
+    EVERYTHING LANDS IN ONE ATOMIC WRITE - the `FxRate` blocks, the `InterestRatePrices` and
+    `FXVolPrices` blocks, the entries that solve them, and the bootstrap of what was installed and
+    what reads it. What lands is ORDINARY blocks: the Curves and Market Prices screens edit them in
+    place from then on, and `check` names what a trader should look at there.
+
+    THE ANSWER'S THREE FACTS. `written` says whether the book moved; `installed` is exactly the
+    factors that were written; `refused` is what refused the WRITE - a late print, a strip too
+    short to solve, the bootstrap's own words - and is only ever non-empty with `written: false`.
+    `not_supplied` is the honest residue: `{factor, reason}` for every want that could not be
+    filled - one this desk's vocabulary spells nothing for, and one HELD because what it stands on
+    is not coming - reported beside a write that still lands everything it could.
+
+    Answers `{result_id, status}` like `/execute`; `/results/{result_id}` carries `progress` while
+    it runs and the outcome under `stats.Setup`. Refused 422 AT SUBMISSION where this workstation
+    has no terminal, where the book declares no `Bootstrapper Configuration`, where the request
+    names a pair this desk's vocabulary does not spell, and where a `deal` is one the booking verb
+    would itself refuse, in its words.
+    """
+    from derivus_bloomberg.errors import BloombergFXError
+
+    live = live_book()
+    document, etag = live.read()
+    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
+            'Bootstrapper Configuration'):
+        raise HTTPException(422, NO_BOOTSTRAPPER)
+    if not terminal_status()['present']:
+        raise HTTPException(422, NO_TERMINAL)
+    try:
+        scope = setup_scope(request, document, live.baseline(document, etag))
+    except (BloombergFXError, ValueError) as error:
+        raise HTTPException(422, str(error))
+    # a set-up is an ACT against the terminal rather than a function of the book, so the submission
+    # clock names it: two set-ups of one pair are two trips
+    result_id = content_hash({'book': etag, 'setup': scope, 'at': time.perf_counter()})
+    submitted = Job(result_id, SetupJob(live, scope, result_id), {}, spine.TELEMETRY)
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 

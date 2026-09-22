@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import datetime
 import json
 import logging
 import re
@@ -403,6 +404,12 @@ def test_a_malformed_booking_is_refused_by_name_and_writes_nothing(book):
     assert refused['text amount']['refused'] == ["Amount must be a number, not '1e6'"]
     assert refused['bare date']['refused'] == [
         'Payment_Date must be {".Timestamp": "2027-01-15"}, not \'2027-01-15\'']
+    # A DEAL IS AN OBJECT: no deal at all, a string and a list are each refused by name rather
+    # than reaching the splice - a 500 out of `dict.update`, or a 200 that wrote nothing
+    for body in ({'deal': None}, {'deal': 'EURZAR'}, {'deal': []}):
+        answer = CLIENT.post('/book/deals', json=body)
+        assert answer.status_code == 422 and answer.json()['detail'] == (
+            'a booking is a deal - post it under `deal`'), body
     assert book.read_bytes() == before
 
 
@@ -648,22 +655,23 @@ def test_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
         candidate['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
 
-def fx_vol_snapshot():
-    """A USDZAR snapshot through the Bloomberg package's own normalization - canned observations
-    standing in for the terminal, everything downstream the real pipeline. One object, so the
-    `/book/market` and `/book/bloomberg` gates tick the same numbers."""
+def fx_vol_snapshot(pair='USDZAR'):
+    """A snapshot through the Bloomberg package's own normalization - canned observations standing
+    in for the terminal, everything downstream the real pipeline. One object, so the
+    `/book/market` and `/book/bloomberg` gates tick the same numbers; `pair` is what a set-up
+    fetches a surface for a second pair with."""
     from derivus_bloomberg import (FXQuoteSecurity, FXVolDefinition, RawBloombergObservation,
                                    normalize_fx_vol)
     raw = {('3M', 'ATM', None): 14.0, ('3M', 'RR', 0.25): -1.2, ('3M', 'BF', 0.25): 0.35,
            ('1Y', 'ATM', None): 15.0, ('1Y', 'RR', 0.25): -1.6, ('1Y', 'BF', 0.25): 0.45}
     definition = FXVolDefinition(
-        pair='USDZAR', surface_name='USD.ZAR', currency='USD',
+        pair=pair, surface_name=pair[:3] + '.' + pair[3:], currency=pair[:3],
         expiries={'3M': 0.25, '1Y': 1.0}, pillars=(0.25,),
-        securities={coordinate: FXQuoteSecurity('USDZAR {} {} {}'.format(*coordinate))
+        securities={coordinate: FXQuoteSecurity('{} {} {} {}'.format(pair, *coordinate))
                     for coordinate in raw})
     observations = [
         RawBloombergObservation(expiry, quote_type, pillar,
-                                'USDZAR {} {} {}'.format(expiry, quote_type, pillar),
+                                '{} {} {} {}'.format(pair, expiry, quote_type, pillar),
                                 'PX_LAST', value)
         for (expiry, quote_type, pillar), value in raw.items()]
     return normalize_fx_vol(definition, observations, pd.Timestamp('2024-06-28 16:30'))
@@ -2229,10 +2237,12 @@ class CannedTerminal:
     per security carrying `ok`, `error` and `fields`, the mid with both sides and the print's own
     date. It is the SESSION as well, so the job's `BloombergSession(...)` lands on it and blpapi is
     never reached; `asked` is every security it was handed, batch by batch, and `stamp` is the day
-    every print claims - which is the SNAP a curve is dated by."""
+    every print claims - which is the SNAP a curve is dated by, and what a freshness check reads.
+    `stamps` dates ONE security differently, which is how a dead series is put among live ones."""
 
-    def __init__(self, prints, dead=(), stamp='2024-06-27'):
+    def __init__(self, prints, dead=(), stamp='2024-06-27', stamps={}):
         self.prints, self.dead, self.asked, self.stamp = prints, set(dead), [], stamp
+        self.stamps = dict(stamps)
 
     def __call__(self, **options):
         return self
@@ -2248,7 +2258,8 @@ class CannedTerminal:
         return {name: {'ok': name not in self.dead, 'error': None,
                        'fields': {} if name in self.dead else {
                            'PX_LAST': self.prints[name], 'PX_BID': self.prints[name] - 0.01,
-                           'PX_ASK': self.prints[name] + 0.01, 'LAST_UPDATE_DT': self.stamp}}
+                           'PX_ASK': self.prints[name] + 0.01,
+                           'LAST_UPDATE_DT': self.stamps.get(name, self.stamp)}}
                 for name in securities}
 
 
@@ -2786,6 +2797,1229 @@ def test_a_rejected_ticker_is_asked_again_and_a_revived_one_lands_in_the_map(
     assert 'SASW30 BGN Curncy' not in terminal.asked, 'the ledger was asked outside the scope'
     # the entry half is quiet while the ledger moves, and a revived name is not then grown again
     assert outcome['drifted'] == {} and outcome['added'] == {}
+
+
+#: A EUR/JPY cross-currency swap on a USD book: every factor it reaches is one the book lacks, and
+#: none of them is a factor the book's own cashflow reaches - which is what a candidate walk has to
+#: answer for and a whole-book walk cannot.
+XCCY = {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': 'XC1', 'MtM_Side': 'Pay',
+        'Pay_Currency': 'EUR', 'Pay_Interest_Rate': 'EUR', 'Pay_Discount_Rate': 'EUR',
+        'Pay_Rate_Type': 'Floating', 'Receive_Currency': 'JPY', 'Receive_Interest_Rate': 'JPY',
+        'Receive_Discount_Rate': 'JPY', 'Receive_Rate_Type': 'Floating',
+        'Principal_Exchange': 'Start_Maturity', 'Effective_Date': BASE,
+        'Maturity_Date': BASE + pd.DateOffset(years=3)}
+
+#: The equity binary completed, so it is a deal the booking would take - which is what makes its
+#: three unseeded factors a VOCABULARY answer rather than an authoring one.
+EQUITY_DEAL = dict(BINARY, Cash_Payoff=AMOUNT)
+
+
+def dependencies(**request):
+    """The walk over a CANDIDATE, as a model asks for it."""
+    return CLIENT.post('/book/dependencies', content=dump(request), headers=JSON).json()
+
+
+def factor_rows(answer):
+    return {row['factor']: row for row in answer['factors']}
+
+
+def test_the_walk_names_what_a_trade_needs(book, vocabulary):
+    """THE WALK IS THE ENGINE'S OWN DISCOVERY, re-emitted: a candidate spliced the way the what-if
+    splices one, its subtree walked against the book's market data, and every factor answered with
+    the seed entry that would supply it - the block, the key, how many securities the seed spells
+    and how many a terminal has verified. Nothing is priced and nothing is written.
+
+    A factor type this desk's vocabulary spells nothing for is reported as honestly: `supply` null
+    and a note, never a guess at an equity's ticker. And a candidate the BOOKING would refuse is
+    refused here in its own words rather than walked - a misspelt type reaches nothing, so a walk
+    that answered it would tell a model the market is fine.
+
+    Killing mutations: the walk reading the whole book instead of the candidate - `InterestRate.ZAR`
+    and `FxRate.ZAR` are the book's own cashflow's; the pair looked up in one spelling only, which
+    leaves `FxRate.JPY` unsuppliable because the seed spells `USDJPY` and not `JPYUSD`; the
+    authoring verdict skipped, which walks a `CrossCurrencySwap` clean.
+    """
+    before = book.read_bytes()
+    answer = dependencies(deal=XCCY)
+    rows = factor_rows(answer)
+
+    assert answer['base_currency'] == 'USD' and answer['deal_path'] == '1'
+    assert [name for name, row in rows.items() if row['status'] == 'missing'] == [
+        'FxRate.EUR', 'FxRate.JPY', 'InterestRate.EUR', 'InterestRate.JPY']
+    assert rows['InterestRate.EUR']['supply'] == {
+        'block': 'rates', 'key': 'EUR', 'securities': 24, 'verified': 0, 'conventions': True}
+    # the pair is the one that ROUTES the currency against the base, either spelling of it
+    assert rows['FxRate.EUR']['supply'] == {
+        'block': 'fx_spot', 'key': 'EURUSD', 'securities': 1, 'verified': 0}
+    assert rows['FxRate.JPY']['supply']['key'] == 'USDJPY'
+    assert rows['FxRate.USD'] == {'factor': 'FxRate.USD', 'status': 'resolved', 'supply': None}
+    assert 'InterestRate.ZAR' not in rows, 'the walk answered for the book, not the candidate'
+    assert book.read_bytes() == before
+
+    equity = factor_rows(dependencies(deal=json.loads(dump(EQUITY_DEAL))))
+
+    assert equity['EquityPrice.EQ']['supply'] is None
+    assert 'EquityPrice' in equity['EquityPrice.EQ']['note']
+
+    # a curve entry a desk spells without its conventions cannot be authored, and the walk says so
+    # rather than answering `true` for a questionnaire nobody wrote
+    assert CLIENT.post('/book/securities', json={
+        'block': 'rates', 'key': 'GATE', 'entry': GATE_CURVE}).status_code == 200
+    gated = dict(json.loads(dump(XCCY)), Pay_Interest_Rate='GATE', Pay_Discount_Rate='GATE')
+    supply = factor_rows(dependencies(deal=gated))['InterestRate.GATE']['supply']
+
+    assert supply['conventions'] is False and supply['block'] == 'rates'
+    assert book.read_bytes() == before
+
+
+def test_the_walk_refuses_by_name_what_it_cannot_walk(book, vocabulary):
+    """A REFUSAL NAMES THE THING AND THE REMEDY, and a 500 is neither. The candidate body is the
+    whole surface: no `deal`, a null one, a `deal_path` beside it, and a deal whose `Object` names
+    no type - which `POST /book/deals` refuses in words this verb hands back verbatim.
+
+    Killing mutations: `request['deal']` unguarded, which is a `TypeError` out of the walk and a
+    bare `'deal'` for an empty body; the `deal_path` in a POST body ignored, which makes two verbs
+    a model uses back to back disagree about one request.
+    """
+    before = book.read_bytes()
+    malformed = {'Object': 'CrossCurrencySwap', 'Reference': 'T', 'Pay_Currency': 'EUR'}
+    answers = {name: CLIENT.post('/book/dependencies', content=dump(body), headers=JSON)
+               for name, body in (('empty', {}), ('null', {'deal': None}),
+                                  ('both', {'deal': XCCY, 'deal_path': '0'}),
+                                  ('nameless', {'deal': malformed}))}
+
+    for name, answer in answers.items():
+        assert answer.status_code == 422, (name, answer.json())
+    assert '`deal`' in answers['empty'].json()['detail']
+    assert 'GET /book/dependencies' in answers['null'].json()['detail']
+    assert 'names both' in answers['both'].json()['detail']
+    assert answers['nameless'].json()['detail'] == CLIENT.post(
+        '/book/deals', content=dump({'deal': malformed}), headers=JSON).json()['refused'][0]
+    assert 'CrossCurrencySwap' in answers['nameless'].json()['detail']
+    assert book.read_bytes() == before
+
+
+def test_a_subtree_is_a_portfolio(tmp_path, vocabulary):
+    """`?deal_path=` IS THE PORTFOLIO. One netting set of a two-set book answers that set's factors
+    and no others, which is what makes the walk usable per counterparty rather than per book.
+
+    Killing mutation: the path ignored - both sets then answer the union, and the ZAR set claims
+    the USD deal's discount curve.
+    """
+    document = json.loads(dump(job(deals=())))
+    document['Calc']['Deals']['Deals']['Children'] = [
+        {'Instrument': {'.Deal': skipped_netting_deal(reference)},
+         'Children': [{'Instrument': {'.Deal': json.loads(dump(deal))}}]}
+        for reference, deal in (('CP1', CASHFLOW),
+                                ('CP2', dict(CASHFLOW, Reference='CF2', Currency='USD',
+                                             Discount_Rate='USD')))]
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        zar = CLIENT.get('/book/dependencies', params={'deal_path': '0'}).json()
+        usd = CLIENT.get('/book/dependencies', params={'deal_path': '1'}).json()
+        whole = CLIENT.get('/book/dependencies').json()
+
+        assert sorted(factor_rows(zar)) == ['FxRate.USD', 'FxRate.ZAR', 'InterestRate.USD',
+                                            'InterestRate.ZAR']
+        assert sorted(factor_rows(usd)) == ['FxRate.USD', 'InterestRate.USD']
+        assert sorted(factor_rows(whole)) == sorted(set(factor_rows(zar)) | set(factor_rows(usd)))
+        assert all(row['status'] == 'resolved' for row in whole['factors'])
+    finally:
+        service.BOOK = None
+
+
+def seeded_map(home, *scopes, rejected={}):
+    """A security map carrying every candidate the seed spells for each `(block, key)` scope,
+    built by the emitter a discovery run builds one with - a workstation whose terminal has already
+    answered for exactly those names, so a set-up over them probes nothing. `rejected` puts named
+    candidates on the ledger instead, which is what a re-ask is measured against."""
+    from derivus_bloomberg import discover
+
+    document = {'schema': 'derivus-bloomberg-map/1', 'generated': '2024-06-28',
+                'blocks': {}, 'rejected': {}}
+    for scope in scopes:
+        seed = service.scoped_seed(service.desk_seed(), *scope)
+        grown = discover.build_map(seed, [
+            discover.Verdict(candidate, 'rejected' if candidate.security in rejected else 'live',
+                             candidate.security, '2024-06-27', None)
+            for candidate in discover.candidates_from_seed(seed)], '2024-06-28')
+        for block, section in grown['blocks'].items():
+            document['blocks'].setdefault(block, {}).update(section)
+        document['rejected'].update(grown['rejected'])
+    os.makedirs(home, exist_ok=True)
+    (home / 'security_map.json').write_text(json.dumps(document, indent=1), newline='\n')
+    return document
+
+
+def seeded_candidates(*scopes):
+    """Every security the seed spells in the named scopes, with the NAME a terminal would have to
+    answer for each to verify - the `expect` fragments `discover.verify` holds a name to."""
+    from derivus_bloomberg import discover
+
+    return {candidate.security: ' '.join(candidate.expect) for scope in scopes
+            for candidate in discover.candidates_from_seed(
+                service.scoped_seed(service.desk_seed(), *scope))}
+
+
+def seeded_rows_of(curve):
+    """The seeded benchmark rows of one curve, in the order the strip is spelled - what a gate
+    names when it wants a ticker of its own to kill."""
+    from derivus_bloomberg import ir_curve
+
+    return ir_curve.seeded_rows(service.desk_seed(), curve)
+
+
+def setup_terminal(monkeypatch, *scopes, stamps={}, **prints):
+    """The seams a set-up meets, canned: a terminal answering every security the seed spells in
+    `scopes` - at the NAME each candidate expects, so a probe verifies rather than mismatching, and
+    at today's clock unless `stamps` dates one of them back - with `prints` naming the spots, and
+    the surface fetch handed back the gate's own snapshot for the pair it was asked about.
+
+    THE FRESHNESS CHECK IS NOT STUBBED: `security_map.stale` runs against this terminal's own
+    `LAST_UPDATE_DT`, so a set-up gate pays for the check a late print has to trip. blpapi is never
+    reached; `asked` is every security the job handed over and `fetched` every surface it took.
+    """
+    import datetime
+
+    import derivus_bloomberg
+    from derivus_bloomberg import session
+
+    named = seeded_candidates(*scopes)
+    terminal = NamingTerminal(dict({security: 3.0 for security in named}, **prints), names=named,
+                              stamp=datetime.date.today().isoformat(), stamps=stamps)
+    terminal.fetched = []
+    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    monkeypatch.setattr(session, 'BloombergSession', terminal)
+    monkeypatch.setattr(derivus_bloomberg, 'fetch_fx_vol', lambda source, definition: (
+        terminal.fetched.append(definition.pair) or fx_vol_snapshot(definition.pair)))
+    return terminal
+
+
+@pytest.fixture
+def desk_setup(tmp_path, monkeypatch):
+    """A USD-base book a market can be set up onto: the one-cashflow market with the FX vol
+    bootstrapper declared, and a `DV_HOME` of the gate's own carrying neither seed nor map - so the
+    vocabulary read is the PACKAGED questionnaire and this workstation's own files are never
+    touched."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    yield path
+    service.BOOK = None
+
+
+def curve_only(path):
+    """The gate book's bootstrapper section cut to the curve family. A book declaring a surface
+    family it carries no block for is one `Config.bootstrap` complains about - a different gate's
+    subject, and noise in any set-up that installs no surface."""
+    document = json.loads(path.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        'InterestRate': {'Prices': 'InterestRate'}}
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def set_up(request):
+    """POST the set-up verb, drain the worker, read the outcome off the result the way a poller
+    does - the book write rides the run's own Stats, as a tick's does."""
+    submitted = CLIENT.post('/book/setup', json=request).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+    return result, result.get('stats', {}).get('Setup', {})
+
+
+def test_a_pair_is_set_up_and_then_quotes(desk_setup, tmp_path, monkeypatch):
+    """THE WHOLE MOVE IN ONE VERB. A desk names a pair the book has no market for; what comes back
+    is a book that quotes it - the surface, the new currency's spot and its curve installed and
+    bootstrapped in ONE write, and a collar on that pair solved to zero off what was written.
+
+    THE SPOT IS ON THE ENGINE'S AXIS, and both directions are gated: `EURUSD` prices one euro in
+    dollars, so `FxRate.EUR.Spot` IS the print, while `USDJPY` prices one dollar in yen, so
+    `FxRate.JPY.Spot` is its reciprocal. `check` names what a trader should look at - a curve set
+    up on conventions nobody here declared, and a surface the base currency is neither leg of.
+
+    A second set-up of the same pair asks no terminal and writes nothing: the want-list is empty.
+    A pair stated in any spelling of it reaches the same seed entry.
+
+    Killing mutations: the spot installed un-crossed, which puts 157.25 on `FxRate.JPY` and makes
+    a yen worth 157 dollars; the walk not narrowed to the pair, which installs the whole book's
+    want-list; the check rows dropped, which is a curve priced off conventions nobody read; the
+    pair not normalised, which sends `eurzar` to a seed that spells `EURZAR`.
+    """
+    home = tmp_path / 'home'
+    seeded_map(home, ('fx_vol', 'EURZAR'), ('fx_vol', 'USDJPY'), ('fx_spot', 'EURUSD'),
+               ('fx_spot', 'USDJPY'), ('rates', 'EUR'), ('rates', 'JPY'))
+    terminal = setup_terminal(
+        monkeypatch, ('fx_vol', 'EURZAR'), ('fx_vol', 'USDJPY'), ('fx_spot', 'EURUSD'),
+        ('fx_spot', 'USDJPY'), ('rates', 'EUR'), ('rates', 'JPY'),
+        **{'EURUSD BGN Curncy': 1.0855, 'USDJPY BGN Curncy': 157.25})
+    before = CLIENT.get('/book').json()['etag']
+
+    result, outcome = set_up({'pair': 'eur/zar'})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is True and outcome['refused'] == []
+    assert outcome['installed'] == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+    assert outcome['not_supplied'] == [] and outcome['held_out'] == []
+    assert outcome['discovered'] == {'added': {}, 'revived': {}}
+    assert sorted(market['Market Prices']) == ['FXVolPrices.EUR.ZAR', 'InterestRatePrices.EUR']
+    assert market['Price Factors']['FxRate.EUR'] == {
+        'Domestic_Currency': None, 'Spot': 1.0855, 'Interest_Rate': 'EUR'}
+    assert market['Bootstrapper Configuration']['InterestRate']['Prices'] == 'InterestRate'
+    assert abs(par_residuals(desk_setup, 'EUR')).max() < 1e-6, 'a benchmark that does not reprice'
+    assert any('EUR was set up on the conventions this build ships' in row
+               for row in outcome['check']), outcome['check']
+    assert any(row.startswith('FXVol.EUR.ZAR is a cross') for row in outcome['check'])
+    # ONE write: the etag the job answers with is the file's, and nothing else moved it
+    assert outcome['etag'] == CLIENT.get('/book').json()['etag'] != before
+
+    result, outcome = set_up({'pair': 'USDJPY'})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['installed'] == ['FXVol.USD.JPY', 'FxRate.JPY', 'InterestRate.JPY']
+    assert market['Price Factors']['FxRate.JPY']['Spot'] == pytest.approx(1.0 / 157.25)
+    assert not [row for row in outcome['check'] if 'cross' in row], 'a USD leg read as a cross'
+
+    terminal.asked.clear()
+    standing = desk_setup.read_bytes()
+    result, quiet = set_up({'pair': 'EUR.ZAR'})
+
+    assert result['status'] == 'done' and quiet['written'] is False and quiet['installed'] == []
+    # EVERY answer carries the same keys, so a refusal is read exactly as a landing is
+    assert quiet['refused'] == [] and quiet['not_supplied'] == [] and quiet['held_out'] == []
+    assert quiet['check'] == [] and quiet['discovered'] == {'added': {}, 'revived': {}}
+    assert terminal.asked == [], 'a set-up with nothing missing asked the terminal'
+    assert desk_setup.read_bytes() == standing
+
+    # and the market that was set up prices the trade it was set up for
+    spot = (market['Price Factors']['FxRate.EUR']['Spot']
+            / market['Price Factors']['FxRate.ZAR']['Spot'])
+    quote = quote_of('ZeroCostCollar', {'pair': 'EURZAR', 'expiry': '1Y', 'notional': AMOUNT,
+                                        'notional_currency': 'EUR', 'floor': spot * 0.95})
+
+    assert len(quote['legs']) == 2 and quote['legs'][0]['strike_market'] == pytest.approx(
+        spot * 0.95)
+    assert abs(quote['net']) < max(abs(leg['premium']) for leg in quote['legs']) * 1e-4
+
+
+def test_a_set_up_a_bootstrap_complains_about_writes_nothing(desk_setup, tmp_path, monkeypatch):
+    """A COMPLAINT REFUSES THE WHOLE WRITE and hands its messages back verbatim - the surface, the
+    spot and the curve all fetched and authored, and the file byte-identical afterwards. Which is
+    also what says the install is ONE write: a set-up that landed the spots or the curve before it
+    bootstrapped would leave that half on disk.
+
+    The complaint is a configured family whose quote block the engine cannot read, so the run says
+    so in its own words. The map is not rewritten either - this desk's terminal had already
+    verified every name in scope, and a map whose content would not change is left alone, which is
+    read off its MTIME because two writers of the same document produce the same bytes.
+
+    AND A BARE `KeyError` IS STILL A SENTENCE: a standing block the emitter cannot read is held out
+    by name and still reaches the bootstrap, which asks for a key nothing wrote.
+
+    Killing mutation: that error handed back as its repr, which names a model nothing to act on.
+    """
+    home = tmp_path / 'home'
+    mapped = (home / 'security_map.json')
+    seeded_map(home, ('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    setup_terminal(monkeypatch, ('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'),
+                   **{'EURUSD BGN Curncy': 1.0855})
+    document = json.loads(desk_setup.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Bootstrapper Configuration']['LogVar2FJModelParameters'] = {}
+    market.setdefault('Market Prices', {})['LogVar2FJModelPrices.USD.ZAR'] = {
+        'instrument': {'Quote_Type': 'Nonsense', 'Underlying': 'ZAR', 'Discount_Rate': 'USD',
+                       'Volatility': 'USD.ZAR', 'European_Options': []}}
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    before, stamped = desk_setup.read_bytes(), mapped.stat().st_mtime_ns
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False and outcome['installed'] == []
+    assert any('Nonsense' in message and 'LogVar2FJModelPrices.USD.ZAR' in message
+               for message in outcome['refused']), outcome
+    assert outcome['check'] == [], 'a set-up that wrote nothing told a trader to go and look'
+    assert desk_setup.read_bytes() == before, 'a refused set-up moved the book'
+    assert mapped.stat().st_mtime_ns == stamped, 'a map with nothing to add was rewritten'
+
+    del market['Bootstrapper Configuration']['LogVar2FJModelParameters']
+    del market['Market Prices']['LogVar2FJModelPrices.USD.ZAR']
+    # an older book's curve block: no conventions beside the quotes and no deal under the row
+    market['Market Prices']['InterestRatePrices.OLD'] = {'instrument': {
+        'Currency': 'USD', 'Discount_Rate': '', 'Points': [
+            {'Tenor': '1Y', 'Security': 'NOSUCH Index', 'Quoted_Market_Value': 1.0,
+             'Use': 'Yes'}]}}
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+
+    assert result['status'] == 'done' and outcome['written'] is False, result
+    assert outcome['refused'] == ['the bootstrap asked for Deal and this market does not carry it']
+    assert [row for row in outcome['held_out'] if row.startswith('InterestRatePrices.OLD left as')]
+    assert desk_setup.read_bytes() == before, 'a refused set-up moved the book'
+
+
+def test_a_late_print_refuses_the_whole_set_up(desk_setup, tmp_path, monkeypatch):
+    """A LATE PRINT REFUSES THE TRIP, as it does on the tick. The check runs over every wanted
+    surface AND every wanted spot BEFORE anything is fetched, so a dead series never reaches a
+    book: `written` false, the refusal naming the security and its date, nothing fetched, and the
+    file byte-identical - not a curve and a spot installed beside a surface that never arrived.
+
+    The spot half is gated the same way, since a spot is the number every deal in the book
+    reprices off.
+
+    Killing mutation: the freshness check deleted, or moved after the fetch - the curve and the
+    spot then install and the answer reads `written: true` with a `refused` list beside it.
+    """
+    home = tmp_path / 'home'
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    seeded_map(home, *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, stamps={'EURZAR25R1Y BGN Curncy': '2019-01-01'},
+                              **{'EURUSD BGN Curncy': 1.0855})
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False and outcome['installed'] == []
+    assert outcome['refused'] == ['EURZAR25R1Y BGN Curncy is stale - 2019-01-01']
+    assert terminal.fetched == [], 'a surface was fetched off a book that was never written'
+    assert desk_setup.read_bytes() == before
+
+    terminal.stamps = {'EURUSD BGN Curncy': '2019-01-01'}
+    result, outcome = set_up({'pair': 'EURZAR'})
+
+    assert result['status'] == 'done' and outcome['written'] is False
+    assert outcome['refused'] == ['EURUSD BGN Curncy is stale - 2019-01-01']
+    assert terminal.fetched == [] and desk_setup.read_bytes() == before
+
+
+def test_a_want_nothing_seeds_is_named_beside_what_was_installed(desk_setup, tmp_path,
+                                                                 monkeypatch):
+    """THE ANSWER'S THREE FACTS ARE INDEPENDENT. A deal reaching a euro cashflow and an equity:
+    the euro half can be supplied and is installed, the equity half cannot and is named under
+    `not_supplied` with the factor and the reason, and `refused` stays empty because the WRITE was
+    not refused. `installed` is exactly what landed - the equity is not in it.
+
+    THE TWO KINDS OF `not_supplied` ARE BOTH HERE: a factor nothing in the vocabulary spells at
+    all, and one it spells but cannot author - a curve entry a desk wrote as a spelling with no
+    conventions, which the seed's own reader refuses naming every field it lacks. The second is
+    the one `installed` can lie about, because it HAS a supply and so is on the want-list.
+
+    Killing mutations: `installed` listing the whole want-list, which claims a curve the book does
+    not carry; the unsuppliable rows folded into `refused`, which tells a model the file did not
+    move when it did.
+    """
+    assert CLIENT.post('/book/securities', json={
+        'block': 'rates', 'key': 'GATE', 'entry': GATE_CURVE}).status_code == 200
+    scopes = (('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('rates', 'GATE'))
+    seeded_map(tmp_path / 'home', *scopes)
+    setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    curve_only(desk_setup)
+    euro = dict(json.loads(dump(CASHFLOW)), Reference='CFE', Currency='EUR', Discount_Rate='EUR')
+    gated = dict(json.loads(dump(CASHFLOW)), Reference='CFG', Discount_Rate='GATE')
+    mixed = {'Object': 'NettingCollateralSet', 'Reference': 'MIX', 'Netted': 'True',
+             'Collateralized': 'False', 'Settlement_Currency': '',
+             'Children': [{'Instrument': {'.Deal': deal}} for deal in
+                          (euro, gated, json.loads(dump(EQUITY_DEAL)))]}
+
+    result, outcome = set_up({'deal': mixed})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is True and outcome['refused'] == []
+    assert outcome['installed'] == ['FxRate.EUR', 'InterestRate.EUR']
+    assert sorted(reasons) == ['DividendRate.EQ', 'EquityPrice.EQ', 'EquityPriceVol.EQ',
+                               'InterestRate.GATE']
+    assert 'this desk seeds no EquityPrice' in reasons['EquityPrice.EQ']
+    assert 'GATE' in reasons['InterestRate.GATE'] and 'spot_days' in reasons['InterestRate.GATE']
+    assert 'EquityPrice.EQ' not in market['Price Factors']
+    assert 'InterestRate.GATE' not in market['Price Factors'], 'a curve nobody could author'
+    assert sorted(market['Market Prices']) == ['InterestRatePrices.EUR']
+
+
+def test_a_set_up_holds_out_the_benchmark_the_screen_refuses(desk_setup, tmp_path, monkeypatch):
+    """ONE DEAD TICKER IS ONE KNOT FEWER, never a refused strip: the row keeps its place, is held
+    out by name in `held_out`, and the curve solves on what is left - the curve verb's own rule,
+    and the reason a benchmark is screened rather than checked for freshness with the surfaces.
+
+    Killing mutation: `held_out` dropped from the answer, which leaves a desk no way to know the
+    curve it just set up is a knot short.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    terminal.dead = {'EESWE10 BGN Curncy'}
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    block = curve_block(desk_setup, 'EUR')
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert outcome['installed'] == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+    assert [row for row in outcome['held_out'] if 'EESWE10 BGN Curncy' in row], outcome['held_out']
+    assert [(row['Tenor'], row['Use']) for row in block['Points'] if row['Use'] != 'Yes'] == [
+        ('10Y', 'No')]
+    assert any('held out' in row for row in outcome['check'])
+    assert abs(par_residuals(desk_setup, 'EUR')).max() < 1e-6, 'the strip without it did not solve'
+
+
+def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
+    """THE SNAP SETS THE DATE. A curve authored off a terminal carries the print's own clock, so a
+    book standing BEHIND those prints rolls onto them - both of its dates - and every curve block
+    it already carries is re-authored there in the same write. A book standing AHEAD of them does
+    not roll back: an old print is evidence about a quote, not a valuation date.
+
+    And a book that rolls forward WHILE the terminal is pricing refuses by name rather than
+    stamping the day it read, which is the one window where a set-up could date a curve behind its
+    own book.
+
+    Killing mutations: the snap never advancing the date, so the block is authored on the day the
+    book stood at; the roll-back guard removed, which stamps 2024-06-28 onto a book at 2030.
+    """
+    from derivus_bloomberg import session
+
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    wider = scopes + (('fx_vol', 'USDZAR'), ('fx_vol', 'USDJPY'), ('fx_spot', 'USDJPY'),
+                      ('rates', 'JPY'), ('rates', 'ZAR'))
+    seeded_map(tmp_path / 'home', *scopes, ('fx_vol', 'USDZAR'))
+    terminal = setup_terminal(monkeypatch, *wider, **{'EURUSD BGN Curncy': 1.0855,
+                                                      'USDJPY BGN Curncy': 157.25})
+    curve_only(desk_setup)
+    assert set_up_curve().status_code == 200, 'a standing curve for the roll to re-author'
+    snapped = terminal.stamp
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    document = json.loads(desk_setup.read_text())
+    stamps = document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']
+
+    assert result['status'] == 'done' and outcome['written'] is True, result
+    assert outcome['base_date'] == snapped
+    assert stamps['Base_Date'] == {'.Timestamp': snapped}
+    assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': snapped}
+    assert 'InterestRatePrices.ZAR' in outcome['reauthored'], 'a standing curve left behind'
+
+    # a book that rolls FORWARD while the terminal is pricing: the write refuses by name with both
+    # days in it rather than stamping the day it read
+    class Rolling(NamingTerminal):
+        def reference_data_report(self, securities, fields):
+            CLIENT.post('/book/date', json={'base_date': '2030-01-02'})
+            return super().reference_data_report(securities, fields)
+
+    seeded_map(tmp_path / 'home', *wider)
+    monkeypatch.setattr(session, 'BloombergSession', Rolling(
+        terminal.prints, names=terminal.names, stamp=terminal.stamp))
+    result, outcome = set_up({'pair': 'USDJPY'})
+
+    assert result['status'] == 'done' and outcome['written'] is False, outcome
+    assert any('2030-01-02' in message and snapped in message
+               for message in outcome['refused']), outcome['refused']
+
+    # and a book standing AHEAD of the prints keeps its own day
+    monkeypatch.setattr(session, 'BloombergSession', terminal)
+    result, outcome = set_up({'pair': 'USDZAR'})
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert outcome['base_date'] == '2030-01-02', 'a snap rolled the book backwards'
+
+
+def test_a_set_up_reads_the_curve_its_own_seed_verified(desk_setup, tmp_path, monkeypatch):
+    """ONE SEED READER PER JOB. A desk that restates a curve's SPELLING without restating its
+    conventions is the legacy case the seed's own fallback exists for, and it is exactly where two
+    readings diverge: the want, the count, the discovery and the strip that is PRICED must all be
+    the one merged entry - the desk's spelling over the packaged conventions - or the map is grown
+    with one family of tickers and the curve built out of another, which the Securities screen
+    then reads as `unmapped` for every knot.
+
+    Killing mutation: the strip read off `seeded_rates`, which takes the desk entry only where it
+    declares conventions - the map holds `EUSA*` and the block is authored from `EESWE*`.
+    """
+    assert CLIENT.post('/book/securities', json={
+        'block': 'rates', 'key': 'EUR', 'entry': {'prefix': 'EUSA', 'expect': 'EUR SWAP (ESTR)',
+                                                  'years': [1, 2, 5, 10], 'weeks': ['1W'],
+                                                  'overnight': {'security': 'ESTRON Index',
+                                                                'expect': 'ESTR'}}}).status_code \
+        == 200
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    rows = curve_block(desk_setup, 'EUR')['Points']
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert {row['Security'] for row in rows} <= set(terminal.prints), 'a ticker never verified'
+    assert [row['Security'] for row in rows if row['Tenor'] == '10Y'] == ['EUSA10 BGN Curncy']
+    assert not [row for row in rows if row['Security'].startswith('EESWE')]
+    # the conventions are the packaged ones the desk did not restate, which is what makes the
+    # spelling it DID restate usable at all
+    assert curve_block(desk_setup, 'EUR')['Compounding'] == 'OIS'
+
+
+def test_a_set_up_installs_no_curve_the_book_does_not_discount_on(tmp_path, monkeypatch):
+    """A PAIR'S WANT-LIST IS THE WALK, not a name. The book discounts its rand on `ZAR-ZARONIA`,
+    so a EURZAR set-up needs the euro's market and nothing else: reading `InterestRate.ZAR` off the
+    currency code would install a second rand curve nothing reads and pay the terminal for a whole
+    strip to do it.
+
+    Killing mutation: the want-list computed from `Price Factors` membership rather than from the
+    engine's own walk of a vanilla option on the pair.
+    """
+    factors = dict(FACTORS, **{
+        'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Interest_Rate='ZAR-ZARONIA'),
+        'InterestRate.ZAR-ZARONIA': FACTORS['InterestRate.ZAR']})
+    del factors['InterestRate.ZAR']
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(deals=(), factors=factors, sections={
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('rates', 'ZAR'))
+        seeded_map(tmp_path / 'home', *scopes)
+        terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+
+        result, outcome = set_up({'pair': 'EURZAR'})
+        market = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+        assert result['status'] == 'done' and outcome['written'] is True, outcome
+        assert outcome['installed'] == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+        assert 'InterestRate.ZAR' not in market['Price Factors'], 'a second rand curve'
+        assert sorted(market['Market Prices']) == ['FXVolPrices.EUR.ZAR',
+                                                   'InterestRatePrices.EUR']
+        assert not [name for name in terminal.asked if name.startswith('SASW')], \
+            'the terminal was asked for a whole rand strip nothing reads'
+    finally:
+        service.BOOK = None
+
+
+def test_a_set_up_discovers_only_what_the_map_has_never_heard_of(desk_setup, tmp_path,
+                                                                 monkeypatch):
+    """DISCOVERY IS SCOPED TO WHAT WOULD SUPPLY THE WANT. A home whose map has never heard of the
+    pair probes exactly the names the seed spells for its three supplying entries - the surface,
+    the spot pair and the curve - and no others, which is the difference between one pair's names
+    and the six hundred the packaged questionnaire spells.
+
+    A home that already holds them probes NONE and does not rewrite the map; one holding a REJECTED
+    name in scope re-asks exactly that name, because a rejection is one day's answer.
+
+    Killing mutations: the unscoped seed handed to `discover.extend` - `asked` then carries
+    `USDZARV1W BGN Curncy` and every swaption the questionnaire names; the map rewritten when
+    nothing was discovered, which is invisible in the bytes and plain in the mtime.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    scoped = seeded_candidates(*scopes)
+    terminal = setup_terminal(monkeypatch, ('fx_vol', 'USDZAR'), *scopes,
+                              **{'EURUSD BGN Curncy': 1.0855})
+    # the home already carries USDZAR: what the EURZAR set-up probes is its OWN scope regardless
+    mapped = tmp_path / 'home' / 'security_map.json'
+    seeded_map(tmp_path / 'home', ('fx_vol', 'USDZAR'))
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    grown = json.loads(mapped.read_text())
+
+    assert result['status'] == 'done' and outcome['written'] is True, result
+    assert set(terminal.asked) == set(scoped), 'the unscoped vocabulary reached the terminal'
+    assert len(outcome['discovered']['added']) == len(scoped)
+    assert set(grown['blocks']['fx_vol']['EURZAR']['quotes']['1Y']) == {
+        'ATM', 'RR_0.10', 'BF_0.10', 'RR_0.25', 'BF_0.25'}
+    # a grown pair lands READABLE: `expiries` is the block's own metadata rather than an entry, and
+    # a surface fetch reads it before it reads a quote
+    assert grown['blocks']['fx_vol']['EURZAR']['expiries']['1Y'] == 1.0
+
+    terminal.asked.clear()
+    stamped = mapped.stat().st_mtime_ns
+    result, again = set_up({'pair': 'USDZAR'})
+
+    assert result['status'] == 'done' and again['installed'] == ['FXVol.USD.ZAR'], again
+    assert again['discovered'] == {'added': {}, 'revived': {}}, 'a verified map was re-probed'
+    assert [name for name in terminal.asked if name.startswith('USDZARV')], 'no freshness check'
+    assert not [name for name in terminal.asked if name.endswith('Curncy')
+                and 'USDZAR' not in name], 'a name outside the scope was probed'
+    assert mapped.stat().st_mtime_ns == stamped, 'a map with nothing to add was rewritten'
+
+
+def test_a_rejected_name_in_scope_is_asked_again(desk_setup, tmp_path, monkeypatch):
+    """A REJECTION IS ONE DAY'S ANSWER. A map that holds every name of the scope but carries one on
+    its ledger re-asks exactly that one - not the verified entries beside it, and nothing outside
+    the scope - and a name that prices now lands in the map under `revived`.
+
+    Killing mutation: the ledger asked only where the entries are incomplete, which leaves a
+    rejection standing forever on a scope that is otherwise fully verified.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    dead = 'EESWE10 BGN Curncy'
+    mapped = tmp_path / 'home' / 'security_map.json'
+    seeded_map(tmp_path / 'home', *scopes, ('fx_vol', 'USDZAR'), rejected={dead})
+    terminal = setup_terminal(monkeypatch, ('fx_vol', 'USDZAR'), *scopes,
+                              **{'EURUSD BGN Curncy': 1.0855})
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    grown = json.loads(mapped.read_text())
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert outcome['discovered']['revived'] == {'rates/EUR/strip/10Y': dead}
+    assert dead not in grown['rejected'] and outcome['discovered']['added'] == {}
+    assert dead in terminal.asked
+    assert not [name for name in terminal.asked if name.startswith('USDZAR')], 'out of scope'
+
+
+def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
+        desk_setup, tmp_path, monkeypatch):
+    """ONLY A TERMINAL SETS A MARKET UP, so a workstation whose blpapi does not import refuses at
+    SUBMISSION by name - no session, no queue, nothing written. A pair this desk's vocabulary does
+    not spell refuses there too, naming the verb that adds it, and one stated BACKWARDS is told the
+    spelling the seed carries rather than sent to add a duplicate. A `deal` the booking verb would
+    refuse is refused there, in its words.
+
+    AND A ROUTINE TICK NEVER GROWS THE MAP. The cadence values the book's spots off the pairs the
+    map already carries; a currency it verified none for is named under `unrouted` and keeps the
+    spot it had, and the map file does not move.
+    """
+    from derivus_bloomberg import session
+    from derivus_bloomberg.errors import BloombergUnavailable
+
+    def absent():
+        raise BloombergUnavailable('no blpapi on this workstation')
+
+    home = tmp_path / 'home'
+    seeded_map(home, ('fx_vol', 'EURZAR'))
+    before, stamped = desk_setup.read_bytes(), (home / 'security_map.json').stat().st_mtime_ns
+    monkeypatch.setattr(session, 'blpapi_module', absent)
+    refused = CLIENT.post('/book/setup', json={'pair': 'EURZAR'})
+
+    assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
+    assert desk_setup.read_bytes() == before
+
+    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    unseeded = CLIENT.post('/book/setup', json={'pair': 'EURNOK'})
+    backwards = CLIENT.post('/book/setup', json={'pair': 'ZAREUR'})
+    ambiguous = CLIENT.post('/book/setup', json={'pair': 'EURZAR', 'deal_path': '0'})
+    nameless = CLIENT.post('/book/setup', content=dump(
+        {'deal': {'Object': 'CrossCurrencySwap', 'Reference': 'T'}}), headers=JSON)
+
+    assert unseeded.status_code == 422 and 'EURNOK' in unseeded.json()['detail']
+    assert '/book/securities' in unseeded.json()['detail']
+    assert backwards.status_code == 422
+    assert backwards.json()['detail'] == 'this desk seeds EURZAR rather than ZAREUR - ask for that'
+    assert ambiguous.status_code == 422 and 'deal_path' in ambiguous.json()['detail']
+    assert nameless.status_code == 422 and 'CrossCurrencySwap' in nameless.json()['detail']
+
+    bloomberg_seams(monkeypatch, terminal=CannedTerminal({}),
+                    provision=lambda source, as_of, on_batch=None: (
+                        json.loads((home / 'security_map.json').read_text()), False))
+    metronome = service.Metronome(60.0, {'pairs': []})
+    metronome.beat()
+    service.EXECUTOR.queue.join()
+    outcome = CLIENT.get('/results/{}'.format(metronome.pending)).json()['stats']['Bloomberg']
+
+    assert outcome['written'] is True and outcome['spots'] == {}
+    assert any('ZAR against USD' in message for message in outcome['unrouted']), outcome
+    assert (home / 'security_map.json').stat().st_mtime_ns == stamped
+
+
+def routed_prints(pair='USDZAR', value=19.0):
+    """A number for every security `routed_map` verifies - the freshness check asks about the
+    surface's names beside the route's, and a terminal answers for what it is asked."""
+    from derivus_bloomberg.security_map import entries
+
+    return {entry['security']: value for _, entry in entries(routed_map(pair))}
+
+
+def today():
+    import datetime
+
+    return datetime.date.today().isoformat()
+
+
+
+def test_nothing_lands_that_would_depend_on_a_block_the_write_will_not_carry(
+        desk_setup, tmp_path, monkeypatch):
+    """THE HOLD RULE. A curve the terminal leaves under the emitter's floor is `not_supplied` in
+    the SCREEN's own words; the currency's spot is held with it, and the surface that leg belongs
+    to is held with the spot. Nothing lands, because nothing left could stand on its own: a book
+    that took the spot would carry an `FxRate` pointing at a curve it does not have, and the deal
+    the set-up was asked to build a market for still would not book.
+
+    Killing mutations: the hold not carried from the curve to the spot, which installs a dangling
+    `FxRate.EUR`; the sub-floor strip reported as a refusal of the write rather than as a row, which
+    loses the reason with it.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    # every EUR benchmark but one is dead: one believed point against a floor of two
+    terminal.dead = {row['security'] for row in seeded_rows_of('EUR')[1:]}
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False and outcome['installed'] == []
+    assert outcome['refused'] == [], 'a want that cannot be supplied is not a refused write'
+    assert sorted(reasons) == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+    assert 'kept 1 of 24 seeded benchmarks' in reasons['InterestRate.EUR']
+    assert reasons['FxRate.EUR'] == 'held with InterestRate.EUR'
+    assert reasons['FXVol.EUR.ZAR'] == 'held with FxRate.EUR'
+    assert 'FxRate.EUR' not in market['Price Factors'], 'a spot against a currency with no curve'
+    assert 'FXVolPrices.EUR.ZAR' not in market.get('Market Prices', {})
+    assert desk_setup.read_bytes() == before
+
+
+def test_what_the_write_can_complete_still_lands(desk_setup, tmp_path, monkeypatch):
+    """AND THE OTHER HALF OF THE RULE: a deal wanting two currencies where one strip is dead lands
+    the other one COMPLETE. The yen's curve and spot install; the euro's curve is `not_supplied`
+    and its spot is held with it, so the book gains a market it can price rather than two halves.
+
+    Killing mutation: the hold taken as a refusal of the whole write, which leaves the yen market
+    unbuilt because the euro's strip was dead.
+    """
+    scopes = (('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('fx_spot', 'USDJPY'), ('rates', 'JPY'))
+    seeded_map(tmp_path / 'home', *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855,
+                                                       'USDJPY BGN Curncy': 157.25})
+    terminal.dead = {row['security'] for row in seeded_rows_of('EUR')[1:]}
+    curve_only(desk_setup)
+    deals = [dict(json.loads(dump(CASHFLOW)), Reference='CF' + currency, Currency=currency,
+                  Discount_Rate=currency) for currency in ('EUR', 'JPY')]
+
+    result, outcome = set_up({'deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'TWO', 'Netted': 'True',
+        'Collateralized': 'False', 'Settlement_Currency': '',
+        'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is True and outcome['refused'] == []
+    assert outcome['installed'] == ['FxRate.JPY', 'InterestRate.JPY']
+    assert sorted(reasons) == ['FxRate.EUR', 'InterestRate.EUR']
+    assert reasons['FxRate.EUR'] == 'held with InterestRate.EUR'
+    assert sorted(market['Market Prices']) == ['InterestRatePrices.JPY']
+    assert 'FxRate.EUR' not in market['Price Factors']
+    assert market['Price Factors']['FxRate.JPY']['Interest_Rate'] == 'JPY'
+
+
+def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path, monkeypatch):
+    """THE HOLD READS THE WHOLE WANT-LIST, not only what this call trimmed, and A NEW CURRENCY IS
+    A PAIR: a leg's spot can be missing before any route exists - the map verified no pair for it,
+    or this desk's seed spells none - and then its CURVE cannot be fitted either, because the fit
+    values that strip's own deals in the book's base and reads the `FxRate` block to do it. Spot,
+    curve and the surface over them are held together, each naming what it waits on.
+
+    Each half holds the other: on a book carrying the yen spot and no yen curve the surface waits
+    on the curve, on one carrying the euro curve and no euro spot it waits on the spot, and the row
+    says which.
+
+    Killing mutations: the hold gathered from the trimmed spots alone, which lands the curve and
+    the surface against a spot that is not coming - the fit then indexes `FxRate.EUR`, and the
+    whole write refuses with a bare `KeyError` naming a key rather than a sentence; the curve half
+    of the surface's hold dropped, which lands a surface on a leg nothing discounts.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('rates', 'EUR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    # the terminal answers for EURUSD under a name no candidate expects, so the probe rejects it
+    # and the map verifies no spot for the pair - the shape a desk meets before any verification
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    curve_only(desk_setup)
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False and outcome['installed'] == [], outcome
+    assert outcome['refused'] == [], 'a want that cannot be supplied is not a refused write'
+    assert sorted(reasons) == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+    assert 'the map verified no spot for EURUSD' in reasons['FxRate.EUR']
+    assert reasons['InterestRate.EUR'] == 'held with FxRate.EUR'
+    assert reasons['FXVol.EUR.ZAR'] == 'held with FxRate.EUR'
+    assert 'InterestRatePrices.EUR' not in market.get('Market Prices', {})
+    assert desk_setup.read_bytes() == before
+
+    # the other way in: the seed spells no pair for that leg at all, so the walk itself diverts it
+    assert CLIENT.post('/book/securities', json={
+        'block': 'fx_spot', 'key': 'pairs', 'entry': ['USDJPY', 'USDZAR']}).status_code == 200
+    result, outcome = set_up({'pair': 'EURZAR'})
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and outcome['written'] is False, result
+    assert outcome['refused'] == [] and outcome['installed'] == []
+    assert sorted(reasons) == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
+    assert 'the seed spells no fx_spot pair for EURUSD or USDEUR' in reasons['FxRate.EUR']
+    assert reasons['FXVol.EUR.ZAR'] == 'held with FxRate.EUR'
+    assert desk_setup.read_bytes() == before
+
+    # a book carrying one half of each pair: a yen spot whose curve is dead, a euro curve whose
+    # spot nothing supplies - so the surface over each is held with the other half by name
+    document = json.loads(before)
+    carried = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    carried['FxRate.JPY'] = {'Domestic_Currency': None, 'Interest_Rate': 'JPY',
+                             'Spot': 1.0 / 157.25}
+    carried['InterestRate.EUR'] = dict(carried['InterestRate.ZAR'], Currency='EUR')
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    scopes = (('fx_vol', 'USDJPY'), ('rates', 'JPY'), ('fx_vol', 'EURZAR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    terminal.dead = {row['security'] for row in seeded_rows_of('JPY')[1:]}
+    standing = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'USDJPY'})
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and outcome['written'] is False, result
+    assert outcome['refused'] == [], 'the surface reached a bootstrap it cannot stand in'
+    assert sorted(reasons) == ['FXVol.USD.JPY', 'InterestRate.JPY']
+    assert reasons['FXVol.USD.JPY'] == 'held with InterestRate.JPY'
+    assert desk_setup.read_bytes() == standing
+
+    expiry = {'.Timestamp': (datetime.date.today() + datetime.timedelta(365)).isoformat()}
+    result, outcome = set_up({'deal': dict(
+        service.PAIR_PROBE, Reference='OPT', Currency='ZAR', Underlying_Currency='EUR',
+        FX_Volatility='EUR.ZAR', Discount_Rate='EUR', Expiry_Date=expiry,
+        Settlement_Date=expiry)})
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and outcome['written'] is False, result
+    assert outcome['refused'] == [], 'the surface reached a bootstrap it cannot stand in'
+    assert sorted(reasons) == ['FXVol.EUR.ZAR', 'FxRate.EUR']
+    assert reasons['FXVol.EUR.ZAR'] == 'held with FxRate.EUR'
+    assert desk_setup.read_bytes() == standing
+
+
+def test_two_wanted_curves_of_one_currency_answer_an_outcome(desk_setup, tmp_path, monkeypatch):
+    """TWO WANTED CURVES CAN BE ONE CURRENCY - this desk's own vocabulary spells three for the rand
+    - and what a queued job owes its caller is an OUTCOME. Both strips are built and land, the spot
+    the book already carries keeps the curve IT names, and `check` names both. Where that spot
+    cannot be supplied, BOTH are held with it and nothing lands.
+
+    Killing mutations: each curve's currency read off a map keyed by CURRENCY, which collapses the
+    two - as a repr it lost `written`, `refused` and `not_supplied` to a bare `KeyError` the job
+    could not answer with at all, and as a lookup it leaves the collapsed curve unheld, landing it
+    against a spot the book will not carry.
+    """
+    scopes = (('fx_spot', 'USDZAR'), ('rates', 'ZAR'), ('rates', 'ZAR-ZARONIA'))
+    seeded_map(tmp_path / 'home', *scopes)
+    setup_terminal(monkeypatch, *scopes, **{'USDZAR BGN Curncy': 18.5})
+    curve_only(desk_setup)
+    document = json.loads(desk_setup.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop(
+        'InterestRate.ZAR')
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    legs = [dict(json.loads(dump(CASHFLOW)), Reference=reference, Discount_Rate=curve)
+            for reference, curve in (('A', 'ZAR'), ('B', 'ZAR-ZARONIA'))]
+    both = {'deal': {'Object': 'NettingCollateralSet', 'Reference': 'TWO', 'Netted': 'True',
+                     'Collateralized': 'False', 'Settlement_Currency': '',
+                     'Children': [{'Instrument': {'.Deal': leg}} for leg in legs]}}
+
+    result, outcome = set_up(both)
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is True and outcome['refused'] == [], outcome
+    assert outcome['installed'] == ['InterestRate.ZAR', 'InterestRate.ZAR-ZARONIA']
+    assert outcome['not_supplied'] == [] and outcome['held_out'] == []
+    assert sorted(market['Market Prices']) == ['InterestRatePrices.ZAR',
+                                               'InterestRatePrices.ZAR-ZARONIA']
+    assert market['Price Factors']['FxRate.ZAR']['Interest_Rate'] == 'ZAR'
+    assert len([row for row in outcome['check'] if 'conventions this build ships' in row]) == 2
+
+    assert CLIENT.post('/book/securities', json={
+        'block': 'fx_spot', 'key': 'pairs', 'entry': ['EURUSD']}).status_code == 200
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop('FxRate.ZAR')
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up(both)
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and outcome['written'] is False, result
+    assert outcome['refused'] == [] and outcome['installed'] == []
+    assert sorted(reasons) == ['FxRate.ZAR', 'InterestRate.ZAR', 'InterestRate.ZAR-ZARONIA']
+    assert reasons['InterestRate.ZAR'] == 'held with FxRate.ZAR'
+    assert reasons['InterestRate.ZAR-ZARONIA'] == 'held with FxRate.ZAR'
+    assert desk_setup.read_bytes() == before
+
+
+def test_a_surface_is_held_with_the_curve_its_leg_actually_discounts_on(desk_setup, tmp_path,
+                                                                        monkeypatch):
+    """A LEG'S CURVE IS THE ONE ITS OWN `FxRate` BLOCK NAMES, not the one a set-up would have built
+    it against. A book whose rand spot discounts on `ZAR-ZARONIA` and whose `ZAR-ZARONIA` entry
+    declares no conventions cannot have that curve supplied, so the EURZAR surface is held with it
+    by name and the book stands still.
+
+    Killing mutation: the leg's curve read off the currency alone, which asks whether
+    `InterestRate.ZAR` is missing while `InterestRate.ZAR-ZARONIA` is the one that is - the surface
+    lands against a currency with no curve, and the book then prices a EURZAR collar with the
+    engine quietly skipping the missing discount curve.
+    """
+    from derivus_bloomberg import security_map
+
+    packaged = security_map.read_seed(security_map.packaged_seed())['rates']['ZAR-ZARONIA']
+    assert CLIENT.post('/book/securities', json={
+        'block': 'rates', 'key': 'ZAR-ZARONIA',
+        'entry': dict(packaged, conventions={})}).status_code == 200
+    document = json.loads(desk_setup.read_text())
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors.pop('InterestRate.ZAR')
+    factors['FxRate.ZAR'] = dict(factors['FxRate.ZAR'], Interest_Rate='ZAR-ZARONIA')
+    document['Calc']['Deals']['Deals']['Children'] = []
+    desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'),
+              ('rates', 'ZAR-ZARONIA'))
+    seeded_map(tmp_path / 'home', *scopes)
+    setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855,
+                                            'USDZAR BGN Curncy': 18.5})
+    before = desk_setup.read_bytes()
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False and outcome['installed'] == []
+    assert reasons['FXVol.EUR.ZAR'] == 'held with InterestRate.ZAR-ZARONIA'
+    assert 'ZAR-ZARONIA declares no curve_day_count' in reasons['InterestRate.ZAR-ZARONIA']
+    assert 'FXVol.EUR.ZAR' not in market['Price Factors'], 'a surface with no rand curve under it'
+    assert desk_setup.read_bytes() == before
+
+
+def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_path, monkeypatch):
+    """A BOOK VALUED FORWARD OF ITS MARKET IS A LEGAL STATE, and the set-up screens its prints
+    exactly as the tick screens the book's own rows - against the book's date. So a book six days
+    ahead of its prints keeps every benchmark out, and what the answer owes is the WAY OUT: the
+    book's date, the print's date and the verb that moves one. It never reads "nothing refused"
+    beside two dozen held-out rows, which is what the emitter's own census says when the rows were
+    held rather than rejected.
+
+    Killing mutation: the emitter's sentence handed back verbatim, which counts the rejections it
+    never made.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
+    seeded_map(tmp_path / 'home', *scopes)
+    setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    curve_only(desk_setup)
+    ahead = (datetime.date.today() + datetime.timedelta(6)).isoformat()
+    assert CLIENT.post('/book/date', json={'base_date': ahead}).status_code == 200
+
+    result, outcome = set_up({'pair': 'EURZAR'})
+    reason = {row['factor']: row['reason'] for row in outcome['not_supplied']}['InterestRate.EUR']
+
+    assert result['status'] == 'done' and outcome['written'] is False, outcome
+    assert 'kept 0 of 24 seeded benchmarks' in reason and '24 stale' in reason
+    assert ahead in reason and 'POST /book/date' in reason
+    # the screen does not keep a rejected print's own date, so the window it judged by stands in
+    assert 'no print more than 5 days older than that' in reason
+    assert 'nothing refused' not in reason, 'the emitter counted rejections it never made'
+
+
+def test_an_installed_spot_names_the_curve_that_was_built(desk_setup, tmp_path, monkeypatch):
+    """A SPOT DISCOUNTS ON THE CURVE THAT LANDED, not on its own currency code. The shipped
+    `ZAR-ZARONIA` entry is the shape that tells them apart - a curve keyed by its own name and
+    declaring `currency: ZAR` - so a book set up through it must carry an `FxRate.ZAR` pointing at
+    `ZAR-ZARONIA`, the block the write actually made.
+
+    Killing mutation: the block authored with `Interest_Rate: currency`, which points a rand spot
+    at a rand curve nothing wrote.
+    """
+    factors = {name: block for name, block in FACTORS.items() if 'ZAR' not in name}
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(deals=(), factors=factors, sections={
+        'Bootstrapper Configuration': {'InterestRate': {'Prices': 'InterestRate'}}}))),
+        indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        scopes = (('fx_spot', 'USDZAR'), ('rates', 'ZAR-ZARONIA'))
+        seeded_map(tmp_path / 'home', *scopes)
+        setup_terminal(monkeypatch, *scopes, **{'USDZAR BGN Curncy': 18.5})
+        rand = dict(json.loads(dump(CASHFLOW)), Discount_Rate='ZAR-ZARONIA')
+
+        result, outcome = set_up({'deal': rand})
+        market = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+        assert result['status'] == 'done' and outcome['written'] is True, outcome
+        assert outcome['installed'] == ['FxRate.ZAR', 'InterestRate.ZAR-ZARONIA']
+        assert market['Price Factors']['FxRate.ZAR']['Interest_Rate'] == 'ZAR-ZARONIA'
+        assert sorted(market['Market Prices']) == ['InterestRatePrices.ZAR-ZARONIA']
+    finally:
+        service.BOOK = None
+
+
+def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_path, monkeypatch):
+    """WHEN THE PRINTS MOVE THE DATE, THE SET-UP IS A TICK AS WELL. A book ten days behind its
+    prints gains a new market AND has the one it already carried re-priced off the terminal in the
+    same session, landing in the same write - the standing surface, the standing curve's rows and
+    the routed spots - otherwise it would hold two days of quotes under one date, the standing
+    curve re-authored forward on numbers nobody re-fetched.
+
+    THE NUMBER IS WHAT SAYS SO: the euro benchmarks print somewhere new, and the block that lands
+    carries the new print rather than the one it was authored on. The write is dated by the whole
+    trip, the roll's own snap included - later here than the day the new strip printed - the roll's
+    held-out rows travel in `held_out`, `check` names every standing block that moved under the
+    desk's feet, and a standing currency's `FxRate` keeps the curve IT discounts on rather than the
+    one this set-up built.
+
+    A book already standing on the prints' day asks the terminal about nothing standing: only the
+    wants are fetched.
+
+    Killing mutations: the roll dropped, or fetched and never merged into the write, which
+    re-authors the standing curve on stale numbers while `check` announces it was re-priced; the
+    write's date ignoring the day the roll's own prints were snapped; the roll's held rows dropped;
+    no standing SURFACE re-priced at all; every spot authored as a new block, which re-points a
+    standing spot at the curve this set-up happened to install.
+    """
+    scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'),
+              ('fx_spot', 'USDZAR'), ('rates', 'ZAR-ZARONIA'), ('fx_spot', 'USDCHF'),
+              ('rates', 'CHF'))
+    seeded_map(tmp_path / 'home', *scopes)
+    # the rand strip prints three days back, so the day the ROLL snapped is the later one
+    rand = (datetime.date.today() - datetime.timedelta(3)).isoformat()
+    terminal = setup_terminal(
+        monkeypatch, *scopes,
+        stamps={row['security']: rand for row in seeded_rows_of('ZAR-ZARONIA')},
+        **{'EURUSD BGN Curncy': 1.0855, 'USDZAR BGN Curncy': 18.5, 'USDCHF BGN Curncy': 0.79})
+    assert set_up({'pair': 'EURZAR'})[1]['written'] is True
+    behind = (datetime.date.today() - datetime.timedelta(10)).isoformat()
+    assert CLIENT.post('/book/date', json={'base_date': behind}).status_code == 200
+    euro = [row['security'] for row in seeded_rows_of('EUR')]
+    terminal.prints.update(dict.fromkeys(euro, 3.25))
+    terminal.dead = {euro[-1]}
+    terminal.asked.clear()
+
+    result, outcome = set_up({'deal': dict(json.loads(dump(CASHFLOW)),
+                                           Discount_Rate='ZAR-ZARONIA')})
+    factors = json.loads(desk_setup.read_text())['Calc']['MergeMarketData'][
+        'ExplicitMarketData']['Price Factors']
+    points = curve_block(desk_setup, 'EUR')['Points']
+
+    assert result['status'] == 'done' and outcome['written'] is True, result
+    assert outcome['installed'] == ['InterestRate.ZAR-ZARONIA']
+    assert set(euro) <= set(terminal.asked), 'the standing euro curve was not re-priced'
+    # THE MERGE IS THE POINT: the standing block carries the print the roll came back with, and
+    # the one row the screen refused keeps the number it had under `Use` No
+    assert {row['Quoted_Market_Value'] for row in points if row['Use'] == 'Yes'} == {3.25}
+    assert outcome['base_date'] == datetime.date.today().isoformat(), 'the roll did not date it'
+    assert 'FXVolPrices.EUR.ZAR' in outcome['updated']
+    assert 'InterestRatePrices.EUR' in outcome['reauthored']
+    assert sorted(row.split(' ', 1)[0] for row in outcome['check'] if 're-priced onto' in row) == [
+        'FXVolPrices.EUR.ZAR', 'InterestRatePrices.EUR'], outcome['check']
+    assert [row for row in outcome['held_out'] if euro[-1] in row], outcome['held_out']
+    assert factors['FxRate.ZAR']['Interest_Rate'] == 'ZAR', 'a standing spot took the new curve'
+    assert factors['FxRate.ZAR']['Spot'] == pytest.approx(1.0 / 18.5)
+
+    terminal.asked.clear()
+    result, again = set_up({'deal': dict(json.loads(dump(CASHFLOW)), Reference='CFC',
+                                         Currency='CHF', Discount_Rate='CHF')})
+
+    assert result['status'] == 'done' and again['written'] is True, result
+    assert again['installed'] == ['FxRate.CHF', 'InterestRate.CHF']
+    assert not (set(euro) & set(terminal.asked)), 'a book on its prints re-priced what stood anyway'
+    assert not [row for row in again['check'] if 're-priced onto' in row]
+
+
+def routed_map(pair='USDZAR'):
+    """The canned map with an `fx_spot` block beside its surface - a desk whose terminal verified
+    the one pair that prices the book's rand against its dollars."""
+    document = dict(canned_map())
+    document['blocks'] = dict(document['blocks'], fx_spot={pair: {
+        'security': '{} BGN Curncy'.format(pair), 'name': pair, 'last_update': '2024-06-28',
+        'verified': '2024-06-28'}})
+    return document
+
+
+def test_the_tick_moves_the_books_spots(desk, monkeypatch):
+    """THE TICK VALUES THE BOOK'S SPOTS, in the same atomic write as the surfaces it fetches. The
+    map says which verified pair prices each currency against the base, and the print is crossed
+    onto the ENGINE's axis - `USDZAR` is rand per dollar, so `FxRate.ZAR` is its reciprocal, one
+    rand in dollars.
+
+    A currency the map verified no pair for is named under `unrouted` and keeps the spot it had: a
+    spot is never triangulated through a third currency, that being a market view rather than a
+    tick.
+
+    Killing mutation: the spot patched un-crossed, which writes 19.0 onto `FxRate.ZAR` and marks
+    one rand at nineteen dollars.
+    """
+    document = json.loads(desk.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['FxRate.CHF'] = {'Domestic_Currency': None, 'Interest_Rate': 'USD',
+                                             'Spot': 1.1}
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    terminal = CannedTerminal({'USDZAR BGN Curncy': 19.0})
+    bloomberg_seams(monkeypatch, terminal=terminal,
+                    provision=lambda source, as_of, on_batch=None: (routed_map(), False))
+
+    result, outcome = ticked()
+    factors = json.loads(desk.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors']
+
+    assert result['status'] == 'done' and outcome['written'] is True
+    assert outcome['spots'] == {'FxRate.ZAR': 1.0 / 19.0}
+    assert factors['FxRate.ZAR']['Spot'] == pytest.approx(1.0 / 19.0)
+    assert factors['FxRate.USD']['Spot'] == 1.0, 'the base leg moved'
+    assert factors['FxRate.CHF']['Spot'] == 1.1, 'an unrouted currency was moved anyway'
+    assert any('CHF against USD' in message for message in outcome['unrouted']), outcome
+    assert terminal.asked == ['USDZAR BGN Curncy'], 'the tick asked about more than the routes'
+    # the same write as the surface: one outcome, one etag, both on the file
+    assert 'FXVol.USD.ZAR' in factors and outcome['installed'] == ['FXVolPrices.USD.ZAR']
+    assert outcome['etag'] == CLIENT.get('/book').json()['etag']
+
+
+def test_a_spot_print_the_terminal_will_not_stand_behind_refuses_the_tick(desk, monkeypatch):
+    """A SPOT GOES THROUGH THE SAME SCREEN AS A SURFACE. A vol quote five days old refuses the
+    whole tick by name; a spot print from 2019 is the same trap and the same refusal, because a
+    dead series keeps answering with a plausible number and every deal in the book reprices off a
+    spot. A ticker that does not answer at all is a named refusal too - `written: false` with the
+    engine's own words - never an `error` status the metronome cannot read a cause off.
+
+    Killing mutations: the spot securities left out of the freshness call, which writes a
+    two-year-old print straight onto the book; the dead-print error left to escape the job, which
+    reaches a poller as `status: error` and a blank outcome.
+    """
+    from derivus_bloomberg import security_map
+
+    document = json.loads(desk.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.CHF'] = {
+        'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.1}
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    before = desk.read_bytes()
+    stale = bloomberg_seams(
+        monkeypatch, stale=security_map.stale,
+        terminal=CannedTerminal(routed_prints(), stamp=today(),
+                                stamps={'USDZAR BGN Curncy': '2019-01-01'}),
+        provision=lambda source, as_of, on_batch=None: (routed_map(), False)) is not None
+
+    result, outcome = ticked()
+
+    assert stale and result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False
+    assert outcome['refused'] == ['USDZAR BGN Curncy is stale - 2019-01-01']
+    # the answer carries the same keys on this path as on a landing: a desk reading `unrouted`
+    # must not have to know which branch answered it
+    assert any('CHF against USD' in message for message in outcome['unrouted']), outcome
+    assert outcome['held_out'] == [] and outcome['spots'] == {}
+    assert desk.read_bytes() == before
+
+    bloomberg_seams(monkeypatch, provision=lambda source, as_of, on_batch=None: (
+        routed_map(), False), terminal=CannedTerminal(
+            routed_prints(), dead=['USDZAR BGN Curncy'], stamp=today()))
+    result, outcome = ticked()
+
+    assert result['status'] == 'done' and 'error' not in result, result
+    assert outcome['written'] is False
+    assert any('USDZAR BGN Curncy' in message for message in outcome['refused']), outcome
+    assert service.Metronome(60.0).cause(result), 'the metronome could read no cause'
+    assert desk.read_bytes() == before
 
 
 def test_a_solve_lands_an_affine_field_in_a_handful_of_pricings(book):

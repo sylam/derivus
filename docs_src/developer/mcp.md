@@ -52,7 +52,9 @@ stays the maintainer's.
 | `describe_curve` | the book's curves as definitions — rows, conventions, and the interpolation each is built under with the source that named it — and, with none named, the seed's own entries a desk can set up |
 | `configure_curve` | `POST /book/curve` — a curve's benchmark rows stated, its own interpolation with them, the block authored from them and the curve solved |
 | `set_base_date` | `POST /book/date` — the day the book is valued as of, both spellings of it, with every curve re-rolled onto it |
-| `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
+| `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces, curve rows and spots off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
+| `book_dependencies` | `GET`/`POST /book/dependencies` — what a candidate, a netting set or the whole book needs from the market, and which seed entry would supply each missing factor |
+| `setup_market` | `POST /book/setup` — build that market: discover only what is unknown, install the surface, spots and curves, bootstrap, one write |
 | `describe_securities` | `GET /book/securities` — the ticker vocabulary a desk could quote, the map of what a terminal verified, and the IPV join: every curve row with the print behind it, the verdict that rejected it, or `unmapped` |
 | `configure_securities` | `POST /book/securities` — one entry of the desk's own seed set or removed, validated by spelling the candidates it now names |
 | `verify_securities` | `POST /book/securities/verify` — the named scope re-verified against the terminal, drift named per entry and new names ledgered, reporting progress while it waits |
@@ -201,6 +203,25 @@ still queued or running is skipped), never provisions (an unprovisioned `DV_HOME
 the cadence carries on; verifying a workstation is a person's decision), and never dies (a failure is
 one warning line, book untouched; three in a row stretch the interval fivefold). `--tick` refuses at
 startup where `blpapi` does not import, and `--tick --no-book` is refused by name.
+
+**A market is set up from what a trade needs.** A booking refused for market data names the factors
+the book lacks, and the two verbs that follow are the model's whole move: `book_dependencies` walks
+a candidate — spliced the way the what-if splices one, so the answer is that trade's want-list and
+not the book's — and hands back each missing factor with the seed entry that would supply it, the
+securities that entry spells and how many a terminal has verified; `setup_market` then builds it.
+It discovers only the names the map has never heard of, checks every wanted print for freshness
+before it fetches anything, and installs the surface, each new currency's spot crossed onto the
+engine's axis and each new curve's seeded benchmarks in one atomic write that the bootstrap judges.
+Nothing lands that would depend on a block the write will not carry: a new currency is installed as
+a pair or not at all, its spot and its curve held with each other and any surface on that leg with
+them, each named with what it waits on, and what is left still lands. A model reads three independent facts off the answer — whether the book
+moved, exactly what was installed, and what could not be supplied and why (`not_supplied`, beside a
+`refused` that only ever rides a write that did not land) — and gets the job's own outcome rather
+than the result envelope it arrived in. What lands is ordinary blocks, which is the point: the Curves and Market
+Prices screens edit them from then on, and `check` names what to look at there. A candidate the
+booking verb would refuse is refused by both verbs in its words, so a misspelt type is never
+answered "nothing is missing". No model has to chain five verbs in the right order to get a market,
+and none of this is a second installer — both verbs ride the curve verb's own edit closures.
 
 **A curve is set up from its instruments, not from a curve.** `configure_curve` takes the benchmark
 rows a desk quotes — a tenor, the security it prints on and a number — and the TENOR is what says

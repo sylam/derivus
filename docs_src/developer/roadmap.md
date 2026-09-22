@@ -314,8 +314,11 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   `Credit_Monte_Carlo`, the same two-run seam with a different calculation in it; a ratio-solve
   primitive for participating forwards beside it.
 - **Service layer, what remains** — SSE for progress, a cost estimate that reads the real grid,
-  auth with budget caps, and the Securities screen's join still read-only: it names the knot quoted
-  off a drifted or unmapped ticker, and the fix is a curve row or a seed entry on another pane.
+  auth with budget caps, and the two market-building verbs served to the MCP binding alone: the
+  dependency walk and the set-up have no screen, so a desk reads a refused booking's want-list
+  through a model rather than beside the book. The Securities screen's join stays read-only too: it
+  names the knot quoted off a drifted or unmapped ticker, and the fix is a curve row or a seed
+  entry on another pane.
 - **Excel end-state** — `RF_*_PORTFOLIO` migrated to `GET /schema`, after which nothing in
   `excel_integration/` imports the engine.
 - **`bind=` for payoff-only deal fields** — a strike moves no discovery, but a deal field is

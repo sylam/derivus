@@ -196,7 +196,17 @@ NOTHING. The Bloomberg tick then keeps those rows valued: the used rows' securit
 and moved as VALUES, a row whose print the screen refuses keeps its number and is held out with
 `Use` No by name — the verb is what puts it back — and a block whose base date has rolled is
 RE-AUTHORED from its own rows and conventions first, because the dates are structure and no tick may
-move them.
+move them. **The tick values the book's SPOTS too**, in that same write: every `FxRate.<ccy>.Spot`
+whose currency routes to a verified `fx_spot` pair against the base is re-fetched in the session the
+trip already holds and crossed onto the engine's axis by `structures.with_live_spots`' own
+inversion, as a values patch rather than an authoring; the outcome names them under `spots`, and a
+currency the map verified no pair for keeps the spot it had and is named under `unrouted`, a cross
+never being triangulated through a third currency. A SPOT PAYS THE SAME SCREEN AS A SURFACE: its
+print goes through `security_map.stale` in the same check, before anything is fetched, so a series
+that stopped printing refuses the whole trip by name rather than writing a plausible number every
+deal in the book then reprices off — and a ticker that does not answer at all is a named refusal
+(`written` false, the message verbatim) rather than an error status the cadence cannot read a cause
+off.
 
 **The snap sets the date.** A row priced off the terminal carries the print's own clock, so both the
 curve verb and the tick author on the LATEST print they came back with, and where that is later than
@@ -232,6 +242,64 @@ that prices now moves off the ledger into the map under `revived` - and the map 
 atomically. A workstation
 whose blpapi does not import refuses there by name — the map is evidence, and only a terminal
 writes one.
+
+**And a market is set up from what a trade NEEDS.** `GET /book/dependencies` (`?deal_path=`, no path
+being the whole book) and `POST /book/dependencies` (`{deal, parent_reference?}`, the candidate
+spliced the way the what-if splices one and nothing written) are the engine's own factor walk over
+one subtree, re-emitted: every factor with its status and, for a missing one, the `supply` that
+would fill it — the vocabulary block and key this desk seeds it under, how many securities the seed
+spells for it, how many the map has verified, and for a curve whether its entry declares
+conventions. That last read is `scoped_seed` and `scoped_map`, the same narrowing a verification is
+asked in, so the counts cannot drift from what a probe would cover; a factor nothing seeds carries
+`supply` null and a note, an equity as honestly as a currency nobody named. The candidate runs the
+BOOKING's own authoring verdict first (`newly_said`, the half of `deal_verdict` that is not about
+market data, which is the question being asked) and refuses in its words, because a deal whose
+`Object` names no type reaches nothing and a walk that answered it would tell a model the market is
+fine.
+`POST /book/setup` (`{pair?, deal?, parent_reference?, deal_path?}`, exactly one of the three or
+none for the whole book's want-list) is the act. A PAIR'S WANT-LIST IS THE WALK TOO: a vanilla
+option on it is walked through the same discovery, so each leg's spot is read at the curve its own
+`FxRate` block discounts on and a book carrying a ZARONIA-discounting rand gains no second rand
+curve; only a leg the book has no spot for takes the curve the seed names for its currency, that
+being the one thing no walk can find until the block exists. The job is queued on the tick's own
+executor and cost class: it discovers ONLY the names the map has never heard of for the supplying
+entries, its rejected ledger asked again beside them — THE MAP IS EVIDENCE AND IS WRITTEN AS IT IS
+GATHERED, before the book, so a refused set-up leaves a grown map and an unmoved book, and a map
+whose content would not change is not rewritten at all. Then every wanted surface and spot print is
+checked for FRESHNESS FIRST, one late security refusing the whole trip by name with nothing fetched
+and nothing written exactly as it refuses a tick; then the surface is fetched, each new currency's
+spot is crossed onto the ENGINE's axis and each new curve's seeded benchmarks are priced, a row the
+screen refuses held out by name. One seed reading serves the whole job — `desk_seed`, the packaged
+entry with the desk's own over it curve by curve — so the strip that is priced is the strip that
+was counted, discovered and verified.
+WHERE THE PRINTS MOVE THE BOOK'S DATE the market it already carries is re-priced in the same
+session and lands in the same write - the standing surfaces, every standing curve's rows and the
+routed spots - through `market_fetch`, the ONE fetch a tick IS, so there is no second spelling of
+the trip and no book holding two days of quotes under one date; where the date does not move, only
+the wants are fetched. Everything lands in ONE atomic write through `curve_edit`: the `FxRate`
+blocks, the quote blocks, the entries that solve them and the bootstrap of what was installed and
+what reads it.
+NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE BOOK WILL NOT CARRY AFTER THE WRITE. A curve nothing
+can supply - no seed entry, no conventions, or a strip the screen leaves under the emitter's floor -
+is a `not_supplied` row carrying the reason, and A NEW CURRENCY IS INSTALLED AS A PAIR OR NOT AT
+ALL: its curve values its own benchmark deals in the book's base, so the fit reads the currency's
+`FxRate` block exactly as that block reads the curve, and the two are held with each other — a spot
+the map verified no pair for holds its curve exactly as a dead strip holds the spot. A surface is
+held with whichever leg is not coming. So no `FxRate` ever lands pointing at a curve the book does
+not have, no curve lands that nothing can value, and every row names the factor it waits on. What
+is left still lands. A strip screened out by age says so in the screen's own
+verdicts with the book's date and `POST /book/date` beside them - the emitter's census counts what
+it REJECTED, and a held-out row is not rejected, so a book valued forward of its market would read
+"nothing refused" there. THE ANSWER'S THREE FACTS ARE INDEPENDENT: `written` says whether the book
+moved and is true iff something landed, `installed` is exactly the factors written, `refused` is
+what refused the WRITE and is only ever non-empty with `written` false, and `not_supplied` is
+`{factor, reason}` for every want that could not be filled. What lands is ORDINARY blocks — the
+screens below edit them in place from then on — and `check` names what a trader should look at
+there: a curve set up on the conventions this build ships, the benchmarks held out, every standing
+block a roll re-priced under the desk's feet, and a surface the base currency is neither leg of.
+Refused at submission with no terminal, with no `Bootstrapper
+Configuration`, for a pair this desk's vocabulary does not spell (one stated backwards being told
+the spelling the seed carries), and for a `deal` the booking verb would itself refuse.
 
 **Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
 every dial at what the entry states or the declaration's default otherwise, edited in place, and

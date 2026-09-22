@@ -77,7 +77,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'poll_result', 'fetch_table', 'deal_values', 'configure_book',
                 'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
                 'patch_market_values', 'describe_securities', 'configure_securities',
-                'verify_securities',
+                'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
                 'recalc_xva', 'book_reconcile', 'book_diary', 'close_check'}
@@ -90,7 +90,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
-                       'set_base_date', 'configure_securities', 'verify_securities'}
+                       'set_base_date', 'configure_securities', 'verify_securities',
+                       'setup_market'}
 
 
 def read_resource(uri):
@@ -268,7 +269,7 @@ def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
 #: The tools that sit on a run and therefore have to speak while they sit.
 WAITING = ('price_candidate', 'execute_book', 'solve_deal', 'solve_structure',
            'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg',
-           'verify_securities')
+           'verify_securities', 'setup_market')
 
 
 def test_no_tool_advertises_the_context_the_sdk_injects():
@@ -700,6 +701,73 @@ def test_the_ticker_vocabulary_and_its_evidence_are_one_read(book, tmp_path, mon
         mcp_server.configure_securities('curves', 'ZAR', {})
 
 
+def test_a_market_is_set_up_from_what_a_trade_needs(book, tmp_path, monkeypatch):
+    """THE TWO MARKET-BUILDING TOOLS ARE THIN. `book_dependencies` is the walk verbatim - the
+    CANDIDATE's own factors, each missing one carrying the seed entry that would supply it - and
+    `setup_market` is one POST that waits, carrying only the argument it was given.
+
+    A workstation with no terminal refuses at the service, and the model reads that refusal rather
+    than a crash: no session is opened here or anywhere.
+
+    WHAT A MODEL RECEIVES IS THE JOB'S OWN OUTCOME - `stats.Setup` with the id and the status
+    beside it - held here against a REAL `/results` envelope rather than a flat dict the service
+    never emits, which is the only way the shape can be gated at all.
+
+    Killing mutations: the walk composed here out of `validate_book` plus `describe_securities`,
+    which answers the BOOK's want-list rather than the candidate's; `setup_market` sending every
+    argument it declares, which names a `deal_path` beside a `pair` and the service refuses; the
+    raw envelope handed back, which carries `tables` and no `result_id`.
+    """
+    from derivus_bloomberg import session as bloomberg
+    from derivus_bloomberg.errors import BloombergUnavailable
+    from test_service import CURVE_ROWS, XCCY
+
+    def absent():
+        raise BloombergUnavailable('no blpapi on this workstation')
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr(bloomberg, 'blpapi_module', absent)
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    walked = mcp_server.book_dependencies(deal=json.loads(dump(XCCY)))
+    rows = {row['factor']: row for row in walked['factors']}
+
+    assert set(tools['book_dependencies'].input_schema['properties']) == {
+        'deal_path', 'deal', 'parent_reference'}
+    assert set(tools['setup_market'].input_schema['properties']) == {
+        'pair', 'deal', 'parent_reference', 'deal_path', 'wait_seconds'}
+    assert rows['InterestRate.EUR']['supply']['key'] == 'EUR'
+    assert rows['FxRate.JPY']['supply'] == {'block': 'fx_spot', 'key': 'USDJPY',
+                                            'securities': 1, 'verified': 0}
+    assert 'InterestRate.ZAR' not in rows, 'the walk answered for the book, not the candidate'
+    assert mcp_server.book_dependencies()['factors'], 'the whole book is a walk too'
+
+    with pytest.raises(ToolError, match='Bootstrapper Configuration'):
+        asyncio.run(mcp_server.setup_market(pair='EURZAR'))
+
+    mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
+    with pytest.raises(ToolError, match='blpapi'):
+        asyncio.run(mcp_server.setup_market(pair='EURZAR'))
+
+    # the envelope a finished queued job really answers with: the outcome under its own Stats key,
+    # beside the tables and the status `/results` always carries
+    landed = {'written': True, 'installed': ['FXVol.EUR.ZAR'], 'refused': [],
+              'not_supplied': [], 'check': [], 'seconds': 1.2}
+    terminal = Terminal({'status': 'done', 'tables': {}, 'stats': {'Setup': landed}})
+    mcp_server.configure(base_url='http://testserver', session=terminal)
+    answer = asyncio.run(mcp_server.setup_market(pair='EURZAR'))
+
+    assert answer == dict(landed, result_id='bbg-1', status='done')
+    assert 'tables' not in answer, 'the result envelope reached the model instead of the outcome'
+    assert terminal.requests[0] == ('POST', 'http://testserver/book/setup', {'pair': 'EURZAR'})
+
+    # past the wait the answer is the pointer it always was, the set-up carrying on service-side
+    mcp_server.configure(base_url='http://testserver',
+                         session=Terminal({'status': 'running'}))
+    waiting = asyncio.run(mcp_server.setup_market(pair='EURZAR', wait_seconds=0.0))
+
+    assert waiting['status'] == 'running' and 'poll_result' in waiting['hint']
+
+
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
     """A refusal must reach the model as DATA - the engine's own messages, verbatim - because the
     model's next move is to fix exactly what they name. And it must not have touched the file."""
@@ -881,9 +949,9 @@ def test_a_booking_answer_is_the_booking_not_the_book(book):
 
 
 class Terminal:
-    """A transport that answers the bloomberg submit and then reads a scripted `/results`
-    sequence - the tool's own contract with no terminal, no service and no socket (the `Down`
-    precedent). The last poll stands once the script runs out."""
+    """A transport that answers a queued submit - the tick's or the set-up's - and then reads a
+    scripted `/results` sequence: the tool's own contract with no terminal, no service and no
+    socket (the `Down` precedent). The last poll stands once the script runs out."""
 
     class Reply:
         def __init__(self, payload):
@@ -897,7 +965,7 @@ class Terminal:
 
     def request(self, method, url, **kwargs):
         self.requests.append((method, url, kwargs.get('json')))
-        if url.endswith('/book/bloomberg'):
+        if url.endswith('/book/bloomberg') or url.endswith('/book/setup'):
             return self.Reply({'result_id': 'bbg-1', 'status': 'queued'})
         return self.Reply(self.polls.pop(0) if len(self.polls) > 1 else self.polls[0])
 

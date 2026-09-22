@@ -245,7 +245,11 @@ def discover(seed, session, as_of, stale_days=STALE_DAYS, on_batch=None):
 
 def _graft(document, grown):
     """Every live entry of a freshly built map merged into an existing one under its own path -
-    the one merge growing and reviving both take. `{path: security}` for what landed."""
+    the one merge growing and reviving both take. `{path: security}` for what landed.
+
+    A surface's `expiries` rides with its quotes: it is the block's own metadata rather than an
+    entry, so a pair the map has never carried would otherwise land verified and unreadable.
+    """
     landed = {}
     for path, entry in entries(grown):
         node = document['blocks']
@@ -253,6 +257,8 @@ def _graft(document, grown):
             node = node.setdefault(part, {})
         node[path[-1]] = entry
         landed['/'.join(path)] = entry['security']
+    for pair, block in grown['blocks'].get('fx_vol', {}).items():
+        document['blocks']['fx_vol'][pair].setdefault('expiries', {}).update(block['expiries'])
     return landed
 
 

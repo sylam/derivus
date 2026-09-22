@@ -86,7 +86,10 @@ the whole batch and names it.
 THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
 configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
 needs a terminal on the service's own workstation, and describe_securities reads the ticker
-vocabulary behind it with the print every curve knot was solved from. Bootstrapping dials,
+vocabulary behind it with the print every curve knot was solved from. A booking refused for
+market data the book lacks is answered by book_dependencies - what that trade needs and which
+seed entry would supply it - and cured by setup_market, which discovers only what is unknown and
+installs the surface, spots and curves as editable defaults in one write. Bootstrapping dials,
 Bloomberg ticker codes and curve set-ups are normally configured once in the web UI - ask
 before changing them here.
 
@@ -819,6 +822,95 @@ async def verify_securities(block: str = None, key: str = None, securities: list
     # a verification's answer is the drift and the verdicts, so this one is not summarised
     return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
                                hint='; the verification carries on service-side either way')
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_dependencies(deal_path: str = None, deal: dict = None,
+                      parent_reference: str = None) -> dict:
+    """What a trade, a portfolio or the whole book NEEDS from the market - and which of this
+    desk's seed entries would supply whatever is missing. Call this the moment a booking, a
+    what-if or a solve is refused for market data.
+
+    With a `deal` it walks that CANDIDATE, spliced the way `price_candidate` splices one, so the
+    answer is what THIS trade needs rather than what the book happens to lack; `parent_reference`
+    puts it under a container the way a booking would. With a `deal_path` it walks the deals under
+    one node of the live book - a netting set is a portfolio - and with neither, the whole book.
+    Nothing is priced and nothing is written.
+
+    Every factor comes back with a `status`. A `missing` one carries `supply`: the vocabulary
+    `block` and `key` this desk seeds it under, how many `securities` the seed spells for it and
+    how many a terminal has `verified`, plus `conventions` for a curve. `supply` null with a `note`
+    means this desk's vocabulary spells nothing for that factor - an equity or a commodity - and
+    the market for it is authored by hand.
+
+    A `deal` the booking verb would refuse is refused HERE in its words rather than walked, so a
+    misspelt type is never answered "nothing is missing". `setup_market` acts on this answer."""
+    if deal is None:
+        return service().call('GET', '/book/dependencies',
+                              params={'deal_path': deal_path} if deal_path is not None else None)
+    return service().call('POST', '/book/dependencies', json=dict(
+        {'deal': deal},
+        **({} if parent_reference is None else {'parent_reference': parent_reference})))
+
+
+@MCP.tool()
+async def setup_market(pair: str = None, deal: dict = None, parent_reference: str = None,
+                       deal_path: str = None, wait_seconds: float = 600.0,
+                       ctx: Context = None) -> dict:
+    """Build the market a trade needs, off THIS workstation's terminal - the cure for a booking
+    refused for missing market data, in one call rather than five.
+
+    Name ONE of: a `pair` (`"EURZAR"`) for that surface, both legs' spots and the curve each
+    discounts on; a `deal` (with `parent_reference` where it would be booked under a container) for
+    everything that candidate reaches; a `deal_path` for one node of the live book. None of them
+    builds everything the book lacks. Nothing missing writes nothing and asks no terminal.
+
+    It discovers only what is UNKNOWN - the names the security map has never heard of for the
+    entries that would supply the want, and its rejected ledger asked again; the map is evidence
+    and is written as it is gathered, BEFORE the book. Then every wanted print is checked for
+    freshness first, one late or dead security refusing the whole trip by name with nothing
+    written; then the surface, each new currency's spot crossed onto the engine's axis and each new
+    curve's seeded benchmarks are fetched and installed in ONE atomic write the bootstrap judges.
+
+    NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE BOOK WILL NOT CARRY. A curve nothing can
+    supply - no seed entry, no conventions, a strip the terminal leaves too short to solve - is a
+    `not_supplied` row carrying the reason, and a NEW CURRENCY IS INSTALLED AS A PAIR OR NOT AT
+    ALL: its curve values its own benchmarks in the book's base, so spot and curve are held with
+    each other, and a surface with whichever leg is not coming, each saying what it waits on. What
+    is left still lands, so a deal wanting two currencies where one is dead gets the other
+    complete.
+
+    READ THREE FACTS OFF THE ANSWER. `written` says whether the book moved, and is true iff
+    something landed. `installed` is exactly the factors that were written. `refused` is what
+    refused the WRITE - a late print, the bootstrap's own words - and is only ever non-empty when
+    `written` is false; `not_supplied` is `{factor, reason}` for every want that could not be
+    filled, reported beside a write that still lands everything it could.
+
+    WHERE THE PRINTS MOVE THE BOOK'S DATE the market it already carries is re-priced in the same
+    trip and lands in the same write, so the book never holds two days of quotes under one date;
+    `check` names every standing block that moved.
+
+    What lands is ORDINARY blocks - `configure_curve` and `update_market_quotes` edit them from
+    then on, and the web UI's Curves and Securities screens show them. `check` names what a trader
+    should look at there: a curve set up on the conventions this build ships, benchmarks the screen
+    held out, a surface the book's base currency is neither leg of. Bootstrapping dials and ticker
+    codes are still configured once in the web UI - this verb changes neither.
+
+    Refused by name where this workstation has no terminal, where the book declares no bootstrapper
+    configuration, where the pair is one this desk's vocabulary does not spell (which
+    `configure_securities` adds), and where the `deal` is one `book_deal` would itself refuse. Past
+    `wait_seconds` the id travels in `hint` and the set-up carries on service-side."""
+    request = {name: value for name, value in (('pair', pair), ('deal', deal),
+                                               ('parent_reference', parent_reference),
+                                               ('deal_path', deal_path)) if value is not None}
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/setup', json=request)
+    answer = await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
+                                 hint='; the set-up carries on service-side either way')
+    # the job's own outcome is the answer, not the result envelope it rides in; a run that has not
+    # settled carries no outcome and is handed back as the pointer it is
+    outcome = (answer.get('stats') or {}).get('Setup')
+    return answer if outcome is None else dict(
+        outcome, result_id=submitted['result_id'], status=answer.get('status'))
 
 
 @MCP.tool()
