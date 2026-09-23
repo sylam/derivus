@@ -308,7 +308,7 @@ def test_a_short_values_half_refuses_rather_than_dropping_the_rows_it_cannot_pai
 # ---------------------------------------------------------------------------------------------
 
 def hashed():
-    """One job carrying two families and two quote tables - the desk's USDZAR smile in `Points` and
+    """One job carrying two families and two quote tables - a USDZAR smile in `Points` and
     the `LogVar2FJModelPrices` ladder in `European_Options` - so the same rule reaches two
     differently shaped blocks in one hash.
 

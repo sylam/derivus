@@ -478,7 +478,7 @@ Gaussian factor, or the other way round, because the two are different models an
 other.
 
 **The quanto drift lives INSIDE the walk, read off the state's own budget.** A quanto payoff — an
-index in one currency paid in another at a fixed rate, which is what the desk's autocall book is —
+index in one currency paid in another at a fixed rate, which is the shape an autocall book takes —
 changes measure to the payoff currency, and the GBM arm applies that as one deal-level carry
 `−ρ σ_ATM σ_FX` off a LOGNORMAL implied ATM vol read at the row's expiry (`pricing.calc_vol_adjustment`).
 Under a walking kit the equity has no implied vol to read: its instantaneous variance is the
@@ -498,13 +498,13 @@ correlation to the Gaussian GIVEN THE MIXER, whose sd is `E[Σ_k] = D √V_k` wi
 normalisation the ruling asked for is the identity. That share `D` is a property of the law
 and no longer a number the engine computes (the four-sub-factor outer of 2026-09-11 retired
 the dilution): **1 exactly** under a Gaussian residual (`Σ_k ≡ √V_k`), **0.9256** at the
-Q-sized NIG defaults and **0.597** on the desk's NKY fit (`c` 0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
+Q-sized NIG defaults and **0.597** on an NKY fit (`c` 0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
 joint whose realised total-return correlation IS the marked −0.40 puts the exact quanto forward
 `E[SX]/E[X]` within **1.2 SE** of the loading as built, where the loading times `D` sits 8.4 SE
 away and the loading over `D` — the ruling's arithmetic taken literally — 11.6 SE away, so the
 literal division is wrong-signed. The 91.6–92.0% lane Q measured is the OTHER reading: the marked
 ρ applied directly to the Gaussian given the mixer, which is the loading times `D` — worth 1.6% of
-the desk's NKY V2 at the Q-sized `D` and **8.4% of the mark** (3.61m ZAR) at the fit's own 0.597.
+an NKY V2 mark at the Q-sized `D` and **8.4% of the mark** at the fit's own 0.597.
 `σ_FX` is the FX surface's ATM FORWARD
 strip on the WALK's own grid — read at every internal step's tenor and differenced by
 `pricing.forward_vol_rate` — where the GBM arm reads one expiry ATM and calls it the whole deal's.
@@ -517,7 +517,7 @@ CRN bump of the marked value instead (`Correlation_Bump`, default 0.025, `Greeks
 one re-compile and re-value each side on the job's own seed for each correlation a priced quanto
 or compo read, so a book with none pays nothing): the row lands in `Greeks_First` under the
 factor's own name and in a `Correlation_Bump` block that names the width and says NOT ON THE
-TAPE. The desk's NKY V2 reads −22,418,800 ZAR per unit of ρ at 32,768 paths, flat to 0.003%
+TAPE. An NKY V2's correlation delta reads flat to 0.003% at 32,768 paths
 between half-widths 0.05 and 0.025 (the value is linear in ρ, as a drift linear in ρ makes it),
 and lane Q's 2y SPX autocall −10.95, flat to 0.001%. Only
 `QEDI_CustomAutoCallSwap`/`_V2` passes the loading today; `Compo` stays refused by name on every
@@ -594,7 +594,7 @@ fit is that staged search unchanged, to the bit. Measured on the five-expiry syn
 market **1**, the solver confirming the gradient it was handed, every written float back within
 2.0e-14 relative; and with every quote moved +2%, **6** against that market's own cold **43**, the
 two landing 7.3e-4 relative apart at the worst — on `Beta`, the direction vanillas leave flat — at
-one 0.742 vol points of RMSE. The desk's Nasdaq ladder reads the same shape, 42 cold against a
+one 0.742 vol points of RMSE. A Nasdaq ladder reads the same shape, 42 cold against a
 polish of 9–10. Every guard, prior row, identification table and `On_Guard` reading is the polish's
 own, and the report says once at INFO that the fit was a warm start, with its count. Two previous
 factors are not warm starts at all and refuse in the seed BY NAME: a retired-era one, and one of the
@@ -813,8 +813,8 @@ flag below, the box not widened. And the row `β` obeys is on `β` while the res
 (`|β|/α` 0.044, the residual effectively Gaussian, the whole smile leverage at the Q size) — an open
 row. The history tier is where the ruling's expected shape lives: NKY with the index history lands
 `α` 7.99, `β` **−2.35**, `|β|/α` 0.29 at **1.171** vol points, better than the clean tree's own
-anchored 1.180. On the desk's NKY autocall 229524957 the mark moves −37.49m → **−38.94m ZAR** and
-the forward-skew reserve **falls 11.71m → 7.21m** (38%): with the residual near Gaussian its half of
+anchored 1.180. On an NKY autocall the mark moves by **3.9%** and
+the forward-skew reserve **falls 38%**: with the residual near Gaussian its half of
 `Skew_Gradient` is nothing and the reserve is the `ρ_s` half alone.
 
 **On-guard fits are reported and flagged, never stood behind.** A fit a box or a floor is holding
@@ -843,8 +843,8 @@ implied leverage over seeds 1–3, `α` **39.4 / 40.9 / 38.8**, `β` −11.4 / �
 `On_Guard` BLANK — the first clean NKY fit in the programme. `α` is off its ceiling on every ladder
 in the book (25.6 to 53.9 across seven fits) and `σ_s` inside its box on every ladder but the
 history-anchored NKY. The price is vanilla fit, NKY 1.614 → **1.985** vol points with the miss in the
-one-month wing, and the desk's autocall marks **−36.29m ZAR** at 32,768 paths (lane L's −38.94m,
-P2's −37.49m) with `Skew_Reserve` **7.64m**, the residual now live in it. At the CLASS defaults
+one-month wing, and the autocall mark comes in **6.8%** under lane L's at 32,768 paths and
+**3.2%** under P2's, with `Skew_Reserve` at **21% of the mark**, the residual now live in it. At the CLASS defaults
 (SPX's −1.9 with a −0.7 `ρ_s`) NKY lands `σ_s` on its 5.0 box with `ρ_s` −0.397, and under the
 cap the fit then carried by default it refused on cap headroom first: an index class default is not a shape
 this model can carry on NKY, which is the argument for the per-name implied numbers.
@@ -1070,8 +1070,8 @@ convention the quote contraction takes over its null space. **It is reported PER
 portfolio**: `pricing.greeks` composes the netting set's off the one gradient it takes, and
 `pricing.deal_reserves` takes one reverse sweep per deal against those two levers alone, so every
 deal row carries its own number beside the set's — which is those deals CONTRACTED rather than
-summed, `|Σ|` at most `Σ|·|` and far under it wherever a book has two sides. Measured on the desk's
-NKY autocall 229524957 under the fit the landed defaults write: `Skew_Reserve` **11.7m ZAR, 28% of
+summed, `|Σ|` at most `Σ|·|` and far under it wherever a book has two sides. Measured on an
+NKY autocall under the fit the landed defaults write: `Skew_Reserve` **28% of
 the mark**, composed identically by hand.
 
 **With the block OFF the rows are REPORTED rather than targeted.** The calibrator can evaluate the

@@ -4094,7 +4094,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     the PATH's own prefix, so a leg whose barrier opens mid-deal still reads its own total variance
     from today. The put then walks, survives and pays in its own world off the SAME uniforms, so
     the stream is untouched and no other document moves. Reading ONE moneyness for the whole path
-    priced a 70% put at the ATM vol: 33% on the desk's NKY structures against their own six legs,
+    priced a 70% put at the ATM vol: 33% on an NKY structure against its own six legs,
     and a flat surface agreeing to 1% is what said the fold was fine and the read was not
     (roadmap.md). A SMILE-LESS model has no better answer than a world per strike; the LogVar2FJ
     arm carries one smile in one walk and is the mark of record. The FULL-PATH branch is unreached

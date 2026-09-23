@@ -355,8 +355,8 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
    with a duplicated utility table, and the deal structure's recursions — the shape
    [Conventions](conventions.md) calls a class waiting to happen.
 12. **The correlation as a leaf.** A correlation mints no leaf today, so a quanto's correlation
-    delta is reported as a common-random-number bump of 0.025: −22.42m ZAR per unit of correlation
-    on the desk's Nikkei autocall, flat to 0.003% between half-widths. The leaf is three edits with
+    delta is reported as a common-random-number bump of 0.025: on an index autocall it reads
+    flat to 0.003% between half-widths, the value linear in ρ. The leaf is three edits with
     a tree-wide blast radius, every document carrying a correlation gaining a first-order row and a
     Hessian row and column, lognormal ones included. The bump is the leaf's oracle.
 14. **`Prices` in process: warning or refusal.** Mandatory on the multiprocessing path; a refusal

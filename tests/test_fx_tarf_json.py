@@ -203,9 +203,9 @@ def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):
     One-step survival standardises the PnL cap `B = K + (R/N)*cp`, which for a PUT is the strike
     LESS the remaining target per unit - negative at every fixing whose target is above the strike,
     and `log(B/S)` then takes the whole deal to not-a-number. A put accrues at most the strike at
-    one fixing, so fifty and five times it are both unreachable; on main both mark NaN, as does the
-    desk's own USDZAR put TARF at every target above its 16.825 strike (+3,240,865 at 0.5,
-    -2,228,134 at 5, NaN at 50 and above).
+    one fixing, so fifty and five times it are both unreachable; on main both mark NaN, as does a
+    USDZAR put TARF at every target above its strike (positive at 0.5, negative at 5, NaN at
+    50 and above).
 
     A cap at or below zero cannot be crossed, so survival is one and the deal is the UNCAPPED
     STRIP: the two targets agree to the BIT, the only quantity differing between them being the
