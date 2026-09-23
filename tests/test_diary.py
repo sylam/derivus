@@ -51,7 +51,7 @@ import rates_world
 import derivus
 from derivus import diary, service, spine, utils
 from derivus.config import CustomJsonEncoder
-from derivus_spine import SpineLog, init_home, policy, vocabulary
+from derivus_spine import SpineLog, capability, init_home, policy, vocabulary
 
 ACTOR = 'subject-desk-one'
 BASE = rates_world.BASE
@@ -242,6 +242,17 @@ def settle(home, key):
         log.close()
 
 
+def at(home, event_type=None):
+    """The record's head, or the positions of one event type - what a gate asserts moved, or did
+    not."""
+    log = SpineLog(home)
+    try:
+        return (log.head()[0] if event_type is None else
+                [frame['lsn'] for frame in log.frames() if frame['event_type'] == event_type])
+    finally:
+        log.close()
+
+
 def diary_rows(**params):
     answer = CLIENT.get('/book/diary', params=params)
     assert answer.status_code == 200, answer.text
@@ -402,7 +413,7 @@ def test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name(unrecorde
     assert 'not determined' in str(refusal.value) and floating[0]['leg'] in str(refusal.value)
 
     exported = diary.export_settlements(fixed, 'a' * 64, ever)
-    assert exported['market'] == 'a' * 64 and len(exported['rows']) == len(fixed)
+    assert exported['values_hash'] == 'a' * 64 and len(exported['rows']) == len(fixed)
     assert exported['totals']['ZAR'] == pytest.approx(sum(row['amount'] for row in fixed))
 
     with pytest.raises(ValueError) as unnamed:
@@ -847,3 +858,157 @@ def test_the_diary_never_runs_on_the_poll_path(unrecorded, tmp_path):
     third = diary_rows()
     assert third['result_id'] != first['result_id'] and third['etag'] != first['etag']
     assert len(payments(third['rows'])) == 2 * len(payments(first['rows']))
+
+
+# --------------------------------------------------------------------------------------------
+# The close, and the settlement file.
+
+def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_path):
+    """THE CLOSE RUNS BEHIND THE CHECK. `POST /book/close` declares what `GET /book/close/check`
+    answers, so a day the check calls illegal refuses HERE naming what it waits on and the head does
+    not move - a close over a payoff nobody observed is a clean bill nobody earned. A legal day
+    files the close over the book's own values vector, `market` defaulting to `official` and `date`
+    to the book's own base date, and a SECOND close on one market supersedes the first rather than
+    correcting it, the answer naming the position it stands over.
+
+    THE VERDICT IS TAKEN OVER THE DOCUMENT THE CLOSE IS STRUCK ON - one read of the book, since a
+    booking landing between two would make the verdict a statement about a book the close was never
+    declared over - and its compile is queued under the CALLER'S seat, like the export's, so a close
+    a seat is not scoped for costs the box nothing before it is refused.
+
+    Killing mutations: the check called and its verdict not read, which declares a close over an
+    unobserved expiry; the date compared as a string rather than parsed, which calls an empty one
+    legal and closes the book on nothing; the supersession read off the close just filed rather
+    than off the fold, which reports every close as standing over itself; and the verdict's compile
+    queued under the deployment's seat, which charges the box for a close it then refuses.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [dict(OPTION, Settlement_Style='Cash')])],
+            factors=dict(FACTORS, **EQUITY))
+    head = at(recorded)
+
+    after = str((BASE + pd.DateOffset(days=61)).date())
+    refused = CLIENT.post('/book/close', json={'date': after})
+    assert refused.status_code == 422 and diary.FIXING in refused.json()['detail'], refused.text
+    for garbage in ('', '2024', 'not-a-day', '2024-06-28T16:30'):
+        assert CLIENT.post('/book/close', json={'date': garbage}).status_code == 422, garbage
+    assert at(recorded) == head, 'a refused close moved the record'
+
+    standing = service.load(service.BOOK.read()[0])
+    declared = CLIENT.post('/book/close', json={}).json()
+    assert declared['date'] == str(BASE.date()) and declared['market'] == 'official'
+    assert declared['values_hash'] == standing.values_hash()
+    assert declared['supersedes_lsn'] is None and at(recorded) == head + 1, declared
+
+    ticked = CLIENT.post('/book/market', content=dump({'patch': {'FxRate.ZAR': {'Spot': 19.5}}}),
+                         headers=JSON)
+    assert ticked.json()['written'] is True, ticked.text
+    restated = CLIENT.post('/book/close', json={'date': str(BASE.date())}).json()
+    assert restated['values_hash'] != declared['values_hash']
+    assert restated['supersedes_lsn'] == declared['recorded']['lsn']
+    assert at(recorded, 'official_close_declared') == [declared['recorded']['lsn'],
+                                                       restated['recorded']['lsn']]
+
+    # the compile the verdict is read off is the CALLER's job: a seat the document scopes for
+    # nothing is refused at the queue, before the close is even a question
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(capability.canonical_document(
+            {'grants': [{'subject': ACTOR, 'verb': v, 'book': '*'}
+                        for v in ('admin', 'validate', 'mark')], 'read': []}))
+        log.append('policy_declared', {'policy': capability.CAPABILITIES_POLICY, 'blob': blob},
+                   actor=ACTOR, blob_refs=(blob,))
+    finally:
+        log.close()
+    service.BOOK_DIARY_CACHE.clear()
+    stranger = CLIENT.post('/book/close', json={'actor': 'subject-nobody-at-all'})
+    assert stranger.status_code == 422, stranger.text
+    said = stranger.json()['detail']
+    assert 'subject-nobody-at-all' in said and 'validate' in said, said
+    assert not service.BOOK_DIARY_CACHE, 'the box compiled a diary for a close it then refused'
+
+
+def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recorded, tmp_path):
+    """THE EXPORT NAMES NO MARKET AND CANNOT. Which board a settlement file is struck on is the one
+    the `tiers` policy DESIGNATES for the export, read by name off the record, so a caller pointing
+    the export at another market is unrepresentable rather than merely refused - the extra key is
+    nothing to the verb. A home designating nothing, and a designation nothing stands under, both
+    refuse at SUBMISSION, before a row is compiled, with the declaration that fixes it.
+
+    What travels is the DIARY's own rows, exported by `export_settlements` off the resolved hash, so
+    the verb composes and spells nothing: the answer is that function's, byte for byte, plus the
+    market block and the count. An undetermined row refuses by name rather than instructing a
+    payment of zero.
+
+    NOTHING IS COMPILED BEHIND A REFUSAL. The designation is resolved before the diary is asked
+    for, so an undesignated home is told what to declare without paying for a whole compile first -
+    asserted on the executor's store rather than on the wording.
+
+    THE COMPILE IS ADMITTED UNDER THE REQUEST'S SEAT, and BEFORE the cache is consulted: a warm
+    cache reaches no queue, so a settlement file a desk instructs payments from would otherwise be
+    a function of who asked first.
+
+    Killing mutations: a `market` taken off the request, which lets a settlement file be struck on
+    any board a caller can name; the designation read without resolving it, which strikes the file
+    on a name nothing stands under; the designation resolved AFTER the compile, which makes an
+    undesignated home pay for the whole diary; the compile queued under the deployment's seat; and
+    admission asked only on a cache miss.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [fixed_leg()])])
+    ever = '2099-01-01'
+    stored = dict(service.EXECUTOR.results)
+
+    undesignated = CLIENT.post('/book/settlements', json={'due_before': ever})
+    assert undesignated.status_code == 422, undesignated.text
+    for said in ('settlement_export', policy.DESIGNATIONS_SECTION, policy.TIERS_POLICY):
+        assert said in undesignated.json()['detail'], said
+    assert service.EXECUTOR.results == stored and not service.BOOK_DIARY_CACHE, \
+        'an undesignated home paid for the compile before it was told what to declare'
+
+    log = SpineLog(recorded)
+    try:
+        policy.declare(log, ACTOR, policy.TIERS_POLICY,
+                       {'tiers': [{'name': 'desk', 'four_eyes': True}],
+                        'designations': {'settlement_export': 'official'}})
+    finally:
+        log.close()
+    unmarked = CLIENT.post('/book/settlements', json={'due_before': ever})
+    assert unmarked.status_code == 422 and 'official' in unmarked.json()['detail'], unmarked.text
+    assert CLIENT.post('/book/settlements', json={}).status_code == 422, 'due_before had a default'
+    assert not service.BOOK_DIARY_CACHE, 'a refused export compiled a diary'
+
+    marked = CLIENT.post('/book/markets', json={'name': 'official'}).json()
+    exported = CLIENT.post('/book/settlements',
+                           json={'due_before': ever, 'market': 'dealer'}).json()
+    assert exported['market'] == {'name': 'official', 'values_hash': marked['values_hash'],
+                                  'lsn': marked['recorded']['lsn']}, 'a named market was resolved'
+
+    direct = diary.export_settlements(diary_rows()['rows'], marked['values_hash'], ever)
+    # `values_hash` is the exporter's own statement of the board; `market` is the record's, the
+    # name it resolved under and the position that name stands at
+    assert (exported['rows'], exported['totals'], exported['due_before'],
+            exported['values_hash']) == (direct['rows'], direct['totals'], ever,
+                                         direct['values_hash'])
+    assert exported['count'] == len(exported['rows']) == len(payments(diary_rows()['rows']))
+
+    serving(tmp_path, [node(swap())])
+    undetermined = CLIENT.post('/book/settlements', json={'due_before': ever})
+    assert undetermined.status_code == 422
+    assert 'not determined' in undetermined.json()['detail'], undetermined.text
+
+    # the export names the seat its COMPILE is queued under, which is the REQUEST's and not the
+    # deployment's, and the question is asked whether or not the cache can already answer it
+    other = 'subject-desk-two'
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [fixed_leg()])])
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(capability.canonical_document(
+            {'grants': [{'subject': other, 'verb': 'validate', 'book': 'diary-desk'}], 'read': []}))
+        log.append('policy_declared', {'policy': capability.CAPABILITIES_POLICY, 'blob': blob},
+                   actor=ACTOR, blob_refs=(blob,))
+    finally:
+        log.close()
+    assert CLIENT.post('/book/settlements',
+                       json={'due_before': ever, 'actor': other}).status_code == 200
+    assert service.BOOK_DIARY_CACHE, 'nothing was cached, so the next ask proves nothing'
+    unnamed = CLIENT.post('/book/settlements', json={'due_before': ever})
+    assert unnamed.status_code == 422 and ACTOR in unnamed.json()['detail'], unnamed.text

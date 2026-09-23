@@ -163,9 +163,13 @@ JOB_SKELETON = {'Calc': {
                 'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.02], [5.0, 0.02]]}}}}}}}}
 
 #: What the worker needs off the request thread: the id to file under, the Context to run, the replay
-#: tuple that id was hashed from, and - under a configured spine home - the attestation LANE and the
-#: job document it is checkable from. Both default to None, so an existing caller mints nothing.
-Job = namedtuple('Job', 'result_id context replay lane evidence', defaults=(None, None))
+#: tuple that id was hashed from, and - under a configured spine home - the attestation LANE, the job
+#: document it is checkable from, and the seat and book the QUEUE admits it under. All default to
+#: None, so an existing caller mints nothing and asks for the firm-level scope. A verb that takes an
+#: `actor` states it; the POLL PATHS state none, because the metronome and the diary are the
+#: deployment's own and `DV_SPINE_ACTOR` is the whole of the name they have.
+Job = namedtuple('Job', 'result_id context replay lane evidence actor book',
+                 defaults=(None, None, None, None))
 
 
 def load(job):
@@ -218,7 +222,7 @@ def attest(submitted, result):
     quote's numbers are cited by is the acceptance, and that is where they are recorded.
     """
     return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
-                              submitted.evidence['values'], result)
+                              submitted.evidence['values'], result, actor_name=submitted.actor)
 
 
 def attested(envelope):
@@ -331,6 +335,12 @@ class ComputeExecutor:
         """File and enqueue the job unless its `result_id` is already known, and return the status
         the caller sees immediately - `queued`, or wherever an identical earlier submission got to.
 
+        ADMISSION IS THE FIRST THING AND THE ONLY ONE: every queued job passes here, `pin_result`
+        has no HTTP verb, and so this is the whole of what an unscoped actor could make this box
+        spend. A refused seat gets the record's own sentence and nothing is filed, enqueued or
+        served - a stored result the queue would not have run is a number this seat was not admitted
+        to.
+
         A standing submission coalescing onto a run still in flight is PROMOTED here, this being
         the only place that sees both: the job the worker dequeued carries the first caller's lane,
         which for a what-if mints nothing. Taken under the lock the worker publishes under, so this
@@ -339,6 +349,10 @@ class ComputeExecutor:
         An `error` result is not promoted onto: there are no numbers, and the promotion would sit
         here forever against a run that is never dequeued again.
         """
+        # before this lock and never under it: `finish` takes this one and then the record's
+        # writer, so a refusal appending its denial from inside would close the cycle
+        if spine.configured():
+            spine.admit(job.lane, job.actor, job.book)
         with self.lock:
             if job.result_id not in self.results:
                 self.results[job.result_id] = {'status': 'queued'}
@@ -689,7 +703,8 @@ def execute(job: dict):
             evidence = evidence_for(job, context)
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
-    submitted = Job(content_hash(stamp), context, stamp, lane, evidence)
+    submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'),
+                    book_name(job))
     calculation = context.current_cfg.deals['Calculation']
     answer = {'result_id': submitted.result_id,
               'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
@@ -1068,7 +1083,8 @@ def book_price(request: dict):
         raise HTTPException(422, str(error))
     context = load(document)
     stamp = replay(context)
-    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY)
+    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
+                    actor=request.get('actor'), book=book_name(document))
     calculation = context.current_cfg.deals['Calculation']
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
@@ -1240,6 +1256,10 @@ NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date, so ?da
 #: What a strip is asked to read from: a position, and nothing that is not one.
 NOT_AN_LSN = ('{!r} is not a position: ?since= takes the `lsn` the last page answered, or nothing '
               'at all for the newest page')
+
+#: The market a close is declared on when the caller names none. Officialness is a property of the
+#: NAME rather than of the data, and this is the name a desk's own close carries.
+OFFICIAL_MARKET = 'official'
 
 
 class DiaryJob:
@@ -1438,16 +1458,27 @@ def diary_etag(document):
                          'calculation': document['Calc']['Calculation']})
 
 
-def diary_of(document):
+def diary_of(document, actor=None):
     """The book's diary, computed on a MISS and cached under the etag of everything a compile
     reads - the `/book/risk` discipline with the compile on the QUEUE rather than on the request
     thread. Two asks over an unmoved book are ONE job: the result id is that etag's own, so the
-    second submission coalesces onto the first and both are served the id they share."""
+    second submission coalesces onto the first and both are served the id they share.
+
+    `actor` is the seat the QUEUE admits the compile under, which the settlement export and the
+    close name and the two reads leave to the deployment's own.
+
+    ADMISSION IS ASKED BEFORE THE CACHE IS READ. `submit` asks for every job that reaches the queue,
+    which is the miss; a HIT reaches no queue, and a warm cache that answered a seat the cold one
+    refuses would make the settlement file a desk instructs payments from a function of who asked
+    first. The miss therefore asks twice, which is one fold against the compile it is guarding.
+    """
+    if spine.configured():
+        spine.admit(spine.TELEMETRY, actor, book_name(document))
     etag = diary_etag(document)
     result_id = content_hash({'diary': etag})
     if etag not in BOOK_DIARY_CACHE:
         submitted = Job(result_id, DiaryJob(document, booked_instruments(document)), {},
-                        spine.TELEMETRY)
+                        spine.TELEMETRY, actor=actor, book=book_name(document))
         EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])
         stored = waited(result_id)
         if stored['status'] != 'done':
@@ -1613,6 +1644,23 @@ def book_markets():
         projector.rows(projections.fold(log, projector)), lsn=log.head()[0]))
 
 
+@app.post('/book/markets', summary='Point a market name at the values the book is carrying')
+def book_market_declared(request: dict):
+    """`{name, actor}` - declare the market `name` over the live book's own values vector.
+
+    OFFICIALNESS IS A PROPERTY OF THE NAME. Every values vector lives identically in the store, and
+    `official` moves onto one only by a declaration from a `mark`-scoped seat - which the record
+    enforces at the append, in its own words, so this verb does not restate it. A
+    `private/<subject>/<name>` board is the same call under a different name, with one rule: the
+    subject in the name must be the seat declaring it, so the name and the fold cannot disagree
+    about who owns a board. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    declared = load(document).declare_market(request.get('name'), actor=request.get('actor'))
+    return {'recorded': {'lsn': declared['lsn']}, 'name': declared['name'],
+            'values_hash': declared['values_hash']}
+
+
 @app.get('/book/diary', summary='Every payment, fixing and expiry the book announces')
 def book_diary(due_before: str = None):
     """The book's own schedule as rows - `{as_of, etag, result_id, rows}`, `?due_before=YYYY-MM-DD`
@@ -1634,10 +1682,8 @@ def book_diary(due_before: str = None):
     return dict(answer, rows=rows)
 
 
-@app.get('/book/close/check', summary='Whether a close on this date is legal, and what it waits on')
-def book_close_check(date: str):
-    """`?date=YYYY-MM-DD` - THE CATCH-UP RULE as a read: a close is legal on a day when every diary
-    entry due on or before it has its fact.
+def close_verdict(rows, day):
+    """Whether a close on `day` is legal over an already-compiled diary, and what it waits on.
 
     Outstanding is exactly four things: a `fixing` row no declared source holds a print for, a
     `payment` row no settlement transition was filed against its key, an `expiry` row whose terms
@@ -1645,12 +1691,10 @@ def book_close_check(date: str):
     `unreadable` row, a deal the compile could not read at all. An expiry a fixing determines never
     blocks a close: the fixing and payment rows already carry it.
 
-    Nothing is DECLARED here. Declaring the close is `Context.declare_market`'s act and stays a
-    verb; this says whether the record is ready for one. 404 where no home is configured.
+    Over ROWS rather than over the book, so the read and the declaration answer one verdict about
+    one document: the verb that declares a close compiles once and asks here, where calling the
+    read verb again would judge a book the close is not struck on.
     """
-    day = read_day(date)
-    document, _ = recording().read()
-    rows = answered(diary_of(document)['rows'])
     due = [row for row in rows if row['due_date'] and row['due_date'] <= day]
     # a deal nobody could read is outstanding on EVERY day: it has no date, and a close declared
     # over a book the engine could not read is a clean bill nobody earned
@@ -1659,6 +1703,98 @@ def book_close_check(date: str):
                    (row['kind'] == diary.PAYMENT and row['state'] != diary.SETTLED) or
                    (row['kind'] == diary.EXPIRY and row['needs'] is not None)]
     return {'date': day, 'legal': not outstanding, 'due': len(due), 'outstanding': outstanding}
+
+
+@app.get('/book/close/check', summary='Whether a close on this date is legal, and what it waits on')
+def book_close_check(date: str):
+    """`?date=YYYY-MM-DD` - THE CATCH-UP RULE as a read: a close is legal on a day when every diary
+    entry due on or before it has its fact, which is `close_verdict` over the book's own diary.
+
+    Nothing is DECLARED here. Declaring the close is `POST /book/close`'s act and stays a verb;
+    this says whether the record is ready for one. 404 where no home is configured.
+    """
+    day = read_day(date)
+    document, _ = recording().read()
+    return close_verdict(answered(diary_of(document)['rows']), day)
+
+
+@app.post('/book/close', summary='Declare the official close - behind the check\'s own verdict')
+def book_close(request: dict):
+    """`{market?, date?, actor}` - declare the official close over the live book's values vector.
+
+    `market` defaults to `official` and `date` to the book's own `Calculation.Base_Date`, parsed
+    exactly as the check parses its `?date=`.
+
+    THE CLOSE RUNS BEHIND THE CHECK. `close_verdict` is the catch-up rule `/book/close/check`
+    answers with, and a day it calls illegal refuses HERE naming what it waits on, with nothing
+    appended - a close declared over a payment nobody settled or a payoff nobody elected is a clean
+    bill nobody earned. ONE READ OF THE BOOK: the verdict is taken over the document this close is
+    struck on, since a booking landing between two reads would make it a statement about a book the
+    close was not declared over. A SECOND close on one market supersedes the first rather than
+    correcting it, so a day restated is two facts, both readable, and the answer names the position
+    it stands over. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
+    # names nothing is a value to refuse, and an empty day is one a string compare calls legal
+    market = OFFICIAL_MARKET if request.get('market') is None else request['market']
+    day = (structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+           if request.get('date') is None else read_day(request['date']))
+    verdict = close_verdict(answered(diary_of(document, request.get('actor'))['rows']), day)
+    if not verdict['legal']:
+        raise HTTPException(422, 'a close on {} is not legal here and nothing is declared - it '
+                                 'waits on {}. A close does not pass over a payment nobody '
+                                 'settled, a fixing nobody printed or an expiry nobody elected: '
+                                 'file those facts and declare again, or read the whole list from '
+                                 'GET /book/close/check?date={}'.format(
+                                     day, ', '.join(
+                                         '{} {} on {}'.format(row['kind'], row['leg'],
+                                                              row['due_date'] or 'every day')
+                                         for row in verdict['outstanding'][:8]), day))
+    declared = load(document).declare_close(market, actor=request.get('actor'))
+    standing = next((row for row in book_markets()['closes'] if row['market'] == market), {})
+    return {'recorded': {'lsn': declared['lsn']}, 'market': market, 'date': day,
+            'values_hash': declared['values_hash'],
+            'supersedes_lsn': standing.get('supersedes_lsn')}
+
+
+@app.post('/book/settlements', summary='The settlement file for one day, on the designated market')
+def book_settlements(request: dict):
+    """`{due_before, actor?}` - every payment due by a day that nobody has settled, totalled by
+    currency and struck on ONE market.
+
+    `due_before` HAS NO DEFAULT: a settlement file is struck FOR a day, and one that exported every
+    payment the book will ever make would instruct the whole book.
+
+    THE VERB TAKES NO MARKET. Which board a settlement file is struck on is the one the record's
+    `tiers` policy DESIGNATES for the export, so resolving another through it is unrepresentable
+    rather than merely refused; a home that designates nothing, or designates a name nothing stands
+    under, refuses before anything is compiled and is told what to declare.
+
+    The rows are the DIARY's, compiled and cached exactly as `GET /book/diary` compiles them - one
+    job on the compute queue at a base valuation's cost class, admitted under this request's own
+    seat before the cache is read, and two asks over an unmoved book are one compile. A row whose
+    amount is not determined, and a row naming no currency, refuse BY NAME rather than instructing a
+    payment of zero.
+
+    The answer is the exporter's own plus two keys: `values_hash` is the BOARD the file was struck
+    on, which is the exporter's statement, and `market` is the name it was resolved under with the
+    position that name stands at, which is the record's. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    if request.get('due_before') is None:
+        raise HTTPException(422, 'a settlement file is struck FOR a day, so due_before has no '
+                                 'default: post it as YYYY-MM-DD - a file carrying every payment '
+                                 'the book will ever make would instruct the whole book')
+    day = read_day(request['due_before'])
+    market = spine.designated_market(spine.SETTLEMENT_EXPORT)
+    rows = answered(diary_of(document, request.get('actor'))['rows'])
+    try:
+        exported = diary.export_settlements(rows, market['values_hash'], day)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    return dict(exported, count=len(exported['rows']), market={
+        field: market[field] for field in ('name', 'values_hash', 'lsn')})
 
 
 #: The desk PROJECTION's own file, beside the book in `DV_HOME`. A file rather than memory because
@@ -1928,7 +2064,9 @@ def book_xva(request: dict):
         stamp = replay(context)
         result_id = content_hash(stamp)
         run = XvaJob(context, reference, terms, result_id, stamp)
-        status = EXECUTOR.submit(Job(result_id, run, stamp), HEAVY)
+        status = EXECUTOR.submit(
+            Job(result_id, run, stamp, spine.CURIOSITY, actor=request.get('actor'),
+                book=book_name(document)), HEAVY)
         XVA_PENDING[reference] = result_id
         # a queued or running job writes its own row when it lands; one that has already run writes
         # here only where the row is missing or names a different run, `as_of` meaning when the
@@ -2955,7 +3093,8 @@ def submit_bloomberg(scope, routine=False):
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
     # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
     # and the lane is declared rather than left blank so the absence is a readable decision
-    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY)
+    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
+                    book=book_name(document))
     # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
@@ -3945,7 +4084,8 @@ def book_setup(request: dict):
     # a set-up is an ACT against the terminal rather than a function of the book, so the submission
     # clock names it: two set-ups of one pair are two trips
     result_id = content_hash({'book': etag, 'setup': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, SetupJob(live, scope, result_id), {}, spine.TELEMETRY)
+    submitted = Job(result_id, SetupJob(live, scope, result_id), {}, spine.TELEMETRY,
+                    actor=request.get('actor'), book=book_name(document))
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
@@ -4118,7 +4258,8 @@ def book_model(request: dict):
     # content addressed on the book it fits: the same calibration over an unmoved book is one
     # execution, and a tick moves the etag, so asking again after one genuinely refits
     result_id = content_hash({'book': etag, 'model': [family, pair]})
-    submitted = Job(result_id, SpotModelJob(live, pair, family, result_id), {})
+    submitted = Job(result_id, SpotModelJob(live, pair, family, result_id), {}, spine.CURIOSITY,
+                    actor=request.get('actor'), book=book_name(document))
     return {'result_id': result_id, 'factor': spot_model_factor(family, block_name),
             'status': EXECUTOR.submit(submitted, HEAVY)}
 
@@ -4308,7 +4449,8 @@ def book_solve(request: dict):
     # the identity is the request against this exact book state - the same solve twice is one run
     submitted = Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
                                   'calculation': document['Calc']['Calculation']}),
-                    SolveJob(document, deal_path, solve, margin), {})
+                    SolveJob(document, deal_path, solve, margin), {}, spine.CURIOSITY,
+                    actor=request.get('actor'), book=book_name(document))
     # a solve is base valuations under the hood - light, so it jumps a draining recalc
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
@@ -4815,7 +4957,8 @@ def book_structure(request: dict):
                               'at': time.perf_counter()})
     submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
                                             request.get('request'), margin,
-                                            request.get('actor')), {}, spine.CURIOSITY)
+                                            request.get('actor')), {}, spine.CURIOSITY,
+                    actor=request.get('actor'), book=book_name(document))
     # base valuations under the hood, so a salesperson's ask jumps every XVA set still waiting
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}

@@ -112,7 +112,10 @@ THE RECORD, where this desk keeps one: book_diary is everything the book owes or
 the fact each row waits on, close_check says whether a close on a day is legal and names what
 is outstanding, book_reconcile says where the book file and the record disagree, book_activity
 is one line per event with the head to page from, and book_markets the official close standing
-per market with the close each superseded."""
+per market with the close each superseded. DECLARING IS THE OTHER HALF: declare_close puts the
+day's close on the record over the values the book is carrying, once close_check says the day is
+legal - declare_market is that same act under any other name - and export_settlements strikes the
+settlement file for a day, on the market the desk designated for it and on no other."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -1408,6 +1411,57 @@ def book_markets() -> dict:
     `values_hash` on a row is the address of the vector itself. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/markets')
+
+
+@MCP.tool()
+def declare_market(name: str, actor: str | None = None) -> dict:
+    """Point a market NAME at the values the book is carrying right now - the desk's mark.
+
+    Officialness is a property of the name: every values vector is stored the same way, and
+    `official` is the name the firm's own board carries. A `private/<subject>/<name>` board is one
+    seat's own and the subject in the name must be the seat declaring it. A seat the desk has not
+    scoped to mark is refused in the record's own words. Answers `{recorded: {lsn}, name,
+    values_hash}`, and re-declaring the same numbers under one name is one fact.
+    """
+    return service().call('POST', '/book/markets',
+                          json=dict({'name': name}, **_stated(actor=actor)))
+
+
+@MCP.tool()
+def declare_close(market: str | None = None, date: str | None = None,
+                  actor: str | None = None) -> dict:
+    """Declare the official close - the day the desk agrees what the book was worth.
+
+    `market` defaults to `official` and `date` to the book's own base date. IT RUNS BEHIND
+    `close_check`: a day that check calls illegal is refused here naming what it waits on, and
+    nothing is recorded - so call `close_check` first and file the missing fixings, settlements and
+    elections. A `private/<subject>/...` board belongs to that subject alone and a close on it is
+    refused for anyone else, exactly as a mark is. A second close on one market SUPERSEDES the first
+    rather than correcting it, and the answer names the position it stands over:
+    `{recorded: {lsn}, market, date, values_hash, supersedes_lsn}`.
+    """
+    return service().call('POST', '/book/close',
+                          json=_stated(market=market, date=date, actor=actor))
+
+
+@MCP.tool()
+def export_settlements(due_before: str, actor: str | None = None) -> dict:
+    """The settlement file for one day: every payment due by `due_before` that nobody has settled,
+    each row with its key, deal, leg, currency and amount, and the totals by currency.
+
+    `due_before` is required - a settlement file is struck FOR a day, and one carrying every future
+    payment would instruct the whole book.
+
+    IT NAMES NO MARKET, and cannot: which board a settlement file is struck on is the one the desk
+    DESIGNATED for the export, and a desk that designated none is refused with the declaration that
+    fixes it. A row whose amount is not yet determined - a floating coupon before its resets fix -
+    and a row naming no currency refuse BY NAME, because instructing a payment of zero is a wrong
+    payment rather than a missing one. The answer carries `values_hash` (the board the file was
+    struck on), `market {name, values_hash, lsn}` (the name it was resolved under and where that
+    name stands), `due_before`, `totals`, `rows` and `count`.
+    """
+    return service().call('POST', '/book/settlements',
+                          json=dict({'due_before': due_before}, **_stated(actor=actor)))
 
 
 @MCP.tool(annotations=READ_ONLY)

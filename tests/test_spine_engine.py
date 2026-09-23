@@ -375,15 +375,20 @@ def test_with_no_spine_home_the_edge_is_the_edge_it_always_was(unrecorded, desk)
 def test_a_configured_home_that_is_not_a_home_refuses_by_name(tmp_path, monkeypatch, desk):
     """Set but not minted is a NAMED refusal and never a quiet fall-back: "configured a home that is
     not there" and "configured none" are different facts, and reading the first as the second would
-    silently un-record a box somebody meant to record."""
+    silently un-record a box somebody meant to record.
+
+    The refusal is the QUEUE's since 5c, so it arrives at the submission in the same words rather
+    than as the run's own error after the numbers were computed - a record nobody can open is one
+    no job on this box gets past, whatever lane it declared.
+    """
     monkeypatch.setenv('DV_SPINE_HOME', str(tmp_path / 'never-minted'))
     monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
-    refused = CLIENT.post('/execute', content=dump(dict(own_job('NO-HOME'),
-                                                        lane=spine.STANDING)), headers=JSON)
-    service.EXECUTOR.queue.join()
-    result = CLIENT.get('/results/{}'.format(refused.json()['result_id'])).json()
-    assert result['status'] == 'error'
-    assert 'log/' in result['error'] and 'DV_Spine init' in result['error']
+    for lane in (spine.STANDING, spine.CURIOSITY):
+        refused = CLIENT.post('/execute', content=dump(dict(own_job('NO-HOME'), lane=lane)),
+                              headers=JSON)
+        assert refused.status_code == 422, lane
+        said = refused.json()['detail']
+        assert 'log/' in said and 'DV_Spine init' in said, lane
 
 
 def test_a_configured_home_still_refuses_an_append_nobody_signed(recorded):
@@ -532,22 +537,41 @@ def test_a_standing_run_that_coalesces_onto_one_in_flight_is_attested_when_it_la
 def test_an_attestation_the_record_refuses_fails_the_run_it_was_for(recorded, desk):
     """A standing run whose attestation is refused has NOT acquired standing, so serving its numbers
     would be the unbacked citation the lane rule prevents. The refusal travels as the run's own
-    error and the record holds the denial and nothing else."""
-    log = opened(recorded)
-    try:
-        blob_id = log.store.put(json.dumps(
-            {'grants': [], 'read': []}, sort_keys=True, separators=(',', ':')).encode('utf-8'))
-        log.append('policy_declared', {'policy': 'capabilities', 'blob': blob_id},
-                   actor=ACTOR, blob_refs=(blob_id,))
-    finally:
-        log.close()
-    standing = head(recorded)
+    error and the record holds the denial and nothing else.
 
-    result = drained(submit(own_job('UNSCOPED'), lane=spine.STANDING))
+    THE QUEUE ASKS FOR THE SCOPE THE APPEND WILL NEED, so the two checks can only disagree where the
+    DOCUMENT MOVED between them: the worker is held behind a barrier, the job is admitted under a
+    `book` grant over `*`, that grant is withdrawn while the run waits, and the attestation meets a
+    document the submission never saw. Anything else would be the hub paying for a Monte Carlo the
+    record was always going to refuse - increment 3's own boundary, which this closes.
+    """
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate', 'book')])
+    barrier = holding()
+    try:
+        assert barrier.running.wait(WORKER_SECONDS), 'the worker never picked the barrier up'
+        submitted = submit(own_job('UNSCOPED'), lane=spine.STANDING)
+        assert submitted['status'] == 'queued', submitted
+        entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+        standing = head(recorded)
+    finally:
+        barrier.released.set()
+
+    result = drained(submitted)
     assert result['status'] == 'error'
     assert 'run_completed' in result['error'] and ACTOR in result['error']
     assert [event_type for _, event_type, _ in facts(recorded)][standing:] == \
         ['capability_denied'], 'the record kept an attestation nobody was scoped for'
+
+    # and the ordinary desk seat - `book` over its own book and nothing firm-level - never reaches
+    # the executor at all, because the fact it would file is firm-level
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(ACTOR, 'book', 'spine-desk')])
+    stored = dict(service.EXECUTOR.results)
+    turned = CLIENT.post('/execute', content=dump(dict(own_job('UNADMITTED'),
+                                                       lane=spine.STANDING)), headers=JSON)
+    assert turned.status_code == 422 and 'book' in turned.json()['detail']
+    assert "over '*'" in turned.json()['detail'], 'the queue asked over the job\'s own book'
+    assert service.EXECUTOR.results == stored, 'the queue ran a job it had refused'
 
 
 def test_a_standing_run_off_a_plan_id_refuses_by_name(recorded, desk):
@@ -785,7 +809,7 @@ def test_a_market_resolves_by_name_and_a_private_one_resolves_for_its_owner(reco
 
     standing = spine.resolve_market('official')
     assert standing == {'name': 'official', 'values_hash': context.values_hash(),
-                        'values': standing['values']}
+                        'lsn': standing['lsn'], 'values': standing['values']}
     assert other.values_hash() != context.values_hash()
     other.patch_market(standing['values'])
     assert other.values_hash() == context.values_hash(), \
@@ -1694,7 +1718,10 @@ def test_a_seat_the_document_does_not_scope_leaves_the_acceptance_standing(recor
     every quote a misconfigured workflow holds back.
     """
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto', 'seat': AUTO_SEAT}))
-    entitle(recorded, [(ACTOR, verb, '*') for verb in ('book', 'mark', 'admin', 'approve')])
+    # `validate` beside the rest: quoting is a curiosity job and 5c's queue asks for that scope
+    # before it runs one, and the six verbs imply nothing about each other here or at the writer
+    entitle(recorded, [(ACTOR, verb, '*')
+                       for verb in ('validate', 'book', 'mark', 'admin', 'approve')])
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     before = quoting.read_bytes()
 
@@ -2584,3 +2611,221 @@ def test_a_fixing_whose_authority_nobody_declared_refuses_by_name(recorded, desk
     # the deal's own index declared and the stranger's still not: the plan compiles regardless
     declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
     assert watched_row(spine.compiled_job(barrier_book())) == [[WATCHED, 108.5]]
+
+
+# --------------------------------------------------------------------------------------------
+# The mark, and the queue that asks first.
+
+def test_a_market_declared_through_the_service_stands_under_the_name_it_was_given(recorded, desk):
+    """`POST /book/markets` is the desk's MARK: the live book's own projected values, filed under a
+    name and resolving back to it by that name.
+
+    THE RECORD'S REFUSALS REACH THE CALLER UNEDITED. A seat the capabilities document does not
+    scope for `mark` is a 422 in the writer's own words with the denial landed as a fact, and a
+    `private/` name whose subject is not the seat declaring it is refused at the verb before
+    anything appends - neither rule is restated here, because a second place to get one right is a
+    second place to get it wrong.
+
+    THE CLOSE IS HELD TO THE SAME OWNER RULE, and is where a caller-chosen market name first reaches
+    the wire: a close inside another subject's `private/` namespace would be a board its owner never
+    declared and is the only reader of, since `resolve_market` answers a name across the
+    declarations of it and the closes on it alike.
+
+    Killing mutations: the verb hashing the document rather than the projected values, after which
+    the mark addresses bytes the store does not hold and nothing resolves; a `mark` check written
+    into the endpoint, which passes this gate while disagreeing with the writer about a private
+    name; and the owner rule absent from `declare_close`, which plants an official close in a
+    namespace the same seat was refused one call earlier.
+    """
+    standing = service.load(service.BOOK.read()[0])
+    declared = CLIENT.post('/book/markets', json={'name': 'official'}).json()
+    assert declared == {'recorded': {'lsn': head(recorded)}, 'name': 'official',
+                        'values_hash': standing.values_hash()}
+    resolved = spine.resolve_market('official')
+    assert resolved['values_hash'] == standing.values_hash()
+    assert resolved['lsn'] == declared['recorded']['lsn'], 'the mark resolved at another position'
+
+    theirs = 'private/{}/screen'.format(DESK_TWO)
+    for named, said in (({}, 'declare_market'), ({'name': ''}, 'declare_market'),
+                        ({'name': theirs}, 'one seat\'s own board')):
+        refused = CLIENT.post('/book/markets', json=named)
+        assert refused.status_code == 422 and said in refused.json()['detail'], named
+    for named, said in (({'market': ''}, 'declare_close'), ({'market': theirs}, 'own board')):
+        refused = CLIENT.post('/book/close', json=named)
+        assert refused.status_code == 422 and said in refused.json()['detail'], named
+    assert head(recorded) == declared['recorded']['lsn'], 'a refused declaration moved the record'
+    assert CLIENT.get('/book/markets').json()['closes'] == [], \
+        'a close landed on another seat\'s board'
+
+    # the seat that may BOOK is not the seat that may MARK, and the refusal is itself a fact
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('book', 'admin')])
+    unscoped = CLIENT.post('/book/markets', json={'name': 'dealer'})
+    assert unscoped.status_code == 422 and 'mark' in unscoped.json()['detail']
+    assert facts(recorded, 'capability_denied')[0][2] == {
+        'subject': ACTOR, 'verb': 'mark', 'book': '*', 'attempted_type': 'market_declared'}
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+#: A seat nobody has ever granted anything, named on the REQUEST the way a stranger reaches a desk.
+STRANGER = 'subject-nobody-at-all'
+
+
+def priced(marker, actor=STRANGER):
+    """One what-if through the service under a named seat, and whether the executor's store MOVED
+    for it - so a gate says the queue never saw the job rather than that its answer was not served.
+
+    The candidate carries the gate's own name: the store is content-addressed and lives for the
+    length of the process, so a shared plan would read as a cache hit rather than as a refusal. The
+    SEAT rides the request body, which is how a caller names one and is the claim the section
+    rests on - relabelling `DV_SPINE_ACTOR` instead would hold only that a deployment whose own
+    seat is unscoped cannot price.
+    """
+    before = dict(service.EXECUTOR.results)
+    answer = CLIENT.post('/book/price', content=dump(dict(
+        {'deal': dict(CASHFLOW, Reference=marker)},
+        **({} if actor is None else {'actor': actor}))), headers=JSON)
+    service.EXECUTOR.queue.join()
+    return answer, dict(service.EXECUTOR.results) != before
+
+
+def test_with_no_document_in_force_the_queue_admits_every_job(recorded, desk):
+    """ENFORCEMENT ACTIVATES BY DECLARATION, at the queue exactly as at the writer. A home that has
+    declared no capabilities document is the single-user instrument the page describes, so a seat
+    nothing ever granted anything prices as it did before admission existed: the ordinary answer,
+    the job on the queue, and a record that does not move.
+
+    Killing mutation: admission failing closed on an absent document, which stops every job on
+    every increment-1 home there is.
+    """
+    at = head(recorded)
+
+    answer, ran = priced('no-document')
+    assert answer.status_code == 200 and ran, answer.text
+    assert drained(answer.json())['status'] == 'done'
+    assert head(recorded) == at, 'a what-if moved the record'
+
+
+def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk, monkeypatch):
+    """THE QUEUE IS THE HUB'S COMPUTE AND IT ASKS FIRST. `pin_result` has no HTTP verb, so a
+    submission is the whole of what an unscoped seat could make this box spend, and the check sits
+    in `submit` - where every queued job passes - rather than in each verb.
+
+    THE SEAT ASKED ABOUT IS THE REQUEST'S. The document here is the posture a ticking desk must
+    declare - `validate` on the deployment's own seat, or the metronome and the diary stop - and
+    the stranger is named on the BODY, so what this holds is the contract's own sentence rather
+    than "a deployment whose seat is unscoped cannot price".
+
+    A what-if mints nothing, so it is admitted under `validate`: the refusal is a 422 in the
+    record's own words, the `capability_denied` is the ONLY new row, and the executor's store is
+    exactly what it was - counted, never believed. Asking again is ONE fact, the denial coalescing
+    onto the LSN it already has. The same seat granted `validate` over this book prices, and A
+    TUPLE ALREADY IN THE STORE IS ASKED ABOUT AGAIN: content addressing dedupes NUMBERS, so a seat
+    whose grant has since been withdrawn is refused at the queue rather than served them. An
+    unnamed actor under a document is refused by name, because a job nobody signed for is one the
+    record could not attribute.
+
+    Killing mutations: the check taken after `queue.put`, which pays for the run and then refuses
+    it; the check taken only where the tuple is new, after which a seat asking for numbers the
+    store already holds is served them; the actor read off the environment rather than the request,
+    which lets the one grant a ticking desk cannot withhold admit every anonymous what-if; and the
+    job's own book dropped, which asks for a scope no desk document grants.
+    """
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+    before = head(recorded)
+
+    refused, ran = priced('under-a-document')
+    assert refused.status_code == 422 and not ran, refused.text
+    said = refused.json()['detail']
+    assert STRANGER in said and 'validate' in said and 'spine-desk' in said, said
+    denials = facts(recorded, 'capability_denied')
+    assert [row[2] for row in denials] == [{'subject': STRANGER, 'verb': 'validate',
+                                            'book': 'spine-desk',
+                                            'attempted_type': spine.CURIOSITY}]
+    assert head(recorded) == before + 1, 'a refused job filed more than the refusal'
+
+    again, ran = priced('under-a-document')
+    assert again.status_code == 422 and not ran
+    assert facts(recorded, 'capability_denied') == denials, 'a repeated refusal is a second fact'
+
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(STRANGER, 'validate', 'spine-desk')])
+    answer, ran = priced('under-a-document')
+    assert answer.status_code == 200 and ran, 'an admitted job never reached the executor'
+    assert drained(answer.json())['status'] == 'done'
+
+    # the numbers are now in the store, and the grant is withdrawn: a cache hit is not an admission.
+    # The withdrawal document may not be a document already declared here - one policy is one blob,
+    # so a repeat coalesces onto the frame it already has and nothing comes into force
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate', 'mark')])
+    withdrawn, ran = priced('under-a-document')
+    assert withdrawn.status_code == 422 and not ran, 'the store answered a seat the queue refuses'
+
+    # and the deployment's own seat still prices, which is the grant that keeps the desk ticking
+    deployment, ran = priced('deployment', actor=None)
+    assert deployment.status_code == 200 and ran, deployment.text
+    monkeypatch.delenv(spine.SPINE_ACTOR)
+    unnamed, ran = priced('unnamed', actor=None)
+    assert unnamed.status_code == 422 and not ran
+    assert spine.SPINE_ACTOR in unnamed.json()['detail']
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_the_scope_the_queue_asks_for_is_the_one_the_jobs_lane_will_mint(recorded):
+    """WHAT A JOB IS ADMITTED UNDER IS WHAT ITS LANE WILL FILE. A standing run files a
+    `run_completed`, so the queue asks for THAT TYPE's own verb and a seat scoped only to validate
+    is turned away before the Monte Carlo rather than after it - where increment 3's boundary left
+    it, the hub paying for an execution the writer would then refuse.
+
+    And the seat asked about is THE REQUEST'S where it names one: the same job posted under a seat
+    the document scopes for `book` runs, and the attestation is filed under that seat rather than
+    under the deployment's own, so what was admitted and what was recorded are one name.
+
+    Killing mutations: one verb asked for every lane, which either stops every what-if on a booking
+    desk or lets a validate-only seat mint attestations; and the request's actor read for admission
+    and not for the append, which records somebody else's run.
+    """
+    assert (spine.STANDING_TYPE, spine.SETTLEMENT_EXPORT) == (
+        'run_completed', policy.DESIGNATED_PROCESSES[0])
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(DESK_TWO, 'book', '*')])
+    standing = dict(own_job('admission'), lane=spine.STANDING)
+
+    refused = CLIENT.post('/execute', content=dump(standing), headers=JSON)
+    assert refused.status_code == 422 and 'book' in refused.json()['detail'], refused.text
+    assert ACTOR in refused.json()['detail'], 'the queue asked about a seat nobody named'
+    assert facts(recorded, 'capability_denied')[0][2]['attempted_type'] == spine.STANDING_TYPE
+    assert facts(recorded, 'run_completed') == []
+
+    ran = submit(standing, actor=DESK_TWO)
+    assert drained(ran)['status'] == 'done', ran
+    assert len(facts(recorded, 'run_completed')) == 1, 'the admitted standing run attested nothing'
+    log = opened(recorded)
+    try:
+        assert [frame['actor'] for frame in log.frames()
+                if frame['event_type'] == 'run_completed'] == [DESK_TWO]
+    finally:
+        log.close()
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat(recorded, quoting):
+    """THE POLL PATH NAMES NOBODY. A diary compile and a beat of the cadence are TELEMETRY jobs no
+    request signed, so the seat the queue admits them under is `DV_SPINE_ACTOR` - the deployment's
+    own, which is the whole of what the metronome has - and a document that does not scope that seat
+    stops them BY NAME rather than silently, which is the one failure a ticking desk must be told
+    about. Neither is run here: what is asserted is which seat the queue asked about.
+
+    Killing mutation: a job carrying no actor admitted unconditionally, which leaves the whole poll
+    path outside the document a desk declared.
+    """
+    service.BOOK_DIARY_CACHE.clear()
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+    assert CLIENT.get('/book/diary').status_code == 200, 'the compile was refused its own seat'
+
+    # not cleared: admission is asked before the cache is read, so the warm one refuses too
+    entitle(recorded, [(ACTOR, 'admin', '*')])
+    for refused in (CLIENT.get('/book/diary').json()['detail'],
+                    str(pytest.raises(spine.SpineRefused, service.submit_bloomberg, {}).value)):
+        assert ACTOR in refused and 'validate' in refused, refused
+    assert facts(recorded, 'capability_denied')[-1][2]['attempted_type'] == spine.TELEMETRY
+    assert verify_home(recorded)['events'] == head(recorded)

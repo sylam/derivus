@@ -60,6 +60,14 @@ CURIOSITY = 'curiosity'
 STANDING = 'standing'
 LANES = (TELEMETRY, CURIOSITY, STANDING)
 
+#: What the standing lane MINTS, respelled beside the lanes for the same reason: `admit` asks the
+#: record which scope this type demands, so the one lane that files a fact is admitted under it.
+STANDING_TYPE = 'run_completed'
+
+#: The process a settlement file is struck under - `derivus_spine.policy.DESIGNATED_PROCESSES`'s
+#: one member, respelled here so the service can name it without paying for the spine import.
+SETTLEMENT_EXPORT = 'settlement_export'
+
 #: What a tree without the extra is told, with the line that fixes it.
 NO_PACKAGE = ('the book of record is not installed on this box ({}) - {} names a spine home, so '
               'this verb records to it; `pip install derivus[enterprise]`, or unset {} to run the '
@@ -116,8 +124,9 @@ def package():
     """
     try:
         import derivus_spine
-        from derivus_spine import (capability, firmness, policy,  # noqa: F401  attribute
-                                   projections, tiers, verbs)     # noqa: F401  access below
+        from derivus_spine import (capability, firmness, policy,   # noqa: F401  attribute
+                                   projections, tiers, verbs,      # noqa: F401  access below
+                                   vocabulary)                     # noqa: F401
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -657,7 +666,7 @@ def route_ticket(plan_hash, terms, booker, lsn=None):
 
 
 def resolve_market(name, actor=None, process=None):
-    """The values vector standing under the market `name`: `{name, values_hash, values}`.
+    """The values vector standing under the market `name`: `{name, values_hash, lsn, values}`.
 
     The composition nothing performed before - the `markets` fold names it, the store holds the
     bytes, `read_values` turns them back into what `patch_market` takes. A name nobody declared
@@ -712,10 +721,73 @@ def resolve_market(name, actor=None, process=None):
                         else 'nothing at all', name, spine.policy.TIERS_POLICY,
                         spine.policy.PRIVATE_MARKET, spine.policy.DESIGNATIONS_SECTION, process))
         latest = max(standing, key=lambda row: (row['as_of'], row['lsn']))
-        return {'name': name, 'values_hash': latest['values_hash'],
+        # the POSITION of the declaration in force, so a file struck on this board names where the
+        # board was declared and replays to it rather than to whatever the name answers later
+        return {'name': name, 'values_hash': latest['values_hash'], 'lsn': latest['lsn'],
                 'values': read_values(log.store.get(latest['values_hash']))}
 
     return folded(fold)
+
+
+def designated_market(process):
+    """The market this record DESIGNATES for `process`, resolved - `resolve_market`'s answer.
+
+    Which board a process prices on is a governance decision the desk declares once, never a
+    caller's parameter, so the name comes off the `tiers` policy and resolving another through a
+    designated process is unrepresentable rather than merely refused. A home designating nothing is
+    told what to declare; a designated name nothing stands under refuses where the name resolves.
+    """
+    spine = package()
+    named = (tiers_policy() or {}).get(spine.policy.DESIGNATIONS_SECTION, {}).get(process)
+    if not named:
+        raise SpineRefused(
+            'this record designates no market for {0!r}, so there is nothing to strike it on: '
+            'which board a designated process prices on is declared once and read by name, never '
+            'chosen per call. Declare it on the {1} policy ({{"{2}": {{"{0}": "official"}}}}) '
+            'through `DV_Spine declare {1} <file.json>`'.format(
+                process, spine.policy.TIERS_POLICY, spine.policy.DESIGNATIONS_SECTION))
+    return resolve_market(named, process=process)
+
+
+def admit(lane, actor_name=None, book=None):
+    """Let this seat put work on the hub's compute, or refuse in the record's own words.
+
+    THE QUEUE IS THE ONE WAY IN. `pin_result` has no HTTP verb, so a submission is the whole of what
+    an unscoped actor could make this box pay for, and the question is asked once where every job
+    passes rather than in each verb. What it asks for is THE SCOPE THE APPEND WILL NEED, verb and
+    book together: a standing run files a FIRM-LEVEL `run_completed`, so it is admitted under that
+    type's own verb over the firm-level scope only a `*` grant reaches, and a seat that gets past
+    here is a seat whose attestation lands - asking over the job's own book instead would admit the
+    ordinary desk seat and let it pay for a Monte Carlo the writer then refuses. Every other lane
+    mints nothing, wants `validate`, and is admitted over the book its document names.
+
+    Enforcement activates BY DECLARATION, as it does at the writer: with no capabilities document in
+    force every job is admitted and this box is the single-user instrument it was. Under one, an
+    unnamed actor is refused by name - a job nobody signed for is one the record could not attribute
+    - and a refused seat lands its `capability_denied` in the writer's voice before the raise, a
+    repeat coalescing onto the LSN it already has.
+    """
+    spine = package()
+    document, genesis = folded(lambda log: spine.capability.state_at(log))
+    if document is None:
+        return
+    verb, book = ((spine.capability.verb_for(STANDING_TYPE), None) if lane == STANDING
+                  else (spine.vocabulary.VALIDATE, book))
+    subject = actor(actor_name)
+    if spine.capability.evaluate(document, genesis, subject, verb, book):
+        return
+    with writing() as log:
+        # the type the lane would have filed, or the lane itself where it files none
+        denial = log.refuse(subject, verb, book,
+                            STANDING_TYPE if lane == STANDING else (lane or CURIOSITY))
+    raise SpineRefused(
+        'actor {0!r} holds no {1} scope over {2!r}, so this job is not queued and nothing runs: '
+        'the hub\'s compute is reached through the queue and the queue asks first, so work whose '
+        'facts this seat could not file is work this box does not pay for. Declare a document '
+        'granting ({0!r}, {1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself '
+        'recorded at LSN {3}'.format(
+            subject, verb, book if book is not None else spine.capability.ANY_BOOK,
+            denial['lsn']))
 
 
 def firmness_policy():

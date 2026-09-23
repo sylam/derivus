@@ -277,7 +277,12 @@ is recorded so a reader knows which readings rest on it.
 - **A desk's poll of the record costs the whole record, per beat** (2026-09-22). `/book/activity`
   parses every segment whatever `?since=` says and `/book/status`'s behind counts walk the log from
   the pin, so one two-second beat is 10 ms at 5 events, 17 ms at 405 and 47 ms at 2,005, and an
-  append-only record never shrinks. The remedy is a seek by LSN inside the log's own reader -
+  append-only record never shrinks. Queue admission rides the same walk once per submitted job -
+  `capability.state_at` is 1.2 ms at 21 events and 20.5 ms at 1,994, a document in force or not,
+  since the fold opens a body only for the policy rows it finds - which is why nothing caches it: a
+  job on this queue is a base valuation, a diary compile or a terminal round trip, so admission is
+  under a fiftieth of the cheapest thing it admits, and a cache of its own would be a second answer
+  to the question below. The remedy is a seek by LSN inside the log's own reader -
   `SpineLog.frames` already holds a byte offset per LSN in `_at` and skips by comparison instead -
   which is a change in `derivus_spine/`.
 - **A private market has no surveillance or admin read** (2026-09-23). `spine.resolve_market`
@@ -392,7 +397,7 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   and threshold ladders fold with the put barrier and the pricer's barrier-hit read (it tests for
   presence, so it fires on a declared `'No'`) retires with them; the TARF's and accumulator's
   decisions-remain arm is folded parameters, not a substituted deal.
-- **Spine increments 5–7** — tier policy, the doorbell, the generated binding and the reading plane
+- **Spine increments 6 and 7** — the doorbell, the generated binding and the reading plane
   ([The Spine](spine.md)).
 - **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
   `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing

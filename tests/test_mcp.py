@@ -27,7 +27,7 @@ from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
-from test_service import BINARY, BOOKED, RATE, SPOT, Held, dump, job
+from test_service import AMOUNT, BINARY, BOOKED, RATE, SPOT, Held, dump, job
 
 SERVER_FILE = mcp_server.__file__
 
@@ -81,7 +81,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'approve_quote', 'reject_quote', 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
-                'close_check', 'book_activity', 'book_markets'}
+                'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
+                'export_settlements'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -90,7 +91,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'approve_quote', 'reject_quote',
+                       'approve_quote', 'reject_quote', 'declare_market', 'declare_close',
+                       'export_settlements',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market'}
@@ -117,7 +119,8 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
     for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
                  '{written: false, refused: [...]}', 'book_diary', 'close_check',
-                 'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_quote'):
+                 'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_quote',
+                 'declare_close', 'export_settlements'):
         assert said in instructions, said
 
 
@@ -293,6 +296,53 @@ def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book
     assert [close['supersedes_lsn'] for close in markets['closes']] == [first]
     assert [name['name'] for name in markets['names']] == ['official']
     assert markets['snapshots'] == []
+
+
+def test_the_mark_the_close_and_the_settlement_file_reach_a_model_as_three_verbs(book, tmp_path,
+                                                                                  monkeypatch):
+    """The record's three WRITES a model can reach: the mark, the close behind `close_check`'s own
+    verdict, and the settlement file struck on the market the desk DESIGNATED for the export. Each
+    tool is one `service().call`, so what a model gets is the verb's own answer and a refusal is the
+    record's own sentence.
+
+    Killing mutations: `declare_close` sending a market or a date the caller did not name, which
+    closes a board nobody asked about or on a day nobody chose; and `export_settlements` passing a
+    market through, which would let a model strike a settlement file on any board it can name.
+    """
+    from derivus_spine import SpineLog, init_home, policy
+
+    actor, home = 'subject-desk-one', tmp_path / 'spine'
+    init_home(home, actor)
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    log = SpineLog(home)
+    try:
+        policy.declare(log, actor, policy.TIERS_POLICY,
+                       {'tiers': [{'name': 'desk', 'four_eyes': True}],
+                        'designations': {'settlement_export': 'official'}})
+    finally:
+        log.close()
+
+    with pytest.raises(ToolError) as unmarked:
+        mcp_server.export_settlements(due_before='2099-01-01')
+    assert 'official' in str(unmarked.value), 'the export resolved a board nothing stands under'
+
+    marked = mcp_server.declare_market('official')
+    closed = mcp_server.declare_close()
+    assert closed['market'] == 'official' and closed['date'] == '2024-06-28'
+    assert closed['values_hash'] == marked['values_hash'] and closed['supersedes_lsn'] is None
+    assert [row['market'] for row in mcp_server.book_markets()['closes']] == ['official']
+
+    exported = mcp_server.export_settlements(due_before='2099-01-01')
+    assert exported['market'] == {'name': 'official', 'values_hash': closed['values_hash'],
+                                  'lsn': closed['recorded']['lsn']}, 'the close did not move it'
+    assert exported['count'] == len(exported['rows']) == 1
+    assert exported['totals'] == {'ZAR': AMOUNT}
+
+    with pytest.raises(ToolError) as illegal:
+        mcp_server.declare_close(date='2099-01-01')
+    assert 'not legal' in str(illegal.value)
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

@@ -69,6 +69,9 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `book_reconcile` | `GET /book/reconcile` — where the book file and the book of record disagree, named by instrument |
 | `book_activity` | `GET /book/activity` — the record's strip, one line per event with the head to page from; `since` is that head and `limit` keeps the newest |
 | `book_markets` | `GET /book/markets` — the official close standing per market with the close each superseded, the declared names, the snapshots |
+| `declare_market` | `POST /book/markets` — the desk's mark: the book's own values filed under a name, `official` wanting a `mark` seat and a `private/` board naming the seat that declares it |
+| `declare_close` | `POST /book/close` — the official close over those values, behind `close_check`'s own verdict, a second close superseding the first |
+| `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

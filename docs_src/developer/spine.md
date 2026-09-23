@@ -2,14 +2,15 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1, 2, 3, 4, 5a and 5b**: the log, the blob store
+page documents what is BUILT, which is **increments 1 through 5**: the log, the blob store
 and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
 booking verbs, the attestation lanes and the firmness check, over all of it the
 projections, the diary, the book file's pin and the desk's own readers of them, beside those the
-tier policy, its evaluator and the verbs that file a decision and a close, and through all of it the
-quote lifecycle: a price recorded when the client accepts it, routed through the desk's own workflow
-before it books. No network — a library, a CLI, eight delegators on `Context`, five read verbs and
-three write verbs on the service, and 318 gates.
+tier policy, its evaluator and the verbs that file a decision and a close, through all of it the
+quote lifecycle — a price recorded when the client accepts it, routed through the desk's own workflow
+before it books — and over the compute itself a queue that asks who is submitting before it runs
+anything. No network — a library, a CLI, eight delegators on `Context`, six read verbs and
+five write verbs on the service, and 326 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -109,8 +110,8 @@ channel into the record.
 ## The gates
 
 105 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 293 of the
-318 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 299 of the
+326 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -711,20 +712,106 @@ documented as the acceptance, and `approve_quote`/`reject_quote` are the second 
 `INSTRUCTIONS` and the `quote_a_structure` prompt say the walk: quote, the client's word, accept, and
 where the desk's policy wants a second seat, its approval, then accept again.
 
+## Increment 5c — the mark, the close, the settlement file, and the queue that asks first
+
+**THE MARK IS THE BOOK'S OWN VALUES UNDER A NAME.** `POST /book/markets` hands
+`Context.declare_market` the live book's projected vector, so what a name stands on is the bytes
+`values_hash` already addresses and a mark and a quote pin one number. Officialness is a property of
+the NAME and the record is what enforces it: a seat the capabilities document does not scope for
+`mark` is a 422 in the writer's own words with the denial landed as a fact, and a
+`private/<subject>/<name>` board whose subject is not the declaring seat is refused at the verb before
+anything appends. Neither rule is restated in the endpoint, because a second place to get a rule right
+is a second place to get it wrong. `spine.resolve_market` now answers the POSITION of the declaration
+in force beside the name and the hash, so a file struck on a board says where that board was declared.
+**THE OWNER RULE IS EVERY VERB'S THAT MOVES WHAT A NAME STANDS ON**, the CLOSE included: a name
+resolves across the declarations of it and the closes on it alike, so a close inside another
+subject's namespace would be a board its owner never declared and is the only reader of — which is
+the second answer to who owns one board that the rule exists to prevent.
+
+**THE CLOSE RUNS BEHIND THE CHECK.** `POST /book/close` declares what `GET /book/close/check`
+answers, on the day it answers for: `market` defaults to `official` and `date` to the book's own
+`Calculation.Base_Date`, parsed by the check's own reader, and a day the check calls illegal refuses
+naming what it waits on with NOTHING APPENDED — a close over a payment nobody settled, a fixing nobody
+printed or a payoff nobody elected is a clean bill nobody earned. Both defaults are CONVENTIONS, so
+only an omitted key takes one: a date that names nothing is refused rather than defaulted, since a
+string compare would call the empty one legal. The verdict is `close_verdict`, the rule as a pure
+function over rows, so the read verb and the declaration answer ONE verdict about ONE document: the
+close compiles the book it read and asks, where calling the read verb again would judge a book the
+close is not struck on. That compile is the CALLER's job on the queue, like the export's. A second
+close on one market SUPERSEDES the first, and the answer carries the `supersedes_lsn` the `markets`
+fold names — read off the fold rather than off the close just filed, because what a close stands over
+is a question about the record.
+
+**THE SETTLEMENT FILE NAMES NO MARKET AND CANNOT.** `POST /book/settlements` takes the day it is
+struck FOR — `due_before`, which has no default — and nothing else: which board it is struck on is the
+market the `tiers` policy DESIGNATES for `settlement_export`, resolved by that name, so pointing the
+export at another is unrepresentable rather than merely refused. A home designating nothing, and one
+designating a name nothing stands under, refuse at SUBMISSION with the declaration that fixes it,
+before a row is compiled. The rows are the DIARY's — the same job on the compute queue at a base
+valuation's cost class that `GET /book/diary` caches, never a second compile path — and the answer is
+`diary.export_settlements`' own, plus the market block and the count: an undetermined amount, and a row
+naming no currency, refuse by name, because instructing a payment of zero is a wrong payment rather
+than a missing one. Two keys say two things and are spelled apart: `values_hash` is the BOARD the
+file was struck on, which is the exporter's own statement over the rows it exported, and `market` is
+the name that board was resolved under with the position that name stands at, which is the record's.
+**ADMISSION IS ASKED BEFORE THE DIARY CACHE IS READ**, here and on every reader of it: a warm cache
+reaches no queue, and a settlement file a desk instructs payments from must not be a function of who
+asked first. The miss therefore asks twice, which is one fold against the compile it guards.
+
+**THE QUEUE IS THE HUB'S COMPUTE, AND IT ASKS FIRST.** One check, in `ComputeExecutor.submit` before
+the job is enqueued, where every queued job passes — the diary, the tick, a what-if, a solve, an XVA
+set and a standing run alike. What it asks for is **THE SCOPE THE APPEND WILL NEED**, verb and book
+together, so a seat that gets past the queue is a seat whose fact lands: a standing run files a
+FIRM-LEVEL `run_completed`, so it is admitted under that type's own verb over the scope only a `*`
+grant reaches, and the ordinary desk seat — `book` over its own book — is turned away before the
+Monte Carlo rather than after it, which is where increment 3's boundary left it. Every other lane
+mints nothing, wants `validate`, and is admitted over the book its own document names. The two
+checks can then only disagree where the DOCUMENT MOVED between them, which is what the gate holds
+with a job waiting behind a barrier while its grant is withdrawn.
+
+Enforcement activates BY DECLARATION, as at the writer: with no capabilities document in force every
+job is admitted and the box is the single-user instrument it was, and under one an unnamed actor is
+refused by name — a job nobody signed for is one the record could not attribute. **THE SEAT IS THE
+REQUEST'S**: `/execute`, `/book/price`, `/book/solve`, `/book/model`, `/book/xva`, `/book/setup`,
+`/book/structure`, `/book/close` and `/book/settlements` all take an `actor` and are admitted under
+it, so a stranger reaching this box is a stranger to the record too. The POLL PATHS take none and
+run under `DV_SPINE_ACTOR` — the diary read, the tick and the securities verification are the
+deployment's own and that name is the whole of what the metronome has, which is also why the one
+grant a ticking desk cannot withhold must not be the grant that admits everybody.
+
+**THE SIX VERBS IMPLY NOTHING ABOUT EACH OTHER**, here as at the writer,
+so a document declared before this increment must now say `validate` for every seat that prices,
+quotes, solves or reads a diary: a `book` grant puts paper on the record and does not buy arithmetic.
+A configured home that is not a home refuses the whole queue in the same sentence it always
+refused a verb with — a record nobody can open is one no job on this box gets past.
+
+A refusal is a fact: `SpineLog.refuse` is the denial verb IN PUBLIC, so the queue lands the same
+`capability_denied` the authorization hook lands rather than learning to forge a reserved type, and a
+repeated refusal coalesces onto the LSN it already has. The job never reaches the executor and no
+result is stored — counted, never believed — and the caller gets a 422 in the record's own words.
+**This closes increment 3's own boundary**: `pin_result` re-executes before the writer adjudicates the
+append, and it has no HTTP verb, so the queue was the whole of the path an unscoped actor had to this
+box's arithmetic and the queue now asks first. The cost is a fold and NOTHING CACHES IT:
+`capability.state_at` is 1.2 ms at 21 events and 20.5 ms at 1,994, with or without a document, while
+the cheapest thing on this queue is a diary compile — the walk itself is the log's missing seek, which
+is one row on the roadmap for every reader that pays it.
+
 ## What is not built yet
 
 No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
-a fold. The market, close and settlement verbs are **5c**, and so is queue admission. No doorbell and
-no generated MCP binding — **6 and 7**. No network anywhere
+a fold. No doorbell and no generated MCP binding — **6 and 7**. No network anywhere
 yet: tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
 rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
 checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope
 by the design's own sentence.
 
-Two boundaries of increment 3's own, declared rather than discovered. `pin_result` reads its tolerance
-policy and re-executes BEFORE the writer adjudicates the append, so an unscoped actor can make the hub
-pay for one execution it will then refuse; the fix is not a second authorization check inside the verb
-(one evaluator, one place) but queue admission, which the design puts under its own capability in
-increment 5. And a STANDING run must post its job document — a `plan_id` names a parse,
-`Context.save_json` is explicitly not a complete round trip, and a provenance chain whose first link is
-a document nobody can recompile is worse than none — so it refuses by name.
+Four boundaries stand, declared rather than discovered. A STANDING run must post its job document — a
+`plan_id` names a parse, `Context.save_json` is explicitly not a complete round trip, and a provenance
+chain whose first link is a document nobody can recompile is worse than none — so it refuses by name.
+The surveillance and admin READ of a private market waits on a second entitlement class and a `read`
+row per subject, the reclassification `vocabulary.classify` ships dormant for; until then the owner
+rule refuses at the verb without minting a fact. No rejection is filed AUTOMATICALLY: a ticket no tier
+admits answers every sentence of its route, and a verdict is a seat's decision the tiers policy names
+no seat for. And a material market move between a quote and the client's word is REPORTED rather than
+refused; a desk wanting a refusal would declare per-field epsilons, which wants a values-vector diff
+that says which numbers moved where the record compares two addresses.

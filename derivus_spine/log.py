@@ -531,6 +531,15 @@ class SpineLog:
             self._capability = build_state(self)
         return (self._capability['doc'], self._capability['genesis'])
 
+    def refuse(self, subject, verb, book, attempted_type):
+        """Record a refusal somebody else made, in the writer's own voice.
+
+        A caller that turns a seat away BEFORE the append - queue admission, which refuses work
+        rather than a fact - lands the denial the authorization hook would have landed, instead of
+        learning to forge a reserved type. `attempted_type` is what the refused act would have said.
+        """
+        return self._deny(subject, verb, book, attempted_type)
+
     def _deny(self, subject, verb, book, attempted_type):
         """Append the refusal as a fact under the writer's own name, and return its envelope.
 

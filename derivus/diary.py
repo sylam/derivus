@@ -126,8 +126,10 @@ def export_settlements(rows, official_values_hash, due_before):
     already settled, against one market.
 
     Takes the diary, the hash of the market it is struck on and the day it settles, and nothing
-    else - no book, no service, no executor. `due_before` has no default: a settlement file is
-    struck FOR a date, and one that exported every future payment would instruct the whole book.
+    else - no book, no service, no executor. The hash comes back as `values_hash`, the BOARD the
+    file was struck on, leaving `market` free for the name a caller resolved it under.
+    `due_before` has no default: a settlement file is struck FOR a date, and one that exported
+    every future payment would instruct the whole book.
     A row whose amount is UNDETERMINED refuses by name rather than exporting a zero: a floating
     amount is not known until its resets fix, and instructing a payment of 0.0 for one is a wrong
     payment rather than a missing one.
@@ -156,7 +158,7 @@ def export_settlements(rows, official_values_hash, due_before):
     totals = {}
     for row in payments:
         totals[row['currency']] = totals.get(row['currency'], 0.0) + row['amount']
-    return {'market': official_values_hash, 'due_before': due_before, 'totals': totals,
+    return {'values_hash': official_values_hash, 'due_before': due_before, 'totals': totals,
             'rows': [{field: row[field] for field in
                       ('key', 'instrument', 'leg', 'schedule_index', 'due_date', 'currency',
                        'amount')} for row in payments]}

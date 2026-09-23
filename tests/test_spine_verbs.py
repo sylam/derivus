@@ -338,6 +338,42 @@ def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
     assert verify_home(home)['events'] == log.head()[0]
 
 
+def test_the_writer_records_a_refusal_it_did_not_itself_make_and_a_repeat_is_one_fact(tmp_path):
+    """`SpineLog.refuse` is the denial verb in public, for the caller that turns a seat away BEFORE
+    the append - queue admission, which refuses WORK and so never reaches `_authorize` at all.
+
+    The row is the one the hook lands, in the writer's own name and under the reserved type no
+    submitter may speak, so a denial minted by the queue and a denial minted by the writer read the
+    same off the log; a repeated refusal coalesces onto the LSN it already has, the tuple carrying
+    no clock of the writer's own.
+
+    Killing mutations: the caller appending `capability_denied` itself, which the writer refuses by
+    name because the type is its own voice; and `refuse` stamping the row with a clock, after which
+    a stranger turned away twice a second is a fact per attempt.
+    """
+    home, log = minted(tmp_path)
+    head = log.head()[0]
+
+    denied = log.refuse(STRANGER, 'validate', BOOK, 'curiosity')
+    assert denied['lsn'] == head + 1 and denied['actor'] == 'writer'
+    assert log.open_body(log.frame_at(denied['lsn'])) == {
+        'subject': STRANGER, 'verb': 'validate', 'book': BOOK, 'attempted_type': 'curiosity'}
+
+    again = log.refuse(STRANGER, 'validate', BOOK, 'curiosity')
+    assert (again['lsn'], again['coalesced']) == (denied['lsn'], True)
+    assert log.head()[0] == denied['lsn'], 'a repeated refusal is a second fact'
+    # a firm-level job asks for the wildcard, which is the scope the body records
+    assert log.open_body(log.frame_at(log.refuse(STRANGER, 'book', None, 'run_completed')[
+        'lsn']))['book'] == '*'
+
+    with pytest.raises(CapabilityDenied) as forged:
+        log.append('capability_denied', {'subject': STRANGER, 'verb': 'validate', 'book': BOOK,
+                                         'attempted_type': 'curiosity'}, actor=DESK)
+    assert 'writer\'s own voice' in str(forged.value)
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
 def test_a_private_market_is_declared_by_the_seat_its_name_names(tmp_path):
     """SELF-DECLARED MEANS SELF-DECLARED. A `private/<subject>/<name>` market is one seat's own
     board, so the subject in the name is the seat that declares it - otherwise any `mark`-scoped
@@ -345,24 +381,34 @@ def test_a_private_market_is_declared_by_the_seat_its_name_names(tmp_path):
     names was refused their own prefix, and ownership would read one way off the name and another
     off the fold.
 
-    Killing mutation: the check dropped, after which `subject-deployment` owns
-    `private/subject-desk-one/screen` and the desk that name points at cannot read it.
+    EVERY VERB THAT MOVES WHAT A NAME STANDS ON ASKS IT, the close included: a close is one way of
+    declaring a market, the `markets` fold resolves a name across both, and one landing inside
+    another subject's namespace would be a board its owner never declared and is the only reader
+    of - exactly the second answer this rule exists to prevent.
+
+    Killing mutations: the check dropped from `declare_market`, after which `subject-deployment`
+    owns `private/subject-desk-one/screen` and the desk that name points at cannot read it; and the
+    check absent from `declare_close`, which is the same fact wearing a close's clothes.
     """
     home, log = minted(tmp_path)
+    taken = ('private/{}/screen'.format(STRANGER), 'private/screen', 'private/')
 
     mine = verbs.declare_market(log, DESK, 'private/{}/screen'.format(DESK), VALUES)
     assert log.open_body(log.frame_at(mine['lsn']))['name'] == 'private/{}/screen'.format(DESK)
+    closed = verbs.declare_close(log, DESK, 'private/{}/screen'.format(DESK), VALUES)
+    assert log.open_body(log.frame_at(closed['lsn']))['market'] == 'private/{}/screen'.format(DESK)
 
-    for taken in ('private/{}/screen'.format(STRANGER), 'private/screen', 'private/'):
-        with pytest.raises(MalformedEvent) as refusal:
-            verbs.declare_market(log, DESK, taken, VALUES)
-        said = str(refusal.value)
-        assert 'declare_market' in said and DESK in said, taken
-        assert 'one seat\'s own board' in said, taken
-    assert log.head()[0] == mine['lsn'], 'a refused declaration wrote something'
+    for verb in ('declare_market', 'declare_close'):
+        for named in taken:
+            with pytest.raises(MalformedEvent) as refusal:
+                getattr(verbs, verb)(log, DESK, named, VALUES)
+            said = str(refusal.value)
+            assert verb in said and DESK in said, (verb, named)
+            assert 'one seat\'s own board' in said, (verb, named)
+    assert log.head()[0] == closed['lsn'], 'a refused declaration wrote something'
 
     # the rule reaches only the private prefix: a firm name is whatever the firm declares it
-    assert verbs.declare_market(log, DESK, 'dealer', VALUES)['lsn'] == mine['lsn'] + 1
+    assert verbs.declare_market(log, DESK, 'dealer', VALUES)['lsn'] == closed['lsn'] + 1
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
 

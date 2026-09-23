@@ -175,7 +175,7 @@ def declare_market(log, actor, name, values, effective_time=None):
     seat was refused their own prefix, and a reader would have two answers to who owns one board.
     Firm-level, so it carries no book.
     """
-    name = _own(_name(name, 'name', 'declare_market'), actor)
+    name = _own(_name(name, 'name', 'declare_market'), actor, 'declare_market')
     address = _blob(log, values, 'the values vector')
     envelope = log.append('market_declared', {'name': name, 'values_hash': address},
                           actor=actor, effective_time=effective_time, blob_refs=(address,))
@@ -190,10 +190,15 @@ def declare_close(log, actor, market, values, effective_time=None):
     on are one address. A SECOND close on one market supersedes the first rather than correcting it
     - the `markets` fold names the LSN it stands over - so a day restated is two facts and an as-at
     read taken before the restatement still reads what it read. Firm-level, so it carries no book.
+
+    The owner rule is `declare_market`'s and is asked here for the same reason: a close is one way
+    of declaring what a name stands on, and one landing inside another seat's `private/` namespace
+    would be a board its owner never declared and the only reader who can resolve it.
     """
     address = _blob(log, values, 'the values vector this close stands on')
     envelope = log.append('official_close_declared',
-                          {'market': _name(market, 'market', 'declare_close'),
+                          {'market': _own(_name(market, 'market', 'declare_close'), actor,
+                                          'declare_close'),
                            'values_hash': address},
                           actor=actor, effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, market=market, values_hash=address)
@@ -456,18 +461,20 @@ def _name(value, field, verb):
     return value
 
 
-def _own(name, actor):
-    """A `private/` market name asserted to name its own declarer.
+def _own(name, actor, verb):
+    """A `private/` market name asserted to name its own declarer. `verb` names the caller.
 
     The name carries the owner and the fold carries the declarer; binding them here makes them one
-    seat, so a reader may resolve ownership off either and get the same answer.
+    seat, so a reader may resolve ownership off either and get the same answer. EVERY verb that
+    moves what a name stands on asks it - a close is one way of declaring a market, so a close
+    inside another seat's namespace would be the second answer the rule exists to prevent.
     """
     parts = name.split('/')
     if parts[0] + '/' == PRIVATE_MARKET and (len(parts) < 2 or parts[1] != actor):
         raise MalformedEvent(
-            'declare_market: {!r} is a {} market of {!r} and {!r} is declaring it - a private '
+            '{}: {!r} is a {} market of {!r} and {!r} is declaring it - a private '
             'market is one seat\'s own board, so the subject in the name IS the seat that declares '
             'it. Declare {}{}/... , or drop the prefix and name a market the firm holds'.format(
-                name, PRIVATE_MARKET, parts[1] if len(parts) > 1 else '(nobody)', actor,
+                verb, name, PRIVATE_MARKET, parts[1] if len(parts) > 1 else '(nobody)', actor,
                 PRIVATE_MARKET, actor))
     return name
