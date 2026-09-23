@@ -47,7 +47,9 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the rejected asked again, the seed's new names probed once and ledgered, the map rewritten |
 | `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
 | `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
-| `POST /book/quote` | book a quote already given - the approval half, refused exactly as a booking is |
+| `POST /book/quote` | ACCEPT a quote already given and book it, refused exactly as a booking is |
+| `POST /book/quote/approve` | sign the ticket an accepted quote minted - the second pair of eyes |
+| `POST /book/quote/reject` | refuse that ticket, with the reason on the row |
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
@@ -79,6 +81,7 @@ something that terminates both, or narrow the origins with `DV_Service --origin`
 
 import json
 import logging
+import math
 import os
 import queue
 import shutil
@@ -95,8 +98,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
-from .schema import (mapping, deal_at, job_children, quote_plan, remove_deal, sniff_indent,
-                     splice_deal, tables_of, update_market_quote, value_message,
+from .schema import (mapping, deal_at, job_children, quote_plan, quote_stamps, remove_deal,
+                     sniff_indent, splice_deal, tables_of, update_market_quote, value_message,
                      walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json
@@ -210,9 +213,9 @@ def attest(submitted, result):
     A refusal here FAILS THE RUN: a run whose attestation was refused has not acquired standing, and
     serving its numbers as though it had is the unbacked citation the rule exists to prevent.
 
-    A standing job with no evidence attests somewhere else, and there is exactly one: the structure
-    quote, recorded as `quote_filed` - it pins the same two hashes and carries what was solved, so a
-    `run_completed` beside it would be two records of one act.
+    `attests` reads the EVIDENCE as well as the lane, so a job that posted no document attests
+    nothing whatever lane it named - which is the posture a structure quote is in, since what a
+    quote's numbers are cited by is the acceptance, and that is where they are recorded.
     """
     return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
                               submitted.evidence['values'], result)
@@ -494,18 +497,38 @@ class Book:
         the write and nothing in between. The write lands only if the file still carries the etag
         the edit ran against; otherwise the edit is re-run on the document as it now stands, which
         is what makes a booking landing mid-tick cost the tick one redo rather than costing the
-        booking the whole tick. The last pass runs under the lock, so an edit that keeps losing
-        to shorter ones lands rather than refusing.
+        booking the whole tick. The LAST PASS IS `transact` - the same act under the lock, so an
+        edit that keeps losing to shorter ones lands rather than refusing.
+
+        AN EDIT THAT APPENDS BEFORE IT WRITES TAKES `transact` INSTEAD: a redo is a second run of
+        the edit, and a fact the first run put on the record is not undone by losing the race.
         """
-        for attempt in range(REDOS):
+        for _ in range(REDOS - 1):
             with self.lock:
                 document, etag = self._read()
-                if attempt == REDOS - 1:
-                    return self._land(document, etag, *edit(document, etag))
             write, outcome = edit(document, etag)
             with self.lock:
                 if not write or self._current() == etag:
                     return self._land(document, etag, write, outcome)
+        return self.transact(edit)
+
+    def transact(self, edit):
+        """Read-modify-write with the EDIT UNDER THE LOCK - one pass, and no redo.
+
+        `mutate`'s last pass, which is this, made the whole act: an edit that APPENDS BEFORE IT
+        WRITES cannot be re-run on a document it did not append against. A redo caused by a write
+        that moved the PLAN meets the check the first pass already passed, refuses, and leaves the
+        record holding a quote and a fill for a write that never landed - the file without the
+        trade, and every retry answering "already booked" at a path that does not exist. With no
+        second pass the appends are on the attempt that writes by construction.
+
+        The price is the lock held for the length of the act rather than for a read and a write -
+        80 ms against 2 for a booking, and the ~200 ms an acceptance costs - so an edit with
+        nothing to append, which is every edit with no home under it, keeps `mutate`.
+        """
+        with self.lock:
+            document, etag = self._read()
+            return self._land(document, etag, *edit(document, etag))
 
     def _land(self, document, etag, write, outcome):
         """An edit's outcome, its document written where it asked for a write - under the lock."""
@@ -938,6 +961,11 @@ def book_deals(request: dict):
     name. A `delete` records nothing: what ends a trade is an election, an expiry observation or a
     status transition, filed through `Context.apply_lifecycle`. Without a home this is inert.
 
+    SO UNDER A HOME THIS EDIT APPENDS BEFORE IT WRITES, and takes `Book.transact` - the whole act
+    under the book lock, one pass and no redo. A redo whose second pass refuses what the first
+    passed - a deal raced in beside this one is newly said about - would leave the record holding a
+    fill the file never took. With no home nothing appends and `mutate`'s optimistic passes stand.
+
     A `reference` beside a `deal_path` names the deal the client read there: another host's write
     moves every position under a path, so an amendment or a delete that would act on whoever now
     sits at it refuses by name instead.
@@ -976,8 +1004,9 @@ def book_deals(request: dict):
                 request.get('execution_reference'), request.get('actor')))
         return written, outcome
 
+    live = live_book()
     try:
-        return live_book().mutate(edit)
+        return (live.transact if spine.configured() else live.mutate)(edit)
     except ValueError as error:
         raise HTTPException(422, str(error))
 
@@ -4361,47 +4390,137 @@ def quote_stamp():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
 
 
-def quote_age(stamp):
-    """How many seconds ago `stamp` was written, or None where there is nothing readable to
-    measure - a pending file from before quotes were stamped, or a stamp that will not parse.
-    None is not zero: an age nobody can establish is not an age inside the window."""
+def quote_age(stamp, until=None):
+    """How many seconds passed between `stamp` and `until` - now, where none is named - or None
+    where there is nothing readable to measure: a pending file from before quotes were stamped, or
+    a stamp that will not parse. None is not zero: an age nobody can establish is not an age inside
+    a window. A stamp carrying no zone reads as UTC, which is what `quote_stamp` writes."""
     import datetime
 
     if not stamp:
         return None
     try:
         given = datetime.datetime.fromisoformat(stamp)
+        ended = datetime.datetime.now(datetime.timezone.utc) if until is None \
+            else datetime.datetime.fromisoformat(until)
     except (TypeError, ValueError):
         return None
-    if given.tzinfo is None:
-        given = given.replace(tzinfo=datetime.timezone.utc)
-    return (datetime.datetime.now(datetime.timezone.utc) - given).total_seconds()
+    given = given if given.tzinfo else given.replace(tzinfo=datetime.timezone.utc)
+    ended = ended if ended.tzinfo else ended.replace(tzinfo=datetime.timezone.utc)
+    return (ended - given).total_seconds()
+
+
+def board_age(document, quoted_at):
+    """How old the OLDEST stamped quote row of this book was at `quoted_at`, in seconds, or None
+    where no row carries a stamp.
+
+    The staleness a booking asks about is the BOARD's, so it is the oldest pillar rather than the
+    latest: a surface refreshed at one expiry and dead at another is as old as its deadest row. And
+    it is EVERY clock the board carries, quote rows and the surfaces a bootstrap wrote alike, which
+    is `schema.quote_stamps` - the one projection `values_hash` also takes the identity by, so a
+    book has an age for the same reason it has an identity.
+    """
+    ages = [quote_age(structures.timestamp(stamp).isoformat(), quoted_at)
+            for stamp in quote_stamps(document.get('Calc', {}).get('MergeMarketData', {}).get(
+                'ExplicitMarketData') or {})]
+    measured = [age for age in ages if age is not None]
+    return max(measured) if measured else None
+
+
+def quote_ticket(document, deal, parent_reference=None, models=None):
+    """THE TICKET: the plan hash of this book AS THE ACCEPTANCE WOULD LEAVE IT - the quote's MIRROR
+    spliced in and its pinned spot models merged - which is what an approval of this quote signs,
+    and a different hash for every quote struck against one unmoved book.
+
+    Both halves are the booking's own seams, `splice_deal` and `structures.pin_models`, so the ticket
+    is the plan and not a near one: a fitted strip books a `Valuation Configuration` entry beside its
+    deal, and that entry is PLAN, so a ticket taken without it would be a hash no booking ever
+    reaches. One function, read when the quote is struck and again when it is accepted, so the plan a
+    decision is filed over and the plan a booking checks cannot be two numbers.
+
+    It validates nothing - a hash is not a verdict - but the pin speaks for itself: at the quote it
+    cannot refuse, the legs having just priced on those parameters, and at the acceptance a pin whose
+    parameters the book no longer carries refuses in `pin_models`' own words, which is the rule the
+    booking already states and now reaches before anything appends.
+    """
+    booked = deepcopy(document)
+    splice_deal(booked, instrument_of(booked_node(structures.mirror(deal))), parent_reference)
+    if models:
+        structures.pin_models(booked, deal, models)
+    return load(booked).plan_hash()
+
+
+def quote_expiry(deal):
+    """The day a composed deal expires, or None where nothing on it names one.
+
+    A vanilla leg carries `Expiry_Date`; an accrual leg carries a fixing STRIP, whose last
+    settlement is the day a target redemption forward writes into that same field. A structure
+    quotes ONE expiry and every leg is struck to it, so the first a block names is the trade's own.
+    """
+    for block in [deal] + [child['Instrument']['.Deal'] for child in deal.get('Children') or []]:
+        if block.get('Expiry_Date'):
+            return structures.timestamp(block['Expiry_Date'])
+        strip = block.get(structures.SCHEDULE_FIELD.get(block.get('Object')))
+        if strip:
+            return structures.timestamp(strip[-1][1])
+    return None
+
+
+def quote_terms(document, pending):
+    """What a tiers policy is handed about this quote: `{notional_in, tenor_years, values_hash}`.
+
+    THE NOTIONAL IS STATED, NEVER CROSSED BY A POLICY CHECK. Its OWN currency needs no market data
+    and is always there; every other currency is one this book can VALUE it in, crossed at the
+    book's own spots through the seam `margin_value` converts on, so the ticket is a fact about the
+    quote rather than about whichever policy happens to be in force. A currency whose cross is not a
+    finite positive number - a spot block installed and not yet ticked carries its declared zero -
+    is simply not among them, which is what makes a cap in it fail its tier by name rather than
+    taking the booking down inside the closure that has already filed the quote. A quote currency
+    the book carries no rate for states only itself. `notional` is the size the ticket deals and
+    carries no side: which way it goes is on the trade, and the quote verb refuses a signed one.
+
+    `tenor_years` is ACT/365 from the book's base date to the composed deal's expiry, and null where
+    the deal names none, which fails a tier that bounds the tenor.
+    """
+    params = (pending.get('quote') or {}).get('params') or {}
+    amount, currency = params.get('notional'), params.get('notional_currency')
+    stated = {}
+    if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0 and currency:
+        stated[currency] = float(amount)
+        for name in structures.market_data(document):
+            if not name.startswith('FxRate.'):
+                continue
+            other = name.split('.', 1)[1]
+            try:
+                crossed = float(amount) * structures.engine_spot(document, currency, other)
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                continue
+            if math.isfinite(crossed) and crossed > 0:
+                stated[other] = crossed
+    expires = quote_expiry(pending['deal'])
+    base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
+    return {'notional_in': stated, 'values_hash': pending['pinned']['values_hash'],
+            'tenor_years': None if expires is None else (expires - base).days / 365.0}
 
 
 def check_pins(pending, document, quote_id):
-    """The TWO-DIMENSIONAL firmness check on an approval: the verdict, or None where there is
-    nothing to check.
+    """What the RECORD asks before a quote is booked: the verdict, or None where there is nothing
+    to ask.
 
-    A quote pins the book's plan hash and its values hash, which are two clocks. The VALUES
-    dimension asks whether the market moved or the pin aged; the PLAN dimension asks whether the
-    book moved under the solve. They are disjoint by MEASUREMENT - a vol tick moves `values_hash`
-    and leaves `plan_hash` bit-identical - so a ticking market is never read as a moved book.
-
-    Neither supersedes `Quote Policy.firm_seconds`, which is the DESK'S mandate and a promise to a
-    client. These two are the RECORD'S: whether the market and the book the price was computed
-    against are still the ones a booking would land in. A quote has to pass all three.
-
-    Both ages come off `quoted_at`, both pins having been taken at one instant; the signature keeps
-    them apart because they are separate clocks.
+    Two answers refuse and one reports. The PLAN is an equality - the marginal charge was solved
+    against a portfolio that has since moved, so the residual this trade would leave is not the one
+    that was priced. The PILLAR is a window the desk declared, read against the age of the board the
+    quote was STRUCK on. The MARKET is a reading: the board moves between a quote and the client's
+    word, and what the booking owes a reader is which market it was struck on and which one it lands
+    in - never a refusal, `Quote Policy.firm_seconds` being the desk's own promise that bounds it.
     """
     pinned = pending.get('pinned')
     if not spine.configured() or not pinned:
         return None
     context = load(document)
-    age = quote_age(pending.get('quoted_at'))
     return spine.check_firmness(
         pinned, {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash()},
-        {'values': age, 'plan': age}, quote_id=quote_id)
+        pinned.get('pillar_age'), quote_id=quote_id)
 
 
 def solved_coordinates(legs):
@@ -4559,32 +4678,37 @@ class StructureJob:
     THE QUOTE IS FOR SOMEONE. `netting_set` names the client's `NettingCollateralSet` and travels
     into `structures.quote`, which checks it before pricing anything; the pending file carries it
     and `/book/quote` books the mirror under that node. `quoted_at` is written beside the outcome,
-    the writer being the only thing that knows the clock the approval's window is measured against.
+    the writer being the only thing that knows the clock the acceptance's window is measured against.
 
-    A QUOTE PINS TWO HASHES under a spine home. They are the BOOK's, taken before the live spot
-    lands on this copy, because the approval asks whether the market and book this trade would LAND
-    against have moved; which spot the legs were struck on is answered under `spot`. The pair goes
-    into the pending file under `pinned` and into the record as `quote_filed`, which also carries
-    what was solved, the edge taken and any relayed client ask, in a sealed body a destroyed class
-    key erases. With no home the pending file is byte for byte what it always was.
+    A QUOTE RECORDS NOTHING. A desk quotes fifteen times a day and cares about the one that comes
+    back, so this lane is CURIOSITY and the record does not move: the fourteen others die in
+    `DV_HOME/tmp` and the one the client accepts is filed by `/book/quote`, from this file. Under a
+    home the pending file therefore carries everything that acceptance will file - the book's two
+    hashes and the values vector behind them, the ticket an approval would sign, how old the board
+    was, who quoted it and what the client asked - and with no home it is byte for byte what it
+    always was.
     """
 
-    def __init__(self, document, structure, params, netting_set=None, request=None, margin=None):
+    def __init__(self, document, structure, params, netting_set=None, request=None, margin=None,
+                 actor=None):
         self.document, self.structure, self.params = document, structure, params
         self.netting_set, self.request, self.margin = netting_set, request, margin
+        self.actor = actor
 
-    def pinned(self):
-        """The book's two hashes and the values vector behind them, or None with no home.
+    def pinned(self, quoted_at):
+        """What the acceptance will file, or None with no home: the book's two hashes, the values
+        vector behind them, the ticket and the board's age.
 
         Read at the TOP of the run, off the document as handed in, because `patch_live_spot` is
         about to move this copy's spot: pinning after it would pin a market that exists only inside
-        this quote, and the dimension is supposed to answer for the book's.
+        this quote, and what a booking asks is whether the BOOK's market and plan have moved.
         """
         if not spine.configured():
             return None
         context = load(self.document)
         return {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
-                'values': spine.values_of(context)}
+                'values': spine.values_of(context), 'pillar_age': board_age(
+                    self.document, quoted_at)}
 
     def sheet(self, directory, outcome):
         """The quote sheet beside the quote file, or the note saying why there is none. The import
@@ -4600,8 +4724,11 @@ class StructureJob:
         return {'sheet': path}
 
     def run_job(self):
-        # the book's own two hashes, taken before the live spot moves this copy's market
-        pinned = self.pinned()
+        # the stamp first: the board's age and the desk's own firm window are both measured
+        # against it, and only the thing that files a quote knows when it was given
+        quoted_at = quote_stamp()
+        # the book's own pins, taken before the live spot moves this copy's market
+        pinned = self.pinned(quoted_at)
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
@@ -4611,20 +4738,23 @@ class StructureJob:
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
         outcome['files'] = dict(self.sheet(directory, outcome), quote=path)
-        # one file IS the pending trade: what was quoted, the deal that books it, and WHEN - the
-        # stamp is the writer's, since only the thing that files a quote knows when it was given
+        # one file IS the pending trade: what was quoted, the deal that books it, and WHEN
         record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
-                  'deal': outcome['deal'], 'quoted_at': quote_stamp()}
+                  'deal': outcome['deal'], 'quoted_at': quoted_at}
         if pinned is not None:
-            # the EVENT first, then the pending file - the same order a booking writes in, and the
-            # same reason: the record is what is true and the file is the desk's copy of it
-            filed = spine.file_quote(
-                outcome['quote_id'], self.structure, pinned['plan_hash'], pinned['values'],
-                solved_coordinates(outcome['legs']), outcome['edge'],
-                request=self.request, book_name=book_name(self.document))
-            record['pinned'] = {'plan_hash': pinned['plan_hash'],
-                                'values_hash': pinned['values_hash'], 'lsn': filed['lsn']}
-            outcome['pinned'] = record['pinned']
+            # a TICKET is a plan and a plan does not read a spot, so the live one this copy now
+            # carries cannot move it: this is the hash the acceptance re-derives off the book,
+            # the quote's own model pin included because the booking merges it
+            pinned['ticket'] = quote_ticket(self.document, outcome['deal'], self.netting_set,
+                                            outcome['valuation_configuration'])
+            # the values vector travels as JSON and canonicalises back to the hash beside it, so
+            # the acceptance files the vector this quote was struck on and not a second reading
+            record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))
+            # who quoted and what the client asked: the acceptance files both under the ACCEPTOR's
+            # seat, so the file is where they survive
+            record['quoted_by'], record['request'] = spine.actor(self.actor), self.request
+            outcome['pinned'] = {name: value for name, value in record['pinned'].items()
+                                 if name != 'values'}
         with open(path, 'w', encoding='utf-8', newline='') as handle:
             json.dump(as_json(record), handle, indent=2)
         return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
@@ -4658,10 +4788,12 @@ def book_structure(request: dict):
     Answers `{result_id, status}` like `/execute`; the outcome arrives under `stats.Quote`. The id
     names the ACT rather than the numbers, so two identical asks are two quotes.
 
-    THE LANE IS STANDING, the one verb here that is: a quote's solve is a run a fact is about to
-    cite, and the fact is the quote itself. Under a spine home this files `quote_filed`, pinning
-    the book's plan and values hashes beside the solved coordinates and the edge. `request` is
-    optional and is what the CLIENT ASKED FOR, relayed - free text, filed in the sealed body.
+    THE LANE IS CURIOSITY AND THE RECORD DOES NOT MOVE. A desk quotes fifteen times a day and cares
+    about the one that comes back, so nothing is filed here: the quote is recorded when the client
+    ACCEPTS it, by `/book/quote`, out of this pending file, and the ones nobody accepts die in
+    `DV_HOME/tmp`. Under a home the file therefore carries what that acceptance will file - the
+    book's two hashes and the values vector behind them, the ticket an approval would sign, how old
+    the board was when the price was given, `quoted_by` and the relayed client `request`.
     """
     document, etag = live_book().read()
     structure = request.get('structure')
@@ -4682,22 +4814,73 @@ def book_structure(request: dict):
                               'netting_set': netting_set, 'margin': margin,
                               'at': time.perf_counter()})
     submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
-                                            request.get('request'), margin), {}, spine.STANDING)
+                                            request.get('request'), margin,
+                                            request.get('actor')), {}, spine.CURIOSITY)
     # base valuations under the hood, so a salesperson's ask jumps every XVA set still waiting
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
-@app.post('/book/quote', summary='Book a quote already given - the approval half of a structure')
-def book_quote(request: dict):
-    """`{quote_id}` - approve a quote and book it. The pending trade is read back from
-    `DV_HOME/tmp/<quote_id>.json` and its deal goes through `deal_edit`, which is the same
-    validate-before-write seam `/book/deals` books through: one atomic write, and a refusal that
-    writes nothing and reads `{written: False, refused: [...]}` in the identical wording.
+def pending_written(path, pending, **facts):
+    """Write what the acceptance now knows onto the pending file.
 
-    The market may have moved since the quote was given, so the validation is against the book as
-    it is NOW: an approval is a booking, and a booking is refused on what it would land in. The
-    file is not deleted - what was quoted, at what market, is why the book carries what it carries.
+    `accepted {lsn, ticket}` is WHERE THE QUOTE WAS FILED, so the decision verbs seek to one frame
+    instead of folding every quote the desk has ever struck; `booked {lsn, deal_path}` is where the
+    trade landed, which is how a second acceptance is told the quote is already on the book rather
+    than that the book has moved - it moved because this booking moved it. Re-written on a retried
+    acceptance with the same numbers, the record coalescing a repeat onto the LSN it already has.
+    """
+    pending.update(facts)
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        json.dump(as_json(pending), handle, indent=2)
+
+
+def tier_step(document, pending, ticket, acceptor):
+    """The workflow this acceptance falls through, as the block the outcome reports.
+
+    A `written` key in the answer IS the outcome: the tier held the booking back, so what comes
+    back is the normal return saying what it waits on. Without one the fill may follow and the
+    block is the `tier` the booking reports beside it.
+
+    NO TIERS POLICY IS TODAY'S FLOW - enforcement activates by declaration, as the capabilities
+    document does. With one in force the FIRST tier whose every declared check passes applies: one
+    naming a SEAT signs automatically under it, one naming none wants a standing human approval over
+    this ticket, and a ticket no tier admits answers every sentence the route collected. The
+    ACCEPTANCE STANDS in all three - it is already on the record - so what is decided here is only
+    whether the trade books.
+
+    A seat the capabilities document does not scope for `approve` lands a `capability_denied` in the
+    record's own voice and the booking waits: an automatic tier that cannot sign is a workflow to
+    fix rather than a trade to wave through.
+    """
+    route = spine.route_ticket(ticket, quote_terms(document, pending), acceptor)
+    if route is None:
+        return {}
+    if route['tier'] is None:
+        return {'written': False, 'refused': route['refusals']}
+    tier = {'name': route['tier'], 'seat': route['seat'], 'approval_lsn': route['approval_lsn']}
+    if route['seat'] is not None:
+        try:
+            tier['approval_lsn'] = spine.approve(
+                ticket, actor_name=route['seat'], book_name=book_name(document))['lsn']
+        except spine.SpineRefused as denied:
+            return {'written': False, 'tier': tier, 'waits_on': str(denied)}
+    elif route['approval_lsn'] is None:
+        return {'written': False, 'tier': tier, 'waits_on': route['waits_on']}
+    return {'tier': tier}
+
+
+@app.post('/book/quote', summary='Accept a quote already given - the booking half of a structure')
+def book_quote(request: dict):
+    """`{quote_id, actor?}` - THE ACCEPTANCE: the client took the price, so the quote is recorded
+    and the trade is booked. The pending trade is read back from `DV_HOME/tmp/<quote_id>.json` and
+    its deal goes through `deal_edit`, the same validate-before-write seam `/book/deals` books
+    through: one atomic write, and a refusal that writes nothing and reads `{written: False,
+    refused: [...]}` in the identical wording.
+
+    The validation is against the book as it is NOW: a booking is refused on what it would land in.
+    The file is not deleted - what was quoted, at what market, is why the book carries what it
+    carries.
 
     What books is the MIRROR of the pending deal, `structures.mirror` being the verb the
     risk-impact step also prices through, so the risk measured and the trade booked cannot disagree
@@ -4710,28 +4893,59 @@ def book_quote(request: dict):
     THE MODEL BOOKS WITH THE TRADE. A quote may have priced its legs under a spot model the book's
     `Valuation Configuration` does not name, and that copy is thrown away when the quote is
     answered - so the pending file records the pin and it is merged HERE, inside the same edit
-    closure the deal is spliced by. A pin whose parameters the book no longer carries REFUSES 422
-    rather than booking a switch that would skip the deal at the next valuation.
+    closure the deal is spliced by. That entry is PLAN, so the TICKET carries it too and a pin whose
+    parameters the book no longer carries REFUSES 422 in `pin_models`' own words where the ticket is
+    re-derived - before anything appends - rather than booking a switch that would skip the deal at
+    the next valuation.
 
     A QUOTE IS FIRM FOR A WINDOW. Where the BOOK declares a `Quote Policy`, `firm_seconds` is how
-    long an approval may stand on the price given, and an older quote is refused 422 naming its
-    age, the window and the remedy. No policy holds every quote approvable for ever. A pending file
+    long an acceptance may stand on the price given, and an older quote is refused 422 naming its
+    age, the window and the remedy. No policy holds every quote bookable for ever. A pending file
     carrying no `quoted_at` is treated as AGED: an unknown age is not an age inside the window.
 
-    AND UNDER A SPINE HOME, FIRM IN TWO MORE DIMENSIONS: a quote that pinned the book's plan and
-    values hashes is checked against those standing NOW, each dimension separately, each refusal
-    naming its own remedy - a ticked market wants a re-quote, a moved book wants the charge
-    re-solved. An approval passes all three checks or none. It then appends the `fill` for the
-    mirror BEFORE the file is written, under the quote id as its execution reference.
+    A QUOTE THAT ALREADY BOOKED IS TOLD SO. The acceptance writes `booked {lsn, deal_path}` onto the
+    pending file in the same act as `accepted`, so a second acceptance answers
+    `{written: false, booked}` naming where the trade landed rather than reporting the move the
+    booking itself made.
+
+    UNDER A SPINE HOME, THREE MORE CHECKS AND ONE READING, in order and all of them before anything
+    appends: the PLAN the charge was solved against, refused where the book has moved under it; the
+    PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says
+    it was already too old; the TICKET, re-derived from the pending deal and this book and refused
+    where it is not the one the quote pinned; and the MARKET, which is REPORTED as
+    `{pinned, current, moved}` and never refused - the board moves between a quote and the client's
+    word, and the desk's own window is the promise that bounds it. ALL FOUR ARE READ INSIDE THE EDIT
+    CLOSURE, against the document the trade lands in: the closure reads under the book lock and the
+    read above it does not, so a check taken up there would be a statement about a book nobody
+    booked into.
+
+    Then one write: `quote_filed` under the ACCEPTOR's seat, the tier step where a `tiers` policy is
+    in force, the `fill` under the quote id as its execution reference, and last the book file. The
+    acceptance is a FACT whatever the tier then says, so a booking the workflow holds back still
+    answers `accepted` and leaves the file untouched. THE WHOLE ACT RUNS UNDER THE BOOK LOCK
+    (`Book.transact`), because an edit that appends before it writes may not be re-run: a redo
+    caused by another host's booking would meet the plan check the first pass passed and leave the
+    record holding a trade the file never took. Another write waits out the acceptance instead.
+
+    A TIER REFUSAL WEARS THE VALIDATION REFUSAL'S SHAPE - `{written: false, refused: [...]}` - and
+    the two are told apart by `accepted`: a validation refusal touched nothing, while a ticket no
+    tier admits is a price the client took that the desk's own policy will not book.
     """
     live = live_book()
     quote_id = request.get('quote_id')
     path = pending_quote(quote_id)
     with open(path, encoding='utf-8') as handle:
         pending = json.load(handle)
+    if pending.get('booked'):
+        return {'written': False, 'accepted': pending.get('accepted'),
+                'booked': pending['booked'],
+                'note': 'quote {} was accepted at LSN {} and booked at {} - it is already on the '
+                        'book and there is nothing further to do; quote again to deal '
+                        'again'.format(quote_id, (pending.get('accepted') or {}).get('lsn'),
+                                       pending['booked']['deal_path'])}
 
     # the window is read off the BOOK as it stands now, not off the quote: the mandate is the
-    # desk's, the same way the validation is against the book as it is now
+    # desk's, and it is about the QUOTE rather than about the book the trade lands in
     document, _ = live.read()
     try:
         policy = structures.read_policy(document)
@@ -4756,34 +4970,109 @@ def book_quote(request: dict):
                                                       firm, age))
 
     quoted = pending.get('quote') or {}
-    parent, pinned = quoted.get('netting_set'), quoted.get('valuation_configuration')
-    try:
-        firmness = check_pins(pending, document, quote_id)
-    except spine.SpineRefused as refused:
-        raise HTTPException(422, str(refused))
+    parent, models = quoted.get('netting_set'), quoted.get('valuation_configuration')
 
-    def approve(book, etag):
+    def accept(book, etag):
+        # the record's three questions are asked of the document THIS write lands in, never of the
+        # read above: this runs under the book lock and that read did not
+        verdict = check_pins(pending, book, quote_id)
+        acceptor = None if verdict is None else spine.actor(request.get('actor'))
+        recorded = {}
+        if verdict is not None:
+            ticket = quote_ticket(book, pending['deal'], parent, models)
+            if ticket != pending['pinned'].get('ticket'):
+                raise HTTPException(
+                    422, 'quote {} pinned the ticket {} and this pending file books {} against the '
+                         'same plan - the file no longer says what was quoted, so nothing is booked '
+                         'from it: re-quote'.format(
+                             quote_id, pending['pinned'].get('ticket'), ticket))
+            # THE RECORD FIRST, `spine_fill`'s law: the acceptance is a fact whatever the tier then
+            # says, so it is on the platter before the workflow is read and stands where the fill
+            # does not follow
+            filed = spine.file_quote(
+                quote_id, quoted['structure'], pending['pinned']['plan_hash'],
+                spine.canonical(pending['pinned']['values']),
+                solved_coordinates(quoted['legs']), quoted['edge'],
+                request=pending.get('request'), ticket=ticket, actor_name=acceptor,
+                book_name=book_name(book))
+            recorded = {'accepted': {'lsn': filed['lsn'], 'ticket': ticket},
+                        'firmness': verdict, 'market': verdict['market']}
+            pending_written(path, pending, accepted=recorded['accepted'])
+            recorded.update(tier_step(book, pending, ticket, acceptor))
+            if 'written' in recorded:
+                return False, recorded
         # no _validated: pin_models edits the book after the verdict, so the verdict is not its
         written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent,
                                      live_book().baseline(book, etag))
         # the model rides the SAME write as the deal - never a second one that could half-land
-        if written and pinned:
-            structures.pin_models(book, pending['deal'], pinned)
-            outcome = dict(outcome, valuation_configuration=pinned)
+        if written and models:
+            structures.pin_models(book, pending['deal'], models)
+            outcome = dict(outcome, valuation_configuration=models)
         if written:
-            # the event first, then the file - `spine_fill`'s law - with the QUOTE ID as the
-            # execution reference that makes a retry the same fact
             outcome = dict(outcome, **spine_fill(
-                book, outcome['deal_path'], quote_quantity(pending), quote_id,
-                request.get('actor')))
-            if firmness is not None:
-                outcome = dict(outcome, firmness=firmness)
-        return written, outcome
+                book, outcome['deal_path'], quote_quantity(pending), quote_id, acceptor))
+            if verdict is not None:
+                pending_written(path, pending, booked={
+                    'lsn': outcome['recorded']['lsn'], 'deal_path': outcome['deal_path']})
+        return written, dict(recorded, **outcome)
 
     try:
-        return live.mutate(approve)
+        # `transact`, not `mutate`: this edit appends before it writes, and a redo would leave the
+        # record holding a quote and a fill for a write that lost the race
+        return live.transact(accept)
     except ValueError as error:
         raise HTTPException(422, str(error))
+
+
+def decided_quote(request, verb):
+    """One decision filed over an accepted quote's ticket: `{recorded: {lsn}, ticket}`.
+
+    `verb` is `spine.approve` or `spine.reject`, which is the whole difference between the two.
+    The pending file must carry `accepted.lsn` - a quote nobody accepted is a price nobody took, so
+    there is no ticket to rule on - and the position it names is checked against the record before
+    anything is filed: a file copied from another home names an LSN holding somebody else's fact.
+    A second identical decision by one seat coalesces onto the LSN it already has.
+    """
+    quote_id = request.get('quote_id')
+    with open(pending_quote(quote_id), encoding='utf-8') as handle:
+        pending = json.load(handle)
+    accepted = pending.get('accepted')
+    if not accepted:
+        raise HTTPException(422, 'quote {} has not been accepted, so there is no ticket to rule '
+                                 'on: a decision is filed over the plan this quote would leave the '
+                                 'book at, which is minted when the client takes the price - '
+                                 'accept it first, through POST /book/quote'.format(quote_id))
+    try:
+        spine.quote_at(accepted['lsn'], quote_id)
+        filed = verb(accepted['ticket'], request)
+    except spine.SpineRefused as refused:
+        raise HTTPException(422, str(refused))
+    return {'recorded': {'lsn': filed['lsn']}, 'ticket': accepted['ticket']}
+
+
+@app.post('/book/quote/approve', summary='Sign an accepted quote - the second pair of eyes')
+def book_quote_approve(request: dict):
+    """`{quote_id, actor}` - approve the ticket an accepted quote minted, so a tier that wants a
+    human can be satisfied and the acceptance retried.
+
+    The approval is over the PLAN this quote would leave the book at, so it reaches this quote and
+    no other and an amended mirror is a new hash by construction. A seat the capabilities document
+    does not scope for `approve` is refused in the record's own words, with the denial landed.
+    """
+    return decided_quote(request, lambda ticket, body: spine.approve(
+        ticket, actor_name=body.get('actor')))
+
+
+@app.post('/book/quote/reject', summary='Refuse an accepted quote, with the reason on the row')
+def book_quote_reject(request: dict):
+    """`{quote_id, reason, actor}` - reject the ticket an accepted quote minted.
+
+    A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
+    approval is what the record says, and the reason is required - a verdict nobody can read the
+    grounds of is one nothing can be filed against later.
+    """
+    return decided_quote(request, lambda ticket, body: spine.reject(
+        ticket, body.get('reason'), actor_name=body.get('actor')))
 
 
 def blank_book():

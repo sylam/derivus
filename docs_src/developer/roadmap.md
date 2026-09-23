@@ -266,8 +266,8 @@ is recorded so a reader knows which readings rest on it.
   Nothing priced moves — `commodity_aps_world.json` is 65,584 reported floats and 0 mismatches
   across the move, and its factor universe is unchanged. What moves is a PIN: under a spine every
   booked deal sits beneath a netting set, and a pending quote pins `plan_hash` beside
-  `values_hash`, so a quote pinned before the deploy and approved after is refused on the plan
-  dimension — the book moved under the solve, which is what that dimension is for. The remedy is
+  `values_hash`, so a quote pinned before the deploy and accepted after is refused on the PLAN —
+  the book moved under the solve, which is what that equality is for. The remedy is
   the ordinary one: drain the pending quotes before deploying, or re-quote. `/book/status`
   publishes no plan hash, so nothing else surfaces it.
 - **The deal panel shows every convention beside the terms** (2026-09-22). A web panel renders all
@@ -293,8 +293,40 @@ is recorded so a reader knows which readings rest on it.
   projector whose rows grow with the desk's own activity: the envelope filter keeps it off every
   other event, and it opens a body per quote at about 0.16 ms, so a two-thousand-event home holding
   three quotes folds in 7.7 ms and one holding 1,978 in 327 ms. A desk quoting a hundred a day
-  reaches the second reading in about three weeks. The remedy is a lookup that names one ticket
-  rather than a reading that returns them all, which is 5b's, when something asks about one.
+  reaches the second reading in about three weeks. It is a READING and nothing on a booking path
+  calls it: a decision seeks to the one frame the acceptance wrote down (`spine.quote_at`), so the
+  cost is one body whatever the desk has quoted. A reader that wants a page of them wants the
+  log's own seek, the row above.
+- **A material market move is not a refusal, and a desk cannot ask for one** (2026-09-23). Between
+  a quote and the client's word the board moves, and the booking REPORTS it — the values struck on,
+  the ones standing, and that they differ — because the desk's own `Quote Policy.firm_seconds` is
+  the promise that bounds it. A desk that wanted a refusal would declare a tolerance per field:
+  which values-plane fields it cares about and how far each may move before a booking is refused
+  rather than reported. UNMEASURED, and measuring it takes the thing that does not exist yet — a
+  comparison between two values vectors that answers WHICH numbers moved and by how much, where
+  today the record compares two 64-hex addresses. That is a field-level diff over
+  `market_patch`'s own shape, per-field epsilons declared like the tolerance policy's, and a gate
+  on a tick that moves one pillar inside the epsilon and one outside it.
+- **No rejection is filed automatically** (2026-09-23). A ticket that falls in no tier answers
+  `refused` with every sentence of the route it took, and the acceptance stands, but nothing files
+  a `rejection` against it: a verdict is a SEAT's decision and the tiers policy names no seat for
+  one. A desk wanting the refusal on the record calls `POST /book/quote/reject` under a seat of its
+  own. Size: UNMEASURED and not measurable — it is a document decision rather than a number. Closing
+  it means the tiers document declaring who signs a refusal, one field on a tier and one branch in
+  the tier step, and the question it asks is whose signature a desk wants on a "no".
+- **A booking's tier step advances a fold this process holds, and it is still linear in the rows it
+  mints** (2026-09-23). `spine.route_ticket` folds `decisions` and `markets` on every acceptance,
+  and both open a body per row: folding from genesis costs 0.164 ms per decision filed, so a desk
+  two thousand decisions in would pay about 330 ms inside the write closure. The pair `fold` already
+  takes is held per projector and advanced instead, which is 0.026 ms per decision — 6.3× cheaper,
+  about 57 ms at two thousand — but NOT flat: 0.011 of it is the envelope walk every fold pays per
+  event, and 0.015 is `projections._from_seed`'s canonical copy of a state that grows with the
+  decisions, the same copy that makes the `activity` strip 219 ms where folding it costs 38. And the
+  pair lives in the PROCESS, so the first acceptance after a restart pays the whole history and a
+  second service on the same home pays it again. One remedy answers all three: a seed minted at the
+  official close (`projections.seed_at`, which `positions` and `blotter` already use), so a fresh
+  process starts where the day started and the state copied is the day's rather than the record's.
+  Size: one `read_seed` in `advancing` and a close that mints for these two projectors.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

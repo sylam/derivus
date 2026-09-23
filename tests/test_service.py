@@ -4690,7 +4690,8 @@ def test_a_two_way_quote_books_the_mirror_at_the_margin_and_the_spread(quoting_t
         'the book does not hold the margin and the spread the desk charged')
 
 
-def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting_two_way):
+def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting_two_way, tmp_path,
+                                                                        monkeypatch):
     """The one path where the PIN is load-bearing for the mark, walked end to end.
 
     A strip quoted on a fitted book prices under the fitted law, and its two-way charge comes off
@@ -4702,20 +4703,38 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     Without that merge the mirror is marked as a lognormal and the number is not the desk's take at
     all - a plausible mark on a trade nobody dealt at it.
 
+    AND THE TICKET IS THAT PLAN. This is the one path where a pin moves it, so this is where the
+    law is held: the `quote_filed` the acceptance files carries a `ticket`, and that hash is the
+    plan hash of the book the booking left - the mirror spliced in AND the pin merged. A ticket
+    taken without the pin is a plan no booking reaches, and a decision filed over it would sign
+    nothing. The home is this gate's own, minted under tmp: the rest of this file runs with none,
+    and `derivus_spine` is imported HERE for the reason the service imports it inside the function.
+
     THE BOOK STATES THE DECLARED PATH COUNT, because the mark is an ordinary base valuation of the
     book and a strip walking a fitted law solves a strike 2.8e-2 per path wide: the identity below
     holds when the two readings share a count and a seed, and a book stating fewer than the quote
     is floored onto marks its own trade on a different estimator - at 1,024 paths this mark lands
     4.6% off the take it was quoted at, which is what `/book/status` names.
     """
+    from derivus_spine import SpineLog, init_home
+
+    home = tmp_path / 'spine'
+    init_home(home, 'subject-desk-one')
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', 'subject-desk-one')
+
     document = json.loads(quoting_two_way.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
     document['Calc']['Calculation']['MCMC_Simulations'] = structures.declared_paths()
+    # a fill carries a counterparty and a netting set on the row, so a recorded desk books the
+    # strip under the client it was quoted for
+    document['Calc']['Deals']['Deals']['Children'].append(
+        json.loads(dump(netting_set('CLIENT_A', 'CPTY_A', []))))
     quoting_two_way.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(quoting_two_way))
 
-    quote = quote_of('Accumulator', ACCUMULATOR, margin=MARGIN)
+    quote = quote_of('Accumulator', ACCUMULATOR, margin=MARGIN, netting_set='CLIENT_A')
     charge = quote['margin']['value']
     take = charge + quote['edge']
 
@@ -4733,6 +4752,16 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     assert booked['written'] is True
     assert on_disk['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Valuation Configuration'] == quote['valuation_configuration']
+
+    log = SpineLog(home)
+    try:
+        filed = [log.open_body(frame) for frame in log.frames()
+                 if frame['event_type'] == 'quote_filed']
+    finally:
+        log.close()
+    assert len(filed) == 1 and filed[0]['quote_id'] == quote['quote_id']
+    assert filed[0]['ticket'] == service.load(on_disk).plan_hash(), \
+        'the ticket is not the plan this booking left the book at'
 
     marked_id, marked = run(on_disk)
     assert marked['status'] == 'done', marked.get('error')

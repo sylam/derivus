@@ -334,19 +334,25 @@ def moves(context, before, edit):
 
 
 def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
-    """A mid, a bid and a `Timestamp` each move `values_hash` alone, which is what lets two-hash
-    quote firmness read them as different questions, and the plan is bit-identical across all of
-    it. DRIVEN OVER BOTH QUOTE TABLES, because the split is a rule about a declared row and not
-    about a key called `Points` - and the `European_Options` mid is the one that used to be
-    plan-side.
+    """A mid and a bid each move `values_hash` alone and leave the plan bit-identical, and a
+    `Timestamp` MOVES NEITHER: a market's identity is its numbers, so a row re-stamped at the same
+    price is the same market and `values_hash` says so.
+
+    The stamp is still a VALUE - `patch_market` moves it, the guard takes it as a tick, and the plan
+    never sees it - so the case is a three-way statement rather than a two-way one, and it is the
+    hash alone that stops reading the clock.
+
+    DRIVEN OVER BOTH QUOTE TABLES, because the split is a rule about a declared row and not about a
+    key called `Points` - and the `European_Options` mid is the one that used to be plan-side.
     """
     # what each fixture's first row ALREADY carries, so a case is known to be a MOVE or an ARRIVAL
     # rather than whichever it happened to be
     carried = {FX_BLOCK: {'Quoted_Market_Value', 'Timestamp'},
                LV_BLOCK: {'Quoted_Market_Value'}}
     for block, container in ((FX_BLOCK, 'Points'), (LV_BLOCK, 'European_Options')):
-        for field, value in (('Quoted_Market_Value', 0.16), ('Quoted_Bid', 0.15),
-                             ('Timestamp', pd.Timestamp('2024-06-28 17:45'))):
+        for field, value, values_too in (('Quoted_Market_Value', 0.16, True),
+                                         ('Quoted_Bid', 0.15, True),
+                                         ('Timestamp', pd.Timestamp('2024-06-28 17:45'), False)):
             context, prices = hashed()
             before = (context.plan_hash(), context.values_hash())
             row = prices[block]['instrument'][container][0]
@@ -357,8 +363,10 @@ def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
             def edit():
                 row[field] = value
 
-            assert moves(context, before, edit) == (False, True), (
-                '{}: {} is not on the values plane alone'.format(block, field))
+            assert moves(context, before, edit) == (False, values_too), (
+                '{}: {} did not land where the clock projection puts it'.format(block, field))
+            assert (field in context.market_patch()[block][container][0]) is True, (
+                '{}: {} left the values patch - a tick still moves it'.format(block, field))
 
 
 @pytest.mark.parametrize('case,plan_too,values_too',

@@ -29,11 +29,15 @@ reaching for a default home. That is the regression bar, asserted first.
   * PROVENANCE: the plan hash is RE-DERIVED by recompiling the blob-stored job document at the
     recorded LSN and required to equal the recorded tuple. The compiler-as-a-fold over fixings is
     increment 4's; what is gated here is that the object it will read is stored and recompiles.
-  * FIRMNESS, all three: a moved book refuses on the plan dimension, an aged market pin on the
-    values dimension, and the two are DISJOINT - a vol tick through the real partition moves
-    `values_hash`, leaves `plan_hash` bit-identical, and does not trip the plan dimension.
-  * ATOMICITY: a priced ticket references exactly one values hash and one book plan, and both
-    staleness policies fire on a deliberately aged fixture.
+  * THE IDENTITY: a tick that re-reads a board at the same prices leaves `values_hash`
+    bit-identical, one moved mid moves it, and the stored vector reads back onto another market.
+  * THE ACCEPTANCE, in order: the desk's own window, the book having MOVED under the solve, the
+    BOARD the quote was struck on being older than a declared window, and the ticket re-derived -
+    each refusing with the head unmoved - while a moved MARKET is reported and books. The values
+    and plan planes are DISJOINT: a vol tick through the real partition moves `values_hash` and
+    leaves `plan_hash` bit-identical.
+  * THE TIER STEP inside the closure, the decision verbs, and the acceptance standing whatever the
+    workflow then says.
   * THE DUAL WRITE'S ORDER: the event goes first and the book file follows, and a booking the
     record refuses leaves the file byte-identical.
 """
@@ -51,11 +55,12 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import derivus
-from derivus import service, spine, utils
+from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
-from derivus.schema import deal_at
+from derivus.schema import deal_at, walk_job_deals
 from derivus_spine import SpineLog, init_home, verify_home
 from derivus_spine import policy, projections, verbs
+from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
@@ -109,9 +114,15 @@ def dump(document):
     return json.dumps(document, cls=CustomJsonEncoder)
 
 
-def fx_vol_snapshot(atm_3m=14.0):
+#: When the canned snapshot says its quotes were seen, and a later reading of the same board.
+SNAPPED = pd.Timestamp('2024-06-28 16:30')
+RESNAPPED = pd.Timestamp('2024-06-28 17:45')
+
+
+def fx_vol_snapshot(atm_3m=14.0, seen=SNAPPED):
     """A USDZAR snapshot through the Bloomberg package's own normalization - canned observations
-    standing in for the terminal, the real pipeline downstream. `atm_3m` is all a TICK moves."""
+    standing in for the terminal, the real pipeline downstream. `atm_3m` is all a TICK moves, and
+    `seen` is when the board was read, which moves every row's stamp and no number."""
     from derivus_bloomberg import (FXQuoteSecurity, FXVolDefinition, RawBloombergObservation,
                                    normalize_fx_vol)
     raw = {('3M', 'ATM', None): atm_3m, ('3M', 'RR', 0.25): -1.2, ('3M', 'BF', 0.25): 0.35,
@@ -126,12 +137,20 @@ def fx_vol_snapshot(atm_3m=14.0):
                                 'USDZAR {} {} {}'.format(expiry, quote_type, pillar),
                                 'PX_LAST', value)
         for (expiry, quote_type, pillar), value in raw.items()]
-    return normalize_fx_vol(definition, observations, pd.Timestamp('2024-06-28 16:30'))
+    return normalize_fx_vol(definition, observations, seen)
 
 
-def fx_vol_quotes(atm_3m=14.0):
+def fx_vol_quotes(atm_3m=14.0, seen=SNAPPED):
     from derivus_bloomberg import to_market_prices_block
-    return {'FXVolPrices.USD.ZAR': to_market_prices_block(fx_vol_snapshot(atm_3m))}
+    return {'FXVolPrices.USD.ZAR': to_market_prices_block(fx_vol_snapshot(atm_3m, seen))}
+
+
+def tick(atm_3m=14.0, seen=SNAPPED):
+    """One market tick through the real verb, asserted to have landed."""
+    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes(atm_3m, seen)}),
+                         headers=JSON).json()
+    assert ticked['written'] is True, ticked
+    return ticked
 
 
 # --------------------------------------------------------------------------------------------
@@ -178,9 +197,7 @@ def quoting(tmp_path):
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
-    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
-                         headers=JSON).json()
-    assert ticked['written'] is True, ticked
+    tick()
     yield path
     service.BOOK = None
 
@@ -931,37 +948,100 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
 
 
 # --------------------------------------------------------------------------------------------
-# The quote: two hashes pinned, two dimensions checked.
+# A market is its numbers.
 
-def test_a_quote_pins_the_books_two_hashes_and_files_them_as_one_ticket(recorded, quoting,
-                                                                        tmp_path):
-    """THE ATOMICITY GATE: a priced ticket references exactly one values hash and one book plan.
-    One quote, one `quote_filed`, one of each in its body beside the solved coordinate and the
-    edge. The pending file carries the same pair, so the approval reads the pins off the desk's
-    copy while the record holds the authoritative one.
+def test_a_board_read_again_at_the_same_prices_is_the_same_market(recorded, quoting):
+    """THE IDENTITY GATE: a tick delivering the SAME numbers under a later stamp leaves
+    `values_hash` bit-identical, and one moved mid moves it.
 
-    The hashes are the BOOK's, taken before the live spot lands on the quote's copy: an approval
-    asks whether the market and the book this trade would LAND against have moved.
+    Rehashing on every tick because a row's clock moved brings no information - when a board was
+    read is data on the row, nothing in pricing reads it, and the record stamps every event with its
+    own clock. The FILE moves either way, the stamp being value-plane data a tick writes, so this is
+    the hash alone that stops reading it.
+
+    Killing mutation: `values_hash` taken of `market_patch()` whole, which calls one market two and
+    reports a quote's market as moved after every beat of a cadence that changed no price.
+    """
+    struck = service.load(service.BOOK.read()[0])
+    before = quoting.read_bytes()
+
+    tick(14.0, RESNAPPED)
+    restamped = service.load(service.BOOK.read()[0])
+    assert quoting.read_bytes() != before, 'the stamp never reached the file - this proved nothing'
+    assert restamped.values_hash() == struck.values_hash(), 'a clock moved the market'
+    assert restamped.plan_hash() == struck.plan_hash()
+
+    tick(14.9, RESNAPPED)
+    moved = service.load(service.BOOK.read()[0])
+    assert moved.values_hash() != struck.values_hash(), 'a moved mid moved nothing'
+    assert moved.plan_hash() == struck.plan_hash()
+
+
+def test_the_stored_values_vector_round_trips_onto_another_market(recorded, quoting):
+    """`values_of` is the bytes `values_hash` NAMES, so the vector the record stores and the hash a
+    quote pins are one number - and reading it back onto a context carrying another board patches
+    the numbers and leaves that context's own stamps where they were.
+
+    Killing mutation: the projection taken in one of the two and not the other, which makes every
+    stored vector address something the record does not hold.
+    """
+    struck = service.load(service.BOOK.read()[0])
+    assert derivus.content_hash(json.loads(spine.values_of(struck).decode('utf-8'))) == \
+        struck.values_hash()
+
+    tick(14.9, RESNAPPED)
+    other = service.load(service.BOOK.read()[0])
+    stamps = other.market_patch()['FXVolPrices.USD.ZAR']['Points']
+    assert other.values_hash() != struck.values_hash()
+
+    other.patch_market(spine.read_values(spine.values_of(struck)))
+    assert other.values_hash() == struck.values_hash(), 'the vector did not read back'
+    assert [row.get('Timestamp') for row in other.market_patch()[
+        'FXVolPrices.USD.ZAR']['Points']] == [row.get('Timestamp') for row in stamps], \
+        'reading a values vector moved the reader\'s own clocks'
+
+
+# --------------------------------------------------------------------------------------------
+# The quote: nothing recorded, everything the acceptance needs on the file.
+
+def pending_of(tmp_path, quote):
+    """The pending trade as it stands on disk."""
+    return json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+
+
+def test_a_quote_records_nothing_and_files_what_the_acceptance_will(recorded, quoting, tmp_path):
+    """WE DO NOT CARE ABOUT A QUOTE UNTIL THE CLIENT ACCEPTS IT. A desk quotes fifteen times a day
+    and cares about the one that comes back, so the head does not move here - asserted as ABSENCE on
+    the head rather than on a filtered count - and the fourteen others die in `DV_HOME/tmp`.
+
+    What the file carries is everything the acceptance will file: the book's two hashes, the values
+    vector behind them canonicalising back to the hash it is filed under, the TICKET the acceptance
+    re-derives off this same book, the age of the oldest stamped pillar, and who quoted it.
+
+    Killing mutation: `/book/structure` left in the standing lane, which files a `quote_filed` for
+    every price a salesperson ever says out loud.
     """
     document, _ = service.BOOK.read()
     context = service.load(document)
+    before = head(recorded)
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET,
                      request='the client wants a year of downside at zero cost')
 
-    lsn, _, body = facts(recorded, 'quote_filed')[0]
-    assert body['quote_id'] == quote['quote_id'] and body['structure'] == 'ZeroCostCollar'
-    assert body['plan_hash'] == context.plan_hash()
-    assert body['values_hash'] == context.values_hash()
-    assert body['request'].startswith('the client wants')
-    assert len(body['solved']) == 1 and body['edge'] == pytest.approx(quote['edge'])
-    assert sorted(body) == ['edge', 'plan_hash', 'quote_id', 'request', 'solved', 'structure',
-                            'values_hash']
-
-    filed = json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
-    assert filed['pinned'] == {'plan_hash': body['plan_hash'],
-                               'values_hash': body['values_hash'], 'lsn': lsn}
-    assert blob(recorded, body['values_hash']) == spine.values_of(context)
-    assert verify_home(recorded)['events'] == head(recorded)
+    assert head(recorded) == before, 'a quote moved the record'
+    filed = pending_of(tmp_path, quote)
+    assert filed['quoted_by'] == ACTOR and filed['request'].startswith('the client wants')
+    pinned = filed['pinned']
+    assert pinned['plan_hash'] == context.plan_hash()
+    assert pinned['values_hash'] == context.values_hash()
+    assert spine.canonical(pinned['values']) == spine.values_of(context)
+    assert derivus.content_hash(pinned['values']) == pinned['values_hash'], \
+        'the vector on the file is not the one the hash beside it names'
+    assert pinned['ticket'] == service.quote_ticket(document, filed['deal'], CLIENT_SET)
+    assert pinned['ticket'] != pinned['plan_hash'], 'the ticket is the book plus this quote'
+    # the board was stamped at 16:30 on the base date, so the age is the wall clock since then
+    assert pinned['pillar_age'] == pytest.approx(
+        service.quote_age(SNAPPED.isoformat(), filed['quoted_at']), rel=1e-6)
+    assert quote['pinned'] == {name: value for name, value in pinned.items() if name != 'values'}
 
 
 class SpotMovingParams(dict):
@@ -985,12 +1065,11 @@ class SpotMovingParams(dict):
         return super().__getitem__(key)
 
 
-def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, quoting):
+def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, quoting, tmp_path):
     """The pins are the BOOK's, and the ordering that makes them so is gated rather than trusted.
     `StructureJob.run_job` takes its two hashes at the TOP, before `patch_live_spot` moves this
     copy's spot: pin after and `values_hash` describes a market existing only inside one quote, so
-    every approval on a box with a live terminal would refuse on the values dimension for a market
-    that never moved, naming a remedy that cannot work.
+    every booking on a box with a live terminal would report a market that never moved as moved.
 
     Nothing else here can see that - a desk box with no terminal never patches the spot - so the
     missing half is supplied as data. The disjointness half comes free: a SPOT is values-plane data
@@ -1003,7 +1082,7 @@ def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, 
     quoted_document = service.BOOK.read()[0]
     job = service.StructureJob(quoted_document, 'ZeroCostCollar',
                                SpotMovingParams(COLLAR, quoted_document, moved_spot), CLIENT_SET)
-    job.run_job()
+    _, out = job.run_job()
 
     assert job.params.moved is True, 'the spot never moved - this gate proved nothing'
     quoted = service.load(job.document)
@@ -1011,25 +1090,324 @@ def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, 
     assert quoted.plan_hash() == book_context.plan_hash(), \
         'a spot moved the plan - the values plane and the plan plane are not disjoint'
 
-    lsn, _, body = facts(recorded, 'quote_filed')[0]
-    assert body['values_hash'] == book_context.values_hash(), \
+    pinned = pending_of(tmp_path, out['Stats']['Quote'])['pinned']
+    assert pinned['values_hash'] == book_context.values_hash(), \
         'the quote pinned its own spot-patched market rather than the book it would land against'
-    assert body['plan_hash'] == book_context.plan_hash()
-    assert blob(recorded, body['values_hash']) == spine.values_of(book_context)
+    assert pinned['plan_hash'] == book_context.plan_hash()
+    assert spine.canonical(pinned['values']) == spine.values_of(book_context)
 
-    # the approval reads the same pair off the desk's copy, so it stands against the book
+    # the booking reads the same pair off the desk's copy, so it stands against the book
     verdict = spine.package().firmness.assess(
-        {'plan_hash': body['plan_hash'], 'values_hash': body['values_hash']},
-        {'plan_hash': book_context.plan_hash(), 'values_hash': book_context.values_hash()},
-        {'values': 1.0, 'plan': 1.0}, spine.firmness_policy())
-    assert verdict['firm'] is True, verdict['refusals']
+        pinned, {'plan_hash': book_context.plan_hash(), 'values_hash': book_context.values_hash()},
+        1.0, spine.firmness_policy())
+    assert verdict['firm'] is True and verdict['market']['moved'] is False
+
+
+# --------------------------------------------------------------------------------------------
+# The acceptance: the record first, then the tier, then the fill, then the file.
+
+def accept(quote, **body):
+    return CLIENT.post('/book/quote', json=dict({'quote_id': quote['quote_id']}, **body))
+
+
+def typed(home, *event_types):
+    """`(lsn, type)` for every event of these types, in LSN order - what an ORDERING assertion is
+    made of."""
+    return [(lsn, event_type) for lsn, event_type, _ in facts(home)
+            if event_type in event_types]
+
+
+def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(recorded, quoting):
+    """THE ACCEPTANCE IS WHERE THE RECORD MOVES. With no tiers policy the flow is what it was: the
+    `quote_filed` under the ACCEPTOR's seat, then the `fill` citing the quote id as its execution
+    reference, at consecutive LSNs, then the file. The quote carries the TICKET the acceptance
+    re-derived, which is the plan an approval of it would sign.
+
+    THE TICKET IS HELD AGAINST THE WORLD, not against itself: the plan the quote WOULD leave the
+    book at is the plan it DID leave it at, read off the file the booking wrote.
+
+    AND AN ACCEPTANCE THAT BOOKED IS TOLD SO BY NAME. The booking was itself a move of the book, so
+    the plan check would send a salesperson to re-quote a trade the desk has already done; the
+    pending file says where it landed and the second acceptance answers that instead. The retry that
+    coalesces is the one a tier held back, which is the desk tier's own gate.
+
+    Killing mutations: the fill appended before the quote, which files a trade against a quote the
+    record does not yet hold; `quote_ticket` splicing at the root, which mints a ticket for a plan
+    no booking reaches.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET,
+                     request='the client wants a year of downside at zero cost')
+    struck = pending_of(quoting.parent, quote)['pinned']
+    before = quoting.read_bytes()
+    booked = accept(quote).json()
+
+    assert booked['written'] is True and quoting.read_bytes() != before
+    filed, fill = typed(recorded, 'quote_filed', 'fill')
+    assert filed[1] == 'quote_filed' and fill[1] == 'fill'
+    assert fill[0] == filed[0] + 1, 'the quote and its fill are not one act'
+    assert booked['accepted'] == {'lsn': filed[0], 'ticket': struck['ticket']}
+    assert pending_of(quoting.parent, quote)['accepted'] == booked['accepted']
+
+    _, _, body = facts(recorded, 'quote_filed')[0]
+    assert body['quote_id'] == quote['quote_id'] and body['structure'] == 'ZeroCostCollar'
+    assert body['ticket'] == struck['ticket'] and body['plan_hash'] == struck['plan_hash']
+    assert body['request'].startswith('the client wants')
+    assert len(body['solved']) == 1 and body['edge'] == pytest.approx(quote['edge'])
+    assert blob(recorded, body['values_hash']) == spine.canonical(struck['values'])
+
+    _, _, fill_body = facts(recorded, 'fill')[0]
+    assert fill_body['execution_reference'] == quote['quote_id']
+    assert fill_body['netting_set'] == CLIENT_SET and fill_body['counterparty'] == 'CPTY_A'
+    assert abs(fill_body['quantity']) == AMOUNT
+    bought = [leg['buy_sell'] for leg in quote['legs'] if leg['buy_sell']][0]
+    assert (fill_body['quantity'] < 0) is (bought == 'Buy'), \
+        'the desk took the same side as its client'
+    landed = json.loads(quoting.read_text())
+    node = deal_at(landed, booked['deal_path'])
+    assert fill_body['instrument'] == derivus.content_hash(service.instrument_of(node))
+    assert body['ticket'] == service.load(landed).plan_hash(), \
+        'the ticket is not the plan this booking left the book at'
+
+    retried = accept(quote).json()
+    assert retried['written'] is False
+    assert retried['booked'] == {'lsn': fill[0], 'deal_path': booked['deal_path']}
+    assert 'already on the book' in retried['note']
+    assert 'the book moved under it' not in json.dumps(retried), \
+        'a quote that booked was told to re-quote'
+    assert typed(recorded, 'quote_filed', 'fill') == [filed, fill], 'a retry filed a second fact'
     assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_a_moved_book_refuses_the_approval_on_the_plan_dimension(recorded, quoting):
+class RacingBook(service.Book):
+    """A live book that lets a SECOND WRITER in at a named moment - THE GATE'S OWN DATA rather than
+    a patch, the way `SpotMovingParams` supplies a terminal, the interleaving a lock exists for
+    being a second writer and a window.
+
+    An acceptance reads the file twice: once outside its act, for the desk's own window, and once
+    inside it for the document the trade lands in. `before` fires on the first, with the lock free,
+    so it can be a write through the book's own verbs - one that beat the acceptance to the file.
+    `within` fires on the second, which is held under the lock, so it has to be a write that never
+    asks for the lock: the only kind that CAN move the file while the act runs, and the window a
+    redo would put the record's appends in.
+    """
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.before = self.within = None
+        self.outer = False
+
+    def arm(self, before=None, within=None):
+        self.before, self.within = before, within
+
+    def read(self):
+        self.outer = True
+        document, etag = super().read()
+        self.outer = False
+        landing, self.before = self.before, None
+        if landing is not None:
+            landing()
+        return document, etag
+
+    def _read(self):
+        document, etag = super()._read()
+        if not self.outer and self.within is not None:
+            landing, self.within = self.within, None
+            landing()
+        return document, etag
+
+
+def booked_deal(reference, amount=5_000.0):
+    """An ordinary `/book/deals` booking under the client's set - a write that moves the PLAN, and
+    one the record holds, so a reconcile after it is clean."""
+    return CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference=reference, Amount=amount),
+        'parent_reference': CLIENT_SET, 'quantity': amount,
+        'execution_reference': 'EXEC-' + reference}), headers=JSON).json()
+
+
+def reconciles_clean():
+    """Whether the record and the file agree on every one of `/book/reconcile`'s three lists."""
+    answer = CLIENT.get('/book/reconcile').json()
+    return answer['in_record_not_in_file'] == answer['in_file_not_in_record'] == answer[
+        'quantity_mismatch'] == []
+
+
+def lockless_deal(path, reference, **fields):
+    """A deal written STRAIGHT INTO THE FILE, under nobody's lock and outside the record - the
+    second writer `Book` picks up through its own mtime check, and the only one that can move the
+    file while an act holds the lock. `fields` author it as the gate needs it: badly, and under the
+    reference a booking is using, is what a redo would newly say something about."""
+    document = json.loads(path.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(
+        {'Instrument': {'.Deal': json.loads(dump(dict(CASHFLOW, Reference=reference, **fields)))}})
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def booked_only(path):
+    """Leave the file holding nothing but what a gate books through the verbs, so a reconcile below
+    reads this gate and not the fixture's own cashflow. The book is re-opened on what is left."""
+    document = json.loads(path.read_text())
+    children = document['Calc']['Deals']['Deals']['Children']
+    children[:] = [node for node in children
+                   if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = RacingBook(str(path))
+
+
+def test_a_write_racing_the_acceptance_leaves_no_half_act_in_either_order(recorded, quoting):
+    """AN ACCEPTANCE APPENDS BEFORE IT WRITES, SO IT MAY NOT RUN OPTIMISTICALLY. `Book.mutate`
+    re-runs an edit that lost the race on the document as it now stands, which is what it is for -
+    but a fact the first run put on the record is not undone by losing, so a redo caused by a
+    plan-moving write would leave the record holding a quote and a fill for a booking the file never
+    took, the caller told to re-quote, and every later acceptance answering "already booked" at a
+    deal path that does not exist. `Book.transact` runs the whole act under the lock instead.
+
+    BOTH ORDERS A LOCK CAN ORDER, each with the other write going through the ordinary booking verb
+    so the record holds it too. First the other write lands before the acceptance reads: the plan
+    refuses and the head does not move. Then the acceptance lands from INSIDE another edit's body -
+    which is where `mutate` runs an edit, outside the lock - so that write meets a file that moved
+    and redoes onto the booked one. After each: one `quote_filed` and one `fill` per acceptance, a
+    reconcile with nothing in any of its three lists, and no answer naming a path the file lacks.
+    The order NO lock can order is the gate below.
+
+    Killing mutation: the acceptance back on `mutate`, whose second pass meets the plan check the
+    first passed and refuses, leaving the record holding a quote and a fill for a trade the file
+    never took and the pending file saying it booked at a path nothing is at.
+    """
+    booked_only(quoting)
+    first = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    before = head(recorded)
+    service.BOOK.arm(before=lambda: booked_deal('LATE-A'))
+    refused = accept(first)
+
+    assert 'LATE-A' in quoting.read_text(), 'the deal never landed - this gate proved nothing'
+    assert refused.status_code == 422
+    assert 'the book moved under it' in refused.json()['detail']
+    assert head(recorded) == before + 1, 'the acceptance appended beside the booking that beat it'
+    assert facts(recorded, 'quote_filed') == []
+    assert [body['execution_reference'] for _, _, body in facts(recorded, 'fill')] == ['EXEC-LATE-A']
+
+    # the other order: the acceptance completes inside another edit's body, so that edit redoes
+    second = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    answered = []
+
+    def racing(document, etag):
+        """A values edit whose body runs OUTSIDE the lock, where the acceptance can land whole. A
+        spot is values-plane, so this write moves neither the plan nor a row a reconcile reads."""
+        if not answered:
+            answered.append(accept(second).json())
+        document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'Price Factors']['FxRate.ZAR']['Spot'] = SPOT + 0.25
+        return True, {'written': True}
+
+    ticked = service.BOOK.mutate(racing)
+    landed = json.loads(quoting.read_text())
+
+    assert answered[0]['written'] is True and ticked['written'] is True
+    assert landed['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors']['FxRate.ZAR']['Spot'] == SPOT + 0.25, 'the racing write never redid'
+    assert len(facts(recorded, 'quote_filed')) == 1 and len(facts(recorded, 'fill')) == 2
+
+    booked = pending_of(quoting.parent, second)['booked']
+    assert deal_at(landed, booked['deal_path'])['Instrument']['.Deal']['Reference'].startswith(
+        'ZeroCostCollar-'), 'the booked path names a deal the file does not hold'
+    assert reconciles_clean(), 'the record and the file disagree after the redo'
+
+
+def test_a_lockless_write_inside_the_act_leaves_no_half_act(recorded, quoting):
+    """THE ORDER NO LOCK CAN ORDER: a deal written straight into the file, which `Book` picks up
+    through its own mtime check, landing on the read the act itself runs - the window a redo would
+    put the record's appends in, and the one a writer that takes the lock cannot reach.
+
+    THE HUB IS THE GATEKEEPER AND THE FILE IS ITS PROJECTION, so what such a write meets is not a
+    race to be ordered - it loses to the land, as every write the act read before does, and a copy
+    of it that outlived the act would be a divergence `/book/reconcile` names. What is gated is the
+    INVARIANT, which holds whichever way the race falls rather than the way it fell here: at most
+    one `quote_filed` and one `fill`, a `booked.deal_path` naming a deal the file holds, a REFUSED
+    acceptance leaving the head where it found it, and the record and the file reconciling on all
+    three lists. Self-contained: one home, one book, one acceptance.
+
+    Killing mutation: the acceptance back on `mutate`, whose second pass meets the plan check the
+    first passed - the caller is told to re-quote while the record keeps the quote and the fill the
+    first pass filed, the file never takes the trade, and the pending file names a deal path
+    nothing is at.
+    """
+    booked_only(quoting)
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    raced = []
+    service.BOOK.arm(within=lambda: raced.append(lockless_deal(quoting, 'RAW-C')))
+    before = head(recorded)
+    took = accept(quote)
+
+    assert raced, 'the write never landed inside the act - this gate proved nothing'
+    assert len(facts(recorded, 'quote_filed')) <= 1 and len(facts(recorded, 'fill')) <= 1, \
+        'the act ran twice and the record holds a quote and a fill for each pass'
+    if took.status_code != 200:
+        assert head(recorded) == before, 'a refused acceptance left its quote on the record'
+    booked = pending_of(quoting.parent, quote).get('booked')
+    if booked is not None:
+        assert booked['deal_path'] in dict(walk_job_deals(json.loads(quoting.read_text()))), \
+            'the pending file says this quote booked where the file holds nothing'
+    assert reconciles_clean(), 'the record and the file disagree after the act'
+
+
+def test_a_booking_raced_by_a_lockless_write_files_its_fill_exactly_once(recorded, quoting):
+    """`/book/deals` IS THE OTHER EDIT THAT APPENDS BEFORE IT WRITES: under a home the fill goes on
+    the record inside the closure, so it takes `Book.transact` and runs one pass under the lock.
+
+    The write racing it wears THIS BOOKING'S OWN REFERENCE and is authored badly, which is what
+    makes a second pass refuse what the first passed: messages are keyed by reference, so the
+    verdict now says something about the deal being booked and `newly_said` returns it.
+
+    Killing mutation: `/book/deals` back on `mutate` - the booking is refused over somebody else's
+    authoring while the record already holds its fill, and reconcile reports a trade the file lacks.
+    """
+    booked_only(quoting)
+    raced = []
+    service.BOOK.arm(within=lambda: raced.append(
+        lockless_deal(quoting, 'RACED-IN', Amount='oops')))
+    booked = booked_deal('RACED-IN')
+
+    assert raced, 'the write never landed inside the act - this gate proved nothing'
+    assert booked['written'] is True, booked
+    assert len(facts(recorded, 'fill')) == 1, 'the record holds a fill per pass of the edit'
+    assert 'oops' not in quoting.read_text(), 'the badly authored write outlived the act it raced'
+    assert reconciles_clean(), 'the record and the file disagree after the booking'
+
+
+def test_a_moved_market_between_the_quote_and_the_acceptance_books_and_says_so(recorded, quoting):
+    """THE RULING: between a quote and the client's word the market may move materially, and we
+    follow the spine as usual. The move is REPORTED on the booking - the values struck on, the ones
+    standing, and that they differ - and never refused; the desk's own `firm_seconds` is the promise
+    that bounds it. The PLAN is untouched by a tick, which is what makes the two separable.
+
+    Killing mutation: the market comparison left as a refusal, which stops a desk booking anything
+    on a market that ticks every thirty seconds.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    struck = pending_of(quoting.parent, quote)['pinned']
+
+    assert tick(14.9)['updated'] == ['FXVolPrices.USD.ZAR']
+    standing = service.load(service.BOOK.read()[0])
+    assert standing.plan_hash() == struck['plan_hash'], \
+        'a vol tick moved the plan - the values plane and the plan plane are not disjoint'
+    assert standing.values_hash() != struck['values_hash'], 'a vol tick moved nothing'
+
+    booked = accept(quote).json()
+    assert booked['written'] is True
+    assert booked['market'] == {'pinned': struck['values_hash'],
+                                'current': standing.values_hash(), 'moved': True}
+    assert booked['firmness']['firm'] is True and booked['firmness']['plan']['moved'] is False
+    assert len(facts(recorded, 'fill')) == 1
+
+
+def test_a_booking_between_the_quote_and_the_acceptance_refuses_with_nothing_appended(recorded,
+                                                                                      quoting):
     """The book moved since the solve, so the marginal charge was priced against a portfolio this
-    trade would no longer join. Only the PLAN dimension refuses - the market was not touched - and
-    it names the dimension and the remedy: a desk told "stale" learns nothing."""
+    trade would no longer join. It refuses BEFORE anything appends - the record does not hold a
+    quote for a trade that was never booked - and names the remedy: a desk told "stale" learns
+    nothing, a desk told "the book moved" re-solves.
+    """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
 
     document = json.loads(quoting.read_text())
@@ -1037,106 +1415,514 @@ def test_a_moved_book_refuses_the_approval_on_the_plan_dimension(recorded, quoti
         json.loads(dump({'Instrument': {'.Deal': dict(CASHFLOW, Reference='LATE',
                                                       Amount=5_000.0)}})))
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    before = head(recorded)
 
-    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
+    refused = accept(quote)
     said = refused.json()['detail']
     assert refused.status_code == 422
-    assert 'the plan dimension' in said and 'the book moved under it' in said
-    assert 'the values dimension' not in said, 'the two dimensions were conflated'
-    assert quote['quote_id'] in said
-
-    assert facts(recorded, 'fill') == [], 'a refused approval booked'
+    assert 'the book moved under it' in said and quote['quote_id'] in said
+    assert 'oldest stamped pillar' not in said, 'the board was blamed for the book'
+    assert head(recorded) == before, 'a refused acceptance appended'
 
 
-def test_an_aged_market_refuses_the_approval_on_the_values_dimension(recorded, quoting):
-    """The market pin is past its window on a market that has NOT moved - a different failure from
-    a moved one, with a different remedy. Aged by DECLARATION: a firmness policy with a zero-second
-    values window, put in the record as a hashed blob through the ordinary writer, which makes the
-    fixture deterministic rather than a sleep.
+def test_a_declared_pillar_window_refuses_a_quote_struck_on_an_old_board(recorded, quoting):
+    """A board already stale when the price was given is a price a client may not hold the desk to,
+    and the desk declares how stale is too stale. Aged by DECLARATION - a firmness policy with a
+    zero-second window, put in the record as a hashed blob through the ordinary writer - which makes
+    the fixture deterministic rather than a sleep.
+
+    AND IT IS THE OLDEST PILLAR, not the freshest: a surface refreshed at one expiry and dead at
+    another is as old as its deadest row, so one row re-stamped today does not make the board fresh.
+    The second stamp is written onto the book as DATA - a stamp is value-plane, so it moves neither
+    the plan the acceptance checks nor the market it reports.
+
+    AND A HOME THAT DECLARED NO WINDOW REFUSES NOTHING, which is the other half of the ruling: a
+    deployment that has not said how stale is too stale has not asked for the question.
     """
-    declare(recorded, policy.FIRMNESS_POLICY, {'values_seconds': 0, 'plan_seconds': 600})
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    assert accept(quote).json()['written'] is True, 'no window refused a stale board'
 
-    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
+    # one pillar re-read a moment ago; the rest stand at the snapshot's own 16:30, two years back
+    document = json.loads(quoting.read_text())
+    rows = document['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']
+    rows[0]['Timestamp'] = {'.Timestamp': pd.Timestamp.utcnow().tz_localize(None).isoformat()}
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+
+    # a window wide enough for the fresh row and far too narrow for the rest of the board
+    declare(recorded, policy.FIRMNESS_POLICY, {'pillar_seconds': 1e6})
+    aged = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    struck = pending_of(quoting.parent, aged)['pinned']
+    assert struck['pillar_age'] > 1e6, 'the board is not old enough to test the window'
+    before = head(recorded)
+
+    refused = accept(aged)
     said = refused.json()['detail']
     assert refused.status_code == 422
-    assert 'the values dimension' in said and 'old against a 0s window' in said
-    assert 'check the tick' in said
-    assert 'the plan dimension' not in said, 'the book was blamed for the market'
-    assert facts(recorded, 'fill') == []
+    assert 'oldest stamped pillar' in said and '1000000s window' in said
+    assert 'the book moved under it' not in said, 'the book was blamed for the board'
+    assert head(recorded) == before, 'a refused acceptance appended'
 
 
-def test_both_staleness_dimensions_fire_on_a_deliberately_aged_fixture(recorded, quoting):
-    """Both staleness policies fire on a deliberately aged fixture: two zero-second windows, one
-    quote, both dimensions named in one refusal - a quote stale on both has two remedies, and
-    reporting one sends a salesperson back into the other."""
-    declare(recorded, policy.FIRMNESS_POLICY, {'values_seconds': 0, 'plan_seconds': 0})
+def test_a_stale_desk_window_refuses_before_the_record_is_asked_anything(recorded, quoting):
+    """The desk's own mandate is FIRST and it is a promise to a client rather than a statement about
+    provenance, so a quote past `firm_seconds` never reaches the record's own checks - asserted on
+    the wording, which is the desk's, and on a head that did not move."""
+    document = json.loads(quoting.read_text())
+    document['Calc'][structures.QUOTE_POLICY] = {'firm_seconds': 0}
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    before = head(recorded)
+    refused = accept(quote)
+
+    assert refused.status_code == 422
+    assert structures.QUOTE_POLICY in refused.json()['detail']
+    assert 'the book moved under it' not in refused.json()['detail']
+    assert head(recorded) == before
+
+
+def test_a_board_stamped_only_on_its_surfaces_has_an_age(recorded, quoting, tmp_path):
+    """ONE PROJECTION FOR THE IDENTITY AND THE AGE. A book bootstrapped once and handed on carries
+    its surfaces' `Quote_Timestamp` and no quote rows at all - six of the fixtures under `tests/`
+    are such a book - and it has an age for exactly the reason it has an identity: `quote_stamps`
+    reads every clock `without_clocks` drops, the value-bound `Date` on a price factor as well as
+    the stamp on a row.
+
+    Killing mutation: `quote_stamps` reading the `Market Prices` rows alone, which answers None for
+    such a board and refuses every acceptance on it in a sentence asking for something already done.
+    """
+    document = json.loads(quoting.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    for row in market['Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        row.pop('Timestamp', None)
+    assert market['Price Factors']['FXVol.USD.ZAR']['Quote_Timestamp'], 'the surface is unstamped'
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    pinned = pending_of(tmp_path, quote)['pinned']
+    assert pinned['pillar_age'] is not None, 'a surface-stamped board read as having no age'
+    assert pinned['pillar_age'] == pytest.approx(service.quote_age(
+        SNAPPED.isoformat(), pending_of(tmp_path, quote)['quoted_at']), rel=1e-9)
+
+    declare(recorded, policy.FIRMNESS_POLICY, {'pillar_seconds': 1e9})
+    assert accept(quote_of('ZeroCostCollar', COLLAR,
+                           netting_set=CLIENT_SET)).json()['written'] is True
+
+
+def test_a_board_stamped_only_on_its_rows_has_an_age(recorded, quoting, tmp_path):
+    """The other half of the same projection. A board bootstrapped from quote rows that carry their
+    own clocks has an age off THOSE, whether or not the surface written from them kept one.
+
+    Killing mutation: `quote_stamps` reading the factor clocks alone, which is the half the
+    increment added and would otherwise be the only half held.
+    """
+    document = json.loads(quoting.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['FXVol.USD.ZAR']['Quote_Timestamp'] = ''
+    assert market['Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points'][0]['Timestamp']
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    pinned = pending_of(tmp_path, quote)['pinned']
+    assert pinned['pillar_age'] is not None, 'a row-stamped board read as having no age'
+    assert pinned['pillar_age'] == pytest.approx(service.quote_age(
+        SNAPPED.isoformat(), pending_of(tmp_path, quote)['quoted_at']), rel=1e-9)
+
+
+def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quoting):
+    """`advancing`'s three laws, read off the fold itself rather than through a booking.
+
+    It ADVANCES, so a verdict filed after the pair was taken is in the next answer. It is BOUNDED at
+    the position it answers, so a frame appended between two asks is not applied twice - a
+    duplicated verdict list that `standing_approval`'s `max` would hide. A pair AHEAD of the
+    position asked for refolds from genesis rather than refusing, since a fold walks forward. And a
+    history that is not the one the pair was taken on drops it: the key is the GENESIS event hash,
+    so a home re-minted where the last one stood is a different record.
+
+    Killing mutations: the fold unbounded while the pair is stamped at the position asked for; a
+    pair ahead of that position used as a seed; the key taken off the path rather than the history.
+    """
+    projections = spine.package().projections
+    decisions = projections.PROJECTORS['decisions']
+    plan, other = 'a' * 64, 'b' * 64
+
+    def verdicts_at(lsn=None):
+        return spine.folded(lambda log: spine.advancing(log, decisions, lsn)['plans'])
+
+    spine.approve(plan, actor_name=ACTOR, book_name='spine-desk')
+    first = verdicts_at()
+    assert [row['lsn'] for row in first[plan]] == [head(recorded)]
+
+    signed = spine.approve(other, actor_name=DESK_TWO, book_name='spine-desk')
+    assert [row['lsn'] for row in verdicts_at()[other]] == [signed['lsn']], 'the pair never advanced'
+    assert [row['lsn'] for row in verdicts_at()[plan]] == [first[plan][0]['lsn']], \
+        'a frame was applied twice'
+
+    # a position BEHIND the pair is a fold from genesis, and the pair is left where it was
+    assert other not in verdicts_at(signed['lsn'] - 1)
+    assert [row['lsn'] for row in verdicts_at()[other]] == [signed['lsn']]
+
+    # another history answers its own, and is not this one's
+    elsewhere = quoting.parent / 'second-spine'
+    init_home(elsewhere, ACTOR)
+    log = opened(elsewhere)
+    try:
+        assert spine.advancing(log, decisions)['plans'] == {}
+    finally:
+        log.close()
+    assert [row['lsn'] for row in verdicts_at()[plan]] == [first[plan][0]['lsn']]
+
+
+def test_a_home_re_minted_where_the_last_one_stood_is_a_different_record(recorded, quoting,
+                                                                        tmp_path):
+    """THE PAIR IS KEYED ON THE HISTORY, NOT THE PATH. A home deleted and minted again at the same
+    place holds none of the verdicts the last one did, and a fold that answered the old ones would
+    route a booking on a record that no longer exists - silently, which is the unsafe direction.
+
+    Killing mutation: the key taken off `log.home`, which answers the predecessor's history.
+    """
+    import shutil
+
+    decisions = spine.package().projections.PROJECTORS['decisions']
+    spine.approve('a' * 64, actor_name=ACTOR, book_name='spine-desk')
+    assert spine.folded(lambda log: spine.advancing(log, decisions))['plans'].get('a' * 64)
+
+    shutil.rmtree(str(recorded))
+    init_home(recorded, ACTOR)
+    spine.approve('c' * 64, actor_name=ACTOR, book_name='spine-desk')
+
+    standing = spine.folded(lambda log: spine.advancing(log, decisions))['plans']
+    assert 'a' * 64 not in standing, 'the pair answered a history this home no longer has'
+    assert 'c' * 64 in standing
+
+
+def test_the_board_is_aged_at_the_moment_the_quote_was_struck(recorded, quoting):
+    """The board's age is taken AT `quoted_at` and travels on the file, so the number a booking is
+    measured by is the one the price was given at - not the one the wall clock says when a client
+    finally calls back.
+
+    Killing mutation: `board_age` measured against now, which grows a quote's board age for as long
+    as the client takes to answer and refuses a price that was fresh when it was given.
+    """
+    document = json.loads(quoting.read_text())
+
+    # the snapshot's own 16:30, read half an hour later
+    assert service.board_age(document, '2024-06-28T17:00:00.000+00:00') == pytest.approx(1800.0)
+    assert service.board_age(document, None) > 1e7, 'the wall clock reads the same as the quote'
+    assert service.board_age({}, '2024-06-28T17:00:00.000+00:00') is None
+
+
+def test_an_edited_pending_file_no_longer_says_what_was_quoted(recorded, quoting, tmp_path):
+    """The TICKET is re-derived from the pending deal and this book and compared against the one the
+    quote pinned. The plan is unmoved here, so the two can differ only where the FILE has been
+    edited - which is exactly what this refuses, before anything appends."""
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    path = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
+    filed = json.loads(path.read_text())
+    filed['deal']['Children'][0]['Instrument']['.Deal']['Strike_Price'] *= 1.01
+    path.write_text(json.dumps(filed, indent=2), newline='\n')
+    before = head(recorded)
+
+    refused = accept(quote)
+    assert refused.status_code == 422
+    assert 'no longer says what was quoted' in refused.json()['detail']
+    assert head(recorded) == before
+
+
+# --------------------------------------------------------------------------------------------
+# The tier step, inside the acceptance closure.
+
+AUTO_SEAT = 'policy/tiers/auto'
+DESK_TWO = 'subject-desk-two'
+
+#: A cap the collar's million dollars sits comfortably under, and one it does not.
+BIG, SMALL = 5_000_000.0, 100_000.0
+
+
+def tiers(*rows, **sections):
+    """A tiers document out of the rows a gate cares about."""
+    return dict(tiers=list(rows), **sections)
+
+
+def entitle(home, grants):
+    """Declare a capabilities document, which is what turns enforcement ON: until one is in force
+    the home is the single-user instrument it was, and after it every append needs a grant."""
+    log = opened(home)
+    try:
+        blob = log.store.put(canonical_document(
+            {'grants': [{'subject': s, 'verb': v, 'book': b} for s, v, b in grants], 'read': []}))
+        return log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
+                          actor=ACTOR, blob_refs=(blob,))
+    finally:
+        log.close()
+
+
+def test_an_automatic_tier_signs_under_its_seat_between_the_quote_and_the_fill(recorded, quoting):
+    """A tier naming a SEAT signs for itself, and the order is the whole point: the acceptance, then
+    the approval under the tier's own subject, then the fill. Three facts at consecutive LSNs, so an
+    auditor reading the log in order sees a trade authorised before it was booked.
+
+    Killing mutation: the approval appended after the fill, which records every automatic booking as
+    having been signed off afterwards.
+    """
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'seat': AUTO_SEAT, 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
 
-    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
-    said = refused.json()['detail']
-    assert refused.status_code == 422
-    assert 'the values dimension' in said and 'the plan dimension' in said
-    assert ' AND ' in said
+    booked = accept(quote).json()
+    assert booked['written'] is True
+    assert booked['tier']['name'] == 'auto' and booked['tier']['seat'] == AUTO_SEAT
+
+    steps = typed(recorded, 'quote_filed', 'approval', 'fill')
+    assert [event_type for _, event_type in steps] == ['quote_filed', 'approval', 'fill']
+    assert [lsn for lsn, _ in steps] == list(range(steps[0][0], steps[0][0] + 3))
+    _, _, signed = facts(recorded, 'approval')[0]
+    assert signed == {'plan_hash': booked['accepted']['ticket']}
+    assert booked['tier']['approval_lsn'] == steps[1][0]
+    assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_a_vol_tick_moves_the_values_hash_and_never_trips_the_plan_dimension(recorded, quoting):
-    """THE DISJOINTNESS GATE, and the reason the `Market Prices` partition was a prerequisite. A
-    pure market tick with NO booking in sight - the ATM vol moves, the block value-updates, the
-    surface re-bootstraps, the file is rewritten - moves `values_hash` and leaves `plan_hash`
-    BIT-IDENTICAL: quote values are the values plane, and pillars, expiries and conventions the
-    plan. So the approval refuses on values while the plan dimension stands, asserted directly as
-    well as through the verdict.
+def test_a_seat_the_document_does_not_scope_leaves_the_acceptance_standing(recorded, quoting):
+    """An automatic tier whose seat holds no `approve` grant cannot sign, so nothing books - but the
+    ACCEPTANCE STANDS, because the client took the price and that is a fact whatever the workflow
+    then says. The denial is a chained fact in the writer's own voice, the file is byte-identical,
+    and the answer names the seat and the scope it lacks.
+
+    Killing mutation: the `quote_filed` appended after the tier step, which loses the acceptance of
+    every quote a misconfigured workflow holds back.
     """
-    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
-    _, _, pinned = facts(recorded, 'quote_filed')[0]
-
-    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes(14.9)}),
-                         headers=JSON).json()
-    assert ticked['written'] is True and ticked['updated'] == ['FXVolPrices.USD.ZAR']
-
-    standing = service.load(service.BOOK.read()[0])
-    assert standing.plan_hash() == pinned['plan_hash'], \
-        'a vol tick moved the plan - the values plane and the plan plane are not disjoint'
-    assert standing.values_hash() != pinned['values_hash'], 'a vol tick moved nothing'
-
-    verdict = spine.package().firmness.assess(
-        pinned, {'plan_hash': standing.plan_hash(), 'values_hash': standing.values_hash()},
-        {'values': 1.0, 'plan': 1.0}, spine.firmness_policy())
-    assert verdict['plan']['firm'] is True, 'a market tick tripped the book dimension'
-    assert verdict['values']['firm'] is False
-
-    refused = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']})
-    assert refused.status_code == 422
-    assert 'the market moved under it' in refused.json()['detail']
-    assert 'the plan dimension' not in refused.json()['detail']
-
-
-def test_a_firm_quote_books_the_mirror_and_the_fill_lands_before_the_file(recorded, quoting):
-    """The whole approval under a spine home: three windows passed - the desk's `firm_seconds` and
-    the record's two dimensions - the `fill` appended, then the file written. The execution
-    reference is the QUOTE ID, a quote being an act its id names, and the quantity carries the
-    DESK's side: the quote is client paper and the approval books the mirror.
-    """
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto', 'seat': AUTO_SEAT}))
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('book', 'mark', 'admin', 'approve')])
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     before = quoting.read_bytes()
 
-    booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
-    assert booked['written'] is True and quoting.read_bytes() != before
-    assert booked['firmness']['firm'] is True
+    booked = accept(quote).json()
+    assert booked['written'] is False and quoting.read_bytes() == before
+    assert booked['accepted']['lsn'] == facts(recorded, 'quote_filed')[0][0]
+    assert AUTO_SEAT in booked['waits_on'] and 'approve' in booked['waits_on']
+    assert facts(recorded, 'fill') == [] and facts(recorded, 'approval') == []
 
-    lsn, _, fill = facts(recorded, 'fill')[0]
-    assert lsn == booked['recorded']['lsn']
-    assert fill['execution_reference'] == quote['quote_id']
-    assert fill['netting_set'] == CLIENT_SET and fill['counterparty'] == 'CPTY_A'
-    assert abs(fill['quantity']) == AMOUNT
-    bought = [leg['buy_sell'] for leg in quote['legs'] if leg['buy_sell']][0]
-    assert (fill['quantity'] < 0) is (bought == 'Buy'), \
-        'the desk took the same side as its client'
-
-    node = deal_at(json.loads(quoting.read_text()), booked['deal_path'])
-    assert fill['instrument'] == derivus.content_hash(service.instrument_of(node))
+    _, _, denial = facts(recorded, 'capability_denied')[0]
+    assert denial['subject'] == AUTO_SEAT and denial['verb'] == 'approve'
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_desk_tier_waits_for_a_second_seat_and_books_on_the_verdict_that_stands(recorded,
+                                                                                  quoting):
+    """THE TWO-ACT DESK TIER, through the service. A tier naming no seat wants a human: the first
+    acceptance files the quote and answers `waits_on` with the file untouched, the ACCEPTOR's own
+    approval does not satisfy four eyes, a rejection filed after it is what the record says LAST -
+    the answer naming its LSN and its reason - and an approval by another seat after that is what
+    books. Four acceptances of one quote, ONE `quote_filed`: the tuples carry no `effective_time`,
+    so the writer's own duplicate rule coalesces them onto the LSN they already have.
+
+    Killing mutations: `standing_approval` reading the first verdict in the list rather than the
+    latest by LSN, which books on an approval a rejection has since overtaken; and the four-eyes
+    test read against any row of the list rather than the one that stands.
+    """
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    before = quoting.read_bytes()
+
+    waiting = accept(quote).json()
+    ticket = waiting['accepted']['ticket']
+    assert waiting['written'] is False and quoting.read_bytes() == before
+    assert waiting['tier'] == {'name': 'desk', 'seat': None, 'approval_lsn': None}
+    assert 'no verdict is filed' in waiting['waits_on']
+
+    signed = CLIENT.post('/book/quote/approve',
+                         json={'quote_id': quote['quote_id'], 'actor': ACTOR}).json()
+    assert signed['ticket'] == ticket
+    own = accept(quote).json()
+    assert own['written'] is False and 'one seat' in own['waits_on']
+    assert quoting.read_bytes() == before
+
+    # a rejection filed LAST is what stands, whatever was approved before it
+    rejected = CLIENT.post('/book/quote/reject', json={
+        'quote_id': quote['quote_id'], 'actor': DESK_TWO, 'reason': 'the client is over limit'})
+    stale = accept(quote).json()
+    assert stale['written'] is False
+    assert str(rejected.json()['recorded']['lsn']) in stale['waits_on']
+    assert 'the client is over limit' in stale['waits_on']
+
+    # and an approval after the rejection is what the record says last
+    approved = CLIENT.post('/book/quote/approve',
+                           json={'quote_id': quote['quote_id'], 'actor': DESK_TWO}).json()
+    booked = accept(quote).json()
+    assert booked['written'] is True and booked['tier']['name'] == 'desk'
+    assert booked['tier']['approval_lsn'] == approved['recorded']['lsn']
+    assert len(facts(recorded, 'fill')) == 1
+    assert [lsn for lsn, _ in typed(recorded, 'quote_filed')] == [waiting['accepted']['lsn']], \
+        'four acceptances of one quote minted more than one fact'
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(recorded, quoting):
+    """A SPOT BLOCK INSTALLED AND NOT YET TICKED carries its declared zero, which is the documented
+    sequence for bringing a new currency up. That currency is one this book cannot VALUE the
+    notional in, so the ticket does not state it and a tier capping in it fails by name - rather
+    than dividing by it inside a closure that has already filed the quote.
+
+    The acceptance stands, the head goes no further than it, and the book file is byte-identical.
+
+    Killing mutation: the cross stated whatever it comes out as, which is a `ZeroDivisionError` out
+    of a booking endpoint - a traceback where every other refusal in this package is a sentence.
+    """
+    document = json.loads(quoting.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.EUR'] = {
+        'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 0.0}
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'seat': AUTO_SEAT, 'max_notional': {'amount': BIG, 'currency': 'EUR'}}))
+
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    pending = pending_of(quoting.parent, quote)
+    terms = service.quote_terms(json.loads(quoting.read_text()), pending)
+    assert 'EUR' not in terms['notional_in'] and set(terms['notional_in']) == {'USD', 'ZAR'}
+
+    # THE OTHER DIRECTION, with the zero on top: the NOTIONAL's own currency unvalued. Its amount
+    # still stands - an amount of a currency needs no rate - and every cross off it reads zero,
+    # which is not a notional a cap can be compared against and so is not stated
+    unvalued = json.loads(quoting.read_text())
+    unvalued['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'FxRate.USD']['Spot'] = 0.0
+    assert service.quote_terms(unvalued, pending)['notional_in'] == {'USD': AMOUNT}
+    before = quoting.read_bytes()
+
+    answer = accept(quote).json()
+    assert answer['written'] is False and 'tier' not in answer
+    assert any('not stated in EUR' in one for one in answer['refused']), answer['refused']
+    assert quoting.read_bytes() == before, 'a refused tier moved the book'
+    assert head(recorded) == answer['accepted']['lsn'], 'the acceptance is not the last fact'
+
+
+def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quoting):
+    """The three checks, each one driving the route through the SERVICE rather than the evaluator.
+
+    Over the cap escalates to the tier that admits it; over every tier answers `refused` with every
+    sentence of the route AND the acceptance standing, since the client took the price whatever the
+    policy says about it. A cap in a currency this book carries no rate for fails ITS tier by name -
+    the safe direction, and the one a conversion inside a policy check would lose - while a cap in a
+    currency it DOES price reads the notional CROSSED at the book's own spot, which is the case that
+    tells a stated notional from an unconverted one. And the market check passes on the name the
+    book's own board is declared under and fails on one nothing declared.
+
+    A TICKET NO TIER ADMITS FILES NO REJECTION: the route's sentences are an answer, and a verdict
+    is a seat's decision the policy names no seat for, so the head stands at the acceptance.
+
+    Killing mutation: `quote_expiry` answering nothing, which routes every ticket past a tier that
+    bounds the tenor.
+    """
+    declared = spine.declare_market('official', spine.values_of(
+        service.load(service.BOOK.read()[0])))
+    # both branches of the expiry, read directly: a vanilla leg names its own day and an accrual
+    # leg names the last settlement of its strip
+    assert service.quote_expiry({'Object': 'StructuredDeal', 'Children': [
+        {'Instrument': {'.Deal': {'Object': 'FXAccumulatorOptionDeal', 'Accumulator_ExpiryDates': [
+            [{'.Timestamp': '2026-03-30'}, {'.Timestamp': '2026-04-01'}, 0.0],
+            [{'.Timestamp': '2026-06-30'}, {'.Timestamp': '2026-07-02'}, 0.0]]}}}]}) == \
+        pd.Timestamp('2026-07-02')
+    assert service.quote_expiry({'Object': 'StructuredDeal'}) is None
+
+    for rows, expected, said in (
+            ([{'name': 'auto', 'seat': AUTO_SEAT,
+               'max_notional': {'amount': SMALL, 'currency': 'USD'}},
+              {'name': 'desk', 'four_eyes': True}], 'desk', 'caps max_notional'),
+            ([{'name': 'auto', 'seat': AUTO_SEAT, 'max_tenor_years': 0.5},
+              {'name': 'desk', 'four_eyes': True}], 'desk', 'caps max_tenor_years'),
+            ([{'name': 'auto', 'seat': AUTO_SEAT,
+               'max_notional': {'amount': BIG, 'currency': 'JPY'}},
+              {'name': 'desk', 'four_eyes': True}], 'desk', 'not stated in JPY'),
+            # a million dollars is 54,054 rand on this book's own axis, so a 100,000 rand cap
+            # admits it - and refuses it if the notional was stated without being crossed
+            ([{'name': 'auto', 'seat': AUTO_SEAT,
+               'max_notional': {'amount': SMALL, 'currency': 'ZAR'}},
+              {'name': 'desk', 'four_eyes': True}], 'auto', None),
+            ([{'name': 'auto', 'seat': AUTO_SEAT, 'market': 'eod'},
+              {'name': 'desk', 'four_eyes': True}], 'desk', 'nothing in this record has declared'),
+            ([{'name': 'auto', 'seat': AUTO_SEAT, 'market': 'official'}], 'auto', None),
+            ([{'name': 'auto', 'seat': AUTO_SEAT,
+               'max_notional': {'amount': SMALL, 'currency': 'USD'}}], None, 'caps max_notional')):
+        declare(recorded, policy.TIERS_POLICY, tiers(*rows))
+        quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+        pending = pending_of(quoting.parent, quote)
+        answer = accept(quote).json()
+
+        if expected == 'auto':
+            assert answer['written'] is True and answer['tier']['name'] == 'auto', rows
+        elif expected == 'desk':
+            assert answer['written'] is False and answer['tier']['name'] == 'desk', rows
+            assert 'no verdict is filed' in answer['waits_on']
+        else:
+            assert answer['written'] is False and 'tier' not in answer, rows
+            assert any(said in one for one in answer['refused']), answer['refused']
+            assert facts(recorded, 'rejection') == [], 'a tier filed a rejection nobody signed'
+            assert head(recorded) == answer['accepted']['lsn'], \
+                'a ticket no tier admits moved the record past its own acceptance'
+        assert answer['accepted']['lsn'] > declared['lsn'], 'the acceptance did not stand'
+        # the sentence the ticket's route collected, which is what "fails that tier by name" means
+        if said is not None:
+            route = spine.route_ticket(pending['pinned']['ticket'], service.quote_terms(
+                json.loads(quoting.read_text()), pending), ACTOR)
+            assert any(said in one for one in route['refusals']), (rows, route['refusals'])
+
+
+# --------------------------------------------------------------------------------------------
+# The decision verbs.
+
+def test_a_decision_on_a_quote_nobody_accepted_refuses_by_name(recorded, quoting, tmp_path):
+    """A decision is filed over the plan an ACCEPTED quote minted, so there is nothing to rule on
+    before the client has taken the price - and a pending file naming a position that holds
+    something else is one copied from another home, which `quote_at` catches by opening the ONE
+    frame at that LSN rather than folding every quote the desk has struck.
+
+    THE POSITION IS EVIDENCE ABOUT NOTHING BY ITSELF, so three things are refused and each by its
+    own check: a position holding another TYPE, a position past the head, and - the shape a file
+    carried between two desks that both quote actually has - a position holding ANOTHER QUOTE.
+
+    Killing mutation: the quote-id check dropped, which rules on whatever quote happens to sit at a
+    remembered position.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    refused = CLIENT.post('/book/quote/approve',
+                          json={'quote_id': quote['quote_id'], 'actor': ACTOR})
+    assert refused.status_code == 422 and 'accept it first' in refused.json()['detail']
+
+    waiting = declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    assert accept(quote).json()['written'] is False, 'the tier let it book and moved the plan'
+    second = quote_of('ZeroCostCollar', dict(COLLAR, notional=AMOUNT / 2),
+                      netting_set=CLIENT_SET)
+    assert accept(second).json()['written'] is False
+
+    path = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
+    filed = json.loads(path.read_text())
+    elsewhere = json.loads((tmp_path / 'tmp' / (second['quote_id'] + '.json')).read_text())
+    read = spine.quote_at(filed['accepted']['lsn'], quote['quote_id'])
+    assert read['quote_id'] == quote['quote_id'] and read['ticket'] == filed['accepted']['ticket']
+
+    # the second quote's own position: a real `quote_filed`, and not this quote's
+    filed['accepted']['lsn'] = elsewhere['accepted']['lsn']
+    path.write_text(json.dumps(filed, indent=2), newline='\n')
+    other = CLIENT.post('/book/quote/reject', json={
+        'quote_id': quote['quote_id'], 'actor': ACTOR, 'reason': 'nothing doing'})
+    assert other.status_code == 422
+    assert second['quote_id'] in other.json()['detail'] and 'and not' in other.json()['detail']
+
+    filed['accepted']['lsn'] = waiting['lsn']
+    path.write_text(json.dumps(filed, indent=2), newline='\n')
+    wrong_type = CLIENT.post('/book/quote/reject', json={
+        'quote_id': quote['quote_id'], 'actor': ACTOR, 'reason': 'nothing doing'})
+    assert wrong_type.status_code == 422 and 'in this record and not the quote' in \
+        wrong_type.json()['detail']
+
+    # and a position past the head is the record saying so, not a traceback
+    filed['accepted']['lsn'] = 10_000
+    path.write_text(json.dumps(filed, indent=2), newline='\n')
+    beyond = CLIENT.post('/book/quote/approve',
+                         json={'quote_id': quote['quote_id'], 'actor': ACTOR})
+    assert beyond.status_code == 422 and 'no LSN 10000' in beyond.json()['detail']
 
 
 def test_the_record_and_the_desk_file_disagree_only_in_the_order_they_were_written(recorded,

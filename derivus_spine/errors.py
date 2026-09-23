@@ -104,9 +104,9 @@ class TierRefused(SpineRefusal):
 
 
 class QuoteNotFirm(SpineRefusal):
-    """A quote whose pins no longer stand: the market moved or aged under it (the VALUES
-    dimension), or the book moved or aged under it (the PLAN dimension). The message names which
-    dimension - the two have different remedies."""
+    """A quote that may not be booked: the BOOK moved under it, or the BOARD it was struck on was
+    already older than the window a desk declared. The message names each - the two have different
+    remedies - and never the market having moved since, which is reported rather than refused."""
 
 
 class CustodyRefusal(SpineRefusal):

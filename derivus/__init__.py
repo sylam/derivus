@@ -673,12 +673,15 @@ class Context:
         return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation)})
 
     def values_hash(self):
-        """The content hash of `market_patch()` - the market VALUES, and nothing else.
+        """The content hash of `market_patch()` less its clocks - the market VALUES, and nothing
+        else.
 
         With `plan_hash`, `__version__` and the seed this is the replay identity: two runs agreeing
-        on all four report the same numbers.
+        on all four report the same numbers. A MARKET'S IDENTITY IS ITS NUMBERS, so the stamps go
+        out (`schema.without_clocks`): when a board was read is data on the row, nothing in pricing
+        reads it, and a hash that moved on a stamp alone would call one market two.
         """
-        return content_hash(self.market_patch())
+        return content_hash(schema.without_clocks(self.market_patch()))
 
     # The book-of-record verbs. Each hands PLAIN DATA to `derivus_spine`, reached lazily inside
     # `derivus.spine` so nothing under `derivus/` depends on the extra; a missing extra or an unset

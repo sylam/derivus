@@ -23,8 +23,8 @@ Three checks and no fourth. SIZE is a cap in the cap's OWN currency, read agains
 caller states: a ticket whose notional is not stated in that currency FAILS that tier by name, which
 is the safe direction and keeps every check here off the market. TENOR is the ticket's own years.
 MARKET is the values vector the quote pinned, which must be the one standing under the name the tier
-prices on. The two staleness checks are deliberately absent: pillar age and book staleness are
-`firmness`'s two windows, enforced on every booking before any tier is read.
+prices on. Staleness is deliberately absent: how old a board may be is `firmness`'s one window,
+enforced on every booking before any tier is read.
 
 Pure functions over plain data - a parsed policy, a ticket and the market names standing - holding
 no log, clock, store or home, so the same inputs answer the same way on the hub, on a replica and in
@@ -175,7 +175,7 @@ def standing_approval(tier, booker, verdicts):
 
 def _tiers(policy):
     """The ordered tiers out of `policy`, asserted to be the document a parser answered - the list
-    AND every row in it, the way `firmness._windows` asserts each window rather than the pair.
+    AND every row in it, the way `firmness._window` asserts the window it is handed.
 
     A home that declared none answers `None`, and this evaluator refuses that rather than inventing
     a workflow: what an undeclared policy means is the caller's decision. A row that is not a named

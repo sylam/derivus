@@ -74,6 +74,13 @@ book_quote, which take market terms and handle the axis; book_risk_summary for t
 its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
 strike to a target; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
 
+QUOTING IS NOT BOOKING. solve_structure gives a price and records nothing - quote as often as
+the client asks. book_quote is the ACCEPTANCE: call it when the client TAKES the price, and it
+is what records the quote and books the trade. Between the two the market moves, which is
+reported and never refused. Where the desk's policy wants a second seat the acceptance comes
+back {written: false} with a tier and waits_on: that seat calls approve_quote(quote_id, actor),
+or reject_quote(quote_id, reason, actor), and then book_quote again.
+
 THE WIRE FORMS a deal is written in: dates {".Timestamp": "YYYY-MM-DD"}, periods
 {".DateOffset": "3M"}, percentages {".Percent": 2.5}, numbers as numbers; a curve or a surface
 is named by the Price Factors block it must match, which desk_status lists. An FX option's
@@ -84,10 +91,12 @@ declared: describe_structure lists them with the parameters they take; never com
 or a seagull from legs by hand.
 
 REFUSALS ARE ANSWERS: {written: false, refused: [...]} names what to fix - fix that one thing
-and post again. Deals are addressed by deal_path, which is positional, so pass the reference
-you read at a path whenever you amend or delete. A legacy book imports as one
-NettingCollateralSet carrying its deals as Children, through book_deal; one bad deal refuses
-the whole batch and names it.
+and post again. The SAME two keys WITH `accepted` beside them is a different answer: the
+client's price is already on the record and the desk's own policy will not book it, so say
+which bound it broke and do not re-quote. Deals are addressed by deal_path, which is
+positional, so pass the reference you read at a path whenever you amend or delete. A legacy
+book imports as one NettingCollateralSet carrying its deals as Children, through book_deal;
+one bad deal refuses the whole batch and names it.
 
 THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
 configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
@@ -492,8 +501,15 @@ def read_deal(deal_path: str) -> dict:
     raise ToolError('no deal at path {!r} - read_book lists the paths'.format(deal_path))
 
 
+def _stated(**fields):
+    """The optional fields a caller actually stated, as the body to post. A key left out is a key
+    the endpoint never sees, which is what keeps a null from meaning a number."""
+    return {name: value for name, value in fields.items() if value is not None}
+
+
 @MCP.tool()
-def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
+def book_deal(deal: dict, parent_reference: str | None = None, quantity: float | None = None,
+              execution_reference: str | None = None, actor: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -505,6 +521,12 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
     A convention you leave out is read as its declared value; a term you leave out, or send as
     `null`, is refused by name - send the number, not a placeholder for one. `parent_reference`
     books it INSIDE a container deal (a structure, a netting set).
+
+    WHERE THE DESK KEEPS A RECORD, three more are required and refuse by name without them:
+    `quantity` is the SIGNED size the desk took, `execution_reference` is the venue exec id or
+    ticket id that makes a retry the same fact, and the deal must sit under a
+    `NettingCollateralSet` naming a counterparty. `actor` is the seat the fact is filed under.
+    A desk that keeps no record ignores all four.
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
@@ -520,14 +542,15 @@ def book_deal(deal: dict, parent_reference: str | None = None) -> dict:
     sees the deal on its next read. The answer is about THIS booking; anything else outstanding in
     the book arrives as counts under `book_issues`, with `validate_book` for the detail.
     """
-    request = {'action': 'add', 'deal': deal}
-    if parent_reference is not None:
-        request['parent_reference'] = parent_reference
-    return _booking(service().call('POST', '/book/deals', json=request))
+    return _booking(service().call('POST', '/book/deals', json=dict(
+        {'action': 'add', 'deal': deal},
+        **_stated(parent_reference=parent_reference, quantity=quantity,
+                  execution_reference=execution_reference, actor=actor))))
 
 
 @MCP.tool()
-def amend_deal(deal_path: str, fields: dict, reference: str | None = None) -> dict:
+def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
+               actor: str | None = None) -> dict:
     """Change one or more fields of a booked deal - "make the notional 3m", "move settlement a
     week". `fields` MERGES into the deal at `deal_path` (from `read_book`); every other field
     stands. The same validate-before-write contract as `book_deal`: a refusal comes back as
@@ -535,10 +558,11 @@ def amend_deal(deal_path: str, fields: dict, reference: str | None = None) -> di
     amend again. Values wear their wire form: dates `{".Timestamp": "YYYY-MM-DD"}`, percentages
     `{".Percent": 2.5}`, plain numbers as numbers. `reference` names the deal you read at that
     path: another host's booking moves every position, and a path that no longer holds it refuses
-    rather than amending whoever sits there now."""
+    rather than amending whoever sits there now. `actor` is the seat the amendment is filed under
+    where the desk keeps a record."""
     return _booking(service().call('POST', '/book/deals', json=dict(
         {'action': 'amend', 'deal_path': deal_path, 'fields': fields},
-        **({} if reference is None else {'reference': reference}))))
+        **_stated(reference=reference, actor=actor))))
 
 
 @MCP.tool()
@@ -546,10 +570,11 @@ def delete_deal(deal_path: str, reference: str | None = None) -> dict:
     """Remove the deal at `deal_path` from the live book, its children with it. The write is
     atomic and every other client sees it on its next read. `reference` names the deal you read at
     that path, so a path another host's booking has moved refuses rather than deleting whoever
-    sits there now - always pass it when other hosts share the book."""
+    sits there now - always pass it when other hosts share the book. A delete RECORDS NOTHING and
+    takes no seat: what ends a trade is an election, an expiry or a settlement, never a row leaving
+    a cache."""
     return service().call('POST', '/book/deals', json=dict(
-        {'action': 'delete', 'deal_path': deal_path},
-        **({} if reference is None else {'reference': reference})))
+        {'action': 'delete', 'deal_path': deal_path}, **_stated(reference=reference)))
 
 
 # --------------------------------------------------------------------------- pricing
@@ -1021,8 +1046,8 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
 
 @MCP.tool()
 async def solve_structure(structure: str, params: dict, netting_set: str | None = None,
-                          margin: dict | None = None, wait_seconds: float = 120.0,
-                          ctx: Context = None) -> dict:
+                          margin: dict | None = None, actor: str | None = None,
+                          wait_seconds: float = 120.0, ctx: Context = None) -> dict:
     """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
     the one to reach for instead of composing legs by hand: the structure declares its own legs,
     their conventions and the order they solve in, so the finance does not depend on this
@@ -1091,15 +1116,18 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     `files.sheet_note` names the install when there is no sheet. A missing sheet writer never
     refuses a quote.
 
-    Then `book_quote(quote_id)` is the approval that makes it a trade. Two identical asks are two
-    quotes, each with its own id and its own files - a quote is an act, not a lookup. A quote is
-    also FIRM ONLY FOR A WINDOW where the book declares one (`Quote Policy.firm_seconds`, ten
-    minutes by default): approve it while it is fresh, or re-quote.
+    Then `book_quote(quote_id)` is the ACCEPTANCE that makes it a trade - call it when the client
+    takes the price and not before. NOTHING IS RECORDED HERE: a desk quotes many times a day and
+    the record holds the one that comes back, so the quotes nobody accepts simply expire in the
+    service's own tmp. Two identical asks are two quotes, each with its own id and its own files -
+    a quote is an act, not a lookup. A quote is also FIRM ONLY FOR A WINDOW where the book declares
+    one (`Quote Policy.firm_seconds`, ten minutes by default): accept it while it is fresh, or
+    re-quote. `actor` is the seat the quote is attributed to where the desk keeps a record.
     """
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/structure',
-        json={'structure': structure, 'params': params,
-              'netting_set': netting_set, 'margin': margin})
+        json=dict({'structure': structure, 'params': params, 'netting_set': netting_set,
+                   'margin': margin}, **_stated(actor=actor)))
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
@@ -1116,18 +1144,18 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
 
 
 @MCP.tool()
-def book_quote(quote_id: str) -> dict:
-    """Approve a quote and book it - the second half of `solve_structure`, and the only thing that
-    turns a quote into a trade.
+def book_quote(quote_id: str, actor: str | None = None) -> dict:
+    """THE ACCEPTANCE: the client took the price, so record the quote and book the trade. The
+    second half of `solve_structure`, and the only thing that turns a quote into a trade - call it
+    on the client's word and never to see what would happen.
 
     `quote_id` is the one the quote carries. The service reads the pending trade back from
     `DV_HOME/tmp/<quote_id>.json` and books the MIRROR of its deal - the quote's legs carry the
     CLIENT's side, and the book holds the bank's position, so every booked leg lands on the
     opposite side from the one quoted - through the SAME validate-before-write seam
-    `book_deal` uses: validated against the book as it is NOW - the market may have moved since
-    the quote was given - written atomically, and refused as `{written: false, refused:
-    [messages]}` with the file untouched. A refusal is an answer; an id with no file behind it is
-    a tool error naming the directory it looked in.
+    `book_deal` uses: validated against the book as it is NOW, written atomically, and refused as
+    `{written: false, refused: [messages]}` with the file untouched. A refusal is an answer; an id
+    with no file behind it is a tool error naming the directory it looked in.
 
     WHERE it books is the quote's own `netting_set`: the mirror lands UNDER that
     `NettingCollateralSet` node, which is what makes `recalc_xva` see the trade - the client's CVA
@@ -1135,16 +1163,65 @@ def book_quote(quote_id: str) -> dict:
     no set books at the root, as it always did.
 
     A QUOTE IS FIRM FOR A WINDOW. Where the book declares a `Quote Policy`, its `firm_seconds` is
-    how long an approval may stand on the price that was given; past it this is a tool error naming
-    the age, the window and the remedy, and NOTHING is written - re-quote with `solve_structure`
-    and approve that. A book declaring no policy holds a quote approvable indefinitely.
+    how long an acceptance may stand on the price that was given; past it this is a tool error
+    naming the age, the window and the remedy, and NOTHING is written - re-quote with
+    `solve_structure` and accept that. A book declaring no policy holds a quote bookable
+    indefinitely.
+
+    WHERE THE DESK KEEPS A RECORD the answer says more. THE MARKET MOVING IS NEWS, NOT A REFUSAL:
+    `market` reports the values the quote was struck on, the ones standing now and whether they
+    moved. What does refuse is the book having moved under the solve and a board that was already
+    stale when the price was given. And where a `tiers` policy is in force the booking may WAIT:
+    the answer then carries `accepted` - the acceptance is filed either way - with `tier` and
+    `waits_on` saying which seat owes a signature, or `refused` where no tier admits the ticket.
+    Have that seat call `approve_quote(quote_id, actor)`, then call this again. `actor` is the seat
+    the acceptance and the fill are filed under.
+
+    TWO REFUSALS WEAR ONE SHAPE and `accepted` is the tell. `{written: false, refused: [...]}` with
+    no `accepted` is the book declining the deal - read the messages, fix, book again. The same two
+    keys WITH `accepted` is the client's price already on the record and the desk's own policy
+    declining to book it: do not re-quote, say which tier refused and what it caps. And
+    `{written: false, booked: {...}}` means this quote is already on the book - nothing to do.
 
     The pending file is NOT deleted. What was quoted, at what market, when, under what id, is the
     audit trail of why the book carries what it carries - and the sheet the client saw stands
     beside it.
     """
-    # An approval books through `deal_edit`, so its answer is a booking's and takes a booking's trim.
-    return _booking(service().call('POST', '/book/quote', json={'quote_id': quote_id}))
+    # An acceptance books through `deal_edit`, so its answer is a booking's and takes a booking's
+    # trim.
+    return _booking(service().call('POST', '/book/quote', json=dict(
+        {'quote_id': quote_id}, **_stated(actor=actor))))
+
+
+@MCP.tool()
+def approve_quote(quote_id: str, actor: str) -> dict:
+    """Sign an accepted quote, so a desk tier that wants a second pair of eyes is satisfied.
+
+    Call this when `book_quote` came back `{written: false}` with a `tier` naming a seat and no
+    `waits_on` this conversation can fix by itself - then call `book_quote` again, which books on
+    the standing approval. `actor` is the seat that signs and is REQUIRED: where the tier declares
+    four eyes it may not be the one that accepted the quote, and a seat the desk has not scoped for
+    approvals is refused in the record's own words.
+
+    The signature is over the PLAN this quote would leave the book at, so it reaches this quote and
+    no other; a re-quote is a new ticket and wants its own. Answers `{recorded: {lsn}, ticket}`,
+    and signing twice is one fact.
+    """
+    return service().call('POST', '/book/quote/approve',
+                          json={'quote_id': quote_id, 'actor': actor})
+
+
+@MCP.tool()
+def reject_quote(quote_id: str, reason: str, actor: str) -> dict:
+    """Refuse an accepted quote, with the reason on the row.
+
+    A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
+    approval is what the record says, and a later approval moves it back. `reason` is required -
+    a verdict nobody can read the grounds of is one nothing can be filed against later. Answers
+    `{recorded: {lsn}, ticket}`.
+    """
+    return service().call('POST', '/book/quote/reject',
+                          json={'quote_id': quote_id, 'reason': reason, 'actor': actor})
 
 
 @MCP.tool()
@@ -1392,9 +1469,15 @@ def quote_a_structure(structure: str, pair: str, notional: str, notional_currenc
         '{3}, expiry {4}, strikes in MARKET terms{5}.\n'
         '3. Report every leg - role, buy/sell, strike, premium - then the net, the net_mid the '
         'book will mark it at, and the edge between them.\n'
-        '4. book_quote(quote_id) ONLY on the user\'s word. A quote is firm for a window; past '
-        'it, re-quote.'.format(structure, pair, notional, notional_currency, expiry,
-                               ', netting_set {!r}'.format(client) if client else ''))
+        '4. book_quote(quote_id) ONLY on the user\'s word that the CLIENT ACCEPTED - that is what '
+        'records the quote and books the trade. Nothing is recorded before it. A quote is firm '
+        'for a window; past it, re-quote.\n'
+        '5. If the answer is {{written: false}} with a tier and waits_on, the desk\'s policy wants '
+        'another seat: have it call approve_quote(quote_id, actor), then book_quote again. With '
+        '`refused` BESIDE `accepted` no tier admits the ticket - say which bound it broke, and do '
+        'not re-quote. A moved market is reported under `market` and is never a refusal.'.format(
+            structure, pair, notional, notional_currency, expiry,
+            ', netting_set {!r}'.format(client) if client else ''))
 
 
 @MCP.prompt()

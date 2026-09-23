@@ -2,12 +2,14 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1, 2, 3, 4 and 5a**: the log, the blob store and
-the chain (riding on them: identity, capability enforcement and key custody), on top of those the
-booking verbs, the attestation lanes and the two-dimensional firmness check, over all of it the
-projections, the diary, the book file's pin and the desk's own readers of them, and beside those the
-tier policy, its evaluator and the verbs that file a decision and a close. No network — a
-library, a CLI, eight delegators on `Context`, five read verbs on the service, and 299 gates.
+page documents what is BUILT, which is **increments 1, 2, 3, 4, 5a and 5b**: the log, the blob store
+and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
+booking verbs, the attestation lanes and the firmness check, over all of it the
+projections, the diary, the book file's pin and the desk's own readers of them, beside those the
+tier policy, its evaluator and the verbs that file a decision and a close, and through all of it the
+quote lifecycle: a price recorded when the client accepts it, routed through the desk's own workflow
+before it books. No network — a library, a CLI, eight delegators on `Context`, five read verbs and
+three write verbs on the service, and 318 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -107,8 +109,8 @@ channel into the record.
 ## The gates
 
 105 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 274 of the
-299 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 293 of the
+318 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -194,8 +196,9 @@ by a fact.** `telemetry` is the blotter's repaint, superseded before anything co
 is a what-if; `standing` is a run a fact is about to name. Only standing mints. `/execute` takes the
 lane (unknown refuses BY NAME where a home is configured, inert where none is), defaulting to curiosity
 because a caller who has not said their output will be cited has not said it; `/book/price` is curiosity
-and not a parameter; the Bloomberg tick is telemetry; and `/book/structure` is standing, where the
-attestation IS the `quote_filed` it produces. Three consequences are gated rather than assumed, and the
+and not a parameter; the Bloomberg tick is telemetry; and `/book/structure` is CURIOSITY too, because a
+quote is not cited until a client accepts it — 5b moved it, and the head does not move on a quote.
+Three consequences are gated rather than assumed, and the
 first two are one sentence read carefully — **content addressing dedupes NUMBERS, and the lane is about
 STANDING**:
 
@@ -222,19 +225,15 @@ package is `policy.compare`, it runs on numbers that came out of the engine, and
 was declared by a deployment in a hashed policy blob — a home that has declared no tolerance policy pins
 nothing at all.
 
-**A quote pins TWO hashes and firmness is checked in two dimensions.** `quote_filed` carries the values
-vector the quote was struck on and the book plan its marginal charge was solved against, beside the
-solved coordinates, the edge, and — optionally — the relayed client request as an erasable field, which
-needs no mechanism of its own because every body here is sealed. The two hashes are the BOOK's, taken
-before the live spot lands on the quote's copy, because what an approval asks is whether the market and
-the book this trade would LAND against have moved. `/book/quote` answers separately on each: VALUES (the
-market moved, or its pin aged past the cadence that refreshes it) and PLAN (the book moved, or its pin
-aged), each refusal naming its own dimension and its own remedy. They are disjoint by MEASUREMENT — a
-vol tick moves `values_hash` and leaves `plan_hash` bit-identical, and the gate asserts that on a
-fixture that ticks a vol with no booking in sight. The desk's own `Quote Policy.firm_seconds` is NOT
-superseded: it is a promise to a client, these two are the record's statement about provenance, and an
-approval passes all three. The windows are policy data (`values_seconds` defaulting to one tick of the
-cadence, `plan_seconds` to the desk's ten minutes), declared as a hashed blob and resolved by fold.
+**A quote pins TWO hashes, and what they are asked is 5b's.** `quote_filed` carries the values vector
+the quote was struck on and the book plan its marginal charge was solved against, beside the solved
+coordinates, the edge, and — optionally — the relayed client request as an erasable field, which needs
+no mechanism of its own because every body here is sealed. The two hashes are the BOOK's, taken before
+the live spot lands on the quote's copy, because what a booking asks is whether the market and the book
+this trade would LAND against have moved. The two planes are disjoint by MEASUREMENT — a vol tick moves
+`values_hash` and leaves `plan_hash` bit-identical, and the gate asserts that on a fixture that ticks a
+vol with no booking in sight. Increment 5b is where they are read: the PLAN refuses, the MARKET is
+reported, and the one staleness window a desk declares is the age of the board the quote was struck on.
 
 **The dual write has a declared ORDER.** Under a spine home the event goes first and the book file
 follows — the durability law applied to the pair, so a refused booking leaves the file byte-identical.
@@ -496,9 +495,9 @@ pinned, which must be the one standing under the name the tier prices on. A tier
 AUTOMATIC approval signs under, or declares `four_eyes` and wants a human; both together is refused
 at the declaration, since an automatic seat never books and the key would say nothing.
 
-**The two staleness checks are `firmness`'s, and a tier restating one is refused by name.** Pillar
-age IS `values_seconds` and book staleness IS `plan_seconds`, enforced on every booking before any
-tier is read, so a document or a tier carrying either — or `firm`, the verdict they answer — is
+**Staleness is `firmness`'s, and a tier restating it is refused by name.** How old a board may be is
+`pillar_seconds`, enforced on every booking before any tier is read, so a document or a tier carrying
+it — or `firm`, the verdict it answers, or either of the two windows 5b retired — is
 refused where it is declared rather than making one question two standards. `designations` is the
 other section: process → market name, closed to the processes something actually resolves by name
 (`settlement_export` is the one this increment binds), because a name nothing reads is a rule nobody
@@ -586,12 +585,137 @@ PROVED by patching a second context carrying another spot onto it; and the CLI r
 refused declaration leaves what was in force in force and whose open-bodied declaration lends its
 position to nobody.
 
+## Increment 5b — the acceptance, the tier step, and the decision verbs
+
+**A MARKET'S IDENTITY IS ITS NUMBERS.** `values_hash` is taken of the values patch with the CLOCKS
+projected out — `schema.without_clocks`, derived from the declarations rather than from a list of
+names: a value-bound `Date` on a price factor (`Quote_Timestamp` on a surface) and the stamp on a
+quote row. A cadence that re-reads a board it did not move leaves the hash bit-identical, because
+rehashing on every tick brings no information: when a board was read is data on the row and on the
+quote that cites it, and the record stamps every event with its own clock. `market_patch` is
+untouched — it is what a tick APPLIES, and moving a stamp out of the values plane would make a
+re-stamp a re-authoring — and `spine.values_of` takes the same projection, so the stored vector's
+ADDRESS is still the hash the quote pinned and the verb asserts the two are one number.
+
+**WE DO NOT CARE ABOUT A QUOTE UNTIL THE CLIENT ACCEPTS IT.** A desk quotes fifteen times a day and
+cares about the one that comes back. `POST /book/structure` therefore runs in the CURIOSITY lane and
+files nothing: the head does not move on a quote, asserted as absence on the head. What it writes is
+the pending file, and under a home that file now carries everything the acceptance will file — the
+book's two hashes, the values vector behind them as JSON that canonicalises back to its own hash, the
+TICKET, the age of the board, `quoted_by` and the relayed client `request`. The fourteen quotes
+nobody accepts die in `DV_HOME/tmp`.
+
+**THE TICKET is the plan hash of the book AS THE ACCEPTANCE WOULD LEAVE IT** — this quote's MIRROR
+spliced in and its pinned spot models merged, through the booking's own two seams (`splice_deal` and
+`structures.pin_models`) and never a second spelling. It is what an approval signs, so it reaches
+this quote and no other and an amended mirror is a new hash by construction, and it is the plan the
+booking DOES leave: a fitted strip books a `Valuation Configuration` entry beside its deal, that
+entry is plan, and a ticket taken without it would be a hash no booking ever reaches. Computed by
+ONE function, at the quote and again at the acceptance, so the plan a decision is filed over and the
+plan a booking checks cannot be two numbers. A plan does not read a spot, so the live one the
+quote's own copy carries cannot move it; and a pin whose parameters the book no longer carries
+refuses where the ticket is re-derived, before anything appends.
+
+**`POST /book/quote` IS THE ACCEPTANCE**, and the booking where the policy admits it. In order, and
+every refusal before anything appends: the desk's own `Quote Policy.firm_seconds`, which is a promise
+to a client and comes first; the PLAN, an equality, refused where the book moved under the solve; the
+PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says it
+was already too old and refusing nothing where a home declared none; and the TICKET, re-derived from
+the pending deal and this book, refused where the file no longer says what was quoted. Then the
+MARKET, which is REPORTED as `{pinned, current, moved}` and NEVER refused: between a quote and the
+client's word the board may move materially and we follow the spine as usual, the desk's own window
+being the promise that bounds it. `firmness` is the one module that answers all four, and its
+document is one window and no second — `values_seconds` and `plan_seconds` are refused by name at the
+declaration, so a desk carrying the old shape is told where its question went. **THE LAST THREE ARE
+READ INSIDE THE EDIT CLOSURE**, against the document the trade lands in: the closure reads under the
+book lock and the read above it does not, so a check taken up there is a statement about a book
+nobody booked into — and the desk window stays outside,
+because it is about the quote rather than about the book.
+
+**The board's age is the identity's own projection.** `board_age` reads `schema.quote_stamps`, which
+is every clock `without_clocks` drops: the stamp on each quote row AND the value-bound `Date` on each
+price factor. A book bootstrapped once and handed on carries its surfaces' `Quote_Timestamp` and no
+quote rows at all, and it has an age for exactly the reason it has an identity.
+
+**One write, and the record goes first.** Inside one `Book.transact` closure — the whole act under
+the book lock, one pass and no redo, because an edit that APPENDS before it writes cannot be re-run
+on a document it did not append against: a redo would meet the plan check its first pass passed and
+leave the record holding a quote and a fill for a write that lost, the file without the trade, and
+every retry answering "already booked" at a path that does not exist. The price is that a tick, a
+bootstrap or a competing booking waits out the act — 73 ms on a young record, 199 ms on one two
+thousand events in. **The line is AN EDIT THAT APPENDS BEFORE IT WRITES TAKES `transact`**, so
+`/book/deals` takes it too WHERE A HOME IS CONFIGURED: its fill and its amendment are appended
+inside the closure, and a redo whose second pass refuses what the first passed — a deal raced in
+beside this one is newly said about — would leave the record holding a fill the file never took.
+With no home nothing appends and the edit keeps `Book.mutate`'s optimistic passes, which is what
+the lock costs: 2 ms of read and write against the 80 ms a booking's own verdict takes. What a lock
+orders is the writers that ask for it: **the hub is the gatekeeper and the file is its projection**,
+so a write that asks for neither — an editor saving `book.json` behind the service — is not a race
+to be ordered but a divergence `/book/reconcile` names. In that closure: `quote_filed` under the
+ACCEPTOR's seat, carrying the ticket and the pending values; then the tier step; then the `fill`
+under the acceptor with the quote id as its execution reference; then the book file. The pending file
+gains `accepted: {lsn, ticket}` in the same act, which is what lets a decision seek to ONE frame
+instead of folding every quote the desk has ever struck, and `booked: {lsn, deal_path}` when the
+fill lands. A retried acceptance coalesces every event onto the LSN it already has — the tuples
+carry no `effective_time`, so this is asserted rather than built, and it is what a desk tier's
+second act does. One that already BOOKED is told so by name: the booking was itself a move of the
+book, so the plan check would send a salesperson to re-quote a trade the desk has already done, and
+`booked` on the file answers `{written: false, booked}` before any of it. And AN EVENT APPENDED
+BEFORE A LATER REFUSAL STANDS: the client took the price, which is a fact whatever the workflow then
+says, so a held-back booking still answers `accepted` and leaves the file byte-identical.
+
+**The tier step is enforcement by declaration.** No `tiers` policy in force is today's flow and the
+fill lands unsigned. With one in force `spine.route_ticket` composes the document, the evaluator, the
+market names standing and — for a tier wanting a human — the verdicts over this ticket, in ONE open
+of the log. **Both folds ADVANCE rather than re-walk** (`spine.advancing`): this runs on every
+acceptance, inside the write closure and so under the book lock, and the rows it
+opens a body for are the very ones it mints — an approval per desk-tier booking and one per automatic
+signature. Folding them from genesis costs **0.164 ms per decision filed**, the same per-body price
+the `quotes` fold pays, so a desk two thousand decisions in would pay about 330 ms to book a trade.
+Holding the `(lsn, state)` pair the fold already takes — one per projector, under the HISTORY they
+were taken on (the genesis event hash, so a home re-minted in place drops them), dropped when it
+changes — makes it **0.026 ms per decision**, 6.3× cheaper and about 57 ms at two thousand. Cheaper
+but not flat, and the residual is not the walk: 0.011 of that is the envelope walk every fold pays
+per EVENT, and the other 0.015 is `_from_seed`'s canonical copy of a state that grows with the
+decisions — the same copy that makes the `activity` strip 219 ms where folding it costs 38. A seed
+at a close is the remedy for both, and is the roadmap's row: a fresh process would start where the
+day started, and the state copied would be the day's rather than the record's.
+
+The ticket states its notional in its OWN currency, which needs no market data, and in every
+other this book can VALUE it in, crossed at the book's own spots; a currency whose cross is not a
+finite positive number — a spot block installed and not yet ticked carries its declared zero — is
+simply not among them, so a cap in it fails ITS tier by name instead of taking down a closure that
+has already filed the quote. A tier naming a SEAT signs under it between the acceptance and the fill,
+three facts at consecutive LSNs; a seat the capabilities document does not scope for `approve` lands
+a `capability_denied` in the writer's own voice, the acceptance stands, nothing books, and the answer
+names the seat and the grant it lacks. A tier naming no seat answers `{written: false, accepted,
+tier, waits_on}` — a NORMAL return, because the model's next move is to get it signed — and a ticket
+no tier admits answers `refused` carrying every sentence of the route it took. **That last wears the
+VALIDATION refusal's shape**, `{written: false, refused: [...]}`, and `accepted` is what tells them
+apart: one touched nothing, the other is a price the client took that the desk's own policy will not
+book. **No automatic rejection is filed**: a rejection is a seat's decision and the policy names no
+seat for one.
+
+**The decision verbs.** `POST /book/quote/approve` and `/reject` take the quote id and file over
+`accepted.ticket` under the caller's own seat. A quote nobody accepted refuses by name — there is no
+ticket to rule on before the client has taken the price — and `spine.quote_at(lsn, quote_id)` is
+`Log.frame_at`'s seek by BYTE OFFSET followed by one body, refusing where that position holds another
+type or another quote, so a pending file copied from another home is caught rather than believed and
+the read costs the same whatever the desk has quoted. Approving twice is one fact, and the LATEST verdict
+stands: a rejection filed after an approval is what the record says, and an approval after that moves
+it back.
+
+**The binding closes its own warning.** `book_deal` carries the `quantity`, `execution_reference` and
+`actor` a recorded desk requires, `amend_deal` and `solve_structure` carry `actor`, `book_quote` is
+documented as the acceptance, and `approve_quote`/`reject_quote` are the second seat's. The server
+`INSTRUCTIONS` and the `quote_a_structure` prompt say the walk: quote, the client's word, accept, and
+where the desk's policy wants a second seat, its approval, then accept again.
+
 ## What is not built yet
 
 No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
-a fold. The tier evaluator has no caller: nothing prices, books or approves through it, and the
-service verbs, the named booker, the four-eyes path and the auto tier's own signature are **5b**,
-queue admission **5c**. No doorbell and no generated MCP binding — **6 and 7**. No network anywhere
+a fold. The market, close and settlement verbs are **5c**, and so is queue admission. No doorbell and
+no generated MCP binding — **6 and 7**. No network anywhere
 yet: tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
 rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
 checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope

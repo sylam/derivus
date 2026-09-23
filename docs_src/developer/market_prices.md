@@ -1231,9 +1231,12 @@ the five families whose quotes are not `Points` rows and are therefore wholly pl
 
 **Timestamps are data the engine stores and reports.** Each quote row carries when it was seen; the
 written surface carries the latest as `Quote_Timestamp`, its own as-of, `bind='value'` because it
-travels with the vols. It enters `values_hash` and therefore the replay identity — the same numbers
-read off a different snapshot are a different market event — and **nothing in pricing reads it**.
-What counts as too old is the consumer's policy. Resolution is FULL: `CustomJsonEncoder` writes a
-midnight `Timestamp` as the plain date it always did (old files re-encode byte-stable) and a
-non-midnight one in ISO form with its time, so the 09:15 and 16:30 snapshots of a quote survive a save
-as themselves and `values_hash` separates them.
+travels with the vols. A stamp is patched, ticked and stored like any value and **nothing in pricing
+reads it** — what counts as too old is the consumer's policy. **A MARKET'S IDENTITY IS ITS NUMBERS**,
+so `values_hash` is taken of the values patch with the clocks projected out (`schema.without_clocks`,
+derived from the declarations — a value-bound `Date` on a factor and the stamp on a quote row): the
+same numbers are the same market whenever they were read, and a cadence that re-stamps a board it did
+not move leaves the hash bit-identical. Resolution is still FULL where the stamp is stored:
+`CustomJsonEncoder` writes a midnight `Timestamp` as the plain date it always did (old files
+re-encode byte-stable) and a non-midnight one in ISO form with its time, so the 09:15 and 16:30
+snapshots of a quote survive a save as themselves.

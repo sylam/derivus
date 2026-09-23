@@ -596,15 +596,17 @@ terms, the market data used, values only, no formulas, `created` pinned to the b
 
 TWO ids name the quoting ACT and they are not the same hash. The runner's `quote_id` — structure, params,
 the netting set, the market the document was carrying, and a submission clock — names both files and is
-the one an approval quotes. The service's `result_id` — book etag, structure, params, the netting set,
+the one an acceptance quotes. The service's `result_id` — book etag, structure, params, the netting set,
 and its own submission clock — names the queued JOB, exactly as `/execute` does. Both carry a clock
 because a quote is an ACT: two identical asks are two quotes, never one coalesced result, and a refusal
 is never pinned.
 
-`POST /book/quote` is the approval: the pending deal booked through the SAME validate-before-write seam
-as any booking, refused in the same wording, against the book as it stands NOW — and the pending file
-survives the booking as the audit trail. A missing `xlsxwriter` never refuses a quote; the outcome names
-the install under `files['sheet_note']` instead.
+`POST /book/quote` is the ACCEPTANCE — the client took the price, so the quote is recorded and the
+pending deal booked through the SAME validate-before-write seam as any booking, refused in the same
+wording, against the book as it stands NOW — and the pending file survives the booking as the audit
+trail. A missing `xlsxwriter` never refuses a quote; the outcome names the install under
+`files['sheet_note']` instead. What the record asks of it, and the workflow a desk can put between the
+two, is [The Spine](spine.md).
 
 The composed deal carries its legs inside the block under `Children`, and `splice_deal` lifts them onto
 the node — the engine walks `node['Children']` and never inside a deal block. Before the lift lived in

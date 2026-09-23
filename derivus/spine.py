@@ -46,7 +46,7 @@ import os
 import threading
 
 from ._version import __version__
-from .schema import tables_of
+from .schema import tables_of, without_clocks
 from .config import Config, CustomJsonEncoder, as_json
 
 #: The whole switch, and the actor beside it. Read per call, like `DV_HOME` one module over.
@@ -73,6 +73,13 @@ NO_ACTOR = ('no actor for this append: every event carries the pseudonymous subj
 #: One writer, one act at a time. The spine answers `WriterBusy` to a second holder of the home;
 #: this lock keeps a request thread and the compute worker from meeting that over their own book.
 _WRITER = threading.Lock()
+
+#: The folds a BOOKING advances rather than re-walking, as the `(lsn, state)` pair `projections.fold`
+#: takes: projector name -> that pair, under the one HISTORY they were folded on. A box serves one
+#: record, so a history that changes drops the lot rather than growing a map nobody evicts.
+#: Assignment is the only write and the fold copies before it advances, so a second thread costs at
+#: worst a pair one position older.
+_ADVANCED, _ADVANCED_HOME = {}, None
 
 
 class SpineRefused(ValueError):
@@ -110,7 +117,7 @@ def package():
     try:
         import derivus_spine
         from derivus_spine import (capability, firmness, policy,  # noqa: F401  attribute
-                                   projections, verbs)            # noqa: F401  access below
+                                   projections, tiers, verbs)     # noqa: F401  access below
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -199,6 +206,38 @@ def _rows(projector, lsn=None):
         return named.rows(projections.fold(log, named, lsn=lsn))
 
     return folded(fold)
+
+
+def advancing(log, projector, lsn=None):
+    """`projector`'s state at `lsn`, ADVANCED from the position this process last folded it to.
+
+    The strip's own pattern moved onto the booking path: a fold takes an `(lsn, state)` pair, so a
+    booking pays for the events since the last one rather than for every decision the desk has ever
+    filed - which is the difference between a constant and a number that grows with exactly the rows
+    this verb mints. The fold is PURE in that pair, copying the state before it advances it, so what
+    is held here is never what a caller reads.
+
+    Bounded at the position it answers rather than at the end of the platter, so the pair says
+    exactly what it covers and a frame appended mid-fold is not applied twice. A position BEHIND the
+    pair refolds from genesis, and a history that is not the one the pairs were taken on drops them
+    - keyed on the GENESIS EVENT HASH rather than on the path, the way `read_seed` checks a close's
+    own hash, so a home re-minted where the last one stood is a different record and not a fold
+    that answers its predecessor's. What comes back is the pair's own state, so a caller READS it
+    and does not edit it.
+    """
+    global _ADVANCED_HOME
+    projections = package().projections
+    at = log.head()[0] if lsn is None else lsn
+    genesis = log.frame_at(1)['event_hash']
+    if _ADVANCED_HOME != genesis:
+        _ADVANCED.clear()
+        _ADVANCED_HOME = genesis
+    held = _ADVANCED.get(projector.name)
+    state = projections.fold(log, projector, lsn=at,
+                             seed=held if held and held['lsn'] <= at else None)
+    _ADVANCED[projector.name] = {'projector': projector.name, 'version': projector.version,
+                                 'lsn': at, 'state': state}
+    return state
 
 
 def canonical(obj):
@@ -355,8 +394,12 @@ def replay(context):
 
 
 def values_of(context):
-    """The values vector this context would run against, as the bytes its `values_hash` names."""
-    return canonical(context.market_patch())
+    """The values vector this context would run against, as the bytes its `values_hash` names.
+
+    The same clock projection `values_hash` takes, so the stored vector's ADDRESS is the pinned
+    hash and `verbs._values` can assert the two are one number.
+    """
+    return canonical(without_clocks(context.market_patch()))
 
 
 def result_of(out):
@@ -532,14 +575,85 @@ def quotes(lsn=None):
     return _rows('quotes', lsn)
 
 
+def quote_at(lsn, quote_id):
+    """The quote filed at `lsn`, as the body the record holds, or a refusal naming what is there.
+
+    ONE FRAME AND ONE BODY. A decision names the quote it is about and the acceptance wrote down
+    where that quote sits, so this is `frame_at`'s seek by byte offset rather than a fold over every
+    quote the desk has ever struck - the one read whose cost would otherwise grow with the desk's
+    own activity. The id is checked against the body rather than assumed: a position remembered
+    somewhere else is not evidence about what stands at it.
+    """
+    def sought(log):
+        frame = log.frame_at(lsn)
+        if frame['event_type'] != 'quote_filed':
+            raise SpineRefused(
+                'LSN {} holds a {} in this record and not the quote {!r} - the acceptance files '
+                'the quote and writes down where, so a position holding something else is a '
+                'pending file edited or copied from another home. Accept the quote '
+                'again'.format(lsn, frame['event_type'], quote_id))
+        body = log.open_body(frame)
+        if body.get('quote_id') != quote_id:
+            raise SpineRefused(
+                'LSN {} holds the quote {!r} in this record and not {!r} - a pending file names '
+                'the position its own acceptance was filed at, so this one was edited or copied '
+                'from another home. Accept the quote again'.format(
+                    lsn, body.get('quote_id'), quote_id))
+        return dict(body, lsn=frame['lsn'], actor=frame['actor'], book=frame['book'])
+
+    return folded(sought)
+
+
 def verdicts(plan_hash, lsn=None):
     """The verdicts filed against `plan_hash` at `lsn`, oldest first.
 
     An empty list is a plan nobody has ruled on, which is not the answer a rejected plan gives - the
     two have different remedies, so the caller reads the list rather than a boolean.
     """
-    filed = _rows('decisions', lsn)['plans']
-    return next((row['verdicts'] for row in filed if row['plan_hash'] == plan_hash), [])
+    return _verdicts(_rows('decisions', lsn), plan_hash)
+
+
+def _verdicts(rows, plan_hash):
+    """The verdicts the `decisions` rows hold against `plan_hash`, oldest first."""
+    return next((row['verdicts'] for row in rows['plans'] if row['plan_hash'] == plan_hash), [])
+
+
+def route_ticket(plan_hash, terms, booker, lsn=None):
+    """Which tier a ticket falls in here and whether it is already signed, or None where this home
+    declared no tiers - which is the flow that books.
+
+    `plan_hash` is the ticket ITSELF, the plan a decision is filed over; `terms` is what the checks
+    read, `{notional_in, tenor_years, values_hash}`, as `tiers.assess` takes it. The composition
+    nothing else performs: the `tiers` document in force, the evaluator over it, the market names
+    standing, and - for a tier that wants a human - the verdicts standing over that plan. One open
+    of the log for all four, and both folds ADVANCE (`advancing`) rather than re-walk: this runs on
+    every acceptance, inside the write closure, and the rows it opens are the ones this verb mints.
+
+    `{tier, seat, refusals, approval_lsn, waits_on}`: a `tier` of None with the route's own
+    sentences under `refusals` is a ticket no tier admits; a `seat` is the subject an automatic
+    approval signs under; `approval_lsn` is the verdict that stands and `waits_on` names what is
+    missing where none does.
+    """
+    def routed(log):
+        spine = package()
+        document = spine.policy.tiers_in_force(log, lsn)
+        if document is None:
+            return None
+        markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn)['names']
+        verdict = spine.tiers.assess(
+            document, terms, dict((name, row['values_hash']) for name, row in markets.items()))
+        answer = {'tier': verdict['tier'], 'seat': verdict['seat'],
+                  'refusals': verdict['refusals'], 'approval_lsn': None, 'waits_on': None}
+        if verdict['tier'] is None or verdict['seat'] is not None:
+            return answer
+        tier = next(row for row in document[spine.policy.TIERS_SECTION]
+                    if row['name'] == verdict['tier'])
+        decisions = spine.projections.PROJECTORS['decisions']
+        answer['approval_lsn'], answer['waits_on'] = spine.tiers.standing_approval(
+            tier, booker, _verdicts(decisions.rows(advancing(log, decisions, lsn)), plan_hash))
+        return answer
+
+    return folded(routed)
 
 
 def resolve_market(name, actor=None, process=None):
@@ -605,22 +719,23 @@ def resolve_market(name, actor=None, process=None):
 
 
 def firmness_policy():
-    """The two staleness windows standing in the record - declared, or the spine's stated defaults.
+    """The staleness window standing in the record, or the empty document a home declaring none
+    runs on.
 
-    A fold rather than a write, so asking what the windows are never queues behind a booking or
-    turns an approval into a `WriterBusy`.
+    A fold rather than a write, so asking what the window is never queues behind a booking or turns
+    an acceptance into a `WriterBusy`.
     """
     return folded(package().policy.firmness_in_force)
 
 
-def check_firmness(pinned, current, ages, quote_id=None, policy=None):
-    """Whether this quote is still firm in both dimensions: the verdict, or a refusal naming each
-    dimension that failed and its remedy.
+def check_firmness(pinned, current, pillar_age, quote_id=None, policy=None):
+    """Whether this quote may be booked: the verdict, or a refusal naming what failed and its
+    remedy.
 
     A pure call into `derivus_spine.firmness` over plain data. `policy` is read out of the record
-    when the caller hands none in, which is the ordinary case - the windows are policy data, so they
-    live in the log rather than in a constant here.
+    when the caller hands none in, which is the ordinary case - the window is policy data, so it
+    lives in the log rather than in a constant here.
     """
-    windows = firmness_policy() if policy is None else policy
+    window = firmness_policy() if policy is None else policy
     with translating():
-        return package().firmness.check(pinned, current, ages, windows, quote_id=quote_id)
+        return package().firmness.check(pinned, current, pillar_age, window, quote_id=quote_id)

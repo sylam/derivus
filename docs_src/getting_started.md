@@ -145,7 +145,8 @@ ships seven structures — `Straddle`, `Strangle`, `ZeroCostCollar`, `Seagull`, 
 each a class naming its sales names, its legs and a recipe (price this leg, solve that one to the
 other's premium). `POST /book/structure` runs the recipe server-side and files the pending trade
 plus its `.xlsx` ticket under `DV_HOME/tmp`, named by the quote id; `POST /book/quote` is the
-approval. Over MCP the same three acts are `describe_structure` (what a zero-cost collar IS, and
+ACCEPTANCE, called when the client takes the price. Over MCP the same three acts are
+`describe_structure` (what a zero-cost collar IS, and
 the parameters it takes — strikes in **market** terms, a USDZAR floor of 17.50), `solve_structure`
 and `book_quote(quote_id)`, so this is a sentence:
 
@@ -160,7 +161,10 @@ where the book quotes no two-way at all. The quote prices on this workstation's 
 the terminal is up and on the book's last ticked one, with the reason named, when it is not — the
 `spot` block says which was used. `book_quote` books the **mirror** of the pending deal, the
 desk's side, because a book holds the bank's position; the pending file survives as the audit
-trail. The full contract is on [the structures page](developer/structures.md).
+trail. Quoting records nothing and accepting records everything — where the desk keeps a book of
+record, the quote is filed at the acceptance and the desk's own workflow decides whether the trade
+books then or waits for a second seat ([The Spine](developer/spine.md)). The full contract is on
+[the structures page](developer/structures.md).
 
 Underneath all of it `solve_deal` is still the single-field verb: a root find over ordinary base
 valuations, run server-side. Par forwards (target 0), sales margins (target the margin), a strike

@@ -25,9 +25,9 @@ the package, it runs on numbers that came out of the engine, and every epsilon i
 by a deployment. A result class the policy does not name is refused rather than compared at a
 default this module picked.
 
-A firmness policy is optional where a tolerance policy is not: a home that declares none is quoting
-off its own book rather than making a claim about somebody else's numbers, so it runs on the stated
-`FIRMNESS_DEFAULTS` below. A fixings policy is the authority an observation is read under, and it
+A firmness policy is optional where a tolerance policy is not, and it has no defaults: a home that
+declares none has not said how stale a board may be, so nothing is refused on staleness and the age
+measured is reported instead. A fixings policy is the authority an observation is read under, and it
 names one source order per index: a home declaring none has said which administrator it believes
 about nothing, so every index it is asked for refuses by name. A tiers policy is the workflow a
 ticket falls through, and it has no default either: a home declaring none has declared no tiers, so
@@ -70,14 +70,18 @@ DESIGNATED_PROCESSES = ('settlement_export',)
 #: The prefix of a market one seat owns. A designated process never resolves one.
 PRIVATE_MARKET = 'private/'
 
-#: The firmness windows, in seconds, that a home declaring no firmness policy runs on.
-#: `values_seconds` is one beat of `DV_Service --tick`, the cadence a market pin is refreshed on;
-#: `plan_seconds` is the ten minutes `Quote Policy.firm_seconds` defaults to.
-FIRMNESS_DEFAULTS = {'values_seconds': 30.0, 'plan_seconds': 600.0}
+#: The firmness document's one field, and the whole of it: how old, in seconds, the oldest stamped
+#: pillar of the board a quote was struck on may be. There is NO DEFAULT - a home declaring no
+#: firmness policy has not said how stale is too stale, so it refuses nothing and reports the age.
+PILLAR_SECONDS = 'pillar_seconds'
 
-#: What a tiers document may not restate: the two windows and the verdict they answer. Pillar age
-#: and book staleness are checked on every booking before a tier is read.
-FIRMNESS_FIELDS = tuple(sorted(FIRMNESS_DEFAULTS)) + ('firm',)
+#: The two windows this one replaced, refused BY NAME rather than ignored: a document declaring one
+#: would be a desk believing it had a rule that nothing enforces.
+FIRMNESS_RETIRED = ('plan_seconds', 'values_seconds')
+
+#: What a tiers document may not restate: the window and the verdict it answers. Pillar age is
+#: checked on every booking before a tier is read.
+FIRMNESS_FIELDS = (PILLAR_SECONDS, 'firm')
 
 
 def parse_tolerance(document, where):
@@ -113,35 +117,44 @@ def parse_tolerance(document, where):
 
 
 def parse_firmness(document, where):
-    """Check `document` as a firmness policy and return it with `FIRMNESS_DEFAULTS` filled in.
+    """Check `document` as a firmness policy and return it parsed.
 
-    Two windows and no third: `{"values_seconds": 30, "plan_seconds": 600}`, each optional and each
-    a finite non-negative number of seconds. An unreadable window raises here, at the declaration,
-    rather than later at an approval that could not act on it.
+    ONE WINDOW AND NO SECOND: `{"pillar_seconds": 900}`, a finite non-negative number of seconds,
+    and the document may be empty. An unreadable window raises here, at the declaration, rather
+    than later at a booking that could not act on it.
+
+    The two windows this replaced are refused by name. `values_seconds` asked whether the board had
+    moved since the quote, which is now REPORTED on the booking rather than refused - the market
+    moves between a quote and the client's word, and the desk's own `firm_seconds` bounds it;
+    `plan_seconds` aged a book that moves by booking rather than by clock, and the equality that
+    catches a moved book needs no window at all.
     """
     def refuse(sentence):
         raise MalformedEvent('{}: {}'.format(where, sentence))
 
     if not isinstance(document, dict):
-        refuse('a firmness policy is {}, not a JSON object - it is {{{}}}'.format(
-            type(document).__name__,
-            ', '.join('"{}": seconds'.format(name) for name in sorted(FIRMNESS_DEFAULTS))))
-    surplus = sorted(set(document) - set(FIRMNESS_DEFAULTS))
+        refuse('a firmness policy is {}, not a JSON object - it is {{"{}": seconds}}'.format(
+            type(document).__name__, PILLAR_SECONDS))
+    retired = sorted(set(document) & set(FIRMNESS_RETIRED))
+    if retired:
+        refuse('a firmness policy carries {} - the board moving between a quote and its acceptance '
+               'is REPORTED on the booking and never refused, and a book that moved is caught by '
+               'the plan hash rather than by a clock. Declare {} instead, which is how old the '
+               'board a quote was struck on may have been'.format(
+                   ', '.join(retired), PILLAR_SECONDS))
+    surplus = sorted(set(document) - {PILLAR_SECONDS})
     if surplus:
         refuse('a firmness policy carries {} beyond {} - the document is closed at the field level; '
                'a window nobody reads is a staleness rule nobody enforces'.format(
-                   ', '.join(surplus), ', '.join(sorted(FIRMNESS_DEFAULTS))))
-    read = dict(FIRMNESS_DEFAULTS)
-    for name in sorted(FIRMNESS_DEFAULTS):
-        if name not in document:
-            continue
-        window = document[name]
-        if not is_number(window) or window < 0:
-            refuse('{} is {!r} - a staleness window is a NUMBER of seconds and is never negative; '
-                   'a window that cannot be read is one no approval could be measured against'
-                   .format(name, window))
-        read[name] = float(window)
-    return read
+                   ', '.join(surplus), PILLAR_SECONDS))
+    if PILLAR_SECONDS not in document:
+        return {}
+    window = document[PILLAR_SECONDS]
+    if not is_number(window) or window < 0:
+        refuse('{} is {!r} - a staleness window is a NUMBER of seconds and is never negative; a '
+               'window that cannot be read is one no booking could be measured against'.format(
+                   PILLAR_SECONDS, window))
+    return {PILLAR_SECONDS: float(window)}
 
 
 def parse_fixings(document, where):
@@ -342,16 +355,15 @@ def _public(market, whose, refuse):
 def _unstaled(carrying, whose, refuse):
     """Refuse a staleness window or its verdict declared in a tiers document.
 
-    Pillar age IS `values_seconds` and book staleness IS `plan_seconds`, enforced on every booking
-    before any tier is read, so a second spelling of either would be two standards for one question.
+    Pillar age IS the firmness policy's `pillar_seconds`, checked on every booking before any tier
+    is read, so a second spelling of it would be two standards for one question.
     """
-    restated = sorted(set(carrying) & set(FIRMNESS_FIELDS))
+    restated = sorted(set(carrying) & (set(FIRMNESS_FIELDS) | set(FIRMNESS_RETIRED)))
     if restated:
-        refuse('{} carries {} - pillar age and book staleness are the {} policy\'s {}, checked on '
-               'EVERY booking before a tier is read, so a second spelling of one would be two '
-               'standards for one question; declare the window under {} instead'.format(
-                   whose, ', '.join(restated), FIRMNESS_POLICY,
-                   ' and '.join(sorted(FIRMNESS_DEFAULTS)), FIRMNESS_POLICY))
+        refuse('{} carries {} - how stale a board may be is the {} policy\'s {}, checked on EVERY '
+               'booking before a tier is read, so a second spelling of it would be two standards '
+               'for one question; declare the window under {} instead'.format(
+                   whose, ', '.join(restated), FIRMNESS_POLICY, PILLAR_SECONDS, FIRMNESS_POLICY))
 
 
 #: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
@@ -522,13 +534,13 @@ def tolerances_in_force(log, lsn=None):
 
 
 def firmness_in_force(log, lsn=None):
-    """The firmness windows standing at `lsn` - the declared ones, or `FIRMNESS_DEFAULTS`.
+    """The firmness document standing at `lsn`, or the empty one where this home declared none.
 
-    Absence is not a refusal here: a home declaring no firmness policy runs on the stated defaults,
-    and the firmness check reports which window it measured against.
+    Absence is not a refusal and not a default: a home declaring no firmness policy refuses nothing
+    on staleness, and the check reports the age it measured beside the window it had none of.
     """
     blob, document, _ = in_force(log, FIRMNESS_POLICY, lsn)
-    return dict(FIRMNESS_DEFAULTS) if blob is None else document
+    return {} if blob is None else document
 
 
 def tiers_in_force(log, lsn=None):

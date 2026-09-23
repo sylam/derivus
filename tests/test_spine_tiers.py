@@ -102,11 +102,11 @@ def read(verdict_, tier, check):
 def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_declared(tmp_path):
     """Every way the document can be wrong, met at the DECLARATION and named there.
 
-    The two that are not merely shape: a tier restating `values_seconds`, `plan_seconds` or `firm`
-    is refused because pillar age and book staleness are the firmness policy's two windows and are
-    checked on every booking before a tier is read - a second spelling would be two standards for
-    one question; and a designation naming a `private/` market is refused because a designated
-    process resolves the market the firm declared and never one seat's own.
+    The two that are not merely shape: a tier restating `pillar_seconds`, `firm` or either of the
+    two windows those replaced is refused because how stale a board may be is the firmness policy's
+    one window and is checked on every booking before a tier is read - a second spelling would be
+    two standards for one question; and a designation naming a `private/` market is refused because
+    a designated process resolves the market the firm declared and never one seat's own.
     """
     home, log = minted(tmp_path)
     broken = (
@@ -120,6 +120,7 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
         ('max_tenor_years', {'tiers': [{'name': 'auto', 'max_tenor_years': -1.0}]}),
         ('escalates_to', {'tiers': [{'name': 'auto', 'escalates_to': 'desk'}]}),
         ('four_eyes', {'tiers': [{'name': 'auto', 'seat': AUTO_SEAT, 'four_eyes': True}]}),
+        ('firmness', {'tiers': [{'name': 'auto', 'pillar_seconds': 900}]}),
         ('firmness', {'tiers': [{'name': 'auto', 'values_seconds': 30}]}),
         ('firmness', {'tiers': [{'name': 'auto', 'firm': True}]}),
         ('firmness', dict(POLICY, plan_seconds=600)),

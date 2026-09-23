@@ -70,6 +70,12 @@ MARKET_QUOTE_REQUIRED = ('Quoted_Market_Value',)
 #: until then, and read only at call time. `partition_market_price` is the one reader.
 MARKET_QUOTE_CONTAINERS = ()
 
+#: Which of those value keys is a CLOCK, and which value-bound field of each factor type is one.
+#: Both derived at the bottom of this file off the same declarations - see `quote_clocks` and
+#: `value_clocks` - and read only at call time, by `without_clocks`.
+MARKET_QUOTE_CLOCKS = ()
+VALUE_CLOCKS = {}
+
 #: How `mapping` renders each type for Handsontable. Rendering only, derived on the way out.
 WIDGET_FORMAT = {
     'Date': {'type': 'date', 'dateFormat': 'YYYY-MM-DD'},
@@ -625,22 +631,72 @@ def apply_values(type_name, structural, values):
     return block
 
 
+def quote_tables(module):
+    """`(the table's key, its row's fields)` for every table a market-price family declares - the
+    ONE walk the two derivations below are read off. Tables and containers alike, since the two
+    `Points` families declare the same row two ways."""
+    return [(f.key, f.row.fields if f.row is not None else f.sub_fields or [])
+            for cls in vars(module).values()
+            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
+            and 'market_factor_type' in cls.__dict__
+            for f in cls.__dict__['fields']]
+
+
 def quote_containers(module):
     """The instrument keys whose ROWS travel the value plane - `MARKET_QUOTE_CONTAINERS`, read off
     the market-price families' own declarations.
 
     A field is a quote container when its row declares EVERY `MARKET_QUOTE_VALUES` key - a
     DECLARATION rather than a list of table names, so a family carrying only a mid stays wholly
-    plan-side and one that grows the block joins by declaring it. Tables and containers alike, since
-    the two `Points` families declare the same row two ways.
+    plan-side and one that grows the block joins by declaring it.
     """
     keys = set(MARKET_QUOTE_VALUES)
-    return tuple(sorted({
-        f.key for cls in vars(module).values()
-        if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
-        and 'market_factor_type' in cls.__dict__
-        for f in cls.__dict__['fields']
-        if keys <= {c.key for c in (f.row.fields if f.row is not None else f.sub_fields or [])}}))
+    return tuple(sorted({key for key, row in quote_tables(module)
+                         if keys <= {c.key for c in row}}))
+
+
+def quote_clocks(module):
+    """The `MARKET_QUOTE_VALUES` keys that say WHEN a row was read rather than what it says -
+    `MARKET_QUOTE_CLOCKS`, read off the same declarations.
+
+    A stamp is the one value key declared as a `Date`, and it is derived rather than spelled so a
+    family growing a second clock joins by declaring it.
+    """
+    return tuple(sorted({c.key for _, row in quote_tables(module) for c in row
+                         if c.key in MARKET_QUOTE_VALUES and c.type == 'Date'}))
+
+
+def value_clocks():
+    """Every factor type's value-bound `Date` fields - `VALUE_CLOCKS`, the clocks that travel with
+    a factor's numbers (`Quote_Timestamp` on a surface).
+
+    Keyed by EVERY factor type, empty tuple included, so a name this map does not know is a market
+    price rather than a factor and `without_clocks` needs no second test for which it is.
+    """
+    return {type_name: tuple(sorted(key for key, f in declared.items()
+                                    if f.bind == 'value' and f.type == 'Date'))
+            for type_name, declared in FACTOR_FIELDS.items()}
+
+
+def without_clocks(patch):
+    """A market values patch with its CLOCKS projected out - what `values_hash` is taken of.
+
+    A MARKET'S IDENTITY IS ITS NUMBERS. When a board was read is data on the row and on the quote
+    that cites it, so a tick delivering the same numbers under a later stamp is the same market and
+    a rehash of it carries no information. Both clocks are read off the declarations rather than
+    listed here: `VALUE_CLOCKS` on a price factor and `MARKET_QUOTE_CLOCKS` on a quote row.
+    """
+    projected = {}
+    for name, values in patch.items():
+        clocks = VALUE_CLOCKS.get(utils.check_rate_name(name)[0])
+        if clocks is None:
+            projected[name] = {container: [{key: cell for key, cell in row.items()
+                                            if key not in MARKET_QUOTE_CLOCKS} for row in rows]
+                               for container, rows in values.items()}
+        else:
+            projected[name] = {key: content for key, content in values.items()
+                               if key not in clocks}
+    return projected
 
 
 def quote_table(block, market_price, key='Points'):
@@ -674,6 +730,24 @@ def quote_rows(instrument):
         if rows and isinstance(rows, list):
             return key, rows
     return None, None
+
+
+def quote_stamps(market):
+    """Every clock the market data carries, in whatever wire form it holds them - a value-bound
+    `Date` on a price factor and the stamp on each quote row.
+
+    What a reader asks how old a BOARD is, and it is EXACTLY what `without_clocks` projects out of
+    the values patch: one declaration answers both questions, so a book whose stamps live on the
+    surface rather than on quote rows has an age for the same reason it has an identity. `market` is
+    the explicit market-data section, whose two halves are read off `VALUE_CLOCKS` and
+    `MARKET_QUOTE_CLOCKS` at call time the way `quote_rows` reads its own containers.
+    """
+    stamps = [block[key] for name, block in (market.get('Price Factors') or {}).items()
+              for key in VALUE_CLOCKS.get(utils.check_rate_name(name)[0], ()) if block.get(key)]
+    stamps.extend(row[key] for block in (market.get('Market Prices') or {}).values()
+                  for row in quote_rows(block.get('instrument') or {})[1] or []
+                  for key in MARKET_QUOTE_CLOCKS if row.get(key))
+    return stamps
 
 
 def partition_market_price(block):
@@ -1000,9 +1074,12 @@ from . import structures  # noqa: E402
 
 #: Filled from the declarations now that the families are imported - see `quote_containers`.
 MARKET_QUOTE_CONTAINERS = quote_containers(bootstrappers)
+MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 
 _types, _sections, _containers = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
+#: After `emit_factor`, which is what fills `FACTOR_FIELDS` - see `value_clocks`.
+VALUE_CLOCKS = value_clocks()
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 
 #: The blank value of a table COLUMN, keyed by its declared `obj` token. A shape is never a column,

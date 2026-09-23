@@ -79,9 +79,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'patch_market_values', 'describe_securities', 'configure_securities',
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
-                'book_quote', 'calibrate_spot_model', 'book_risk_summary', 'xva_view',
-                'recalc_xva', 'book_reconcile', 'book_diary', 'close_check', 'book_activity',
-                'book_markets'}
+                'book_quote', 'approve_quote', 'reject_quote', 'calibrate_spot_model',
+                'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
+                'close_check', 'book_activity', 'book_markets'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -90,6 +90,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
+                       'approve_quote', 'reject_quote',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market'}
@@ -115,7 +116,8 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
     assert 'RF_SERVICE_URL' not in instructions, "the maintainer's docstring, not the desk's"
     for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
-                 '{written: false, refused: [...]}', 'book_diary', 'close_check'):
+                 '{written: false, refused: [...]}', 'book_diary', 'close_check',
+                 'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_quote'):
         assert said in instructions, said
 
 
@@ -588,6 +590,76 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
 
         with pytest.raises(ToolError, match='tmp'):
             mcp_server.book_quote('nothing-was-ever-quoted-under-this')
+    finally:
+        service.BOOK = None
+
+
+def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeypatch):
+    """THE WARNING CLOSES: a desk that keeps a record books through these tools. `book_deal` carries
+    the signed quantity, the execution reference and the seat the service demands under a home, and
+    without them it refuses in the SERVICE's own words rather than in a paraphrase here.
+
+    And the two-act desk tier runs through the binding exactly as it does through the service: the
+    acceptance is filed, the booking waits on a second seat, `approve_quote` under another one
+    satisfies it and the retry books. Nothing is monkeypatched - a real home under tmp, a real
+    policy declared through the record's own verb, the fault injected as DATA.
+    """
+    from derivus_spine import SpineLog, init_home, policy
+
+    from test_service import fx_vol_quotes
+    home = tmp_path / 'spine'
+    init_home(home, 'subject-desk-one')
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', 'subject-desk-one')
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+
+    client = {'Object': 'NettingCollateralSet', 'Reference': 'CLIENT_A', 'Netted': 'True',
+              'Collateralized': 'False', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
+              'Funding_Rate': 'USD', 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
+              'Credit_Support_Amounts': {'Counterparty': 'CPTY_A'}}
+    document = json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})))
+    document['Calc']['Deals']['Deals']['Children'].append(
+        {'Instrument': {'.Deal': client}, 'Children': []})
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        assert mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))['written']
+        deal = {'Object': 'FixedCashflowDeal', 'Reference': 'CF-RECORDED', 'Currency': 'ZAR',
+                'Discount_Rate': 'ZAR', 'Amount': 250_000.0,
+                'Payment_Date': {'.Timestamp': '2026-06-28'}}
+
+        with pytest.raises(ToolError, match='quantity'):
+            mcp_server.book_deal(deal, parent_reference='CLIENT_A')
+        with pytest.raises(ToolError, match='execution_reference'):
+            mcp_server.book_deal(deal, parent_reference='CLIENT_A', quantity=-250_000.0)
+
+        booked = mcp_server.book_deal(deal, parent_reference='CLIENT_A', quantity=-250_000.0,
+                                      execution_reference='EXEC-11', actor='subject-desk-one')
+        assert booked['written'] is True and booked['recorded']['lsn']
+
+        log = SpineLog(home)
+        try:
+            policy.declare(log, 'subject-desk-one', policy.TIERS_POLICY,
+                           {'tiers': [{'name': 'desk', 'four_eyes': True}]})
+        finally:
+            log.close()
+
+        quote = asyncio.run(mcp_server.solve_structure('ZeroCostCollar', {
+            'pair': 'USDZAR', 'expiry': '1Y', 'notional': 1_000_000.0,
+            'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)},
+            netting_set='CLIENT_A', actor='subject-desk-one'))
+        waiting = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
+        assert waiting['written'] is False and waiting['tier']['name'] == 'desk'
+        assert 'no verdict is filed' in waiting['waits_on']
+
+        signed = mcp_server.approve_quote(quote['quote_id'], 'subject-desk-two')
+        assert signed['ticket'] == waiting['accepted']['ticket']
+        accepted = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
+        assert accepted['written'] is True and accepted['tier']['approval_lsn'] == signed[
+            'recorded']['lsn']
+        assert accepted['accepted'] == waiting['accepted'], 'a retry minted a second acceptance'
     finally:
         service.BOOK = None
 

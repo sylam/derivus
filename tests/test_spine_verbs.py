@@ -31,7 +31,8 @@ are ordinary functions in this file, which is what lets the re-execution path ru
     contradicting an attestation this hub made itself.
   * THE TOLERANCE POLICY is the only epsilon in the package, so an unnamed class is refused and a
     home with no policy pins nothing.
-  * FIRMNESS in two dimensions, four refusals, each naming itself.
+  * FIRMNESS: two answers that refuse - the book having moved, the board already stale against the
+    one window a desk declares - and one that REPORTS, the market having moved since the quote.
 """
 import hashlib
 import json
@@ -693,8 +694,8 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
         with pytest.raises(MalformedEvent):
             policy.declare(log, MINT, policy.TOLERANCE_POLICY, broken)
 
-    for broken in ({'values_seconds': -1}, {'plan_seconds': 'ten minutes'},
-                   {'values_seconds': 30, 'surprise': 1}):
+    for broken in ({'pillar_seconds': -1}, {'pillar_seconds': 'ten minutes'},
+                   {'pillar_seconds': 30, 'surprise': 1}):
         with pytest.raises(MalformedEvent):
             policy.declare(log, MINT, policy.FIRMNESS_POLICY, broken)
 
@@ -709,27 +710,26 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
     log.close()
 
 
-def test_the_policy_in_force_is_a_fold_and_the_defaults_are_stated(tmp_path):
+def test_the_policy_in_force_is_a_fold_and_absence_is_the_answer(tmp_path):
     """The last declaration at or before a position is the one that answers, which makes "what
     standard was this claim held to in March" a fold like every other question. A home that
-    declared no FIRMNESS policy runs on the stated desk conventions, because it is not making a
-    claim about anybody else's numbers - while a home that declared no TOLERANCE policy pins
-    nothing, because it is.
+    declared no FIRMNESS policy refuses nothing on staleness, because it has not said how stale is
+    too stale - while a home that declared no TOLERANCE policy pins nothing, because attesting
+    somebody else's numbers is a claim and quoting off your own board is not.
 
     The fold answers WHERE as well as what, off the same walk, so a reader showing an operator what
     is in force and where it came from cannot show one declaration's blob at another's position.
     """
     home, log = minted(tmp_path)
     assert policy.in_force(log, policy.TOLERANCE_POLICY) == (None, None, None)
-    assert policy.firmness_in_force(log) == {'values_seconds': 30.0, 'plan_seconds': 600.0}
+    assert policy.firmness_in_force(log) == {}
 
-    first = policy.declare(log, MINT, policy.FIRMNESS_POLICY, {'values_seconds': 5})
-    assert policy.firmness_in_force(log) == {'values_seconds': 5.0, 'plan_seconds': 600.0}
-    second = policy.declare(log, MINT, policy.FIRMNESS_POLICY,
-                            {'values_seconds': 5, 'plan_seconds': 90})
-    assert policy.firmness_in_force(log) == {'values_seconds': 5.0, 'plan_seconds': 90.0}
+    first = policy.declare(log, MINT, policy.FIRMNESS_POLICY, {'pillar_seconds': 5})
+    assert policy.firmness_in_force(log) == {'pillar_seconds': 5.0}
+    second = policy.declare(log, MINT, policy.FIRMNESS_POLICY, {'pillar_seconds': 90})
+    assert policy.firmness_in_force(log) == {'pillar_seconds': 90.0}
     # as of the earlier position the earlier document is what governed
-    assert policy.firmness_in_force(log, second['lsn'] - 1)['plan_seconds'] == 600.0
+    assert policy.firmness_in_force(log, second['lsn'] - 1)['pillar_seconds'] == 5.0
     assert first['lsn'] < second['lsn']
 
     # ONE WALK, ONE ANSWER: the position comes off the frame this fold chose, so an open-bodied
@@ -739,7 +739,7 @@ def test_the_policy_in_force_is_a_fold_and_the_defaults_are_stated(tmp_path):
                actor=MINT)
     assert policy.in_force(log, policy.FIRMNESS_POLICY)[2] == second['lsn']
     assert policy.in_force(log, policy.FIRMNESS_POLICY)[0] == second['blob']
-    assert policy.firmness_in_force(log)['plan_seconds'] == 90.0
+    assert policy.firmness_in_force(log)['pillar_seconds'] == 90.0
 
     # a declared document whose blob stopped answering for it refuses out loud rather than
     # folding to a sentinel: this fold is read by a VERB, so nothing is bricked by refusing
@@ -752,96 +752,128 @@ def test_the_policy_in_force_is_a_fold_and_the_defaults_are_stated(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# Firmness: two dimensions, four refusals, each naming itself.
+# Firmness: two answers that refuse, one that reports.
 
 PINNED = {'plan_hash': 'a' * 64, 'values_hash': 'b' * 64}
-WINDOWS = {'values_seconds': 30.0, 'plan_seconds': 600.0}
+WINDOW = {'pillar_seconds': 900.0}
 
 
-def test_a_quote_is_firm_when_both_dimensions_stand():
-    """The accepting case, and it reports everything it read - both hashes, both ages, both
-    windows - so a desk shown a verdict never has to re-derive the comparison to believe it."""
-    verdict = firmness.assess(PINNED, dict(PINNED), {'values': 1.0, 'plan': 1.0}, WINDOWS)
+def test_a_quote_may_be_booked_when_the_plan_stands_and_the_board_was_fresh():
+    """The accepting case, and it reports everything it read - both hashes, the age and the window -
+    so a desk shown a verdict never has to re-derive the comparison to believe it."""
+    verdict = firmness.assess(PINNED, dict(PINNED), 1.0, WINDOW)
 
     assert verdict['firm'] is True and verdict['refusals'] == []
-    assert verdict['values'] == {'firm': True, 'pinned': 'b' * 64, 'current': 'b' * 64,
-                                 'age': 1.0, 'window': 30.0, 'refusals': []}
-    assert verdict['plan']['window'] == 600.0
-    assert firmness.check(PINNED, dict(PINNED), {'values': 1.0, 'plan': 1.0}, WINDOWS,
-                          quote_id='Q-1')['firm'] is True
+    assert verdict['plan'] == {'pinned': 'a' * 64, 'current': 'a' * 64, 'moved': False}
+    assert verdict['pillar'] == {'age': 1.0, 'window': 900.0, 'firm': True}
+    assert verdict['market'] == {'pinned': 'b' * 64, 'current': 'b' * 64, 'moved': False}
+    assert firmness.check(PINNED, dict(PINNED), 1.0, WINDOW, quote_id='Q-1')['firm'] is True
 
 
-def test_a_moved_book_refuses_on_the_plan_dimension_and_says_so():
+def test_a_moved_market_is_reported_and_never_refused():
+    """THE RULING: between a quote and the client's word the board may move materially, and the
+    booking follows the spine as usual. The move is NEWS - the values struck on, the ones standing
+    and that they differ - and the desk's own `firm_seconds` is the promise that bounds it."""
+    ticked = dict(PINNED, values_hash='d' * 64)
+    verdict = firmness.assess(PINNED, ticked, 1.0, WINDOW)
+
+    assert verdict['firm'] is True and verdict['refusals'] == []
+    assert verdict['market'] == {'pinned': 'b' * 64, 'current': 'd' * 64, 'moved': True}
+    assert firmness.check(PINNED, ticked, 1.0, WINDOW, quote_id='Q-2')['market']['moved'] is True
+
+
+def test_a_moved_book_refuses_on_the_plan_and_says_so():
     """The book moved since the solve: the marginal charge was priced against a portfolio this
-    trade would no longer join. The VALUES dimension is untouched, which is the whole point of
-    having two - a desk told "stale" learns nothing, a desk told "the book moved" re-solves."""
+    trade would no longer join. The board is untouched, which is the whole point of answering them
+    apart - a desk told "stale" learns nothing, a desk told "the book moved" re-solves."""
     moved = dict(PINNED, plan_hash='c' * 64)
-    verdict = firmness.assess(PINNED, moved, {'values': 1.0, 'plan': 1.0}, WINDOWS)
+    verdict = firmness.assess(PINNED, moved, 1.0, WINDOW)
 
-    assert verdict['firm'] is False
-    assert verdict['values']['firm'] is True
-    assert verdict['plan']['firm'] is False and len(verdict['plan']['refusals']) == 1
-    said = verdict['plan']['refusals'][0]
-    assert said.startswith('the plan dimension:') and 'the book moved under it' in said
-    assert 'a' * 64 in said and 'c' * 64 in said
+    assert verdict['firm'] is False and verdict['pillar']['firm'] is True
+    assert verdict['plan']['moved'] is True and verdict['market']['moved'] is False
+    said = verdict['refusals'][0]
+    assert 'the book moved under it' in said and 'a' * 64 in said and 'c' * 64 in said
 
     with pytest.raises(QuoteNotFirm) as refusal:
-        firmness.check(PINNED, moved, {'values': 1.0, 'plan': 1.0}, WINDOWS, quote_id='Q-7')
-    assert 'Q-7' in str(refusal.value) and 'plan dimension' in str(refusal.value)
-    assert 'values dimension' not in str(refusal.value), 'the dimensions were conflated'
+        firmness.check(PINNED, moved, 1.0, WINDOW, quote_id='Q-7')
+    assert 'Q-7' in str(refusal.value) and 'the book moved under it' in str(refusal.value)
+    assert 'oldest stamped pillar' not in str(refusal.value), 'the two answers were conflated'
 
 
-def test_an_aged_market_refuses_on_the_values_dimension_and_says_so():
-    """The pin is older than the cadence that refreshes it, on a market that has not moved at all -
-    which is a different failure from a moved one and has a different remedy: check the tick."""
-    verdict = firmness.assess(PINNED, dict(PINNED), {'values': 45.0, 'plan': 45.0}, WINDOWS)
+def test_a_board_already_stale_when_the_price_was_given_refuses_by_name():
+    """The pillar window is about the board the quote was STRUCK on: a price given off a surface
+    nobody had refreshed for an hour is not one a client may hold the desk to, and the remedy is
+    the tick rather than a re-quote against a market that never moved."""
+    verdict = firmness.assess(PINNED, dict(PINNED), 3600.0, WINDOW)
 
-    assert verdict['firm'] is False
-    assert verdict['plan']['firm'] is True, '45s is inside the 600s book window'
-    said = verdict['values']['refusals'][0]
-    assert said.startswith('the values dimension:') and '45.0s old against a 30s window' in said
-    assert 'check the tick' in said
+    assert verdict['firm'] is False and verdict['plan']['moved'] is False
+    assert verdict['pillar'] == {'age': 3600.0, 'window': 900.0, 'firm': False}
+    said = verdict['refusals'][0]
+    assert '3600.0s old at its oldest stamped pillar' in said and '900s window' in said
+
+    # and a home that declared NO window refuses nothing, reporting the age it measured
+    silent = firmness.assess(PINNED, dict(PINNED), 3600.0, {})
+    assert silent['firm'] is True and silent['pillar'] == {'age': 3600.0, 'window': None,
+                                                           'firm': True}
 
 
-def test_both_dimensions_refuse_together_and_the_refusal_names_both():
-    """A quote stale on both has two things wrong with it and two remedies, so BOTH are named -
-    reporting the first would send a salesperson back to re-quote into the second."""
+def test_both_refusals_fire_together_and_the_refusal_names_both():
+    """A quote with two things wrong with it has two remedies, so BOTH are named - reporting the
+    first would send a salesperson back to re-quote into the second."""
     with pytest.raises(QuoteNotFirm) as refusal:
-        firmness.check(PINNED, {'plan_hash': 'c' * 64, 'values_hash': 'd' * 64},
-                       {'values': 1e6, 'plan': 1e6}, WINDOWS, quote_id='Q-9')
+        firmness.check(PINNED, {'plan_hash': 'c' * 64, 'values_hash': 'd' * 64}, 1e6, WINDOW,
+                       quote_id='Q-9')
     said = str(refusal.value)
-    assert said.count('the values dimension:') == 2 and said.count('the plan dimension:') == 2, said
+    assert 'the book moved under it' in said and 'oldest stamped pillar' in said
     assert ' AND ' in said
 
 
 def test_an_age_that_cannot_be_established_is_not_an_age_inside_the_window():
-    """The edge's own ruling about a pending file with no stamp, met here in the general case. A
-    clock that ran backwards reads as unknown too, because a future stamp is the one reading that
-    would let an arbitrarily stale quote through."""
-    for ages in ({'values': None, 'plan': 1.0}, {'plan': 1.0}, {'values': -5.0, 'plan': 1.0},
-                 {'values': 'a while', 'plan': 1.0}):
-        verdict = firmness.assess(PINNED, dict(PINNED), ages, WINDOWS)
-        assert verdict['firm'] is False and verdict['plan']['firm'] is True
-        assert 'unknown age is not an age' in verdict['values']['refusals'][0]
-        assert verdict['values']['age'] is None
+    """A book no row of which is stamped, met here in the general case. A clock that ran backwards
+    reads as unknown too, because a board stamped after the quote that read it is the one reading
+    that would let an arbitrarily stale one through. With no window declared, none of it refuses."""
+    for age in (None, -5.0, 'a while'):
+        verdict = firmness.assess(PINNED, dict(PINNED), age, WINDOW)
+        assert verdict['firm'] is False and verdict['plan']['moved'] is False
+        assert 'carries no stamped pillar' in verdict['refusals'][0]
+        assert verdict['pillar']['age'] is None
+        assert firmness.assess(PINNED, dict(PINNED), age, {})['firm'] is True
 
 
 def test_the_firmness_check_refuses_what_it_cannot_compare_rather_than_answering_anyway():
     """A missing pin is a quote that never pinned rather than a quote that went stale, and a window
-    that will not read is one no approval could be measured against. Both refuse by name, so a
+    that will not read is one no booking could be measured against. Both refuse by name, so a
     verdict of "not firm" always means what it says."""
     with pytest.raises(MalformedEvent) as refusal:
-        firmness.assess({'plan_hash': 'a' * 64}, dict(PINNED), {'values': 1.0, 'plan': 1.0},
-                        WINDOWS)
+        firmness.assess({'plan_hash': 'a' * 64}, dict(PINNED), 1.0, WINDOW)
     assert 'values_hash' in str(refusal.value) and 'never pinned' in str(refusal.value)
 
     with pytest.raises(MalformedEvent):
-        firmness.assess(PINNED, dict(PINNED), {'values': 1.0, 'plan': 1.0},
-                        {'values_seconds': 'thirty', 'plan_seconds': 600.0})
+        firmness.assess(PINNED, dict(PINNED), 1.0, {'pillar_seconds': 'fifteen minutes'})
     with pytest.raises(MalformedEvent):
-        firmness.assess(PINNED, dict(PINNED), 30.0, WINDOWS)
+        firmness.assess(PINNED, dict(PINNED), 1.0, 900.0)
     with pytest.raises(MalformedEvent):
-        firmness.assess('a' * 64, dict(PINNED), {'values': 1.0, 'plan': 1.0}, WINDOWS)
+        firmness.assess('a' * 64, dict(PINNED), 1.0, WINDOW)
+
+
+def test_the_two_retired_windows_are_refused_at_the_declaration_by_name(tmp_path):
+    """A desk carrying the old document must be TOLD where its question went rather than declaring
+    a window nothing enforces: `values_seconds` asked whether the board had moved, which is now
+    reported, and `plan_seconds` aged a book the plan hash already catches."""
+    home, log = minted(tmp_path)
+
+    for retired in ({'values_seconds': 30}, {'plan_seconds': 600},
+                    {'pillar_seconds': 900, 'plan_seconds': 600}):
+        with pytest.raises(MalformedEvent) as refusal:
+            policy.declare(log, MINT, policy.FIRMNESS_POLICY, retired)
+        assert 'pillar_seconds' in str(refusal.value)
+        assert sorted(retired)[0] in str(refusal.value) or 'plan_seconds' in str(refusal.value)
+
+    assert policy.declare(log, MINT, policy.FIRMNESS_POLICY, {})['lsn'] == 5
+    assert policy.firmness_in_force(log) == {}, 'an empty document declared a window'
+    policy.declare(log, MINT, policy.FIRMNESS_POLICY, {'pillar_seconds': 900})
+    assert policy.firmness_in_force(log) == {'pillar_seconds': 900.0}
+    log.close()
 
 
 # --------------------------------------------------------------------------------------------
