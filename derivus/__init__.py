@@ -727,6 +727,38 @@ class Context:
 
         return record(name, values_of(self), actor_name=actor, effective_time=effective_time)
 
+    def declare_close(self, market, actor=None, effective_time=None):
+        """Declare the official close on `market` over the values vector THIS context is carrying.
+
+        A second close on one market SUPERSEDES the first rather than correcting it, so a day
+        restated is two facts and an as-at read taken before the restatement still reads what it
+        read.
+        """
+        from .spine import declare_close as record, values_of
+
+        return record(market, values_of(self), actor_name=actor, effective_time=effective_time)
+
+    def approve(self, plan_hash, actor=None, book=None, effective_time=None):
+        """Sign a plan hash - the second pair of eyes, recorded as a fact.
+
+        One seat signing one plan twice is one fact, coalescing onto the LSN it already has;
+        economics that moved are a new plan hash, so an amended plan asks for a new signature.
+        """
+        from .spine import approve as record
+
+        return record(plan_hash, actor_name=actor, book_name=book, effective_time=effective_time)
+
+    def reject(self, plan_hash, reason, actor=None, book=None, effective_time=None):
+        """Refuse a plan hash, with the grounds on the row.
+
+        A verdict is never withdrawn: a rejection sits beside an earlier approval rather than
+        erasing it, and what a deployment does with two verdicts is the deployment's rule.
+        """
+        from .spine import reject as record
+
+        return record(plan_hash, reason, actor_name=actor, book_name=book,
+                      effective_time=effective_time)
+
     def pin_result(self, job, values, result, claim, actor=None, book=None, effective_time=None):
         """Promote a replay claim this box did not witness: re-execute it, or find it already
         attested, and only then record it.

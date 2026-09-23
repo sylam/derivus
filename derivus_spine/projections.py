@@ -14,9 +14,10 @@
 """The projections - positions, the blotter, lifecycle state and the strip, folded out of the log.
 
 A projection is a pure fold. `fold` streams the frames a projector names, applies them in LSN order
-and answers state nobody edited; a knock, an expiry, an accrual and a position are READ off that
-state and stored nowhere, since storing one would be a second source of truth about whether the
-barrier fired. The vocabulary holds facts and this module holds every consequence of them.
+and answers state nobody edited; a knock, an expiry, an accrual, a position and the seat that struck
+a quote are READ off that state and stored nowhere, since storing one would be a second source of
+truth about whether the barrier fired. The vocabulary holds facts and this module holds every
+consequence of them.
 
 Frames are located by ENVELOPE and only the hits are opened - the rule `capability.build_state` and
 `policy.in_force` already state - so a fold costs the length of the history rather than the price of
@@ -316,6 +317,35 @@ class Decisions(Projector):
                              for policy, row in sorted(state['policies'].items())]}
 
 
+class Quotes(Projector):
+    """One row per quote filed: who struck it, the two hashes it pinned, the ticket an approval
+    would sign where one was computed, and what was solved for what edge.
+
+    The BOOKER is the frame's own actor, since no body carries one - which is what makes "may this
+    seat approve this quote" a fold rather than a second field somebody has to fill in. A quote id
+    is minted per structure, so a second filing under one id is a RESTATEMENT and stands by the
+    as-of key the whole record files keyed rows under - a backdated one does not win by arriving
+    last. Rows read in LSN order, which is the order they were struck in and not their ids'.
+    """
+
+    name = 'quotes'
+    reads = ('quote_filed',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        _stand(state, body['quote_id'], frame, {
+            'booker': frame['actor'], 'book': frame['book'], 'plan_hash': body['plan_hash'],
+            'values_hash': body['values_hash'], 'ticket': body.get('ticket'),
+            'structure': body['structure'], 'solved': body['solved'], 'edge': body['edge']})
+
+    def rows(self, state):
+        return sorted((_shown(row, quote_id=quote_id) for quote_id, row in state.items()),
+                      key=lambda row: row['lsn'])
+
+
 class Activity(Projector):
     """One line per event, envelope only: where it sits, when it was recorded and when it is true,
     who said it, and the declared sentence about what it was.
@@ -342,7 +372,8 @@ class Activity(Projector):
 
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
-    Positions(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Activity()))
+    Positions(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
+    Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):
@@ -444,7 +475,7 @@ def fixings_at(log, lsn=None, sources=None, indices=None):
     home declaring no policy at all has named an authority for nothing and answers nothing.
     """
     if sources is None:
-        blob, document = in_force(log, FIXINGS_POLICY, lsn)
+        blob, document, _ = in_force(log, FIXINGS_POLICY, lsn)
         if blob is None:
             return {}
         sources = document[FIXINGS_SECTION]

@@ -11,7 +11,8 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The acts a desk performs on the record - booking, amending, lifecycle, marks, quotes and runs.
+"""The acts a desk performs on the record - booking, amending, lifecycle, decisions, marks, quotes
+and runs.
 
 The logic lives here and the engine holds thin delegators, so no module under `derivus/` learns
 about users, workflow or storage: everything below takes plain data and injected callables.
@@ -29,7 +30,7 @@ file is an interim stand-in.
 import json
 
 from .errors import MalformedEvent, ReplayRefused, UnknownEventType
-from .policy import compare, tolerances_in_force
+from .policy import PRIVATE_MARKET, compare, tolerances_in_force
 from .vocabulary import is_hash, is_integer, is_number, is_text
 
 #: The three attestation lanes, which are the three answers to "will this output be cited by a
@@ -141,23 +142,65 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
     return log.append(event_type, body, actor=actor, book=book, effective_time=effective_time)
 
 
+def approve(log, actor, plan_hash, book=None, effective_time=None):
+    """Sign a plan: an approval over the hash that identifies the ticket.
+
+    Retried by the same seat it COALESCES onto the LSN it already has, since the semantic tuple
+    carries no clock of the writer's own - a second signature of one plan by one seat is one fact.
+    An amended plan is a different hash and so is a different signature.
+    """
+    return log.append('approval', {'plan_hash': _pinned(plan_hash, 'plan_hash')},
+                      actor=actor, book=book, effective_time=effective_time)
+
+
+def reject(log, actor, plan_hash, reason, book=None, effective_time=None):
+    """Refuse a plan, with the reason on the row.
+
+    The reason is required and has no default: a verdict is never withdrawn, so a rejection nobody
+    can read the grounds of is one nothing can be filed against later.
+    """
+    return log.append('rejection', {'plan_hash': _pinned(plan_hash, 'plan_hash'),
+                                    'reason': _name(reason, 'reason', 'reject')},
+                      actor=actor, book=book, effective_time=effective_time)
+
+
 def declare_market(log, actor, name, values, effective_time=None):
     """Point a market name at a values vector, returning the envelope plus the vector's address.
 
     Officialness is a property of the name, never of the data: every values vector lives identically
     in the store, and `official` moves onto one only by a declaration from a `mark`-scoped actor. A
-    `private/<subject>/<name>` scratch market is the same call under a different name. Firm-level,
-    so it carries no book.
+    `private/<subject>/<name>` scratch market is the same call under a different name, with one
+    rule: SELF-DECLARED MEANS SELF-DECLARED, so the subject in the name must be the seat declaring
+    it. Otherwise a seat could mint a market inside another's namespace and own it while the named
+    seat was refused their own prefix, and a reader would have two answers to who owns one board.
+    Firm-level, so it carries no book.
     """
+    name = _own(_name(name, 'name', 'declare_market'), actor)
     address = _blob(log, values, 'the values vector')
-    envelope = log.append('market_declared',
-                          {'name': _name(name, 'name', 'declare_market'), 'values_hash': address},
+    envelope = log.append('market_declared', {'name': name, 'values_hash': address},
                           actor=actor, effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, name=name, values_hash=address)
 
 
+def declare_close(log, actor, market, values, effective_time=None):
+    """Declare the official close on `market` over a values vector, returning the envelope plus the
+    vector's address.
+
+    The values are blobbed exactly as `declare_market` blobs them, so a close and the mark it stands
+    on are one address. A SECOND close on one market supersedes the first rather than correcting it
+    - the `markets` fold names the LSN it stands over - so a day restated is two facts and an as-at
+    read taken before the restatement still reads what it read. Firm-level, so it carries no book.
+    """
+    address = _blob(log, values, 'the values vector this close stands on')
+    envelope = log.append('official_close_declared',
+                          {'market': _name(market, 'market', 'declare_close'),
+                           'values_hash': address},
+                          actor=actor, effective_time=effective_time, blob_refs=(address,))
+    return dict(envelope, market=market, values_hash=address)
+
+
 def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
-               request=None, book=None, effective_time=None):
+               request=None, ticket=None, book=None, effective_time=None):
     """File a quote: two hashes pinned, what was solved, and what the desk took for it.
 
     Two hashes because a quote goes stale in two unrelated ways (see `firmness`). `values` is the
@@ -168,6 +211,10 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
     `request` is the relayed client utterance - free text, optional and erasable: the body is sealed
     under its class key, so shredding that key erases the utterance while the chain still verifies.
     The same string in the envelope would be permanent.
+
+    `ticket` is the plan hash of the book with this quote's mirror spliced in - what an approval
+    would sign, and a different hash for every quote struck against one unmoved book. Optional,
+    because a body filed before it existed validates exactly as it did.
     """
     address = _blob(log, values, 'the values vector this quote was struck on')
     body = {'quote_id': _name(quote_id, 'quote_id', 'file_quote'),
@@ -176,6 +223,8 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
             'solved': solved, 'edge': edge}
     if request is not None:
         body['request'] = request
+    if ticket is not None:
+        body['ticket'] = _pinned(ticket, 'ticket')
     envelope = log.append('quote_filed', body, actor=actor, book=book,
                           effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, quote_id=quote_id, plan_hash=body['plan_hash'], values_hash=address)
@@ -405,3 +454,20 @@ def _name(value, field, verb):
         raise MalformedEvent(
             '{}: {} is {!r}, and a name that names nothing is not a name'.format(verb, field, value))
     return value
+
+
+def _own(name, actor):
+    """A `private/` market name asserted to name its own declarer.
+
+    The name carries the owner and the fold carries the declarer; binding them here makes them one
+    seat, so a reader may resolve ownership off either and get the same answer.
+    """
+    parts = name.split('/')
+    if parts[0] + '/' == PRIVATE_MARKET and (len(parts) < 2 or parts[1] != actor):
+        raise MalformedEvent(
+            'declare_market: {!r} is a {} market of {!r} and {!r} is declaring it - a private '
+            'market is one seat\'s own board, so the subject in the name IS the seat that declares '
+            'it. Declare {}{}/... , or drop the prefix and name a market the firm holds'.format(
+                name, PRIVATE_MARKET, parts[1] if len(parts) > 1 else '(nobody)', actor,
+                PRIVATE_MARKET, actor))
+    return name

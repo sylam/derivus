@@ -109,8 +109,8 @@ def package():
     """
     try:
         import derivus_spine
-        from derivus_spine import (firmness, policy, projections,  # noqa: F401  attribute
-                                   verbs)                      # noqa: F401  access below
+        from derivus_spine import (capability, firmness, policy,  # noqa: F401  attribute
+                                   projections, verbs)            # noqa: F401  access below
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -191,6 +191,16 @@ def folded(fold):
             log.close()
 
 
+def _rows(projector, lsn=None):
+    """One projector's rows at `lsn`, folded off the home - what every read below is made of."""
+    def fold(log):
+        projections = package().projections
+        named = projections.PROJECTORS[projector]
+        return named.rows(projections.fold(log, named, lsn=lsn))
+
+    return folded(fold)
+
+
 def canonical(obj):
     """The bytes the engine hashes `obj` as: sorted keys, tight separators, `CustomJsonEncoder`.
 
@@ -250,7 +260,7 @@ def observations(lsn=None, indices=None):
     """
     def fold(log):
         spine = package()
-        blob, document = spine.policy.in_force(log, spine.policy.FIXINGS_POLICY, lsn)
+        blob, document, _ = spine.policy.in_force(log, spine.policy.FIXINGS_POLICY, lsn)
         ordered = {} if blob is None else document[spine.policy.FIXINGS_SECTION]
         named = set(indices or ())
         return (spine.projections.fixings_at(log, lsn=lsn, sources=ordered,
@@ -441,6 +451,23 @@ def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective
                                      effective_time=effective_time)
 
 
+def approve(plan_hash, actor_name=None, book_name=None, effective_time=None):
+    """Sign a plan hash. One seat approving one plan twice is one fact, coalescing onto the LSN it
+    already has; an amended plan is a different hash and so is a different signature."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.approve(log, actor(actor_name), plan_hash, book=book_name,
+                             effective_time=effective_time)
+
+
+def reject(plan_hash, reason, actor_name=None, book_name=None, effective_time=None):
+    """Refuse a plan hash with the reason on the row - the check, what it measured and the bound."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.reject(log, actor(actor_name), plan_hash, reason, book=book_name,
+                            effective_time=effective_time)
+
+
 def declare_market(name, values, actor_name=None, effective_time=None):
     """Point the market `name` at a values vector. `official` demands `mark` scope, which the writer
     enforces - a check here would be a second place to get it wrong."""
@@ -450,14 +477,24 @@ def declare_market(name, values, actor_name=None, effective_time=None):
                                     effective_time=effective_time)
 
 
-def file_quote(quote_id, structure, plan_hash, values, solved, edge, request=None,
+def declare_close(market, values, actor_name=None, effective_time=None):
+    """Declare the official close on `market` over a values vector. A second close supersedes the
+    first rather than editing it, so a day restated is two facts and both stay readable."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.declare_close(log, actor(actor_name), market, values,
+                                   effective_time=effective_time)
+
+
+def file_quote(quote_id, structure, plan_hash, values, solved, edge, request=None, ticket=None,
                actor_name=None, book_name=None, effective_time=None):
     """File a quote with both hashes pinned - the values vector it was struck on and the book plan
-    its marginal charge was solved against."""
+    its marginal charge was solved against - and, where the caller computed one, the `ticket` plan
+    an approval of this quote would sign."""
     verbs = package().verbs
     with writing() as log:
         return verbs.file_quote(log, actor(actor_name), quote_id, structure, plan_hash, values,
-                                solved, edge, request=request, book=book_name,
+                                solved, edge, request=request, ticket=ticket, book=book_name,
                                 effective_time=effective_time)
 
 
@@ -478,6 +515,93 @@ def pin_result(claim, job, values, result, actor_name=None, book_name=None, effe
         return verbs.pin_result(log, actor(actor_name), claim, job, values, result,
                                 execute or executor(), book=book_name,
                                 effective_time=effective_time)
+
+
+def tiers_policy():
+    """The tiers document standing in the record, or None where this home declared none.
+
+    A fold like every other policy read, so what a ticket would be routed by is answerable without
+    queueing behind a booking.
+    """
+    return folded(package().policy.tiers_in_force)
+
+
+def quotes(lsn=None):
+    """Every quote the record holds at `lsn`, oldest first: who struck it, what it pinned, what it
+    solved, and the ticket plan an approval of it would sign."""
+    return _rows('quotes', lsn)
+
+
+def verdicts(plan_hash, lsn=None):
+    """The verdicts filed against `plan_hash` at `lsn`, oldest first.
+
+    An empty list is a plan nobody has ruled on, which is not the answer a rejected plan gives - the
+    two have different remedies, so the caller reads the list rather than a boolean.
+    """
+    filed = _rows('decisions', lsn)['plans']
+    return next((row['verdicts'] for row in filed if row['plan_hash'] == plan_hash), [])
+
+
+def resolve_market(name, actor=None, process=None):
+    """The values vector standing under the market `name`: `{name, values_hash, values}`.
+
+    The composition nothing performed before - the `markets` fold names it, the store holds the
+    bytes, `read_values` turns them back into what `patch_market` takes. A name nobody declared
+    REFUSES rather than falling back on the book's own market, which is the whole point of binding a
+    process to a market by name.
+
+    A NAME IS RESOLVED TO ITS LATEST DECLARATION, across the declarations of the name and the
+    official closes of it alike - a close is one way of declaring what a market stands on, and a
+    reader that took the name's own row would answer yesterday's board on a market the desk has
+    since closed. Latest by the fold's own as-of key, `(effective_time, lsn)`, so a close backdated
+    behind the mark in force is on the platter and does not displace it.
+
+    `private/<subject>/<name>` is one seat's own and resolves for that SUBJECT alone - the name
+    carries its owner and `verbs.declare_market` refuses a private name whose subject is not the
+    seat declaring it, so ownership reads the same off the name and off the fold. The surveillance
+    and admin read of one is an entitlement class this record does not yet classify, so nobody else
+    reaches it here. The two rules are checked independently: with `process` named, the market must
+    ALSO be the one the tiers policy designates for it, which no private name ever is.
+    """
+    asking = actor or os.environ.get(SPINE_ACTOR)
+
+    def fold(log):
+        spine = package()
+        # the fold's own state rather than its rows: the rows drop the as-of key the merge orders by
+        markets = spine.projections.fold(log, spine.projections.PROJECTORS['markets'])
+        standing = [rows[name] for rows in (markets['names'], markets['closes']) if name in rows]
+        if not standing:
+            raise SpineRefused(
+                'no market is declared under the name {!r} in this record: a process bound to a '
+                'market by name may not price on whatever market happens to be loaded, so this '
+                'refuses rather than falling back on the book\'s own. The names standing are '
+                '{}'.format(name, ', '.join(sorted(
+                    set(markets['names']) | set(markets['closes']))) or '(none)'))
+        owner = name.split('/')[1] if name.startswith(spine.policy.PRIVATE_MARKET) else None
+        if owner is not None and asking != owner:
+            raise SpineRefused(
+                '{!r} is {!r}\'s own market and this read names {!r}: a private market resolves for '
+                'the seat that declared it and for nobody else here, the surveillance and admin '
+                'read of one being an entitlement class this record does not yet classify. Ask '
+                'that seat, or declare your own'.format(name, owner, asking))
+        if process is not None:
+            designations = (spine.policy.tiers_in_force(log) or {}).get(
+                spine.policy.DESIGNATIONS_SECTION, {})
+            if designations.get(process) != name:
+                raise SpineRefused(
+                    'the process {!r} resolves {} here and this asked for the market {!r}: a '
+                    'designated process prices on the market the {} policy designates for it and '
+                    'never on another - and never on a {} market, which is one seat\'s own. '
+                    'Designate it ({{"{}": {{{!r}: "<market>"}}}}), or resolve the market without '
+                    'naming a process'.format(
+                        process, repr(designations[process]) if process in designations
+                        else 'nothing at all', name, spine.policy.TIERS_POLICY,
+                        spine.policy.PRIVATE_MARKET, spine.policy.DESIGNATIONS_SECTION, process))
+        latest = max(standing, key=lambda row: (row['as_of'], row['lsn']))
+        return {'name': name, 'values_hash': latest['values_hash'],
+                'values': read_values(log.store.get(latest['values_hash']))}
+
+    return folded(fold)
 
 
 def firmness_policy():

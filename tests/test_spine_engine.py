@@ -220,7 +220,7 @@ def blob(home, digest):
 
 
 def declare(home, name, document):
-    """Declare one of the two increment-3 policies onto a home, through the ordinary writer."""
+    """Declare one of the reserved policies onto a home, through the ordinary writer."""
     log = opened(home)
     try:
         return policy.declare(log, ACTOR, name, document)
@@ -735,12 +735,149 @@ def test_the_context_verbs_book_amend_and_file_the_three_lifecycle_facts(recorde
     with pytest.raises(spine.SpineRefused):
         context.apply_lifecycle('knocked_out', {'instrument': 'a' * 64, 'choice': 'x'})
 
-    marked = context.declare_market('private/desk-one/screen')
+    marked = context.declare_market('private/{}/screen'.format(ACTOR))
     assert marked['values_hash'] == context.values_hash(), \
         'a market names the values vector this context is carrying'
     assert blob(recorded, marked['values_hash']) == spine.values_of(context)
 
     assert verify_home(recorded)['events'] == head(recorded) == 4 + 6
+
+
+def test_a_market_resolves_by_name_and_a_private_one_resolves_for_its_owner(recorded):
+    """The composition nothing performed before: a NAME, folded to a values hash, fetched from the
+    store and read back as the objects `patch_market` takes. The proof is that it moves a book - a
+    second context carrying another spot is patched onto the declared market and hashes to it.
+
+    A name nobody declared refuses rather than falling back on whatever market is loaded, which is
+    the entire point of binding a process to a market by name. A `private/<subject>/<name>` market
+    resolves for the SUBJECT ITS NAME NAMES - which the declaring verb holds to the seat declaring
+    it, so the name and the fold cannot disagree about who owns a board - and for nobody else here:
+    the surveillance and admin read of one is an entitlement class this record does not yet
+    classify, and a per-market ACL is the thing the design forbids.
+
+    A NAME RESOLVES TO ITS LATEST DECLARATION, and an official close is one way of declaring what a
+    market stands on, so a close at a second vector moves what the name answers and a declaration
+    after it moves it back. Latest by the fold's as-of key, so a close backdated behind the
+    declaration in force does not displace it by arriving last.
+    """
+    context = derivus.Context().load_json((dump(job()), 'posted'))
+    context.declare_market('official')
+    context.declare_market('private/subject-desk-two/screen', actor='subject-desk-two')
+    other = derivus.Context().load_json((dump(job(factors=dict(
+        FACTORS, **{'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Spot=SPOT + 1.0)}))), 'posted'))
+
+    standing = spine.resolve_market('official')
+    assert standing == {'name': 'official', 'values_hash': context.values_hash(),
+                        'values': standing['values']}
+    assert other.values_hash() != context.values_hash()
+    other.patch_market(standing['values'])
+    assert other.values_hash() == context.values_hash(), \
+        'the resolved market did not read back as the market it names'
+
+    with pytest.raises(spine.SpineRefused) as refusal:
+        spine.resolve_market('settlement')
+    assert "'settlement'" in str(refusal.value) and 'official' in str(refusal.value)
+
+    mine = spine.resolve_market('private/subject-desk-two/screen', actor='subject-desk-two')
+    assert mine['values_hash'] == context.values_hash()
+    for stranger in (ACTOR, None):
+        with pytest.raises(spine.SpineRefused) as refusal:
+            spine.resolve_market('private/subject-desk-two/screen', actor=stranger)
+        assert 'entitlement class' in str(refusal.value), stranger
+        assert 'subject-desk-two' in str(refusal.value)
+
+    # the close is a declaration of the name, and the two orders answer the two vectors
+    closed = derivus.Context().load_json((dump(job(factors=dict(
+        FACTORS, **{'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Spot=SPOT + 2.0)}))), 'posted'))
+    restated = derivus.Context().load_json((dump(job(factors=dict(
+        FACTORS, **{'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Spot=SPOT + 3.0)}))), 'posted'))
+    assert len({context.values_hash(), closed.values_hash(), restated.values_hash()}) == 3
+    closed.declare_close('official')
+    assert spine.resolve_market('official')['values_hash'] == closed.values_hash(), \
+        'a close on the name did not move what the name resolves to'
+    restated.declare_market('official')
+    assert spine.resolve_market('official')['values_hash'] == restated.values_hash(), \
+        'a declaration after a close did not move it back'
+    # latest by the as-of key, not by LSN: a close BACKDATED behind the name's declaration is the
+    # record's last row on that market and does not displace it - the fold's own supersession rule
+    restated.declare_market('desk')
+    closed.declare_close('desk', effective_time='2020-01-02T16:00:00.000000Z')
+    assert spine.resolve_market('desk')['values_hash'] == restated.values_hash(), \
+        'a backdated close displaced the declaration in force by arriving last'
+
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_designated_process_resolves_the_market_the_policy_names_and_never_a_private_one(
+        recorded):
+    """`process=` is the other half of the binding: the name must be the market the tiers policy
+    DESIGNATES for that process, so a settlement export cannot be pointed at a market somebody
+    picked. A home that designates nothing refuses too - a rule nobody declared is not one a
+    process may assume - and a `private/` name refuses whoever asks, its owner included, because no
+    designation is ever private.
+
+    The two rules are checked independently rather than one behind the other: a stranger asking for
+    a private market under a process meets the OWNER rule, and its owner asking meets the
+    designation rule, so neither is dead behind the other.
+    """
+    context = derivus.Context().load_json((dump(job()), 'posted'))
+    context.declare_market('official')
+    context.declare_market('dealer')
+    context.declare_market('private/subject-desk-two/screen', actor='subject-desk-two')
+
+    with pytest.raises(spine.SpineRefused) as undesignated:
+        spine.resolve_market('official', process='settlement_export')
+    assert 'nothing at all' in str(undesignated.value)
+
+    assert spine.tiers_policy() is None
+    declare(recorded, policy.TIERS_POLICY, {'tiers': [{'name': 'desk', 'four_eyes': True}],
+                                            'designations': {'settlement_export': 'official'}})
+    assert spine.tiers_policy()['designations'] == {'settlement_export': 'official'}
+
+    assert spine.resolve_market('official', process='settlement_export')['values_hash'] == \
+        context.values_hash()
+    for named in ('dealer', 'private/subject-desk-two/screen'):
+        with pytest.raises(spine.SpineRefused) as refusal:
+            spine.resolve_market(named, process='settlement_export', actor='subject-desk-two')
+        said = str(refusal.value)
+        assert 'settlement_export' in said and "'official'" in said and named in said, named
+
+    # the owner rule is not dead behind the designation rule: a stranger naming a process meets it
+    with pytest.raises(spine.SpineRefused) as refusal:
+        spine.resolve_market('private/subject-desk-two/screen', process='settlement_export',
+                             actor=ACTOR)
+    assert 'entitlement class' in str(refusal.value)
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_the_seam_files_a_decision_a_close_and_reads_them_back_as_folds(recorded):
+    """The three delegators and the three reads, on one home. A verdict is never withdrawn, so
+    `verdicts` answers the LIST in the order it was filed and never a boolean - "approved" and
+    "nobody has ruled" have different remedies. A quote names the seat that struck it off the
+    envelope, since no body carries one.
+    """
+    context = derivus.Context().load_json((dump(job()), 'posted'))
+    plan = context.plan_hash()
+
+    context.reject(plan, 'the booker and the approver are one seat', book='spine-desk')
+    signed = context.approve(plan, actor='subject-desk-two', book='spine-desk')
+    assert [(row['verdict'], row['actor']) for row in spine.verdicts(plan)] == [
+        ('rejection', ACTOR), ('approval', 'subject-desk-two')]
+    assert spine.verdicts(plan)[-1]['lsn'] == signed['lsn']
+    assert spine.verdicts('f' * 64) == [], 'a plan nobody ruled on answered somebody else\'s list'
+
+    closed = context.declare_close('official')
+    assert facts(recorded, 'official_close_declared')[0][2] == {
+        'market': 'official', 'values_hash': context.values_hash()}
+    assert closed['values_hash'] == context.values_hash()
+
+    spine.file_quote('Q-1', 'ZeroCostCollar', plan, spine.values_of(context), {'floor': 17.25},
+                     4200.0, ticket='c' * 64, actor_name='subject-desk-two', book_name='spine-desk')
+    quoted = spine.quotes()
+    assert len(quoted) == 1 and quoted[0]['booker'] == 'subject-desk-two'
+    assert quoted[0]['ticket'] == 'c' * 64 and quoted[0]['plan_hash'] == plan
+    assert quoted[0]['values_hash'] == context.values_hash()
+    assert verify_home(recorded)['events'] == head(recorded)
 
 
 def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(recorded, desk):

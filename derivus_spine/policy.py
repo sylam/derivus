@@ -11,7 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The tolerance, firmness and fixings policy documents, and the fold that finds the one in force.
+"""The tolerance, firmness, fixings and tiers policy documents, and the fold that finds one in force.
 
 Policy is data: hashed into the blob store and declared through the ordinary writer, as the
 capabilities document is. Nothing here is a constant edited in a release - a deployment that wants a
@@ -29,7 +29,9 @@ A firmness policy is optional where a tolerance policy is not: a home that decla
 off its own book rather than making a claim about somebody else's numbers, so it runs on the stated
 `FIRMNESS_DEFAULTS` below. A fixings policy is the authority an observation is read under, and it
 names one source order per index: a home declaring none has said which administrator it believes
-about nothing, so every index it is asked for refuses by name.
+about nothing, so every index it is asked for refuses by name. A tiers policy is the workflow a
+ticket falls through, and it has no default either: a home declaring none has declared no tiers, so
+what an undeclared workflow means is the caller's decision rather than this module's.
 """
 import json
 
@@ -42,6 +44,7 @@ from .vocabulary import is_hash, is_number, is_text
 TOLERANCE_POLICY = 'tolerance'
 FIRMNESS_POLICY = 'firmness'
 FIXINGS_POLICY = 'fixings'
+TIERS_POLICY = 'tiers'
 
 #: The tolerance document's one section: result class -> the absolute epsilon a replay of that
 #: class may differ by. Closed at the field level, like an event body.
@@ -51,10 +54,30 @@ TOLERANCE_SECTION = 'tolerances'
 #: across, the first one holding a print winning.
 FIXINGS_SECTION = 'sources'
 
+#: The tiers document's two sections: the ORDERED list a ticket is matched against, and the market
+#: each designated process resolves by name.
+TIERS_SECTION = 'tiers'
+DESIGNATIONS_SECTION = 'designations'
+
+#: What a tier may declare. The first three name it and say who signs; the last three are CHECKS,
+#: and a key a tier omits is a check it does not make, so a tier declaring none is the catch-all.
+TIER_FIELDS = ('name', 'seat', 'four_eyes', 'max_notional', 'max_tenor_years', 'market')
+
+#: The processes a designation binds, and the whole of them: a name nothing resolves by is a rule
+#: nobody enforces.
+DESIGNATED_PROCESSES = ('settlement_export',)
+
+#: The prefix of a market one seat owns. A designated process never resolves one.
+PRIVATE_MARKET = 'private/'
+
 #: The firmness windows, in seconds, that a home declaring no firmness policy runs on.
 #: `values_seconds` is one beat of `DV_Service --tick`, the cadence a market pin is refreshed on;
 #: `plan_seconds` is the ten minutes `Quote Policy.firm_seconds` defaults to.
 FIRMNESS_DEFAULTS = {'values_seconds': 30.0, 'plan_seconds': 600.0}
+
+#: What a tiers document may not restate: the two windows and the verdict they answer. Pillar age
+#: and book staleness are checked on every booking before a tier is read.
+FIRMNESS_FIELDS = tuple(sorted(FIRMNESS_DEFAULTS)) + ('firm',)
 
 
 def parse_tolerance(document, where):
@@ -159,10 +182,182 @@ def parse_fixings(document, where):
     return {FIXINGS_SECTION: dict((index, list(order)) for index, order in entries.items())}
 
 
+def parse_tiers(document, where):
+    """Check `document` as a tiers policy and return it COMPLETED. `where` names it in refusals.
+
+    An ORDERED list of tiers, and the market each designated process resolves by name. A tier
+    declares a unique name, optionally the seat an automatic approval signs under, and its checks -
+    a key it omits is a check it does not make, so a tier declaring none is the catch-all the list
+    ends at. Staleness is not among them: pillar age and book staleness are the firmness policy's
+    two windows, checked on every booking before a tier is read, so a tier restating one is refused
+    here rather than making one question two standards.
+
+    WHAT IS STORED IS THE COMPLETED DOCUMENT, `parse_firmness`'s practice: the two defaults this
+    shape has - `four_eyes` false on a tier that names no seat, and an empty `designations` - are
+    written in before the bytes are hashed, so one workflow is ONE BLOB however the operator spelled
+    it and two desks declaring the same rules do not get two governance histories of one decision.
+    A tier that names a seat is completed with no `four_eyes` at all: the two keys together are
+    refused, and an automatic seat never books.
+    """
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+
+    if not isinstance(document, dict):
+        refuse('a tiers policy is {}, not a JSON object - it is {{"{}": [tier, ...], "{}": '
+               '{{process: market}}}}'.format(
+                   type(document).__name__, TIERS_SECTION, DESIGNATIONS_SECTION))
+    _unstaled(document, 'a tiers policy', refuse)
+    surplus = sorted(set(document) - {TIERS_SECTION, DESIGNATIONS_SECTION})
+    if surplus:
+        refuse('a tiers policy carries {} beyond {} and {} - the document is closed at the field '
+               'level; drop the key or version the document shape'.format(
+                   ', '.join(surplus), TIERS_SECTION, DESIGNATIONS_SECTION))
+    tiers = document.get(TIERS_SECTION)
+    if not isinstance(tiers, list) or not tiers:
+        refuse('{} is {!r}, not a non-empty ORDERED list - the FIRST tier whose every declared '
+               'check passes is the one that applies, so the order IS the policy and a document '
+               'naming no tier routes nothing at all'.format(TIERS_SECTION, tiers))
+    named = set()
+    for position, tier in enumerate(tiers):
+        _tier(tier, position, named, refuse)
+    return {TIERS_SECTION: [_completed(tier) for tier in tiers],
+            DESIGNATIONS_SECTION: _designations(document, refuse)}
+
+
+def _completed(tier):
+    """`tier` with its one default written in: `four_eyes` false where the tier names no seat.
+
+    A seated tier is left alone - it may not carry the key at all - so the completed document says
+    of every tier exactly one thing about whether the approver may be the booker.
+    """
+    return dict(tier) if 'seat' in tier else dict({'four_eyes': False}, **tier)
+
+
+def _tier(tier, position, named, refuse):
+    """One tier of a tiers policy, checked. `named` collects the names as they are read, so a
+    second tier spelled like the first is refused where it would otherwise shadow it."""
+    at = 'tier {}'.format(position + 1)
+    if not isinstance(tier, dict):
+        refuse('{} is {}, not an object - a tier is {{"name": ..., check: bound, ...}}'.format(
+            at, type(tier).__name__))
+    name = tier.get('name')
+    if not is_text(name):
+        refuse('{} is named {!r}, and a tier that names nothing cannot be the answer to which tier '
+               'a ticket falls in'.format(at, name))
+    at = 'the {!r} tier'.format(name)
+    if name in named:
+        refuse('{} is declared twice, so the list does not say which of them applies - name them '
+               'apart, or drop the one that says nothing'.format(at))
+    named.add(name)
+    _unstaled(tier, at, refuse)
+    surplus = sorted(set(tier) - set(TIER_FIELDS))
+    if surplus:
+        refuse('{} carries {} beyond {} - the document is closed at the field level; a check nobody '
+               'reads is a bound nobody enforces'.format(
+                   at, ', '.join(surplus), ', '.join(TIER_FIELDS)))
+    if 'seat' in tier and not is_text(tier['seat']):
+        refuse('{} signs under seat {!r}, and a seat that names nothing signs nothing - name the '
+               'subject the approval is attributed to, or leave the key out and let a human '
+               'sign'.format(at, tier['seat']))
+    if 'four_eyes' in tier and not isinstance(tier['four_eyes'], bool):
+        refuse('{} declares four_eyes {!r}: it is true or false, and a value that is neither says '
+               'nothing about whether the approver may be the booker'.format(
+                   at, tier['four_eyes']))
+    if 'seat' in tier and 'four_eyes' in tier:
+        refuse('{} declares both a seat ({!r}) and four_eyes - an automatic seat never books, so '
+               'the key would say nothing here; drop four_eyes, or drop the seat and let a human '
+               'sign'.format(at, tier['seat']))
+    if 'max_notional' in tier:
+        _cap(tier['max_notional'], at, refuse)
+    if 'max_tenor_years' in tier and (not is_number(tier['max_tenor_years'])
+                                      or tier['max_tenor_years'] < 0):
+        refuse('{} caps max_tenor_years at {!r} - a tenor bound is a finite number of years and is '
+               'never negative'.format(at, tier['max_tenor_years']))
+    if 'market' in tier:
+        if not is_text(tier['market']):
+            refuse('{} names market {!r}, and a market that names nothing is not one a quote\'s '
+                   'values can be required to stand under'.format(at, tier['market']))
+        _public(tier['market'], at, refuse)
+
+
+def _cap(cap, at, refuse):
+    """A tier's `max_notional`, checked: an amount and the currency it is an amount OF.
+
+    Closed at those two. A cap that does not name its currency is a number nothing can compare a
+    ticket against, and a policy check that crossed one currency into another would read a market.
+    """
+    if not isinstance(cap, dict) or sorted(cap) != ['amount', 'currency']:
+        refuse('{} caps max_notional at {!r}: a cap is {{"amount": number, "currency": name}} and '
+               'is closed at those two - a cap that does not name its currency is a number no '
+               'ticket can be compared against'.format(at, cap))
+    if not is_number(cap['amount']) or cap['amount'] < 0:
+        refuse('{} caps max_notional at the amount {!r} - a cap is a finite number of its own '
+               'currency and is never negative'.format(at, cap['amount']))
+    if not is_text(cap['currency']):
+        refuse('{} caps max_notional in the currency {!r}, and a currency that names nothing is not '
+               'one a ticket can state its notional in'.format(at, cap['currency']))
+
+
+def _designations(document, refuse):
+    """The process -> market map of a tiers policy, checked and copied.
+
+    Closed to `DESIGNATED_PROCESSES`, since a name nothing resolves by is a rule nobody enforces,
+    and closed against a private market: a designated process resolves the market the firm declared
+    and never one seat's own. A document designating nothing LEAVES THE SECTION OUT - a key stated
+    and left empty of meaning is a document to fix rather than one to read past.
+    """
+    if DESIGNATIONS_SECTION not in document:
+        return {}
+    entries = document[DESIGNATIONS_SECTION]
+    if not isinstance(entries, dict):
+        refuse('{} is {}, not an object of process -> market name - a policy that designates '
+               'nothing says so by leaving the section out'.format(
+                   DESIGNATIONS_SECTION, type(entries).__name__))
+    for process, market in sorted(entries.items()):
+        if process not in DESIGNATED_PROCESSES:
+            refuse('{} designates a market for {!r}, which no process resolves by name - the '
+                   'designated processes are {}, and a name nothing reads is a rule nobody '
+                   'enforces'.format(DESIGNATIONS_SECTION, process,
+                                     ', '.join(DESIGNATED_PROCESSES)))
+        if not is_text(market):
+            refuse('{} designates {!r} for {}, and a market that names nothing is not one a process '
+                   'can resolve'.format(DESIGNATIONS_SECTION, market, process))
+        _public(market, '{} for {!r}'.format(DESIGNATIONS_SECTION, process), refuse)
+    return dict(entries)
+
+
+def _public(market, whose, refuse):
+    """`market` asserted to be a name the firm declared rather than one seat's own.
+
+    One check for the two places a policy points at a market. A designated process resolves the
+    firm's board, and a tier's `market` decides whether an AUTOMATIC seat signs - the same character
+    of decision - so neither may rest on a scratch board one seat declared for itself.
+    """
+    if market.startswith(PRIVATE_MARKET):
+        refuse('{} names the market {!r}: a {} market is one seat\'s own, and neither a designated '
+               'process nor a tier deciding whether an automatic seat signs prices on one - name '
+               'the market the firm declared'.format(whose, market, PRIVATE_MARKET))
+
+
+def _unstaled(carrying, whose, refuse):
+    """Refuse a staleness window or its verdict declared in a tiers document.
+
+    Pillar age IS `values_seconds` and book staleness IS `plan_seconds`, enforced on every booking
+    before any tier is read, so a second spelling of either would be two standards for one question.
+    """
+    restated = sorted(set(carrying) & set(FIRMNESS_FIELDS))
+    if restated:
+        refuse('{} carries {} - pillar age and book staleness are the {} policy\'s {}, checked on '
+               'EVERY booking before a tier is read, so a second spelling of one would be two '
+               'standards for one question; declare the window under {} instead'.format(
+                   whose, ', '.join(restated), FIRMNESS_POLICY,
+                   ' and '.join(sorted(FIRMNESS_DEFAULTS)), FIRMNESS_POLICY))
+
+
 #: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
 #: than store a document nobody could read back.
 PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness,
-           FIXINGS_POLICY: parse_fixings}
+           FIXINGS_POLICY: parse_fixings, TIERS_POLICY: parse_tiers}
 
 
 def canonical_policy(policy, document, where=None):
@@ -195,18 +390,23 @@ def declare(log, actor, policy, document, effective_time=None):
 
 
 def in_force(log, policy, lsn=None):
-    """`(blob, document)` for the declaration of `policy` standing at or before `lsn`, or
-    `(None, None)` where the log carries none.
+    """`(blob, document, lsn)` for the declaration of `policy` standing at or before `lsn`, or
+    `(None, None, None)` where the log carries none.
 
     Read off the platter over `log.frames` rather than from an index, since reading never claims the
     home and a handle routinely outlives someone else's append. Rows are located by envelope - only
     `policy_declared` bodies are opened - so the fold costs the length of the policy history.
 
+    ONE WALK, ONE ANSWER: the position comes off the frame this fold CHOSE, so a reader that shows
+    where a document was declared cannot show the blob of one declaration at the LSN of another.
+    `policy_declared` is open-bodied, so a declaration carrying no blob is a fact about the name
+    that this fold steps over, and joining a second fold to it would count it.
+
     A declaration whose blob no longer answers for it raises `MalformedEvent` rather than folding to
     a sentinel: unlike the capabilities fold, this one is called by a verb, so a refusal bricks
     nothing.
     """
-    blob = None
+    blob, at = None, None
     for frame in log.frames(end_lsn=lsn):
         if frame['event_type'] != 'policy_declared':
             continue
@@ -215,9 +415,9 @@ def in_force(log, policy, lsn=None):
             continue
         if not is_hash(body.get('blob')):
             continue
-        blob = body['blob']
+        blob, at = body['blob'], frame['lsn']
     if blob is None:
-        return (None, None)
+        return (None, None, None)
     where = 'the {} policy {}'.format(policy, blob)
     try:
         raw = log.store.get(blob)
@@ -232,7 +432,7 @@ def in_force(log, policy, lsn=None):
         raise MalformedEvent(
             '{} is not JSON - the blob was altered under its own address; restore blobs/ from a '
             'verified replica, or declare a replacement'.format(where))
-    return (blob, PARSERS[policy](document, where))
+    return (blob, PARSERS[policy](document, where), at)
 
 
 def compare(claimed, produced, tolerances):
@@ -311,7 +511,7 @@ def tolerances_in_force(log, lsn=None):
     Raises `ReplayRefused` where no tolerance policy is declared: such a home has never said what
     "reproduces" means and so can attest nothing.
     """
-    blob, document = in_force(log, TOLERANCE_POLICY, lsn)
+    blob, document, _ = in_force(log, TOLERANCE_POLICY, lsn)
     if blob is None:
         raise ReplayRefused(
             'no {} policy is declared in this log, so there is no standard a replay claim could be '
@@ -327,5 +527,15 @@ def firmness_in_force(log, lsn=None):
     Absence is not a refusal here: a home declaring no firmness policy runs on the stated defaults,
     and the firmness check reports which window it measured against.
     """
-    blob, document = in_force(log, FIRMNESS_POLICY, lsn)
+    blob, document, _ = in_force(log, FIRMNESS_POLICY, lsn)
     return dict(FIRMNESS_DEFAULTS) if blob is None else document
+
+
+def tiers_in_force(log, lsn=None):
+    """The tiers document standing at `lsn`, or None where this home declared none.
+
+    Absence is neither a refusal nor a default: a home that declared no tiers has stated no
+    workflow, and what a ticket falling through no tier means is the caller's decision rather than
+    a document this module invented.
+    """
+    return in_force(log, TIERS_POLICY, lsn)[1]

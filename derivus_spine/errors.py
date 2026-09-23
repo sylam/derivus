@@ -97,6 +97,12 @@ class ReplayRefused(SpineRefusal):
     no tolerance policy is declared at all, so there is no standard to hold the claim to."""
 
 
+class TierRefused(SpineRefusal):
+    """A ticket no tier of the policy in force admits. The message names every tier that was
+    tried, the check each failed and the bound it was measured against - the tiers are ordered, so
+    the list is also the route the ticket took."""
+
+
 class QuoteNotFirm(SpineRefusal):
     """A quote whose pins no longer stand: the market moved or aged under it (the VALUES
     dimension), or the book moved or aged under it (the PLAN dimension). The message names which

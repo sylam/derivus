@@ -280,6 +280,21 @@ is recorded so a reader knows which readings rest on it.
   append-only record never shrinks. The remedy is a seek by LSN inside the log's own reader -
   `SpineLog.frames` already holds a byte offset per LSN in `_at` and skips by comparison instead -
   which is a change in `derivus_spine/`.
+- **A private market has no surveillance or admin read** (2026-09-23). `spine.resolve_market`
+  resolves a `private/<subject>/<name>` market for the subject its name names and refuses everyone
+  else at the verb, without minting a fact. The other read the design names — surveillance and
+  admin — is a second entitlement class and a `read` row per subject, which is the reclassification
+  `vocabulary.classify` ships dormant for; a per-market rule instead would be the per-object ACL the
+  design forbids by name. Size: the class and the rows are a desk-two decision and the code is a
+  second branch in one function, UNMEASURED because nothing has asked for the read yet. Nothing is
+  blocked by it: a designated process resolves the firm's own market, and a private one is its
+  declaring seat's.
+- **`spine.quotes()` opens every quote the record holds** (2026-09-23). The `quotes` fold is the one
+  projector whose rows grow with the desk's own activity: the envelope filter keeps it off every
+  other event, and it opens a body per quote at about 0.16 ms, so a two-thousand-event home holding
+  three quotes folds in 7.7 ms and one holding 1,978 in 327 ms. A desk quoting a hundred a day
+  reaches the second reading in about three weeks. The remedy is a lookup that names one ticket
+  rather than a reading that returns them all, which is 5b's, when something asks about one.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

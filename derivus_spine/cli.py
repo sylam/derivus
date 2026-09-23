@@ -11,18 +11,20 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""`DV_Spine` - the home verbs and the identity verbs.
+"""`DV_Spine` - the home verbs, the identity verbs and the policy verbs.
 
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
 head) and `status` (read it). The identity verbs are `enroll` (mint a seat keypair), `grant`
 (declare a capabilities document), `rewrap` (wrap the class key to whoever the document now
 admits), `name` (the mutable display-name side table) and `whoami` (verify an OIDC token against a
-JWKS the deployment hands in as a file). Nothing here fetches, listens or stores a secret.
+JWKS the deployment hands in as a file). The policy verbs are `declare` (put any reserved policy
+document on the record from a JSON file) and `policy` (report what is in force). Nothing here
+fetches, listens or stores a secret.
 
 Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
 the call rather than captured at import. The four home verbs are spelled out individually since
-each carries its own flags; the five identity verbs register from `IDENTITY_VERBS`.
+each carries its own flags; the rest register from `IDENTITY_VERBS` and `POLICY_VERBS`.
 
 `custody` and `identity` are imported inside the verbs that need them, so a missing module for one
 verb cannot stop the CLI loading for the others.
@@ -41,8 +43,9 @@ import os
 import sys
 
 from derivus_spine import SpineLog, SpineRefusal, init_home, verify_home, write_checkpoint
+from derivus_spine import policy as policies
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
-from derivus_spine.errors import CapabilityDenied, CustodyRefusal
+from derivus_spine.errors import CapabilityDenied, CustodyRefusal, MalformedEvent
 
 HOME_HELP = ('the spine home to work on; defaults to DV_SPINE_HOME, else ~/.derivus_spine')
 
@@ -192,6 +195,45 @@ def do_name(args):
                    'display': identity.display_names(home).get(args.subject)})
 
 
+def do_declare(args):
+    """Declare a reserved policy document from a JSON file and report the declaration.
+
+    The document is parsed and canonicalised on the way into the store, so one policy is one blob
+    however the operator spelled their JSON and a document nobody could read back never lands. The
+    capabilities document is `grant`'s: it is the one policy this module does not parse.
+    """
+    log = SpineLog(spine_home(args.home))
+    try:
+        return report(policies.declare(
+            log, args.actor, args.policy,
+            read_json(args.file, '{} policy document'.format(args.policy))))
+    finally:
+        log.close()
+
+
+def do_policy(args):
+    """Report the reserved policies in force, each with the blob it is stored under and the LSN of
+    the declaration that put it there.
+
+    All three come off ONE fold and so cannot disagree: `policy_declared` is open-bodied, and a
+    declaration under a reserved name carrying no blob is a fact this reading steps over rather
+    than a position it borrows. Named, it is one policy; unnamed, every reserved name - one nobody
+    declared standing as nulls, so silence is never mistaken for absence.
+    """
+    if args.name is not None and args.name not in policies.PARSERS:
+        raise MalformedEvent(
+            '{!r} is not a policy this verb reads - it reads {}, and the capabilities document is '
+            '`DV_Spine grant`\'s own file'.format(
+                args.name, ', '.join(sorted(policies.PARSERS))))
+    log = SpineLog(spine_home(args.home))
+    try:
+        return report(dict(
+            (name, dict(zip(('blob', 'document', 'lsn'), policies.in_force(log, name))))
+            for name in ([args.name] if args.name else sorted(policies.PARSERS))))
+    finally:
+        log.close()
+
+
 def do_whoami(args):
     """Verify an OIDC id token against a JWKS file and report the pseudonymous subject reference.
 
@@ -203,8 +245,8 @@ def do_whoami(args):
         args.token, read_json(args.jwks, 'JWKS'), args.issuer, args.audience))
 
 
-#: flag -> how it is declared, spelled once so `--actor` means the same thing on every verb that
-#: appends.
+#: argument -> how it is declared, spelled once so `--actor` means the same thing on every verb
+#: that appends. A name carrying no dashes is a positional.
 ARGUMENTS = {
     'subject': {'help': 'the pseudonymous subject reference to name'},
     '--subject': {'required': True, 'help': 'the pseudonymous subject reference to enroll'},
@@ -219,6 +261,11 @@ ARGUMENTS = {
     '--file': {'required': True,
                'help': 'the capabilities document to declare: {"grants": [...], "read": [...]}, '
                        'canonicalised on the way into the store'},
+    'policy': {'help': 'the reserved policy this document is declared under: one of {}'.format(
+        ', '.join(sorted(policies.PARSERS)))},
+    'file': {'help': 'the JSON policy document, parsed and canonicalised into the store'},
+    'name': {'nargs': '?', 'default': None,
+             'help': 'the reserved policy to report; every one of them where no name is given'},
     '--display': {'default': None, 'help': 'the display name to write into the side table'},
     '--erase': {'action': 'store_true',
                 'help': 'erase this subject\'s display name; the log is not touched'},
@@ -242,6 +289,15 @@ IDENTITY_VERBS = (
      ('subject', ('--display', '--erase')), do_name),
     ('whoami', 'verify an OIDC id token against a JWKS file and print the subject reference',
      ('--token', '--jwks', '--issuer', '--audience'), do_whoami),
+)
+
+#: The same four-tuple for the policy verbs - the policy-file editor this deployment has, in its
+#: CLI form: one verb that declares a document and one that reports what is standing.
+POLICY_VERBS = (
+    ('declare', 'declare a reserved policy document from a JSON file',
+     ('policy', 'file', '--actor'), do_declare),
+    ('policy', 'report the reserved policies in force with the blob and LSN each stands at',
+     ('name',), do_policy),
 )
 
 
@@ -284,7 +340,7 @@ def build_parser():
                      help='report the head position and whether this home can open its bodies'
                      ).set_defaults(run=do_status)
 
-    for verb, help_text, arguments, runner in IDENTITY_VERBS:
+    for verb, help_text, arguments, runner in IDENTITY_VERBS + POLICY_VERBS:
         seated = verbs.add_parser(verb, parents=[common], help=help_text)
         for argument in arguments:
             if isinstance(argument, tuple):

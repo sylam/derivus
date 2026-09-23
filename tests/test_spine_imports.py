@@ -10,7 +10,7 @@
 # Derivus is distributed WITHOUT ANY WARRANTY; without even the implied
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
-"""The spine's import surface, its packaging, and the four verbs `DV_Spine` answers to.
+"""The spine's import surface, its packaging, and the verbs `DV_Spine` answers to.
 
 The book of record depends on stdlib plus `cryptography` - no engine, no torch, no network. That
 is a PROPERTY OF THE SOURCE, so the first gate reads it rather than the loaded modules; the second
@@ -202,8 +202,10 @@ def test_the_spine_ships_as_a_sibling_package_with_cryptography_as_an_extra():
 
 
 def test_the_cli_declares_four_verbs_and_the_home_flag():
-    """Gated off the source, before the core exists to drive it. Four verbs and no fifth - what
-    the spine grows later arrives as an event or a fold, not a new mouth."""
+    """Gated off the source, before the core exists to drive it. The four HOME verbs are the ones
+    spelled out individually, each carrying its own flags; every other verb registers from a table
+    and is driven end to end below, so this gate stays the one that says a home is minted, verified,
+    signed and read by exactly these four."""
     with open(os.path.join(SPINE, 'cli.py'), encoding='utf-8') as handle:
         tree = ast.parse(handle.read(), filename='cli.py')
 
@@ -260,6 +262,65 @@ def test_the_cli_mints_verifies_checkpoints_and_reports(tmp_path):
     # the home is answered by the environment too, and to the same place - `DV_HOME` one level over
     named = dict(os.environ, DV_SPINE_HOME=home)
     assert json.loads(spine('status', env=named).stdout) == standing
+
+
+@needs_spine_core
+def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_path):
+    """The policy-file editor this deployment has, in its CLI form. A document goes on the record
+    from a JSON file and comes back with the blob it was stored under and the LSN it stands at;
+    a reserved name nobody declared reports as nulls, so silence is never mistaken for absence.
+
+    A document no parser reads NEVER LANDS - the refusal is the library's own sentence with exit 1
+    - and what was in force before it stays in force, which is the half a round trip exists for.
+    """
+    home = str(tmp_path / 'spine')
+    assert spine('init', '--home', home).returncode == 0
+    path = tmp_path / 'tiers.json'
+    path.write_text(json.dumps({
+        'tiers': [{'name': 'auto', 'seat': 'policy/tiers/auto',
+                   'max_notional': {'amount': 5000000.0, 'currency': 'USD'}},
+                  {'name': 'desk', 'four_eyes': True}],
+        'designations': {'settlement_export': 'official'}}), encoding='utf-8')
+
+    declared = spine('declare', 'tiers', str(path), '--actor', 'subject-deployment', '--home', home)
+    assert declared.returncode == 0, declared.stderr
+    answer = json.loads(declared.stdout)
+    assert answer['policy'] == 'tiers' and len(answer['blob']) == 64
+
+    standing = json.loads(spine('policy', 'tiers', '--home', home).stdout)['tiers']
+    assert (standing['blob'], standing['lsn']) == (answer['blob'], answer['lsn'])
+    assert [tier['name'] for tier in standing['document']['tiers']] == ['auto', 'desk']
+
+    # THE BLOB AND ITS POSITION COME OFF ONE WALK. `policy_declared` is open-bodied, so a
+    # declaration under a reserved name carrying no blob is legal and is a fact about the name -
+    # and a readout that joined a second fold to this one would print the standing blob at ITS LSN
+    from derivus_spine import SpineLog
+    log = SpineLog(home)
+    try:
+        inline = log.append('policy_declared', {'policy': 'tiers', 'note': 'by hand'},
+                            actor='subject-deployment')['lsn']
+    finally:
+        log.close()
+    joined = json.loads(spine('policy', 'tiers', '--home', home).stdout)['tiers']
+    assert inline > answer['lsn']
+    assert (joined['blob'], joined['lsn']) == (answer['blob'], answer['lsn']), \
+        'the readout borrowed the position of a declaration that carried no blob'
+
+    every = json.loads(spine('policy', '--home', home).stdout)
+    assert sorted(every) == ['firmness', 'fixings', 'tiers', 'tolerance']
+    assert every['tolerance'] == {'blob': None, 'document': None, 'lsn': None}
+
+    broken = tmp_path / 'broken.json'
+    broken.write_text(json.dumps({'tiers': [{'name': 'auto', 'firm': True}]}), encoding='utf-8')
+    refused = spine('declare', 'tiers', str(broken), '--actor', 'subject-deployment', '--home', home)
+    assert refused.returncode == 1 and 'firmness' in refused.stderr
+    assert 'Traceback' not in refused.stderr
+    assert json.loads(spine('policy', 'tiers', '--home', home).stdout)['tiers']['blob'] \
+        == answer['blob'], 'a refused declaration moved what is in force'
+
+    # the capabilities document is `grant`'s own file and this verb says so rather than crashing
+    named = spine('policy', 'capabilities', '--home', home)
+    assert named.returncode == 1 and 'grant' in named.stderr
 
 
 @needs_spine_core

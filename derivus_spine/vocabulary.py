@@ -203,11 +203,12 @@ PROVENANCE_TYPES = {
         ('tolerance_policy', HASH))),
     # The quoting act. It pins two hashes because a quote is firm in two dimensions: the values
     # vector it was struck on and the book plan its marginal charge was solved against. `request` is
-    # the relayed client utterance, optional and erased by shredding the class key.
+    # the relayed client utterance, optional and erased by shredding the class key; `ticket` is the
+    # plan the book WOULD have with this mirror spliced in, which is what an approval signs.
     'quote_filed': _validator('quote_filed', (
         ('quote_id', TEXT), ('structure', TEXT), ('plan_hash', HASH), ('values_hash', HASH),
         ('solved', COORDINATES), ('edge', NUMBER)),
-        optional=(('request', TEXT),)),
+        optional=(('request', TEXT), ('ticket', HASH))),
 }
 
 

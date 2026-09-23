@@ -42,7 +42,7 @@ from derivus_spine.genesis import VERIFYING_KEY_POLICY
 from derivus_spine.policy import FIXINGS_POLICY, TOLERANCE_POLICY, declare
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, SUMMARIES, fixings_at, fold, knocked, read_seed, seed_at)
-from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run
+from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run, file_quote
 from derivus_spine.vocabulary import EVENT_TYPES
 
 import test_spine_imports as imports
@@ -127,6 +127,16 @@ def closed_book(tmp_path):
                                      values, b'{"mtm": 1.0}', book=BOOK)
     complete_run(log, ACTOR, STANDING, claim, b'{"Calc": {"second": true}}', values,
                  b'{"mtm": 2.0}', book=BOOK)
+    file_quote(log, 'subject-desk-two', 'Q-1', 'ZeroCostCollar', marks['plan'], values,
+               {'floor': 17.10}, 4100.0, ticket=marks['plan'], book=BOOK)
+    file_quote(log, ACTOR, 'Q-2', 'Straddle', marks['plan'], values, {}, 0.0, book=BOOK)
+    # an id that sorts BEFORE Q-1 and is struck after it, so LSN order and alphabetical order part
+    file_quote(log, ACTOR, 'A-9', 'Straddle', marks['plan'], values, {}, 0.0, book=BOOK)
+    # the same id restated, and then a BACKDATED restatement that does not win by arriving last
+    marks['quoted'] = file_quote(log, 'subject-desk-two', 'Q-1', 'ZeroCostCollar', marks['plan'],
+                                 values, {'floor': 17.25}, 4200.0, ticket=marks['plan'], book=BOOK)
+    file_quote(log, 'subject-desk-two', 'Q-1', 'ZeroCostCollar', marks['plan'], values,
+               {'floor': 16.00}, 9999.0, ticket=marks['plan'], book=BOOK, effective_time=MON)
     return home, log, marks
 
 
@@ -143,7 +153,7 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     of sentences is committed the same way, because it is data the fixture cannot exercise."""
     home, log, marks = synthetic_book(tmp_path)
     assert set(PROJECTORS) == {'activity', 'attestations', 'blotter', 'decisions', 'lifecycle',
-                               'markets', 'positions'}
+                               'markets', 'positions', 'quotes'}
 
     for name in sorted(PROJECTORS):
         projector = PROJECTORS[name]
@@ -410,7 +420,8 @@ def test_the_second_fixture_pins_what_the_synthetic_book_cannot_say(tmp_path):
     """A position closed out is a row and not an absence; the FIRST attestation of a replay tuple
     stands, whole, which is what `verbs.attestation` answers; the LAST declaration of a policy
     stands, which is what `policy.in_force` answers; a print superseded twice keeps both prints it
-    beat; and verdicts read in the order they were filed."""
+    beat; verdicts read in the order they were filed; and a quote names the SEAT that struck it,
+    read off the envelope, with the ticket beside it where the caller computed one."""
     home, log, marks = closed_book(tmp_path)
 
     closed = PROJECTORS['positions'].rows(fold(log, PROJECTORS['positions']))
@@ -432,4 +443,16 @@ def test_the_second_fixture_pins_what_the_synthetic_book_cannot_say(tmp_path):
     printed = PROJECTORS['lifecycle'].rows(fold(log, PROJECTORS['lifecycle']))['fixings'][0]
     assert printed['value'] == 1.0860 and printed['lsn'] == 11
     assert printed['supersedes'] == [{'value': 1.0851, 'lsn': 9}, {'value': 1.0857, 'lsn': 10}]
+
+    quoted = PROJECTORS['quotes'].rows(fold(log, PROJECTORS['quotes']))
+    assert [row['quote_id'] for row in quoted] == ['Q-2', 'A-9', 'Q-1'], \
+        'the rows read in LSN order, which is not their ids\' order'
+    assert quoted[-1] == {'quote_id': 'Q-1', 'booker': 'subject-desk-two', 'book': BOOK,
+                          'plan_hash': marks['plan'], 'values_hash': marks['values'],
+                          'ticket': marks['plan'], 'structure': 'ZeroCostCollar',
+                          'solved': {'floor': 17.25}, 'edge': 4200.0, 'effective_time': None,
+                          'lsn': marks['quoted']['lsn']}, \
+        'the LATER filing under one id stands, and the backdated one did not win by arriving last'
+    assert quoted[0]['booker'] == ACTOR and quoted[0]['ticket'] is None, \
+        'a quote filed without a ticket carries the absence rather than somebody else\'s hash'
     log.close()

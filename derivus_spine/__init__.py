@@ -38,6 +38,7 @@ from .errors import (
     CapabilityDenied,
     CustodyRefusal,
     ReplayRefused,
+    TierRefused,
     QuoteNotFirm,
 )
 from .store import BlobStore
@@ -74,5 +75,6 @@ __all__ = [
     'CapabilityDenied',
     'CustodyRefusal',
     'ReplayRefused',
+    'TierRefused',
     'QuoteNotFirm',
 ]

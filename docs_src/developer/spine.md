@@ -2,11 +2,12 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1, 2, 3 and 4**: the log, the blob store and the
-chain (riding on them: identity, capability enforcement and key custody), on top of those the booking
-verbs, the attestation lanes and the two-dimensional firmness check, and over all of it the
-projections, the diary, the book file's pin and the desk's own readers of them. No network — a
-library, a CLI, five delegators on `Context`, five read verbs on the service, and 281 gates.
+page documents what is BUILT, which is **increments 1, 2, 3, 4 and 5a**: the log, the blob store and
+the chain (riding on them: identity, capability enforcement and key custody), on top of those the
+booking verbs, the attestation lanes and the two-dimensional firmness check, over all of it the
+projections, the diary, the book file's pin and the desk's own readers of them, and beside those the
+tier policy, its evaluator and the verbs that file a decision and a close. No network — a
+library, a CLI, eight delegators on `Context`, five read verbs on the service, and 299 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -105,9 +106,9 @@ channel into the record.
 
 ## The gates
 
-104 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider ten-file set worth 256 of the 281
-above, and `tests/test_diary.py` carries the rest),
+105 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 274 of the
+299 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -478,11 +479,120 @@ head, so it is asked for where `positions_behind` is above zero or the FILE has 
 answer in hand — never on the beat, never on `events_behind`, and an answer once fetched stands
 until another replaces it.
 
+## Increment 5a — the tiers, the decisions, the close
+
+**A FOURTH RESERVED NAME, and the document IS the workflow.** `tiers` joins `tolerance`, `firmness`
+and `fixings` as a policy this package owns the shape of: an ORDERED list of tiers and the market
+each designated process resolves by name, hashed into the store and declared through the ordinary
+writer under `admin` like every other. The rule is one sentence — **the FIRST tier whose every
+declared check passes is the one that applies** — and a key a tier omits is a check it does not
+make, so a list ends at a catch-all declaring none and a ticket reaching the end of a list without
+one falls in no tier at all, which is an answer rather than a default. Three checks and no fourth.
+`max_notional` is an amount AND the currency it is an amount of, read against the notionals the
+CALLER states, so no check here reads a market and a ticket whose notional is not stated in that
+currency FAILS that tier by name — the safe direction, and the one a conversion inside a policy
+check would lose. `max_tenor_years` is the ticket's own. `market` is the values vector the quote
+pinned, which must be the one standing under the name the tier prices on. A tier names the `seat` an
+AUTOMATIC approval signs under, or declares `four_eyes` and wants a human; both together is refused
+at the declaration, since an automatic seat never books and the key would say nothing.
+
+**The two staleness checks are `firmness`'s, and a tier restating one is refused by name.** Pillar
+age IS `values_seconds` and book staleness IS `plan_seconds`, enforced on every booking before any
+tier is read, so a document or a tier carrying either — or `firm`, the verdict they answer — is
+refused where it is declared rather than making one question two standards. `designations` is the
+other section: process → market name, closed to the processes something actually resolves by name
+(`settlement_export` is the one this increment binds), because a name nothing reads is a rule nobody
+enforces. Neither a designation nor a tier's own `market` may be a `private/` name: a designated
+process resolves the firm's board, a tier's market decides whether an AUTOMATIC seat signs, and
+neither rests on a board one seat declared for itself.
+
+**WHAT IS STORED IS THE COMPLETED DOCUMENT**, the practice `parse_firmness` set. The two defaults
+this shape has — `four_eyes` false on a tier that names no seat, and an empty `designations` — are
+written in before the bytes are hashed, so one workflow is ONE BLOB however the operator spelled it
+and two desks declaring the same rules do not get two governance histories of one decision. A tier
+that names a seat is completed with no `four_eyes` at all: the two keys together are refused, and an
+automatic seat never books. A cap is a MAXIMUM on every axis — a ticket exactly at one passes and
+the smallest step over it does not — and a notional is an AMOUNT of a currency and never a sign, so
+a zero or a negative one is refused rather than clearing every cap there is.
+
+**The evaluator is pure, and nothing calls it yet.** `derivus_spine/tiers.py` is `firmness.py`'s
+shape — `assess` returns a verdict, `check` raises `TierRefused` carrying the same sentences — over
+a parsed policy, a ticket and the market names standing, holding no log, clock, store or home, which
+the gate asserts on the signatures AND on the module's own imports rather than on the docstring. The
+verdict names the tier, the seat, every check read with the value measured and the bound declared,
+and one sentence per failure of every tier tried, which is also the route the ticket took. A check
+that could not be MADE is a failure and never a pass. `standing_approval` is the human half: **THE
+LATEST VERDICT STANDS**, by LSN, because a verdict is never withdrawn, so a rejection filed after an
+approval is what the record says last; under `four_eyes` the approver may not be the booker. Scope
+is not re-checked there — the writer refused an unscoped approval at the append, so every verdict in
+the fold was already a seat's.
+
+**The decisions are verbs now, and so is the close.** `approve` and `reject` file the two verdicts
+the vocabulary has carried since increment 1 with nothing filing them; both demand `approve` scope,
+and an unscoped seat is refused with the denial landed, like every other verb. One seat signing one
+plan twice is ONE fact — the semantic tuple carries no clock of the writer's own — while a second
+seat signing the same plan is a second, because who signed is part of what was said. `declare_close`
+blobs its values exactly as `declare_market` does, and a second close on one market SUPERSEDES the
+first rather than correcting it, so a day restated is two facts and a fold taken as at the first
+still answers what it answered. `quote_filed` gains the optional `ticket`: `plan_hash` is the BOOK's
+plan, which is the right question for firmness and the wrong one for identity — two quotes struck
+against an unmoved book pin the same one — while `ticket` is the plan the book WOULD have with this
+quote's mirror spliced in, so an approval over it reaches this quote and no other and an amended
+mirror is a new hash by construction. A body carrying none validates exactly as it did. The eighth
+projector, `quotes`, reads those bodies: one row per quote id, carrying the SEAT that struck it off
+the envelope, since no body holds one, a second filing under one id standing by the as-of key every
+other keyed row here stands by, and the rows read in LSN order rather than their ids'. **It is the
+one projector whose rows grow with the desk's own activity**: it opens a body per quote, about
+0.16 ms each, so the fold is 7.7 ms on a two-thousand-event home holding three quotes and 327 ms on
+one holding 1,978 — the envelope filter keeps it off every other event and nothing keeps it off its
+own. `spine.quotes()` answers every quote the record holds and is a reading; the lookup a desk will
+want is 5b's, when something asks about one ticket.
+
+**A market is resolved BY NAME for the first time.** `spine.resolve_market(name, actor, process)`
+composes the `markets` fold, the blob store and `read_values` — every piece of which existed, and
+was composed in exactly one place — and answers `{name, values_hash, values}` as the objects
+`patch_market` takes. A name nobody declared REFUSES rather than falling back on whatever market is
+loaded, which is the whole point of binding a process to a market by name; with `process` named, it
+must be the market the tiers policy designates for that process, and a home designating nothing
+refuses too. **A NAME RESOLVES TO ITS LATEST DECLARATION BY LSN, and an official close is one way of
+declaring one**: a close moves what the name answers and a later declaration moves it back, so a
+reader cannot be handed yesterday's board on a market the desk has since closed. A
+`private/<subject>/<name>` market resolves for the subject ITS NAME NAMES, and `declare_market`
+refuses a private name whose subject is not the seat declaring it — self-declared means
+self-declared, so the name and the fold cannot disagree about who owns a board. The ownership rule
+and the designation rule are checked independently, neither standing behind the other. **The
+surveillance and admin read of a private market is DEFERRED**: it wants a second entitlement class
+and a `read` row per subject, which is the reclassification the dormant mechanism holds for desk
+two, and a per-market ACL now would be the per-object ACL the design forbids by name. Until then the
+owner rule refuses at the verb, without minting a fact for it.
+
+**The mouths.** `DV_Spine declare <policy> <file.json> --actor` puts any reserved policy on the
+record from a JSON file, parsed and canonicalised on the way into the store so one policy is one
+blob however the operator spelled it, and `DV_Spine policy [name]` reports what is in force with the
+blob and the LSN of the declaration that put it there, a name nobody declared reading as nulls. All
+three come off ONE WALK — `policy.in_force` answers the position of the frame it chose — because
+`policy_declared` is open-bodied and a declaration under a reserved name carrying no blob is a fact
+this reading steps over rather than a position it could borrow. `Context` gains `approve`, `reject`
+and `declare_close` beside `declare_market`, and the seam gains `tiers_policy`, `quotes` and
+`verdicts` as folds.
+
+**18 new gates in four files**, with the `quotes` golden and its rows joining the twelve in
+`tests/test_spine_projections.py`. The shapes worth naming: the whole closure of the document met AT
+THE DECLARATION, seventeen ways at once, including the two that are not merely shape — a restated
+staleness window and a private market under a designation or a tier; three spellings of one workflow
+hashing to one blob; the purity gate reading the evaluator's signatures and its import list, so an
+evaluator that learned to open a home turns it red the day it does; the market resolved by name and
+PROVED by patching a second context carrying another spot onto it; and the CLI round trip, whose
+refused declaration leaves what was in force in force and whose open-bodied declaration lends its
+position to nobody.
+
 ## What is not built yet
 
 No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
-a fold. No tier policy, no doorbell, no generated MCP binding — **5 through 7**. No network anywhere yet:
-tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
+a fold. The tier evaluator has no caller: nothing prices, books or approves through it, and the
+service verbs, the named booker, the four-eyes path and the auto tier's own signature are **5b**,
+queue admission **5c**. No doorbell and no generated MCP binding — **6 and 7**. No network anywhere
+yet: tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
 rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
 checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope
 by the design's own sentence.

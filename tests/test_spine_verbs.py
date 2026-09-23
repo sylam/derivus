@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus_spine import (
     CapabilityDenied, MalformedEvent, MissingBlobRefusal, QuoteNotFirm, ReplayRefused, SpineLog,
     UnknownEventType, init_home, verify_home)
-from derivus_spine import firmness, policy, verbs
+from derivus_spine import firmness, policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 MINT = 'subject-deployment'
@@ -279,11 +279,13 @@ def test_declaring_official_without_mark_scope_is_refused_and_the_refusal_is_log
 # --------------------------------------------------------------------------------------------
 # Capability denial, per verb this increment added.
 
-def test_every_new_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
+def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
     """The capability-denial gate on the VERBS - a different claim from the type-level sweep in
     `test_spine_capability.py`, since a verb could reach the writer under an actor the verb chose
     rather than the one the caller named. One document granting nothing turns every arm off at once,
-    which is the design: authorization is a document and a pure function.
+    which is the design: authorization is a document and a pure function. The verb each type demands
+    is spelled here rather than read off the vocabulary, so this file disagrees with that table if
+    the table moves.
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
@@ -291,27 +293,30 @@ def test_every_new_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_pa
     ran = []
 
     attempts = (
-        ('fill', lambda: verbs.book(log, STRANGER, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1',
-                                    book=BOOK)),
-        ('amendment', lambda: verbs.amend(log, STRANGER, INSTRUMENT, AMENDED, book=BOOK)),
-        ('election', lambda: verbs.apply_lifecycle(
+        ('fill', 'book', lambda: verbs.book(log, STRANGER, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT,
+                                            'E-1', book=BOOK)),
+        ('amendment', 'book', lambda: verbs.amend(log, STRANGER, INSTRUMENT, AMENDED, book=BOOK)),
+        ('election', 'book', lambda: verbs.apply_lifecycle(
             log, STRANGER, 'election', {'instrument': 'a' * 64, 'choice': 'exercise'}, book=BOOK)),
-        ('market_declared', lambda: verbs.declare_market(log, STRANGER, 'private/x', VALUES)),
-        ('quote_filed', lambda: verbs.file_quote(
+        ('market_declared', 'mark',
+         lambda: verbs.declare_market(log, STRANGER, 'private/' + STRANGER, VALUES)),
+        ('official_close_declared', 'mark',
+         lambda: verbs.declare_close(log, STRANGER, 'official', VALUES)),
+        ('approval', 'approve', lambda: verbs.approve(log, STRANGER, 'a' * 64, book=BOOK)),
+        ('rejection', 'approve', lambda: verbs.reject(log, STRANGER, 'a' * 64, 'the terms moved',
+                                                      book=BOOK)),
+        ('quote_filed', 'book', lambda: verbs.file_quote(
             log, STRANGER, 'Q-1', 'ZeroCostCollar', 'a' * 64, VALUES, {'floor': 17.25}, 4200.0,
             book=BOOK)),
-        ('run_completed', lambda: verbs.complete_run(
+        ('run_completed', 'book', lambda: verbs.complete_run(
             log, STRANGER, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)),
-        ('result_pinned', lambda: verbs.pin_result(
+        ('result_pinned', 'approve', lambda: verbs.pin_result(
             log, STRANGER, claim(), JOB, VALUES, RESULT, executor_of(RESULT, seen=ran),
             book=BOOK)),
     )
 
     expected = []
-    for event_type, attempt in attempts:
-        verb = {'approval': 'approve'}.get(event_type) or (
-            'approve' if event_type == 'result_pinned' else
-            'mark' if event_type == 'market_declared' else 'book')
+    for event_type, verb, attempt in attempts:
         head = log.head()[0]
         with pytest.raises(CapabilityDenied) as refusal:
             attempt()
@@ -319,14 +324,118 @@ def test_every_new_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_pa
         for named in (STRANGER, verb, event_type):
             assert named in said, (event_type, named, said)
         assert log.head()[0] == head + 1, event_type
-        expected.append((head + 1, {'subject': STRANGER, 'verb': verb,
-                                    'book': BOOK if event_type != 'market_declared' else '*',
+        # the two firm-level acts carry no book, so the denial's scope is the wildcard
+        scope = '*' if event_type in ('market_declared', 'official_close_declared') else BOOK
+        expected.append((head + 1, {'subject': STRANGER, 'verb': verb, 'book': scope,
                                     'attempted_type': event_type}))
 
     assert denials(log) == expected, 'a refusal went unrecorded or was recorded wrong'
     assert tolerance and len(ran) == 1, \
         'the pin re-executed before the writer refused it - a declared boundary, gated so a change ' \
         'to it is a change to this line'
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_private_market_is_declared_by_the_seat_its_name_names(tmp_path):
+    """SELF-DECLARED MEANS SELF-DECLARED. A `private/<subject>/<name>` market is one seat's own
+    board, so the subject in the name is the seat that declares it - otherwise any `mark`-scoped
+    actor could mint a market inside another seat's namespace and own it, while the seat the name
+    names was refused their own prefix, and ownership would read one way off the name and another
+    off the fold.
+
+    Killing mutation: the check dropped, after which `subject-deployment` owns
+    `private/subject-desk-one/screen` and the desk that name points at cannot read it.
+    """
+    home, log = minted(tmp_path)
+
+    mine = verbs.declare_market(log, DESK, 'private/{}/screen'.format(DESK), VALUES)
+    assert log.open_body(log.frame_at(mine['lsn']))['name'] == 'private/{}/screen'.format(DESK)
+
+    for taken in ('private/{}/screen'.format(STRANGER), 'private/screen', 'private/'):
+        with pytest.raises(MalformedEvent) as refusal:
+            verbs.declare_market(log, DESK, taken, VALUES)
+        said = str(refusal.value)
+        assert 'declare_market' in said and DESK in said, taken
+        assert 'one seat\'s own board' in said, taken
+    assert log.head()[0] == mine['lsn'], 'a refused declaration wrote something'
+
+    # the rule reaches only the private prefix: a firm name is whatever the firm declares it
+    assert verbs.declare_market(log, DESK, 'dealer', VALUES)['lsn'] == mine['lsn'] + 1
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+# --------------------------------------------------------------------------------------------
+# The decisions, and the close.
+
+def test_an_approval_retried_by_one_seat_is_one_fact_and_a_rejection_carries_its_grounds(tmp_path):
+    """A decision is a fact over a plan HASH, so an amended plan is a new hash needing a new
+    signature. One seat signing one plan twice is ONE fact - the semantic tuple carries no clock of
+    the writer's own, so the retry meets its own tag - while a second seat signing the same plan is
+    a second fact, because who signed is part of what was said.
+
+    A rejection's reason is required and has no default: a verdict is never withdrawn, so grounds
+    nobody can read are grounds nothing can be filed against later.
+    """
+    home, log = minted(tmp_path)
+    plan, other = 'a' * 64, 'b' * 64
+
+    signed = verbs.approve(log, DESK, plan, book=BOOK)
+    assert signed['coalesced'] is False
+    assert log.open_body(log.frame_at(signed['lsn'])) == {'plan_hash': plan}
+
+    again = verbs.approve(log, DESK, plan, book=BOOK)
+    assert again['coalesced'] is True and again['lsn'] == signed['lsn']
+    assert verbs.approve(log, MINT, plan, book=BOOK)['lsn'] == signed['lsn'] + 1
+
+    amended = verbs.approve(log, DESK, other, book=BOOK)
+    assert amended['lsn'] > signed['lsn'], 'an amended plan reached the signature of the old one'
+
+    refused = verbs.reject(log, MINT, plan, 'the booker and the approver are one seat', book=BOOK)
+    assert log.open_body(log.frame_at(refused['lsn'])) == {
+        'plan_hash': plan, 'reason': 'the booker and the approver are one seat'}
+
+    for broken in (('not-a-hash', 'why'), (plan, ''), (plan, None)):
+        with pytest.raises(MalformedEvent) as refusal:
+            verbs.reject(log, MINT, broken[0], broken[1], book=BOOK)
+        assert ('plan_hash' if broken[0] != plan else 'reason') in str(refusal.value)
+    with pytest.raises(MalformedEvent):
+        verbs.approve(log, DESK, 'not-a-hash', book=BOOK)
+
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_second_close_supersedes_the_first_and_a_read_before_it_is_unmoved(tmp_path):
+    """A close is declared by a verb and superseded by a SECOND close rather than corrected in
+    place, so the row names the LSN it stands over and the day as it was marked first is still
+    readable at the position it was marked at.
+
+    Killing mutation: the second close overwriting the values hash of the first, after which a fold
+    taken as at the first close answers the restated vector and no read of the record can say the
+    day was marked twice.
+    """
+    home, log = minted(tmp_path)
+
+    first = verbs.declare_close(log, MINT, 'official', VALUES)
+    assert first['values_hash'] == address(VALUES)
+    assert log.open_body(log.frame_at(first['lsn'])) == {
+        'market': 'official', 'values_hash': address(VALUES)}
+
+    second = verbs.declare_close(log, MINT, 'official', MOVED_VALUES)
+    assert second['values_hash'] == address(MOVED_VALUES) and second['lsn'] > first['lsn']
+
+    markets = projections.PROJECTORS['markets']
+    standing = markets.rows(projections.fold(log, markets))['closes'][0]
+    assert (standing['values_hash'], standing['supersedes_lsn']) == (address(MOVED_VALUES),
+                                                                    first['lsn'])
+    was = markets.rows(projections.fold(log, markets, lsn=first['lsn']))['closes'][0]
+    assert (was['values_hash'], was['supersedes_lsn']) == (address(VALUES), None)
+
+    with pytest.raises(MalformedEvent) as refusal:
+        verbs.declare_close(log, MINT, '', VALUES)
+    assert 'declare_close' in str(refusal.value) and 'market' in str(refusal.value)
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
 
@@ -591,7 +700,7 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
 
     with pytest.raises(MalformedEvent) as refusal:
         policy.declare(log, MINT, 'liquidity', {'anything': 1})
-    assert 'firmness, fixings, tolerance' in str(refusal.value)
+    assert 'firmness, fixings, tiers, tolerance' in str(refusal.value)
 
     assert log.head()[0] == 4, 'a refused declaration wrote something'
     # an empty tolerance document is a policy that tolerates nothing, and it is legal - silence is
@@ -605,9 +714,13 @@ def test_the_policy_in_force_is_a_fold_and_the_defaults_are_stated(tmp_path):
     standard was this claim held to in March" a fold like every other question. A home that
     declared no FIRMNESS policy runs on the stated desk conventions, because it is not making a
     claim about anybody else's numbers - while a home that declared no TOLERANCE policy pins
-    nothing, because it is."""
+    nothing, because it is.
+
+    The fold answers WHERE as well as what, off the same walk, so a reader showing an operator what
+    is in force and where it came from cannot show one declaration's blob at another's position.
+    """
     home, log = minted(tmp_path)
-    assert policy.in_force(log, policy.TOLERANCE_POLICY) == (None, None)
+    assert policy.in_force(log, policy.TOLERANCE_POLICY) == (None, None, None)
     assert policy.firmness_in_force(log) == {'values_seconds': 30.0, 'plan_seconds': 600.0}
 
     first = policy.declare(log, MINT, policy.FIRMNESS_POLICY, {'values_seconds': 5})
@@ -618,6 +731,15 @@ def test_the_policy_in_force_is_a_fold_and_the_defaults_are_stated(tmp_path):
     # as of the earlier position the earlier document is what governed
     assert policy.firmness_in_force(log, second['lsn'] - 1)['plan_seconds'] == 600.0
     assert first['lsn'] < second['lsn']
+
+    # ONE WALK, ONE ANSWER: the position comes off the frame this fold chose, so an open-bodied
+    # declaration under the same name - legal, and what `canonical_policy`'s own refusal points at
+    # - is stepped over rather than lending its LSN to somebody else's blob
+    log.append('policy_declared', {'policy': policy.FIRMNESS_POLICY, 'note': 'by hand'},
+               actor=MINT)
+    assert policy.in_force(log, policy.FIRMNESS_POLICY)[2] == second['lsn']
+    assert policy.in_force(log, policy.FIRMNESS_POLICY)[0] == second['blob']
+    assert policy.firmness_in_force(log)['plan_seconds'] == 90.0
 
     # a declared document whose blob stopped answering for it refuses out loud rather than
     # folding to a sentinel: this fold is read by a VERB, so nothing is bricked by refusing
@@ -750,6 +872,7 @@ def test_a_quote_pins_two_hashes_and_carries_its_erasable_request(tmp_path):
 
     quiet = verbs.file_quote(log, DESK, 'Q-2', 'Straddle', 'a' * 64, VALUES, {}, 0.0, book=BOOK)
     assert 'request' not in log.open_body(log.frame_at(quiet['lsn']))
+    assert 'ticket' not in log.open_body(log.frame_at(quiet['lsn']))
 
     log.close()
     assert verify_home(home)['events'] == 6
@@ -761,6 +884,41 @@ def test_a_quote_pins_two_hashes_and_carries_its_erasable_request(tmp_path):
     with pytest.raises(Exception):
         shredded.open_body(shredded.frame_at(filed['lsn']))
     shredded.close()
+
+
+def test_a_quote_carries_the_ticket_its_approval_would_sign_where_one_was_computed(tmp_path):
+    """The optional third hash. `plan_hash` is the BOOK's plan, which is the right question for
+    firmness - has the book this would land against moved - and the wrong one for identity, since
+    two quotes struck against an unmoved book pin the same one. `ticket` is the plan the book WOULD
+    have with this quote's mirror spliced in, so an approval over it reaches this quote and no
+    other, and an amended mirror is a new hash by construction.
+
+    Optional because a v1 body carries none and still validates. Checked where it is given: a
+    ticket that is not a content address is not a ticket.
+    """
+    home, log = minted(tmp_path)
+    spliced, other = 'c' * 64, 'd' * 64
+
+    filed = verbs.file_quote(log, DESK, 'Q-1', 'ZeroCostCollar', 'a' * 64, VALUES,
+                             {'floor': 17.25}, 4200.0, ticket=spliced, book=BOOK)
+    body = log.open_body(log.frame_at(filed['lsn']))
+    assert body['ticket'] == spliced and body['plan_hash'] == 'a' * 64
+    assert sorted(body) == ['edge', 'plan_hash', 'quote_id', 'solved', 'structure', 'ticket',
+                            'values_hash']
+
+    # the same book plan, a different mirror: one pinned hash, two tickets
+    second = verbs.file_quote(log, DESK, 'Q-2', 'ZeroCostCollar', 'a' * 64, VALUES,
+                              {'floor': 17.5}, 4300.0, ticket=other, book=BOOK)
+    assert log.open_body(log.frame_at(second['lsn']))['plan_hash'] == body['plan_hash']
+    assert log.open_body(log.frame_at(second['lsn']))['ticket'] != body['ticket']
+
+    with pytest.raises(MalformedEvent) as refusal:
+        verbs.file_quote(log, DESK, 'Q-3', 'Straddle', 'a' * 64, VALUES, {}, 0.0,
+                         ticket='not-a-hash', book=BOOK)
+    assert 'ticket' in str(refusal.value)
+    assert log.head()[0] == second['lsn'], 'a refused quote wrote something'
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
 
 
 def test_a_quote_refuses_a_pin_that_is_not_a_pin_and_a_coordinate_that_is_not_a_number(tmp_path):
@@ -883,14 +1041,14 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
 
 
 def test_the_optional_field_is_not_an_extension_point():
-    """`quote_filed` is the only type declaring an optional field, and `_validator` grew an
-    `optional` arm for it. The arm's defence is that an optional field is still NAMED, so the body
+    """`quote_filed` is the only type declaring optional fields, and `_validator` grew an
+    `optional` arm for them. The arm's defence is that an optional field is still NAMED, so the body
     stays as closed as it ever was. A validator that stopped checking surplus the moment a type
     gained an optional field would open the hole on precisely the type that carries a client's own
     words, and an undeclared field sits outside every hash, seal and signature here.
 
-    Three claims: the field may be ABSENT, it is CHECKED when present exactly as a declared field
-    is, and its presence buys no other field a way in.
+    Three claims: a field may be ABSENT, it is CHECKED when present exactly as a declared field is
+    and at its OWN kind, and its presence buys no other field a way in.
     """
     from derivus_spine.vocabulary import validate
 
@@ -898,19 +1056,26 @@ def test_the_optional_field_is_not_an_extension_point():
             'values_hash': 'b' * 64, 'solved': {'floor': 17.25}, 'edge': 4200.0}
     validate('quote_filed', body)
     validate('quote_filed', dict(body, request='three months of downside at zero cost'))
+    validate('quote_filed', dict(body, ticket='c' * 64))
 
-    # the surplus rule, unmoved: the closure names the optional field and still refuses the rest
+    # the surplus rule, unmoved: the closure names the optional fields and still refuses the rest
     with pytest.raises(MalformedEvent) as refusal:
         validate('quote_filed', dict(body, surprise='outside every hash the closure names'))
     said = str(refusal.value)
     assert 'carries surprise beyond' in said, said
-    assert 'request' in said, 'the refusal does not name the optional field as one of the known'
+    for optional in ('request', 'ticket'):
+        assert optional in said, 'the refusal does not name the optional fields among the known'
 
-    # and present, it is held to its kind - an optional field is not an unchecked one
+    # and present, each is held to its OWN kind - an optional field is not an unchecked one, and
+    # two of them on one type are not one kind
     for broken in (17, '', None, {'said': 'it'}):
         with pytest.raises(MalformedEvent) as refusal:
             validate('quote_filed', dict(body, request=broken))
         assert 'request is' in str(refusal.value), (broken, str(refusal.value))
+    for broken in ('not-a-hash', 'C' * 64, 17, None):
+        with pytest.raises(MalformedEvent) as refusal:
+            validate('quote_filed', dict(body, ticket=broken))
+        assert 'ticket is' in str(refusal.value) and 'content hash' in str(refusal.value), broken
 
     # the types that declare NO optional field are validated by the identical code, and a gate that
     # did not say so would pass on a validator that had quietly stopped closing those too
@@ -950,4 +1115,29 @@ def test_a_declared_policy_is_stored_canonically_so_one_policy_is_one_blob(tmp_p
     assert second['coalesced'] is True and second['lsn'] == first['lsn']
     assert json.loads(log.store.get(first['blob']).decode('utf-8')) == {
         'tolerances': {'cva': 1e-6, 'mtm': 1e-9}}
+    log.close()
+
+
+def test_a_tiers_policy_declared_twice_leaves_the_last_one_in_force(tmp_path):
+    """The fourth reserved name resolves the way the other three do: by the ordinary fold, the LAST
+    declaration at or before a position standing. A workflow is governance, so replacing one is a
+    whole new document rather than an edit of the one in force, and what routed a ticket in March is
+    a fold like every other question.
+    """
+    home, log = minted(tmp_path)
+    assert policy.tiers_in_force(log) is None, 'a home declaring no tiers routes nothing'
+
+    first = policy.declare(log, MINT, policy.TIERS_POLICY,
+                           {'tiers': [{'name': 'desk', 'four_eyes': True}]})
+    second = policy.declare(log, MINT, policy.TIERS_POLICY, {
+        'tiers': [{'name': 'auto', 'seat': 'policy/tiers/auto'}, {'name': 'desk'}],
+        'designations': {'settlement_export': 'official'}})
+
+    assert [tier['name'] for tier in policy.tiers_in_force(log)['tiers']] == ['auto', 'desk']
+    assert policy.tiers_in_force(log)['designations'] == {'settlement_export': 'official'}
+    assert [tier['name'] for tier in policy.tiers_in_force(log, second['lsn'] - 1)['tiers']] == \
+        ['desk']
+    assert first['blob'] != second['blob'] and first['lsn'] < second['lsn']
+    # the completed document is what stands, so the catch-all says what it means about four eyes
+    assert policy.tiers_in_force(log)['tiers'][1] == {'name': 'desk', 'four_eyes': False}
     log.close()
