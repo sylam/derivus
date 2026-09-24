@@ -63,6 +63,12 @@ SEGMENT_GLOB = 'segment-*.jsonl'
 #: replica file-copies, and a lock is about this machine's processes, never about the history.
 WRITER_LOCK = '.writer.lock'
 
+#: Called `(home, lsn, event_hash)` after every frame this process lands, which is the one place a
+#: head moves under a writer. The record announcing a POSITION and never a fact, so a listener that
+#: wants what happened reads the log; process-local and never persisted, so nothing here is part of
+#: the record.
+WATCHERS = []
+
 #: The nine pre-LSN envelope fields the body is sealed against. Listed once so the writer and the
 #: verifier build the same AAD; the order here is immaterial, since JCS sorts them.
 AAD_FIELDS = ('actor', 'book', 'effective_time', 'entitlement_class', 'event_type',
@@ -141,6 +147,20 @@ def aad_bytes(envelope):
         raise ChainBroken(
             'the frame has no {} - a frame carries the nine envelope fields the body is sealed '
             'against; the line is not one this writer wrote'.format(missing))
+
+
+def ciphertext(frame, where):
+    """`frame`'s body as the sealed bytes it is, or `ChainBroken` naming `where`.
+
+    One spelling for the verifier and the replica, since both re-derive the chain over the
+    CIPHERTEXT and neither holds a key to tell a bad body from an unreadable one.
+    """
+    try:
+        return base64.b64decode(frame['body'])
+    except (binascii.Error, TypeError, ValueError):
+        raise ChainBroken(
+            '{}: the body is not base64 - the line has been altered; restore the frame from a '
+            'verified replica'.format(where))
 
 
 def event_hash(ciphertext_hash, idempotency_tag, prev_hash, record_time):
@@ -262,19 +282,27 @@ class SpineLog:
     def frames(self, start_lsn=1, end_lsn=None):
         """Every frame from `start_lsn` to `end_lsn`, in LSN order, read from disk.
 
+        `start_lsn` is SOUGHT rather than walked to: one open and one `seek` onto `_floor`'s byte
+        offset, then forward from there, so a page costs the page rather than the history.
+
         The segment listing is re-read too, because reading never claims the home and a handle held
         across someone else's append would otherwise walk the segments that existed when it opened.
         The only remembered value is a seen segment's lower bound, which cannot change once the
         segment holds a line.
         """
         seen = dict((path, index) for index, path in enumerate(self._segments))
+        first, offset = self._floor(start_lsn)
         for path in sorted(self.log.glob(SEGMENT_GLOB)):
             index = seen.get(path)
-            if index is not None and end_lsn is not None \
-                    and self._segment_first[index] is not None \
-                    and self._segment_first[index] > end_lsn:
-                return
+            if index is not None:
+                if index < first:
+                    continue
+                if end_lsn is not None and self._segment_first[index] is not None \
+                        and self._segment_first[index] > end_lsn:
+                    return
             with path.open('rb') as handle:
+                if index == first:
+                    handle.seek(offset)
                 for raw in handle:
                     if not raw.strip():
                         continue
@@ -284,6 +312,17 @@ class SpineLog:
                     if end_lsn is not None and frame['lsn'] > end_lsn:
                         return
                     yield frame
+
+    def _floor(self, start_lsn):
+        """`(segment index, byte offset)` a walk to `start_lsn` may begin at - the position of the
+        largest INDEXED LSN at or below it, else the start of the first segment.
+
+        A LOWER BOUND and never a lookup. The index was built when this handle opened and a handle
+        routinely outlives someone else's append, so a position past the head is answered by the
+        head's own offset and the frames after it are reached by the walk.
+        """
+        located = self._at.get(min(start_lsn, self._head_lsn))
+        return located if located is not None else (0, 0)
 
     def frame_at(self, lsn):
         """The one frame at `lsn`, read by byte offset. Raises `ChainBroken` if this log has no
@@ -395,18 +434,7 @@ class SpineLog:
             hashlib.sha256(sealed).hexdigest(), tag, envelope['prev_hash'], record_time)
         frame['lsn'] = self._head_lsn + 1
 
-        line = json.dumps(frame, sort_keys=True, separators=(',', ':')).encode('utf-8') + b'\n'
-        index, offset = self._write(line)
-
-        self._at[frame['lsn']] = (index, offset)
-        self._tags[tag] = frame['lsn']
-        self._segment_last[index] = frame['lsn']
-        if self._segment_first[index] is None:
-            self._segment_first[index] = frame['lsn']
-        self._head_lsn = frame['lsn']
-        self._head_hash = frame['event_hash']
-        if frame['lsn'] == 1:
-            self._genesis_actor = actor
+        self._land(frame)
         if event_type in CAPABILITY_EVENTS and self._capability is not None:
             # The fold moves with the log rather than being re-read from it. Safe only because this
             # handle holds the home's claim, so nothing else can have appended since.
@@ -416,6 +444,69 @@ class SpineLog:
         envelope['lsn'] = frame['lsn']
         envelope['coalesced'] = False
         return envelope
+
+    def accept(self, frame):
+        """Write a frame the HUB authored, verbatim, and answer it - the replica's whole write path.
+
+        Four questions and no fifth: the twelve fields, the next position, a link to this head, and
+        an event hash that recomputes over the bytes offered. It does not validate against the
+        vocabulary, since a replica of a newer hub must still chain; it does not authorize, scope
+        being the hub's question, answered where the fact was made; and it does not coalesce on the
+        tag, a replica writing the order the hub gave it. It DOES claim the home, so two followers
+        on one replica meet `WriterBusy` rather than both writing one position.
+        """
+        self._claim()
+        where = 'the frame offered at LSN {}'.format(frame.get('lsn'))
+        check_frame(frame, where)
+        if frame['lsn'] != self._head_lsn + 1:
+            raise ChainBroken(
+                '{}: this replica stands at LSN {} and a replica writes the hub\'s NEXT line - a '
+                'position ahead would leave a hole nothing can fill and one behind is already '
+                'written; pull again from LSN {}'.format(where, self._head_lsn, self._head_lsn))
+        if frame['prev_hash'] != self._head_hash:
+            raise ChainBroken(
+                '{}: it links to {} and LSN {} of this replica is {} - the frame belongs to another '
+                'history, so it is not the next line HERE; verify this home and pull from the hub '
+                'that wrote it'.format(
+                    where, frame['prev_hash'], self._head_lsn, self._head_hash))
+        recomputed = event_hash(
+            hashlib.sha256(ciphertext(frame, where)).hexdigest(), frame['idempotency_tag'],
+            frame['prev_hash'], frame['record_time'])
+        if recomputed != frame['event_hash']:
+            raise ChainBroken(
+                '{}: the event hash recomputes to {}, not the {} the frame carries - one of the '
+                'ciphertext, the tag, the link or the record time moved between the hub and here; '
+                'pull it again'.format(where, recomputed, frame['event_hash']))
+        self._land(frame)
+        return frame
+
+    def _land(self, frame):
+        """Put one frame on the platter, index where it went, and announce the head it left - what
+        `append` and `accept` share.
+
+        A watcher is told AFTER the bytes are durable and is never allowed to stop an append: a
+        record is not held up because a screen was not told where it now stands.
+        """
+        index, offset = self._write(
+            json.dumps(frame, sort_keys=True, separators=(',', ':')).encode('utf-8') + b'\n')
+        self._index(frame, index, offset)
+        for watching in tuple(WATCHERS):
+            try:
+                watching(self.home, frame['lsn'], frame['event_hash'])
+            except Exception:
+                LOG.debug('%s: a watcher refused LSN %d', self.home, frame['lsn'], exc_info=True)
+
+    def _index(self, frame, index, offset):
+        """File the position, the tag and the head one frame leaves behind, whether it was just
+        written or just read off the platter."""
+        self._at[frame['lsn']] = (index, offset)
+        self._tags.setdefault(frame['idempotency_tag'], frame['lsn'])
+        if self._segment_first[index] is None:
+            self._segment_first[index] = frame['lsn']
+        self._head_lsn = frame['lsn']
+        self._head_hash = frame['event_hash']
+        if frame['lsn'] == 1:
+            self._genesis_actor = frame['actor']
 
     def _coalesce(self, lsn, tag, canonical):
         """The duplicate-tag path: return the stored event's envelope once it is proven the same
@@ -587,7 +678,6 @@ class SpineLog:
         """
         self._segments = sorted(self.log.glob(SEGMENT_GLOB))
         self._segment_first = [None] * len(self._segments)
-        self._segment_last = [0] * len(self._segments)
         self._at = {}
         self._tags = {}
         # The capability fold is dropped rather than carried across a scan that replaced its
@@ -615,23 +705,23 @@ class SpineLog:
                             '{} at byte {} is not JSON, where LSN {} should be: a line inside the '
                             'log was altered or lost - restore the segment from a verified '
                             'replica'.format(path.name, position, self._head_lsn + 1))
-                    self._accept(frame, index, position, path)
+                    self._stored(frame, index, position, path)
                 position = end
             if truncate_at is not None:
                 LOG.warning('%s: truncating %d torn byte(s) at %d - a line interrupted mid-write, '
                             'never fsynced, never chained onto', path.name,
                             len(data) - truncate_at, truncate_at)
                 os.truncate(str(path), truncate_at)
-            self._segment_last[index] = self._head_lsn
             if self._segment_first[index] is None:
                 self._segment_first[index] = self._head_lsn + 1
 
-    def _accept(self, frame, index, offset, path):
-        """Check one frame's stored fields against the position the log has reached, then index it
-        and advance the head."""
+    def _stored(self, frame, index, offset, path):
+        """Check one STORED frame's fields against the position the log has reached, then index it
+        and advance the head. Hashes are not recomputed here - that is `verify_home`'s job, so
+        verification stays something a replica does TO a log rather than something a log says about
+        itself."""
         check_frame(frame, '{} at byte {}'.format(path.name, offset))
-        expected = self._head_lsn + 1
-        if frame['lsn'] != expected:
+        if frame['lsn'] != self._head_lsn + 1:
             raise ChainBroken(
                 '{} at byte {}: LSN {} follows LSN {} - the sequence is positional and dense, so a '
                 'gap means a lost or reordered line; restore the segment from a verified '
@@ -641,15 +731,7 @@ class SpineLog:
                 'LSN {}: prev_hash {} does not link to LSN {} ({}) - the chain is broken here; '
                 'restore from a verified replica rather than repairing in place'.format(
                     frame['lsn'], frame['prev_hash'], self._head_lsn, self._head_hash))
-        self._at[frame['lsn']] = (index, offset)
-        # First writer wins, so a coalesce points at the event that was actually first.
-        self._tags.setdefault(frame['idempotency_tag'], frame['lsn'])
-        if self._segment_first[index] is None:
-            self._segment_first[index] = frame['lsn']
-        self._head_lsn = frame['lsn']
-        self._head_hash = frame['event_hash']
-        if frame['lsn'] == 1:
-            self._genesis_actor = frame['actor']
+        self._index(frame, index, offset)
 
     def _parse(self, raw, path):
         """One line read back as a frame, or `ChainBroken` naming the segment. Reading is where a
@@ -708,7 +790,6 @@ class SpineLog:
         path = self.log / 'segment-{:08d}.jsonl'.format(len(self._segments) + 1)
         self._segments.append(path)
         self._segment_first.append(None)
-        self._segment_last.append(self._head_lsn)
         return (len(self._segments) - 1, path)
 
     @staticmethod

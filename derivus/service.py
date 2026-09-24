@@ -79,6 +79,7 @@ There is no auth and CORS is open by default: this is a TRUSTED-NETWORK deployme
 something that terminates both, or narrow the origins with `DV_Service --origin`.
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -90,11 +91,11 @@ import time
 
 from collections import Counter, namedtuple, OrderedDict
 from copy import deepcopy
-from itertools import count
+from itertools import count, islice
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
@@ -142,6 +143,11 @@ _SPOT_FAILURE = (0.0, None)
 #: An SPA served from anywhere but the service itself cannot call it without this. Read when the
 #: middleware stack is built - the first request, long after `main` has parsed `--origin`.
 ORIGINS = ['*']
+
+#: Frames a replica is served per pull where it names no `?limit=`, and how long the doorbell
+#: holds an idle stream before it says something a proxy will not close over.
+REPLICA_PAGE = 500
+DOORBELL_SECONDS = 15.0
 
 #: The ENVELOPE the declarations sit inside, which `/schema` cannot describe: market data under
 #: `MergeMarketData.ExplicitMarketData` (or behind a `MarketDataFile` path), a deal as a `.Deal`
@@ -1659,6 +1665,102 @@ def book_market_declared(request: dict):
     declared = load(document).declare_market(request.get('name'), actor=request.get('actor'))
     return {'recorded': {'lsn': declared['lsn']}, 'name': declared['name'],
             'values_hash': declared['values_hash']}
+
+
+@app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")
+def spine_frames(since: str = None, limit: int = REPLICA_PAGE):
+    """`{head, frames}` - the frames after `since`, as the twelve fields they are on the platter.
+
+    NOT THE STRIP. `/book/activity` serves six of a frame's twelve fields, and five of the six it
+    drops are what the chain is MADE of, so a replica pulling the strip could never link a line.
+    `body` is the base64 ciphertext the platter holds and nothing opens it, so this read answers on
+    a crypto-shredded home exactly as it answers on the hub, and what a replica writes is what the
+    hub wrote.
+
+    `since` is the LAST LSN DELIVERED, the strip's own cursor: a follower asks with the head it
+    stands at and is served what comes after it, so an empty page is a replica that is up to date.
+    `head` is where this read saw the record, which is what says whether another page is owed.
+    404 where no home is configured, and NO BOOK IS ASKED FOR.
+    """
+    recorded()
+    start, wanted = read_lsn(since), max(limit, 0)
+
+    def read(log):
+        frames = list(islice(log.frames(start_lsn=(start or 0) + 1), wanted))
+        return {'head': max(log.head()[0], frames[-1]['lsn'] if frames else 0), 'frames': frames}
+
+    return spine.folded(read)
+
+
+@app.get('/spine/blobs/{digest}', summary='One blob by address - what an entitled replica pulls')
+def spine_blob(digest: str, actor: str = None):
+    """The bytes filed under `digest`, re-hashed on the way out.
+
+    SELF-VERIFYING BY HASH, so the serving side needs no trust and a replica checks what it got
+    whatever route it came by. Served to a seat the capabilities document admits to READ the class
+    - firm for everything while classification is dormant - and refused by name to one it does not,
+    an unsigned read included; a home declaring no document serves everyone, as every other
+    enforcement here does. A blob this home does not hold is the record's own sentence as a 422.
+    404 where no home is configured.
+    """
+    recorded()
+    return Response(content=spine.blob(digest, actor), media_type='application/octet-stream')
+
+
+async def doorbell_beats(heartbeat=DOORBELL_SECONDS):
+    """The doorbell's own sequence: a comment as the stream opens, one `data:` frame per move of
+    the record's head, and a comment every `heartbeat` seconds of quiet.
+
+    ASYNC, and that is the whole of why a desk may open as many of these as it has tabs. A sync
+    generator handed to `StreamingResponse` is driven through the thread pool, so an idle stream
+    parks one of the forty tokens EVERY sync endpoint here shares and forty tabs stall the service.
+    Awaiting costs a task and no thread; the writer's announce arrives on whatever thread wrote the
+    frame and reaches this loop through `call_soon_threadsafe`.
+
+    The opening comment is what REGISTERS the listener, since a generator's body does not run until
+    its first value is asked for, so a reader that has seen one byte is a reader that will hear the
+    next append; the `with` is what UNregisters it, on the close starlette performs when a client
+    goes away, rather than whenever a collection happens to run. Only the position is carried, so
+    nothing of a body reaches the wire.
+    """
+    loop = asyncio.get_running_loop()
+    # the LATEST position, not a queue of them: a beat is a position and the newest covers every
+    # one before it, so a reader that fell behind costs positions rather than memory
+    rung, standing = asyncio.Event(), [None]
+
+    def ring(home, lsn, event_hash):
+        standing[0] = {'head': event_hash, 'lsn': lsn}
+        loop.call_soon_threadsafe(rung.set)
+
+    with spine.watching(ring):
+        yield ': the record is beating\n\n'
+        while True:
+            try:
+                await asyncio.wait_for(rung.wait(), heartbeat)
+            except asyncio.TimeoutError:
+                yield ': beat\n\n'
+                continue
+            # cleared BEFORE the position is read, so a move in between rings again rather than
+            # being erased by the clear
+            rung.clear()
+            yield 'data: {}\n\n'.format(json.dumps(standing[0], sort_keys=True))
+
+
+@app.get('/spine/doorbell', summary='A beat per head move - the record ringing, never delivering')
+def spine_doorbell():
+    """An event stream carrying `{lsn, head}` on every move of the record's head, and a comment on
+    a fixed cadence so a proxy does not close an idle one.
+
+    A NOTIFICATION AND NEVER A DELIVERY: the position is the whole payload, so nothing of a body
+    reaches the wire and a reader learns only that there is something to pull. A beat dropped is
+    covered by the next, a beat repeated is one empty pull, and a beat behind the head is a pull
+    that answers nothing - which is why a replica's convergence rests on the pull and never on this
+    stream arriving. THE TRIGGER IS THE WRITER'S OWN APPEND, announced where the bytes go durable,
+    so nothing here polls the log, and an open stream costs a task rather than one of the worker
+    threads every other verb on this service shares. 404 where no home is configured.
+    """
+    recorded()
+    return StreamingResponse(doorbell_beats(), media_type='text/event-stream')
 
 
 @app.get('/book/diary', summary='Every payment, fixing and expiry the book announces')

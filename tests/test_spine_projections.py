@@ -36,14 +36,15 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_spine import (
-    MalformedEvent, SpineLog, SpineRefusal, UnknownEventType, WriterBusy, canonical_bytes,
-    projections, verify_home)
+    CapabilityDenied, MalformedEvent, SpineLog, SpineRefusal, UnknownEventType, WriterBusy,
+    canonical_bytes, projections, verify_home)
+from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.genesis import VERIFYING_KEY_POLICY
 from derivus_spine.policy import FIXINGS_POLICY, TOLERANCE_POLICY, declare
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, SUMMARIES, fixings_at, fold, knocked, read_seed, seed_at)
 from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run, file_quote
-from derivus_spine.vocabulary import EVENT_TYPES
+from derivus_spine.vocabulary import ADMIN, EVENT_TYPES
 
 import test_spine_imports as imports
 from test_spine import (
@@ -152,8 +153,8 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     differently is a red gate rather than a silent change of what a reader sees. The strip's table
     of sentences is committed the same way, because it is data the fixture cannot exercise."""
     home, log, marks = synthetic_book(tmp_path)
-    assert set(PROJECTORS) == {'activity', 'attestations', 'blotter', 'decisions', 'lifecycle',
-                               'markets', 'positions', 'quotes'}
+    assert set(PROJECTORS) == {'activity', 'attestations', 'blotter', 'decisions', 'denials',
+                               'lifecycle', 'markets', 'positions', 'quotes'}
 
     for name in sorted(PROJECTORS):
         projector = PROJECTORS[name]
@@ -376,6 +377,39 @@ def test_a_fixing_with_no_declared_source_refuses_and_the_order_is_the_authority
 
     with pytest.raises(MalformedEvent):
         declare(log, ACTOR, FIXINGS_POLICY, {'sources': {INDEX: ECB}})
+    log.close()
+
+
+def test_a_refused_append_is_readable_as_a_row(tmp_path):
+    """The `denials` fold, which is what makes "nothing outside its seat's verb" a reading rather
+    than a body walk. The writer already files a refusal as a fact; the envelope says only that one
+    happened, and the strip renders one declared sentence for every denial alike, so WHO was
+    refused WHICH verb over WHAT scope is inside the body and nowhere else.
+
+    The committed golden is `[]`, the design's synthetic book declaring no capabilities document
+    and so refusing nobody - the hole `quotes` has too - so the rows are driven here: two seats
+    turned away, one of them twice, and a second refusal of one fact coalescing onto the LSN it
+    already has by the ordinary tag rule.
+    """
+    home = seeded(tmp_path, 'refused', clips=())
+    log = SpineLog(home)
+    blob = log.store.put(canonical_document({
+        'grants': [{'subject': ACTOR, 'verb': ADMIN, 'book': '*'}],
+        'read': [{'subject': ACTOR, 'class': 'firm'}]}))
+    log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+               blob_refs=(blob,))
+
+    for attempt in range(2):
+        with pytest.raises(CapabilityDenied):
+            log.append('fill', fill('EXEC-STRANGER'), actor='subject-nobody', book=BOOK)
+    with pytest.raises(CapabilityDenied):
+        log.append('market_declared', {'name': 'official', 'values_hash': blob}, actor=ACTOR)
+
+    rows = PROJECTORS['denials'].rows(fold(log, PROJECTORS['denials']))
+    assert [(row['subject'], row['verb'], row['book'], row['attempted_type']) for row in rows] == [
+        ('subject-nobody', 'book', BOOK, 'fill'), (ACTOR, 'mark', '*', 'market_declared')], \
+        'a repeated refusal is one fact and coalesces onto the LSN it already has'
+    assert [row['lsn'] for row in rows] == [6, 7]
     log.close()
 
 

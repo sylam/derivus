@@ -274,17 +274,17 @@ is recorded so a reader knows which readings rest on it.
   48 declared keys of a swap where 7 are the trade, the other 41 being conventions the store now
   marks as such (`convention` on the descriptor). A fold would hide them by default; it is not
   built because nothing under `web/scripts` drives `FieldView`, so it would ship ungated.
-- **A desk's poll of the record costs the whole record, per beat** (2026-09-22). `/book/activity`
-  parses every segment whatever `?since=` says and `/book/status`'s behind counts walk the log from
-  the pin, so one two-second beat is 10 ms at 5 events, 17 ms at 405 and 47 ms at 2,005, and an
-  append-only record never shrinks. Queue admission rides the same walk once per submitted job -
-  `capability.state_at` is 1.2 ms at 21 events and 20.5 ms at 1,994, a document in force or not,
-  since the fold opens a body only for the policy rows it finds - which is why nothing caches it: a
-  job on this queue is a base valuation, a diary compile or a terminal round trip, so admission is
-  under a fiftieth of the cheapest thing it admits, and a cache of its own would be a second answer
-  to the question below. The remedy is a seek by LSN inside the log's own reader -
-  `SpineLog.frames` already holds a byte offset per LSN in `_at` and skips by comparison instead -
-  which is a change in `derivus_spine/`.
+- **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
+  the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
+  where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is
+  `SpineLog.__init__`, which streams every segment to build the head, the tag index and the offset
+  per LSN: 11.3 ms at 2,005 events, paid once per read because a reader never claims the home and
+  so cannot hold a handle across one. A strip's FIRST paint pays it twice over, since a page with
+  no `?since=` folds from genesis by design. Queue admission rides the same open once per submitted
+  job (`capability.state_at`, 1.2 ms at 21 events and 20.5 ms at 1,994), which is still under a
+  fiftieth of the cheapest job it gates, so nothing caches it. The remedy is a checkpointed index
+  beside `log/` - derivable, disposable and verified the way a seed is - and the question it asks
+  is what invalidates one when a second process appends.
 - **A private market has no surveillance or admin read** (2026-09-23). `spine.resolve_market`
   resolves a `private/<subject>/<name>` market for the subject its name names and refuses everyone
   else at the verb, without minting a fact. The other read the design names — surveillance and
@@ -300,8 +300,19 @@ is recorded so a reader knows which readings rest on it.
   three quotes folds in 7.7 ms and one holding 1,978 in 327 ms. A desk quoting a hundred a day
   reaches the second reading in about three weeks. It is a READING and nothing on a booking path
   calls it: a decision seeks to the one frame the acceptance wrote down (`spine.quote_at`), so the
-  cost is one body whatever the desk has quoted. A reader that wants a page of them wants the
-  log's own seek, the row above.
+  cost is one body whatever the desk has quoted. The log's own seek answered the READING half of
+  this - a page of quotes now reaches its first row in 0.20 ms rather than 7.50 - and the 0.16 ms
+  per body stands, so what a paged `quotes` read wants is a `?since=` on the verb and a seed at the
+  close, not a faster walk.
+- **A blob is served by the hub and by nobody else** (2026-09-23). A replica holds `blobs/` and
+  every byte in it is self-verifying by hash, so a follower could serve another follower and neither
+  would have to trust the other. It does not: a peer server is a second entitlement-evaluating
+  surface on a box that is not the writer, and this phase has one deployment, so the read
+  (`GET /spine/blobs/{hash}`) is the hub's alone and a replica that wants bytes asks it. UNMEASURED,
+  and the number that would decide it is a hub's outbound cost per follower, which at one deployment
+  is a hub answering itself. Closing it means the entitlement evaluation running where the bytes
+  are, which is the same `read` rows over the same fold - and the question it asks is whose document
+  a replica evaluates under when its own chain is behind the hub's.
 - **A material market move is not a refusal, and a desk cannot ask for one** (2026-09-23). Between
   a quote and the client's word the board moves, and the booking REPORTS it — the values struck on,
   the ones standing, and that they differ — because the desk's own `Quote Policy.firm_seconds` is

@@ -346,6 +346,32 @@ class Quotes(Projector):
                       key=lambda row: row['lsn'])
 
 
+class Denials(Projector):
+    """Every append the writer refused, in the order it refused them: the seat, the verb it lacked,
+    the scope the verb was wanted over, and the type the refused act would have said.
+
+    The one reading that says WHAT was refused: the envelope carries a type and the strip renders
+    one declared sentence for every denial alike, so who was turned away from what is inside the
+    body and nowhere else. Its reader is the acceptance game's oracle, which holds the script's
+    attempts against the refusals the record kept. A refusal that never reached the writer - a tier
+    that admits no ticket, a stale board, a malformed request - mints nothing and is not here.
+    """
+
+    name = 'denials'
+    reads = ('capability_denied',)
+
+    def initial(self):
+        return []
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        state.append({'lsn': frame['lsn'], 'subject': body['subject'], 'verb': body['verb'],
+                      'book': body['book'], 'attempted_type': body['attempted_type']})
+
+    def rows(self, state):
+        return list(state)
+
+
 class Activity(Projector):
     """One line per event, envelope only: where it sits, when it was recorded and when it is true,
     who said it, and the declared sentence about what it was.
@@ -373,7 +399,7 @@ class Activity(Projector):
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
     Positions(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
-    Activity()))
+    Denials(), Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):

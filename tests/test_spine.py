@@ -1053,6 +1053,67 @@ def test_the_chain_runs_across_a_segment_boundary(tmp_path):
     assert len(segments(home)) == 2, 'a new line joins the last segment; the roll is by size only'
 
 
+class CountingLog(SpineLog):
+    """A log that counts the bytes of every line its reader takes off the platter - the gate's own
+    instrument, a subclass rather than a patch.
+
+    `_parse` is called once per line a walk consumes and never by the scan, which reads the whole
+    file by other means, so what this adds up is exactly what a READ of frames cost.
+    """
+
+    def __init__(self, home):
+        self.read = 0
+        SpineLog.__init__(self, home)
+
+    def _parse(self, raw, path):
+        self.read += len(raw)
+        return SpineLog._parse(self, raw, path)
+
+
+def test_a_page_of_frames_seeks_rather_than_walking_the_log(tmp_path):
+    """A PAGE COSTS THE PAGE. `frames(start_lsn=)` reaches its first row by seeking to the byte
+    offset the log already holds for the largest indexed LSN at or below it, so a ten-row page at
+    the head reads ten lines rather than the history - which is what the desk's poll, the queue's
+    admission and every replica's pull pay per beat.
+
+    Two hundred events, not two thousand: the separation between a page and a walk is already
+    twentyfold here and every assertion below is the same sentence, while an event costs an fsync,
+    so the bigger home buys three minutes of suite and no claim.
+
+    The offset is a LOWER BOUND and never a lookup, because a handle routinely outlives another
+    process's append: a page starting past this handle's head is answered from the head's own
+    offset, and the frames written since are reached by walking forward from there. That is
+    asserted here rather than reasoned about, on a reader opened before the writer moved.
+    """
+    home = seeded(tmp_path, 'paged', clips=())
+    writer = SpineLog(home)
+    for clip in range(200):
+        writer.append('fill', fill('EXEC-{}'.format(clip)), actor=ACTOR, book=BOOK)
+    writer.close()
+    held = sum(path.stat().st_size for path in segments(home))
+
+    log = CountingLog(home)
+    assert [frame['lsn'] for frame in log.frames(start_lsn=195)] == list(range(195, 205))
+    page = log.read
+    assert 0 < page < held / 10, 'a ten-row page read {} of {} bytes'.format(page, held)
+
+    log.read = 0
+    assert list(log.frames(start_lsn=205)) == [], 'a page past the head answers nothing'
+    assert 0 < log.read < page, 'the empty page read more than the ten-row one'
+
+    log.read = 0
+    assert len(list(log.frames())) == 204 and log.read == held, \
+        'the whole walk still reads the whole log, which is the number the page is against'
+
+    # the handle above was opened before this append, so the frame it has never seen is reached by
+    # the walk forward from the offset the seek landed on
+    second = SpineLog(home)
+    landed = second.append('fill', fill('EXEC-AFTERWARDS'), actor=ACTOR, book=BOOK)
+    second.close()
+    assert [frame['lsn'] for frame in log.frames(start_lsn=205)] == [landed['lsn']]
+    assert [frame['lsn'] for frame in log.frames(start_lsn=210)] == []
+
+
 def test_a_copied_home_verifies_extends_and_still_catches_a_tamper(tmp_path):
     """The disaster posture, tested rather than asserted: three directories copied to a clean
     place, and everything the original could do the copy does - verify from genesis, catch a

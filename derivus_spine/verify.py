@@ -25,16 +25,18 @@ is not a rung. Referential closure is asked of the whole history: any blob a bod
 the store's own walk, a blob class reducing only through a logged retention event. A home whose
 class key was destroyed raises `SealedBodyUnreadable` under `entitled=True` and still verifies its chain under
 `entitled=False` - crypto-shredding, not tampering. What each mode covers: docs_src/developer/spine.md.
+
+`verify_chain` is the third posture and the cheapest: the RANGE a follower just landed, re-derived
+off the platter, the chain behind it having been checked when it landed. It shares this module's one
+walk, so a range and a whole history cannot disagree about what re-deriving a frame means.
 """
-import base64
-import binascii
 import hashlib
 
 from .canon import canonical_bytes, content_hash
 from .errors import (
     ChainBroken, CheckpointInvalid, MissingBlobRefusal, SealedBodyUnreadable)
 from .genesis import VERIFYING_KEY_POLICY
-from .log import GENESIS_PREV, SpineLog, check_frame, event_hash, semantic_tuple
+from .log import GENESIS_PREV, SpineLog, check_frame, ciphertext, event_hash, semantic_tuple
 from .seal import Keys
 from .vocabulary import cited_blobs, is_hash
 
@@ -59,15 +61,53 @@ def verify_home(home, entitled=True):
             'ciphertext, and read the bodies on a replica that still holds the key'.format(
                 log.home))
     blinded = entitled and keys.has_blind()
+    events, previous, read = _walk(log, 0, GENESIS_PREV, entitled, blinded)
 
+    verified = NOT_ASSESSED
+    if entitled:
+        # Checkpoints before the manifest: the published verifying key is itself a citation, so a
+        # home that lost it hears which assertion it can no longer make.
+        verified = _checkpoints(log, read['checkpoints'], read['declarations'], read['heads'])
+        _closure(log, read['citations'])
+    return {'mode': 'entitled' if entitled else 'chain-only', 'events': events,
+            'checkpoints_verified': verified, 'head_lsn': events, 'head_hash': previous}
+
+
+def verify_chain(home, stood):
+    """Re-derive the links and event hashes of everything this home holds after `stood`, and answer
+    the chain-only report over that range.
+
+    WHAT A FOLLOWER CHECKS ON A BEAT. The chain behind `stood` was re-derived when it landed and
+    nothing in this package rewrites a line, so a page can only have broken its own links and the
+    one that joins it to the frame before - which is where the walk starts, off the platter, so a
+    write that never landed is met here rather than believed. The whole-history assertions stay
+    `verify_home`'s: the checkpoint ladder and referential closure both reach behind any range.
+    """
+    log = SpineLog(home)
     previous = GENESIS_PREV
-    events = 0
-    heads = {}
-    checkpoints = []
-    declarations = []
-    citations = []
+    if stood:
+        linked = next(iter(log.frames(start_lsn=stood, end_lsn=stood)), None)
+        if linked is None:
+            raise ChainBroken(
+                'this home holds no LSN {}, so there is nothing for the frames after it to link '
+                'to: verify it whole (`DV_Spine verify --chain-only`) and pull again'.format(stood))
+        previous = linked['event_hash']
+    events, previous, _ = _walk(log, stood, previous, False, False)
+    return {'mode': 'chain-only', 'events': events, 'checkpoints_verified': NOT_ASSESSED,
+            'head_lsn': events, 'head_hash': previous}
 
-    for frame in log.frames():
+
+def _walk(log, stood, previous, entitled, blinded):
+    """Re-derive every frame after `stood`, and answer `(head lsn, head hash, what was read)`.
+
+    The one loop `verify_home` and `verify_chain` share, so a range and a whole history cannot part
+    company about what re-deriving a frame means. `previous` is the hash the first frame must link
+    to; what is read is the checkpoints, the key declarations and the blob citations the entitled
+    half then adjudicates.
+    """
+    events = stood
+    read = {'heads': {}, 'checkpoints': [], 'declarations': [], 'citations': []}
+    for frame in log.frames(start_lsn=stood + 1):
         check_frame(frame, str(log.log))
         lsn = frame['lsn']
         if lsn != events + 1:
@@ -79,12 +119,7 @@ def verify_home(home, entitled=True):
                 'LSN {}: prev_hash {} does not link to LSN {} ({}) - the chain parts company here; '
                 'restore from a verified replica rather than repairing in place'.format(
                     lsn, frame['prev_hash'], events, previous))
-        try:
-            sealed = base64.b64decode(frame['body'])
-        except (binascii.Error, TypeError, ValueError):
-            raise ChainBroken(
-                'LSN {}: the body is not base64 - the line has been altered; restore the frame '
-                'from a verified replica'.format(lsn))
+        sealed = ciphertext(frame, 'LSN {}'.format(lsn))
         recomputed = event_hash(hashlib.sha256(sealed).hexdigest(), frame['idempotency_tag'],
                                 frame['prev_hash'], frame['record_time'])
         if recomputed != frame['event_hash']:
@@ -99,28 +134,20 @@ def verify_home(home, entitled=True):
             # Bodies are not re-validated against today's vocabulary - a v1 event must stay
             # verifiable under a v(n+1) writer - so only these two shapes are read.
             if frame['event_type'] == 'checkpoint':
-                checkpoints.append((lsn, payload))
+                read['checkpoints'].append((lsn, payload))
             elif (frame['event_type'] == 'policy_declared' and isinstance(payload, dict)
                     and payload.get('policy') == VERIFYING_KEY_POLICY
                     and is_hash(payload.get('blob'))):
                 # A rung of the ladder at the position it was declared. A declaration naming no
                 # blob is not a rung and does not remove the rungs already on it.
-                declarations.append((lsn, payload['blob']))
-            citations.extend((lsn, frame['event_type'], field, digest)
-                             for field, digest in cited_blobs(frame['event_type'], payload))
+                read['declarations'].append((lsn, payload['blob']))
+            read['citations'].extend((lsn, frame['event_type'], field, digest)
+                                     for field, digest in cited_blobs(frame['event_type'], payload))
 
         previous = frame['event_hash']
         events = lsn
-        heads[lsn] = frame['event_hash']
-
-    verified = NOT_ASSESSED
-    if entitled:
-        # Checkpoints before the manifest: the published verifying key is itself a citation, so a
-        # home that lost it hears which assertion it can no longer make.
-        verified = _checkpoints(log, checkpoints, declarations, heads)
-        _closure(log, citations)
-    return {'mode': 'entitled' if entitled else 'chain-only', 'events': events,
-            'checkpoints_verified': verified, 'head_lsn': events, 'head_hash': previous}
+        read['heads'][lsn] = frame['event_hash']
+    return (events, previous, read)
 
 
 def _interior(log, frame, blinded):

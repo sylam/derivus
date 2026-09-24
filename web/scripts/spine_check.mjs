@@ -1,8 +1,9 @@
 // Drives `src/spine.ts` where the eye cannot: the page a poll merges onto the strip it holds, the
-// verdict the banner reads off the reconcile lists, what a fold at the head is asked for, the two
-// transitions the store holds it by, and the shape the markets panel renders. Every check names
-// the MUTATION it kills - the change to the module that would still typecheck, still render, and
-// still be wrong.
+// strip under a doorbell stream whose beats are dropped, duplicated and reordered, the verdict the
+// banner reads off the reconcile lists, what a fold at the head is asked for, the two transitions
+// the store holds it by, and the shape the markets panel renders. Every check names the MUTATION
+// it kills - the change to the module that would still typecheck, still render, and still be
+// wrong.
 //
 //   node web/scripts/spine_check.mjs         # exits 1 on a miss
 //
@@ -125,6 +126,54 @@ check('the merge leaves the rows it was handed standing',
       'an in-place sort or push, which reorders the array the strip is rendering from',
       lsns(HELD), [18, 19, 20]);
 
+// --- ringsAhead and the strip under a mutilated beat sequence
+//
+// The service's own answer, as data: a page is the oldest rows after the cursor, and the cursor a
+// page answers is its last row. One beat per event, then the three faults a stream has - dropped,
+// duplicated, and arriving out of order - each read by a client of its own off ONE hub.
+const RUNG = [18, 19, 20, 21, 22].map((lsn) => ({ lsn, head: `h${lsn}` }));
+const HISTORY = [...HELD, ...PAGE.rows];
+const pageAfter = (since) => {
+  const rows = HISTORY.filter((row) => row.lsn > since).slice(0, 2);
+  return { lsn: rows.length ? rows[rows.length - 1].lsn : since, rows };
+};
+
+function reading(beats) {
+  let rows = [];
+  let cursor = 0;
+  for (const beat of beats) {
+    while (spine.ringsAhead(beat, cursor)) {
+      const page = pageAfter(cursor);
+      if (page.rows.length === 0) break;
+      rows = spine.mergeActivity(rows, page);
+      cursor = page.lsn;
+    }
+  }
+  return { rows, cursor };
+}
+
+const every = reading(RUNG);
+const dropped = reading(RUNG.filter((_, at) => at % 3 !== 2));
+const shuffled = reading([RUNG[2], RUNG[0], RUNG[0], RUNG[4], RUNG[1], RUNG[4], RUNG[3]]);
+
+check('a beat past the cursor is read and one at or behind it is not',
+      'the comparison made `>=` or dropped, which reads the whole strip again on every duplicate '
+      + 'a reconnecting stream replays, and on every beat that arrives out of order',
+      [spine.ringsAhead(RUNG[4], 21), spine.ringsAhead(RUNG[4], 22), spine.ringsAhead(RUNG[4], 99)],
+      [true, false, false]);
+check('a stream with every third beat dropped reads the same strip as one that lost none',
+      'the page asked for from the BEAT\'s position rather than from the cursor the client holds, '
+      + 'after which a dropped beat is an event this desk never sees at all',
+      [lsns(dropped.rows), dropped.cursor], [lsns(every.rows), every.cursor]);
+check('and so does one whose beats are duplicated and out of order',
+      'the cursor advanced off the beat instead of off the page delivered, which walks the strip '
+      + 'backwards on a beat that arrives late and skips what the client never read',
+      [lsns(shuffled.rows), shuffled.cursor], [lsns(every.rows), every.cursor]);
+check('a beat nobody rang leaves the strip exactly where the poll left it',
+      'a read on every beat whatever it says, which turns a heartbeat into a fold of the record '
+      + 'once per cadence on every desk that has a tab open',
+      [lsns(reading([]).rows), reading([]).cursor], [[], 0]);
+
 // --- reconcileVerdict: THE LISTS DECIDE
 const none = spine.reconcileVerdict(null, null);
 check('no record is a state of the screen and not an empty reconcile',
@@ -244,7 +293,7 @@ check('the shaping leaves the answer it was handed standing',
       [MARKETS.closes.map((close) => close.lsn), MARKETS.names.map((name) => name.lsn),
        MARKETS.snapshots.map((shot) => shot.lsn)], [[14, 17], [12, 13], [19, 20]]);
 
-console.log(`\n${ran} checks over 8 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

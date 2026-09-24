@@ -2,15 +2,16 @@
 
 `derivus_spine/` is the append-only book of record being built around the engine — the center a desk
 box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1 through 5**: the log, the blob store
+page documents what is BUILT, which is **increments 1 through 6**: the log, the blob store
 and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
 booking verbs, the attestation lanes and the firmness check, over all of it the
 projections, the diary, the book file's pin and the desk's own readers of them, beside those the
 tier policy, its evaluator and the verbs that file a decision and a close, through all of it the
 quote lifecycle — a price recorded when the client accepts it, routed through the desk's own workflow
-before it books — and over the compute itself a queue that asks who is submitting before it runs
-anything. No network — a library, a CLI, eight delegators on `Context`, six read verbs and
-five write verbs on the service, and 326 gates.
+before it books — over the compute itself a queue that asks who is submitting before it runs
+anything, and around the whole of it a REPLICA: a read-only copy that pulls the hub's own frames,
+verifies them where it stands and is told when there is something to pull. A library, a CLI, eight
+delegators on `Context`, nine read verbs and five write verbs on the service, and 338 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -20,7 +21,7 @@ A sibling package on the `derivus_mcp` terms: in the wheel, never importing the 
 surface is **stdlib plus `cryptography`** (AES-GCM sealing, Ed25519 checkpoint signatures) and nothing
 else, held by an AST gate over every module and a subprocess gate proving `import derivus_spine` pulls
 no torch and no `derivus.*`. The extra is `pip install derivus[enterprise]`, orthogonal to `desk`.
-`DV_Spine init | verify [--chain-only] | checkpoint | status` is the console script; the home is
+`DV_Spine init | verify [--chain-only] | checkpoint | status | follow` is the console script; the home is
 `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine` — the spine is the CENTER's store and
 deliberately not `DV_HOME`, which is the edge's.
 
@@ -109,9 +110,9 @@ channel into the record.
 
 ## The gates
 
-105 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider eleven-file set worth 299 of the
-326 above, and `tests/test_diary.py` carries the rest),
+106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider twelve-file set worth 311 of the
+338 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -796,11 +797,118 @@ box's arithmetic and the queue now asks first. The cost is a fold and NOTHING CA
 the cheapest thing on this queue is a diary compile — the walk itself is the log's missing seek, which
 is one row on the roadmap for every reader that pays it.
 
+## Increment 6 — the seek, the replica, the doorbell
+
+**A PAGE COSTS THE PAGE.** `SpineLog.frames(start_lsn=)` reached its first row by parsing every line
+below it; it now SEEKS — one open, one `seek` onto the byte offset the log already held per LSN, and
+a walk forward from there, re-globbing the segments exactly as before so a reader still sees the
+writer's next frame. The offset is a LOWER BOUND and never a lookup, because a handle routinely
+outlives another process's append: a page starting past this handle's head is answered from the
+head's own offset and what came after is reached by the walk. Never N `frame_at` calls, which
+re-open the file each time and measured slower than the walk they would replace. At 2,005 events a
+ten-row page at the head goes **7.50 ms to 0.20 ms**, a two-hundred-row page 7.48 to 0.90, and a page
+that answers nothing 7.40 to 0.16; the whole walk is unmoved, which is the point. Every one of the
+nine callers gets faster and none changes shape. What the desk's beat still pays is the HANDLE: a
+read opens a log and opening one scans every segment (11.3 ms at 2,005 events), so `/book/status`
+goes 23.5 ms to 14.2 and an empty strip page 20.9 to 13.5 — the reading half closed, the open's own
+half on the roadmap with its number.
+
+**A REPLICA IS A READ-ONLY COPY THAT VERIFIES ITSELF.** `SpineLog.accept(frame)` is its whole write
+path and asks four things and no fifth: the twelve fields, the next position, a link to this head,
+and an event hash that recomputes over the bytes offered. It does not validate against the
+vocabulary — a replica of a hub running a newer one must still chain, or the first type a hub learns
+strands every copy of the record — does not authorize, scope being the hub's question answered where
+the fact was made, and does not coalesce on the tag, a replica writing the order the hub gave it. It
+DOES claim the home, so two followers on one replica meet `WriterBusy` rather than both writing LSN
+n+1. What it writes is the hub's line BYTE FOR BYTE, which is gated as the two segment files being
+equal rather than as the two frames carrying the same fields.
+
+**THE STRIP CANNOT FEED A REPLICA**, which is why 6 has a read of its own. `GET /book/activity`
+serves six of a frame's twelve fields plus a declared sentence, and every one of the six it drops is
+something `accept` asks for. `GET /spine/frames?since=&limit=` serves the frame itself, `body` the
+base64 ciphertext it is on the platter, opening nothing — so it answers on a crypto-shredded home
+exactly as it answers on the hub — with `since` the last LSN delivered, as the strip's cursor is.
+`GET /spine/blobs/{hash}` serves bytes by address, `store.get` re-hashing on the way out so the
+serving side needs no trust, gated on the asking seat's READ row against the blob's class — firm for
+everything while classification is dormant — a home declaring no document serving everyone as every
+other enforcement here does, and a seat outside the rows or a read nobody signed refused by name.
+
+**`DV_Spine follow <hub-url> --home <replica>`** is the pull: `while the page is not empty: pull the
+frames after my head, accept each`. Catching up after an hour asleep is that loop with more pages in
+it and never another path, and the whole of what it costs is DURABILITY: 0.16 ms a frame to pull over
+a socket against 31 ms a frame to fsync one, which is the same byte-on-the-platter price the hub
+paid to write it. A replica that is up to date is one empty pull, 2.3 ms. **`--once` is bounded by
+THE HEAD THE FIRST PULL REPORTED** rather than by an empty page: a desk in session is a hub that
+keeps writing, and a one-shot sync against one would otherwise have no reason to return — which is
+what that field on the frames read is for. `--blobs`
+pulls the bytes the chain cites, which is the ENTITLED posture by construction, a citation living in
+the sealed body; a chain-only follower is told to materialize a key rather than quietly pulling
+nothing. The one blob that cannot be discovered is the FIRST WRAP: which blob makes this seat
+entitled is a question only an entitled reader can ask of the chain, so it arrives by address, which
+is what a read by address is for.
+
+**A FOLLOWER CHECKS THE RANGE IT LANDED, NOT THE HISTORY.** A copy that took bytes off a network and
+did not check them is a copy of nothing — but re-deriving the whole chain on every beat is O(the
+record) per EVENT, which is the cost 6a took out of the reader put back on the follower: on a
+2,516-event home a ONE-FRAME beat spent **98.5 ms** inside a from-genesis pass, and somewhere past a
+hundred thousand a follower stops keeping up with itself. What a page can have broken is its own
+links and the one that joins it to the frame before, since what is behind it was re-derived when it
+landed and nothing here rewrites a line, so `verify_chain` re-reads exactly that off the platter and
+the same beat costs **13.9 ms**, of which 13 is the handle's own scan — the roadmap's row, not this
+one. The whole chain is still checked where the walk is worth it — the first catch-up of a session,
+`follow --verify` on every beat, `DV_Spine verify` on demand — and the checkpoint ladder and
+referential closure stay whole-history assertions, both reaching behind any range.
+
+**THE AUTHENTICITY BOUNDARY, said out loud**: a checkpoint signs the head BEFORE it, so a replica
+proves authenticity up to its last pulled checkpoint and the frames past it are chained but unsigned.
+A follower wanting signed history asks the hub to checkpoint, or waits.
+
+**THE DOORBELL IS A NOTIFICATION AND NEVER A DELIVERY.** `GET /spine/doorbell` is an event stream
+carrying `{lsn, head}` and nothing else, plus a comment on a fixed cadence so a proxy does not close
+an idle one. The trigger is THE WRITER'S OWN APPEND: `SpineLog` announces where its head went at the
+moment the bytes are durable, to listeners this process registered and nothing persists, so no poll
+of the log runs inside the service and a watcher that refuses is logged rather than allowed to stop
+an append. Because a beat carries a position and the pull asks from the position the replica stands
+at, a beat dropped is covered by the next, a beat repeated is one empty pull, and a beat behind the
+head is a pull that answers nothing — which is why three replicas fed one stream, one intact, one
+losing every third beat, one hearing them twice and out of order, end at ONE head hash with all nine
+projectors folding to byte-equal rows. The beat itself costs **0.164 ms** from the append landing to
+a follower reading it over a socket on one box, and 0.014 ms where the two share a process — against
+the two-second cadence it replaces. The desk's strip rides an `EventSource` on it and keeps the
+two-second poll as the fallback and for the status block; the follower does the same, falling back
+to its interval when the stream drops and reconnecting, with ONE catch-up either way.
+
+**AN OPEN STREAM COSTS A TASK AND NOT A THREAD**, which is what lets a desk open as many as it has
+tabs. The generator is ASYNC: it awaits the position and the heartbeat, and the writer's announce
+reaches the loop from whatever thread wrote the frame. A sync generator handed to a streaming
+response is driven through the thread pool instead, so every idle stream parks one of the forty
+tokens EVERY other verb here shares and past forty tabs a booking, a price or a replica's pull waits
+for somebody else's heartbeat. Measured on one box at 0, 20 and 50 open streams: **15.1, 15.7 and
+15.0 ms** for the same frames read and **no thread taken at all**, where the sync shape put the
+fiftieth reader behind a fifteen-second wait. And a client that goes away takes its listener with
+it, dropped by the generator's own close rather than whenever a cyclic collection runs: fifty opened
+and closed leave zero.
+
+**The ninth projector.** `denials` reads `capability_denied` and answers `{lsn, subject, verb, book,
+attempted_type}` — the only reading that says who was refused what, since the envelope says only that
+a refusal happened and the strip renders one declared sentence for every one of them. Its reader is
+the acceptance game's oracle, which holds a script's attempts against the refusals the record kept. A
+refusal that never reaches the writer — a tier admitting no ticket, a stale board, a malformed
+request — mints nothing and is not there.
+
+**What 6 is NOT.** No peer writes, in any phase: `accept` takes only a frame the hub already chained,
+so "submit to a replica" is unrepresentable rather than merely refused. No failover — the hub down
+means booking stops, screens stay live off the local replica, and recovery is restarting the process.
+No peer blob serving: a second entitlement-evaluating surface on a box that is not the writer, for a
+phase with one deployment. And nothing of transport or authentication is built for it — the doorbell
+is one `GET` on the service that already exists, on whatever port it already runs.
+
 ## What is not built yet
 
 No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
-a fold. No doorbell and no generated MCP binding — **6 and 7**. No network anywhere
-yet: tokens are verified, never fetched, and no write path is exposed beyond localhost. No class-key
+a fold. No generated MCP binding — **7**; a model does not follow a log, so 6 adds no tool. The
+network is READ-ONLY and localhost's: tokens are verified rather than fetched, the three reads a
+replica uses serve and never take, and no write path is exposed beyond the box. No class-key
 rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
 checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope
 by the design's own sentence.

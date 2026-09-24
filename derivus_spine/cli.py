@@ -15,12 +15,13 @@
 
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
-head) and `status` (read it). The identity verbs are `enroll` (mint a seat keypair), `grant`
-(declare a capabilities document), `rewrap` (wrap the class key to whoever the document now
-admits), `name` (the mutable display-name side table) and `whoami` (verify an OIDC token against a
-JWKS the deployment hands in as a file). The policy verbs are `declare` (put any reserved policy
-document on the record from a JSON file) and `policy` (report what is in force). Nothing here
-fetches, listens or stores a secret.
+head), `status` (read it) and `follow` (pull a hub's frames into this home, the one verb that
+speaks to a network and the one that only ever reads at the far end). The identity verbs are
+`enroll` (mint a seat keypair), `grant` (declare a capabilities document), `rewrap` (wrap the class
+key to whoever the document now admits), `name` (the mutable display-name side table) and `whoami`
+(verify an OIDC token against a JWKS the deployment hands in as a file). The policy verbs are
+`declare` (put any reserved policy document on the record from a JSON file) and `policy` (report
+what is in force). Nothing here listens or stores a secret.
 
 Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
 the call rather than captured at import. The four home verbs are spelled out individually since
@@ -100,6 +101,34 @@ def do_status(args):
     return report({'home': home, 'head_lsn': lsn, 'head_hash': event_hash,
                    'bodies_readable': os.path.isfile(
                        os.path.join(home, 'keys', 'class_firm.key'))})
+
+
+def do_follow(args):
+    """Pull the hub's frames into this home until it stands where the hub does, and report each
+    catch-up that took something.
+
+    `--once` catches up to THE HEAD THE FIRST PULL REPORTED and stops - an operator's one-shot
+    sync, and a cron's whole job, which against a desk in session is a hub that never stops
+    writing. Without it the verb follows: the hub's doorbell where it rings one, a beat every
+    `--interval` seconds where it does not or where the stream drops, and the same catch-up either
+    way. `--blobs` pulls the bytes the frames cite, which wants a home that can open its bodies; a
+    chain-only replica pulls frames alone. `--verify` re-derives the whole chain on every beat
+    rather than the range that beat landed, which the first catch-up does regardless.
+    """
+    from derivus_spine import replica
+    hub = replica.Hub(args.url, actor=args.actor)
+    log = SpineLog(spine_home(args.home))
+    try:
+        if args.once:
+            return report(replica.catch_up(log, hub, blobs=args.blobs, bounded=True, whole=True))
+        beats = replica.beating(
+            hub, replica.INTERVAL if args.interval is None else args.interval)
+        for caught in replica.follow(log, hub, beats, blobs=args.blobs, whole=args.verify):
+            if caught['frames']:
+                report(caught)
+    finally:
+        log.close()
+    return 0
 
 
 def read_json(path, what):
@@ -339,6 +368,27 @@ def build_parser():
     verbs.add_parser('status', parents=[common],
                      help='report the head position and whether this home can open its bodies'
                      ).set_defaults(run=do_status)
+
+    pulled = verbs.add_parser('follow', parents=[common],
+                              help='pull a hub\'s frames into this home and keep pulling: a '
+                                   'replica writes what the hub chained and submits nothing')
+    pulled.add_argument('url', type=str, help='where the hub serves /spine/frames')
+    pulled.add_argument('--once', action='store_true',
+                        help='catch up to the head the first pull reports and stop, rather than '
+                             'following a hub that may never stop writing')
+    pulled.add_argument('--verify', action='store_true',
+                        help='re-derive the whole chain on every beat rather than the range that '
+                             'beat landed; the first catch-up does it regardless')
+    pulled.add_argument('--interval', type=float, default=None,
+                        help='seconds between beats where the hub rings no doorbell, or where the '
+                             'stream drops')
+    pulled.add_argument('--blobs', action='store_true',
+                        help='pull the bytes the frames cite too; wants a home that can open its '
+                             'bodies, a chain-only replica needing none of them')
+    pulled.add_argument('--actor', type=str, default=None,
+                        help='the subject reference a blob read is served under; a chain-only '
+                             'follower needs none')
+    pulled.set_defaults(run=do_follow)
 
     for verb, help_text, arguments, runner in IDENTITY_VERBS + POLICY_VERBS:
         seated = verbs.add_parser(verb, parents=[common], help=help_text)

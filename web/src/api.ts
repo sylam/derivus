@@ -93,6 +93,9 @@ export const getBookStatus = () => call<BookStatus>('GET', '/book/status');
 // the `lsn` a page answers is the cursor the next one is asked with
 export const getBookActivity = (since: number | '') =>
   call<ActivityPage>('GET', `/book/activity?since=${since}`);
+// the doorbell is the one endpoint that is a STREAM, so it is a path an `EventSource` opens
+// rather than a call: a beat per head move, carrying a position and nothing else
+export const DOORBELL = '/spine/doorbell';
 export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
 export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);

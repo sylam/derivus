@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import asyncio
 import datetime
 import json
 import logging
@@ -5578,3 +5579,178 @@ def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_not
         assert 'conventions' not in curve
     finally:
         service.BOOK = None
+
+
+# --------------------------------------------------------------------------------------------
+# The record's three reads for a replica. The rest of this file runs with no spine home, so each
+# of these mints its own under tmp and `derivus_spine` is imported HERE, for the reason the
+# service imports it inside the function.
+
+RECORDED_SEAT = 'subject-desk-one'
+RECORDED_BOOK = 'FX-VANILLA'
+STRANGER = 'subject-nobody'
+
+
+def recorded_home(tmp_path, monkeypatch, clips=('EXEC-1',)):
+    """A minted spine home with one fill per clip, configured for the service and its actor."""
+    from derivus_spine import SpineLog, init_home
+
+    home = tmp_path / 'spine'
+    init_home(home, RECORDED_SEAT)
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', RECORDED_SEAT)
+    log = SpineLog(home)
+    try:
+        for reference in clips:
+            log.append('fill', {
+                'instrument': 'a' * 64, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
+                'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference},
+                actor=RECORDED_SEAT, book=RECORDED_BOOK)
+    finally:
+        log.close()
+    return home
+
+
+async def rung_by(home, booking):
+    """Step the doorbell the way starlette steps it - an ASYNC generator on a loop - with the
+    append on a worker thread, which is where the writer's announce really comes from.
+
+    Answers `(every chunk the stream emitted, the beat it parsed, the envelope that rang it)`.
+    """
+    beats = service.doorbell_beats(heartbeat=0.05)
+    sent = [await beats.asend(None)]
+    landed = await asyncio.to_thread(booking, home)
+    rang = None
+    # bounded, because a doorbell that says nothing is a stream of heartbeats and never an end
+    for _ in range(20):
+        sent.append(await beats.asend(None))
+        if sent[-1].startswith('data:'):
+            rang = json.loads(sent[-1][len('data:'):])
+            break
+    # an idle stream says something a proxy will not close over, which is a different yield -
+    # bounded, so a stream that says nothing at all is a red gate rather than a suite that hangs
+    try:
+        idle = await asyncio.wait_for(beats.asend(None), 5.0)
+    except asyncio.TimeoutError:
+        idle = None
+    await beats.aclose()
+    return sent, rang, landed, idle
+
+
+def test_the_doorbell_carries_a_position_and_never_a_fact(tmp_path, monkeypatch):
+    """The stream, driven as a stream - the generator the endpoint hands starlette, stepped by this
+    gate rather than read off a socket, because a `TestClient` collects a response before it
+    answers and a doorbell never completes.
+
+    Three assertions and they are the whole contract. A beat parses to `{lsn, head}` AND NO THIRD
+    KEY, so a position is all that reaches the wire; nothing of the booking's body - the instrument
+    it names, the counterparty, the reference that makes it one fact - appears in any byte the
+    stream emitted, over an append carrying all three; and a stream with nothing to say says the
+    comment that keeps a proxy from closing it.
+    """
+    from derivus_spine import SpineLog
+
+    def booking(home):
+        log = SpineLog(home)
+        try:
+            return log.append('fill', {
+                'instrument': 'b' * 64, 'quantity': 250000.0, 'netting_set': 'CSA-0007',
+                'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': 'EXEC-RUNG'},
+                actor=RECORDED_SEAT, book=RECORDED_BOOK)
+        finally:
+            log.close()
+
+    home = recorded_home(tmp_path, monkeypatch, clips=())
+    sent, rang, landed, idle = asyncio.run(rung_by(home, booking))
+
+    assert sent[0].startswith(':'), 'the opening comment is what registers the listener'
+    assert rang == {'head': landed['event_hash'], 'lsn': landed['lsn']}, rang
+    assert sorted(rang) == ['head', 'lsn'], 'a third key on the doorbell is a fact on the wire'
+    assert idle == ': beat\n\n', 'an idle stream said nothing a proxy would hold the socket for'
+    wire = ''.join(sent)
+    for secret in ('b' * 64, 'CSA-0007', 'LEI-5493001KJTIIGC8Y1R12', 'EXEC-RUNG', '250000'):
+        assert secret not in wire, secret
+    assert not service.spine.package().log.WATCHERS, 'a closed stream left its listener behind'
+
+
+def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(tmp_path, monkeypatch):
+    """Why a replica needs a read of its own. `/spine/frames` answers what `SpineLog.frames`
+    yields, in canonical bytes; `/book/activity` answers six of those fields plus a declared
+    sentence, and every one of the six it drops is something `accept` asks for - the sealed body,
+    the two hashes the chain is made of, the tag uniqueness is enforced on and the class the body
+    is sealed against. A strip is a reading for a person; a frame is the line itself.
+    """
+    from derivus_spine import SpineLog, canonical_bytes
+    from derivus_spine.log import FRAME_FIELDS
+
+    home = recorded_home(tmp_path, monkeypatch)
+    log = SpineLog(home)
+    try:
+        held = list(log.frames())
+    finally:
+        log.close()
+
+    served = CLIENT.get('/spine/frames').json()
+    assert served['head'] == len(held) == 5
+    assert canonical_bytes(served['frames']) == canonical_bytes(held)
+    assert sorted(served['frames'][0]) == sorted(FRAME_FIELDS)
+
+    paged = CLIENT.get('/spine/frames', params={'since': 3, 'limit': 1}).json()
+    assert [frame['lsn'] for frame in paged['frames']] == [4] and paged['head'] == 5
+    assert CLIENT.get('/spine/frames', params={'since': 5}).json()['frames'] == []
+    assert CLIENT.get('/spine/frames', params={'since': 'soon'}).status_code == 422
+
+    strip = CLIENT.get('/book/activity').json()['rows']
+    assert canonical_bytes(strip) != canonical_bytes(held)
+    kept = set(strip[0]) & set(FRAME_FIELDS)
+    assert len(kept) == 6 and set(strip[0]) - kept == {'summary'}
+    assert set(FRAME_FIELDS) - kept == {
+        'body', 'entitlement_class', 'event_hash', 'event_version', 'idempotency_tag', 'prev_hash'}
+
+    # and the read OPENS NO BODY, so a crypto-shredded home answers what the hub answers
+    shredded = home / 'keys' / 'class_firm.key'
+    shredded.rename(shredded.with_name('class_firm.key.aside'))
+    assert canonical_bytes(CLIENT.get('/spine/frames').json()['frames']) == canonical_bytes(held)
+
+
+def test_a_blob_is_served_by_address_to_a_seat_the_record_admits_to_read_it(tmp_path, monkeypatch):
+    """The second read a replica needs, and the one that is gated. A blob is self-verifying by
+    hash, so the serving side needs no trust; what it does need is the asking seat's READ row,
+    since the bytes behind a citation are the fact itself. A home declaring no document serves
+    everyone, as every other enforcement here does; under one, a seat outside the rows and a read
+    nobody signed are refused in the record's own words as a 422.
+    """
+    from derivus_spine import SpineLog
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+
+    home = recorded_home(tmp_path, monkeypatch, clips=())
+    log = SpineLog(home)
+    try:
+        digest = log.store.put(b'{"USDZAR":18.5}')
+        assert CLIENT.get('/spine/blobs/{}'.format(digest)).content == b'{"USDZAR":18.5}'
+        blob = log.store.put(canonical_document({
+            'grants': [{'subject': RECORDED_SEAT, 'verb': 'admin', 'book': '*'}],
+            'read': [{'subject': RECORDED_SEAT, 'class': 'firm'}]}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
+                   actor=RECORDED_SEAT, blob_refs=(blob,))
+    finally:
+        log.close()
+
+    assert CLIENT.get('/spine/blobs/{}'.format(digest),
+                      params={'actor': RECORDED_SEAT}).content == b'{"USDZAR":18.5}'
+    refused = CLIENT.get('/spine/blobs/{}'.format(digest), params={'actor': STRANGER})
+    assert refused.status_code == 422
+    assert STRANGER in refused.json()['detail'] and 'read row' in refused.json()['detail']
+    assert 'chain-only' in refused.json()['detail'], 'no remedy for a follower that wants none'
+
+    monkeypatch.delenv('DV_SPINE_ACTOR')
+    unsigned = CLIENT.get('/spine/blobs/{}'.format(digest))
+    assert unsigned.status_code == 422 and 'no actor' in unsigned.json()['detail']
+    assert CLIENT.get('/spine/blobs/{}'.format('f' * 64),
+                      params={'actor': RECORDED_SEAT}).status_code == 422
+
+    # self-verifying BY HASH on the way out, which is what lets a replica take bytes from anywhere:
+    # a file altered under its own address is refused rather than served
+    (home / 'blobs' / digest[:2] / digest[2:4] / digest).write_bytes(b'not what it says it is')
+    altered = CLIENT.get('/spine/blobs/{}'.format(digest), params={'actor': RECORDED_SEAT})
+    assert altered.status_code == 422 and 'hashes to' in altered.json()['detail']

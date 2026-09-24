@@ -1,12 +1,13 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
-  failure, getBook, getBookActivity, getBookRisk, getBookStatus, getBookXva, getSchema,
+  DOORBELL, failure, getBook, getBookActivity, getBookRisk, getBookStatus, getBookXva, getSchema,
   postDescribe,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner } from './components/Record';
 import { WORKSPACES } from './registry';
+import { ringsAhead } from './spine';
 import { AppContext, INITIAL, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -47,6 +48,18 @@ export function App() {
   // recreated whenever the book moves, and a cursor that reset with it would re-read the history.
   const since = useRef(0);
 
+  // The record's own read - the pin and how far the record has moved past it, then the events
+  // after the cursor. ONE FUNCTION on two clocks, the poll's beat and the doorbell's, so the two
+  // cannot read differently; held across renders, so the stream below is opened once. `spine` is
+  // read fresh every time, so a service restarted with a home appears without a reload and a box
+  // that keeps none is never read twice.
+  const readRecord = useRef(async () => {
+    const status = await getBookStatus();
+    const page = status.spine === null ? null : await getBookActivity(since.current || '');
+    if (page) since.current = page.lsn;
+    dispatch({ type: 'RECORD_READ', spine: status.spine, page });
+  }).current;
+
   // the etag poll: a deal booked by ANY client (MCP, Excel, an editor on the file) appears here
   // within a tick, the user's place preserved
   useEffect(() => {
@@ -61,18 +74,26 @@ export function App() {
             source: { kind: 'book', etag: live.etag, path: live.path },
           });
         }
-        // THE RECORD RIDES THE SAME BEAT: the pin and how far the record has moved past it, then
-        // the events after the cursor. `spine` is read fresh each beat, so a service restarted
-        // with a home appears without a reload and a box that keeps none is never read twice.
-        const status = await getBookStatus();
-        const page = status.spine === null
-          ? null : await getBookActivity(since.current || '');
-        if (page) since.current = page.lsn;
-        dispatch({ type: 'RECORD_READ', spine: status.spine, page });
+        await readRecord();
       } catch { /* the poll outlives a service restart */ }
     }, BOOK_POLL_MS);
     return () => clearInterval(timer);
-  }, [state.source]);
+  }, [state.source, readRecord]);
+
+  // THE DOORBELL, where the service rings one: a beat per head move, and the same read. A beat is
+  // a NOTIFICATION AND NEVER A DELIVERY, so a stream a proxy closes, a beat that arrives twice and
+  // one that arrives out of order all cost latency and never an event - the poll above reaches
+  // every one of them on its own beat. Opened only on a desk that records: a box keeping no home
+  // 404s this, and the browser would reconnect to that forever.
+  const recording = state.record.spine !== null;
+  useEffect(() => {
+    if (!recording) return;
+    const bell = new EventSource(DOORBELL);
+    bell.onmessage = (beat) => {
+      if (ringsAhead(JSON.parse(beat.data), since.current)) readRecord();
+    };
+    return () => bell.close();
+  }, [recording, readRecord]);
 
   // The desk's two data views ride the SAME etag: the poll above is the only clock in the client,
   // and a booking, an amendment or a market tick moves the book here and the numbers follow.

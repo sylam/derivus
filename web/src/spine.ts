@@ -9,7 +9,7 @@
 
 import { plural } from './desk';
 import type {
-  ActivityPage, ActivityRow, BookMarkets, MarketClose, Reconcile, SpineBlock,
+  ActivityPage, ActivityRow, BookMarkets, Doorbell, MarketClose, Reconcile, SpineBlock,
 } from './types';
 
 /** How many strip rows a client holds. The service caps a page at 200 and this caps what has been
@@ -101,6 +101,17 @@ export function mergeActivity(held: ActivityRow[], page: ActivityPage | null,
   const byLsn = new Map(held.map((row) => [row.lsn, row]));
   for (const row of page.rows) byLsn.set(row.lsn, row);
   return [...byLsn.values()].sort((a, b) => a.lsn - b.lsn).slice(-cap);
+}
+
+/** Whether a doorbell beat is worth a read: one naming a position past the cursor this client
+ * holds is, and one at or behind it is a beat already read past - a duplicate, or one that
+ * arrived out of order.
+ *
+ * A BEAT IS NEVER A DELIVERY. The page is what moves the strip and the cursor is what asks for
+ * it, so a beat skipped here costs nothing the next beat or the poll does not cover, and a beat
+ * acted on twice is one page that merges onto rows already held. */
+export function ringsAhead(beat: Doorbell, cursor: number): boolean {
+  return beat.lsn > cursor;
 }
 
 /** The banner's whole reading. THE LISTS DECIDE AND THE COUNTS NEVER DO: the counts say how far

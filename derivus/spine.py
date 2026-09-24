@@ -207,6 +207,53 @@ def folded(fold):
             log.close()
 
 
+@contextlib.contextmanager
+def watching(listener):
+    """`listener(home, lsn, event_hash)` called once per frame this process lands, for the length
+    of the block.
+
+    The record's own publication: `SpineLog` announces where its head went at the moment the bytes
+    are durable, so a doorbell rings off the WRITE rather than off a poll of the log. What is
+    published is a position and never a fact, and the registration is this process's own and is
+    dropped at the end of the block, so a client that went away leaves nothing behind it.
+    """
+    watchers = package().log.WATCHERS
+    watchers.append(listener)
+    try:
+        yield listener
+    finally:
+        watchers.remove(listener)
+
+
+def blob(digest, actor_name=None):
+    """The bytes the record holds at `digest`, for a seat it admits to READ them.
+
+    `admit`'s shape on the reading side, and the one read a replica needs beyond the frames: no
+    capabilities document in force serves everyone, as every other enforcement here does, and under
+    one a seat outside the `read` rows - or a read nobody signed - is refused by name. The class is
+    the firm's while classification is dormant, which is why this asks the document rather than the
+    blob. The store re-hashes on the way out, so what a replica pulls is self-verifying whatever
+    served it.
+    """
+    spine = package()
+
+    def read(log):
+        document, _ = spine.capability.state_at(log)
+        if document is not None:
+            subject = actor(actor_name)
+            if subject not in spine.capability.read_subjects(document):
+                raise SpineRefused(
+                    'actor {0!r} is not admitted to read the {1} class here, so these bytes are '
+                    'not served: a replica pulls the blobs its seat may open, and the CHAIN it '
+                    'pulls beside them is re-derived over ciphertext and needs no key at all. '
+                    'Declare a read row ({{"read": [{{"class": "{1}", "subject": {0!r}}}]}}) '
+                    'through `DV_Spine grant --file`, or follow this record chain-only'.format(
+                        subject, spine.vocabulary.FIRM_CLASS))
+        return log.store.get(digest)
+
+    return folded(read)
+
+
 def _rows(projector, lsn=None):
     """One projector's rows at `lsn`, folded off the home - what every read below is made of."""
     def fold(log):

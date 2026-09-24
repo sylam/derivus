@@ -109,6 +109,12 @@ class QuoteNotFirm(SpineRefusal):
     remedies - and never the market having moved since, which is reported rather than refused."""
 
 
+class HubUnreachable(SpineRefusal):
+    """The hub a replica follows not answering - no route to it, a read that timed out, or a
+    refusal where the two reads a follower needs should be. Never a state a replica is stuck in:
+    what it already holds verifies without the hub, and the pull is simply asked again."""
+
+
 class CustodyRefusal(SpineRefusal):
     """Key custody declining - a wrap that does not open under the seat's own private key, an
     enrollment the log does not carry, or an escrow recovery asked of a home that declared no
