@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { configureBook } from '../api';
 import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
+import { Navigator, type Page } from '../components/Navigator';
 import { useApp, written } from '../state';
 import { isObject, token } from '../tokens';
 import type { ConfigSection, Schema } from '../types';
@@ -137,35 +138,35 @@ function RuleTable({ schema, name, declared, value, configure }: {
   );
 }
 
-/** One configuration section against its declaration, rendered by SHAPE. A declaration carrying
- * `types` is an entry per key the book states - the entry's own values where it has them and the
- * declared default otherwise, so an empty `{}` shows every dial at its default - plus the families
- * it does not state yet. One carrying `menu` is the rule table above. Editable where the document
- * is the live book. */
-function ConfigurationSection({ schema, name, declared, value, configure }: {
-  schema: Schema; name: string; declared: ConfigSection; value: unknown; configure?: Configure;
-}) {
+/** One configuration section against its declaration, as PAGES and by shape. A declaration
+ * carrying `types` is an entry per key the book states - the entry's own values where it has them
+ * and the declared default otherwise, so an empty `{}` shows every dial at its default - filed under
+ * the section, plus a page adding a family it does not state yet. One carrying `menu` is the rule
+ * table above, one page. Editable where the document is the live book. */
+function sectionPages(schema: Schema, name: string, declared: ConfigSection, value: unknown,
+                      configure?: Configure): Page[] {
   if (!declared.types) {
-    return <RuleTable schema={schema} name={name} declared={declared} value={value}
-                      configure={configure} />;
+    return [{ id: name, label: name, content: (
+      <RuleTable schema={schema} name={name} declared={declared} value={value}
+                 configure={configure} />
+    ) }];
   }
   const types = declared.types;
   const stated = Object.keys(isObject(value) ? value : {});
   const missing = Object.keys(types).filter((family) =>
     !stated.some((key) => declarationFor(types, key) === types[family]));
-  return (
-    <>
-      {stated.map((key) => (
-        <DescriptorPanel
-          key={key} title={`${name} — ${key}`} fields={declarationFor(types, key)?.fields}
-          values={isObject(value) && isObject(value[key]) ? value[key] : {}}
-          onAmend={configure && ((field, wire) => configure(key, { [field]: wire }))} />
-      ))}
-      {configure && missing.length > 0 && (
-        <AddEntry missing={missing} configure={configure} />
-      )}
-    </>
-  );
+  return [
+    ...stated.map((key) => ({ id: `${name}/${key}`, folder: name, label: key, content: (
+      <DescriptorPanel
+        title={`${name} — ${key}`} fields={declarationFor(types, key)?.fields}
+        values={isObject(value) && isObject(value[key]) ? value[key] : {}}
+        onAmend={configure && ((field, wire) => configure(key, { [field]: wire }))} />
+    ) })),
+    ...(configure && missing.length ? [{
+      id: `${name}/`, folder: name, label: 'another family', accent: true,
+      content: <AddEntry missing={missing} configure={configure} />,
+    }] : []),
+  ];
 }
 
 /** The bootstrap's own dials: one entry per price family under the factor it writes, the
@@ -184,13 +185,8 @@ export function BootstrapperView() {
       : undefined;
 
   return (
-    <div className="main">
-      <div className="panel">
-        {Object.entries(schema.Configuration).map(([section, declared]) => (
-          <ConfigurationSection key={section} schema={schema} name={section} declared={declared}
-                                value={explicit[section]} configure={configure(section)} />
-        ))}
-      </div>
-    </div>
+    <Navigator screen="bootstrap" keep pages={Object.entries(schema.Configuration).flatMap(
+      ([section, declared]) => sectionPages(schema, section, declared, explicit[section],
+                                            configure(section)))} />
   );
 }

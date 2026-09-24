@@ -3,8 +3,9 @@ import { configureSecurities, failure, getResult, getSecurities, verifySecuritie
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { EditableScalar } from '../components/FieldView';
+import { Navigator, type Page } from '../components/Navigator';
 import {
-  USED_COLUMNS, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
+  USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
 import { useApp } from '../state';
@@ -125,27 +126,12 @@ function SeedCard({ block, name, entry, onSaved }: {
 }
 
 /** THE VOCABULARY: the seed as the service completes it - the packaged questionnaire with the
- * desk's own over it - one card per key each block files its entries by. */
-function Vocabulary({ seed, onSaved }: {
-  seed: Record<string, Record<string, unknown>>; onSaved: () => void;
-}) {
-  return (
-    <>
-      {Object.keys(seed).sort().map((block) => (
-        <Fragment key={block}>
-          <div className="pager">
-            <b>{block}</b>
-            <span>{Object.keys(seed[block] ?? {}).length} entries</span>
-          </div>
-          {Object.keys(seed[block] ?? {}).map((key) => (
-            <SeedCard key={`${block}/${key}`} block={block} name={key} entry={seed[block][key]}
-                      onSaved={onSaved} />
-          ))}
-        </Fragment>
-      ))}
-    </>
-  );
-}
+ * desk's own over it - one page per key each block files its entries by. */
+const vocabularyPages = (seed: SecuritiesAnswer['seed'], onSaved: () => void): Page[] =>
+  Object.keys(seed).sort().flatMap((block) => Object.keys(seed[block] ?? {}).map((key) => ({
+    id: `${block}/${key}`, folder: block, label: key,
+    content: <SeedCard block={block} name={key} entry={seed[block][key]} onSaved={onSaved} />,
+  })));
 
 type Verification = { start: (scope: { block?: string }) => void; running: boolean; strip: ReactNode };
 
@@ -233,31 +219,19 @@ function useVerification(onDone: () => void): Verification {
   };
 }
 
-/** THE EVIDENCE: what a terminal answered, block by block - each entry under the path a drift is
- * named by, the ledger of what was rejected and why, and the button that asks again. */
-function Evidence({ answer, verify }: { answer: SecuritiesAnswer; verify: Verification }) {
-  const blocks = Object.keys(answer.map.blocks).sort();
+/** THE EVIDENCE: what a terminal answered, filed by block - each entry under the path a drift is
+ * named by, with the button that asks again - and the ledger of what was rejected and why. */
+function evidencePages(answer: SecuritiesAnswer, verify: Verification): Page[] {
   const rejected = rejectedRows(answer.map.rejected);
-  return (
-    <>
-      <div className="statusrow">
-        <button className="ghost" disabled={verify.running}
-                onClick={() => verify.start({})}>verify the whole map</button>
-        <span className="hint">generated <span className="mono">
-          {answer.map.generated ?? 'never'}</span></span>
-      </div>
-      {verify.strip}
-      {blocks.length === 0 && (
-        <div className="placeholder">{answer.provisioned
-          ? 'the map carries no entry'
-          : 'this home has never been verified: the vocabulary is a claim, and nothing has '
-            + 'evidenced it'}</div>
-      )}
-      {blocks.map((block) => {
-        const rows = mapRows(answer.map.blocks[block], [block]);
-        return (
-          <section className="card" key={block}>
-            <h3>{block} — {rows.length} verified</h3>
+  return [
+    ...mapPages(answer.map.blocks).map(({ block, key, node }) => {
+      const rows = mapRows(node, key === null ? [block] : [block, key]);
+      return {
+        id: key === null ? block : `${block}/${key}`, label: key ?? block,
+        folder: key === null ? undefined : block,
+        content: (
+          <section className="card">
+            <h3>{key === null ? block : `${block} — ${key}`} — {rows.length} verified</h3>
             <div className="pager">
               <button className="ghost" disabled={verify.running}
                       onClick={() => verify.start({ block })}>verify {block}</button>
@@ -266,58 +240,50 @@ function Evidence({ answer, verify }: { answer: SecuritiesAnswer; verify: Verifi
                        data={rows.map(({ path, entry }) => [
                          path, entry.security, entry.name, entry.last_update, entry.verified])} />
           </section>
-        );
-      })}
-      {rejected.length > 0 && (
-        <section className="card">
-          <h3>rejected — {rejected.length}</h3>
-          <DataTable columns={['ticker', 'verdict', 'name', 'last print', 'error']} index={[]}
-                     data={rejected.map((row) => [
-                       row.security, row.verdict, row.name, row.last_update, row.error])}
-                     cell={(r, c) => (c === 1
-                       ? <span className="chip error">{rejected[r].verdict}</span> : undefined)} />
-        </section>
-      )}
-    </>
-  );
+        ),
+      };
+    }),
+    ...(rejected.length ? [{ id: 'rejected', label: `rejected (${rejected.length})`, content: (
+      <section className="card">
+        <h3>rejected — {rejected.length}</h3>
+        <DataTable columns={['ticker', 'verdict', 'name', 'last print', 'error']} index={[]}
+                   data={rejected.map((row) => [
+                     row.security, row.verdict, row.name, row.last_update, row.error])}
+                   cell={(r, c) => (c === 1
+                     ? <span className="chip error">{rejected[r].verdict}</span> : undefined)} />
+      </section>
+    ) }] : []),
+  ];
 }
 
-/** EVERY KNOT NAMES ITS PRINT: the book's own quote rows with the print each was solved from and
- * whatever a terminal ever said about the security it came off. The IPV read - nothing here edits
- * anything, and the verdict is the service's word. */
-function Prints({ used }: { used: UsedRow[] }) {
-  const curves = [...new Set(used.map((row) => row.curve))];
-  if (curves.length === 0) {
-    return <div className="placeholder">this book carries no curve block, so no knot names a
-      print yet</div>;
-  }
-  return (
-    <>
-      {curves.map((curve) => {
-        const rows = usedRows(used, curve);
-        return (
-          <section className="card" key={curve}>
-            <h3>{curve} — {rows.length} knots</h3>
-            <DataTable columns={[...USED_COLUMNS]} index={[]}
-                       data={rows.map((row) => USED_COLUMNS.map((key) => row[key]))}
-                       cell={(r, c) => (USED_COLUMNS[c] === 'verdict'
-                         ? <span className={`chip ${rows[r].tone}`}>{rows[r].verdict}</span>
-                         : undefined)} />
-          </section>
-        );
-      })}
-    </>
-  );
-}
+/** EVERY KNOT NAMES ITS PRINT: the book's own quote rows, a page per curve, with the print each was
+ * solved from and whatever a terminal ever said about the security it came off. The IPV read -
+ * nothing here edits anything, and the verdict is the service's word. */
+const printPages = (used: UsedRow[]): Page[] =>
+  [...new Set(used.map((row) => row.curve))].map((curve) => {
+    const rows = usedRows(used, curve);
+    return {
+      id: curve, label: curve, content: (
+        <section className="card">
+          <h3>{curve} — {rows.length} knots</h3>
+          <DataTable columns={[...USED_COLUMNS]} index={[]}
+                     data={rows.map((row) => USED_COLUMNS.map((key) => row[key]))}
+                     cell={(r, c) => (USED_COLUMNS[c] === 'verdict'
+                       ? <span className={`chip ${rows[r].tone}`}>{rows[r].verdict}</span>
+                       : undefined)} />
+        </section>
+      ),
+    };
+  });
 
 /** The ticker vocabulary, its evidence and every knot's print - the three halves of one read. The
  * seed is what this desk CLAIMS it could quote, the map is what a terminal answered about those
  * claims, and the join is which print each knot of the book was solved from. */
 export function SecuritiesView() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
+  const pane = state.selection.picks.securities ?? PANES[0].id;
   const [answer, setAnswer] = useState<SecuritiesAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pane, setPane] = useState(PANES[0].id);
   const [reload, setReload] = useState(0);
   const source = state.source;
   const verify = useVerification(() => setReload((count) => count + 1));
@@ -350,25 +316,58 @@ export function SecuritiesView() {
                        hint="The seed, the map and every knot's print, in one read." />;
   }
 
+  const saved = () => setReload((count) => count + 1);
+  const panes: Record<string, { pages: Page[]; empty: string; head?: ReactNode }> = {
+    vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing' },
+    evidence: {
+      pages: evidencePages(answer, verify),
+      empty: answer.provisioned ? 'the map carries no entry'
+        : 'this home has never been verified: the vocabulary is a claim, and nothing has '
+          + 'evidenced it',
+      head: (
+        <>
+          <div className="statusrow">
+            <button className="ghost" disabled={verify.running}
+                    onClick={() => verify.start({})}>verify the whole map</button>
+            <span className="hint">generated <span className="mono">
+              {answer.map.generated ?? 'never'}</span></span>
+          </div>
+          {verify.strip}
+        </>
+      ),
+    },
+    prints: {
+      pages: printPages(answer.used),
+      empty: 'this book carries no curve block, so no knot names a print yet',
+    },
+  };
+  const shown = panes[pane];
+
+  // one pane at a time, each its own tree under its own pick, and the vocabulary's cards kept
+  // mounted - an entry edited and not yet saved survives a look at another
   return (
-    <div className="main">
-      <div className="panel">
-        <div className="pager">
+    <Navigator
+      screen={`securities.${pane}`} pages={shown.pages} empty={shown.empty}
+      keep={pane === 'vocabulary'}
+      side={
+        <div className="sidehead">
           {PANES.map((entry) => (
-            <button key={entry.id} className={`chip${pane === entry.id ? ' on' : ''}`}
-                    onClick={() => setPane(entry.id)}>{entry.label}</button>
+            <button key={entry.id} className={pane === entry.id ? 'on' : ''}
+                    onClick={() => dispatch({ type: 'PICK', screen: 'securities', id: entry.id })}>
+              {entry.label}
+            </button>
           ))}
-          <span className="spacer" />
-          <span className="mono">{answer.home}</span>
-          <span className={`chip${answer.provisioned ? ' done' : ''}`}>
-            {answer.provisioned ? 'verified' : 'never verified'}</span>
         </div>
-        {pane === 'vocabulary' && (
-          <Vocabulary seed={answer.seed} onSaved={() => setReload((count) => count + 1)} />
-        )}
-        {pane === 'evidence' && <Evidence answer={answer} verify={verify} />}
-        {pane === 'prints' && <Prints used={answer.used} />}
-      </div>
-    </div>
+      }
+      head={
+        <>
+          <div className="pager">
+            <span className="mono">{answer.home}</span>
+            <span className={`chip${answer.provisioned ? ' done' : ''}`}>
+              {answer.provisioned ? 'verified' : 'never verified'}</span>
+          </div>
+          {shown.head}
+        </>
+      } />
   );
 }

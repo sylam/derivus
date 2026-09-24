@@ -3,6 +3,7 @@ import { configureCurve, failure, getCurves } from '../api';
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { DescriptorPanel, EditableScalar, type AmendField } from '../components/FieldView';
+import { Navigator } from '../components/Navigator';
 import {
   QUIET_MS, commit, curveFields, curveRequest, due, nearPair, panelValues, prefill, solvedFactor,
   type CurveEdit, type CurveForm, type Editing,
@@ -216,21 +217,19 @@ export function CurvesView() {
   const params = token(market['Price Factor Interpolation'], '.ModelParams');
   const defaults = isObject(params) ? params[section.entry ?? ''] : undefined;
   const typeScheme = String((isObject(defaults) ? defaults[FACTOR] : '') || section.value || '');
-  const names = Object.keys(answer.curves);
   const card = { schema: state.schema, fields, panel, declared, typeScheme,
                  factors: market['Price Factors'] ?? {} };
 
+  // filed by currency, the one family being every curve's; every card stays mounted, since a
+  // burst of edits posts a beat after its last commit and a click away must not drop it
   return (
-    <div className="main">
-      <div className="panel">
-        {names.length === 0 && (
-          <div className="placeholder">this book carries no curve block yet</div>
-        )}
-        {names.map((name) => (
-          <CurveCard key={name} {...card} title={name} block={answer.curves[name]} />
-        ))}
-        <CurveCard key="a new curve" {...card} title="a new curve" seeded={answer.seeded ?? {}} />
-      </div>
-    </div>
+    <Navigator screen="curves" keep pages={[
+      ...Object.entries(answer.curves).map(([name, block]) => ({
+        id: name, folder: block.currency, label: block.curve,
+        content: <CurveCard {...card} title={name} block={block} />,
+      })),
+      { id: 'a new curve', label: 'a new curve', accent: true,
+        content: <CurveCard {...card} title="a new curve" seeded={answer.seeded ?? {}} /> },
+    ]} />
   );
 }

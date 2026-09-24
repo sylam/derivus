@@ -219,6 +219,15 @@ check('mapRows on an empty map is an empty list',
       + 'answers an empty map for',
       [securities.mapRows({}), securities.mapRows(undefined)], [[], []]);
 
+// --- mapPages
+const SPOTS = { EURUSD: evidence('EURUSD BGN Curncy', 'EUR-USD X-RATE'),
+                USDZAR: evidence('USDZAR BGN Curncy', 'USD-ZAR X-RATE') };
+check('mapPages files a block of containers a page per container, and a block of entries whole',
+      'every child a page, which files the spot block one page per security - a page per row; or '
+      + 'every block whole, which lays every curve\'s strip on one page',
+      securities.mapPages({ ...BLOCKS, fx_spot: SPOTS }).map(({ block, key }) => [block, key]),
+      [['fx_spot', null], ['fx_vol', 'USDZAR'], ['rates', 'ZAR']]);
+
 // --- rejectedRows
 check('rejectedRows is the ledger in ticker order, carrying the terminal\'s own error',
       'the error dropped, which leaves `invalid` on screen with nothing saying what the terminal '
@@ -229,7 +238,7 @@ check('rejectedRows is the ledger in ticker order, carrying the terminal\'s own 
        { security: 'SASW5 BGN Curncy', verdict: 'dead', name: 'ZAR SWAP QTR (VS 3M) 5Y',
          last_update: '2007-03-26', error: '' }]);
 
-console.log(`\n${ran} checks over 8 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

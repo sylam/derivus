@@ -95,6 +95,20 @@ export function mapRows(node: unknown, prefix: string[] = []): { path: string; e
   return Object.entries(node).flatMap(([key, value]) => mapRows(value, [...prefix, key]));
 }
 
+/** The map as the pages the evidence files it on, blocks in order: a block whose entries all sit in
+ * containers - a curve's strip, a pair's quote grid - one page per container, and a block carrying
+ * an entry directly one page whole, a page per security being a page per row. */
+export function mapPages(blocks: Record<string, unknown>) {
+  return Object.keys(blocks).sort().flatMap((block) => {
+    const node = blocks[block];
+    const children = Object.entries(isObject(node) ? node : {}).filter(
+      (pair): pair is [string, Record<string, unknown>] => isObject(pair[1]));
+    return children.length && children.every(([, child]) => typeof child.security !== 'string')
+      ? children.map(([key, child]) => ({ block, key: key as string | null, node: child }))
+      : [{ block, key: null as string | null, node }];
+  });
+}
+
 /** The rejected ledger as the table renders it, in ticker order - a rejection is keyed by TICKER
  * because a candidate that never became an entry has no path. The terminal's own error travels:
  * it is why the name was refused. */

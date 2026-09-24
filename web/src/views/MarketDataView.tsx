@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
-import { Tree } from '../components/Tree';
+import { Navigator } from '../components/Navigator';
 import { stampText } from '../desk';
 import { marketsView } from '../spine';
 import { useApp, written } from '../state';
@@ -39,9 +39,37 @@ function resolveProcess(
   return { title: 'static - no process' };
 }
 
+/** One price factor: its declared fields, VALUES editable over the live book - the bind='value'
+ * declaration is the whole predicate, so structure stays read-only exactly where the engine refuses
+ * it anyway - and the process that simulates it. */
+function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
+  schema: Schema; name: string; block: Record<string, unknown>;
+  priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean;
+}) {
+  const { dispatch } = useApp();
+  const type = name.split('.')[0];
+  const onPatch: AmendField | undefined = live
+    ? async (key, wireValue) => written(dispatch, await patchMarket(name, { [key]: wireValue }))
+    : undefined;
+  return (
+    <>
+      <DescriptorPanel
+        title={name} fields={schema.Factor.types[type]} values={block} onAmend={onPatch}
+        editable={(_, descriptor) => descriptor.bind === 'value'} />
+      <ProcessPanel schema={schema} factorName={name} block={block}
+                    priceModels={priceModels} modelConfig={modelConfig} />
+      {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
+        <div className="pager">
+          interpolation methods: {schema.Interpolation_factor_map[type].join(', ')}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function MarketDataView() {
-  const { state, dispatch } = useApp();
-  const { doc, schema, selection, describe } = state;
+  const { state } = useApp();
+  const { doc, schema, describe } = state;
   if (!doc || !schema) return null;
 
   const merge = doc.Calc.MergeMarketData ?? {};
@@ -49,33 +77,12 @@ export function MarketDataView() {
   const explicit = merge.ExplicitMarketData ?? {};
   const factors = (explicit['Price Factors'] ?? {}) as Record<string, unknown>;
   const priceModels = (explicit['Price Models'] ?? {}) as Record<string, unknown>;
-  const names = Object.keys(factors).sort();
-
-  const selected = selection.factor;
-  const block = selected ? factors[selected] : undefined;
-  const type = selected?.split('.')[0] ?? '';
-
-  // market VALUES edit over the live book - the bind='value' declaration is the whole predicate,
-  // so structure stays read-only exactly where the engine refuses it anyway
-  const onPatch: AmendField | undefined =
-    state.source?.kind === 'book' && selected
-      ? async (key, wireValue) =>
-          written(dispatch, await patchMarket(selected, { [key]: wireValue }))
-      : undefined;
+  const live = state.source?.kind === 'book';
 
   return (
-    <div className="main">
-      <div className="sidebar">
-        <Tree
-          nodes={names.map((name) => {
-            const [factorType, ...rest] = name.split('.');
-            return { id: name, type: factorType, label: rest.join('.') };
-          })}
-          selected={selected}
-          onSelect={(id) => dispatch({ type: 'SELECT_FACTOR', name: id })}
-        />
-      </div>
-      <div className="panel">
+    <Navigator
+      screen="market" empty="this document carries no price factor"
+      head={<>
         <RecordMarkets />
         {marketFile ? (
           <div className="banner">
@@ -86,29 +93,18 @@ export function MarketDataView() {
                 ? ` and is missing ${describe.factors.missing.join(', ')}.` : '.')}
           </div>
         ) : null}
-        {!selected && <div className="placeholder">select a price factor</div>}
-        {selected && isObject(block) && (
-          <>
-            <DescriptorPanel
-              title={selected}
-              fields={schema.Factor.types[type]}
-              values={block}
-              onAmend={onPatch}
-              editable={(_, descriptor) => descriptor.bind === 'value'}
-            />
-            <ProcessPanel
-              schema={schema} factorName={selected} block={block}
-              priceModels={priceModels} modelConfig={explicit['Model Configuration']}
-            />
-            {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
-              <div className="pager">
-                interpolation methods: {schema.Interpolation_factor_map[type].join(', ')}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+      </>}
+      pages={Object.keys(factors).sort().map((name) => {
+        const [type, ...rest] = name.split('.');
+        const block = factors[name];
+        return {
+          id: name, folder: type, label: rest.join('.') || type,
+          content: isObject(block) ? (
+            <FactorBlock schema={schema} name={name} block={block} priceModels={priceModels}
+                         modelConfig={explicit['Model Configuration']} live={live} />
+          ) : <DescriptorPanel title={name} values={{ value: block }} />,
+        };
+      })} />
   );
 }
 

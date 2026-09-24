@@ -53,7 +53,8 @@ export type AppState = {
   source: Source | null;
   docError: string | null;
   tab: string;
-  selection: { deal: string | null; factor: string | null };
+  /** The deal the portfolio shows, and the page each navigated screen shows, by screen. */
+  selection: { deal: string | null; picks: Record<string, string> };
   describe: DescribeResult | null;
   validate: ValidateResult | null;
   run: RunState;
@@ -77,7 +78,7 @@ export const NO_RECORD: RecordState = {
 
 export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
-  tab: 'portfolio', selection: { deal: null, factor: null },
+  tab: 'portfolio', selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
   record: NO_RECORD,
 };
@@ -90,7 +91,7 @@ export type Action =
   | { type: 'DOC_FAILED'; error: string }
   | { type: 'TAB'; tab: string }
   | { type: 'SELECT_DEAL'; path: string | null }
-  | { type: 'SELECT_FACTOR'; name: string | null }
+  | { type: 'PICK'; screen: string; id: string }
   | { type: 'DESCRIBED'; describe: DescribeResult }
   | { type: 'VALIDATED'; validate: ValidateResult }
   | { type: 'RUN_SUBMITTED'; resultId: string }
@@ -125,7 +126,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ? { ...state, doc: action.doc, source: action.source, docError: null, validate: null }
         : {
             ...state, doc: action.doc, source: action.source, docError: null,
-            selection: { deal: null, factor: null }, describe: null, validate: null, run: IDLE_RUN,
+            selection: { deal: null, picks: {} }, describe: null, validate: null, run: IDLE_RUN,
             risk: IDLE_RISK, xva: IDLE_XVA,
           };
     case 'DOC_FAILED':
@@ -134,8 +135,9 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, tab: action.tab };
     case 'SELECT_DEAL':
       return { ...state, selection: { ...state.selection, deal: action.path } };
-    case 'SELECT_FACTOR':
-      return { ...state, selection: { ...state.selection, factor: action.name } };
+    case 'PICK':
+      return { ...state, selection: {
+        ...state.selection, picks: { ...state.selection.picks, [action.screen]: action.id } } };
     case 'DESCRIBED':
       return { ...state, describe: action.describe };
     case 'VALIDATED':

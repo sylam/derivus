@@ -15,6 +15,15 @@ way — the schema publishes which columns those are (`MarketPrices.values`) and
 the whole block, so structure stays where the engine refuses it. Everything else stays read-only;
 booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
 
+**The market screens navigate by a tree.** Market Prices, Curves, Bootstrapper, Securities and
+Market Data file their blocks in a sidebar by what they are — a quote block under its family, a
+curve under its currency, an entry under its section, a vocabulary entry or a map block under its
+risk factor, a price factor under its type — and show the one picked, a quote block its points
+with its settings folded beneath. A folder of more than twelve stands closed until opened, a tree
+of more than twelve carries a filter, and what a desk opened is remembered on that browser. The
+grouping, the filter and which folders stand open are `src/tree.ts`, checked by
+`scripts/tree_check.mjs`; `src/components/Navigator.tsx` is the one screen shape.
+
 A `Surface`-shaped price factor renders as four views over one pure module (`src/vols.ts`): the
 **smiles**, one line per expiry over the x coordinate; the **term structure** at one x; the
 **surface**, a rotatable 3-D mesh whose `echarts-gl` code is a lazy chunk the base bundle does not

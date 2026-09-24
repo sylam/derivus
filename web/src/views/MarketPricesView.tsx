@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { failure, getResult, tickBloomberg, tickMarket } from '../api';
 import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
+import { Navigator } from '../components/Navigator';
 import { useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
@@ -36,10 +37,10 @@ function quoteField(fields: Section | undefined, values: string[]) {
     values.every((name) => columnsOf(declared).includes(name)));
 }
 
-/** One `Market Prices` block: its family's declarations over the instrument, then the quote ladder
- * under its declared columns with the VALUE columns editable. An edit posts the WHOLE block back
- * through the tick verb, which moves a quoted value, its two-way and its timestamp and refuses a
- * structural change by name; a refusal renders verbatim and a success re-reads the book. */
+/** One `Market Prices` block: the quote ladder under its declared columns with the VALUE columns
+ * editable, and its family's declarations over the rest folded beneath. An edit posts the WHOLE
+ * block back through the tick verb, which moves a quoted value, its two-way and its timestamp and
+ * refuses a structural change by name; a refusal renders verbatim and a success re-reads the book. */
 function MarketPriceBlock({ schema, name, block, live }: {
   schema: Schema; name: string; block: unknown; live: boolean;
 }) {
@@ -61,27 +62,33 @@ function MarketPriceBlock({ schema, name, block, live }: {
     return written(dispatch, await tickMarket({ [name]: next }));
   }
 
+  // the ladder is the page and the block's settings fold under it; the ladder is left out of the
+  // settings' VALUES as well as their fields, or it renders a second time as JSON
+  const unladdered = <T,>(record: Record<string, T>) =>
+    Object.fromEntries(Object.entries(record).filter(([key]) => key !== quotes?.[0]));
+  const settings = (
+    <DescriptorPanel title={name} values={unladdered(instrument)} fields={unladdered(fields)} />
+  );
+  if (!rows.length) return settings;
   return (
     <>
-      <DescriptorPanel
-        title={name} values={instrument}
-        fields={Object.fromEntries(
-          Object.entries(fields).filter(([key]) => key !== quotes?.[0]))} />
-      {rows.length > 0 && (
-        <section className="card">
-          <h3>{name} — {quotes![0]} ({rows.length})</h3>
-          <DataTable
-            columns={columns} index={[]}
-            data={rows.map((row) => columns.map((column) => row[column]))}
-            cell={(r, c) => (editable.has(columns[c]) ? (
-              <EditableScalar
-                key={`${r}.${columns[c]}`} name={columns[c]}
-                descriptor={columnDescriptor(quotes![1], columns[c])}
-                value={rows[r][columns[c]]}
-                onAmend={(column, wire) => save(r, column, wire)} />
-            ) : undefined)} />
-        </section>
-      )}
+      <section className="card">
+        <h3>{name} — {quotes![0]} ({rows.length})</h3>
+        <DataTable
+          columns={columns} index={[]}
+          data={rows.map((row) => columns.map((column) => row[column]))}
+          cell={(r, c) => (editable.has(columns[c]) ? (
+            <EditableScalar
+              key={`${r}.${columns[c]}`} name={columns[c]}
+              descriptor={columnDescriptor(quotes![1], columns[c])}
+              value={rows[r][columns[c]]}
+              onAmend={(column, wire) => save(r, column, wire)} />
+          ) : undefined)} />
+      </section>
+      <details className="fold">
+        <summary>settings</summary>
+        {settings}
+      </details>
     </>
   );
 }
@@ -145,8 +152,8 @@ function BloombergTick() {
   );
 }
 
-/** The quotes half of the market data: every `Market Prices` block filed by family, its values
- * editable over the live book, and one button that goes and gets the desk's own. */
+/** The quotes half of the market data: every `Market Prices` block filed under its family, its
+ * values editable over the live book, and one button that goes and gets the desk's own. */
 export function MarketPricesView() {
   const { state } = useApp();
   const { doc, schema } = state;
@@ -154,23 +161,17 @@ export function MarketPricesView() {
 
   const prices = doc.Calc.MergeMarketData?.ExplicitMarketData?.['Market Prices'];
   const blocks = isObject(prices) ? prices : {};
-  const names = Object.keys(blocks).sort();
   const live = state.source?.kind === 'book';
 
   return (
-    <div className="main">
-      <div className="panel">
-        <BloombergTick />
-        {names.length === 0 && <div className="placeholder">this book quotes nothing</div>}
-        {names.map((name, i) => (
-          <div key={name}>
-            {name.split('.')[0] !== names[i - 1]?.split('.')[0] && (
-              <div className="pager"><b>{name.split('.')[0]}</b></div>
-            )}
-            <MarketPriceBlock schema={schema} name={name} block={blocks[name]} live={live} />
-          </div>
-        ))}
-      </div>
-    </div>
+    <Navigator
+      screen="prices" head={<BloombergTick />} empty="this book quotes nothing"
+      pages={Object.keys(blocks).sort().map((name) => {
+        const [family, ...rest] = name.split('.');
+        return {
+          id: name, folder: family, label: rest.join('.') || family,
+          content: <MarketPriceBlock schema={schema} name={name} block={blocks[name]} live={live} />,
+        };
+      })} />
   );
 }
