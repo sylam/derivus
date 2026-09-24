@@ -70,7 +70,7 @@ is recorded so a reader knows which readings rest on it.
   it, and no index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967
   against a fitted 0.2671.
 - **A ladder of vanillas alone does not pin the residual's tail parameter** (2026-09-15). The fit
-  reports, for each parameter, how hard its prior pushes compared with the quotes; on the desk's
+  reports, for each parameter, how hard its prior pushes compared with the quotes; on a
   Nikkei block the tail parameter `Alpha` reads about ten times one quote row, so its fitted value
   is the prior's as much as the market's. Under the walk this showed as two fitted values from
   different seeds; the quadrature pricer, the default since 2026-09-14, writes the same bytes on
@@ -81,8 +81,8 @@ is recorded so a reader knows which readings rest on it.
   same rows at the declared default windows move neither. The vendor's chain quotes no
   forward-start.
 - **The Nikkei's implied-volatility surface answers one maturity** (2026-09-15), so its long end
-  comes from the listed chain, pulled in the Tokyo session, or the file's own surface; the desk's
-  Nikkei mark moves 4.6% between a chain-only fit and one carrying the file's 2.74-year
+  comes from the listed chain, pulled in the Tokyo session, or the file's own surface; a Nikkei
+  autocall's mark moves 4.6% between a chain-only fit and one carrying the file's long-dated
   at-the-money point. The S&P 500, Nasdaq 100 and Euro Stoxx 50 surfaces answer three to
   twenty-four months at 90 to 110 percent moneyness, and the listed chain carries every expiry
   past that.
@@ -382,9 +382,9 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
     ladder states; a block's own `Leverage_Prior_SE` and `Leverage_Product_Prior_SE` supersede it
     where declared. At a fitted vol-of-vol of 5 it reads several quote rows, and at the
     class-default tier it is what the Nikkei cannot carry. A history's leverage of −0.20 ± 0.09
-    and product −1.05 ± 0.67 move the desk mark to −41.9m through those rows: the estimator's
-    leverage is the single most consequential number it produces, and its standard error is a
-    sampling error, not a desk's spread.
+    and product −1.05 ± 0.67 move an NKY autocall's mark by 11.7% through those rows: the
+    estimator's leverage is the single most consequential number it produces, and its standard
+    error is a sampling error, not a desk's spread.
 17. **Whether the Hull-White solve should scale its steps by the Jacobian's columns** (2026-09-14).
     The LogVar2FJ fit runs its least-squares stage with each parameter's step scaled by the size
     of its own Jacobian column, the better-conditioned solve; the Hull-White chain does not, and

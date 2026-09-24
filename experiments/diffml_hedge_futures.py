@@ -25,8 +25,8 @@ the index carry forward  S_t * exp(c_t(tau_u) tau_u)  (same NS curve, no basis).
             differently, the three futures are genuinely non-collinear: >=2 of them are
             needed to match the liability's spot AND carry exposure (not redundant).
    * BASIS is in the future only -> UNHEDGEABLE (pure tracking error).
-DEAL SPREAD (the realistic bit): the deal is NOT struck at the money -- it is struck ~$5-8/oz
-ABOVE fair, so the desk books a margin.  The strike level cancels in the mark-to-market wealth
+DEAL SPREAD: the deal is NOT struck at the money -- it is struck MARGIN per oz ABOVE fair,
+so the desk books a margin.  The strike level cancels in the mark-to-market wealth
 dynamics, so the spread enters as a day-1 wealth CUSHION  N_INIT = NU*MARGIN  (see MARGIN).  That
 turns the objective from "minimise variance" into "do not lose MORE than the spread, keep upside":
 the spread is a downside BUDGET.  Consequences (shown in the downside table): the best STATIC hedge
@@ -109,8 +109,8 @@ PHI    = 1.0 - KAPPA # AR(1) persistence
 SIGMA  = 4.0         # spot per-step shock std (price level)
 NU     = 3.0         # liability notional
 S_INIT = MU
-MARGIN = 6.5         # USD/oz the deal is struck ABOVE fair (the desk's spread; real deals are NOT
-#   at-the-money -- we lock in $5-8/oz).  The strike level CANCELS in the mark-to-market wealth
+MARGIN = 6.5         # USD/oz the deal is struck ABOVE fair (the desk's spread, so the deal is NOT
+#   at-the-money).  The strike level CANCELS in the mark-to-market wealth
 #   dynamics (we track dL), so the spread enters as a day-1 wealth CUSHION N_INIT = NU*MARGIN.
 #   Economically it is a downside BUDGET: the job is to not lose MORE than the spread, not to avoid
 #   any loss -- so the policy can under-hedge and keep upside, spending the spread on tail risk.
