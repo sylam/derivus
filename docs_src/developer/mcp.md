@@ -72,6 +72,7 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `declare_market` | `POST /book/markets` — the desk's mark: the book's own values filed under a name, `official` wanting a `mark` seat and a `private/` board naming the seat that declares it |
 | `declare_close` | `POST /book/close` — the official close over those values, behind `close_check`'s own verdict, a second close superseding the first |
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
+| `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

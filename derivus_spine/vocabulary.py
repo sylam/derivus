@@ -310,6 +310,11 @@ def classify(event_type, book):
 #: type -> the fields whose value is an address in the blob store. `policy_declared` is listed for
 #: its `blob` alone; the rest of an open policy body is the policy's own business.
 BLOB_FIELDS = {
+    # A trade's own terms. `book` and `amend` fsync the canonical instrument into the store and
+    # cite its address, so closure reaches what a position is made of and a replica pulling blobs
+    # holds the terms behind every row it folds.
+    'fill': ('instrument',),
+    'amendment': ('instrument', 'amended_to'),
     'snapshot_registered': ('blob',),
     'market_declared': ('values_hash',),
     'official_close_declared': ('values_hash',),

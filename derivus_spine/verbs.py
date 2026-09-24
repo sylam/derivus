@@ -134,12 +134,33 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
             'apply_lifecycle does not file {!r}: it files {} and nothing else, because those are '
             'the three lifecycle FACTS - the holder\'s act, the world\'s observation, and a ruling '
             'a contract vests in an agent. Everything else a lifecycle produces - a knock, an '
-            'expiry, an accrual, a state that changed - is a CONSEQUENCE of terms plus one of '
-            'those three, so it is derived by a fold over what is already here and never stored; '
-            'storing it would be a second source of truth about whether the barrier fired. File '
-            'the observation the consequence follows from, and read the consequence off the '
-            'projection'.format(event_type, ', '.join(LIFECYCLE_TYPES)))
+            'expiry, an accrual - is a CONSEQUENCE of terms plus one of those three, so it is '
+            'derived by a fold over what is already here and never stored; storing it would be a '
+            'second source of truth about whether the barrier fired. File the observation the '
+            'consequence follows from, and read the consequence off the projection. An operational '
+            'state a party MOVED - a settlement paid, a confirmation matched - is a fact rather '
+            'than a consequence, and `transition` files it'.format(
+                event_type, ', '.join(LIFECYCLE_TYPES)))
     return log.append(event_type, body, actor=actor, book=book, effective_time=effective_time)
+
+
+def transition(log, actor, subject, status, book=None, effective_time=None):
+    """Move the operational state a party put a subject in - a settlement paid, a confirmation
+    matched - and return the envelope.
+
+    `subject` is an ADDRESS: the derived cashflow key a diary row carries, or the instrument a
+    trade books under. The vocabulary takes any name there, because a later subject may be keyed
+    another way, and this verb is the narrower one - a state filed against something nobody can
+    resolve is a state nobody can read back.
+
+    WHETHER THE BOOK ANNOUNCES A ROW under that key is not asked here. The record holds what it was
+    told and a fold says what answers for it, so a transition against a key the diary has dropped
+    is a FACT this verb files and an invariant the oracle reads, never a refusal at the writer.
+    """
+    return log.append('status_transition',
+                      {'subject': _pinned(subject, 'subject'),
+                       'status': _name(status, 'status', 'transition')},
+                      actor=actor, book=book, effective_time=effective_time)
 
 
 def approve(log, actor, plan_hash, book=None, effective_time=None):

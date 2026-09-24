@@ -980,7 +980,7 @@ def book_deals(request: dict):
     envelope under `recorded`. `quantity` and `execution_reference` become required, and the deal
     must sit under a `NettingCollateralSet` naming a counterparty; each of the three refuses by
     name. A `delete` records nothing: what ends a trade is an election, an expiry observation or a
-    status transition, filed through `Context.apply_lifecycle`. Without a home this is inert.
+    status transition, filed through `POST /book/transition`. Without a home this is inert.
 
     SO UNDER A HOME THIS EDIT APPENDS BEFORE IT WRITES, and takes `Book.transact` - the whole act
     under the book lock, one pass and no redo. A redo whose second pass refuses what the first
@@ -1665,6 +1665,28 @@ def book_market_declared(request: dict):
     declared = load(document).declare_market(request.get('name'), actor=request.get('actor'))
     return {'recorded': {'lsn': declared['lsn']}, 'name': declared['name'],
             'values_hash': declared['values_hash']}
+
+
+@app.post('/book/transition', summary='Move the state a party put a subject in')
+def book_transition(request: dict):
+    """`{subject, status, actor}` - file the operational state a party moved a subject to.
+
+    `subject` is an ADDRESS: the derived cashflow key `GET /book/diary` carries on every row, or
+    the instrument a trade books under. This is what a settlement and a confirmation say, and it is
+    what `GET /book/close/check` waits on for a payment - a close does not pass over money nobody
+    said had moved.
+
+    A SUBJECT THE DIARY DOES NOT CARRY IS STILL A FACT. The record holds what it was told and a
+    fold says what answers for it, so a state filed against a row the book has since paid away
+    lands rather than refusing; what reads the two against each other is a projection. A seat the
+    capabilities document does not scope for `book` is refused in the record's own words with the
+    denial landed, which this verb does not restate. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    filed = load(document).transition(request.get('subject'), request.get('status'),
+                                      actor=request.get('actor'), book=book_name(document))
+    return {'recorded': {'lsn': filed['lsn']}, 'subject': request.get('subject'),
+            'status': request.get('status')}
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")
@@ -5277,8 +5299,14 @@ def decided_quote(request, verb):
     there is no ticket to rule on - and the position it names is checked against the record before
     anything is filed: a file copied from another home names an LSN holding somebody else's fact.
     A second identical decision by one seat coalesces onto the LSN it already has.
+
+    ONE SCOPE FOR AN APPROVAL, and it is the job's own book: a ticket is the plan THIS book would
+    have, so a seat scoped to approve over its own book signs by hand exactly as the tier signs
+    automatically for it. Filing the human verdict firm-level would leave those two verdicts of one
+    ticket needing two grants.
     """
     quote_id = request.get('quote_id')
+    document, _ = recording().read()
     with open(pending_quote(quote_id), encoding='utf-8') as handle:
         pending = json.load(handle)
     accepted = pending.get('accepted')
@@ -5289,7 +5317,7 @@ def decided_quote(request, verb):
                                  'accept it first, through POST /book/quote'.format(quote_id))
     try:
         spine.quote_at(accepted['lsn'], quote_id)
-        filed = verb(accepted['ticket'], request)
+        filed = verb(accepted['ticket'], request, book_name(document))
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
     return {'recorded': {'lsn': filed['lsn']}, 'ticket': accepted['ticket']}
@@ -5301,11 +5329,13 @@ def book_quote_approve(request: dict):
     human can be satisfied and the acceptance retried.
 
     The approval is over the PLAN this quote would leave the book at, so it reaches this quote and
-    no other and an amended mirror is a new hash by construction. A seat the capabilities document
-    does not scope for `approve` is refused in the record's own words, with the denial landed.
+    no other and an amended mirror is a new hash by construction, and it is filed under the job's
+    OWN BOOK - the scope the tier's automatic signature uses, so one grant answers both. A seat the
+    capabilities document does not scope for `approve` there is refused in the record's own words,
+    with the denial landed.
     """
-    return decided_quote(request, lambda ticket, body: spine.approve(
-        ticket, actor_name=body.get('actor')))
+    return decided_quote(request, lambda ticket, body, book: spine.approve(
+        ticket, actor_name=body.get('actor'), book_name=book))
 
 
 @app.post('/book/quote/reject', summary='Refuse an accepted quote, with the reason on the row')
@@ -5314,10 +5344,11 @@ def book_quote_reject(request: dict):
 
     A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
     approval is what the record says, and the reason is required - a verdict nobody can read the
-    grounds of is one nothing can be filed against later.
+    grounds of is one nothing can be filed against later. Filed under the job's own book, as the
+    approval is.
     """
-    return decided_quote(request, lambda ticket, body: spine.reject(
-        ticket, body.get('reason'), actor_name=body.get('actor')))
+    return decided_quote(request, lambda ticket, body, book: spine.reject(
+        ticket, body.get('reason'), actor_name=body.get('actor'), book_name=book))
 
 
 def blank_book():

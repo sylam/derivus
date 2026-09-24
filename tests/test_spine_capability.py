@@ -33,6 +33,7 @@ later declaration is refused and recorded, a stranger's break-glass use lands an
 the genesis seat's use restores admin, a new document lands, and the history verifies green.
 """
 import ast
+import hashlib
 import json
 import os
 import sys
@@ -61,6 +62,11 @@ BOOK_ONE = 'FX-VANILLA'
 BOOK_TWO = 'FX-EXOTIC'
 HASH_A = 'a' * 64
 HASH_B = 'b' * 64
+#: The two instruments the sweep books and amends, as the BYTES they address. A fill and an
+#: amendment CITE their terms, so the home that takes one holds it - `minted` puts both.
+TERMS, RESTRUCK = b'the instrument this sweep books', b'the instrument it is amended to'
+BOOKED = hashlib.sha256(TERMS).hexdigest()
+AMENDED = hashlib.sha256(RESTRUCK).hexdigest()
 WHEN = '2026-08-29T09:15:00.000000Z'
 
 #: Every type whose append demands one of the six document verbs. Computed, not typed out: the
@@ -89,11 +95,13 @@ def minted(tmp_path, name='home'):
     """A home mid-genesis, handed back with the writer open on it."""
     home = tmp_path / name
     init_home(home, MINT)
-    return home, SpineLog(home)
+    log = SpineLog(home)
+    log.store.put(TERMS), log.store.put(RESTRUCK)
+    return home, log
 
 
 def fill(reference, book=BOOK_ONE):
-    return {'instrument': HASH_A, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
+    return {'instrument': BOOKED, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
             'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference}
 
 
@@ -125,7 +133,7 @@ def attempts(log):
     tolerance = log.store.put(b'{"tolerances":{"mtm":1e-09}}')
     return (
         ('fill', fill('EXEC-1'), BOOK_ONE),
-        ('amendment', {'instrument': HASH_A, 'amended_to': HASH_B}, BOOK_ONE),
+        ('amendment', {'instrument': BOOKED, 'amended_to': AMENDED}, BOOK_ONE),
         ('election', {'instrument': HASH_A, 'choice': 'exercise'}, BOOK_ONE),
         ('status_transition', {'subject': HASH_A, 'status': 'confirmed'}, BOOK_ONE),
         ('snapshot_registered', {'blob': surface}, BOOK_ONE),
@@ -787,6 +795,7 @@ def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_pat
     assert declared['policy'] == CAPABILITIES_POLICY and declared['coalesced'] is False
 
     log = SpineLog(home)
+    log.store.put(TERMS)
     assert log.store.get(declared['blob']) == canonical_document(
         document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE))))
     with pytest.raises(CapabilityDenied):

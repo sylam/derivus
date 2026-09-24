@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import re
@@ -5588,6 +5589,10 @@ def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_not
 
 RECORDED_SEAT = 'subject-desk-one'
 RECORDED_BOOK = 'FX-VANILLA'
+#: The two instruments these fills book, as the BYTES they address. A fill CITES its terms and the
+#: record holds what it cites, so the home that takes one stores it first.
+RECORDED_TERMS = (b'the instrument this home books', b'the instrument its doorbell rings on')
+RECORDED_INSTRUMENTS = tuple(hashlib.sha256(terms).hexdigest() for terms in RECORDED_TERMS)
 STRANGER = 'subject-nobody'
 
 
@@ -5601,9 +5606,12 @@ def recorded_home(tmp_path, monkeypatch, clips=('EXEC-1',)):
     monkeypatch.setenv('DV_SPINE_ACTOR', RECORDED_SEAT)
     log = SpineLog(home)
     try:
+        for terms in RECORDED_TERMS:
+            log.store.put(terms)
         for reference in clips:
             log.append('fill', {
-                'instrument': 'a' * 64, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
+                'instrument': RECORDED_INSTRUMENTS[0], 'quantity': 1000000.0,
+                'netting_set': 'CSA-0007',
                 'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference},
                 actor=RECORDED_SEAT, book=RECORDED_BOOK)
     finally:
@@ -5654,7 +5662,8 @@ def test_the_doorbell_carries_a_position_and_never_a_fact(tmp_path, monkeypatch)
         log = SpineLog(home)
         try:
             return log.append('fill', {
-                'instrument': 'b' * 64, 'quantity': 250000.0, 'netting_set': 'CSA-0007',
+                'instrument': RECORDED_INSTRUMENTS[1], 'quantity': 250000.0,
+                'netting_set': 'CSA-0007',
                 'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': 'EXEC-RUNG'},
                 actor=RECORDED_SEAT, book=RECORDED_BOOK)
         finally:

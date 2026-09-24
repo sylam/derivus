@@ -65,6 +65,10 @@ STRANGER = 'subject-nobody'
 GHOST = 'subject-ghost'
 BOOK_ONE = 'FX-VANILLA'
 HASH_A = 'a' * 64
+#: The instrument this file's fills book, as the BYTES it addresses - a fill cites its terms and
+#: the record holds what it cites, so `minted` puts them.
+TERMS = b'the instrument this gate books'
+BOOKED = hashlib.sha256(TERMS).hexdigest()
 ANY = '*'
 
 
@@ -89,11 +93,13 @@ def minted(tmp_path, name='hub'):
     """A home mid-genesis with the writer open on it."""
     home = tmp_path / name
     init_home(home, MINT)
-    return home, SpineLog(home)
+    log = SpineLog(home)
+    log.store.put(TERMS)
+    return home, log
 
 
 def fill(reference):
-    return {'instrument': HASH_A, 'quantity': 2500000.0, 'netting_set': 'CSA-0007',
+    return {'instrument': BOOKED, 'quantity': 2500000.0, 'netting_set': 'CSA-0007',
             'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference}
 
 

@@ -1,17 +1,18 @@
 # The Spine
 
-`derivus_spine/` is the append-only book of record being built around the engine — the center a desk
-box is the edge of. The full seven-increment design lives in the owner's brief outside the tree; this
-page documents what is BUILT, which is **increments 1 through 6**: the log, the blob store
+`derivus_spine/` is the append-only book of record around the engine — the center a desk
+box is the edge of. **1 through 7 — the design is built**: the log, the blob store
 and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
 booking verbs, the attestation lanes and the firmness check, over all of it the
 projections, the diary, the book file's pin and the desk's own readers of them, beside those the
 tier policy, its evaluator and the verbs that file a decision and a close, through all of it the
 quote lifecycle — a price recorded when the client accepts it, routed through the desk's own workflow
 before it books — over the compute itself a queue that asks who is submitting before it runs
-anything, and around the whole of it a REPLICA: a read-only copy that pulls the hub's own frames,
-verifies them where it stands and is told when there is something to pull. A library, a CLI, eight
-delegators on `Context`, nine read verbs and five write verbs on the service, and 338 gates.
+anything, around the whole of it a REPLICA: a read-only copy that pulls the hub's own frames,
+verifies them where it stands and is told when there is something to pull, and over all of that an
+ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
+scripted faults beside it, held to nine invariants. A library, a CLI, eight
+delegators on `Context`, nine read verbs and six write verbs on the service, and 356 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -21,7 +22,7 @@ A sibling package on the `derivus_mcp` terms: in the wheel, never importing the 
 surface is **stdlib plus `cryptography`** (AES-GCM sealing, Ed25519 checkpoint signatures) and nothing
 else, held by an AST gate over every module and a subprocess gate proving `import derivus_spine` pulls
 no torch and no `derivus.*`. The extra is `pip install derivus[enterprise]`, orthogonal to `desk`.
-`DV_Spine init | verify [--chain-only] | checkpoint | status | follow` is the console script; the home is
+`DV_Spine init | verify [--chain-only] | checkpoint | status | follow | oracle` is the console script; the home is
 `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine` — the spine is the CENTER's store and
 deliberately not `DV_HOME`, which is the edge's.
 
@@ -111,8 +112,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider twelve-file set worth 311 of the
-338 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fourteen-file set worth 329 of
+the 356 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -529,7 +530,9 @@ is not re-checked there — the writer refused an unscoped approval at the appen
 the fold was already a seat's.
 
 **The decisions are verbs now, and so is the close.** `approve` and `reject` file the two verdicts
-the vocabulary has carried since increment 1 with nothing filing them; both demand `approve` scope,
+the vocabulary has carried since increment 1 with nothing filing them; both demand `approve` over
+THE JOB'S OWN BOOK - a ticket is the plan this book would have, so one grant answers the tier's
+automatic signature and the second seat's own hand alike -
 and an unscoped seat is refused with the denial landed, like every other verb. One seat signing one
 plan twice is ONE fact — the semantic tuple carries no clock of the writer's own — while a second
 seat signing the same plan is a second, because who signed is part of what was said. `declare_close`
@@ -903,23 +906,163 @@ No peer blob serving: a second entitlement-evaluating surface on a box that is n
 phase with one deployment. And nothing of transport or authentication is built for it — the doorbell
 is one `GET` on the service that already exists, on whatever port it already runs.
 
+## Increment 7 — the oracle, and the day it reads
+
+**THE GENERATED BINDING WAS ALREADY THE DESIGN.** `GET /schema` publishes the desk's declarations
+and `describe_structure` serves them, so a structure declared reaches a model with no edit and there
+is nothing to generate; what 7 builds is the ACCEPTANCE TEST — a synthetic day on the desk played by
+SEATS through the binding, an adversary beside them, scripted faults beside that, and an oracle that
+reads the record afterwards as a replica and answers nine invariants. With the adversary off, the
+same day is the demo.
+
+**THE ORACLE IS PURE OVER A HOME AND A SCRIPT.** `derivus_spine/oracle.py` folds the record the way
+every other reader does and re-runs the writer's own decisions through the writer's own functions,
+so what it answers is a property of the bytes rather than of the process that made them. Each
+invariant is one function answering `{held, evidence}`, `held` being null for a question this home
+or this script could not put — a question nobody asked is never a question that held. The nine:
+
+1. **copies agree** — two homes carry one head hash at the SHALLOWER of their two heads and every
+   projector folds to byte-equal rows there, since a replica behind its hub has not pulled yet
+   rather than disagreed;
+2. **nothing outside its seat** — every frame re-adjudicated, `verb_for` naming what the type
+   demanded and `evaluate` answering it against the capability state BEFORE that frame, folded
+   forward by `apply_event` — the writer's own step, so the same answer at the length of the record
+   instead of its square. No exception is needed for the reserved rows or for genesis: the writer's
+   own verb evaluates yes and a home with no document in force evaluates yes, exactly as the append
+   did. The ENVELOPE HALF stands without a key — a type no verb declares is a write nobody could be
+   scoped for, and a denial under any name but the writer's is the one voice that is never gated,
+   forged;
+3. **every refusal is a denial** — what the script says was refused AT THE WRITER is in the
+   `denials` fold and nothing else is, matched on the four fields the writer files rather than on a
+   position, since a seat refused twice coalesces. A refusal that never reached the writer mints
+   nothing BY DESIGN, so it is stated as the boundary it is and its absence is what the set equality
+   asserts;
+4. **an amended plan is a new approval** — `quotes` × `decisions`: no two quote ids share a ticket,
+   and where the record carries a workflow at the position a fill landed, that fill's quote carries
+   a standing approval by a seat that is not the one that booked it. Where no tiers policy stands
+   the desk declared no second pair of eyes, which is stated rather than failed;
+5. **closes superseded, never edited** — THE SUPERSESSION HALF IS THE FOLD'S OWN and is not
+   asserted, because it cannot be broken from a platter: `Markets.apply` COMPUTES `supersedes_lsn`
+   off the row standing before the frame and files it only where the as-of key is later, so a close
+   either does not displace — it is behind the one in force, standing over nothing — or displaces
+   naming exactly the position it stood over, and a reading that re-ran the fold to check the fold
+   would be one spelling checking itself. What a platter CAN carry that the fold cannot is a close
+   body the closed vocabulary would have refused, a copy of a newer hub or a hand on a file, and
+   that is what this reads;
+6. **every number's replay tuple** — the attestations are exactly the standing runs the script asked
+   for, asked as a SET because content addressing dedupes numbers and not standing: an identical
+   what-if after a standing run reaches the same four coordinates and must not read as a second
+   attestation. A standing ask with no row is a number nothing can replay; a row no standing ask
+   names is a lane that mints nothing having minted;
+7. **the diary equals the filings** — every settlement filed against a derived key names a row the
+   diary carries. THE ONE A REPLICA CANNOT PUT: the diary is a COMPILE of the book, not a fold of
+   the record, so `DV_Spine oracle` reports it not assessed by name and a caller holding an engine
+   hands the keys in as data;
+8. **no delete** — the positions dense from genesis, every blob the chain CITES still addressable,
+   the store holding no fewer at the end of the walk than at its start, and neither the store nor
+   the vocabulary carrying a verb for forgetting. Referential closure is the deletion a record can
+   actually suffer: the store has no verb for it, so what takes a blob is a file system, and the
+   citing frame is still on the platter naming an address nothing answers for. A LINE that left is
+   met earlier and harder, when the home is opened. A citation lives in a sealed body, so a keyless
+   copy is left with the other three arms;
+9. **duplicates coalesce** — every idempotency tag on one position, read off the envelope, so a copy
+   holding no key answers it.
+
+**WHAT A COPY CAN SAY.** A crypto-shredded home answers 1, 8, 9 and the envelope half of 2 — the
+chain, the positions, the tags and the types are the envelope's — and names the other five as NOT
+ASSESSED with the reason, never as a pass. A follower that pulled FRAMES AND NO BLOBS is the other
+posture and is answered the same way: the capabilities fold reads a document out of the store and
+fails closed on one that is gone, so re-running the writer against it would call every frame after
+the declaration a forgery — 2 and 4 therefore ask for the blob first and tell that copy to follow
+with `--blobs`. `DV_Spine oracle --home <replica> [--script <json>]
+[--against <other home>]` prints the report and exits 1 on an invariant that did not hold.
+
+**THE GAME IS `gates/spine_game/`, AND IT IS A GATE.** `play.py` mints a home, declares the
+capabilities document and the tiers policy that scope the day, writes the book, serves it on an
+EPHEMERAL PORT, and stands N followers up against it; then the seats work, and the script of what
+was asked is written beside the run for the oracle to hold the record against. Seven seats:
+financial control marks the board and later attests the close's own numbers and declares it,
+settlements strikes the file and files what was paid, sales quotes, the trader accepts, the second
+seat signs, confirmations moves what the book owes, and audit reads and files nothing. A ROLE IS A
+CALLABLE over the table, which is the whole of the interface — the scripted players are functions,
+and a host driving `DV_MCP` against the same hub plays the same day by handing one of its own in;
+the LLM-driven mode is that substitution and nothing else. ONE act has no binding verb and says so:
+a STANDING lane is not something a model may declare at all — `/execute` has no tool, by the
+binding's own shape — so control posts the close's valuation over the transport, and the script
+names it. Everything else a seat does here is a tool a host has, `file_status` included: the back
+office had no verb until this increment, which is what playing the day found.
+
+**NINE OBJECTIVES, AND THE ANSWERS COME IN THREE SHAPES.** A DENIAL is the writer refusing an append
+and filing the refusal as a fact; a REFUSAL is a tier, a window or a validator turning an act away
+before any append, which mints nothing; and some attempts are answered by the record simply CARRYING
+what happened. Approving your own ticket appends the approval — a seat signing a plan is a fact —
+and the booking still waits, because four eyes asks WHO signed. Wearing a second display name
+changes a mutable side table outside the log and the refusal still names the subject. Two
+acceptances raced leave one fill at one LSN and the loser told the book moved. An approval over one
+plan does not reach another, a re-quote being a new ticket by construction. A booked trade restated
+is an amendment at the head with the fold behind it unchanged. Deleting evidence takes a file system
+and the copy refuses by name at the citation it can no longer resolve. A forged checkpoint CHAINS —
+a replica's `accept` asks four things and a signature is not one of them — and the verification
+refuses it, which is the authenticity boundary said out loud. A tampered line parts company with the
+chain at the position it was altered. And a stranger's what-if is refused at the QUEUE with the
+denial landed, before a Monte Carlo is paid for.
+
+**FIVE FAULTS, AND THE DAY CARRIES ON.** The writer is a REAL PROCESS and is killed with the
+operating system, so the torn-tail rule is observed on a platter rather than asserted about one: the
+chain re-derives whole and the desk writes the next frame onto it. A replica is partitioned by not
+being told and resumes by asking once. A print carrying a truth-time older than the one standing
+does not win by arriving last, and the print it lost to keeps it on the row. A late fixing after the
+close is answered by a SECOND close naming the position the first stood at. And one act said twice
+is one fact at one LSN, because the semantic tuple carries no clock of the writer's own.
+
+**Nothing is monkeypatched.** Real homes under the caller's own directory, a real service over a
+real socket, real replicas pulling real frames, a real process killed, and every other fault
+injected as data on a disk. The hub is the single writer and every seat reaches it the way a model
+would — an adversary with a second writer is not an objective, it is a divergence
+`/book/reconcile` names.
+
+**THE BACK OFFICE HAS A VERB.** `status_transition` is what a settlement and a confirmation say,
+and `verbs.transition` files it: `subject` is an ADDRESS — the derived cashflow key a diary row
+carries, or the instrument a trade books under — where the vocabulary takes any name, because a
+state filed against something nobody can resolve is a state nobody can read back, and a later
+subject may be keyed another way. WHETHER THE BOOK ANNOUNCES A ROW under that key is a FOLD's
+question: the record holds what it was told, so a settlement against a row since paid away lands
+rather than refusing, and the oracle's seventh invariant is what reads the two against each other.
+`Context.transition`, `POST /book/transition` and the `file_status` tool are the mouths, and
+`close_check` stops waiting on a payment the moment one lands.
+
+**A TRADE'S TERMS ARE A CITATION.** `book` and `amend` fsync the canonical instrument into the store
+and name its address, so `BLOB_FIELDS` lists `fill.instrument` and `amendment`'s two: referential
+closure resolves them and a follower pulling `--blobs` asks for them, which is the difference
+between a copy of the record and a copy with every position in it and the terms behind none.
+
+**ONE SCOPE FOR AN APPROVAL.** A ticket is the plan THIS book would have, so both verdicts — the
+tier's automatic signature and the second seat's own hand — are filed under the job's own book, and
+one grant answers both.
+
 ## What is not built yet
 
-No DuckDB and no reading plane — increment 4 ships none, and every question a desk asks the record is
-a fold. No generated MCP binding — **7**; a model does not follow a log, so 6 adds no tool. The
-network is READ-ONLY and localhost's: tokens are verified rather than fetched, the three reads a
-replica uses serve and never take, and no write path is exposed beyond the box. No class-key
-rotation (rewrap adds recipients; rotation is a later logged event). The external anchor hook is the
-checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data, out of scope
-by the design's own sentence.
+No DuckDB and no reading plane: every question a desk asks the record is a fold, the largest fold
+state is 167 bytes per event, and the trigger is one projector's state passing a declared budget.
+The network is READ-ONLY and localhost's: tokens are verified rather than fetched, the three reads a
+replica uses serve and never take, and no write path is exposed beyond the box — under that posture
+`actor` is ATTRIBUTION rather than authentication, and the honest control is the bind address. No
+class-key rotation (rewrap adds recipients; rotation is a later logged event). The external anchor
+hook is the checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data,
+out of scope by the design's own sentence.
 
-Four boundaries stand, declared rather than discovered. A STANDING run must post its job document — a
+Six boundaries stand, declared rather than discovered. A STANDING run must post its job document — a
 `plan_id` names a parse, `Context.save_json` is explicitly not a complete round trip, and a provenance
 chain whose first link is a document nobody can recompile is worse than none — so it refuses by name.
 The surveillance and admin READ of a private market waits on a second entitlement class and a `read`
 row per subject, the reclassification `vocabulary.classify` ships dormant for; until then the owner
 rule refuses at the verb without minting a fact. No rejection is filed AUTOMATICALLY: a ticket no tier
 admits answers every sentence of its route, and a verdict is a seat's decision the tiers policy names
-no seat for. And a material market move between a quote and the client's word is REPORTED rather than
+no seat for. A material market move between a quote and the client's word is REPORTED rather than
 refused; a desk wanting a refusal would declare per-field epsilons, which wants a values-vector diff
-that says which numbers moved where the record compares two addresses.
+that says which numbers moved where the record compares two addresses. A blob is served by the hub
+and by nobody else: a peer server is a second entitlement-evaluating surface on a box that is not
+the writer, and this phase has one deployment. And OPENING a log still scans every segment to build
+the head, the tag index and the offset per LSN — 11.3 ms at 2,005 events, which every reader pays
+once and 6a's seek does not touch — so the reading half is closed and the open's own half waits on a
+checkpointed index: the three maps written down at a close and re-read instead of rebuilt.

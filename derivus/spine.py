@@ -550,6 +550,16 @@ def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective
                                      effective_time=effective_time)
 
 
+def transition(subject, status, actor_name=None, book_name=None, effective_time=None):
+    """Move the state a party put a subject in - a settlement paid, a confirmation matched. The
+    subject is a derived cashflow key or an instrument address; the diary's rows are a fold's
+    question and not this verb's."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.transition(log, actor(actor_name), subject, status, book=book_name,
+                                effective_time=effective_time)
+
+
 def approve(plan_hash, actor_name=None, book_name=None, effective_time=None):
     """Sign a plan hash. One seat approving one plan twice is one fact, coalescing onto the LSN it
     already has; an amended plan is a different hash and so is a different signature."""

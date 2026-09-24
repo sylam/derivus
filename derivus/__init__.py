@@ -719,6 +719,20 @@ class Context:
         return record(event_type, body, actor_name=actor, book_name=book,
                       effective_time=effective_time)
 
+    def transition(self, subject, status, actor=None, book=None, effective_time=None):
+        """Move the operational state a party put a subject in - a settlement paid, a confirmation
+        matched.
+
+        `subject` is the derived cashflow key a diary row carries, or the instrument a trade books
+        under. Whether the book still announces a row under that key is a FOLD's question: the
+        record holds what it was told, and a state filed against a row that has been paid away is a
+        fact rather than a refusal.
+        """
+        from .spine import transition as record
+
+        return record(subject, status, actor_name=actor, book_name=book,
+                      effective_time=effective_time)
+
     def declare_market(self, name, actor=None, effective_time=None):
         """Point a market NAME at the values vector THIS context is carrying.
 

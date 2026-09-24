@@ -65,8 +65,13 @@ from derivus_spine.vocabulary import FACT_TYPES
 
 ACTOR = 'subject-desk-one'
 BOOK = 'FX-VANILLA'
-INSTRUMENT = hashlib.sha256(b'EURUSD 1.0850 2026-12-18 call').hexdigest()
-OTHER = hashlib.sha256(b'EURUSD 1.1000 2026-12-18 call').hexdigest()
+#: The two instruments the fixtures book and amend, as the BYTES they address. A fill and an
+#: amendment CITE their terms, and the record holds what it cites, so a home that books one stores
+#: it first - `instruments(log)` is what every fixture here calls before it appends.
+TERMS = b'EURUSD 1.0850 2026-12-18 call'
+AMENDED = b'EURUSD 1.1000 2026-12-18 call'
+INSTRUMENT = hashlib.sha256(TERMS).hexdigest()
+OTHER = hashlib.sha256(AMENDED).hexdigest()
 #: One instant, named wherever a gate wants several facts to share a truth-time. A retry does NOT
 #: need it: `effective_time` is null when the caller says nothing, and null is the same on the
 #: second call as on the first, which IS the retry law rather than a way around it.
@@ -143,6 +148,15 @@ def fill(reference, quantity=1000000.0, instrument=INSTRUMENT):
 # --------------------------------------------------------------------------------------------
 # Homes, and the doctoring of them.
 
+def instruments(log):
+    """Put the fixtures' two instruments in `log`'s store and answer their addresses.
+
+    Durability ordering, which a fill's citation asks for: `verbs.book` fsyncs the canonical
+    instrument before the event that names it, and a gate building a body by hand owes the same.
+    """
+    return (log.store.put(TERMS), log.store.put(AMENDED))
+
+
 def seeded(root, name='home', clips=('EXEC-1', 'EXEC-2', 'EXEC-3')):
     """A minted home with genesis plus one fill per clip - LSNs 1..4 are genesis, 5.. are trades.
 
@@ -152,6 +166,7 @@ def seeded(root, name='home', clips=('EXEC-1', 'EXEC-2', 'EXEC-3')):
     home = root / name
     init_home(home, ACTOR)
     log = SpineLog(home)
+    instruments(log)
     for reference in clips:
         log.append('fill', fill(reference), actor=ACTOR, book=BOOK, effective_time=WHEN)
     log.close()

@@ -114,8 +114,10 @@ is outstanding, book_reconcile says where the book file and the record disagree,
 is one line per event with the head to page from, and book_markets the official close standing
 per market with the close each superseded. DECLARING IS THE OTHER HALF: declare_close puts the
 day's close on the record over the values the book is carrying, once close_check says the day is
-legal - declare_market is that same act under any other name - and export_settlements strikes the
-settlement file for a day, on the market the desk designated for it and on no other."""
+legal - declare_market is that same act under any other name - export_settlements strikes the
+settlement file for a day, on the market the desk designated for it and on no other, and
+file_status says a payment settled or a confirmation matched, against the row's own key, which is
+what close_check then stops waiting on."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -1442,6 +1444,26 @@ def declare_close(market: str | None = None, date: str | None = None,
     """
     return service().call('POST', '/book/close',
                           json=_stated(market=market, date=date, actor=actor))
+
+
+@MCP.tool()
+def file_status(subject: str, status: str, actor: str | None = None) -> dict:
+    """Say that a payment settled, a confirmation matched, or whatever else moved the state of one
+    row - the back office's half of the record.
+
+    `subject` is the row's own `key`, which `book_diary` carries on every row and
+    `export_settlements` carries on every row it instructs: it is a 64-hex address, so paste the
+    one the row gives you rather than a reference or a date. `status` is the desk's own word, and
+    `settled` is the one `close_check` reads - a close does not pass over a payment nobody said had
+    moved.
+
+    A key the book no longer announces a row for is still RECORDED: the record holds what it was
+    told and the reading is a fold, so a late settlement against a paid-away row is a fact rather
+    than a refusal. `actor` is the seat it is filed under. Answers `{recorded: {lsn}, subject,
+    status}`, and saying one thing twice is one fact.
+    """
+    return service().call('POST', '/book/transition', json=dict(
+        {'subject': subject, 'status': status}, **_stated(actor=actor)))
 
 
 @MCP.tool()

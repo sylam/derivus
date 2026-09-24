@@ -408,8 +408,6 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   and threshold ladders fold with the put barrier and the pricer's barrier-hit read (it tests for
   presence, so it fires on a declared `'No'`) retires with them; the TARF's and accumulator's
   decisions-remain arm is folded parameters, not a substituted deal.
-- **Spine increments 6 and 7** — the doorbell, the generated binding and the reading plane
-  ([The Spine](spine.md)).
 - **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
   `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing
   and the payoff read together, which is a pricer's answer rather than a schedule's. Two smaller

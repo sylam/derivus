@@ -82,7 +82,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'book_quote', 'approve_quote', 'reject_quote', 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
-                'export_settlements'}
+                'export_settlements', 'file_status'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -92,7 +92,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'approve_quote', 'reject_quote', 'declare_market', 'declare_close',
-                       'export_settlements',
+                       'export_settlements', 'file_status',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market'}
@@ -120,7 +120,7 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
                  '{written: false, refused: [...]}', 'book_diary', 'close_check',
                  'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_quote',
-                 'declare_close', 'export_settlements'):
+                 'declare_close', 'export_settlements', 'file_status'):
         assert said in instructions, said
 
 
@@ -298,16 +298,23 @@ def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book
     assert markets['snapshots'] == []
 
 
-def test_the_mark_the_close_and_the_settlement_file_reach_a_model_as_three_verbs(book, tmp_path,
-                                                                                  monkeypatch):
-    """The record's three WRITES a model can reach: the mark, the close behind `close_check`'s own
-    verdict, and the settlement file struck on the market the desk DESIGNATED for the export. Each
-    tool is one `service().call`, so what a model gets is the verb's own answer and a refusal is the
-    record's own sentence.
+def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_verbs(book, tmp_path,
+                                                                                    monkeypatch):
+    """The record's four WRITES a model can reach: the mark, the close behind `close_check`'s own
+    verdict, the settlement file struck on the market the desk DESIGNATED for the export, and the
+    back office saying a row was PAID. Each tool is one `service().call`, so what a model gets is
+    the verb's own answer and a refusal is the record's own sentence.
+
+    The last of the four closes the loop the first three leave open: a close over that day is
+    ILLEGAL while the payment stands, a file instructs it, `file_status` says it moved against the
+    row's own derived key, and then the next file no longer carries it and the day is legal - which
+    is the whole of what a settlement is for.
 
     Killing mutations: `declare_close` sending a market or a date the caller did not name, which
-    closes a board nobody asked about or on a day nobody chose; and `export_settlements` passing a
-    market through, which would let a model strike a settlement file on any board it can name.
+    closes a board nobody asked about or on a day nobody chose; `export_settlements` passing a
+    market through, which would let a model strike a settlement file on any board it can name; and
+    `file_status` filing under a reference rather than the row's key, which settles nothing the
+    export can see.
     """
     from derivus_spine import SpineLog, init_home, policy
 
@@ -342,7 +349,16 @@ def test_the_mark_the_close_and_the_settlement_file_reach_a_model_as_three_verbs
 
     with pytest.raises(ToolError) as illegal:
         mcp_server.declare_close(date='2099-01-01')
-    assert 'not legal' in str(illegal.value)
+    assert 'not legal' in str(illegal.value), 'a close passed over a payment nobody had made'
+
+    settled = mcp_server.file_status(exported['rows'][0]['key'], 'settled', actor=actor)
+    assert settled['recorded']['lsn'] > closed['recorded']['lsn']
+    assert mcp_server.file_status(exported['rows'][0]['key'], 'settled', actor=actor)[
+        'recorded']['lsn'] == settled['recorded']['lsn'], 'saying it twice is two facts'
+    assert mcp_server.export_settlements(due_before='2099-01-01')['count'] == 0, \
+        'the next file instructs the payment the desk has already made'
+    assert mcp_server.close_check('2099-01-01')['legal'] is True, \
+        'the close still waits on a payment the back office said had moved'
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

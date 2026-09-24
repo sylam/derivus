@@ -173,6 +173,50 @@ def test_the_lifecycle_verb_refuses_anything_consequence_shaped_with_the_closure
     assert verify_home(home)['events'] == 7
 
 
+def test_a_settlement_is_filed_under_its_own_key_and_read_back_under_it(tmp_path):
+    """THE BACK OFFICE'S VERB. A state a party MOVED - a payment made, a confirmation matched - is
+    a fact rather than a consequence, so `transition` files it where `apply_lifecycle` refuses it
+    and names this verb instead.
+
+    The subject is an ADDRESS, which the vocabulary is wider than on purpose: a state filed against
+    something nobody can resolve is a state nobody can read back, so the verb is the narrower one.
+    What the record does NOT ask is whether a book announces a row under that key - it holds what
+    it was told and a fold says what answers for it - so a key nothing carries lands.
+
+    Killing mutations: the subject left to the validator's TEXT, which files a settlement against a
+    deal's reference; and `transition` reached through `apply_lifecycle`, whose refusal now names
+    it.
+    """
+    home, log = minted(tmp_path)
+    key, orphan = address(b'CF1/fixed/payment/2026-06-28'), address(b'a row nobody carries')
+
+    landed = verbs.transition(log, DESK, key, 'settled', book=BOOK, effective_time=WHEN)
+    assert landed['lsn'] == 5 and landed['coalesced'] is False
+    assert verbs.transition(log, DESK, key, 'settled', book=BOOK,
+                            effective_time=WHEN)['coalesced'] is True, 'saying it twice is two'
+    assert verbs.transition(log, DESK, orphan, 'settled', book=BOOK)['lsn'] == 6
+
+    for said, status in ((key, ''), (key, None), ('CF1', 'settled'), ('a' * 63, 'settled')):
+        with pytest.raises(MalformedEvent):
+            verbs.transition(log, DESK, said, status, book=BOOK)
+    with pytest.raises(UnknownEventType) as sent:
+        verbs.apply_lifecycle(log, DESK, 'status_transition', {'subject': key, 'status': 'settled'},
+                              book=BOOK)
+    assert '`transition` files it' in str(sent.value), str(sent.value)
+
+    standing = projections.fold(log, projections.PROJECTORS['lifecycle'])['transitions']
+    assert sorted(standing) == sorted((key, orphan))
+    assert standing[key]['status'] == 'settled' and standing[key]['lsn'] == 5
+
+    declare(log, MINT, document(grants=((DESK, 'mark', BOOK),)))
+    with pytest.raises(CapabilityDenied) as refusal:
+        verbs.transition(log, DESK, key, 'unsettled', book=BOOK)
+    assert 'book' in str(refusal.value) and DESK in str(refusal.value)
+    assert denials(log)[-1][1] == {'subject': DESK, 'verb': 'book', 'book': BOOK,
+                                   'attempted_type': 'status_transition'}
+    log.close()
+
+
 # --------------------------------------------------------------------------------------------
 # Booking: idempotency in both directions, and what a fill will not do without.
 

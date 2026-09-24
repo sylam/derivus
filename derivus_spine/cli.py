@@ -15,17 +15,19 @@
 
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
-head), `status` (read it) and `follow` (pull a hub's frames into this home, the one verb that
-speaks to a network and the one that only ever reads at the far end). The identity verbs are
-`enroll` (mint a seat keypair), `grant` (declare a capabilities document), `rewrap` (wrap the class
-key to whoever the document now admits), `name` (the mutable display-name side table) and `whoami`
-(verify an OIDC token against a JWKS the deployment hands in as a file). The policy verbs are
-`declare` (put any reserved policy document on the record from a JSON file) and `policy` (report
-what is in force). Nothing here listens or stores a secret.
+head), `status` (read it), `follow` (pull a hub's frames into this home, the one verb that
+speaks to a network and the one that only ever reads at the far end) and `oracle` (answer the nine
+invariants over what this home holds, against what a day's script says was asked).
+
+The identity verbs are `enroll` (mint a seat keypair), `grant` (declare a capabilities document),
+`rewrap` (wrap the class key to whoever the document now admits), `name` (the mutable display-name
+side table) and `whoami` (verify an OIDC token against a JWKS the deployment hands in as a file).
+The policy verbs are `declare` (put any reserved policy document on the record from a JSON file)
+and `policy` (report what is in force). Nothing here listens or stores a secret.
 
 Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
-the call rather than captured at import. The four home verbs are spelled out individually since
-each carries its own flags; the rest register from `IDENTITY_VERBS` and `POLICY_VERBS`.
+the call rather than captured at import. The home verbs are spelled out individually since each
+carries its own flags; the rest register from `IDENTITY_VERBS` and `POLICY_VERBS`.
 
 `custody` and `identity` are imported inside the verbs that need them, so a missing module for one
 verb cannot stop the CLI loading for the others.
@@ -129,6 +131,21 @@ def do_follow(args):
     finally:
         log.close()
     return 0
+
+
+def do_oracle(args):
+    """Answer the nine invariants over this home and print the report; exit 1 where one did not
+    hold.
+
+    `--script` is what was ASKED - the acts a day put to the record - which two of the nine hold the
+    record against; `--against` is a second copy to compare with. The diary one is not assessed
+    here: it is a compile of the book rather than a fold of the record.
+    """
+    from derivus_spine import oracle
+    answers = oracle.report(spine_home(args.home), against=args.against,
+                            script=read_json(args.script, 'game script') if args.script else None)
+    report(answers)
+    return 1 if oracle.failed(answers) else 0
 
 
 def read_json(path, what):
@@ -389,6 +406,18 @@ def build_parser():
                         help='the subject reference a blob read is served under; a chain-only '
                              'follower needs none')
     pulled.set_defaults(run=do_follow)
+
+    asked = verbs.add_parser('oracle', parents=[common],
+                             help='answer the nine invariants over this home and say which of '
+                                  'them a copy standing here could not assess')
+    asked.add_argument('--script', type=str, default=None,
+                       help='the JSON record of what a day ASKED, which the refusals and the '
+                            'attestation lanes are held against; without it those two are not '
+                            'assessed')
+    asked.add_argument('--against', type=str, default=None,
+                       help='a second copy of this record to compare heads and folds with at the '
+                            'shallower of the two heads')
+    asked.set_defaults(run=do_oracle)
 
     for verb, help_text, arguments, runner in IDENTITY_VERBS + POLICY_VERBS:
         seated = verbs.add_parser(verb, parents=[common], help=help_text)
