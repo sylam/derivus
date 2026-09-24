@@ -115,5 +115,8 @@ dependency system, the resolver layer and the house conventions.
 ## Licence
 
 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) —
-free for any noncommercial purpose, including research, teaching and personal projects. Commercial
-use requires a separate licence.
+free for any noncommercial purpose, including research, teaching and personal projects — with one
+additional permission, stated in [LICENSE](LICENSE): a single ninety-day internal evaluation for a
+commercial purpose, not in production and not relied upon for any decision on positions held for
+commercial gain. Commercial use beyond that requires a separate licence from the licensor; ask
+through the project repository.
