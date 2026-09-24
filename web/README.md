@@ -66,8 +66,10 @@ entry edits, the two requests and the join are `src/securities.ts`, checked by
 
 **The two data views are reads, and neither has a run button.** *Risk* is `GET /book/risk`: the
 book's consolidated mark and its whole-book gradient, counterparty-blind — a headline strip, the
-aggregate greeks (sortable by size of exposure or read in curve order), and the per-deal marks,
-one row per top-level trade, whose total is the headline. The verb computes on a cache miss and
+risk read in QUOTES by default (per unit of each benchmark and smile quote the book's factors are
+built from, with a factor nothing quotes, a spot, on its own row) or in factors a click away,
+sortable by size of exposure or read in curve order, and the per-deal marks, one row per
+top-level trade, whose total is the headline. The verb computes on a cache miss and
 answers from the cache after, so this view rides the etag the book poll already moves and says
 plainly when the book has moved out from under the numbers on screen. *XVA* is `GET /book/xva`:
 one row per netting set, the last run over what the book says the set is now — a CVA, its age, its
@@ -76,8 +78,9 @@ tuple in an expander. Recalcs are asked for through the MCP verbs (`recalc_xva`)
 screen: a credit Monte Carlo is minutes of device time, and a surface that could start one on a
 click would start one by accident.
 
-The arithmetic behind both — ages, sorts, totals, staleness — is `src/desk.ts`, pure and free of
-React, the way `src/blotter.ts` is for the blotter.
+The arithmetic behind both — ages, sorts, totals, staleness, the quote reading — is `src/desk.ts`,
+pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading is checked
+by `scripts/desk_check.mjs`.
 
 The UI is optional to the core library. Nothing here enters the `derivus` package: it is a client
 of the same endpoints every other client uses, built separately and handed to the service as a

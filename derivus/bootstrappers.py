@@ -17,6 +17,7 @@ import copy
 import time
 import logging
 from collections import namedtuple
+from itertools import groupby
 
 # third party stuff
 import numpy as np
@@ -6017,14 +6018,23 @@ class InterestRateCurveParameters(Construction):
 
         A set is the group of blocks whose residuals read each other's curves, measured rather than
         declared (`coupled_sets`). Forming one costs a compile and a backward pass per block and
-        buys an operator whose Jacobian carries the coupling, so it is formed only where one was
-        asked for; with no `Quote_Propagation` this is a dependency-ordered loop.
+        buys a Jacobian that carries the coupling, so it is formed only where something reads that
+        Jacobian - a ride, or a quote derivative, whose half across the coupling a block solved
+        alone drops: an OIS quote then moves nothing priced off the curve discounting on it. With
+        neither asked for this is a dependency-ordered loop. A benchmark set has one reporting
+        currency, so a quote derivative's set stops at a currency - the other side a constant, as
+        it always was - where a ride across one refuses (`solve_set`).
         """
         base_date = sys_params['Base_Date']
         blocks = self.in_dependency_order(market_prices)
+        ride = any(entry['instrument']['Quote_Propagation'] == 'Linear' for _, entry in blocks)
         groups = self.coupled_sets(blocks, price_factors, factor_interp, base_date, calendars) \
-            if any(entry['instrument']['Quote_Propagation'] == 'Linear'
-                   for _, entry in blocks) else [[block] for block in blocks]
+            if ride or any(entry['instrument']['Quote_Sensitivity'] == 'Yes'
+                           for _, entry in blocks) else [[block] for block in blocks]
+        if not ride:
+            # a run of one currency at a time, so the dependency order the set came in stands
+            groups = [list(run) for group in groups for _, run in groupby(
+                group, key=lambda member: member[1]['instrument']['Currency'])]
 
         for group in groups:
             self.solve_set(group, price_factors, factor_interp, base_date, calendars)
@@ -6843,15 +6853,14 @@ def bootstrap_order(section):
                           for name, edges in sorted(unresolved.items()))))
 
 
-def bootstrap_dependents(market_prices, moved):
-    """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
-    numbers: those blocks, plus every block that reads what one of them writes, closed over.
+def block_readers(market_prices):
+    """`{block: [every block reading what it writes]}` over one `Market Prices` section.
 
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
-    (`benchmark_curves`), so a tick of one curve re-solves the curves discounting on it and no
-    others. A block of a type no family reads is nobody's dependency.
+    (`benchmark_curves`), so a curve is read by the curves discounting on it and no others. A block
+    of a type no family reads is nobody's dependency.
     """
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
@@ -6867,13 +6876,35 @@ def bootstrap_dependents(market_prices, moved):
                     cls is not curves or wrote is not curves
                     or '.'.join(utils.check_rate_name(written)[1:]) in named[reader]):
                 readers.setdefault(written, []).append(reader)
-    covered, pending = set(moved), list(moved)
+    return readers
+
+
+def closed_over(edges, start):
+    """`start` and everything `edges` reaches from it."""
+    covered, pending = set(start), list(start)
     while pending:
-        for reader in readers.get(pending.pop(), ()):
-            if reader not in covered:
-                covered.add(reader)
-                pending.append(reader)
+        for reached in edges.get(pending.pop(), ()):
+            if reached not in covered:
+                covered.add(reached)
+                pending.append(reached)
     return covered
+
+
+def bootstrap_dependents(market_prices, moved):
+    """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
+    numbers: those blocks, plus every block that reads what one of them writes, closed over."""
+    return closed_over(block_readers(market_prices), moved)
+
+
+def bootstrap_precedents(market_prices, wanted):
+    """The blocks a fit of `wanted` stands on: those blocks, plus every block one of them reads,
+    closed over - the walk `bootstrap_dependents` takes, backwards. A curve discounting on another
+    is one system with it, so its quotes move whatever the first is read by."""
+    reads = {}
+    for written, readers in block_readers(market_prices).items():
+        for reader in readers:
+            reads.setdefault(reader, []).append(written)
+    return closed_over(reads, wanted)
 
 
 def market_prices_for(btype, market_prices, declared=None):

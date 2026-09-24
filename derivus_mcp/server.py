@@ -1265,18 +1265,26 @@ def book_risk_summary() -> dict:
     different calculation for a different reason - see `xva_view`.
 
     Answers the mark (`mtm` in the book's report currency), `as_of`, the `etag` the service cached
-    it under, how many deals it covers, and the LARGEST gradient rows by absolute size - `factor`
-    (the price factor), `tenor` (its coordinates, absent for a spot) and `value` (the derivative in
-    report currency per unit of that factor). Never the whole per-deal table: `deal_values` on an
-    `execute_book` run serves that, and the web blotter renders the lot.
+    it under, how many deals it covers, and the LARGEST rows by absolute size, twice. `quotes` is
+    the risk a desk hedges in - `block` (the quote block), `quote` (the benchmark or smile quote)
+    and `value`, the derivative per unit of the quote AS QUOTED (a par rate in percent reads per
+    1%), taken through the calibration that builds the factor, `quoted` naming the factors those
+    rows stand for and `quote_note` why a book's quotes did not reach its risk where they did not.
+    `greeks` is every factor's own row - `factor`, `tenor` (absent for a spot) and `value` per
+    unit of that factor - where a spot, and anything no quote builds, is read. Never the whole
+    per-deal table: `deal_values` on an `execute_book` run serves that, and the web blotter
+    renders the lot.
 
     Cheap and cached on the book's own content, so asking again after nothing moved costs nothing;
     a booking or a market tick moves the etag and the numbers follow.
     """
     risk = service().call('GET', '/book/risk')
     greeks = sorted(risk['greeks'], key=lambda row: -abs(row['value']))
+    quotes = sorted(risk['quotes'], key=lambda row: -abs(row['value']))
     return {'as_of': risk['as_of'], 'etag': risk['etag'], 'currency': risk['currency'],
             'mtm': risk['mtm'], 'deals': len(risk['per_deal']),
+            'quotes': quotes[:MAX_GREEK_ROWS], 'quote_rows': len(quotes),
+            'quoted': risk['quoted'], 'quote_note': risk['quote_note'],
             'greeks': greeks[:MAX_GREEK_ROWS], 'greek_rows': len(greeks),
             'hint': 'the per-deal values are behind execute_book + deal_values; XVA is xva_view'}
 

@@ -178,7 +178,10 @@ generation produces and which the regular route averages at `1/n`.
 tolerances, same float64 — so enabling quote gradients cannot move a mark by construction. Autograd
 runs `forward` with grad mode off and the solve needs it on for its own Jacobian, so it is re-enabled
 inside and the iteration's graph dies with the iteration. The block goes through the wrapper whether
-or not a quote is on the tape; with `quotes=None` it is a pass-through.
+or not a quote is on the tape; with `quotes=None` it is a pass-through. The one thing the switch
+changes is the SET: on a multi-curve book it solves each [coupled set](quote_propagation.md#multi-curve)
+inside a currency as one system, the only solve whose Jacobian carries `dθ₂/dq₁` - the same root,
+the USD world's OIS curve bit for bit and its projection curve 2 ulp of zero rate away.
 
 **Backward is the implicit function theorem**, never an unrolled solver. At $F(\theta^*, q) = 0$,
 $d\theta/dq = -(\partial F/\partial\theta)^{-1}\partial F/\partial q$, so an incoming cotangent
@@ -1077,10 +1080,12 @@ itself. Without that row a scattering ladder would be evidence against everythin
   parameterisation built, and a swaption quote here is the number on the `Instrument_Definitions` row
   or a premium, never a smile parameter. (It was also the surface's ATM read until 2026-09-01; a zero
   row refuses by name now.)
-- **No reporting format** — `dV/dq` lands on the quote leaves in `Config.quote_leaves` paired with each
-  quote's descriptor, and no `Greeks_First`-style block is emitted: `make_factor_index` reads a tenor
-  grid off `all_factors`, and a quote is not a factor. A consumer would have to honour the [two
-  shapes](#the-attachment) and the descriptor collision.
+- **No reporting format in the engine** — `dV/dq` lands on the quote leaves in `Config.quote_leaves`
+  paired with each quote's descriptor, and no `Greeks_First`-style block is emitted: `make_factor_index`
+  reads a tenor grid off `all_factors`, and a quote is not a factor. The service's consolidated risk
+  (`/book/risk`, `service.quote_rows`) is the one reader: it honours the [two shapes](#the-attachment)
+  and a coupled set's one leaf filed under every member, and files a quote two families read as two
+  rows under their two blocks, whose total is their sum.
 - **No second differentiation** — neither `CalibrationSolve.backward` nor `LeastSquaresSolve.backward`
   supports `create_graph`, and the second refuses it explicitly. A Gauss–Newton contraction carries no
   second derivative, so a quote-space Hessian off that node would be the curvature of a different

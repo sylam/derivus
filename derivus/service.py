@@ -52,7 +52,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/quote/reject` | refuse that ticket, with the reason on the row |
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
-| `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, cached on what it reads |
+| `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
 | `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
 | `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
 
@@ -1164,6 +1164,78 @@ def greek_rows(frame):
     return rows
 
 
+def quote_blocks(prices, universe):
+    """The `Market Prices` blocks a risk run refits: every block writing a factor the book reads,
+    and every block one of those stands on - a curve discounting on another is one system with it,
+    so the other's quotes move the book too. A block the book reaches through nothing is left out,
+    so a market file carrying a few hundred fitted names refits the ones this book prices."""
+    writes = {cls.market_factor_type: cls.price_factor_type for cls in bootstrappers.FAMILIES}
+    factors = {name: utils.check_tuple_name(utils.Factor(writes[family], tuple(rest)))
+               for name in prices for family, *rest in [utils.check_rate_name(name)]
+               if family in writes}
+    read = set(universe)
+    return bootstrappers.bootstrap_precedents(
+        prices, [name for name, factor in factors.items() if factor in read])
+
+
+def quote_context(run):
+    """`(context, note)`: the risk run with the book's own quotes CONNECTED - the blocks its
+    factors are built from refitted with `Quote_Sensitivity` on wherever the family declares it,
+    so one backward leaves `dV/dq` on every quote beside `dV/dtheta` on every factor - or the run
+    as it stands and the sentence saying why not. The switch is worth zero forward, so the marks
+    are the book's own; a refit that refuses leaves the risk in factor space rather than failing
+    the read."""
+    market = run['Calc']['MergeMarketData']['ExplicitMarketData']
+    prices = market.get('Market Prices') or {}
+    blocks = quote_blocks(prices, load(run).current_cfg.factor_universe()['resolved']) \
+        if prices else set()
+    if not blocks:
+        return load(run), None
+    quoted = deepcopy(run)
+    declared = mapping['MarketPrices']['types']
+    quoted['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'] = {
+        name: dict(prices[name], instrument=dict(
+            prices[name]['instrument'], Quote_Sensitivity='Yes'))
+        if 'Quote_Sensitivity' in declared.get(utils.check_rate_name(name)[0], {})
+        else prices[name] for name in sorted(blocks)}
+    context = load(quoted)
+    try:
+        context.bootstrap()
+    except Exception as refusal:
+        return load(run), ('the quotes this book is built from did not refit, so its risk is read '
+                           'on the factors alone: {}'.format(refusal))
+    # a family nobody configured fits nothing and says so only in a log, so the answer says it
+    silent = sorted(name for name, block in quoted['Calc']['MergeMarketData'][
+        'ExplicitMarketData']['Market Prices'].items()
+        if block['instrument'].get('Quote_Sensitivity') == 'Yes'
+        and name not in context.current_cfg.quote_leaves)
+    return context, silent and ('{} published no quote derivative - no Bootstrapper Configuration '
+                                'entry fits the family - so what they build is read on its '
+                                'factors'.format(', '.join(silent))) or None
+
+
+def quote_rows(config):
+    """`(rows, factors)`: `{block, quote, value}` per quote a bootstrap left connected, and the
+    factors those rows stand for. A coupled set publishes ONE leaf under every member's name, its
+    quotes prefixed by the block each came off, so a leaf is read once and each row filed under
+    its own block; a leaf the book never reached carries no gradient and no row."""
+    leaves = {}
+    for block, (descriptors, leaf) in config.quote_leaves.items():
+        leaves.setdefault(id(leaf), (descriptors, leaf, []))[2].append(block)
+    rows = []
+    for descriptors, leaf, blocks in leaves.values():
+        grads = [one.grad for one in leaf] if isinstance(leaf, (list, tuple)) else [leaf.grad]
+        if any(grad is None for grad in grads):
+            continue
+        values = [value for grad in grads for value in grad.detach().cpu().reshape(-1).tolist()]
+        for descriptor, value in zip(descriptors, values):
+            named = next((name for name in blocks if descriptor.startswith(name + ': ')), None)
+            rows.append({'block': named or blocks[0],
+                         'quote': descriptor[len(named) + 2:] if named else descriptor,
+                         'value': value})
+    return rows, sorted(map(utils.check_tuple_name, config.calibrated_factors))
+
+
 def consolidated_risk(document):
     """The consolidated view's whole computation: ONE base valuation with `Greeks: 'First'` over
     the book as it stands, in its own Context.
@@ -1175,16 +1247,24 @@ def consolidated_risk(document):
     `per_deal` is the frame's TOP-LEVEL rows, one per trade, so `mtm` is exactly their sum: a
     structure's legs and a set's members are inside the row their container reports, and adding
     them again would double the book. An empty book never reaches a run.
+
+    THE RISK IS IN QUOTE SPACE where the book's factors are built from quotes (`quote_context`):
+    `quotes` is the derivative per unit of each quote as quoted, `quoted` the factors those rows
+    stand for, and `greeks` every factor's own row beside them; `quote_note` says why a book
+    whose quotes did not refit is read on its factors alone.
     """
     run = deepcopy(document)
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
                                       Object='BaseValuation', Greeks='First')
     answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
-              'mtm': 0.0, 'per_deal': [], 'greeks': []}
+              'mtm': 0.0, 'per_deal': [], 'greeks': [], 'quotes': [], 'quoted': [],
+              'quote_note': None}
     if not job_children(run):
         return answer
 
-    _, out = load(run).run_job()
+    context, answer['quote_note'] = quote_context(run)
+    _, out = context.run_job()
+    answer['quotes'], answer['quoted'] = quote_rows(context.current_cfg)
     table = as_json(out['Results']['mtm'])['.DataFrame']
     column = {name: position for position, name in enumerate(table['columns'])}
     paths = top_level_paths(document)
@@ -1216,7 +1296,9 @@ def book_risk():
     anything; a book that will not price answers 422 naming the cause and caches nothing.
 
     `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
-    value}` flattened off the gradient frame, trimmed at the last non-zero coordinate.
+    value}` flattened off the gradient frame, trimmed at the last non-zero coordinate; `quotes` is
+    `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
+    quoted, `quoted` the factors those rows stand for and `quote_note` why not where they are not.
     """
     document, _ = live_book().read()
     etag = risk_etag(document)

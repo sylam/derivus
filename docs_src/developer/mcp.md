@@ -62,7 +62,7 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `configure_securities` | `POST /book/securities` — one entry of the desk's own seed set or removed, validated by spelling the candidates it now names |
 | `verify_securities` | `POST /book/securities/verify` — the named scope re-verified against the terminal, drift named per entry and new names ledgered, reporting progress while it waits |
 | `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
-| `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest gradient rows, counterparty-blind |
+| `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest rows, counterparty-blind: per quote the book's factors are built from, and per factor |
 | `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
 | `book_diary` | `GET /book/diary` — every payment, fixing and expiry the book carries, with the amount where the compile determines one and the key a settlement fact names the row by |
 | `close_check` | `GET /book/close/check` — whether a close on a day is legal, and the rows it waits on |

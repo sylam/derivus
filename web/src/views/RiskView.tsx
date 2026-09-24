@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  factorFamily, lagsBook, marksTotal, reconciles, sortGreeks, stampText, tenorText,
+  factorFamily, lagsBook, marksTotal, quoteView, reconciles, sortGreeks, stampText, tenorText,
   type GreekKey,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
@@ -19,14 +19,19 @@ import type { BookRisk } from '../types';
  * risk is refetched behind it, and the strip says plainly while the two are apart.
  */
 export function RiskView() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const { risk, source } = state;
   const [key, setKey] = useState<GreekKey>('magnitude');
   const [descending, setDescending] = useState(true);
+  // QUOTES by default wherever the book's factors are built from quotes; the factor reading is
+  // one click away, and a book with no quote block has only that one
+  const quotes = (risk.data?.quotes ?? []).length > 0
+    && state.selection.picks.risk !== 'factors';
 
   const rows = useMemo(
-    () => (risk.data ? sortGreeks(risk.data.greeks, key, descending) : []),
-    [risk.data, key, descending]);
+    () => (risk.data
+      ? sortGreeks(quotes ? quoteView(risk.data) : risk.data.greeks, key, descending) : []),
+    [risk.data, quotes, key, descending]);
 
   // the risk verb answers over the LIVE book; a document opened from a file has no server-side
   // book to differentiate, and saying so is better than showing another book's numbers under it
@@ -101,10 +106,9 @@ export function RiskView() {
             </div>
           </div>
           <div className="stat">
-            <div className="label">Gradient</div>
+            <div className="label">{quotes ? 'Quote risk' : 'Gradient'}</div>
             <div className="value">
-              {data.greeks.length}<span className="unit">
-                {data.greeks.length === 1 ? 'row' : 'rows'}</span>
+              {rows.length}<span className="unit">{rows.length === 1 ? 'row' : 'rows'}</span>
             </div>
           </div>
           <div className="stat">
@@ -128,6 +132,8 @@ export function RiskView() {
           </div>
         )}
 
+        {data.quote_note && <div className="banner">{data.quote_note}</div>}
+
         {data.per_deal.length === 0 && data.greeks.length === 0 ? (
           <div className="note">
             Nothing was marked and nothing was differentiated — an empty book answers zeros
@@ -137,9 +143,21 @@ export function RiskView() {
         ) : (
           <>
             <div className="blotterbar">
+              {data.quotes.length > 0 && ['quotes', 'factors'].map((view) => (
+                <button key={view} className={`ghost${(view === 'quotes') === quotes ? ' on' : ''}`}
+                        onClick={() => dispatch({ type: 'PICK', screen: 'risk', id: view })}>
+                  {view}
+                </button>
+              ))}
               <span className="hint">
-                <b>Aggregate greeks</b> — the report-currency derivative per unit of each factor,
-                over the whole book
+                {quotes ? (
+                  <><b>Risk in quotes</b> — the report-currency derivative per unit of each quote as
+                    quoted, through the calibration that builds the factor; a factor no quote
+                    builds keeps its own row, and a quote the book does not move with is left off</>
+                ) : (
+                  <><b>Aggregate greeks</b> — the report-currency derivative per unit of each
+                    factor, over the whole book</>
+                )}
               </span>
               <span className="spacer" />
               {risk.loading && <span className="hint">refreshing…</span>}
@@ -149,11 +167,11 @@ export function RiskView() {
                 <thead>
                   <tr>
                     <SortTh
-                      label="Factor" mine="factor" key_={key} descending={descending}
-                      onSort={sortBy}
+                      label={quotes ? 'Block · Factor' : 'Factor'} mine="factor" key_={key}
+                      descending={descending} onSort={sortBy}
                       title="sorted by name, each factor's coordinates in curve order beneath it"
                     />
-                    <th>Tenor</th>
+                    <th>{quotes ? 'Quote · Tenor' : 'Tenor'}</th>
                     <SortTh
                       label={currency ? `Value (${currency})` : 'Value'} mine="magnitude"
                       key_={key} descending={descending} onSort={sortBy} numeric
@@ -170,7 +188,9 @@ export function RiskView() {
                       </td>
                       {/* a factor with no coordinates carries no tenor key at all - the cell is
                           empty because there is nothing there, not because it was dropped */}
-                      <td className="n tenor">{tenorText(row.tenor)}</td>
+                      <td className={row.quote === undefined ? 'n tenor' : 'tenor'}>
+                        {row.quote ?? tenorText(row.tenor)}
+                      </td>
                       <td className={`n${row.value < 0 ? ' neg' : ''}`}>
                         {formatNumber(row.value)}
                       </td>

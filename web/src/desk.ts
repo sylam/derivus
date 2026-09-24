@@ -118,6 +118,18 @@ export function sortGreeks(rows: GreekRow[], key: GreekKey, descending: boolean)
   });
 }
 
+/** The gradient read in QUOTE space: every quote the book moves with, under the block it came off
+ * and in the order the block quotes them, then every factor row no quote block stands for - a
+ * spot, a curve set up by hand - in its own units. A factor a block builds is read on its quotes
+ * and never twice; a quote past everything the book holds reads exactly zero and is left off the
+ * screen, the service's answer keeping the whole ladder. */
+export function quoteView(risk: BookRisk): GreekRow[] {
+  const quoted = new Set(risk.quoted);
+  return [...risk.quotes.filter((row) => row.value !== 0)
+            .map(({ block, quote, value }) => ({ factor: block, quote, value })),
+          ...risk.greeks.filter((row) => !quoted.has(row.factor))];
+}
+
 /** The family a factor name opens with - `FxRate`, `InterestRate`, `FXVol`. What a desk groups by
  * when it reads a gradient, and it is the name's own first segment, not a list kept here. */
 export function factorFamily(factor: string): string {

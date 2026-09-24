@@ -296,6 +296,11 @@ shape — so `calibration_jacobian` inverts one block matrix and `∂θ₂/∂q�
 others raises at the bootstrap, naming both halves — there is one operator over the set, so there is
 nothing for a declining member to mean. The tolerance is likewise the set's strictest.
 
+**A quote derivative has the same coupling in it**, so `Quote_Sensitivity` forms the same sets and
+stops them at a currency rather than refusing, the other side a constant as it always was. Solved one
+block at a time, an OIS quote moved nothing priced off the projection curve discounting on it: its
+leaf carried no gradient and the book's consolidated risk had no row for it.
+
 ### The coupling is MEASURED, not declared {#measured-coupling}
 
 `Discount_Rate` is the wrong question: what a benchmark **projects** off is authored inside its own deal

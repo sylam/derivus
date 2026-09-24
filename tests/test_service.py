@@ -5077,6 +5077,99 @@ def test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking(
     assert len(greeks['FXVol.USD.ZAR']['tenor']) == 2, 'a surface node is two'
     assert any(row['factor'] == 'FXVol.USD.ZAR' and row['value'] for row in after['greeks']), \
         'the option booked no vega - the gradient is vacuous'
+    # the surface is built from the book's own FX vol quotes, so its risk is read on them too
+    assert after['quoted'] == ['FXVol.USD.ZAR'] and after['quote_note'] is None
+    assert {row['block'] for row in after['quotes']} == {'FXVolPrices.USD.ZAR'}
+    assert max(abs(row['value']) for row in after['quotes']) > 1.0
+
+
+def curve_book(path, bootstrapper=True):
+    """A book reading ONE curve - a four-year swap forecasting and discounting on `USD-3M` - whose
+    block is solved against `USD-OIS`, the multi-curve world's own quotes and true curves standing
+    as its market data. The book's own FX rate names `USD-3M` too, so `USD-OIS` reaches the book
+    through the FIT and nothing else: the coupling a factor-space gradient cannot show."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from rates_world import BASE as CURVE_BASE, par_swap
+    from test_interest_rate_prices import authored_world
+
+    market_prices, factors, _ = authored_world('usd')
+    factors['FxRate.USD']['Interest_Rate'] = 'USD-3M'
+    sections = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': CURVE_BASE},
+                'Market Prices': market_prices}
+    if bootstrapper:
+        sections['Bootstrapper Configuration'] = {'InterestRate': {'Prices': 'InterestRate'}}
+    document = json.loads(dump(job(
+        deals=(par_swap('SWP_4Y', 'USD', 'USD-3M', 'USD-3M', 4, 3.9),), factors=factors,
+        sections=sections, Base_Date=CURVE_BASE)))
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    return document
+
+
+def refitted_value(document):
+    """The book re-bootstrapped from its quotes and priced, by the ordinary path and in process."""
+    context = in_process(document)
+    context.bootstrap()
+    _, out = context.run_job()
+    frame = out['Results']['mtm']
+    return float(frame.loc[frame['Reference'] == 'SWP_4Y', 'Value'].iloc[0])
+
+
+def test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from(tmp_path):
+    """`/book/risk` in QUOTE space. The book reads `USD-3M` alone; its block discounts on `USD-OIS`,
+    so an OIS quote moves the book through the fit and the factor-space gradient has no row for it.
+    Every quote of BOTH blocks is a row, once, filed under its own block, and the row IS the move of
+    the book re-bootstrapped with that quote bumped - a central difference, which is what a
+    desk's own bump-and-refit would read.
+
+    KILLING MUTATIONS, each red: the coupled set's leaf read under each member's name, which files
+    every row twice; the blocks the book reads refitted without the blocks they stand on, which
+    drops the OIS rows, the OIS curve then a constant of the 3M fit; the blocks solved one at a
+    time under a quote derivative, which leaves the OIS leaf with no gradient at all - the curve
+    family formed its coupled sets for a ride alone; and a family nothing fits going unsaid.
+    """
+    document = curve_book(tmp_path / 'book.json')
+    service.BOOK = service.Book(str(tmp_path / 'book.json'))
+    try:
+        risk = CLIENT.get('/book/risk').json()
+    finally:
+        service.BOOK = None
+
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices']
+    assert risk['quote_note'] is None
+    assert risk['quoted'] == ['InterestRate.USD-3M', 'InterestRate.USD-OIS']
+    assert 'InterestRate.USD-OIS' not in {row['factor'] for row in risk['greeks']}, (
+        'the book reads the OIS curve directly, so the gate no longer measures the coupling')
+    rows = {}
+    for row in risk['quotes']:
+        assert (row['block'], row['quote']) not in rows, 'a quote reported twice'
+        rows[row['block'], row['quote']] = row['value']
+    for block, market_price in prices.items():
+        assert [quote for name, quote in rows if name == block] == [
+            point['Descriptor'] for point in market_price['instrument']['Points']]
+
+    for block in prices:
+        points = prices[block]['instrument']['Points']
+        largest = max(range(len(points)), key=lambda i: abs(rows[block, points[i]['Descriptor']]))
+        reported = rows[block, points[largest]['Descriptor']]
+        assert abs(reported) > 1.0, 'a quote the book does not move with makes the check vacuous'
+        moved = []
+        for step in (0.01, -0.01):
+            bumped = json.loads(json.dumps(document))
+            bumped['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][block][
+                'instrument']['Points'][largest]['Quoted_Market_Value'] += step
+            moved.append(refitted_value(bumped))
+        assert reported == pytest.approx((moved[0] - moved[1]) / 0.02, rel=1e-6), block
+
+    # a book whose quotes fit nothing - no bootstrapper configured - reads on its factors, SAYING so
+    curve_book(tmp_path / 'bare.json', bootstrapper=False)
+    service.BOOK = service.Book(str(tmp_path / 'bare.json'))
+    try:
+        bare = CLIENT.get('/book/risk').json()
+    finally:
+        service.BOOK = None
+    assert bare['quotes'] == [] and bare['quoted'] == []
+    assert all(block in bare['quote_note'] for block in prices), bare['quote_note']
+    assert bare['greeks'] and bare['mtm'] == pytest.approx(risk['mtm'], rel=1e-9)
 
 
 #: A netting set's CSA tables, at zero thresholds - the shape the engine's own CVA fixtures use.

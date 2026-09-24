@@ -122,7 +122,13 @@ export type GreekRow = {
   tenor?: number[];
   /** The report-currency derivative per unit of the factor, aggregated over the WHOLE book. */
   value: number;
+  /** A QUOTE's row as the quote view reads it: `factor` is the block the quote came off. */
+  quote?: string;
 };
+
+/** One quote: the report-currency derivative per unit of the quote AS QUOTED - a par rate in
+ * percent reads per 1% - taken through the calibration that builds a factor from it. */
+export type QuoteRow = { block: string; quote: string; value: number };
 
 /** One TOP-LEVEL trade's mark. A structure or a netting set appears once, with its net - its legs
  * are inside the row their container reports, which is why `mtm` is exactly the sum of these. */
@@ -143,6 +149,12 @@ export type BookRisk = {
   mtm: number;
   per_deal: DealMark[];
   greeks: GreekRow[];
+  /** The risk in QUOTE space, every quote of every block the book's factors are built from. */
+  quotes: QuoteRow[];
+  /** The factors those quotes stand for - read on their quotes, and in `greeks` beside them. */
+  quoted: string[];
+  /** Why a book's quotes did not reach its risk, where they did not; null where they all did. */
+  quote_note: string | null;
 };
 
 /** One netting set: what the BOOK says it is now over what the last RUN said about it. The two
