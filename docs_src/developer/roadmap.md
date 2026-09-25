@@ -280,8 +280,8 @@ is recorded so a reader knows which readings rest on it.
   warm polish on every uncached read; and a bootstrap raises at its first refusal, so one block that
   cannot carry a quote derivative - an FX forward outright, a polish stopping above
   `Stationarity_Tol` - returns the whole book's risk in factor space with the refusal named.
-  UNMEASURED on a desk book; the served book of two FX trades reads in 5.1 s, its three blocks'
-  refit included. The remedy for the second is a retry with the refusing block's switch off.
+  UNMEASURED on a desk book; a two-trade FX book reads in 5.1 s, its three blocks' refit
+  included. The remedy for the second is a retry with the refusing block's switch off.
 - **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
   the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
   where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is
