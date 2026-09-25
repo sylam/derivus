@@ -29,7 +29,9 @@ day, the wire forms a deal is written in, the FX strike axis, what a refusal mea
 not booking and where the second seat comes in, that bootstrapping dials and ticker codes are
 configured once in the web UI, and — where this desk keeps a record — the five verbs that read it:
 what the book owes, whether a close is legal, where the file and the record disagree, the strip of
-what has been recorded, and the official closes. The module docstring stays the maintainer's.
+what has been recorded, and the official closes - and the paper the book trades under, declared by
+the seat that keeps the legal documents, with a booking's quantity as the position change in units
+of the deal. The module docstring stays the maintainer's.
 
 ## The tools
 
@@ -44,7 +46,7 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
 | `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
-| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity`, `execution_reference` and `actor` a recorded desk requires, and a delete records nothing so it takes no seat |
+| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio` and `price` it may state; a delete records nothing so it takes no seat |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `describe_calculations` / `configure_calculation` / `run_calculation` | `/calculations` — the desk's own named calculations: listed, saved one at a time (judged against the type's declarations), and run over the live book or one subtree in the curiosity lane |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
@@ -74,6 +76,7 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `declare_close` | `POST /book/close` — the official close over those values, behind `close_check`'s own verdict, a second close superseding the first |
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
 | `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on |
+| `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

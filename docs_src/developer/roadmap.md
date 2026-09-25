@@ -425,9 +425,10 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   cache key covers the deals and the calculation but not the record its compile now reads, so a
   print filed after a read does not recompile (the rows stay right, `answered` resolving prints per
   request).
-- **The deal tree hydrated from the fold** rather than reconciled against it. The record holds no
-  netting set's own node — its CSA terms are not a fact yet — so the book file stays the
-  materialisation and `/book/reconcile` is how it is checked.
+- **The deal tree hydrated from the fold** rather than reconciled against it. Every piece is in the
+  record now - positions keyed by agreement and portfolio, each instrument's terms and each
+  agreement's netting set by address - but the book file stays the materialisation and
+  `/book/reconcile` is how it is checked.
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,

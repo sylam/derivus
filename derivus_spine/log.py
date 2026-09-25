@@ -541,7 +541,7 @@ class SpineLog:
     def _authorize(self, event_type, body, actor, book):
         """The enforcement hook: may this actor say this, and is what they are saying evaluable?
 
-        Enforcement activates by declaration for the six document verbs; break-glass is gated from
+        Enforcement activates by declaration for the document verbs; break-glass is gated from
         event one instead, no declaration granting it and so no declaration's absence opening it. A
         refusal is itself a fact - `capability_denied` under the writer's own name, appended before
         the raise.
@@ -560,7 +560,7 @@ class SpineLog:
             return
         doc, genesis = self._capability_state()
         verb = verb_for(event_type)
-        # By declaration for the six document verbs, from event one for the RECOVERY handle: the
+        # By declaration for the document verbs, from event one for the RECOVERY handle: the
         # handle is not in a document, so "no document yet" cannot mean anybody may pull it.
         if (doc is not None or verb == RECOVERY) \
                 and not evaluate(doc, genesis, actor, verb, book):

@@ -51,7 +51,8 @@ from derivus_spine.capability import (
     state_at, verb_for)
 from derivus_spine.vocabulary import (
     ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK,
-    PROVENANCE_TYPES, RECOVERY, VERBS, WRITER, WRITER_TYPES, BLOB_FIELDS, classify, validate)
+    PROVENANCE_TYPES, RECOVERY, REFERENCE_TYPES, VERBS, WRITER, WRITER_TYPES, BLOB_FIELDS,
+    classify, validate)
 
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
@@ -131,6 +132,7 @@ def attempts(log):
     job = log.store.put(b'{"Calc":{"Calculation":{"Object":"BaseValuation"}}}')
     produced = log.store.put(b'{"mtm":1234.5}')
     tolerance = log.store.put(b'{"tolerances":{"mtm":1e-09}}')
+    terms = log.store.put(b'{"Object":"NettingCollateralSet","Netted":"True"}')
     return (
         ('fill', fill('EXEC-1'), BOOK_ONE),
         ('amendment', {'instrument': BOOKED, 'amended_to': AMENDED}, BOOK_ONE),
@@ -163,6 +165,11 @@ def attempts(log):
         ('result_pinned', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
                            'seed': None, 'job': job, 'result': produced,
                            'tolerance_policy': tolerance}, BOOK_ONE),
+        # document: the paper the book trades under, declared firm-wide
+        ('entity_declared', {'entity': 'LEI-5493001KJTIIGC8Y1R12', 'name': 'a counterparty'},
+         None),
+        ('agreement_declared', {'agreement': 'CSA-0007', 'entity': 'LEI-5493001KJTIIGC8Y1R12',
+                                'kind': 'ISDA 2002 with CSA', 'terms': terms}, None),
     )
 
 
@@ -559,7 +566,8 @@ def test_a_capabilities_document_that_cannot_be_evaluated_does_not_land(tmp_path
     assert 'grants' in refused(canonical_bytes({'read': []}))
     assert 'beyond grants, read' in refused(canonical_bytes(
         dict(document(), revokes=[])))
-    assert 'six scopes' in refused(canonical_bytes(document(grants=((DESK, 'launch', ANY_BOOK),))))
+    assert 'not one of the scopes' in refused(
+        canonical_bytes(document(grants=((DESK, 'launch', ANY_BOOK),))))
     assert 'row' in refused(canonical_bytes({'grants': [{'subject': DESK}], 'read': []}))
     assert 'names nothing' in refused(canonical_bytes(document(grants=((DESK, BOOK, ''),))))
     # valid JSON, valid shape, NON-canonical bytes: one policy, two spellings, refused
@@ -677,7 +685,7 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
     write nobody could be scoped for and nobody could be refused for - a hole in enforcement shaped
     exactly like the thing enforcement is for."""
     assert set(EVENT_TYPES) == (set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)
-                                | set(WRITER_TYPES))
+                                | set(REFERENCE_TYPES) | set(WRITER_TYPES))
     assert set(EVENT_VERB) == set(EVENT_TYPES)
     assert set(EVENT_VERB.values()) <= set(VERBS) | {RECOVERY, WRITER}
     assert EVENT_VERB['break_glass_used'] == RECOVERY

@@ -83,7 +83,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
                 'export_settlements', 'file_status', 'describe_calculations',
-                'configure_calculation', 'run_calculation'}
+                'configure_calculation', 'run_calculation', 'describe_agreements',
+                'declare_legal_entity', 'declare_agreement'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -96,7 +97,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'export_settlements', 'file_status',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
-                       'setup_market', 'configure_calculation', 'run_calculation'}
+                       'setup_market', 'configure_calculation', 'run_calculation',
+                       'declare_legal_entity', 'declare_agreement'}
 
 
 def read_resource(uri):

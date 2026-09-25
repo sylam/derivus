@@ -141,10 +141,10 @@ def closed_book(tmp_path):
     return home, log, marks
 
 
-class PositionsV2(projections.Positions):
-    """The positions projector one version on, reading the same v1 bodies."""
+class PositionsOnward(projections.Positions):
+    """The positions projector one version on, reading the same bodies."""
 
-    version = 2
+    version = projections.Positions.version + 1
 
 
 def test_every_projector_replays_to_its_committed_golden(tmp_path):
@@ -153,8 +153,9 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     differently is a red gate rather than a silent change of what a reader sees. The strip's table
     of sentences is committed the same way, because it is data the fixture cannot exercise."""
     home, log, marks = synthetic_book(tmp_path)
-    assert set(PROJECTORS) == {'activity', 'attestations', 'blotter', 'decisions', 'denials',
-                               'lifecycle', 'markets', 'positions', 'quotes'}
+    assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'decisions',
+                               'denials', 'entities', 'lifecycle', 'markets', 'positions',
+                               'quotes'}
 
     for name in sorted(PROJECTORS):
         projector = PROJECTORS[name]
@@ -282,50 +283,55 @@ def test_facts_sharing_an_effective_time_fold_in_lsn_order(tmp_path):
     clips.close()
 
 
-def test_a_v2_projector_folds_v1_bodies_and_a_seed_is_verified_not_trusted(tmp_path):
+def test_a_projector_one_version_on_folds_the_same_bodies_and_a_seed_is_verified_not_trusted(
+        tmp_path):
     """Version tolerance, and the seed as evidence rather than as state. A projector whose rows
-    moved on still folds the bodies a v1 writer wrote; the seed minted by the version before it
-    refuses where it is read AND where it is folded; and a seed minted over another home's close,
+    moved on still folds the bodies an earlier writer wrote; the seed minted by the version before
+    it refuses where it is read AND where it is folded; and a seed minted over another home's close,
     one torn, or one whose state was edited beneath an intact close, refuses by name instead of
     folding a fiction nothing else can detect."""
     home, log, marks = synthetic_book(tmp_path)
-    v1, v2 = PROJECTORS['positions'], PositionsV2()
+    shipped, onward = PROJECTORS['positions'], PositionsOnward()
+    filed_name = 'positions-{}-{}.json'.format(shipped.version, CLOSE)
 
-    assert canonical_bytes(v2.rows(fold(log, v2))) == canonical_bytes(v1.rows(fold(log, v1)))
-    assert read_seed(log, v1, CLOSE) is None
+    assert canonical_bytes(onward.rows(fold(log, onward))) == canonical_bytes(
+        shipped.rows(fold(log, shipped)))
+    assert read_seed(log, shipped, CLOSE) is None
 
-    seed = seed_at(log, v1, CLOSE)
-    assert read_seed(log, v1, CLOSE) == seed
+    seed = seed_at(log, shipped, CLOSE)
+    assert read_seed(log, shipped, CLOSE) == seed
     with pytest.raises(SpineRefusal) as filed:
-        read_seed(log, v2, CLOSE)
-    assert 'positions-1-15.json' in str(filed.value) and 'version 2' in str(filed.value)
+        read_seed(log, onward, CLOSE)
+    assert filed_name in str(filed.value)
+    assert 'version {}'.format(onward.version) in str(filed.value)
     with pytest.raises(SpineRefusal) as handed:
-        fold(log, v2, seed=seed)
-    assert 'version 1' in str(handed.value) and 'version 2' in str(handed.value)
+        fold(log, onward, seed=seed)
+    assert 'version {}'.format(shipped.version) in str(handed.value)
+    assert 'version {}'.format(onward.version) in str(handed.value)
     with pytest.raises(SpineRefusal) as other:
-        fold(log, v1, seed={'projector': 'blotter', 'version': 1, 'lsn': 6, 'state': {}})
+        fold(log, shipped, seed={'projector': 'blotter', 'version': 1, 'lsn': 6, 'state': {}})
     assert "'blotter'" in str(other.value)
 
     elsewhere, elsewhere_log, _ = synthetic_book(tmp_path / 'elsewhere')
-    seed_at(elsewhere_log, v1, CLOSE)
+    seed_at(elsewhere_log, shipped, CLOSE)
     elsewhere_log.close()
-    filed_at = home / SEEDS / 'positions-1-15.json'
-    filed_at.write_bytes((elsewhere / SEEDS / 'positions-1-15.json').read_bytes())
+    filed_at = home / SEEDS / filed_name
+    filed_at.write_bytes((elsewhere / SEEDS / filed_name).read_bytes())
     with pytest.raises(SpineRefusal) as foreign:
-        read_seed(log, v1, CLOSE)
+        read_seed(log, shipped, CLOSE)
     assert 'not that history' in str(foreign.value)
 
     filed_at.write_bytes(b'{"projector": "positions", "vers')
     with pytest.raises(SpineRefusal) as torn:
-        read_seed(log, v1, CLOSE)
+        read_seed(log, shipped, CLOSE)
     assert 'is not JSON' in str(torn.value)
 
-    seed_at(log, v1, CLOSE)
+    seed_at(log, shipped, CLOSE)
     doctored = json.loads(filed_at.read_text(encoding='utf-8'))
     doctored['state'][sorted(doctored['state'])[0]]['quantity'] = 42.0
     filed_at.write_text(json.dumps(doctored), encoding='utf-8')
     with pytest.raises(SpineRefusal) as edited:
-        read_seed(log, v1, CLOSE)
+        read_seed(log, shipped, CLOSE)
     assert 'edited beneath its own close' in str(edited.value)
     log.close()
 
@@ -441,7 +447,8 @@ def test_the_seeds_directory_stands_beside_the_log_and_the_verifier_never_reads_
     assert (home / SEEDS).is_dir()
     assert verify_home(home) == entitled and verify_home(home, entitled=False) == chain
 
-    filed = json.loads((home / SEEDS / 'positions-1-15.json').read_text(encoding='utf-8'))
+    filed = json.loads((home / SEEDS / 'positions-{}-{}.json'.format(
+        positions.version, CLOSE)).read_text(encoding='utf-8'))
     assert filed == seed and filed['lsn'] == CLOSE
     for path in (home / SEEDS).iterdir():
         path.unlink()

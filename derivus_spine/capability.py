@@ -57,7 +57,7 @@ class _Unreadable(object):
 
     A value rather than an exception: the fold runs inside the writer's authorization hook, so
     raising would take every append with it, `break_glass_used` and a replacement declaration
-    included. `evaluate` refuses all six verbs against this, while break-glass and the admin it
+    included. `evaluate` refuses every document verb against this, while break-glass and the admin it
     recovers still answer.
     """
 
@@ -138,7 +138,7 @@ def _shape(document, where):
                     refuse('{}[{}].{} is {!r}, and a name that names nothing is not a name'.format(
                         section, position, name, row[name]))
             if section == 'grants' and row['verb'] not in VERBS:
-                refuse('grants[{}].verb is {!r}, which is not one of the six scopes ({}) - the '
+                refuse('grants[{}].verb is {!r}, which is not one of the scopes ({}) - the '
                        'verbs are closed, so a document cannot invent authority'.format(
                            position, row['verb'], ', '.join(VERBS)))
 

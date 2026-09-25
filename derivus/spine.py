@@ -49,9 +49,11 @@ from ._version import __version__
 from .schema import tables_of, without_clocks
 from .config import Config, CustomJsonEncoder, as_json
 
-#: The whole switch, and the actor beside it. Read per call, like `DV_HOME` one module over.
+#: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
+#: call, like `DV_HOME` one module over.
 SPINE_HOME = 'DV_SPINE_HOME'
 SPINE_ACTOR = 'DV_SPINE_ACTOR'
+SPINE_SEEDS = 'DV_SPINE_SEEDS'
 
 #: The three attestation lanes, respelled here so a call site can name one without paying for the
 #: spine import. The refusal wording still comes from `derivus_spine.verbs.check_lane`.
@@ -254,12 +256,27 @@ def blob(digest, actor_name=None):
     return folded(read)
 
 
+def seeds():
+    """The folder a reader starts its folds from: `DV_SPINE_SEEDS`, else the home's own `seeds/`.
+
+    Where a deployment files its seeds - a folder every seat reads after the end of day, or a
+    seat's own for a day it wants to stand at - is its own to say; a reader finding none there
+    folds from genesis and answers the same.
+    """
+    named = os.environ.get(SPINE_SEEDS)
+    return os.path.abspath(os.path.expanduser(named)) if named else None
+
+
+def fold_from(log, projector, lsn=None):
+    """`projector`'s state at `lsn`, started from the newest verified seed in `seeds()`."""
+    return package().projections.fold_from(log, projector, lsn=lsn, folder=seeds())
+
+
 def _rows(projector, lsn=None):
     """One projector's rows at `lsn`, folded off the home - what every read below is made of."""
     def fold(log):
-        projections = package().projections
-        named = projections.PROJECTORS[projector]
-        return named.rows(projections.fold(log, named, lsn=lsn))
+        named = package().projections.PROJECTORS[projector]
+        return named.rows(fold_from(log, named, lsn))
 
     return folded(fold)
 
@@ -290,7 +307,8 @@ def advancing(log, projector, lsn=None):
         _ADVANCED_HOME = genesis
     held = _ADVANCED.get(projector.name)
     state = projections.fold(log, projector, lsn=at,
-                             seed=held if held and held['lsn'] <= at else None)
+                             seed=held if held and held['lsn'] <= at
+                             else projections.latest_seed(log, projector, seeds(), at))
     _ADVANCED[projector.name] = {'projector': projector.name, 'version': projector.version,
                                  'lsn': at, 'state': state}
     return state
@@ -519,18 +537,59 @@ def executor(kind=None):
 # The verbs. Each one is: canonicalise, open the home, delegate, close.
 
 def book(deal, quantity, counterparty, netting_set, execution_reference,
-         actor_name=None, book_name=None, effective_time=None):
+         actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
+         portfolio=None):
     """Book a fill against the canonical instrument `deal`, returning the spine's envelope.
 
     `deal` is canonicalised through the engine's encoder and its hash is the instrument id, so
     booking the same strike twice registers one instrument and files two events against it.
-    `execution_reference` has no default: it is what makes a retry the same fact.
+    `execution_reference` has no default: it is what makes a retry the same fact. `quantity` is the
+    position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
+    where they are stated.
     """
     verbs = package().verbs
     with writing() as log:
         return verbs.book(log, actor(actor_name), canonical(deal), quantity, counterparty,
                           netting_set, execution_reference, book=book_name,
-                          effective_time=effective_time)
+                          effective_time=effective_time, price=price, agreement=agreement,
+                          portfolio=portfolio)
+
+
+def declare_entity(entity, name, parent=None, actor_name=None, effective_time=None):
+    """Declare a legal entity the book may trade with. `document` scope, which the writer enforces;
+    who holds it is the deployment's grant."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.declare_entity(log, actor(actor_name), entity, name, parent=parent,
+                                    effective_time=effective_time)
+
+
+def declare_agreement(agreement, entity, kind, terms, actor_name=None, effective_time=None):
+    """Declare an agreement with a legal entity, its `terms` the netting set its positions are
+    compiled into, canonicalised through the engine's encoder and filed by address."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.declare_agreement(log, actor(actor_name), agreement, entity, kind,
+                                       canonical(terms), effective_time=effective_time)
+
+
+def entities(lsn=None):
+    """Every legal entity the record declares at `lsn`: its name and the parent it is grouped
+    under."""
+    return _rows('entities', lsn)
+
+
+def agreements(lsn=None):
+    """Every agreement the record declares at `lsn`, each with the terms it was declared under read
+    back out of the store."""
+    def fold(log):
+        projections = package().projections
+        named = projections.PROJECTORS['agreements']
+        rows = named.rows(fold_from(log, named, lsn))
+        return [dict(row, terms=json.loads(log.store.get(row['terms']).decode('utf-8')),
+                     terms_hash=row['terms']) for row in rows]
+
+    return folded(fold)
 
 
 def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None):

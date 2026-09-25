@@ -205,7 +205,7 @@ def test_the_cli_declares_the_home_verbs_and_the_home_flag():
     """Gated off the source, before the core exists to drive it. The HOME verbs are the ones spelled
     out individually, each carrying its own flags; every other verb registers from a table and is
     driven end to end below, so this gate stays the one that says a home is minted, verified,
-    signed, read, FOLLOWED and held to its invariants by exactly these six."""
+    signed, read, FOLLOWED, held to its invariants and SEEDED by exactly these seven."""
     with open(os.path.join(SPINE, 'cli.py'), encoding='utf-8') as handle:
         tree = ast.parse(handle.read(), filename='cli.py')
 
@@ -218,9 +218,9 @@ def test_the_cli_declares_the_home_verbs_and_the_home_flag():
             if isinstance(named, ast.Constant) and isinstance(named.value, str):
                 (verbs if node.func.attr == 'add_parser' else flags).add(named.value)
 
-    assert verbs == {'init', 'verify', 'checkpoint', 'status', 'follow', 'oracle'}
+    assert verbs == {'init', 'verify', 'checkpoint', 'status', 'follow', 'oracle', 'seed'}
     assert {'--home', '--chain-only', '--actor', '--once', '--blobs', '--script',
-            '--against'} <= flags
+            '--against', '--at', '--out'} <= flags
 
 
 def spine(*argv, **kwargs):

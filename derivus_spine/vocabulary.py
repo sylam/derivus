@@ -25,10 +25,11 @@ declared string must be non-empty.
 
 `BLOB_FIELDS` declares which of a body's hashes name bytes in the store, so referential closure is
 asked the same way by the writer and by a verifier over a log it did not write - not every 64-hex
-field is a blob. The closed set is in four parts because four different mouths speak it
-(`FACT_TYPES`, `CUSTODY_TYPES`, `PROVENANCE_TYPES`, `WRITER_TYPES`), `EVENT_TYPES` is the union
-`validate` consults, and `EVENT_VERB` names the capability verb each type demands - with
-`break_glass_used` answering to the genesis seat alone and `capability_denied` never gated.
+field is a blob. The closed set is in five parts because five different mouths speak it
+(`FACT_TYPES`, `CUSTODY_TYPES`, `PROVENANCE_TYPES`, `REFERENCE_TYPES`, `WRITER_TYPES`),
+`EVENT_TYPES` is the union `validate` consults, and `EVENT_VERB` names the capability verb each
+type demands - with `break_glass_used` answering to the genesis seat alone and `capability_denied`
+never gated.
 `classify` derives the entitlement class from provenance, so a reclassification is one declaration.
 """
 import math
@@ -144,11 +145,15 @@ def _validator(event_type, fields, open_body=False, optional=()):
 
 #: type -> validate(body). The trading vocabulary: observations, then judgment, then governance.
 FACT_TYPES = {
-    # A fill carries a SIGNED quantity, never a position, and an execution reference so a retry is
-    # the same fact by construction while two identical clips are two facts.
+    # A fill carries a SIGNED quantity - the position CHANGE in units of the instrument, 1 being the
+    # instrument as written - never a position, and an execution reference so a retry is the same
+    # fact by construction while two identical clips are two facts. `agreement` and `portfolio` are
+    # where the position sits and `price` what it was done at; a body carrying none of the three
+    # validates exactly as it did before they existed.
     'fill': _validator('fill', (
         ('instrument', HASH), ('quantity', NUMBER), ('counterparty', TEXT),
-        ('netting_set', TEXT), ('execution_reference', TEXT))),
+        ('netting_set', TEXT), ('execution_reference', TEXT)),
+        optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', TEXT))),
     # Economics are never edited: an amendment is a new instrument hash linked to the old one.
     'amendment': _validator('amendment', (
         ('instrument', HASH), ('amended_to', HASH))),
@@ -227,6 +232,19 @@ CUSTODY_TYPES = {
         ('class', TEXT), ('subject', TEXT), ('wrap', HASH))),
 }
 
+#: The reference vocabulary - who the book trades with and under what paper, said by the seat that
+#: keeps the legal documents rather than by the desk that books against them.
+REFERENCE_TYPES = {
+    # A legal entity is a counterparty the credit unit is; `parent` groups entities, nothing more.
+    'entity_declared': _validator('entity_declared', (
+        ('entity', TEXT), ('name', TEXT)), optional=(('parent', TEXT),)),
+    # An agreement's terms are an instrument - a netting set's, validated by the engine that prices
+    # it - cited by address. `kind` is the document's label as its declarer states it. A later
+    # declaration under one id restates the agreement; a balance is never here, being settlement.
+    'agreement_declared': _validator('agreement_declared', (
+        ('agreement', TEXT), ('entity', TEXT), ('kind', TEXT), ('terms', HASH))),
+}
+
 #: The writer's own voice, and the whole of it: a denial is a decision and so is appended rather
 #: than logged. Said by the writer about a submitter, so the public append refuses this type by name
 #: (log.py) and only the internal denial path emits it, under the actor `writer`.
@@ -240,18 +258,21 @@ WRITER_TYPES = {
 EVENT_TYPES = dict(FACT_TYPES)
 EVENT_TYPES.update(CUSTODY_TYPES)
 EVENT_TYPES.update(PROVENANCE_TYPES)
+EVENT_TYPES.update(REFERENCE_TYPES)
 EVENT_TYPES.update(WRITER_TYPES)
 
 #: What a submitter may name, and what an unknown-type refusal lists. `capability_denied` is
 #: excluded: it would advertise a door that is bolted.
-SUBMITTABLE = tuple(sorted(set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)))
+SUBMITTABLE = tuple(sorted(set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)
+                           | set(REFERENCE_TYPES)))
 
-#: The six capability verbs a policy document grants, spelled once. `draft` and `validate` name work
+#: The capability verbs a policy document grants, spelled once. `draft` and `validate` name work
 #: that happens before the log, so no event type demands them; they are here because the document
-#: granting them is evaluated by the same function.
-DRAFT, VALIDATE, BOOK, APPROVE, MARK, ADMIN = (
-    'draft', 'validate', 'book', 'approve', 'mark', 'admin')
-VERBS = (DRAFT, VALIDATE, BOOK, APPROVE, MARK, ADMIN)
+#: granting them is evaluated by the same function. Each is an ACT - who performs it is the
+#: deployment's grant, never a name here.
+DRAFT, VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, ADMIN = (
+    'draft', 'validate', 'book', 'approve', 'mark', 'document', 'admin')
+VERBS = (DRAFT, VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, ADMIN)
 
 #: The two authorizations that come from no policy document, named as pseudo-verbs so one evaluator
 #: answers every append. `RECOVERY` is the break-glass path, declared at genesis and answerable to
@@ -283,6 +304,9 @@ EVENT_VERB = {
     'official_close_declared': MARK,
     'fixing_observed': MARK,
     'determination': MARK,              # a ruling where the contract vests the call in an agent
+    # document: the paper the book trades under - its counterparties and their agreements.
+    'entity_declared': DOCUMENT,
+    'agreement_declared': DOCUMENT,
     # admin: governance, custody and the deployment attesting to its own position.
     'policy_declared': ADMIN,           # every policy, capabilities included - see the strand rule
     'retention_declared': ADMIN,
@@ -290,7 +314,7 @@ EVENT_VERB = {
     'checkpoint': ADMIN,
     'seat_enrolled': ADMIN,
     'key_wrapped': ADMIN,
-    # Outside the six, and outside any document.
+    # Outside the document verbs, and outside any document.
     'break_glass_used': RECOVERY,       # the genesis seat's, doc or no doc; anyone else's is denied
     'capability_denied': WRITER,        # never gated, or a denial could itself be denied
 }
@@ -332,6 +356,9 @@ BLOB_FIELDS = {
     # A quote cites the board it was struck on; the solved coordinates and the edge ride in the body
     # and the plan is re-derivable.
     'quote_filed': ('values_hash',),
+    # An agreement's terms, so a replica pulling blobs holds the netting set every position under
+    # the agreement is compiled into.
+    'agreement_declared': ('terms',),
 }
 
 

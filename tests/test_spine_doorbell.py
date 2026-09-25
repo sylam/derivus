@@ -75,7 +75,7 @@ from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.custody import CLASS_KEY_FILE, enroll, materialize, rewrap, seat_key_path
 from derivus_spine.log import EVENT_VERSION, aad_bytes, event_hash, now_stamp
 from derivus_spine.projections import PROJECTORS, fold
-from derivus_spine.verbs import file_quote
+from derivus_spine.verbs import declare_agreement, declare_entity, file_quote
 from derivus_spine.verify import verify_chain
 from derivus_spine.vocabulary import FIRM_CLASS, VERBS
 
@@ -135,8 +135,9 @@ def granted(log, actor, verbs=VERBS, read=(ACTOR,)):
 
 
 def hub_of(tmp_path):
-    """The design's synthetic book, then 5b's quote flow, then a document in force and a stranger
-    refused under it - so every one of the nine projectors has rows to disagree about.
+    """The design's synthetic book, then 5b's quote flow, then the paper the book trades under,
+    then a document in force and a stranger refused under it - so every projector has rows to
+    disagree about.
 
     Answers `(home, log)` with the writer still open.
     """
@@ -146,6 +147,9 @@ def hub_of(tmp_path):
                ticket='b' * 64, book=BOOK)
     file_quote(log, ACTOR, 'Q-2', 'Accumulator', 'a' * 64, values, {'strike': 16.5}, 900.0,
                book=BOOK)
+    declare_entity(log, ACTOR, 'LEI-5493001KJTIIGC8Y1R12', 'a counterparty')
+    declare_agreement(log, ACTOR, 'CSA-0007', 'LEI-5493001KJTIIGC8Y1R12', 'ISDA 2002 with CSA',
+                      b'{"Object":"NettingCollateralSet","Reference":"CSA-0007"}')
     granted(log, ACTOR)
     with pytest.raises(CapabilityDenied):
         log.append('fill', fill('EXEC-STRANGER'), actor=STRANGER, book=BOOK)
@@ -219,8 +223,8 @@ def test_a_dropped_duplicated_or_reordered_doorbell_converges_every_replica(tmp_
     Three followers off one hub, each handed its own view of one stream as a list. The lossy one is
     behind when the rounds end, which is what makes the mutilation real rather than decorative; one
     more beat - the next head move, or the metronome the stream falls back to - covers it, and then
-    the three chain-only verifications carry one head hash and all nine projectors fold to
-    byte-equal rows.
+    the three chain-only verifications carry one head hash and every projector folds to byte-equal
+    rows.
     """
     hub, writer = hub_of(tmp_path)
     reader = served(hub)
@@ -252,7 +256,7 @@ def test_a_dropped_duplicated_or_reordered_doorbell_converges_every_replica(tmp_
     assert set(report['events'] for report in reports) == {writer.head()[0]}
 
     rows = [folded(entitled_by_copy(hub, tmp_path / name)) for name in sorted(streams)]
-    assert len(rows[0]) == 9, sorted(rows[0])
+    assert sorted(rows[0]) == sorted(PROJECTORS), sorted(rows[0])
     for name in sorted(rows[0]):
         assert rows[0][name] == rows[1][name] == rows[2][name], name
     assert json.loads(rows[0]['denials'])[0]['subject'] == STRANGER

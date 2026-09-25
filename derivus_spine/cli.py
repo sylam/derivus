@@ -16,8 +16,9 @@
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
 head), `status` (read it), `follow` (pull a hub's frames into this home, the one verb that
-speaks to a network and the one that only ever reads at the far end) and `oracle` (answer the nine
-invariants over what this home holds, against what a day's script says was asked).
+speaks to a network and the one that only ever reads at the far end), `oracle` (answer the nine
+invariants over what this home holds, against what a day's script says was asked) and `seed`
+(mint the folds at an official close into a folder a reader starts from).
 
 The identity verbs are `enroll` (mint a seat keypair), `grant` (declare a capabilities document),
 `rewrap` (wrap the class key to whoever the document now admits), `name` (the mutable display-name
@@ -43,6 +44,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 
 from derivus_spine import SpineLog, SpineRefusal, init_home, verify_home, write_checkpoint
@@ -146,6 +148,49 @@ def do_oracle(args):
                             script=read_json(args.script, 'game script') if args.script else None)
     report(answers)
     return 1 if oracle.failed(answers) else 0
+
+
+def do_seed(args):
+    """Mint a seed for every projector but the strip at one official close, into `--out` (the
+    home's own `seeds/` where none is named), and report what was written.
+
+    The close is `--at`: an LSN, a day (`YYYY-MM-DD`, the last close true on or before it), or the
+    last close there is where nothing is named. When this runs and where the folder is are the
+    deployment's own - an end of day dropping its seeds where every seat reads them, or a seat
+    standing at a day of its own choosing.
+    """
+    from derivus_spine import projections
+    log = SpineLog(spine_home(args.home))
+    try:
+        close_lsn = named_close(log, args.at)
+        seeds = [projections.seed_at(log, projections.PROJECTORS[name], close_lsn, args.out)
+                 for name in sorted(projections.PROJECTORS) if name not in projections.UNSEEDED]
+    finally:
+        log.close()
+    return report({'close_lsn': close_lsn,
+                   'folder': os.path.abspath(args.out) if args.out
+                   else os.path.join(spine_home(args.home), projections.SEEDS),
+                   'seeds': [{'projector': seed['projector'], 'version': seed['version'],
+                              'state_hash': seed['state_hash']} for seed in seeds]})
+
+
+def named_close(log, at):
+    """The close `at` names: an LSN as given, a `YYYY-MM-DD` day's last close, or the last close
+    there is. `MalformedEvent` where it names none."""
+    from derivus_spine import projections
+    if at is not None and at.isdigit():
+        return int(at)
+    if at is not None and not re.match(r'^\d{4}-\d{2}-\d{2}$', at):
+        raise MalformedEvent(
+            '--at {!r} is neither an LSN nor a day: name the close as its position in the log, or '
+            'as YYYY-MM-DD for the last close true on or before that day'.format(at))
+    found = projections.close_on(log, at)
+    if found is None:
+        raise MalformedEvent(
+            'this home holds no official close{} - a seed stands at a close, the one position '
+            'where the desk already agrees what the day was'.format(
+                '' if at is None else ' on or before {}'.format(at)))
+    return found
 
 
 def read_json(path, what):
@@ -418,6 +463,17 @@ def build_parser():
                        help='a second copy of this record to compare heads and folds with at the '
                             'shallower of the two heads')
     asked.set_defaults(run=do_oracle)
+
+    minted_seeds = verbs.add_parser('seed', parents=[common],
+                                    help='mint the folds at one official close into a folder, '
+                                         'so a reader starts at that close instead of genesis')
+    minted_seeds.add_argument('--at', type=str, default=None,
+                              help='the close: an LSN, or YYYY-MM-DD for the last close true on '
+                                   'or before that day; the last close there is where omitted')
+    minted_seeds.add_argument('--out', type=str, default=None,
+                              help='the folder to file the seeds in - one every seat reads, or a '
+                                   'seat\'s own; the home\'s seeds/ where omitted')
+    minted_seeds.set_defaults(run=do_seed)
 
     for verb, help_text, arguments, runner in IDENTITY_VERBS + POLICY_VERBS:
         seated = verbs.add_parser(verb, parents=[common], help=help_text)

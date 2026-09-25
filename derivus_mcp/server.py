@@ -121,7 +121,10 @@ day's close on the record over the values the book is carrying, once close_check
 legal - declare_market is that same act under any other name - export_settlements strikes the
 settlement file for a day, on the market the desk designated for it and on no other, and
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
-what close_check then stops waiting on."""
+what close_check then stops waiting on. THE PAPER the book trades under is declared too, by the seat
+that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
+and never a balance, and describe_agreements to read them - a booking then names its agreement,
+and its quantity is the position change in units of the deal, 1 booking it as written."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -518,7 +521,9 @@ def _stated(**fields):
 
 @MCP.tool()
 def book_deal(deal: dict, parent_reference: str | None = None, quantity: float | None = None,
-              execution_reference: str | None = None, actor: str | None = None) -> dict:
+              execution_reference: str | None = None, actor: str | None = None,
+              agreement: str | None = None, portfolio: str | None = None,
+              price: float | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -532,10 +537,13 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     books it INSIDE a container deal (a structure, a netting set).
 
     WHERE THE DESK KEEPS A RECORD, three more are required and refuse by name without them:
-    `quantity` is the SIGNED size the desk took, `execution_reference` is the venue exec id or
-    ticket id that makes a retry the same fact, and the deal must sit under a
-    `NettingCollateralSet` naming a counterparty. `actor` is the seat the fact is filed under.
-    A desk that keeps no record ignores all four.
+    `quantity` is the position change in units of the deal - 1 books it as written, -1 closes it,
+    -0.5 unwinds half - `execution_reference` is the venue exec id or ticket id that makes a retry
+    the same fact, and the deal must sit under a `NettingCollateralSet` naming a counterparty.
+    `agreement` names an agreement `describe_agreements` lists - the set it sits under must be the
+    set of that name - `portfolio` where the position sits (the book's own name if left out), and
+    `price` what it was done at. `actor` is the seat the fact is filed under. A desk that keeps no
+    record ignores all of them.
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
@@ -554,7 +562,8 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     return _booking(service().call('POST', '/book/deals', json=dict(
         {'action': 'add', 'deal': deal},
         **_stated(parent_reference=parent_reference, quantity=quantity,
-                  execution_reference=execution_reference, actor=actor))))
+                  execution_reference=execution_reference, actor=actor, agreement=agreement,
+                  portfolio=portfolio, price=price))))
 
 
 @MCP.tool()
@@ -1519,6 +1528,49 @@ def file_status(subject: str, status: str, actor: str | None = None) -> dict:
     """
     return service().call('POST', '/book/transition', json=dict(
         {'subject': subject, 'status': status}, **_stated(actor=actor)))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_agreements() -> dict:
+    """The paper the book trades under: every legal entity the record declares, with the parent it
+    is grouped under, and every agreement with the entity it is with, the document's kind and the
+    netting-set terms its positions compile into. 404 on a box that records nothing.
+    """
+    return dict(service().call('GET', '/book/entities'),
+                **service().call('GET', '/book/agreements'))
+
+
+@MCP.tool()
+def declare_legal_entity(entity: str, name: str, parent: str | None = None,
+                         actor: str | None = None) -> dict:
+    """Declare a legal entity the book may trade with - the credit unit a client is.
+
+    `entity` is its id as the legal system knows it, `name` what a reader is shown, `parent` the
+    entity it is grouped under, if any. Declaring one is the `document` act, which only a seat
+    granted it may perform; a second declaration under one id restates it. Answers
+    `{recorded: {lsn}, entity}`.
+    """
+    return service().call('POST', '/book/entities', json=dict(
+        {'entity': entity, 'name': name}, **_stated(parent=parent, actor=actor)))
+
+
+@MCP.tool()
+def declare_agreement(agreement: str, entity: str, kind: str, terms: dict,
+                      actor: str | None = None) -> dict:
+    """Declare an agreement with a declared legal entity: its id, the document's `kind` as you
+    label it (an ISDA with a CSA, a GMRA, a long-form confirmation), and its `terms` - a
+    `NettingCollateralSet` block (`describe_instrument_type`), which every position booked under
+    the agreement is compiled into.
+
+    The terms carry the paper and nothing else: no Children - a position is a fill booked against
+    the agreement - and no balance or collateral amount, which arrive as settlements. The engine
+    judges them before anything is recorded and a refusal names what to fix. Declaring one is the
+    `document` act; a second declaration under one id restates it. Answers
+    `{recorded: {lsn}, agreement, terms}`, `terms` the address they are stored at.
+    """
+    return service().call('POST', '/book/agreements', json=dict(
+        {'agreement': agreement, 'entity': entity, 'kind': kind, 'terms': terms},
+        **_stated(actor=actor)))
 
 
 @MCP.tool()

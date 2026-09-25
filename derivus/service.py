@@ -103,10 +103,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
 from .schema import (mapping, deal_at, job_children, quote_plan, quote_stamps, remove_deal,
-                     sniff_indent, splice_deal, tables_of, update_market_quote, value_message,
-                     walk_job_deals)
+                     sniff_indent, splice_deal, tables_of, update_market_quote,
+                     validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
-from .config import Config, ModelParams, as_json
+from .config import Config, ModelParams, as_json, decode_wire
+from .instruments import construct_instrument
 from . import diary
 from .spine import replay
 
@@ -898,7 +899,8 @@ def book_name(document):
     return named if isinstance(named, str) and named else None
 
 
-def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
+def spine_fill(document, deal_path, quantity, execution_reference, actor=None, agreement=None,
+               portfolio=None, price=None):
     """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
 
     THE EVENT GOES FIRST: called after the verdict and before `Book.mutate` writes the file, so a
@@ -906,8 +908,12 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
     round, the file being the interim stand-in and the log what is true.
 
     Three things a fill carries have no default and refuse by name: the netting set and its
-    counterparty, off the set the trade sits inside, and the execution reference, which is what
-    makes a retry the same fact by construction.
+    counterparty, and the execution reference, which is what makes a retry the same fact by
+    construction. A booking naming an `agreement` takes both from the agreement the record
+    declares - its id and its entity - and must sit under the file's set of that name, the set
+    being the agreement's materialisation; one naming none takes them off the set it sits inside.
+    `portfolio` is where the position sits, the book's own name where none is stated, and `price`
+    what it was done at.
     """
     if not spine.configured():
         return {}
@@ -918,7 +924,21 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
             'counterparty and a netting set on the row: book it under the client\'s set - that is '
             'where the counterparty and the CSA are declared, and it is the unit the CVA is '
             'projected over'.format(deal_path))
-    counterparty, _ = set_terms(node)
+    if agreement is not None:
+        declared = dict((row['agreement'], row) for row in spine.agreements())
+        if agreement not in declared:
+            raise spine.SpineRefused(
+                'this booking names agreement {!r} and the record declares {} - an agreement is '
+                'declared before anything is booked under it, by the seat that keeps the legal '
+                'documents'.format(agreement, ', '.join(sorted(declared)) or 'none'))
+        if node.get('Reference') != agreement:
+            raise spine.SpineRefused(
+                'this booking names agreement {!r} and sits under the netting set {!r}: the set is '
+                'the agreement\'s materialisation in the book, so book it under the set of that '
+                'name'.format(agreement, node.get('Reference')))
+        counterparty = declared[agreement]['entity']
+    else:
+        counterparty, _ = set_terms(node)
     if not counterparty:
         raise spine.SpineRefused(
             'the netting set {!r} names no counterparty in its Credit_Support_Amounts, and a fill '
@@ -937,7 +957,8 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None):
     return {'recorded': spine.book(
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor,
-        book_name=book_name(document))}
+        book_name=book_name(document), price=price, agreement=agreement,
+        portfolio=portfolio or book_name(document))}
 
 
 def spine_amendment(document, deal_path, before, actor=None):
@@ -980,10 +1001,13 @@ def book_deals(request: dict):
 
     UNDER A SPINE HOME the write is a pair and the event goes first: an `add` appends the `fill`
     and an `amend` the `amendment` before the file is rewritten, and the outcome carries the
-    envelope under `recorded`. `quantity` and `execution_reference` become required, and the deal
-    must sit under a `NettingCollateralSet` naming a counterparty; each of the three refuses by
-    name. A `delete` records nothing: what ends a trade is an election, an expiry observation or a
-    status transition, filed through `POST /book/transition`. Without a home this is inert.
+    envelope under `recorded`. `quantity` - the position change in units of the instrument, 1 being
+    the deal as written - and `execution_reference` become required, and the deal must sit under a
+    `NettingCollateralSet` naming a counterparty; each of the three refuses by name. `agreement`
+    names a declared agreement the set materialises, `portfolio` where the position sits and
+    `price` what it was done at. A `delete` records nothing: what ends a trade is an election, an
+    expiry observation or a status transition, filed through `POST /book/transition`. Without a
+    home this is inert.
 
     SO UNDER A HOME THIS EDIT APPENDS BEFORE IT WRITES, and takes `Book.transact` - the whole act
     under the book lock, one pass and no redo. A redo whose second pass refuses what the first
@@ -1025,7 +1049,8 @@ def book_deals(request: dict):
         if written:
             outcome = dict(outcome, _validated=outcome['validate'], **spine_fill(
                 document, outcome['deal_path'], request.get('quantity'),
-                request.get('execution_reference'), request.get('actor')))
+                request.get('execution_reference'), request.get('actor'),
+                request.get('agreement'), request.get('portfolio'), request.get('price')))
         return written, outcome
 
     live = live_book()
@@ -1508,28 +1533,31 @@ POSITION_EVENTS = ('fill', 'amendment')
 
 
 def record_positions(lsn=None):
-    """The record's positions at `lsn`, or AT THE HEAD where none is named, each amendment chain
-    collapsed onto its HEAD.
+    """The record's positions at `lsn`, or AT THE HEAD where none is named, per INSTRUMENT - the
+    file's own unit - each amendment chain collapsed onto its HEAD.
 
-    A deal whose terms were restruck is the deal the file now holds, so the chain's clips and its
-    signed quantity are answered under the instrument it was amended INTO - which reconciles clean
-    whichever end of the link the quantity is carried on.
+    The record keys a position where it sits, instrument by agreement by portfolio, and the file
+    holds a deal node per instrument, so the two meet on the instrument: every row of one is summed
+    and the netting set is the agreement a row sits under. A deal whose terms were restruck is the
+    deal the file now holds, so the chain's clips and its signed quantity are answered under the
+    instrument it was amended INTO - which reconciles clean whichever end of the link the quantity
+    is carried on.
     """
     projections = spine.package().projections
-    rows = spine.folded(lambda log: projections.PROJECTORS['positions'].rows(
-        projections.fold(log, projections.PROJECTORS['positions'], lsn=lsn)))
-    at = {row['instrument']: row for row in rows}
+    named = projections.PROJECTORS['positions']
+    rows = spine.folded(lambda log: named.rows(spine.fold_from(log, named, lsn)))
+    moved = dict((row['instrument'], row['amended_to']) for row in rows if row['amended_to'])
     heads = {}
     for row in rows:
         instrument, seen = row['instrument'], set()
-        while at.get(instrument, {}).get('amended_to') and instrument not in seen:
+        while instrument in moved and instrument not in seen:
             seen.add(instrument)
-            instrument = at[instrument]['amended_to']
+            instrument = moved[instrument]
         head = heads.setdefault(instrument, {'instrument': instrument, 'quantity': 0.0,
                                              'clips': 0, 'netting_set': None, 'last_lsn': 0})
         head['quantity'] += row['quantity']
         head['clips'] += row['clips']
-        head['netting_set'] = row['netting_set'] or head['netting_set']
+        head['netting_set'] = row['agreement'] or head['netting_set']
         head['last_lsn'] = max(head['last_lsn'], row['last_lsn'])
     return heads
 
@@ -1865,6 +1893,107 @@ def book_transition(request: dict):
                                       actor=request.get('actor'), book=book_name(document))
     return {'recorded': {'lsn': filed['lsn']}, 'subject': request.get('subject'),
             'status': request.get('status')}
+
+
+#: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
+#: by what the settlement interface files, so a netting set's opening balance and every collateral
+#: row's amount are refused in its terms.
+AGREEMENT_STATE = ('Opening_Balance',)
+HOLDING_AMOUNTS = ('Amount', 'Units', 'Principal')
+
+
+def agreement_terms(terms, agreement):
+    """`terms` judged as the netting set an agreement's positions compile into, its `Reference`
+    the agreement's own id - or the 422 naming what is wrong with it.
+
+    Judged by the engine that prices it: a block that is not a `NettingCollateralSet`, one carrying
+    positions, one its own declarations say something about, and one stating a balance or a holding
+    are each refused by name. Nothing here reads a book, so a record with no book file declares its
+    paper the same way.
+    """
+    if not isinstance(terms, dict) or terms.get('Object') != 'NettingCollateralSet':
+        raise HTTPException(422, 'an agreement\'s terms are the netting set its positions are '
+                                 'compiled into - post a NettingCollateralSet block under `terms`, '
+                                 'not {!r}'.format(terms if not isinstance(terms, dict)
+                                                   else terms.get('Object')))
+    if terms.get('Children'):
+        raise HTTPException(422, 'the terms of {!r} carry Children: a position under an agreement '
+                                 'is a fill booked against it, never part of its paper'.format(
+                                     agreement))
+    stated = dict(terms, Reference=agreement)
+    state = ['{} is {!r}'.format(field, stated[field]) for field in AGREEMENT_STATE
+             if stated.get(field)]
+    state += ['Collateral_Assets.{}[{}].{} is {!r}'.format(table, position, field, row[field])
+              for table, rows in sorted((stated.get('Collateral_Assets') or {}).items())
+              for position, row in enumerate(rows or []) if isinstance(row, dict)
+              for field in HOLDING_AMOUNTS if row.get(field)]
+    if state:
+        raise HTTPException(422, 'the terms of {!r} state {}: a balance and a holding are '
+                                 'settlement state, arriving through the settlement interface, '
+                                 'never terms of the paper - state the eligible collateral with no '
+                                 'amounts'.format(agreement, '; '.join(state)))
+    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
+        wire, lambda deal: deal))
+    said = validate_instrument(construct_instrument(decoded, {}))
+    if said:
+        raise HTTPException(422, 'the terms of {!r} are not a netting set the engine can compile: '
+                                 '{}'.format(agreement, '; '.join(said)))
+    return stated
+
+
+@app.post('/book/entities', summary='Declare a legal entity the book trades with')
+def book_entity_declared(request: dict):
+    """`{entity, name, parent?, actor}` - declare a legal entity: its id as the deployment's legal
+    system knows it, the name a reader is shown, and the parent it is grouped under, if any.
+
+    The act is `document`, which the record enforces at the append in its own words; which seat
+    holds it is the deployment's grant. A second declaration under one id restates the entity. 404
+    where no home is configured.
+    """
+    recorded()
+    filed = spine.declare_entity(request.get('entity'), request.get('name'),
+                                 parent=request.get('parent'), actor_name=request.get('actor'))
+    return {'recorded': {'lsn': filed['lsn']}, 'entity': request.get('entity')}
+
+
+@app.get('/book/entities', summary="The record's legal entities")
+def book_entities():
+    """`{entities}` - every legal entity the record declares, with the parent each is grouped
+    under. 404 where no home is configured."""
+    recorded()
+    return {'entities': spine.entities()}
+
+
+@app.post('/book/agreements', summary='Declare an agreement with a legal entity')
+def book_agreement_declared(request: dict):
+    """`{agreement, entity, kind, terms, actor}` - declare an agreement: its id, the entity it is
+    with, the document's kind as its declarer labels it, and its TERMS - the netting set every
+    position under it is compiled into.
+
+    The terms are judged by the engine before anything appends (`agreement_terms`), the entity must
+    already be declared, and the act is `document`, enforced by the record. A second declaration
+    under one id restates the agreement, and a read before it still answers the terms it
+    answered. 404 where no home is configured.
+    """
+    recorded()
+    agreement, entity = request.get('agreement'), request.get('entity')
+    terms = agreement_terms(request.get('terms'), agreement)
+    declared = sorted(row['entity'] for row in spine.entities())
+    if entity not in declared:
+        raise HTTPException(422, 'agreement {!r} names entity {!r} and the record declares {} - '
+                                 'declare the entity first'.format(
+                                     agreement, entity, ', '.join(declared) or 'none'))
+    filed = spine.declare_agreement(agreement, entity, request.get('kind'), terms,
+                                    actor_name=request.get('actor'))
+    return {'recorded': {'lsn': filed['lsn']}, 'agreement': agreement, 'terms': filed['terms']}
+
+
+@app.get('/book/agreements', summary="The record's agreements, each with its terms")
+def book_agreements():
+    """`{agreements}` - every agreement the record declares, with the entity, the kind and the
+    terms it was declared under. 404 where no home is configured."""
+    recorded()
+    return {'agreements': spine.agreements()}
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")
@@ -4984,24 +5113,10 @@ def solved_coordinates(legs):
     return found
 
 
-def quote_quantity(pending):
-    """The SIGNED quantity a booked quote lands as: the notional it was struck on, with the DESK's
-    side on it.
-
-    A fill carries a quantity and never a position, and the sign is which way the desk went. The
-    quote is CLIENT paper and `/book/quote` books the mirror, so the desk's side is the opposite: a
-    client who bought the structure leaves the desk short it. Read off the first leg carrying a
-    side, a structure's legs being one trade.
-
-    A quote with no notional or no sided leg answers None, which `spine_fill` turns into a named
-    refusal rather than a guess.
-    """
-    quoted = pending.get('quote') or {}
-    notional = (quoted.get('params') or {}).get('notional')
-    sides = [leg.get('buy_sell') for leg in quoted.get('legs') or [] if leg.get('buy_sell')]
-    if not isinstance(notional, (int, float)) or isinstance(notional, bool) or not sides:
-        return None
-    return float(notional) if sides[0] == 'Sell' else -float(notional)
+#: The position an accepted quote books: one unit of its MIRROR as written. The quote is client
+#: paper and `/book/quote` books the mirror, whose terms carry the desk's side and the notional
+#: struck, so the fill says how many of that instrument the desk now holds and nothing about either.
+MIRROR_AS_WRITTEN = 1.0
 
 
 def spot_failure():
@@ -5455,7 +5570,7 @@ def book_quote(request: dict):
             outcome = dict(outcome, valuation_configuration=models)
         if written:
             outcome = dict(outcome, **spine_fill(
-                book, outcome['deal_path'], quote_quantity(pending), quote_id, acceptor))
+                book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, acceptor))
             if verdict is not None:
                 pending_written(path, pending, booked={
                     'lsn': outcome['recorded']['lsn'], 'deal_path': outcome['deal_path']})

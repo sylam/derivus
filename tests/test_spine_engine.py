@@ -971,6 +971,88 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
+    """Legal's half and the desk's, through the service.
+
+    An entity is declared and then an agreement with it, its terms judged by the engine before
+    anything appends: a block that is not a netting set, one carrying positions, one stating a
+    balance or a holding, one its own declarations refuse and one naming an entity nobody declared
+    each refuse by name with nothing recorded. A booking naming the agreement files it on the fill,
+    the counterparty being the agreement's entity, beside the portfolio - the book's own where none
+    is stated - and the price it was done at; the position is keyed by the agreement and the
+    portfolio. A booking naming an agreement nobody declared, or sitting under another set than
+    the agreement's own, refuses by name and leaves the file byte-identical.
+
+    Killing mutations: the counterparty read off the file's set rather than the agreement books
+    `CPTY_A` where the paper says `LEI-A`; the portfolio default dropped files the second booking
+    under the book only through the fold's fallback, and the fill carries no portfolio.
+    """
+    def declared(body):
+        return CLIENT.post('/book/agreements', content=dump(body), headers=JSON)
+
+    terms = netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump(
+        {'entity': 'LEI-A', 'name': 'Client A', 'parent': 'LEI-GROUP'}),
+        headers=JSON).status_code == 200
+    head_before = head(recorded)
+    for body, said in (
+            (dict(terms, Object='FixedCashflowDeal'), 'NettingCollateralSet block'),
+            (dict(terms, Children=[{'Instrument': {'.Deal': CASHFLOW}}]), 'carry Children'),
+            (dict(terms, Opening_Balance=1_000_000.0), 'Opening_Balance is 1000000.0'),
+            (dict(terms, Collateral_Assets={'Cash_Collateral': [{'Currency': 'USD',
+                                                                  'Amount': 500_000.0}]}),
+             'Cash_Collateral[0].Amount is 500000.0'),
+            (dict(terms, Netted='Sometimes'), 'Netted is')):
+        refused = declared({'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
+                            'terms': body})
+        assert refused.status_code == 422 and said in refused.json()['detail'], said
+    stranger = declared({'agreement': CLIENT_SET, 'entity': 'LEI-Z', 'kind': 'ISDA 2002',
+                         'terms': terms})
+    assert stranger.status_code == 422 and 'declare the entity first' in stranger.json()['detail']
+    assert head(recorded) == head_before, 'a refused declaration recorded something'
+
+    signed = declared({'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002 with CSA',
+                       'terms': terms}).json()
+    agreements = CLIENT.get('/book/agreements').json()['agreements']
+    assert [(row['agreement'], row['entity'], row['kind']) for row in agreements] == [
+        (CLIENT_SET, 'LEI-A', 'ISDA 2002 with CSA')]
+    assert agreements[0]['terms_hash'] == signed['terms']
+    assert agreements[0]['terms']['Reference'] == CLIENT_SET
+    assert CLIENT.get('/book/entities').json()['entities'][0]['parent'] == 'LEI-GROUP'
+
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'] += [
+        netting_set(CLIENT_SET, 'CPTY_A'), netting_set('CLIENT_B', 'CPTY_B')]
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    before = desk.read_bytes()
+    deal = dict(CASHFLOW, Reference='CF-PAPER', Amount=250_000.0)
+    for parent, agreement, said in (('CLIENT_B', CLIENT_SET, 'materialisation'),
+                                    (CLIENT_SET, 'ISDA-NOBODY', 'the record declares')):
+        refused = CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': deal, 'parent_reference': parent, 'agreement': agreement,
+            'quantity': 1.0, 'execution_reference': 'EXEC-PAPER'}), headers=JSON)
+        assert refused.status_code == 422 and said in refused.json()['detail'], said
+        assert desk.read_bytes() == before, 'a refused booking moved the file'
+
+    for reference, portfolio in (('EXEC-PAPER', 'Rates/EM'), ('EXEC-BOOK', None)):
+        booked = CLIENT.post('/book/deals', content=dump(dict(
+            {'action': 'add', 'deal': dict(deal, Reference=reference), 'parent_reference':
+             CLIENT_SET, 'agreement': CLIENT_SET, 'quantity': 1.0, 'price': 99.5,
+             'execution_reference': reference},
+            **({} if portfolio is None else {'portfolio': portfolio}))), headers=JSON).json()
+        assert booked['written'] is True, booked
+    fills = [body for _, _, body in facts(recorded, 'fill')]
+    assert [(fill['agreement'], fill['counterparty'], fill['portfolio'], fill['price'])
+            for fill in fills] == [(CLIENT_SET, 'LEI-A', 'Rates/EM', 99.5),
+                                   (CLIENT_SET, 'LEI-A', 'spine-desk', 99.5)]
+    projections = service.spine.package().projections
+    positions = projections.PROJECTORS['positions']
+    rows = service.spine.folded(lambda log: positions.rows(projections.fold(log, positions)))
+    assert {(row['agreement'], row['portfolio']) for row in rows} == {
+        (CLIENT_SET, 'Rates/EM'), (CLIENT_SET, 'spine-desk')}
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
 # --------------------------------------------------------------------------------------------
 # A market is its numbers.
 
@@ -1182,13 +1264,15 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     _, _, fill_body = facts(recorded, 'fill')[0]
     assert fill_body['execution_reference'] == quote['quote_id']
     assert fill_body['netting_set'] == CLIENT_SET and fill_body['counterparty'] == 'CPTY_A'
-    assert abs(fill_body['quantity']) == AMOUNT
-    bought = [leg['buy_sell'] for leg in quote['legs'] if leg['buy_sell']][0]
-    assert (fill_body['quantity'] < 0) is (bought == 'Buy'), \
-        'the desk took the same side as its client'
+    assert fill_body['quantity'] == 1.0, 'one unit of the mirror as written'
     landed = json.loads(quoting.read_text())
     node = deal_at(landed, booked['deal_path'])
     assert fill_body['instrument'] == derivus.content_hash(service.instrument_of(node))
+    # the side and the size live in the mirror's own terms, which is the instrument the fill cites
+    bought = [leg['buy_sell'] for leg in quote['legs'] if leg['buy_sell']][0]
+    held = [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']
+            if child['Instrument']['.Deal'].get('Buy_Sell')][0]
+    assert held != bought, 'the desk took the same side as its client'
     assert body['ticket'] == service.load(landed).plan_hash(), \
         'the ticket is not the plan this booking left the book at'
 

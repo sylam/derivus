@@ -11,8 +11,10 @@ before it books — over the compute itself a queue that asks who is submitting 
 anything, around the whole of it a REPLICA: a read-only copy that pulls the hub's own frames,
 verifies them where it stands and is told when there is something to pull, and over all of that an
 ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
-scripted faults beside it, held to nine invariants. A library, a CLI, eight
-delegators on `Context`, nine read verbs and six write verbs on the service, and 356 gates.
+scripted faults beside it, held to nine invariants. **8** adds the paper the book trades under -
+its legal entities and agreements - with every position keyed where it sits, and seeds filed where
+a deployment says. A library, a CLI, eight delegators on `Context`, eleven read verbs and eight
+write verbs on the service, and 361 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -1039,6 +1041,46 @@ between a copy of the record and a copy with every position in it and the terms 
 **ONE SCOPE FOR AN APPROVAL.** A ticket is the plan THIS book would have, so both verdicts — the
 tier's automatic signature and the second seat's own hand — are filed under the job's own book, and
 one grant answers both.
+
+## Increment 8 — the paper, and where a position sits
+
+**A POSITION IS KEYED WHERE IT SITS.** A `fill` carries three more fields, each optional so a body
+filed before them validates exactly as it did: the `agreement` and the `portfolio` it sits under,
+and the `price` it was done at. Its `quantity` is the signed position CHANGE in units of the
+instrument - 1 the instrument as written, -1 closing it, -0.5 unwinding half - and the position is
+a fold, never written. `positions` is version 2 and keys by instrument × agreement × portfolio: one
+instrument under two agreements is two positions, credit exposure being per agreement, and in two
+portfolios it is two, a portfolio being where risk is owned. A fill filed before the key existed
+sits under its netting set and its book, and an amendment carries every row forward under its own
+key. An accepted quote books ONE UNIT of its mirror as written, whose terms carry the desk's side
+and the notional struck.
+
+**THE PAPER IS DECLARED.** A fifth part of the closed vocabulary, said by the seat that keeps the
+legal documents rather than by the desk: `entity_declared` - an id, a name, and an optional parent
+that groups it - and `agreement_declared` - an id, the entity, a kind as its declarer labels it,
+and the terms: the netting set its positions compile into, cited by address so a replica pulling
+blobs holds them. The act is a seventh capability verb, `document`; who holds it is the
+deployment's grant, so the record names no department. The `entities` and `agreements` folds read
+them, a restatement standing by the as-of key and an agreement naming the declaration it stood
+over. `POST /book/entities` and `POST /book/agreements` are the service's mouths, the terms judged
+by the engine before anything appends - not a netting set, carrying positions, stating a balance or
+a holding (settlement state, never paper), or refused by their own declarations, each by name - with
+a `GET` beside each, and the binding's `declare_legal_entity`, `declare_agreement` and
+`describe_agreements`. A booking naming an `agreement` takes its counterparty from the agreement's
+entity and must sit under the file's set of that name, the set being the agreement's
+materialisation; its `portfolio` is the book's own name where none is stated.
+
+**A SEED IS FILED WHERE THE DEPLOYMENT SAYS.** `DV_Spine seed --at <lsn|day> [--out <folder>]` mints
+every fold but the strip's at an official close - the last one true on a day, where a day is named -
+into a folder: one every seat reads after an end of day, or a seat's own for a day it wants to
+stand at. A reader takes the newest seed at or behind its head from `DV_SPINE_SEEDS` (the home's
+`seeds/` where unset), verified as ever and of its own projector's version only, and folds the
+day's events on top; the seam's reads and a booking's `advancing` pair start there. When a seed is
+minted and how long a folder keeps one are operating policy rather than machinery.
+
+`tests/test_spine_paper.py` holds the record's half - the keyed fold over five clips and an
+amendment, the paper's folds with a backdated restatement and a lost citation, the seed folder, the
+verb - and `tests/test_spine_engine.py` the service's.
 
 ## What is not built yet
 

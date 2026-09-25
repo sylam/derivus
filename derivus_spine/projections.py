@@ -32,6 +32,7 @@ the fold that would consume it. Deleting `seeds/` costs one refold.
 """
 import json
 import os
+import pathlib
 
 from .canon import canonical_bytes, content_hash
 from .errors import SpineRefusal
@@ -73,8 +74,14 @@ SUMMARIES = {
     'quote_filed': 'a quote was filed',
     'seat_enrolled': 'a seat was enrolled',
     'key_wrapped': 'a class key was wrapped to a seat',
+    'entity_declared': 'a legal entity was declared',
+    'agreement_declared': 'an agreement was declared',
     'capability_denied': 'the writer refused an append',
 }
+
+#: The projectors a seed is never minted for. The strip's state IS its history, so copying it out of
+#: a seed costs more than folding it (219 ms against 38 at two thousand events).
+UNSEEDED = ('activity',)
 
 
 class Projector:
@@ -92,14 +99,19 @@ class Projector:
 
 
 class Positions(Projector):
-    """The net position per instrument, the clips behind it, and the amendment that moved it.
+    """The net position per instrument, agreement and portfolio, the clips behind it, and the
+    amendment that moved it.
 
-    An amendment carries the position FORWARD: the file's deal node hashes to the amended terms, so
-    the position lives on the new instrument and the old row stands at zero naming where it went. A
-    row is never dropped - a position closed out is a fact about the book, not an absence.
+    A position is keyed WHERE IT SITS: one instrument dealt under two agreements is two positions,
+    credit exposure being per agreement, and one instrument in two portfolios is two, a portfolio
+    being where risk is owned. A fill filed before the key existed sits under its netting set and
+    its book. An amendment carries every position FORWARD onto the instrument the amended terms
+    hash to, each under its own key, the old row standing at zero naming where it went; a row is
+    never dropped - a position closed out is a fact about the book, not an absence.
     """
 
     name = 'positions'
+    version = 2
     reads = ('fill', 'amendment')
 
     def initial(self):
@@ -107,29 +119,29 @@ class Positions(Projector):
 
     def apply(self, state, frame, log):
         body = log.open_body(frame)
-        row = state.get(body['instrument'])
-        if row is None:
-            row = state[body['instrument']] = {
-                'book': frame['book'], 'netting_set': None, 'counterparty': None,
-                'quantity': 0.0, 'clips': 0, 'amended_to': None,
-                'first_lsn': frame['lsn'], 'last_lsn': frame['lsn']}
         if frame['event_type'] == 'fill':
-            row['netting_set'] = body['netting_set']
+            row = _position(state, body['instrument'], body.get('agreement') or body['netting_set'],
+                            body.get('portfolio') or frame['book'] or '', frame)
             row['counterparty'] = body['counterparty']
             row['quantity'] += float(body['quantity'])
             row['clips'] += 1
-        else:
-            row['amended_to'] = body['amended_to']
-            head = state.setdefault(body['amended_to'], dict(
-                row, quantity=0.0, clips=0, amended_to=None, first_lsn=frame['lsn']))
-            head['quantity'] += row['quantity']
-            head['clips'] += row['clips']
-            head['last_lsn'] = frame['lsn']
-            row['quantity'], row['clips'] = 0.0, 0
-        row['last_lsn'] = frame['lsn']
+            row['last_lsn'] = frame['lsn']
+            return
+        for agreement, under in sorted(state.get(body['instrument'], {}).items()):
+            for portfolio, row in sorted(under.items()):
+                head = _position(state, body['amended_to'], agreement, portfolio, frame, row)
+                head['quantity'] += row['quantity']
+                head['clips'] += row['clips']
+                head['last_lsn'] = frame['lsn']
+                row['amended_to'] = body['amended_to']
+                row['quantity'], row['clips'] = 0.0, 0
+                row['last_lsn'] = frame['lsn']
 
     def rows(self, state):
-        return [_shown(row, instrument=instrument) for instrument, row in sorted(state.items())]
+        return [_shown(row, instrument=instrument, agreement=agreement, portfolio=portfolio)
+                for instrument, agreements in sorted(state.items())
+                for agreement, portfolios in sorted(agreements.items())
+                for portfolio, row in sorted(portfolios.items())]
 
 
 class Lifecycle(Projector):
@@ -372,6 +384,54 @@ class Denials(Projector):
         return list(state)
 
 
+class Entities(Projector):
+    """Every legal entity declared, under its id: its name and the parent it is grouped under.
+
+    A second declaration under one id restates the entity and stands by the as-of key, so a
+    backdated one does not win by arriving last.
+    """
+
+    name = 'entities'
+    reads = ('entity_declared',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        _stand(state, body['entity'], frame,
+               {'name': body['name'], 'parent': body.get('parent'), 'actor': frame['actor']})
+
+    def rows(self, state):
+        return [_shown(row, entity=entity) for entity, row in sorted(state.items())]
+
+
+class Agreements(Projector):
+    """Every agreement declared, under its id: the entity it is with, the document's kind, and the
+    address of the terms its netting set is compiled from.
+
+    A restatement stands by the as-of key and names the declaration it stood over, as a close does,
+    so an as-at read before it still answers the terms it answered.
+    """
+
+    name = 'agreements'
+    reads = ('agreement_declared',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        standing = state.get(body['agreement'])
+        _stand(state, body['agreement'], frame,
+               {'entity': body['entity'], 'kind': body['kind'], 'terms': body['terms'],
+                'actor': frame['actor'],
+                'supersedes_lsn': standing['lsn'] if standing else None})
+
+    def rows(self, state):
+        return [_shown(row, agreement=agreement) for agreement, row in sorted(state.items())]
+
+
 class Activity(Projector):
     """One line per event, envelope only: where it sits, when it was recorded and when it is true,
     who said it, and the declared sentence about what it was.
@@ -399,7 +459,7 @@ class Activity(Projector):
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
     Positions(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
-    Denials(), Activity()))
+    Denials(), Entities(), Agreements(), Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):
@@ -418,20 +478,23 @@ def fold(log, projector, lsn=None, seed=None):
     return state
 
 
-def seed_at(log, projector, close_lsn):
-    """Mint `projector`'s seed at `close_lsn`, file it under `seeds/`, and answer it.
+def seed_at(log, projector, close_lsn, folder=None):
+    """Mint `projector`'s seed at `close_lsn`, file it in `folder` (the home's `seeds/` where none
+    is named), and answer it.
 
     A seed is minted only AT an official close, the one position where the desk already agrees what
     the day was, and it carries that close's own event hash and its state's own address, so a
     reader can tell whether the history it summarises is this one and whether the state is the
-    one minted over it. Written the way the store writes: scratch, fsync, rename.
+    one minted over it. WHEN one is minted and WHERE it is shared is the deployment's to decide - a
+    folder every seat reads, or a seat's own for a day it wants to stand at. Written the way the
+    store writes: scratch, fsync, rename.
     """
     frame = _close_frame(log, close_lsn, 'a seed at LSN {}'.format(close_lsn))
     state = fold(log, projector, lsn=close_lsn)
     seed = {'projector': projector.name, 'version': projector.version, 'lsn': close_lsn,
             'head': frame['event_hash'], 'state_hash': content_hash(state),
             'state': state}
-    path = _seed_path(log, projector, close_lsn)
+    path = _seed_path(log, projector, close_lsn, folder)
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.parent / (path.name + '.new')
     with scratch.open('wb') as handle:
@@ -442,8 +505,8 @@ def seed_at(log, projector, close_lsn):
     return seed
 
 
-def read_seed(log, projector, close_lsn):
-    """The seed filed for `projector` at `close_lsn`, or None where none is filed.
+def read_seed(log, projector, close_lsn, folder=None):
+    """The seed filed for `projector` at `close_lsn` in `folder`, or None where none is filed.
 
     Verified, never trusted: the file must parse, say which projector and version minted it, carry
     the event hash LSN `close_lsn` has IN THIS LOG, and hold state that hashes to its own stamp -
@@ -451,9 +514,9 @@ def read_seed(log, projector, close_lsn):
     than folding a fiction nothing else can detect. Every refusal here is cured by deleting the
     file and refolding.
     """
-    path = _seed_path(log, projector, close_lsn)
+    path = _seed_path(log, projector, close_lsn, folder)
     if not path.is_file():
-        others = sorted(other.name for other in (log.home / SEEDS).glob(
+        others = sorted(other.name for other in _seeds(log, folder).glob(
             '{}-*-{}.json'.format(projector.name, close_lsn)))
         if not others:
             return None
@@ -487,6 +550,52 @@ def read_seed(log, projector, close_lsn):
             'it and refold'.format(
                 where, content_hash(seed.get('state')), seed.get('state_hash')))
     return seed
+
+
+def latest_seed(log, projector, folder=None, lsn=None):
+    """The newest seed filed for `projector` in `folder` at or behind `lsn` - this log's head where
+    none is named - verified as `read_seed` verifies one, or None where there is none to start from.
+
+    A seed of another VERSION is not a candidate, since a folder several seats share may hold two
+    releases' seeds while one rolls out; a seed of this version that does not verify refuses by
+    name rather than being stepped over. A close past this log's head - a copy behind the one that
+    minted the seed - is not one it can stand at yet.
+    """
+    at = log.head()[0] if lsn is None else lsn
+    prefix = '{}-{}-'.format(projector.name, projector.version)
+    closes = sorted((int(path.stem[len(prefix):])
+                     for path in _seeds(log, folder).glob(prefix + '*.json')
+                     if path.stem[len(prefix):].isdigit()), reverse=True)
+    for close_lsn in closes:
+        if close_lsn <= at:
+            return read_seed(log, projector, close_lsn, folder)
+    return None
+
+
+def fold_from(log, projector, lsn=None, folder=None):
+    """`fold` started at the newest verified seed in `folder` at or behind `lsn`, else at genesis.
+
+    The same state either way - which the seed-equivalence gate holds - at the cost of the frames
+    since the close rather than of the whole history, so a reader pays for its day.
+    """
+    return fold(log, projector, lsn=lsn, seed=latest_seed(log, projector, folder, lsn))
+
+
+def close_on(log, date=None):
+    """The LSN of the last official close true on or before `date` (`YYYY-MM-DD`) - the last close
+    there is where none is named - or None where there is no such close.
+
+    Read by the as-of key, so a close restated for a day stands for that day whenever it was
+    written, and of two for one day the later in that key wins.
+    """
+    found = None
+    for frame in log.frames():
+        if frame['event_type'] != SEED_EVENT:
+            continue
+        key = as_of_key(frame)
+        if (date is None or key[0][:10] <= date) and (found is None or key > found[0]):
+            found = (key, frame['lsn'])
+    return None if found is None else found[1]
 
 
 def fixings_at(log, lsn=None, sources=None, indices=None):
@@ -576,9 +685,26 @@ def _stand(under, name, frame, row):
         under[name] = filed
 
 
-def _seed_path(log, projector, close_lsn):
-    """`seeds/<projector>-<version>-<lsn>.json` - the name carries what the file must say."""
-    return log.home / SEEDS / '{}-{}-{}.json'.format(
+def _position(state, instrument, agreement, portfolio, frame, moved=None):
+    """The positions row under `(instrument, agreement, portfolio)`, opened at this frame where none
+    stands. A row an amendment opens carries the book and counterparty of the row `moved` onto it."""
+    under = state.setdefault(instrument, {}).setdefault(agreement, {})
+    if portfolio not in under:
+        under[portfolio] = {'book': frame['book'] if moved is None else moved['book'],
+                            'counterparty': None if moved is None else moved['counterparty'],
+                            'quantity': 0.0, 'clips': 0, 'amended_to': None,
+                            'first_lsn': frame['lsn'], 'last_lsn': frame['lsn']}
+    return under[portfolio]
+
+
+def _seeds(log, folder):
+    """The folder seeds are filed in: `folder`, else the home's own `seeds/`."""
+    return log.home / SEEDS if folder is None else pathlib.Path(folder)
+
+
+def _seed_path(log, projector, close_lsn, folder=None):
+    """`<folder>/<projector>-<version>-<lsn>.json` - the name carries what the file must say."""
+    return _seeds(log, folder) / '{}-{}-{}.json'.format(
         projector.name, projector.version, close_lsn)
 
 

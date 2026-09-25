@@ -12,7 +12,7 @@
 ########################################################################
 
 """The acts a desk performs on the record - booking, amending, lifecycle, decisions, marks, quotes
-and runs.
+and runs - and the paper it trades under: its counterparties and their agreements.
 
 The logic lives here and the engine holds thin delegators, so no module under `derivus/` learns
 about users, workflow or storage: everything below takes plain data and injected callables.
@@ -72,7 +72,7 @@ def mints(lane):
 
 
 def book(log, actor, instrument, quantity, counterparty, netting_set, execution_reference,
-         book=None, effective_time=None):
+         book=None, effective_time=None, price=None, agreement=None, portfolio=None):
     """Book a fill, returning the envelope plus the instrument's address.
 
     `instrument` is the canonical JSON of the deal's terms as bytes - the caller canonicalises,
@@ -81,8 +81,10 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
 
     `execution_reference` is required and has no default. It is what makes a retry the same fact by
     construction, coalescing onto the LSN it already has, and two legitimately identical clips two
-    facts. `quantity` is a signed quantity, never a position: position is a fold. The instrument
-    blob is fsynced before the event citing it appends.
+    facts. `quantity` is the signed position CHANGE in units of the instrument - 1 is the instrument
+    as written, -1 closes it, -0.5 unwinds half - never a position: position is a fold. `agreement`
+    and `portfolio` say where the position sits and `price` what it was done at, each filed only
+    where stated. The instrument blob is fsynced before the event citing it appends.
     """
     address = _blob(log, instrument, 'the canonical instrument')
     if not is_number(quantity):
@@ -93,6 +95,15 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
             'counterparty': _name(counterparty, 'counterparty', 'book'),
             'netting_set': _name(netting_set, 'netting_set', 'book'),
             'execution_reference': _name(execution_reference, 'execution_reference', 'book')}
+    if price is not None:
+        if not is_number(price):
+            raise MalformedEvent(
+                'book: price is {!r} - what a fill was done at is a finite number in the '
+                'instrument\'s own quote, or it is left out'.format(price))
+        body['price'] = price
+    for field, value in (('agreement', agreement), ('portfolio', portfolio)):
+        if value is not None:
+            body[field] = _name(value, field, 'book')
     envelope = log.append('fill', body, actor=actor, book=book, effective_time=effective_time,
                           blob_refs=(address,))
     return dict(envelope, instrument=address)
@@ -223,6 +234,37 @@ def declare_close(log, actor, market, values, effective_time=None):
                            'values_hash': address},
                           actor=actor, effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, market=market, values_hash=address)
+
+
+def declare_entity(log, actor, entity, name, parent=None, effective_time=None):
+    """Declare a legal entity the book may trade with, and return the envelope.
+
+    `entity` is its id as the deployment's legal system knows it and `name` what a reader is shown;
+    `parent` groups it under another entity and says nothing else. A second declaration under one
+    id restates it. Firm-level, so it carries no book.
+    """
+    body = {'entity': _name(entity, 'entity', 'declare_entity'),
+            'name': _name(name, 'name', 'declare_entity')}
+    if parent is not None:
+        body['parent'] = _name(parent, 'parent', 'declare_entity')
+    return log.append('entity_declared', body, actor=actor, effective_time=effective_time)
+
+
+def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time=None):
+    """Declare an agreement with a legal entity, returning the envelope plus the terms' address.
+
+    `terms` is the canonical JSON of the netting set the agreement's positions are compiled into,
+    as bytes - the caller canonicalises and validates, the engine knowing what a netting set may
+    say - and `kind` the document's label as its declarer states it. A second declaration under one
+    id restates the agreement. Firm-level, so it carries no book.
+    """
+    address = _blob(log, terms, 'the canonical agreement terms')
+    envelope = log.append('agreement_declared',
+                          {'agreement': _name(agreement, 'agreement', 'declare_agreement'),
+                           'entity': _name(entity, 'entity', 'declare_agreement'),
+                           'kind': _name(kind, 'kind', 'declare_agreement'), 'terms': address},
+                          actor=actor, effective_time=effective_time, blob_refs=(address,))
+    return dict(envelope, agreement=agreement, terms=address)
 
 
 def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,

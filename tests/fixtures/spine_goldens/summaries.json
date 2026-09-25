@@ -1,4 +1,5 @@
 {
+  "agreement_declared": "an agreement was declared",
   "amendment": "terms were restruck under a new instrument",
   "approval": "a plan was approved",
   "break_glass_used": "the recovery seat was used",
@@ -6,6 +7,7 @@
   "checkpoint": "the head was signed",
   "determination": "a ruling was made",
   "election": "a holder made its choice",
+  "entity_declared": "a legal entity was declared",
   "fill": "a clip was booked",
   "fixing_observed": "an observation was printed",
   "key_wrapped": "a class key was wrapped to a seat",
