@@ -91,14 +91,23 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   );
 }
 
+/** A field's label: its description where that is a label, its own name where the description is
+ * a paragraph - which is then the hover, so the prose is one pointer away rather than the column. */
+function labelOf(name: string, descriptor?: Descriptor): { text: string; title?: string } {
+  const description = descriptor?.description ?? name;
+  return description.length > 64 ? { text: name.replace(/_/g, ' '), title: description }
+    : { text: description };
+}
+
 /** Save one field's wire value; resolves to refusal messages, or null on success. */
 export type AmendField = (key: string, wireValue: unknown) => Promise<string[] | null>;
 
 /** One card of labelled fields: declared descriptors in declaration order with the document's
  * values over them, then every UNDECLARED key of the value dict - visible, marked, at the end.
- * With `onAmend`, declared SCALAR fields grow inputs (shapes, tables and containers stay
- * read-only in this slice, and the amendment merges top-level keys, so container children never
- * receive the handler). `editable` narrows WHICH declared fields may edit - the market view
+ * With `onAmend`, declared SCALAR fields grow inputs (shapes and tables stay read-only), and a
+ * container's own scalars edit THROUGH the container: the amendment names the container and
+ * carries it whole, its other keys standing, because an amendment merges top-level keys and a
+ * container is one of them. `editable` narrows WHICH declared fields may edit - the market view
  * passes the bind='value' test, so structure stays read-only where the engine says it must. */
 export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
   title: string;
@@ -122,12 +131,15 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
         {rows.map(({ key, descriptor }) => {
           const value = values[key] !== undefined ? values[key] : descriptor?.value;
           const container = descriptor?.widget === 'Container';
+          const whole = isObject(value) ? value : {};
           return container ? (
             <div key={key} style={{ gridColumn: '1 / -1' }}>
               <DescriptorPanel
-                title={descriptor?.description ?? key}
+                title={labelOf(key, descriptor).text}
                 fields={descriptor?.sub_fields}
-                values={isObject(value) ? value : {}}
+                values={whole} editable={editable}
+                onAmend={onAmend && (!editable || editable(key, descriptor!))
+                  ? (field, wire) => onAmend(key, { ...whole, [field]: wire }) : undefined}
               />
             </div>
           ) : (
@@ -155,10 +167,11 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend }: {
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
+  const { text, title } = labelOf(name, descriptor);
   return (
     <>
-      <div className="k">
-        {descriptor?.description ?? name}
+      <div className="k" title={title}>
+        {text}
         {descriptor?.required && !stated && <span className="required"> *</span>}
         {!declared && <span className="hint">(not declared)</span>}
       </div>

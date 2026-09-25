@@ -269,6 +269,11 @@ body {
 
 .fields .hint { color: var(--text-muted); font-size: 12px; margin-left: 8px; }
 
+/* a field named for its prose: the description is the hover */
+.fields > .k[title] {
+  cursor: help; text-decoration: underline dotted var(--border); text-underline-offset: 3px;
+}
+
 .fields .required { color: var(--bad); font-weight: 600; }
 
 /* a card holding a card: a stat that is a dict of dicts */

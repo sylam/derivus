@@ -17,6 +17,8 @@ export type Source =
 export type RunState = {
   status: 'idle' | 'submitting' | 'queued' | 'running' | 'done' | 'error';
   resultId: string | null;
+  /** The page that asked for the run - the book's own calculation, or a named one. */
+  origin: string | null;
   summary: ResultSummary | null;
   error: string | null;
   table: string | null;
@@ -64,7 +66,7 @@ export type AppState = {
 };
 
 export const IDLE_RUN: RunState = {
-  status: 'idle', resultId: null, summary: null, error: null,
+  status: 'idle', resultId: null, origin: null, summary: null, error: null,
   table: null, page: null, scalars: {}, startedAt: null,
 };
 
@@ -94,7 +96,7 @@ export type Action =
   | { type: 'PICK'; screen: string; id: string }
   | { type: 'DESCRIBED'; describe: DescribeResult }
   | { type: 'VALIDATED'; validate: ValidateResult }
-  | { type: 'RUN_SUBMITTED'; resultId: string }
+  | { type: 'RUN_SUBMITTED'; resultId: string; origin: string }
   | { type: 'RUN_POLLED'; summary: ResultSummary }
   | { type: 'RUN_FAILED'; error: string }
   | { type: 'TABLE_SELECTED'; table: string }
@@ -145,7 +147,8 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'RUN_SUBMITTED':
       return {
         ...state,
-        run: { ...IDLE_RUN, status: 'queued', resultId: action.resultId, startedAt: Date.now() },
+        run: { ...IDLE_RUN, status: 'queued', resultId: action.resultId, origin: action.origin,
+               startedAt: Date.now() },
       };
     case 'RUN_POLLED': {
       const status = action.summary.status as RunState['status'];

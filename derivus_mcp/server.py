@@ -73,6 +73,10 @@ you have not booked; book_deal for a plain instrument; for FX options solve_stru
 book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
 its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
 strike to a target; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
+The desk keeps its own NAMED CALCULATIONS - a credit Monte Carlo at another path count, a PFE
+grid, a base valuation with Greeks: describe_calculations lists them, configure_calculation saves
+one, run_calculation prices the live book (or one subtree) under it. They are this workstation's:
+the book's own calculation and the record never move.
 
 QUOTING IS NOT BOOKING. solve_structure gives a price and records nothing - quote as often as
 the client asks. book_quote is the ACCEPTANCE: call it when the client TAKES the price, and it
@@ -609,6 +613,49 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
     if calculation_overrides:
         request['calculation_overrides'] = calculation_overrides
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price', json=request)
+    return await _await_result(submitted['result_id'], wait_seconds, ctx)
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_calculations() -> dict:
+    """The desk's own NAMED CALCULATIONS - `{calculations: {name: block}}`, each block a
+    `Calculation` as the book states one: `Object` names the type (`BaseValuation`,
+    `CreditMonteCarlo`, `HedgeMonteCarlo`) and every other key is one of that type's declared
+    fields, `describe_calculation_type` listing them. A field a block does not state is the book's
+    own when it runs - the date and the currency among them. Kept on this workstation, never in
+    the book and never on the record."""
+    return service().call('GET', '/calculations')
+
+
+@MCP.tool()
+def configure_calculation(name: str, calculation: dict | None = None) -> dict:
+    """Save a named calculation, or remove it with `calculation` null.
+
+    `calculation` is a `Calculation` block: `{"Object": "CreditMonteCarlo", "MCMC_Simulations":
+    8192, "Time_Grid": "0d 1m(1m) 2y(3m)", "Credit_Valuation_Adjustment": {"Calculate": "Yes",
+    "Counterparty": "<SurvivalProb name>", ...}}` - the type, then only the fields you want to
+    differ from the book's own calculation. A container such as `Credit_Valuation_Adjustment` is
+    stated whole. Judged against the type's declarations before anything is written: an unknown
+    type, an undeclared field or a value outside a field's menu comes back `{written: false,
+    refused: [...]}` naming it, the file untouched. The book and the record never move."""
+    return service().call('POST', '/calculations', json={'name': name, 'calculation': calculation})
+
+
+@MCP.tool()
+async def run_calculation(name: str, deal_path: str | None = None, actor: str | None = None,
+                          wait_seconds: float = 120.0, ctx: Context = None) -> dict:
+    """Price the live book under one named calculation - the whole book, or the subtree at
+    `deal_path` (a netting set, a structure, one trade). The block is merged over the book's own
+    calculation exactly as `price_candidate` merges `calculation_overrides`, so asking for the same
+    dials either way is ONE run. Nothing is booked and nothing is recorded. Waits up to
+    `wait_seconds`; the answer carries `tables` and `stats` as `execute_book` does, and a credit
+    Monte Carlo is minutes - past the wait the answer is the result id to poll."""
+    request = {'name': name}
+    if deal_path is not None:
+        request['deal_path'] = deal_path
+    if actor is not None:
+        request['actor'] = actor
+    submitted = await asyncio.to_thread(service().call, 'POST', '/calculations/run', json=request)
     return await _await_result(submitted['result_id'], wait_seconds, ctx)
 
 

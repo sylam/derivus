@@ -46,6 +46,7 @@ what has been recorded, and the official closes. The module docstring stays the 
 | `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
 | `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity`, `execution_reference` and `actor` a recorded desk requires, and a delete records nothing so it takes no seat |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
+| `describe_calculations` / `configure_calculation` / `run_calculation` | `/calculations` — the desk's own named calculations: listed, saved one at a time (judged against the type's declarations), and run over the live book or one subtree in the curiosity lane |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
 | `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the MID, strikes solved with the two-way charged on them, the mid and the edge said, the pending trade filed under its id. Records nothing |
 | `book_quote` | `POST /book/quote` — the ACCEPTANCE: the client took the price, so the quote is recorded and its mirror booked, refused exactly as a booking is |

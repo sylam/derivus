@@ -2,9 +2,9 @@
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
 import type {
-  ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CurveOutcome,
-  CurvesAnswer, DescribeResult, JobDoc, Reconcile, ResultSummary, Schema, SecuritiesAnswer,
-  SeedOutcome, TablePage, ValidateResult,
+  ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
+  CalculationsAnswer, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, Reconcile,
+  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -98,6 +98,14 @@ export const getBookActivity = (since: number | '') =>
 export const DOORBELL = '/spine/doorbell';
 export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
 export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
+// the desk's own named calculations: kept on this workstation beside the book, saved one at a time
+// (a null removes one), and run over the live book - whole or one subtree - in the curiosity lane
+export const getCalculations = () => call<CalculationsAnswer>('GET', '/calculations');
+export const saveCalculation = (name: string, calculation: Record<string, unknown> | null) =>
+  call<CalculationOutcome>('POST', '/calculations', { name, calculation });
+export const runCalculation = (name: string, dealPath?: string) =>
+  call<{ result_id: string; status: string }>('POST', '/calculations/run',
+    dealPath === undefined ? { name } : { name, deal_path: dealPath });
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

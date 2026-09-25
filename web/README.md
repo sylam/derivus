@@ -78,6 +78,11 @@ tuple in an expander. Recalcs are asked for through the MCP verbs (`recalc_xva`)
 screen: a credit Monte Carlo is minutes of device time, and a surface that could start one on a
 click would start one by accident.
 
+*Calculation* is the book's own calculation, read-only, beside the desk's NAMED calculations
+(`/calculations`, kept in `DV_HOME`): filed by type, each its dials over the book's own with every
+edit saved whole — a container's scalars through the container — a Run over the whole book or one
+top-level node, and the run's results under the page that asked for it.
+
 The arithmetic behind both — ages, sorts, totals, staleness, the quote reading — is `src/desk.ts`,
 pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading is checked
 by `scripts/desk_check.mjs`.

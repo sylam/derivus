@@ -5255,6 +5255,73 @@ def xva_rows():
     return {entry['reference']: entry for entry in CLIENT.get('/book/xva').json()['sets']}
 
 
+def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(desk_xva):
+    """The desk's own NAMED CALCULATIONS: saved in `DV_HOME`, judged against their own type's
+    declarations, and run over the live book - whole, or one subtree.
+
+    IDENTITY, NOT A SECOND PATH: a named credit Monte Carlo stating what the XVA recalc states for
+    `NS_A`, pointed at `NS_A`, is the recalc's own run - one result id - and a named base valuation
+    with Greeks is the what-if verb's run with the same overrides. A judged block is a normal answer
+    naming what to fix, one level into a container included, with the file untouched; a name
+    nobody saved refuses naming the ones there are; and the book never moves.
+
+    KILLING MUTATIONS: the saved block merged anywhere but over the book's own calculation, or the
+    subtree left whole, which moves the run id off the recalc's; a container's keys unjudged, which
+    saves `Calculate: 'Maybe'` and dies inside the Monte Carlo instead.
+    """
+    book = desk_xva.read_bytes()
+    cva_a = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
+             'Simulation_Batches': service.XVA_SIMULATION_BATCHES,
+             'Deflation_Interest_Rate': 'USD',
+             'Credit_Valuation_Adjustment': dict(
+                 service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
+             'Funding_Valuation_Adjustment': dict(
+                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A',
+                 Risk_Free_Curve='USD', Funding_Cost_Interest_Curve='FUND',
+                 Funding_Benefit_Interest_Curve='FUND')}
+    greeks = {'Object': 'BaseValuation', 'Greeks': 'First'}
+
+    def save(name, calculation):
+        return CLIENT.post('/calculations', content=json.dumps(
+            {'name': name, 'calculation': calculation}), headers=JSON).json()
+
+    def run_named(name, **scope):
+        return CLIENT.post('/calculations/run', content=json.dumps(dict(scope, name=name)),
+                           headers=JSON)
+
+    assert CLIENT.get('/calculations').json() == {'calculations': {}}
+    assert save('CVA on A', cva_a)['written'] and save('Greeks', greeks)['written']
+    assert CLIENT.get('/calculations').json() == {
+        'calculations': {'CVA on A': cva_a, 'Greeks': greeks}}
+
+    recalced = recalc(['NS_A'])['queued'][0]
+    assert xva_rows()['NS_A']['cva'] > 0.0, 'a CVA of nothing makes the identity vacuous'
+    named = run_named('CVA on A', deal_path='0').json()
+    assert named == {'result_id': recalced['result_id'], 'status': 'done'}
+
+    priced = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': greeks}), headers=JSON).json()
+    assert run_named('Greeks').json()['result_id'] == priced['result_id']
+    service.EXECUTOR.queue.join()
+    assert CLIENT.get('/results/{}'.format(priced['result_id'])).json()['status'] == 'done'
+
+    before = (desk_xva.parent / 'calculations.json').read_bytes()
+    unknown = save('bad', {'Object': 'CreditMonteCarlo', 'Nope': 1})
+    inner = save('bad', {'Object': 'CreditMonteCarlo',
+                         'Credit_Valuation_Adjustment': {'Calculate': 'Maybe'}})
+    nothing = save('bad', {'Object': 'Nothing'})
+    assert unknown['written'] is False and 'CreditMonteCarlo declares no Nope' in unknown[
+        'refused'][0]
+    assert inner['refused'] == ["Calculate is 'Maybe', not one of Yes, No"], inner
+    assert nothing['written'] is False and "'Nothing' is no calculation" in nothing['refused'][0]
+    assert (desk_xva.parent / 'calculations.json').read_bytes() == before
+
+    missing = run_named('nope')
+    assert missing.status_code == 422 and 'CVA on A, Greeks' in missing.json()['detail']
+    assert save('Greeks', None)['calculations'] == {'CVA on A': cva_a}
+    assert desk_xva.read_bytes() == book, 'a named calculation moved the book'
+
+
 def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_xva, tmp_path):
     """The XVA lifecycle: never run, recalced, filed, then partially recalced.
 

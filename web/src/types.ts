@@ -368,6 +368,18 @@ export type MapEntry = {
   verified: string;
 };
 
+/** `GET /calculations` - the desk's own named calculations, each a `Calculation` block: `Object`
+ * names the type and every other key is one of its declared fields. */
+export type CalculationsAnswer = { calculations: Record<string, Record<string, unknown>> };
+
+/** What a save answered: the file as it now stands, or the judgement naming what to fix. */
+export type CalculationOutcome = {
+  written: boolean;
+  name: string;
+  refused?: string[];
+  calculations?: Record<string, Record<string, unknown>>;
+};
+
 export type SecuritiesAnswer = {
   etag: string;
   home: string;

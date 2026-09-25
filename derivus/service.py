@@ -53,6 +53,9 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
+| `GET /calculations` | the desk's own named calculations - one `Calculation` block per name, kept in `DV_HOME` |
+| `POST /calculations` | save one named calculation, judged against its type's declarations, or remove it |
+| `POST /calculations/run` | the live book, whole or one subtree, under one named calculation - curiosity, nothing recorded |
 | `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
 | `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
 
@@ -1032,6 +1035,20 @@ def book_deals(request: dict):
         raise HTTPException(422, str(error))
 
 
+def judge_fields(owner, declared, stated):
+    """Refuse by name the first key of `stated` that `declared` does not declare, or a value outside
+    its menu - a container's own keys judged one level down against its sub-fields."""
+    for field, value in sorted(stated.items()):
+        if field not in declared:
+            raise ValueError('{} declares no {} - it declares {}'.format(
+                owner, field, ', '.join(sorted(declared))))
+        menu = declared[field].get('values')
+        if menu is not None and value not in menu:
+            raise ValueError('{} is {!r}, not one of {}'.format(field, value, ', '.join(menu)))
+        if declared[field].get('sub_fields') and isinstance(value, dict):
+            judge_fields(field, declared[field]['sub_fields'], value)
+
+
 def with_overrides(document, overrides):
     """`calculation_overrides` merged into the book's `Calculation` block IN PLACE, each judged
     against the calculation's OWN declarations: a field it does not declare, or a value outside
@@ -1046,15 +1063,8 @@ def with_overrides(document, overrides):
     if declared is None:
         raise ValueError('{!r} is no calculation - this engine runs {}'.format(
             calculation.get('Object'), ', '.join(sorted(mapping['Calculation']['types']))))
-    for field, value in sorted(overrides.items()):
-        if field == 'Object':
-            continue
-        if field not in declared:
-            raise ValueError('{} declares no {} to override - it declares {}'.format(
-                calculation['Object'], field, ', '.join(sorted(declared))))
-        menu = declared[field].get('values')
-        if menu is not None and value not in menu:
-            raise ValueError('{} is {!r}, not one of {}'.format(field, value, ', '.join(menu)))
+    judge_fields(calculation['Object'], declared,
+                 {field: value for field, value in overrides.items() if field != 'Object'})
     document['Calc']['Calculation'] = calculation
 
 
@@ -1086,6 +1096,92 @@ def book_price(request: dict):
                 raise HTTPException(422, '; '.join(outcome['refused']))
         with_overrides(document, request.get('calculation_overrides', {}))
     except ValueError as error:
+        raise HTTPException(422, str(error))
+    context = load(document)
+    stamp = replay(context)
+    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
+                    actor=request.get('actor'), book=book_name(document))
+    calculation = context.current_cfg.deals['Calculation']
+    return {'result_id': submitted.result_id,
+            'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+
+
+#: The desk's own named calculations in `DV_HOME` beside its book, `{"calculations": {name: block}}`
+#: - this workstation's, never the book's and never the record's.
+CALCULATIONS_FILE = 'calculations.json'
+
+
+def read_calculations():
+    """`{name: Calculation block}` - what this workstation saved, empty where it saved nothing. A
+    file that is there and not JSON refuses by name: "none saved" and "the file is broken" are two
+    different facts."""
+    try:
+        with open(os.path.join(dv_home(), CALCULATIONS_FILE), encoding='utf-8') as handle:
+            return json.load(handle)['calculations']
+    except FileNotFoundError:
+        return {}
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, '{} is not readable as the desk\'s calculations: {}'.format(
+            os.path.join(dv_home(), CALCULATIONS_FILE), error))
+
+
+@app.get('/calculations', summary="The desk's own named calculations")
+def calculations():
+    """Every calculation this workstation keeps under a name - a credit Monte Carlo at another path
+    count, a PFE grid, a base valuation with Greeks - as the `Calculation` block it states: `Object`
+    names the type and every other key is one of that type's declared fields. What a block does not
+    state is the book's own at run time, the date and the currency among them."""
+    return {'calculations': read_calculations()}
+
+
+@app.post('/calculations', summary='Save one named calculation, or remove it')
+def save_calculation(request: dict):
+    """`{name, calculation}` - the block kept under `name` in the desk's own file, a null
+    `calculation` removing it. The block is judged against its own type's declarations before
+    anything is written - an unknown type, a field the type does not declare, a value outside a
+    field's menu, a container key its container does not declare - and a judged block is a normal
+    answer, `{written: false, refused: [...]}` with the file untouched, because the next move is to
+    fix what it names. Local to this workstation: the book and the record never move."""
+    name = str(request.get('name') or '').strip()
+    if not name:
+        raise HTTPException(422, 'a calculation is saved under a name - name it')
+    saved = read_calculations()
+    calculation = request.get('calculation')
+    if calculation is None:
+        saved.pop(name, None)
+    else:
+        declared = mapping['Calculation']['types'].get(calculation.get('Object'))
+        try:
+            if declared is None:
+                raise ValueError('{!r} is no calculation - this engine runs {}'.format(
+                    calculation.get('Object'), ', '.join(sorted(mapping['Calculation']['types']))))
+            judge_fields(calculation['Object'], declared, {
+                field: value for field, value in calculation.items() if field != 'Object'})
+        except ValueError as error:
+            return {'written': False, 'name': name, 'refused': [str(error)]}
+        saved[name] = calculation
+    write_desk_file(CALCULATIONS_FILE, {'calculations': saved})
+    return {'written': True, 'name': name, 'calculations': saved}
+
+
+@app.post('/calculations/run', summary='Run the live book under one named calculation')
+def run_calculation(request: dict):
+    """`{name, deal_path?, actor?}` - the live book priced under the calculation saved as `name`:
+    its block merged over the book's own `Calculation` exactly as `/book/price` merges overrides,
+    so the same dials asked for either way are ONE run, and the deal tree narrowed to the node at
+    `deal_path` where one is named - a netting set, a structure, one trade. The book file never
+    moves and the lane is curiosity, so nothing is recorded. Answers `{result_id, status}`."""
+    saved = read_calculations()
+    name = request.get('name')
+    if name not in saved:
+        raise HTTPException(422, 'no calculation is saved as {!r} - this workstation keeps '
+                                 '{}'.format(name, ', '.join(sorted(saved)) or 'none'))
+    document, _ = live_book().read()
+    try:
+        with_overrides(document, saved[name])
+        if request.get('deal_path') is not None:
+            job_children(document)[:] = [deal_at(document, request['deal_path'])]
+    except (ValueError, KeyError, IndexError) as error:
         raise HTTPException(422, str(error))
     context = load(document)
     stamp = replay(context)
