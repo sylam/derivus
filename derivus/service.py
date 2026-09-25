@@ -159,7 +159,7 @@ DOORBELL_SECONDS = 15.0
 JOB_SKELETON = {'Calc': {
     'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': '2024-06-28'},
                     'Currency': 'USD', 'Random_Seed': 1},
-    'Deals': {'Tag_Titles': '', 'Reference': 'skeleton', 'Deals': {'Children': [
+    'Deals': {'Reference': 'skeleton', 'Deals': {'Children': [
         {'Instrument': {'.Deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'USD',
             'Discount_Rate': 'USD', 'Calendars': None, 'Amount': 1000000.0,
@@ -912,11 +912,19 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
     construction. A booking naming an `agreement` takes both from the agreement the record
     declares - its id and its entity - and must sit under the file's set of that name, the set
     being the agreement's materialisation; one naming none takes them off the set it sits inside.
-    `portfolio` is where the position sits, the book's own name where none is stated, and `price`
-    what it was done at.
+    `portfolio` is the path where the position sits, its top node the book - where permissions are
+    granted - and the book itself where none is stated; `price` is what it was done at.
     """
     if not spine.configured():
         return {}
+    book = book_name(document)
+    segments = portfolio.split('/') if portfolio else []
+    if book is not None and segments and (segments[0] != book or '' in segments):
+        named = [segment for segment in segments if segment]
+        raise spine.SpineRefused(
+            'this booking names portfolio {!r}, and a portfolio is a path of named segments whose '
+            'top node is the book it is booked in, {!r}, where its permissions are granted - post '
+            '{!r}'.format(portfolio, book, '/'.join(named if named[:1] == [book] else [book] + named)))
     node = enclosing_set(document, deal_path)
     if node is None:
         raise spine.SpineRefused(
@@ -956,9 +964,8 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
             'two facts by construction - post the venue exec id or the ticket id')
     return {'recorded': spine.book(
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
-        node.get('Reference'), execution_reference, actor_name=actor,
-        book_name=book_name(document), price=price, agreement=agreement,
-        portfolio=portfolio or book_name(document))}
+        node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
+        agreement=agreement, portfolio=portfolio or book)}
 
 
 def spine_amendment(document, deal_path, before, actor=None):
@@ -1004,10 +1011,10 @@ def book_deals(request: dict):
     envelope under `recorded`. `quantity` - the position change in units of the instrument, 1 being
     the deal as written - and `execution_reference` become required, and the deal must sit under a
     `NettingCollateralSet` naming a counterparty; each of the three refuses by name. `agreement`
-    names a declared agreement the set materialises, `portfolio` where the position sits and
-    `price` what it was done at. A `delete` records nothing: what ends a trade is an election, an
-    expiry observation or a status transition, filed through `POST /book/transition`. Without a
-    home this is inert.
+    names a declared agreement the set materialises, `portfolio` the path the position sits at -
+    its top node the book, `<book>/Rates/EM` - and `price` what it was done at. A `delete` records
+    nothing: what ends a trade is an election, an expiry observation or a status transition, filed
+    through `POST /book/transition`. Without a home this is inert.
 
     SO UNDER A HOME THIS EDIT APPENDS BEFORE IT WRITES, and takes `Book.transact` - the whole act
     under the book lock, one pass and no redo. A redo whose second pass refuses what the first
@@ -1543,9 +1550,7 @@ def record_positions(lsn=None):
     instrument it was amended INTO - which reconciles clean whichever end of the link the quantity
     is carried on.
     """
-    projections = spine.package().projections
-    named = projections.PROJECTORS['positions']
-    rows = spine.folded(lambda log: named.rows(spine.fold_from(log, named, lsn)))
+    rows = spine.positions(lsn)
     moved = dict((row['instrument'], row['amended_to']) for row in rows if row['amended_to'])
     heads = {}
     for row in rows:
@@ -1796,6 +1801,32 @@ def book_reconcile():
         return {'lsn': None, 'events_behind': None, 'positions_behind': None,
                 'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': []}
     return dict(reconciled(document, pinned), lsn=pinned['lsn'], **behind(pinned))
+
+
+@app.get('/book/positions', summary="The record's positions, each where the book file holds it")
+def book_positions():
+    """`{positions}` - every position standing on the record at its head, as the fold keys it:
+    the instrument, the agreement and the portfolio it sits under, its counterparty, the NET
+    quantity in units of the instrument and the clips behind it.
+
+    Beside each, where the book FILE holds it: `deal_paths` are the nodes carrying that instrument
+    under that agreement's set, and `reference` and `object` the first one's. A position closed to
+    zero or amended onto other terms stands no more - the record keeps its history - and one the
+    file does not hold answers no path, which `/book/reconcile` names. 404 where no home is
+    configured.
+    """
+    document, _ = recording().read()
+    rows = [row for row in spine.positions() if row['quantity']]
+    held = file_positions(document, {row['instrument'] for row in rows})
+    answer = []
+    for row in rows:
+        paths = [node['deal_path'] for node in held.get(row['instrument'], [])
+                 if (enclosing_set(document, node['deal_path']) or {}).get('Reference')
+                 == row['agreement']]
+        deal = deal_at(document, paths[0])['Instrument']['.Deal'] if paths else {}
+        answer.append(dict(row, deal_paths=paths, reference=deal.get('Reference'),
+                           object=deal.get('Object')))
+    return {'positions': answer}
 
 
 @app.get('/book/activity', summary="The record's own strip - one line per event")

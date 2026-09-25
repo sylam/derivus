@@ -8,7 +8,9 @@
 // details block. A type nobody anticipated therefore still fills what columns it can and renders
 // the rest in its expander, rather than raising.
 
-import { formatNumber, isObject, label, token } from './tokens';
+import type { Position } from './positions';
+import { formatNumber, isObject, token } from './tokens';
+import type { TreeNode } from './tree';
 import type { DealNode, JobDoc, Schema } from './types';
 
 // ---- the candidate lists: one per column, most specific first ----------------------------------
@@ -131,22 +133,17 @@ export function cellText(value: unknown): string | undefined {
   return undefined;
 }
 
-/** The deal's `Tags` as one line. The booking side does not stamp clients yet, so this column
- * shows exactly what the book carries and nothing else: a list joins (the titles are the book's
- * own `Tag_Titles`), a string reads as itself, anything else stays blank rather than printing
- * `[object Object]` at a reader. */
-export function tagText(value: unknown): string {
-  if (Array.isArray(value)) return value.map(label).join(' / ');
-  if (isObject(value)) return '';
-  return value === null || value === undefined ? '' : String(value);
-}
-
 // ---- the rows ---------------------------------------------------------------------------------
 
 export type BlotterRow = {
-  /** The positional `deal_path` ('0/2/1') - the identity the service, the tree and the MCP
-   * booking verbs all use. */
+  /** The row's key: the positional `deal_path` ('0/2/1') - the identity the service, the tree
+   * and the MCP booking verbs all use - or, grouped by the record, a folder's or a position's. */
   path: string;
+  /** What a click on the row picks: the deal path, the position it belongs to, or nothing for a
+   * folder. */
+  target: string | null;
+  /** The position the row IS, where the book is grouped by the record. */
+  position?: Position;
   depth: number;
   object: string;
   reference: string;
@@ -166,7 +163,6 @@ export type BlotterRow = {
    * dates of its own - the earliest roll of anything underneath it. */
   roll?: string;
   days?: number;
-  tag: string;
   deal: Record<string, unknown>;
   children: BlotterRow[];
 };
@@ -203,6 +199,7 @@ export function toRows(
 
     return {
       path: id,
+      target: id,
       depth,
       object,
       reference: String(deal.Reference ?? ''),
@@ -217,10 +214,56 @@ export function toRows(
       next,
       roll,
       days: base && roll ? daysBetween(base, roll) : undefined,
-      tag: tagText(deal.Tags),
       deal,
       children,
     };
+  });
+}
+
+/** Every row by its deal path, legs included - what a position's row is read off. */
+export function rowsByPath(rows: BlotterRow[],
+                           index = new Map<string, BlotterRow>()): Map<string, BlotterRow> {
+  for (const row of rows) {
+    index.set(row.path, row);
+    rowsByPath(row.children, index);
+  }
+  return index;
+}
+
+/** The earliest roll among `rows` - what a row holding them inherits. */
+const earliest = (rows: BlotterRow[]): string | undefined =>
+  rows.map((row) => row.roll).filter((d): d is string => !!d).sort()[0];
+
+/** A tree of the record's grouping as blotter rows. A folder is a row carrying the earliest roll
+ * beneath it; a position is the file's own row at the first node holding it, RE-KEYED under the
+ * position - two positions can hold one node - with every row of it, legs included, picking the
+ * position; and a position the file does not hold is a row saying so. */
+export function groupedRows(nodes: TreeNode[], rows: Map<string, BlotterRow>,
+                            positions: Map<string, Position>, base: string | undefined,
+                            depth = 0): BlotterRow[] {
+  return nodes.map((node) => {
+    if (node.group) {
+      const children = groupedRows(node.children ?? [], rows, positions, base, depth + 1);
+      const roll = earliest(children);
+      return {
+        path: node.id, target: null, depth, object: '', reference: node.label, container: true,
+        ignored: false, roll, days: base && roll ? daysBetween(base, roll) : undefined, deal: {},
+        children,
+      };
+    }
+    const position = positions.get(node.id);
+    const held = position?.deal_paths.length ? rows.get(position.deal_paths[0]) : undefined;
+    if (!held) {
+      return {
+        path: node.id, target: node.id, depth, object: 'not in the file', reference: node.label,
+        container: false, ignored: false, deal: {}, children: [], position,
+      };
+    }
+    const keyed = (row: BlotterRow, at: number): BlotterRow => ({
+      ...row, path: node.id + row.path.slice(held.path.length), target: node.id, depth: at,
+      children: row.children.map((child) => keyed(child, at + 1)),
+    });
+    return { ...keyed(held, depth), position };
   });
 }
 
@@ -239,17 +282,39 @@ export function inWindow(row: BlotterRow, horizon: number | null): boolean {
   return row.days !== undefined && row.days >= 0 && row.days <= horizon;
 }
 
-/** The window filter over the tree: a row survives on its own account, and a parent survives when
- * anything underneath it does - so a structure never loses the leg that is rolling. An ignored
- * row never makes a window: the engine does not price it, so it cannot roll off. */
+/** Whether a row rolls inside the window on its OWN account - its own expiry or next date. A row
+ * holding others with no date of its own - a netting set, a folder of the record's grouping -
+ * rolls only through what it holds, and an ignored row never rolls: the engine does not price it. */
+const rollsOwn = (row: BlotterRow, horizon: number | null): boolean =>
+  !row.ignored && (row.expiry ?? row.next) !== undefined && inWindow(row, horizon);
+
+/** The window filter over the tree: a row rolling on its own account survives whole - a structure
+ * never loses the leg that is rolling - and a row holding others survives with only those of them
+ * that do, so a netting set with one trade rolling this week shows that trade. */
 export function filterRows(rows: BlotterRow[], horizon: number | null): BlotterRow[] {
   if (horizon === null) return rows;
   return rows.flatMap((row) => {
     const children = filterRows(row.children, horizon);
-    const rolling = !row.ignored && inWindow(row, horizon);
+    const rolling = rollsOwn(row, horizon);
     if (!rolling && children.length === 0) return [];
     return [{ ...row, children: rolling ? row.children : children }];
   });
+}
+
+/** Whether a row holds trades rather than being one: a netting set, or a folder of the record's
+ * grouping, which picks nothing. */
+const holdsTrades = (row: BlotterRow): boolean =>
+  row.target === null || row.object === 'NettingCollateralSet';
+
+const rollsWithin = (row: BlotterRow, horizon: number | null): boolean =>
+  rollsOwn(row, horizon) || row.children.some((child) => rollsWithin(child, horizon));
+
+/** How many trades roll inside the window: a trade anything in which rolls is one - a structure is
+ * one trade and its legs its parts - and a row holding trades counts what rolls among them and
+ * never itself. */
+export function rollingCount(rows: BlotterRow[], horizon: number | null): number {
+  return rows.reduce((sum, row) => sum + (holdsTrades(row) ? rollingCount(row.children, horizon)
+    : Number(rollsWithin(row, horizon))), 0);
 }
 
 /** Sorted WITHIN the tree, never across it: siblings order by days-to-roll (undated last), and a

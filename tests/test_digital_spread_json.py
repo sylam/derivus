@@ -84,7 +84,7 @@ def _job(deals, factors, valuation=None):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                         'MCMC_Simulations': 1, 'Random_Seed': 1},
-        'Deals': {'Tag_Titles': '', 'Reference': 'digital',
+        'Deals': {'Reference': 'digital',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}} for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},

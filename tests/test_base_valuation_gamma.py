@@ -105,7 +105,7 @@ def equity_cfg(r=0.0, q=0.0, spot=SPOT, vol=VOL):
         'EquityPriceVol.EQ': {
             'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
             'Surface': utils.Curve([], [[m, t, vol] for m in MONEYNESS for t in (0.02, 2.0)])}}
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(EQ_OPTION, {})}]},
                'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
     return c
@@ -125,7 +125,7 @@ def fx_forward_cfg():
                              'Curve': utils.Curve([], [[0.0, 0.03], [5.0, 0.035]])},
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[0.0, 0.02], [5.0, 0.025]])}}
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(FX_FORWARD, {})}]},
                'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
     return c
@@ -137,7 +137,7 @@ def swap_cfg(levels=SWAP_LEVELS):
     c.params['System Parameters']['Base_Date'] = rw.BASE
     c.params['Price Factors'] = rw.market(
         'USD', {'USD': (SWAP_KNOTS, list(levels))}, 'USD', day_count='ACT_365')
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(
                    rw.par_swap('SW1', 'USD', 'USD', 'USD', 7, 3.5, day_count='ACT_365'), {})}]},
                'Calculation': {'Base_Date': rw.BASE, 'Currency': 'USD'}}

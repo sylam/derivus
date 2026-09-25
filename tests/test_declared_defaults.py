@@ -122,8 +122,11 @@ BARRIERS = [('Down_And_Out', 1.12, 1.25, 'Call'), ('Down_And_In', 1.12, 1.25, 'C
 #: The hash is taken over `Correlations` in the nested form the file carries, which is the only
 #: spelling of that section: a document declaring none hashes the same either way.
 PINNED = {
+    # re-pinned 2026-09-25, every document carrying a deal tree: `Tag_Titles` left the deals'
+    # attributes and `Tags` every deal, keys no program read - the factor universes are unmoved and
+    # the three documents priced here mark bit for bit
     'autocall_job.json': (
-        'a5f6560a00df96fd7f0a5b5b1087e60495c6321517431c54e6afcb13931f5d73', 5, 0),
+        'dc88939c63f341fb641977e4995ac4cead587aa12c52e4753db531882c74b8c8', 5, 0),
     # re-pinned 2026-09-22: the only plan a declared default has ever moved, and it moved by a
     # constructor no longer WRITING one. `NettingCollateralSet.__init__` used to `setdefault`
     # `Settlement_Period`, `Liquidation_Period` and `Opening_Balance` into the authored block,
@@ -131,15 +134,15 @@ PINNED = {
     # seven and the program is the same one. Measured both ways: 65,584 reported floats, 0
     # mismatches, and the factor universe unmoved at (6, 0)
     'commodity_aps_world.json': (
-        '61d35fab9b7bc859a8bd9900cbb37b1740289b72faca56ee3b9b3df3ab4aee83', 6, 0),
+        '038c69eef5b5c933cc0ef41e5dd2194351385e02834117ea91442fba736766cf', 6, 0),
     # re-pinned 2026-09-03: the DOCUMENT changed, not the reading of it. `Barrier_Hit` retired -
     # the knock-out is a fold over the schedule - so the block lost a field and the plan is a
     # different program. The factor universe is untouched (5, 0) and the mark is bit-identical at
     # 62.428908447906807, which is the half of this pin that says nothing else moved
     'fx_accumulator_job.json': (
-        '4e04eb1cb3d428d956d66ea091d1e3568320bde3283876313dcdccfdc82444a5', 5, 0),
+        '4f022be39f1d4d49ebcf3e01a5901e9fcd4f63ec93e9d5d6b9bf782907d50e76', 5, 0),
     'fx_tarf_job.json': (
-        '0413fa7e4ff497523561e44e1ab205369d6948731061e3479fd2714a099f93d1', 5, 0),
+        '6e145cf5df2e9d2d79a0e21a9a13faf54115363ed1406d4d786f73eeb9ecd72d', 5, 0),
     # re-pinned 2026-09-16: both market files carried a null Base_Date, which the loader fills
     # with the wall clock, so these two plans moved with the calendar. Each file now carries
     # its job's own base date; the runs are unmoved, the date being the calculation's to set
@@ -289,7 +292,7 @@ def price(block):
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                         'MCMC_Simulations': 1, 'Random_Seed': 1},
-        'Deals': {'Tag_Titles': '', 'Reference': 'defaults',
+        'Deals': {'Reference': 'defaults',
                   'Deals': {'Children': [{'Instrument': {'.Deal': block}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
@@ -635,7 +638,7 @@ def book(deals):
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': WORLD_BASE, 'Currency': 'USD',
                         'MCMC_Simulations': 1, 'Random_Seed': 1},
         'CalendDataFile': CALENDARS,
-        'Deals': {'Tag_Titles': '', 'Reference': 'defaults',
+        'Deals': {'Reference': 'defaults',
                   'Deals': {'Children': [node(deal) for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': WORLD_BASE},
@@ -669,7 +672,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    assert sum(dropped(deal) for deal in BOOK) == 201
+    assert sum(dropped(deal) for deal in BOOK) == 187
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)

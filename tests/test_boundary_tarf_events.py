@@ -100,7 +100,7 @@ def _cfg(deal, spot, counterparty=False, simulate_fx=False):
     if simulate_fx:
         c.params['Price Models'] = {'GBMAssetPriceModel.AUD': {'Vol': SIGMA, 'Drift': 0.0}}
         c.params['Model Configuration'].append('FxRate', (), 'GBMAssetPriceModel')
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(deal, {})}]},
                'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
     return c

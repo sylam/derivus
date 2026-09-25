@@ -230,7 +230,7 @@ def compress_deal_data(deals):
             (filtered if deal['Instrument'].field['Reference'] in values else unfiltered).append(deal)
         return filtered, unfiltered
 
-    def compress_CFFloatingInterestListDeal(unders, ref, use_ref_as_tag=False):
+    def compress_CFFloatingInterestListDeal(unders, ref):
         compressed = []
         all_margin = {}
         all_notional = {}
@@ -278,26 +278,15 @@ def compress_deal_data(deals):
                 zip(final[:-1], final[1:])) if x['Resets'][0][0] > y['Resets'][0][0]]
 
             if len(splits) >= len(existing_deals):
-                # can happen with e.g. prime linked swaps (many resets per day)
-                # check to see if we must edit the tag
-                for deal in existing_deals:
-                    if use_ref_as_tag:
-                        deal['Instrument'].field['Tags'] = list(ref)
-                    # add the deal uncompressed
-                    compressed.append(deal)
+                # can happen with e.g. prime linked swaps (many resets per day): add them uncompressed
+                compressed.extend(existing_deals)
             else:
                 for i, (deal, m, n) in enumerate(zip(existing_deals, [0] + splits, splits + [None])):
                     legnum = '_Leg{}'.format(i) if splits else ''
                     deal['Instrument'].field['Buy_Sell'] = 'Buy'
                     deal['Instrument'].field['Cashflows'] = dict(cf_prop)
                     deal['Instrument'].field['Cashflows']['Items'] = final[m:n]
-                    if use_ref_as_tag:
-                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format(
-                            'Buy', deal['Instrument'].field['Currency'], legnum)
-                        deal['Instrument'].field['Tags'] = list(ref)
-                    else:
-                        deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format('Buy', ref, legnum)
-
+                    deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format('Buy', ref, legnum)
                     compressed.append(deal)
 
                 # move the existing deal index forward

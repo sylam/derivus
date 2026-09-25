@@ -1,13 +1,13 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
-  DOORBELL, failure, getBook, getBookActivity, getBookRisk, getBookStatus, getBookXva, getSchema,
-  postDescribe,
+  DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities,
+  getBookPositions, getBookRisk, getBookStatus, getBookXva, getSchema, postDescribe,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner } from './components/Record';
 import { WORKSPACES } from './registry';
-import { ringsAhead } from './spine';
+import { pinnedAt, ringsAhead } from './spine';
 import { AppContext, INITIAL, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -126,6 +126,27 @@ export function App() {
       .catch((error) => { if (live) dispatch({ type: 'XVA_FAILED', ...failure(error) }); });
     return () => { live = false; };
   }, [state.source, onXva]);
+
+  // The positions and the paper they sit under, for the two screens that group the book by them:
+  // read while one of them is looked at on a desk that records, and again whenever the file or the
+  // record moves under it - a booking moves both, a declaration the record alone.
+  const paperWanted = (state.tab === 'portfolio' || state.tab === 'blotter') && visible
+    && recording;
+  const recordAt = pinnedAt(state.record.spine);
+  useEffect(() => {
+    if (state.source?.kind !== 'book' || !paperWanted) return;
+    let live = true;
+    dispatch({ type: 'PAPER_FETCHING' });
+    Promise.all([getBookPositions(), getBookEntities(), getBookAgreements()])
+      .then(([held, legal, signed]) => {
+        if (live) {
+          dispatch({ type: 'PAPER_LOADED', paper: {
+            positions: held.positions, entities: legal.entities, agreements: signed.agreements } });
+        }
+      })
+      .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
+    return () => { live = false; };
+  }, [state.source, paperWanted, recordAt]);
 
   // describe whenever the document moves
   useEffect(() => {

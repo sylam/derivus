@@ -1,16 +1,23 @@
 import { useMemo, useState } from 'react';
 import {
-  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, inWindow, sortRows, tagText,
-  toRows, type BlotterRow,
+  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow,
+  rollingCount, rowsByPath, sortRows, toRows, type BlotterRow,
 } from '../blotter';
 import { DescriptorPanel } from '../components/FieldView';
+import {
+  GROUPINGS, NO_PAPER, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
+  type Position,
+} from '../positions';
 import { useApp } from '../state';
+import { formatNumber } from '../tokens';
 import type { Schema } from '../types';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
  * containers still holding their legs, sorted by days-to-roll so "who rolls off this week" is one
  * glance. Read-only by construction - the amendment surface is the portfolio view, and a blotter
- * that edited would be a blotter nobody could scan.
+ * that edited would be a blotter nobody could scan. Where the desk keeps a record it reads the
+ * Portfolio screen's grouping - the file's own nesting, by portfolio or by client - and every row
+ * says what the record holds of it.
  *
  * It rides the SAME etag poll every other view does: the document in the store is the truth, so a
  * booking, an amendment or a market tick from any client repaints this table on the next tick with
@@ -25,9 +32,17 @@ export function BlotterView() {
 
   const base = useMemo(() => (doc ? baseDateOf(doc) : undefined), [doc]);
   // an empty book is a book: a document carrying no Deals block still renders the empty blotter
-  const tree = useMemo(() => (doc
+  const book = useMemo(() => (doc
     ? toRows(doc.Calc.Deals?.Deals?.Children ?? [], schema?.Instrument.containers ?? [], base)
     : []), [doc, schema, base]);
+  // the record's columns and groupings are the live book's: a copy opened from a file has none
+  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const grouping = recording ? state.grouping : 'book';
+  const paper = state.paper.data ?? NO_PAPER;
+  const tree = useMemo(() => (grouping === 'book' ? book : groupedRows(
+    grouping === 'portfolio' ? portfolioTree(paper.positions) : clientTree(paper),
+    rowsByPath(book), byId(paper.positions), base)), [grouping, book, paper, base]);
+  const heldAt = useMemo(() => byPath(paper.positions), [paper]);
 
   if (!doc) return null;
 
@@ -35,7 +50,7 @@ export function BlotterView() {
   const rows = flatten(sortRows(filterRows(tree, horizon), sort), collapsed);
   // the deal COUNT is /describe's answer and the header already states it - this bar states only
   // what is the blotter's own reading, the roll-off
-  const rolling = countRows(filterRows(tree, 30));
+  const rolling = rollingCount(tree, 30);
 
   function toggle(path: string) {
     setCollapsed((current) => {
@@ -49,6 +64,12 @@ export function BlotterView() {
     <div className="main">
       <div className="panel">
         <div className="blotterbar">
+          {recording && GROUPINGS.map((choice) => (
+            <button key={choice.id} className={`ghost${grouping === choice.id ? ' on' : ''}`}
+                    onClick={() => dispatch({ type: 'GROUP', grouping: choice.id })}>
+              {choice.label}
+            </button>
+          ))}
           <span className="hint">roll-off window</span>
           {WINDOWS.map((window) => (
             <button
@@ -92,7 +113,9 @@ export function BlotterView() {
                 <th>Expiry</th>
                 <th>Next date</th>
                 <th className="n">Days</th>
-                <th>Tag</th>
+                {recording && <th className="n">Qty</th>}
+                {recording && <th>Portfolio</th>}
+                {recording && <th>Client</th>}
                 <th />
               </tr>
             </thead>
@@ -102,18 +125,24 @@ export function BlotterView() {
                   key={row.path}
                   row={row}
                   schema={schema}
-                  selected={selection.deal === row.path}
+                  held={!recording ? null
+                    : row.position ? [row.position] : grouping === 'book'
+                      ? heldAt.get(row.path) ?? [] : []}
+                  entities={paper.entities}
+                  selected={row.target !== null && selection.deal === row.target}
                   emphasised={horizon !== null ? inWindow(row, horizon) : inWindow(row, 7)}
                   collapsed={collapsed.has(row.path)}
                   opened={opened === row.path}
                   onToggle={() => toggle(row.path)}
                   onOpen={() => setOpened(opened === row.path ? null : row.path)}
-                  tagTitles={tagText(doc.Calc.Deals?.Tag_Titles)}
-                  onSelect={() => dispatch({ type: 'SELECT_DEAL', path: row.path })}
+                  onSelect={() => row.target !== null
+                    && dispatch({ type: 'SELECT_DEAL', path: row.target })}
                 />
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={12} className="hint">nothing rolls off in this window.</td></tr>
+                <tr><td colSpan={recording ? 14 : 11} className="hint">
+                  nothing rolls off in this window.
+                </td></tr>
               )}
             </tbody>
           </table>
@@ -124,8 +153,8 @@ export function BlotterView() {
 }
 
 function Row(props: {
-  row: BlotterRow; schema: Schema | null; selected: boolean; emphasised: boolean;
-  collapsed: boolean; opened: boolean; tagTitles: string;
+  row: BlotterRow; schema: Schema | null; held: Position[] | null; entities: Paper['entities'];
+  selected: boolean; emphasised: boolean; collapsed: boolean; opened: boolean;
   onToggle: () => void; onOpen: () => void; onSelect: () => void;
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
@@ -161,7 +190,7 @@ function Row(props: {
         </td>
         <td className="date">{row.next && row.next !== row.expiry ? row.next : ''}</td>
         <Days row={row} />
-        <td title={props.tagTitles || undefined}>{row.tag}</td>
+        {props.held && <Held held={props.held} entities={props.entities} />}
         <td className="opener">
           <span onClick={(e) => { e.stopPropagation(); props.onOpen(); }}>
             {opened ? '×' : '⋯'}
@@ -170,7 +199,7 @@ function Row(props: {
       </tr>
       {opened && (
         <tr className="detail">
-          <td colSpan={12}>
+          <td colSpan={props.held ? 14 : 11}>
             {sections
               ? sections.map((section) => (
                   <DescriptorPanel
@@ -184,6 +213,22 @@ function Row(props: {
           </td>
         </tr>
       )}
+    </>
+  );
+}
+
+/** What the record holds of a row: the net quantity, and the portfolios and clients it sits
+ * under - one position where the book is grouped by the record, every one the file's node holds
+ * where it is not. */
+function Held({ held, entities }: { held: Position[]; entities: Paper['entities'] }) {
+  const distinct = (values: string[]) => [...new Set(values)].join(', ');
+  return (
+    <>
+      <td className="n">
+        {held.length ? formatNumber(held.reduce((sum, row) => sum + row.quantity, 0)) : ''}
+      </td>
+      <td>{distinct(held.map((row) => row.portfolio))}</td>
+      <td>{distinct(held.map((row) => clientName(entities, row.counterparty)))}</td>
     </>
   );
 }
@@ -216,8 +261,4 @@ function Days({ row }: { row: BlotterRow }) {
   if (row.days === undefined) return <td className="n hint">—</td>;
   const tone = row.days < 0 ? 'past' : row.days <= 7 ? 'hot' : row.days <= 30 ? 'warm' : '';
   return <td className={`n days ${tone}`} title={row.roll}>{row.days}</td>;
-}
-
-function countRows(rows: BlotterRow[]): number {
-  return rows.reduce((total, row) => total + 1 + countRows(row.children), 0);
 }

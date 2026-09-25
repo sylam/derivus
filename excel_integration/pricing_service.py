@@ -334,7 +334,7 @@ def build_portfolio_job_json(
                              ``portfolio_service.flatten_portfolio``.
     :param calc_params:      dict for the ``Calculation`` section (must include
                              at minimum ``{'Object': 'BaseValuation', ...}``).
-    :param attributes:       optional ``{'Reference': ..., 'Tag_Titles': ...}``.
+    :param attributes:       optional ``{'Reference': ...}``.
     :returns: compact JSON string suitable for ``price_job({'job_json': ...})``.
     """
     from .portfolio_service import unflatten_portfolio
@@ -354,7 +354,6 @@ def build_portfolio_job_json(
         "Calc": {
             "Calculation": calc_params,
             "Deals": {
-                "Tag_Titles": attrs.get("Tag_Titles", ""),
                 "Reference": attrs.get("Reference", ""),
                 "Deals": deals_root,
             },

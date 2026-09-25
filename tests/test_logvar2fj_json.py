@@ -66,7 +66,7 @@ COUPONS = [0.02, 0.04, 0.06, 0.08]
 
 def _autocall(**overrides):
     """The synthetic autocall: four quarterly-ish fixings, a coupon ladder and a 70% terminal put."""
-    deal = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC1', 'Tags': '', 'MtM': '',
+    deal = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC1', 'MtM': '',
             'Currency': 'EUR', 'Payoff_Currency': 'EUR', 'Equity': 'INDEX_A',
             'Dividends': 'INDEX_A', 'Discount_Rate': 'EUR', 'Equity_Volatility': 'INDEX_A.EUR',
             'Buy_Sell': 'Buy', 'Option_Type': 'Put', 'Strike_Price': 100.0,
@@ -87,7 +87,7 @@ def _job(calc, deals=(), **sections):
     return {'Calc': {
         'Calculation': calc,
         'MergeMarketData': {'MarketDataFile': WORLD, 'ExplicitMarketData': dict(sections)},
-        'Deals': {'Reference': 'test', 'Tag_Titles': '',
+        'Deals': {'Reference': 'test',
                   'Deals': {'Children': list(deals)}}}}
 
 

@@ -114,7 +114,7 @@ def job(deal, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1024, 'Random_Seed': 1}, **(calc or {})),
-        'Deals': {'Tag_Titles': '', 'Reference': 'fold',
+        'Deals': {'Reference': 'fold',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}}
                                          for d in (deal if isinstance(deal, list) else [deal])]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {

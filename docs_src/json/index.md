@@ -68,7 +68,7 @@ e.g.
 Extra information (e.g. returning simulated cashflows, exposure profiles etc. is specified here).
 
 ## Deals
-This section only has 3 attributes:
+This section has 2 attributes:
 ### Reference
 The name of this collection of deals (used later when generating the output)
 
@@ -83,27 +83,20 @@ e.g.
 }
 ```
 
-### Tag_Titles
-It is sometimes useful to add extra information to each deal over an above that which is solely required
-for pricing (e.g. Portfolio or Originating desk). Later, when defining these tags per deal, these are the 
-titles that will be used for reporting.
+### Deals
+The deals themselves, as a tree:
 
-e.g. 
 ```json
 {
   "Calc": {
     "Deals": {
-      "Tag_Titles": "Portfolio,Desk",
       "Deals": {
         "Children": [
-          {          
+          {
             "Instrument": {
               ".Deal": {
                 "Object": "FXNonDeliverableForward",
                 "Reference": "12345678",
-                "Tags": [
-                  "River Forex Trading,STIRT"
-                ],
                 "Buy_Currency": "USD",
                 "Sell_Currency": "ZAR",
                 "Buy_Amount": -10000000,
@@ -122,14 +115,14 @@ e.g.
   }
 }
 ```
-Notice how the *Tags* attribute corresponds to the *Tag_Titles* attribute.
 
-### Deals
-In the example above, we see the general layout for defining deals. A *Deals* attribute is always 
-followed a single *Children* which is then defined to be an array. Further *Instrument* objects (of 
-type *.Deal*) are then defined as children. Note that should the *Instrument* be a Container object,
-it may then define its own *Children* attribute as an array. Nested structures thus form a tree 
-structure.
+A *Deals* attribute is always followed by a single *Children*, defined to be an array. Further
+*Instrument* objects (of type *.Deal*) are then defined as children. Should the *Instrument* be a
+Container object, it may define its own *Children* array, so nested structures form a tree.
+
+A deal carries its terms and nothing about where it is held. Where a desk keeps a record, the
+portfolio a trade sits in, the agreement it is dealt under and the seat that booked it are carried
+by the fill that books it - see [the Spine](../developer/spine.md#increment-8-the-paper-and-where-a-position-sits).
 
 ## MergeMarketData
 There are just 2 attributes here. 

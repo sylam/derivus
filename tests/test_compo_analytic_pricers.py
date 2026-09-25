@@ -162,7 +162,7 @@ def _job(deals, factors, calc=None, models=None, currency='EUR'):
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE,
                              'Currency': currency, 'MCMC_Simulations': 1,
                              'Random_Seed': 1}, **(calc or {})),
-        'Deals': {'Tag_Titles': '', 'Reference': 'compo',
+        'Deals': {'Reference': 'compo',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}} for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
 

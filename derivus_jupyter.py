@@ -245,7 +245,7 @@ class TreePanel(metaclass=ABCMeta):
                         data.append([get_repr(item, field, rf.schema.default.get(widget_type, default_val)) for
                                      field, item, widget_type in zip(headings, flow, widgets)])
                     return_value = to_json(data)
-                elif field_name in ['Description', 'Tags']:
+                elif field_name == 'Description':
                     return_value = to_json(obj)
                 elif field_name == 'TARF_ExpiryDates':
                     headings = ['Date', 'Settle', 'Value']

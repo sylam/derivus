@@ -95,7 +95,7 @@ def _job(deal, base=BASE, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                              'MCMC_Simulations': SIMS, 'Random_Seed': 1}, **(calc or {})),
-        'Deals': {'Tag_Titles': '', 'Reference': 'ext',
+        'Deals': {'Reference': 'ext',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},

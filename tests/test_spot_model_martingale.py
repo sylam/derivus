@@ -91,7 +91,7 @@ def document(paths):
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE},
                         'Currency': 'USD', 'MCMC_Simulations': paths, 'Random_Seed': 1},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market},
-        'Deals': {'Reference': 'test', 'Tag_Titles': '', 'Deals': {'Children': []}}}}
+        'Deals': {'Reference': 'test', 'Deals': {'Children': []}}}}
 
 
 def params(device, invert=False):

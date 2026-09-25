@@ -86,7 +86,7 @@ def _job(deal, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **(calc or {})),
-        'Deals': {'Tag_Titles': '', 'Reference': 'pb',
+        'Deals': {'Reference': 'pb',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
@@ -480,7 +480,7 @@ def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
                 'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
                 'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No',
                 'Hessian': 'Yes' if hessian else 'No'}},
-        'Deals': {'Tag_Titles': '', 'Reference': 'pb',
+        'Deals': {'Reference': 'pb',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': base, 'Base_Date': BASE},

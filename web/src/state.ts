@@ -4,6 +4,7 @@
 
 import { createContext, useContext, type Dispatch } from 'react';
 import { getBook, type BookDealOutcome } from './api';
+import type { Grouping, Paper } from './positions';
 import { readRecord, reconciledRecord, type RecordHeld } from './spine';
 import type {
   ActivityPage, BookRisk, BookXva, DescribeResult, JobDoc, Reconcile, ResultSummary, Schema,
@@ -63,6 +64,10 @@ export type AppState = {
   risk: RiskState;
   xva: Fetched<BookXva>;
   record: RecordState;
+  /** The positions standing and the paper they sit under, for the screens that group by them. */
+  paper: Fetched<Paper>;
+  /** How the Portfolio screen and the blotter group the book - one choice for both. */
+  grouping: Grouping;
 };
 
 export const IDLE_RUN: RunState = {
@@ -74,6 +79,7 @@ const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false 
 
 export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
 export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
+export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
 export const NO_RECORD: RecordState = {
   spine: null, rows: [], reconcile: null, reconciledAt: null,
 };
@@ -82,7 +88,7 @@ export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
   tab: 'portfolio', selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
-  record: NO_RECORD,
+  record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
 };
 
 export type Action =
@@ -109,6 +115,10 @@ export type Action =
   | { type: 'XVA_FETCHING' }
   | { type: 'XVA_LOADED'; xva: BookXva }
   | { type: 'XVA_FAILED'; error: string; status: number | null }
+  | { type: 'PAPER_FETCHING' }
+  | { type: 'PAPER_LOADED'; paper: Paper }
+  | { type: 'PAPER_FAILED'; error: string; status: number | null }
+  | { type: 'GROUP'; grouping: Grouping }
   // the record, read on the book poll's own beat: where the file stands, and the strip's next
   // page; then the reconcile answer, under the file etag it was folded against
   | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
@@ -129,7 +139,7 @@ export function reducer(state: AppState, action: Action): AppState {
         : {
             ...state, doc: action.doc, source: action.source, docError: null,
             selection: { deal: null, picks: {} }, describe: null, validate: null, run: IDLE_RUN,
-            risk: IDLE_RISK, xva: IDLE_XVA,
+            risk: IDLE_RISK, xva: IDLE_XVA, paper: IDLE_PAPER,
           };
     case 'DOC_FAILED':
       return { ...state, docError: action.error };
@@ -192,6 +202,17 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         xva: { data: null, error: action.error, status: action.status, loading: false },
       };
+    case 'PAPER_FETCHING':
+      return { ...state, paper: { ...state.paper, loading: true } };
+    case 'PAPER_LOADED':
+      return { ...state, paper: { data: action.paper, error: null, status: null, loading: false } };
+    case 'PAPER_FAILED':
+      return {
+        ...state,
+        paper: { data: null, error: action.error, status: action.status, loading: false },
+      };
+    case 'GROUP':
+      return { ...state, grouping: action.grouping };
     // both transitions are `web/src/spine.ts`'s, and both answer the record they were handed
     // where nothing moved - the beat is two seconds and most beats of it bring nothing at all
     case 'RECORD_READ': {

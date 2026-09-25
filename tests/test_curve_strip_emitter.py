@@ -1103,7 +1103,7 @@ def job_document(market_prices=None):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': AS_OF.isoformat()},
                         'Currency': 'ZAR'},
-        'Deals': {'Tag_Titles': '', 'Reference': 'strip', 'Deals': {'Children': []}},
+        'Deals': {'Reference': 'strip', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'ZAR',
                                   'Base_Date': {'.Timestamp': AS_OF.isoformat()}},

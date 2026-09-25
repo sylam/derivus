@@ -55,7 +55,7 @@ DEAL_REFERENCE = 'ZeroCostCollar-' + QUOTE_ID[:8]
 BOOK = {'Calc': {
     'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE},
                     'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
-    'Deals': {'Tag_Titles': '', 'Reference': 'desk', 'Deals': {'Children': [
+    'Deals': {'Reference': 'desk', 'Deals': {'Children': [
         {'Instrument': {'.Deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'ZAR',
             'Discount_Rate': 'ZAR', 'Calendars': None, 'Amount': NOTIONAL,

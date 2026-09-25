@@ -139,7 +139,7 @@ def _job(interpolation=None):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Currency': 'USD', 'Greeks': 'No',
                         'Base_Date': {'.Timestamp': BASE.strftime('%Y-%m-%d')}},
-        'Deals': {'Tag_Titles': '', 'Reference': 'carry', 'Deals': {'Children': [{
+        'Deals': {'Reference': 'carry', 'Deals': {'Children': [{
             'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
                                      'Netted': 'True', 'Collateralized': 'False'}},
             'Children': [{'Instrument': {'.Deal': deal}}]}]}},

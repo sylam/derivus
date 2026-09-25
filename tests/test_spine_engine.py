@@ -90,7 +90,7 @@ def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
-        'Deals': {'Tag_Titles': '', 'Reference': 'spine-desk',
+        'Deals': {'Reference': 'spine-desk',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
@@ -1034,7 +1034,7 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
         assert refused.status_code == 422 and said in refused.json()['detail'], said
         assert desk.read_bytes() == before, 'a refused booking moved the file'
 
-    for reference, portfolio in (('EXEC-PAPER', 'Rates/EM'), ('EXEC-BOOK', None)):
+    for reference, portfolio in (('EXEC-PAPER', 'spine-desk/Rates/EM'), ('EXEC-BOOK', None)):
         booked = CLIENT.post('/book/deals', content=dump(dict(
             {'action': 'add', 'deal': dict(deal, Reference=reference), 'parent_reference':
              CLIENT_SET, 'agreement': CLIENT_SET, 'quantity': 1.0, 'price': 99.5,
@@ -1043,14 +1043,70 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
         assert booked['written'] is True, booked
     fills = [body for _, _, body in facts(recorded, 'fill')]
     assert [(fill['agreement'], fill['counterparty'], fill['portfolio'], fill['price'])
-            for fill in fills] == [(CLIENT_SET, 'LEI-A', 'Rates/EM', 99.5),
+            for fill in fills] == [(CLIENT_SET, 'LEI-A', 'spine-desk/Rates/EM', 99.5),
                                    (CLIENT_SET, 'LEI-A', 'spine-desk', 99.5)]
     projections = service.spine.package().projections
     positions = projections.PROJECTORS['positions']
     rows = service.spine.folded(lambda log: positions.rows(projections.fold(log, positions)))
     assert {(row['agreement'], row['portfolio']) for row in rows} == {
-        (CLIENT_SET, 'Rates/EM'), (CLIENT_SET, 'spine-desk')}
+        (CLIENT_SET, 'spine-desk/Rates/EM'), (CLIENT_SET, 'spine-desk')}
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, desk):
+    """`/book/positions` is the fold at the head joined to the FILE: every position standing under
+    its agreement and portfolio, beside the nodes carrying its instrument under that agreement's
+    set. One instrument under two agreements is two positions, each reading its own set's nodes; a
+    close-out stands no more; a node the file lost answers no path. A portfolio whose top node is
+    not the book, or with an empty segment, refuses by name with nothing appended.
+
+    Killing mutations: the join by instrument alone hands the legacy set's position the declared
+    agreement's nodes too; the standing filter dropped answers the closed position at zero.
+    """
+    CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                headers=JSON)
+    assert CLIENT.post('/book/agreements', content=dump({
+        'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
+        'terms': netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']}),
+        headers=JSON).status_code == 200
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'] += [
+        netting_set(CLIENT_SET, 'CPTY_A'), netting_set('CLIENT_B', 'CPTY_B')]
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    def booked(execution, parent, **fields):
+        return CLIENT.post('/book/deals', content=dump(dict(
+            {'action': 'add', 'deal': dict(CASHFLOW, Reference='CF-HELD', Amount=250_000.0),
+             'parent_reference': parent, 'quantity': 1.0, 'execution_reference': execution},
+            **fields)), headers=JSON)
+
+    head_before = head(recorded)
+    for portfolio, posted in (('Rates/EM', 'spine-desk/Rates/EM'),
+                              ('spine-desk//EM', 'spine-desk/EM')):
+        refused = booked('EXEC-BAD', CLIENT_SET, agreement=CLIENT_SET, portfolio=portfolio)
+        assert refused.status_code == 422 and repr(posted) in refused.json()['detail'], portfolio
+    assert head(recorded) == head_before, 'a refused portfolio recorded something'
+
+    for execution, parent, fields in (
+            ('EXEC-1', CLIENT_SET, {'agreement': CLIENT_SET, 'portfolio': 'spine-desk/Rates/EM'}),
+            ('EXEC-2', CLIENT_SET, {'agreement': CLIENT_SET}),
+            ('EXEC-3', 'CLIENT_B', {}),
+            ('EXEC-4', CLIENT_SET, {'agreement': CLIENT_SET, 'quantity': -1.0})):
+        assert booked(execution, parent, **fields).json()['written'] is True, execution
+    standing = CLIENT.get('/book/positions').json()['positions']
+    assert sorted((row['agreement'], row['portfolio'], row['counterparty'], row['quantity'],
+                   row['clips'], row['deal_paths'], row['reference'], row['object'])
+                  for row in standing) == [
+        (CLIENT_SET, 'spine-desk/Rates/EM', 'LEI-A', 1.0, 1, ['1/0', '1/1', '1/2'], 'CF-HELD',
+         'FixedCashflowDeal'),
+        ('CLIENT_B', 'spine-desk', 'CPTY_B', 1.0, 1, ['2/0'], 'CF-HELD', 'FixedCashflowDeal')]
+
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'][2]['Children'].clear()
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    lost = {row['agreement']: row for row in CLIENT.get('/book/positions').json()['positions']}
+    assert (lost['CLIENT_B']['deal_paths'], lost['CLIENT_B']['reference']) == ([], None)
+    assert lost[CLIENT_SET]['deal_paths'] == ['1/0', '1/1', '1/2']
 
 
 # --------------------------------------------------------------------------------------------
@@ -2408,14 +2464,14 @@ def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
 
 def test_the_record_reads_are_a_404_on_a_box_that_records_nothing(unrecorded, desk):
     """A reading refuses nothing and a desk that records nothing is a STATE rather than an
-    error: the two reads 404 in the service's own sentence naming the variable, the status block
+    error: the three reads 404 in the service's own sentence naming the variable, the status block
     is null, and the banner's verdict is `none`.
 
-    Killing mutation: either read answering an empty strip or an empty markets list, which tells a
-    desk that keeps no record that its record holds nothing.
+    Killing mutation: any read answering an empty strip, markets list or positions list, which tells
+    a desk that keeps no record that its record holds nothing.
     """
     assert spine.configured() is False
-    for path in ('/book/activity', '/book/markets'):
+    for path in ('/book/activity', '/book/markets', '/book/positions'):
         answer = CLIENT.get(path)
         assert answer.status_code == 404, path
         assert spine.SPINE_HOME in answer.json()['detail'], path

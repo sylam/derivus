@@ -139,7 +139,7 @@ def job_document():
     }
     c.params['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': VOL, 'Drift': RATE}}
     c.params['Model Configuration'].append('EquityPrice', (), 'GBMAssetPriceModel')
-    c.deals = {'Attributes': {'Reference': 'multigpu', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'multigpu'},
                'Deals': {'Children': [{'Instrument': construct_instrument(CALL, {})},
                                       {'Instrument': construct_instrument(PUT, {})}]},
                'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': BASE,
@@ -317,7 +317,7 @@ def hmm_document():
               'Currency': 'USD', 'Repo_Rate': 'USD', 'Carry': 'PLAT_CARRY',
               'Maturity_Date': BASE + pd.DateOffset(years=1), 'Units': 10.0,
               'Payoff_Currency': 'USD'}
-    c.deals = {'Attributes': {'Reference': 'hmm', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'hmm'},
                'Deals': {'Children': [{'Instrument': construct_instrument(future, {})}]},
                'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': BASE,
                                'Currency': 'USD'}}

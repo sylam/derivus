@@ -70,7 +70,7 @@ def _cfg():
     # value be one: the pricing measure and the simulation measure have to be the same
     c.params['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': VOL, 'Drift': 0.0}}
     c.params['Model Configuration'].append('EquityPrice', (), 'GBMAssetPriceModel')
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(field, {})}]},
                'Calculation': {'Base_Date': BASE, 'Currency': 'USD'}}
     return c

@@ -65,7 +65,7 @@ export type DealNode = {
 export type JobDoc = {
   Calc: {
     Calculation: Record<string, unknown>;
-    Deals: { Tag_Titles?: unknown; Reference?: string; Deals: { Children: DealNode[] } };
+    Deals: { Reference?: string; Deals: { Children: DealNode[] } };
     MergeMarketData?: {
       MarketDataFile?: string;
       ExplicitMarketData?: Record<string, Record<string, unknown>>;

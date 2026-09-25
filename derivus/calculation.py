@@ -2156,8 +2156,6 @@ class Base_Revaluation(Calculation):
                         data[k] = v.item()
                     elif k == 'Skew_Reserve':
                         data[k] = v
-                if deal.Instrument.field.get('Tags'):
-                    data.update(dict(zip(tag_titles, deal.Instrument.field['Tags'][0].split(','))))
 
             block = []
             greeks = {}
@@ -2187,7 +2185,6 @@ class Base_Revaluation(Calculation):
             return block, greeks
 
         self.output = {}
-        tag_titles = self.config.deals['Attributes'].get('Tag_Titles', '').split(',')
         mtm, greeks = check_prices(
             self.netting_sets, [('Parent', self.netting_sets.obj.Instrument.field.get('Reference'))])
 

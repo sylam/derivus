@@ -136,7 +136,6 @@
     },
     "Deals": {
       "Reference": "test",
-      "Tag_Titles": "Portfolio,Trader",
       "Deals": {
         "Children": [
           {
@@ -144,9 +143,6 @@
               ".Deal": {
                 "Object": "FXAccumulatorOptionDeal",
                 "Reference": "ACC1",
-                "Tags": [
-                  "FX-EXOTICS,jdoe"
-                ],
                 "Currency": "USD",
                 "Underlying_Currency": "EUR",
                 "Discount_Rate": "USD",

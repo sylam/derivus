@@ -1,6 +1,7 @@
 // One function per service endpoint, same-origin: vite proxies in dev, the service serves the
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
+import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
   CalculationsAnswer, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, Reconcile,
@@ -98,6 +99,12 @@ export const getBookActivity = (since: number | '') =>
 export const DOORBELL = '/spine/doorbell';
 export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
 export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
+// the positions standing, each where the file holds it, and the paper they sit under - the two
+// keys the grouped views file the book by
+export const getBookPositions = () => call<{ positions: Position[] }>('GET', '/book/positions');
+export const getBookEntities = () => call<{ entities: Entity[] }>('GET', '/book/entities');
+export const getBookAgreements = () =>
+  call<{ agreements: Agreement[] }>('GET', '/book/agreements');
 // the desk's own named calculations: kept on this workstation beside the book, saved one at a time
 // (a null removes one), and run over the live book - whole or one subtree - in the curiosity lane
 export const getCalculations = () => call<CalculationsAnswer>('GET', '/calculations');

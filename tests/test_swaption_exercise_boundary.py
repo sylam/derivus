@@ -212,7 +212,7 @@ def config():
                              (fixed_leg(reference + '_FIX', 'Buy'),
                               floating_leg(reference + '_FLT', 'Buy'))]}
 
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [
                    {'Instrument': construct_instrument(NETTING, {}),
                     'Children': [node('PAYER', 'Payer'), node('RECEIVER', 'Receiver')]}]},

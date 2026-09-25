@@ -61,6 +61,7 @@ export function Tree({ id, nodes, selected, onSelect }: {
           <span className="label">{node.label}</span>
           {node.muted && <span className="badge">ignored</span>}
           {node.group && <span className="count">{leaves(node)}</span>}
+          {!node.group && node.hint && <span className="count">{node.hint}</span>}
         </div>
         {open && node.children?.map((child) => row(child, depth + 1))}
       </Fragment>

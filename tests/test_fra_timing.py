@@ -182,7 +182,7 @@ def config(deals, sigma=None):
                 'Sigma': utils.Curve([], [[0.0, sigma], [5.0, sigma]])}
         c.params['Model Configuration'].append(
             'InterestRate', (), 'HullWhite1FactorInterestRateModel')
-    c.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    c.deals = {'Attributes': {'Reference': 'test'},
                'Deals': {'Children': [{'Instrument': construct_instrument(d, {})} for d in deals]},
                'Calculation': {'Base_Date': BASE, 'Currency': CURRENCY}}
     return c

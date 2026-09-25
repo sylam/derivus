@@ -862,7 +862,6 @@ ADMIN = Group('Admin', [
                   'dispatches on it and refuses a block that names none, so it is the one field '
                   'nothing can stand in for'),
     F('Reference', 'Text', default='', convention=True),
-    F('Tags', 'Text', default='', convention=True),
     F('MtM', 'Text', default='', convention=True),
     F('Sales_Margin', 'Float', default=0, convention=True,
       description='What the desk charged for this ticket over the mid, in Sales_Margin_Currency '

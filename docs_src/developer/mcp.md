@@ -31,7 +31,8 @@ configured once in the web UI, and — where this desk keeps a record — the fi
 what the book owes, whether a close is legal, where the file and the record disagree, the strip of
 what has been recorded, and the official closes - and the paper the book trades under, declared by
 the seat that keeps the legal documents, with a booking's quantity as the position change in units
-of the deal. The module docstring stays the maintainer's.
+of the deal and its portfolio a path under the book, and `book_positions` reading what stands. The
+module docstring stays the maintainer's.
 
 ## The tools
 
@@ -77,6 +78,7 @@ of the deal. The module docstring stays the maintainer's.
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
 | `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on |
 | `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
+| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, and the `deal_paths` where the book file holds it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

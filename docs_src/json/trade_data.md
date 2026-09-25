@@ -13,7 +13,6 @@ an uncollateralized netting set.
           ".Deal": {
             "Object": "NettingCollateralSet",
             "Reference": "Test",
-            "Tags": "",
             "Collateralized": "False",
             "Netted": "True"
           }
@@ -24,7 +23,6 @@ an uncollateralized netting set.
               ".Deal": {
                 "Object": "FXNonDeliverableForward",
                 "Reference": "341",
-                "Tags": "",
                 "MtM": "",
                 "Sell_Currency": "USD",
                 "Sell_Amount": 1000,

@@ -123,8 +123,9 @@ settlement file for a day, on the market the desk designated for it and on no ot
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
 what close_check then stops waiting on. THE PAPER the book trades under is declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
-and never a balance, and describe_agreements to read them - a booking then names its agreement,
-and its quantity is the position change in units of the deal, 1 booking it as written."""
+and never a balance, and describe_agreements to read them - a booking then names its agreement and
+its portfolio, a path under the book, and its quantity is the position change in units of the deal,
+1 booking it as written; book_positions reads what stands, each where it sits."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -541,8 +542,8 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     -0.5 unwinds half - `execution_reference` is the venue exec id or ticket id that makes a retry
     the same fact, and the deal must sit under a `NettingCollateralSet` naming a counterparty.
     `agreement` names an agreement `describe_agreements` lists - the set it sits under must be the
-    set of that name - `portfolio` where the position sits (the book's own name if left out), and
-    `price` what it was done at. `actor` is the seat the fact is filed under. A desk that keeps no
+    set of that name - `portfolio` the path where the position sits, its top node the book's own
+    name (`<book>/Rates/EM`, the book itself if left out), and `price` what it was done at. `actor` is the seat the fact is filed under. A desk that keeps no
     record ignores all of them.
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
@@ -1538,6 +1539,18 @@ def describe_agreements() -> dict:
     """
     return dict(service().call('GET', '/book/entities'),
                 **service().call('GET', '/book/agreements'))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_positions() -> dict:
+    """The book's positions as the record holds them, one row per instrument under an agreement and
+    a portfolio: the counterparty, the NET quantity in units of the deal - the fills summed, 1 being
+    the deal as written - the clips behind it, and `deal_paths` where the book file holds it, the
+    path `read_deal` and `amend_deal` take. The portfolio is a path whose top node is the book; the
+    client is the counterparty, whose name and parent `describe_agreements` gives. A position closed
+    to zero stands no more. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/positions')
 
 
 @MCP.tool()

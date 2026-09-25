@@ -573,6 +573,12 @@ def declare_agreement(agreement, entity, kind, terms, actor_name=None, effective
                                        canonical(terms), effective_time=effective_time)
 
 
+def positions(lsn=None):
+    """Every position the record holds at `lsn`, keyed instrument by agreement by portfolio: the net
+    quantity in units of the instrument, the clips behind it and the amendment that moved it."""
+    return _rows('positions', lsn)
+
+
 def entities(lsn=None):
     """Every legal entity the record declares at `lsn`: its name and the parent it is grouped
     under."""

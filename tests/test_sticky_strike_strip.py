@@ -102,7 +102,7 @@ def run(price_factors, calc=BV):
         market.update(MODELS)
     job = {'Calc': {
         'Calculation': dict(calc),
-        'Deals': {'Tag_Titles': '', 'Reference': 'sticky',
+        'Deals': {'Reference': 'sticky',
                   'Deals': {'Children': [{'Instrument': {'.Deal': DEAL}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
     cx = derivus.Context()

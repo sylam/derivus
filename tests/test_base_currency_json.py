@@ -51,7 +51,7 @@ def job(base, fx_model=False):
     calc = {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': base, 'Time_grid': '0d 2y(3m)',
             'Batch_Size': 64, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': base}
     return {'Calc': {'Calculation': calc,
-                     'Deals': {'Tag_Titles': '', 'Reference': 'base', 'Deals': {'Children': [
+                     'Deals': {'Reference': 'base', 'Deals': {'Children': [
                          {'Instrument': {'.Deal': rw.par_swap('SW', 'USD', 'USD', 'USD', 2, 4.0)}}]}},
                      'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
 

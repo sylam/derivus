@@ -57,7 +57,7 @@ def _world(entry_name, chained=True, partner_of_cme='LBMA_AM.PM.CME', cross_chai
             'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': '2026-01-15'},
             'Currency': 'USD', 'Batch_Size': 64, 'Simulation_Batches': 1, 'Random_Seed': 1,
             'Deflation_Interest_Rate': 'USD-SOFR', 'Time_Grid': '0d 1m(1m)'},
-        'Deals': {'Tag_Titles': '', 'Reference': 'chained', 'Deals': {'Children': [{
+        'Deals': {'Reference': 'chained', 'Deals': {'Children': [{
             'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
                                      'Netted': 'True', 'Collateralized': 'False'}},
             'Children': [{'Instrument': {'.Deal': {

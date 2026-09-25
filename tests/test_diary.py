@@ -172,7 +172,7 @@ def job(nodes, factors=None, **calculation):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'ZAR',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
-        'Deals': {'Tag_Titles': '', 'Reference': 'diary-desk', 'Deals': {'Children': nodes}},
+        'Deals': {'Reference': 'diary-desk', 'Deals': {'Children': nodes}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'ZAR', 'Base_Date': BASE},
             'Model Configuration': {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {

@@ -259,12 +259,15 @@ is recorded so a reader knows which readings rest on it.
   falsy — and the arity bug goes with it. UNMEASURED in price, and nothing in the tree can measure
   it: no document carries an `EquitySwapLeg`, and no deal in any fixture or job file states a blank
   table in either spelling.
-- **Every book carrying a netting set moves its plan hash once, at this landing** (2026-09-22).
-  `NettingCollateralSet.__init__` used to `setdefault` `Settlement_Period`, `Liquidation_Period`
-  and `Opening_Balance` INTO the authored block, and the plan hashes the block; the declaration
-  says all three, so the same set is three keys shorter and the same program hashes differently.
-  Nothing priced moves — `commodity_aps_world.json` is 65,584 reported floats and 0 mismatches
-  across the move, and its factor universe is unchanged. What moves is a PIN: under a spine every
+- **A landing that changes how a document is read moves its plan hash once** (2026-09-22,
+  2026-09-25). `NettingCollateralSet.__init__` used to `setdefault` `Settlement_Period`,
+  `Liquidation_Period` and `Opening_Balance` INTO the authored block, and the plan hashes the block;
+  the declaration says all three, so the same set is three keys shorter and the same program hashes
+  differently - every book carrying a netting set moved. Then `Tag_Titles` left the deals' loaded
+  attributes, which the plan also hashes, and every document carrying a deal tree moved. Nothing
+  priced moves either time — `commodity_aps_world.json` is 65,584 reported floats and 0 mismatches
+  across the first, three fixture documents mark bit for bit across the second, and no factor
+  universe changes. What moves is a PIN: under a spine every
   booked deal sits beneath a netting set, and a pending quote pins `plan_hash` beside
   `values_hash`, so a quote pinned before the deploy and accepted after is refused on the PLAN —
   the book moved under the solve, which is what that equality is for. The remedy is
@@ -282,6 +285,14 @@ is recorded so a reader knows which readings rest on it.
   `Stationarity_Tol` - returns the whole book's risk in factor space with the refusal named.
   UNMEASURED on a desk book; a two-trade FX book reads in 5.1 s, its three blocks' refit
   included. The remedy for the second is a retry with the refusing block's switch off.
+- **A position's size is shown and not priced** (2026-09-25). A fill carries the position CHANGE
+  in units of the deal - 0.3 of it, a close-out at -1 - and the record, the positions read and the
+  two grouped views show the net, but the engine prices every node of the book file as the deal is
+  written, one unit: a partial fill books a whole one, and a close-out booked through `/book/deals`
+  splices a second node of the same terms where it should cancel the first. Only positions of one
+  unit price right today. Closing it means each deal type declaring which fields scale with the
+  position and the compile writing each instrument scaled by its net, the mirror where the net is
+  negative.
 - **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
   the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
   where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is

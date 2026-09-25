@@ -161,7 +161,7 @@ def book(base, order=('EUR', 'ZAR'), deals=(), **sections):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': base,
                         'MCMC_Simulations': 1, 'Random_Seed': 1},
-        'Deals': {'Tag_Titles': '', 'Reference': 'cross',
+        'Deals': {'Reference': 'cross',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
             'System Parameters': {'Base_Currency': base, 'Base_Date': BASE},

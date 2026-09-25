@@ -96,7 +96,7 @@ def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
-        'Deals': {'Tag_Titles': '', 'Reference': 'service',
+        'Deals': {'Reference': 'service',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},

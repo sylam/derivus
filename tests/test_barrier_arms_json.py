@@ -92,7 +92,7 @@ def _run(deal):
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                         'MCMC_Simulations': 1, 'Random_Seed': 1},
-        'Deals': {'Tag_Titles': '', 'Reference': 'arms',
+        'Deals': {'Reference': 'arms',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},

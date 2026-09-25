@@ -315,19 +315,6 @@ def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):
                        'reach it and the reported delta is short that whole fixing')
 
 
-def test_the_deal_tags_reach_the_reported_row(tmp_path):
-    """`Tags` carries the book-keeping and `Tag_Titles` names the columns it lands in. Nothing in
-    pricing reads either, which is the reason to assert them: a field no pricer touches is one
-    whose round trip nothing else can notice going wrong, and a desk sorts its blotter by it.
-    """
-    out = _run(_job(), tmp_path, 'tags')
-    rows = out['Results']['mtm']
-    rows = rows[rows['Reference'] == 'ACC1']
-    assert 'Portfolio' in rows.columns and 'Trader' in rows.columns, list(rows.columns)
-    assert rows['Portfolio'].iloc[0] == 'FX-EXOTICS', rows['Portfolio'].iloc[0]
-    assert rows['Trader'].iloc[0] == 'jdoe', rows['Trader'].iloc[0]
-
-
 def _long_lag_job(greeks='No', spot=None, sims=1 << 16):
     """The dead-branch document: settlements lag their fixings by MORE than the fixing spacing, so a
     knocked deal carries several fixed-but-unsettled payoffs - the pending head - through every

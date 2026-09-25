@@ -106,7 +106,7 @@ def artifact_of(config, *names):
 
 def with_deals(config, book=None, currency=CCY, curve=CURVE, discount=CURVE,
                day_count='ACT_365'):
-    config.deals = {'Attributes': {'Reference': 'test', 'Tag_Titles': ''},
+    config.deals = {'Attributes': {'Reference': 'test'},
                     'Deals': {'Children': [{'Instrument': construct_instrument(
                         par_swap(ref, currency, curve, discount, years, rate,
                                  day_count=day_count), {})}
@@ -870,7 +870,7 @@ def test_the_artifact_survives_a_job_document_round_trip_by_key():
 
     document = json.dumps({'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': CCY},
-        'Deals': {'Tag_Titles': '', 'Reference': 'test', 'Deals': {'Children': []}},
+        'Deals': {'Reference': 'test', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': CCY, 'Base_Date': BASE},
             'Price Factors': prepared.params['Price Factors'],

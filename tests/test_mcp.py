@@ -84,7 +84,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
                 'export_settlements', 'file_status', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
-                'declare_legal_entity', 'declare_agreement'}
+                'declare_legal_entity', 'declare_agreement', 'book_positions'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -226,7 +226,7 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
 
 
 def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
-    """The four reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
+    """The five reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
     turns into the service's own sentence rather than an empty answer a model would read as
     agreement, or as a record holding nothing.
 
@@ -236,7 +236,8 @@ def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, m
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     for tool, arguments in ((mcp_server.book_reconcile, {}),
                             (mcp_server.close_check, {'date': '2030-01-01'}),
-                            (mcp_server.book_activity, {}), (mcp_server.book_markets, {})):
+                            (mcp_server.book_activity, {}), (mcp_server.book_markets, {}),
+                            (mcp_server.book_positions, {})):
         with pytest.raises(ToolError) as refusal:
             tool(**arguments)
         assert 'DV_SPINE_HOME' in str(refusal.value) and '404' in str(refusal.value)
@@ -253,7 +254,7 @@ def test_the_record_reads_are_read_only_and_say_what_they_read(book):
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     for name, said in (('book_diary', 'determined'), ('close_check', 'legal'),
                        ('book_reconcile', 'record'), ('book_activity', 'strip'),
-                       ('book_markets', 'close')):
+                       ('book_markets', 'close'), ('book_positions', 'portfolio')):
         assert tools[name].annotations.read_only_hint is True, name
         assert said in tools[name].description, name
         assert name in mcp_server.INSTRUCTIONS, name

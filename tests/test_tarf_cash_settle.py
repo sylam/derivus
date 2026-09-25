@@ -84,7 +84,7 @@ def _job(buy_sell):
             'Model Configuration': {'.ModelParams': {
                 'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}},
             'Correlations': {}, 'Valuation Configuration': {}}},
-        'Deals': {'Reference': 'test', 'Tag_Titles': '',
+        'Deals': {'Reference': 'test',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}}}}
 
 

@@ -10,6 +10,8 @@ export type TreeNode = {
   /** An action rather than a thing - "a new curve", "another family" - drawn in the accent. */
   accent?: boolean;
   badge?: string;
+  /** What an item says beside its label - a position's size and where else it sits. */
+  hint?: string;
   /** A FOLDER and not an item: nothing to select, so a click opens or closes it. */
   group?: boolean;
   children?: TreeNode[];

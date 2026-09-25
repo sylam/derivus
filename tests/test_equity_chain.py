@@ -1238,7 +1238,7 @@ def job_document(market_prices=None, factors=None, surface=True, repo=None):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': AS_OF.isoformat()},
                         'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
-        'Deals': {'Tag_Titles': '', 'Reference': 'chain', 'Deals': {'Children': []}},
+        'Deals': {'Reference': 'chain', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD',
                                   'Base_Date': {'.Timestamp': AS_OF.isoformat()}},
@@ -1643,7 +1643,7 @@ def probe_deals(expiries):
     `utils.calc_eq_forward` itself. THE PRICER'S FORWARD AND NOT A REPLICA: the deal reads
     `EquityPrice.SPX`'s own `Interest_Rate` against `DividendRate.SPX` through the compiled factor
     path, the same call every equity option makes."""
-    return [{'Object': 'EquityForwardDeal', 'Reference': 'FWD{}'.format(index), 'Tags': '',
+    return [{'Object': 'EquityForwardDeal', 'Reference': 'FWD{}'.format(index),
              'MtM': '', 'Forward_Price': 0.0, 'Buy_Sell': 'Buy', 'Payoff_Type': 'Standard',
              'Equity_Volatility': '', 'Maturity_Date': {'.Timestamp': expiry.isoformat()},
              'Equity': 'SPX', 'Units': 1.0, 'Currency': 'USD',

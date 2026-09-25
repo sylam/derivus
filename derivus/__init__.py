@@ -498,9 +498,7 @@ class Context:
             cfg.holidays = self.holiday_cfg_cache[data['Calc']['CalendDataFile']]
 
         if 'Deals' in data['Calc']:
-            cfg.deals = {'Attributes': {
-                'Tag_Titles': data['Calc']['Deals'].get('Tag_Titles', ''),
-                'Reference': data['Calc']['Deals'].get('Reference')}}
+            cfg.deals = {'Attributes': {'Reference': data['Calc']['Deals'].get('Reference')}}
             valuation_config = cfg.params.get('Valuation Configuration', {})
             deals = resolve_deferred_deals ( data['Calc']['Deals']['Deals'], valuation_config )
             # TODO: the compression only reaches one level of nesting
@@ -536,7 +534,6 @@ class Context:
                 {
                     "Calculation": cfg.deals['Calculation'],
                     "Deals": {
-                        "Tag_Titles": cfg.deals['Attributes'].get('Tag_Titles', ''),
                         "Reference": cfg.deals['Attributes'].get('Reference', ''),
                         "Deals": cfg.deals['Deals']
                         },

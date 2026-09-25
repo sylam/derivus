@@ -771,7 +771,7 @@ def composition_config(fitted, ir_curve, fx_currency, fx_spot, benchmarks, base_
         children.append(netting_set('FXP_' + name, [unit_cashflow(
             'FXP_' + name, fx_currency, ir_curve, leg['effective'])]))
 
-    config.deals = {'Attributes': {'Reference': 'hw2f_composition', 'Tag_Titles': ''},
+    config.deals = {'Attributes': {'Reference': 'hw2f_composition'},
                     'Deals': {'Children': children},
                     'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': base_date,
                                     'Currency': base_currency}}

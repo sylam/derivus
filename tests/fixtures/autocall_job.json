@@ -121,7 +121,6 @@
     },
     "Deals": {
       "Reference": "test",
-      "Tag_Titles": "",
       "Deals": {
         "Children": [
           {
@@ -129,7 +128,6 @@
               ".Deal": {
                 "Object": "QEDI_CustomAutoCallSwap",
                 "Reference": "AC1",
-                "Tags": "",
                 "MtM": "",
                 "Currency": "USD",
                 "Payoff_Currency": "USD",

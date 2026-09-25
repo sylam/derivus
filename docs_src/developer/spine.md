@@ -12,9 +12,9 @@ anything, around the whole of it a REPLICA: a read-only copy that pulls the hub'
 verifies them where it stands and is told when there is something to pull, and over all of that an
 ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
 scripted faults beside it, held to nine invariants. **8** adds the paper the book trades under -
-its legal entities and agreements - with every position keyed where it sits, and seeds filed where
-a deployment says. A library, a CLI, eight delegators on `Context`, eleven read verbs and eight
-write verbs on the service, and 361 gates.
+its legal entities and agreements - with every position keyed where it sits and read there, and
+seeds filed where a deployment says. A library, a CLI, eight delegators on `Context`, twelve read
+verbs and eight write verbs on the service, and 362 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -114,8 +114,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fourteen-file set worth 329 of
-the 356 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 335 of
+the 362 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -1070,6 +1070,18 @@ a `GET` beside each, and the binding's `declare_legal_entity`, `declare_agreemen
 entity and must sit under the file's set of that name, the set being the agreement's
 materialisation; its `portfolio` is the book's own name where none is stated.
 
+**THE BOOK IS READ WHERE IT SITS.** A portfolio is a path whose top node is the book the fill is
+filed under, where its permissions are granted, so a stated one outside it or with an empty segment
+refuses by name at the booking. `GET /book/positions` answers every position standing at the head -
+a closed one stands no more - beside the nodes of the book file carrying its instrument under its
+agreement's set, and the binding reads it as `book_positions`. It is how the web UI groups the
+book: the Portfolio screen and the blotter show the file's own nesting, the portfolio tree - a
+folder per segment of the path - or the client tree - an entity under the parent declared for it,
+holding its agreements and then the entities under it, every declared one standing whether or not
+anything is booked there - and a position picked shows the deal the file holds for it. The deal's
+`Tags` field and the deals block's `Tag_Titles` retire with it: they were where a desk wrote a
+portfolio, a desk and a trader, and the fill carries all three.
+
 **A SEED IS FILED WHERE THE DEPLOYMENT SAYS.** `DV_Spine seed --at <lsn|day> [--out <folder>]` mints
 every fold but the strip's at an official close - the last one true on a day, where a day is named -
 into a folder: one every seat reads after an end of day, or a seat's own for a day it wants to
@@ -1080,7 +1092,8 @@ minted and how long a folder keeps one are operating policy rather than machiner
 
 `tests/test_spine_paper.py` holds the record's half - the keyed fold over five clips and an
 amendment, the paper's folds with a backdated restatement and a lost citation, the seed folder, the
-verb - and `tests/test_spine_engine.py` the service's.
+verb - `tests/test_spine_engine.py` the service's, and `web/scripts/positions_check.mjs` the two
+trees and the grouped blotter.
 
 ## What is not built yet
 

@@ -662,17 +662,6 @@ class FVA(JOB):
             combo_deals = [x for x in self.cx.current_cfg.deals['Deals']['Children'][0]['Children'] if 'Combination' in x['Instrument'].field.get('Tags',[''])[0]]
             self.combinations = len(combo_deals)
             
-            if self.cx.current_cfg.deals['Attributes'].get('Reference','').endswith('CPY'):
-                #internal deal
-                self.logger(self.netting_set, 'Netting set is internal - only filtering specific portfolios')
-                for i in self.cx.current_cfg.deals['Deals']['Children'][0]['Children']:
-                    tags = i['Instrument'].field.get('Tags',[''])[0].split(',')                    
-                    if tags and tags[1] in ['IR Prime Strat','IR Cpty Prime NonCSA','IR Cpty Swap Internal','IR Cpty CPI KSP Hedge','IR Cpty Vol Internal','IR Cpty Swaps NonCSA','IR Prime Hedge','IR Prime Fixed']:
-                    # if False and not str(i['Instrument'].field['Reference']) in ['CrB_Counterparty_A_ISDA', 'CrB_Counterparty_B_ISDA']:
-                        i['Ignore'] = 'False'
-                    else:
-                        i['Ignore'] = 'True'
-            
             # if assets.replace('_Collateral','')=='Equity':
             if self.ns.field.get('Credit_Support_Amounts', {}).get('Independent_Amount') is not None:
                 self.logger(self.netting_set, 'Netting set has an Independent Amount - assuming Equity collar deals and Skipping')
