@@ -102,14 +102,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from . import (Context, bootstrappers, content_hash, riskfactors, solve_deal_field, spine,
                structures, utils)
-from .schema import (mapping, deal_at, job_children, quote_plan, quote_stamps, remove_deal,
-                     sniff_indent, splice_deal, tables_of, update_market_quote,
+from .schema import (mapping, deal_at, instrument_of, job_children, quote_plan, quote_stamps,
+                     remove_deal, sniff_indent, splice_deal, tables_of, update_market_quote,
                      validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire
 from .instruments import construct_instrument
 from . import diary
-from .spine import replay
+from .spine import book_name, replay
 
 LOG = logging.getLogger(__name__)
 
@@ -864,14 +864,11 @@ def deal_edit(document, deal, parent_reference=None, baseline=None):
 # The book file's writers, under a spine. Every function below answers `{}` where no home is
 # configured, which is what makes the edge bit-identical without one.
 
-def instrument_of(node):
-    """The canonical TERMS of a booked node - the deal block with its legs written back under it.
-    One reading, used by the booking and the amendment alike, so an amended container is an
-    amendment of the instrument that was booked rather than of a different spelling of it."""
-    deal = dict(node['Instrument']['.Deal'])
-    if node.get('Children'):
-        deal['Children'] = node['Children']
-    return deal
+def priced(document):
+    """The book as it PRICES: the file with what the record holds written in - every position at
+    its net, every print the declared sources order - and the file as it stands where no home is
+    configured. A read never refuses a print nobody ordered, so the compile is not strict."""
+    return spine.compiled_job(document, strict=False)
 
 
 def enclosing_set(document, deal_path):
@@ -889,14 +886,20 @@ def enclosing_set(document, deal_path):
     return None
 
 
-def book_name(document):
-    """The book a fill is attributed to: the job document's own `Deals.Reference`, or None.
-
-    Capability grants are (verb x book), so a desk scoped over one book must not reach another. A
-    document naming none files a firm-level fact, which only a `*` grant reaches.
-    """
-    named = (document.get('Calc', {}).get('Deals', {}) or {}).get('Reference')
-    return named if isinstance(named, str) and named else None
+def held_structure(document, deal_path):
+    """The path of the outermost structure above `deal_path` the record holds a position in, or
+    None. A structure held whole is ONE instrument, its legs inside its own terms."""
+    segments, held = str(deal_path).split('/'), None
+    for depth in range(1, len(segments)):
+        node = deal_at(document, '/'.join(segments[:depth]))
+        if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet':
+            continue
+        if held is None:
+            held = {row['instrument'] for row in spine.positions()
+                    if row['quantity'] and row.get('book') == book_name(document)}
+        if content_hash(instrument_of(node)) in held:
+            return '/'.join(segments[:depth])
+    return None
 
 
 def spine_fill(document, deal_path, quantity, execution_reference, actor=None, agreement=None,
@@ -962,6 +965,20 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
             'this booking declares no execution_reference, and a fill body must carry one: it is '
             'what makes a retry the same fact by construction and two legitimately identical clips '
             'two facts by construction - post the venue exec id or the ticket id')
+    parent = deal_path.rsplit('/', 1)[0] if '/' in str(deal_path) else None
+    if parent and deal_at(document, parent)['Instrument']['.Deal'].get(
+            'Object') != 'NettingCollateralSet':
+        before = deepcopy(document)
+        remove_deal(before, deal_path)
+        holder = held_structure(before, deal_path)
+        if holder is not None:
+            structure = deal_at(before, holder)['Instrument']['.Deal']
+            raise spine.SpineRefused(
+                'this booking sits in {} {!r}, which the record holds as a position: a structure '
+                'held whole carries its legs as its terms, so a leg booked into it would move the '
+                'instrument that position is in - book the leg under its netting set, or close the '
+                'structure and book it again with the leg'.format(
+                    structure.get('Object'), structure.get('Reference')))
     return {'recorded': spine.book(
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
@@ -1041,15 +1058,18 @@ def book_deals(request: dict):
             expected_reference(document, request)
             baseline = live_book().baseline(document, etag)
             node = deal_at(document, request['deal_path'])
-            before = instrument_of(node)
+            # a leg of a structure held whole amends THAT instrument, its position carried onto
+            # the terms the edit leaves
+            held = (spine.configured() and held_structure(document, request['deal_path'])
+                    or request['deal_path'])
+            before = deepcopy(instrument_of(deal_at(document, held)))
             node['Instrument']['.Deal'].update(request['fields'])
             written, outcome = deal_verdict(
                 document, [node['Instrument']['.Deal'].get('Reference')], request['deal_path'],
                 baseline)
             if written:
                 outcome = dict(outcome, _validated=outcome['validate'],
-                               **spine_amendment(document, request['deal_path'], before,
-                                                 request.get('actor')))
+                               **spine_amendment(document, held, before, request.get('actor')))
             return written, outcome
         written, outcome = deal_edit(document, request['deal'], request.get('parent_reference'),
                                      live_book().baseline(document, etag))
@@ -1119,11 +1139,12 @@ def book_price(request: dict):
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, etag = live_book().read()
+    baseline = live_book().baseline(document, etag) if request.get('deal') is not None else None
+    document = priced(document)
     try:
         if request.get('deal') is not None:
             written, outcome = deal_edit(document, request['deal'],
-                                         request.get('parent_reference'),
-                                         live_book().baseline(document, etag))
+                                         request.get('parent_reference'), baseline)
             if not written:
                 raise HTTPException(422, '; '.join(outcome['refused']))
         with_overrides(document, request.get('calculation_overrides', {}))
@@ -1208,7 +1229,7 @@ def run_calculation(request: dict):
     if name not in saved:
         raise HTTPException(422, 'no calculation is saved as {!r} - this workstation keeps '
                                  '{}'.format(name, ', '.join(sorted(saved)) or 'none'))
-    document, _ = live_book().read()
+    document = priced(live_book().read()[0])
     try:
         with_overrides(document, saved[name])
         if request.get('deal_path') is not None:
@@ -1364,6 +1385,14 @@ def quote_rows(config):
     return rows, sorted(map(utils.check_tuple_name, config.calibrated_factors))
 
 
+def live_deals(children):
+    """Whether anything under `children` prices: a deal the file does not ignore, however deep in
+    the netting sets and structures that only frame it. A book closed out answers as an empty one."""
+    return any(node.get('Ignore') != 'True' and (
+        node['Instrument']['.Deal'].get('Object') not in ('NettingCollateralSet', 'StructuredDeal')
+        or live_deals(node.get('Children', []))) for node in children)
+
+
 def consolidated_risk(document):
     """The consolidated view's whole computation: ONE base valuation with `Greeks: 'First'` over
     the book as it stands, in its own Context.
@@ -1374,7 +1403,7 @@ def consolidated_risk(document):
 
     `per_deal` is the frame's TOP-LEVEL rows, one per trade, so `mtm` is exactly their sum: a
     structure's legs and a set's members are inside the row their container reports, and adding
-    them again would double the book. An empty book never reaches a run.
+    them again would double the book. A book holding nothing live never reaches a run.
 
     THE RISK IS IN QUOTE SPACE where the book's factors are built from quotes (`quote_context`):
     `quotes` is the derivative per unit of each quote as quoted, `quoted` the factors those rows
@@ -1387,7 +1416,7 @@ def consolidated_risk(document):
     answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
               'mtm': 0.0, 'per_deal': [], 'greeks': [], 'quotes': [], 'quoted': [],
               'quote_note': None}
-    if not job_children(run):
+    if not live_deals(job_children(run)):
         return answer
 
     context, answer['quote_note'] = quote_context(run)
@@ -1428,7 +1457,7 @@ def book_risk():
     `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
     quoted, `quoted` the factors those rows stand for and `quote_note` why not where they are not.
     """
-    document, _ = live_book().read()
+    document = priced(live_book().read()[0])
     etag = risk_etag(document)
     if etag not in BOOK_RISK_CACHE:
         try:
@@ -1505,7 +1534,9 @@ def booked_instruments(document):
     found = {}
     for _, node in walk_job_deals(document):
         reference = node['Instrument']['.Deal'].get('Reference')
-        found[reference] = None if reference in found else content_hash(instrument_of(node))
+        address = content_hash(instrument_of(node))
+        # a partial unwind is a second node of the SAME terms, which names one instrument
+        found[reference] = address if found.get(reference, address) == address else None
     return found
 
 
@@ -1810,7 +1841,8 @@ def book_positions():
     quantity in units of the instrument and the clips behind it.
 
     Beside each, where the book FILE holds it: `deal_paths` are the nodes carrying that instrument
-    under that agreement's set, and `reference` and `object` the first one's. A position closed to
+    under that agreement's set - the first the one the book prices at the net, any later one a
+    clip it ignores - and `reference` and `object` the first one's. A position closed to
     zero or amended onto other terms stands no more - the record keeps its history - and one the
     file does not hold answers no path, which `/book/reconcile` names. 404 where no home is
     configured.
@@ -2507,7 +2539,7 @@ def book_xva(request: dict):
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book is one run, and asking twice hands back the id of the first.
     """
-    document, _ = live_book().read()
+    document = priced(live_book().read()[0])
     found = {node['Instrument']['.Deal'].get('Reference'): node
              for _, node in netting_sets(document)}
     named = request.get('netting_sets')
@@ -5322,8 +5354,10 @@ class StructureJob:
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
-        outcome = structures.quote(self.document, self.structure, self.params, spot_source,
-                                   self.netting_set, self.margin)
+        # the BOOK a risk-impact step reads is the book as it prices; the pins above and the ticket
+        # below are the file's, which is what the acceptance re-derives them from
+        outcome = structures.quote(priced(self.document), self.structure, self.params,
+                                   spot_source, self.netting_set, self.margin)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')

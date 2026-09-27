@@ -129,7 +129,7 @@ def _one_touch(ref, direction, barrier, payoff='EUR'):
     return dict({
         'Object': 'EquityOneTouchOption', 'Reference': ref, 'Currency': 'USD', 'Equity': 'EQ',
         'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Cash_Payoff': CASH,
-        'Barrier_Type_One': direction, 'Barrier_Price': barrier, 'Payment_Timing': 'Expiry',
+        'Barrier_Type': direction, 'Barrier_Price': barrier, 'Payment_Timing': 'Expiry',
         'Expiry_Date': EXPIRY, 'Barrier_Dates': [],
         'Barrier_Monitoring_Frequency': pd.DateOffset(days=0)}, **_ccy(payoff))
 

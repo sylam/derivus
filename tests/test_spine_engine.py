@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import derivus
 from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
-from derivus.schema import deal_at, walk_job_deals
+from derivus.schema import deal_at, splice_deal, walk_job_deals
 from derivus_spine import SpineLog, init_home, verify_home
 from derivus_spine import policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
@@ -1107,6 +1107,122 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
     lost = {row['agreement']: row for row in CLIENT.get('/book/positions').json()['positions']}
     assert (lost['CLIENT_B']['deal_paths'], lost['CLIENT_B']['reference']) == ([], None)
     assert lost[CLIENT_SET]['deal_paths'] == ['1/0', '1/1', '1/2']
+
+
+def test_the_book_prices_every_position_at_its_net(recorded, desk):
+    """THE COMPILE WRITES THE RECORD'S NET, and the desk's risk reads the compiled book. A deal
+    booked whole prices as written; the same terms booked again at minus a half - a second node in
+    the file - leave the first node held at half and the second ignored, so the client's set reads
+    exactly half the cashflow; a second minus a half leaves nothing of it priced; and the paths a
+    verb resolves against the file still name the nodes they named. A position held in a block
+    stating none of its amounts - a hand edit, a legacy file - refuses the read by name rather than
+    pricing a whole unit of it.
+
+    A plan named off the book still runs once the record holds a position; another book's position
+    in the same terms is that book's; a partial unwind keeps its settlement key; and a book closed
+    out reads as an empty one rather than differentiating nothing.
+
+    Killing mutations: the second node of the same terms priced beside the first, which reads the
+    whole cashflow at a net of a half; the risk read off the file rather than the compiled book,
+    which prices both nodes as written; the compile summing every book's positions; and a clip's
+    shared reference mapped to no instrument, which leaves its payment nothing to settle against.
+    """
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    deal = dict(CASHFLOW, Reference='CF-HELD', Amount=250_000.0)
+
+    def booked(execution, quantity):
+        answer = CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': deal, 'parent_reference': CLIENT_SET, 'quantity': quantity,
+            'execution_reference': execution}), headers=JSON).json()
+        assert answer['written'] is True, answer
+
+    def held():
+        rows = CLIENT.get('/book/risk').json()['per_deal']
+        return {row['reference']: row['value'] for row in rows}[CLIENT_SET]
+
+    booked('EXEC-WHOLE', 1.0)
+    whole = held()
+    assert whole != 0.0
+    prepared = CLIENT.post('/prepare', content=desk.read_text(), headers=JSON).json()
+    assert CLIENT.post('/execute', json={'plan_id': prepared['plan_id']}).status_code == 200
+    frame = {'Calc': {'Deals': {'Reference': service.book_name(json.loads(desk.read_text()))}}}
+    assert spine.compiled_job(frame) is frame
+    spine.book(service.instrument_of(deal_at(json.loads(desk.read_text()), '1/0')), 1.0, 'CPTY_A',
+               CLIENT_SET, 'EXEC-ELSEWHERE', book_name='another-desk')
+    assert held() == whole
+    booked('EXEC-HALF', -0.5)
+    assert held() == whole / 2
+    assert service.booked_instruments(json.loads(desk.read_text()))['CF-HELD'] is not None
+    compiled = service.priced(json.loads(desk.read_text()))
+    assert (deal_at(compiled, '1/0')['Instrument']['.Deal']['Amount'],
+            deal_at(compiled, '1/1').get('Ignore')) == (125_000.0, 'True')
+    booked('EXEC-REST', -0.5)
+    assert held() == 0.0
+    closed = service.priced(json.loads(desk.read_text()))
+    del closed['Calc']['Deals']['Deals']['Children'][0]
+    assert service.consolidated_risk(closed)['per_deal'] == []
+
+    document = json.loads(desk.read_text())
+    bare = {key: value for key, value in dict(CASHFLOW, Reference='CF-BARE').items()
+            if key != 'Amount'}
+    splice_deal(document, json.loads(dump(bare)), CLIENT_SET)
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    node = deal_at(document, '1/3')
+    spine.book(service.instrument_of(node), 0.5, 'CPTY_A', CLIENT_SET, 'EXEC-BARE',
+               book_name='spine-desk')
+    refused = CLIENT.get('/book/risk')
+    assert refused.status_code == 422 and "FixedCashflowDeal 'CF-BARE'" in refused.json()['detail']
+
+
+def test_a_structure_is_held_whole(recorded, desk):
+    """A STRUCTURE BOOKED WHOLE IS ONE INSTRUMENT, its legs inside its terms. A leg booked into it
+    refuses by name, since it would move the instrument the position is in; a leg amended amends
+    the structure, the position carried onto the terms the edit leaves; and a position the record
+    holds in a leg of a structure it also holds refuses the read, where pricing the leg as the
+    structure's would read neither.
+
+    Killing mutations: the refusal dropped, which books the leg into the held structure; the
+    amendment filed against the leg rather than the structure, which prices the edited structure
+    as written beside its old terms at half; and the stranded legs priced as their structure's.
+    """
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    splice_deal(document, {'Object': 'StructuredDeal', 'Reference': 'SOLO', 'Currency': 'ZAR'},
+                CLIENT_SET)
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    legs = [dict(CASHFLOW, Reference='LEG-A', Amount=100_000.0),
+            dict(CASHFLOW, Reference='LEG-B', Amount=50_000.0)]
+
+    def structure(reference, deals):
+        return {'Object': 'StructuredDeal', 'Reference': reference, 'Currency': 'ZAR',
+                'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}
+
+    def booked(deal, parent, execution, quantity):
+        return CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': deal, 'parent_reference': parent, 'quantity': quantity,
+            'execution_reference': execution}), headers=JSON)
+
+    assert booked(structure('PAIR', legs), CLIENT_SET, 'EXEC-PAIR', 1.0).json()['written']
+    refused = booked(dict(CASHFLOW, Reference='LEG-C'), 'PAIR', 'EXEC-LEG', 1.0)
+    assert refused.status_code == 422 and "StructuredDeal 'PAIR'" in refused.json()['detail']
+    assert booked(structure('PAIR', legs), CLIENT_SET, 'EXEC-PAIR-HALF', -0.5).json()['written']
+    amended = CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': '1/1/0', 'fields': {'Amount': 300_000.0}}), headers=JSON)
+    assert amended.json()['written'] is True
+    compiled = service.priced(json.loads(desk.read_text()))
+    assert (deal_at(compiled, '1/1/0')['Instrument']['.Deal']['Amount'],
+            deal_at(compiled, '1/2').get('Ignore')) == (150_000.0, 'True')
+
+    for execution, leg in zip(('EXEC-X', 'EXEC-Y'), legs):
+        assert booked(dict(leg, Reference=leg['Reference'].replace('LEG', 'SOLO')), 'SOLO',
+                      execution, 1.0).json()['written']
+    solo = [dict(leg, Reference=leg['Reference'].replace('LEG', 'SOLO')) for leg in legs]
+    assert booked(structure('SOLO', solo), CLIENT_SET, 'EXEC-SOLO', -0.5).json()['written']
+    stranded = CLIENT.get('/book/risk')
+    assert stranded.status_code == 422
+    assert "StructuredDeal 'SOLO'" in stranded.json()['detail'], stranded.json()
 
 
 # --------------------------------------------------------------------------------------------

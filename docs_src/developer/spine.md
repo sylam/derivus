@@ -12,9 +12,9 @@ anything, around the whole of it a REPLICA: a read-only copy that pulls the hub'
 verifies them where it stands and is told when there is something to pull, and over all of that an
 ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
 scripted faults beside it, held to nine invariants. **8** adds the paper the book trades under -
-its legal entities and agreements - with every position keyed where it sits and read there, and
-seeds filed where a deployment says. A library, a CLI, eight delegators on `Context`, twelve read
-verbs and eight write verbs on the service, and 362 gates.
+its legal entities and agreements - with every position keyed where it sits, read there and priced
+at its net, and seeds filed where a deployment says. A library, a CLI, nine delegators on `Context`, twelve read
+verbs and eight write verbs on the service, and 363 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -114,8 +114,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 335 of
-the 362 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 336 of
+the 363 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -395,13 +395,13 @@ writes the fixing in force at `lsn` into the cell that type declares it in, for 
 the job's own base date: a print carries its date as text, so a forward-dated one is a legal fact
 and writing it would price a barrier as observed on a day that has not happened. `/execute` and
 `/prepare` both compile before they hash, so a plan named once and ticked as a delta is the plan
-that runs; without a home, and for a document whose deals declare no observation table, `compiled_job`
-returns its argument and the edge is what it always was. Which source is authoritative is POLICY:
+that runs; without a home, and where the record holds no position and no deal declares an
+observation table, `compiled_job` returns its argument and the edge is what it always was. Which source is authoritative is POLICY:
 `fixings_at` resolves across sources by the order the reserved `fixings` policy declares, and an
 index A PLAN COMPILES AGAINST that the policy does not name refuses by name — a fixing whose
 authority nobody vouched for is not a fixing a plan may use, and the refusal reaches a desk as a 422
-in the record's own words. A READING refuses nothing, its COMPILE HALF INCLUDED: `compiled_job` takes a
-`strict` flag, and the two read verbs pass it false — the book is compiled as written plus whatever
+in the record's own words. A READING refuses no print, its COMPILE HALF INCLUDED: `compiled_job` takes a
+`strict` flag, and every read passes it false — the book is compiled as written plus whatever
 the declared orders can fill, an index the policy does not order reads unresolved with the reason on
 the row and is outstanding, and a print for an index no deal here names is nothing to them at all.
 A read that cannot compile at all answers its refusal ONCE: the result store keeps successes only,
@@ -425,9 +425,10 @@ MCP binding.
 **Two boundaries, declared rather than discovered.** `xva.json` is NOT a fold and does not become
 one here: `run_completed`'s body carries no netting set, the vocabulary does not grow in this
 increment, and a row that cannot name its set is not a projection. And FULL HYDRATION — the deal tree
-regenerated from the positions fold rather than compared against it — waits until a netting set's own
-node is in the record, its CSA terms being what no fact carries today; until then the file is the
-materialisation and reconcile is how it is checked.
+regenerated from the positions fold rather than compared against it — waited on a netting set's own
+node being in the record, its CSA terms being what no fact carried then; increment 8 files them as an
+agreement's terms, and the file stays the materialisation, reconcile how it is checked, until the
+tree is hydrated.
 
 ## Increment 4c — the record's readers on the desk
 
@@ -1082,6 +1083,30 @@ anything is booked there - and a position picked shows the deal the file holds f
 `Tags` field and the deals block's `Tag_Titles` retire with it: they were where a desk wrote a
 portfolio, a desk and a trader, and the fill carries all three.
 
+**THE BOOK PRICES AT ITS NET.** A position is units of the instrument, so the compile that writes
+the record's prints into the plan writes its positions too: every node of the file the record holds
+a position in is written at its NET - the fills summed over every portfolio under its agreement's
+set - through `spine.scaled`, the engine seeing amounts and never a quantity, which multiplies every
+field the deal's type declares `sized` (a scalar, a table column, a leg's) and takes a negative net
+as the mirror, every `side` the type declares flipped where it has one and the sizes signed where it
+has none. An amortisation step is sized as a MAGNITUDE - the engine takes it off its principal's
+magnitude whatever the principal's sign - so it scales and is never signed. The legs of an option on
+its children - a swaption's underlying - are its terms, sized and never flipped; every other deal's
+legs - a structure's, a cap's caplets - are themselves held. A net of one is the deal as written, a
+net of nothing is no deal, and the same terms' second node under one set is the first one's clip,
+ignored rather than priced twice - ignored and not removed, so every path a verb resolved against
+the file still names its node. The desk's reads price the compiled book - the consolidated risk, the
+XVA recalc, the what-if, a named calculation and a quote's risk-impact step - beside `/execute`,
+`/prepare` and the diary, which always did; a quote's pins and its ticket stay the file's, which is
+what the acceptance re-derives them from. Every type a position can be held in declares its sizes
+beside its trial - a structure and a mark-to-market cross-currency swap through their legs - and
+held at half a unit each marks exactly half and held short exactly minus, to the bit; a block
+stating none of the amounts its type declares refuses by name rather than pricing one unit. A
+STRUCTURE BOOKED WHOLE IS ONE INSTRUMENT, its legs inside its terms: a leg booked into it refuses by
+name, a leg amended amends the structure and carries its position onto the terms the edit leaves,
+and a position the record holds in a leg of a structure it also holds refuses the read rather than
+pricing the leg as the structure's.
+
 **A SEED IS FILED WHERE THE DEPLOYMENT SAYS.** `DV_Spine seed --at <lsn|day> [--out <folder>]` mints
 every fold but the strip's at an official close - the last one true on a day, where a day is named -
 into a folder: one every seat reads after an end of day, or a seat's own for a day it wants to
@@ -1092,8 +1117,10 @@ minted and how long a folder keeps one are operating policy rather than machiner
 
 `tests/test_spine_paper.py` holds the record's half - the keyed fold over five clips and an
 amendment, the paper's folds with a backdated restatement and a lost citation, the seed folder, the
-verb - `tests/test_spine_engine.py` the service's, and `web/scripts/positions_check.mjs` the two
-trees and the grouped blotter.
+verb - `tests/test_spine_engine.py` the service's, `web/scripts/positions_check.mjs` the two trees
+and the grouped blotter, and `tests/test_position_scaling.py` a trial per family of types
+(`tests/trial_<family>.py`), the census holding every type to its declaration and its trial, and
+every declared amount to a trial that states it.
 
 ## What is not built yet
 

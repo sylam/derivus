@@ -52,11 +52,14 @@ export const positionId = (position: Position): string =>
 export const byId = (positions: Position[]): Map<string, Position> =>
   new Map(positions.map((position) => [positionId(position), position]));
 
-/** The positions the file holds at each node, by its deal path. */
+/** The positions each node of the file CARRIES, by its deal path: the first node holding the
+ * terms, which the book prices at the net, and never a later clip of the same terms, which it
+ * ignores. */
 export function byPath(positions: Position[]): Map<string, Position[]> {
   const held = new Map<string, Position[]>();
   for (const position of positions) {
-    for (const path of position.deal_paths) held.set(path, [...(held.get(path) ?? []), position]);
+    const [path] = position.deal_paths;
+    if (path !== undefined) held.set(path, [...(held.get(path) ?? []), position]);
   }
   return held;
 }

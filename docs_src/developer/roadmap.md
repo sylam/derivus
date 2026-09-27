@@ -228,16 +228,61 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
-- **Six declared fields carry stated values nothing reads** (2026-09-22). `DealDefaultSwap`'s
-  `Is_Digital` and `Digital_Recovery` select a branch that was never wired; its `Upfront` is a real
-  payment no pricer discounts; `QEDI_CustomAutoCallSwap`'s `Units` is the deal's notional and
-  neither the V1 nor the V2 pricer reads it, the strip being unitless today; `Rate_Currency` on
-  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path;
-  and `Averaging_Method` on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader
-  in the tree is a cashflow LIST's own container key, falling back to `None` on another class.
-  A desk that states one is silently ignored, which is the opposite failure to the one the
+- **Nine declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26).
+  `DealDefaultSwap`'s `Is_Digital` and `Digital_Recovery` select a branch that was never wired; its
+  `Upfront` is a real payment no pricer discounts; `Rate_Currency` on `DepositDeal` and
+  `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path; `Averaging_Method`
+  on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader in the tree is a
+  cashflow LIST's own container key, falling back to `None` on another class; a floating cashflow
+  list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads where the fixed
+  list's does; and `CommodityForwardDeal`'s `Payoff_Type` and `Payoff_Currency`, on a forward
+  declaring no strike, whose mark is the commodity delivered - `Units x F x D` - with nothing paid
+  for it. A desk that states one is silently ignored, which is the opposite failure to the one the
   convention/placeholder split closes: UNMEASURED, because there is no reading to compare against.
   Each is either wired to the branch it names or deleted with the branch.
+- **An energy option reads each sample's volatility over about 127 years** (2026-09-26).
+  `pv_energy_option` measures a sample's time as its reset day less the valuation time, and
+  `TensorCashFlows.energy` stores that day as an Excel serial date, so every sample's variance
+  accumulates over the serial number rather than to its fixing; the base date
+  `EnergySingleOption.calc_dependencies` computes for the conversion is never read. A four-month
+  option struck at 82 on an 81.5 forward at 30% marks 72.80 per unit where Black gives about 5.5. No
+  document prices one.
+- **An inflation list reads a reference DATE as a reference LEVEL** (2026-09-26). `TensorCashFlows`
+  stores a cashflow's reference date as minus its days from the base in the slot a known index level
+  uses, and `get_index_val` reads every non-negative entry as a level: a base reference date 90 days
+  back prices exactly as a stated level of 90.0, one on the base date as a level of 0, marking
+  infinity, and a list mixing stated base values with future base dates reads the dates as levels,
+  -50,220.81 against +39,974.69 on one linker. A list stating its base print prices right.
+- **A deposit's amortisation comes back at maturity** (2026-09-26). An amortising `DepositDeal`
+  accrues on the reduced balance and repays its full `Amount` at maturity, so no step's principal is
+  paid on its own date. UNMEASURED against an oracle; the mark stays linear in the position.
+- **The nth-to-default basket has no sensitivities** (2026-09-26). `Greeks: First` raises autograd's
+  in-place error on the recurrence in `expected_rate_gaussian_copula`. Read from the code alone, a
+  simulated row also scales each name's hazard by the index's cumulative hazard at the FIRST row's
+  horizons, which on a static curve is (s - t)/s of it: UNMEASURED, a credit Monte Carlo of a basket
+  being what would measure it.
+- **An autocall V2's floating margin is declared a number and read as a basis** (2026-09-26).
+  `Floating_Margin` is declared a `Float` and `QEDI_CustomAutoCallSwap_V2.calc_dependencies` reads
+  `.amount` off it, so a margin stated as the number the store publishes skips the deal; only the
+  `{".Basis": bp}` wire form prices. One declaration's type.
+- **An equity swap leg skips in three natural spellings and pays no dividend** (2026-09-26). Beside
+  the dividends table the blank-table row names, a blank `Payoff_Currency` is not read as the leg's
+  own currency and a leg started on or before the base date with no known price at its start carries
+  a `None` FX rate - each skips the leg - and compiled, `Known_Dividends` reaches only the reset's
+  `Weight` slot, which `pv_equity_cashflows` never reads. The leg's generator rework is where they
+  close.
+- **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
+  that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
+  files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
+  stand - one probe read -85.38 against 0, where the tree before read +170.76. The migration the
+  design names, a fill of one under every legacy node, is what makes the close net to nothing.
+- **An energy leg paying several periods on one day beside others prices NaN** (2026-09-26).
+  `pv_energy_cashflows` prices distinct pay days and a leg paying everything on one day, but a leg
+  some of whose periods share a pay day and some not marks NaN: the payments want summing onto their
+  unique pay days before they are discounted.
+- **The FX double Asian does not price under a credit Monte Carlo** (2026-09-26). Its pricer returns
+  one value where the exposure grid asks for one per row, so the run refuses on the shape; a base
+  valuation prices it, inside an independent Monte Carlo's standard error.
 - **A deal the compile could not read still lets the job report success** (2026-09-22). A
   placeholder a document does not say — the key absent, or carrying a `null` — is refused by name
   at booking, so it cannot reach a pricer through
@@ -285,14 +330,12 @@ is recorded so a reader knows which readings rest on it.
   `Stationarity_Tol` - returns the whole book's risk in factor space with the refusal named.
   UNMEASURED on a desk book; a two-trade FX book reads in 5.1 s, its three blocks' refit
   included. The remedy for the second is a retry with the refusing block's switch off.
-- **A position's size is shown and not priced** (2026-09-25). A fill carries the position CHANGE
-  in units of the deal - 0.3 of it, a close-out at -1 - and the record, the positions read and the
-  two grouped views show the net, but the engine prices every node of the book file as the deal is
-  written, one unit: a partial fill books a whole one, and a close-out booked through `/book/deals`
-  splices a second node of the same terms where it should cancel the first. Only positions of one
-  unit price right today. Closing it means each deal type declaring which fields scale with the
-  position and the compile writing each instrument scaled by its net, the mirror where the net is
-  negative.
+- **A cap or a floor stated by its terms alone does not price** (2026-09-26). A `CapDeal` or
+  `FloorDeal` carrying its optionlet list prices the list - its `post_process` sums its children,
+  and a position sizes the list - but stated by its terms alone it is skipped, `generate` not
+  implemented, and marks NaN; the schedule its own compile builds is a floating leg carrying the cap
+  rate as its margin rather than as a strike. Closing it is the generator the design names: the
+  optionlet list generated from the terms at compile by the function the authoring step uses.
 - **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
   the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
   where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is

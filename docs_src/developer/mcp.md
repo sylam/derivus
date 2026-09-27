@@ -141,7 +141,11 @@ endpoint additionally requires a signed `quantity`, an `execution_reference` and
 fact to a seat: `book_deal` takes all four, `amend_deal` and `solve_structure` take `actor`, and a
 delete records nothing so it takes no seat. A desk that keeps no record ignores them all, which is
 why they are optional rather than required — the tool schema is one contract for both postures, and
-the service's own refusal is what names a missing one.
+the service's own refusal is what names a missing one. The quantity PRICES: the book's reads price
+every position at its net, and `describe_instrument_type` marks the fields a position scales
+(`sized`, or `magnitude` for an amortisation step, which never takes the short's sign) and the ones
+a short flips (`side`) — a structure and a mark-to-market cross-currency swap mark none, their legs
+carrying the size.
 
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere, as in the
 web UI's tree, because references are not unique in a book. Another host's booking moves every

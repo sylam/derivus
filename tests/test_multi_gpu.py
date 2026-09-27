@@ -313,6 +313,8 @@ def hmm_document():
         'Initial_State_Probs': [0.7, 0.3],
         'Calibration_DT_Years': 1.0 / 252.0}}
     c.params['Model Configuration'].append('CommodityPrice', (), 'MarkovHMMSpotModel')
+    # ten contracts: `Units` is the future's declared size, read since 2026-09-26 - the four pins
+    # below were re-taken then, each matrix exactly ten times the one it replaced
     future = {'Object': 'CommodityFutureDeal', 'Reference': 'FUT', 'Commodity': 'PLAT',
               'Currency': 'USD', 'Repo_Rate': 'USD', 'Carry': 'PLAT_CARRY',
               'Maturity_Date': BASE + pd.DateOffset(years=1), 'Units': 10.0,
@@ -356,7 +358,7 @@ def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
     pooled matrix would move with n while every worker still agreed with itself.
     """
     reference = sha(hmm_pooled(1, device='cpu'))
-    assert reference == 'bd4f479854a56fcc', 'the sharded HMM CPU stream moved: %s' % reference
+    assert reference == 'a9e2f5e42834078d', 'the sharded HMM CPU stream moved: %s' % reference
     for n in (2, 4):
         assert sha(hmm_pooled(n, device='cpu')) == reference, (
             'the Sobol-consuming world moved at n=%d - the quasi stream is reading its position '
@@ -367,7 +369,7 @@ def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
 def test_a_sobol_consuming_world_is_bit_identical_across_devices():
     """The same, across the two real devices, where worker j also changes silicon."""
     reference = sha(hmm_pooled(1))
-    assert reference == '16d1acb3658a91b3', 'the sharded HMM CUDA stream moved: %s' % reference
+    assert reference == '8532978a799719ce', 'the sharded HMM CUDA stream moved: %s' % reference
     for n in (2, 4):
         assert sha(hmm_pooled(n)) == reference, (
             'the Sobol-consuming world moved at n=%d on CUDA' % n)
@@ -380,7 +382,7 @@ def test_the_unsharded_hmm_path_is_untouched():
     """
     _, cpu = derivus.run_cmc(hmm_document(), torch.float32, overrides(), 0, 1, None,
                              deterministic_batches=False, device='cpu')
-    assert sha(cpu['Results']['mtm'].values) == '571f7d2265552420', (
+    assert sha(cpu['Results']['mtm'].values) == 'cd34f5838cab3d1d', (
         'the unsharded HMM path moved on cpu: %s' % sha(cpu['Results']['mtm'].values))
     # and it is NOT the sharded answer: anchoring moves which points a batch reads and the
     # per-batch reseed moves the generator, so the two are different valid path sets
@@ -392,7 +394,7 @@ def test_the_unsharded_hmm_path_is_untouched_on_cuda():
     """The same pin on the device, where a different generator backend feeds the same stream."""
     _, out = derivus.run_cmc(hmm_document(), torch.float32, overrides(), 0, 1, None,
                              deterministic_batches=False, device=None)
-    assert sha(out['Results']['mtm'].values) == 'eb1d50954f7eb319', (
+    assert sha(out['Results']['mtm'].values) == 'fbf7c38c5c63fc60', (
         'the unsharded HMM path moved on cuda: %s' % sha(out['Results']['mtm'].values))
 
 

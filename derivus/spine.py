@@ -42,6 +42,7 @@ verbs' `except ValueError -> 422` handlers surface the library's own wording.
 """
 import contextlib
 import json
+import numbers
 import os
 import threading
 
@@ -384,8 +385,15 @@ def observations(lsn=None, indices=None):
 
 
 def compiled_job(document, lsn=None, strict=True):
-    """The job the plan hashes, with every declared observation filled from the record at `lsn`.
-    Unchanged where no home is configured.
+    """The job the plan hashes, with every position the record holds at `lsn` written at its net
+    and every declared observation filled. Unchanged where no home is configured.
+
+    A position is units of the instrument, so the node carrying it prices at its NET - the fills
+    summed over every portfolio under its agreement's set - through `scaled`: a net of one
+    is the deal as written, of nothing is no deal, and a second node of the same terms under the
+    same set is the first one's clip, ignored rather than priced twice. Ignored rather than
+    removed, so every deal path a verb resolved against the file still names the node it named. A
+    node the record holds nothing for prices as written.
 
     `strict` is what separates a PLAN from a READ. A plan may not read a fixing nobody vouched for,
     so an index it compiles against that no `fixings` policy orders refuses by name. A read fills
@@ -404,10 +412,19 @@ def compiled_job(document, lsn=None, strict=True):
     import copy
 
     from .diary import index_named
+    from .schema import job_children
 
-    if not configured() or not _observing(document):
+    if not configured():
+        return document
+    try:
+        job_children(document)
+    except ValueError:
+        return document
+    held = _nets(lsn, book_name(document))
+    if not held and not _observing(document):
         return document
     filled = copy.deepcopy(document)
+    _hold(filled, held)
     observing = [(deal, terms, index_named(deal, terms)) for deal, terms in _observing(filled)]
     named = {index for _, _, index in observing if index}
     observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
@@ -417,6 +434,162 @@ def compiled_job(document, lsn=None, strict=True):
                                        if _day(row) <= base else None)
                              for row in deal[terms.table]]
     return filled
+
+
+def book_name(document):
+    """The book a fill is attributed to: the job document's own `Deals.Reference`, or None.
+
+    Capability grants are (verb x book), so a desk scoped over one book must not reach another. A
+    document naming none files a firm-level fact, which only a `*` grant reaches.
+    """
+    named = (document.get('Calc', {}).get('Deals', {}) or {}).get('Reference')
+    return named if isinstance(named, str) and named else None
+
+
+def _nets(lsn=None, book=None):
+    """`{(instrument, agreement): net}` - every position `book` holds at `lsn`, summed over its
+    portfolios, the agreement being the set the file materialises it under."""
+    nets = {}
+    for row in positions(lsn):
+        if row.get('book') == book:
+            key = (row['instrument'], row['agreement'])
+            nets[key] = nets.get(key, 0.0) + row['quantity']
+    return nets
+
+
+def _hold(document, nets):
+    """Every node of `document` the record holds a position in, IN PLACE at its net: scaled, the
+    same terms' second node under one set ignored, and a net of nothing ignored. A container the
+    record holds nothing for is walked through, a netting set naming the agreement below it.
+
+    A structure held whole is ONE instrument, its legs inside its own terms, so a position the
+    record holds in one of those legs has no node of its own to price at: it refuses by name
+    rather than being priced as the structure's."""
+    from . import content_hash
+    from .schema import instrument_of, job_children, mapping
+
+    containers = mapping['Instrument']['containers']
+    carried, inside = set(), {}
+
+    def legs(children, agreement, holder):
+        for node in children:
+            inside[(content_hash(instrument_of(node)), agreement)] = (node, holder)
+            legs(node.get('Children', []), agreement, holder)
+
+    def walk(children, agreement):
+        for position, node in enumerate(children):
+            deal = node['Instrument']['.Deal']
+            if node.get('Ignore') == 'True':
+                continue
+            key = (content_hash(instrument_of(node)), agreement)
+            if key not in nets:
+                if deal.get('Object') in containers:
+                    walk(node.get('Children', []), deal.get('Reference') if deal.get('Object')
+                         == 'NettingCollateralSet' else agreement)
+                continue
+            legs(node.get('Children', []), agreement, deal)
+            if key in carried or not nets[key]:
+                node['Ignore'] = 'True'
+            elif nets[key] != 1:
+                try:
+                    children[position] = scaled(node, nets[key])
+                except ValueError as refused:
+                    raise SpineRefused(str(refused))
+            carried.add(key)
+
+    walk(job_children(document), None)
+    for key, (node, holder) in inside.items():
+        if nets.get(key) and key not in carried:
+            leg = node['Instrument']['.Deal']
+            raise SpineRefused(
+                'the record holds a position in {} {!r} and one in {} {!r}, the structure it sits '
+                'in: a structure is held whole or through its legs, never both - close one of the '
+                'two'.format(leg.get('Object'), leg.get('Reference'), holder.get('Object'),
+                             holder.get('Reference')))
+
+
+def _scaled_value(field, value, factor):
+    """`value` with every part `field` declares sized multiplied by `factor` - a scalar, a table
+    column in rows keyed by name or by position, a container's sub-field - and how many it moved."""
+    number = isinstance(value, numbers.Real) and not isinstance(value, bool)
+    if field.sized and number:
+        return value * (abs(factor) if field.sized == 'magnitude' else factor), 1
+    if field.sub_fields and isinstance(value, dict):
+        declared = {sub.key: sub for sub in field.sub_fields}
+        moved = {key: _scaled_value(declared[key], item, factor) if key in declared else (item, 0)
+                 for key, item in value.items()}
+        return ({key: item for key, (item, _) in moved.items()},
+                sum(count for _, count in moved.values()))
+    columns = [column for column in field.row.fields if column.sized] if field.row else []
+    token = next(iter(value)) if isinstance(value, dict) and len(value) == 1 else None
+    rows = value[token] if token and token.startswith('.') else value
+    if not columns or not isinstance(rows, list):
+        return value, 0
+    positions = [field.row.fields.index(column) for column in columns]
+    count, scaled = 0, []
+    for row in rows:
+        row = dict(row) if isinstance(row, dict) else list(row) if isinstance(row, list) else row
+        for column, position in zip(columns, positions):
+            cell = column.key if isinstance(row, dict) else position
+            if isinstance(row, (dict, list)) and (cell in row if isinstance(row, dict)
+                                                  else cell < len(row)):
+                row[cell], moved = _scaled_value(column, row[cell], factor)
+                count += moved
+        scaled.append(row)
+    return ({token: scaled} if rows is not value else scaled), count
+
+
+def _sizes(field):
+    """Whether `field` declares an amount anywhere in it - itself, a sub-field, a column."""
+    return bool(field.sized) or any(_sizes(part) for part in list(field.sub_fields or ()) + (
+        field.row.fields if field.row else []))
+
+
+def scaled(node, quantity):
+    """`node` HELD `quantity` times, as a new node: every field its type declares `sized` - its
+    legs' included - multiplied, and a negative quantity taken as the MIRROR, every `side` the type
+    declares flipped with the sizes at the quantity's magnitude, or the sizes signed where it
+    declares none. The engine prices amounts as written and never learns a quantity.
+
+    The legs of a deal written as an OPTION ON ITS CHILDREN - a swaption's underlying - are its
+    terms, so they are sized and never flipped; every other deal's legs - a structure's, a cap's
+    caplets - are themselves held, and decide. An amount the block omits is what its declaration
+    says omission means, so a convention's value is written at the size. A deal stating none of the
+    amounts its type declares refuses by name: it would price one unit whatever the position is.
+    A frame declaring none - an empty structure - holds nothing to size; a LEAF declaring none is
+    one unit whatever the position, and refuses too.
+    """
+    from . import instruments
+    from .schema import declared_fields
+
+    deal = node['Instrument']['.Deal']
+    cls = getattr(instruments, str(deal.get('Object')), None)
+    declared = declared_fields(cls) if isinstance(cls, type) else {}
+    sides = [field for field in declared.values() if field.side]
+    flip = quantity < 0 and bool(sides)
+    factor = -quantity if flip else quantity
+    count, terms = 0, {}
+    for key, value in deal.items():
+        terms[key], moved = (_scaled_value(declared[key], value, factor) if key in declared
+                             else (value, 0))
+        count += moved
+    for key, field in declared.items():
+        if key not in deal and field.sized and field.convention and field.default:
+            terms[key], count = field.default * factor, count + 1
+    for side in sides if flip else ():
+        held = deal.get(side.key, side.default)
+        terms[side.key] = side.values[1] if held == side.values[0] else side.values[0]
+    held = dict(node, Instrument=dict(node['Instrument'], **{'.Deal': terms}))
+    if node.get('Children'):
+        legs = factor if getattr(cls, 'option_on_children', False) else quantity
+        held['Children'] = [scaled(child, legs) for child in node['Children']]
+    elif not count and (any(_sizes(field) for field in declared.values())
+                        or not getattr(cls, 'accepts_children', False)):
+        raise ValueError('a position of {} in {} {!r} cannot be priced: it states none of the '
+                         'amounts its type declares, so it would price one unit as written - '
+                         'state them, or hold it in whole units'.format(
+                             quantity, deal.get('Object'), deal.get('Reference')))
+    return held
 
 
 def _base_day(document):

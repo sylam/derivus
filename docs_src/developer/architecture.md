@@ -14,7 +14,7 @@ derivus is a **financial virtual machine**. A job is a program; the engine compi
 
 The public surface is documented in [API Overview](../api_overview.md); this section is the internal view. Reading order: Architecture → [Calc Lifecycle](calc_lifecycle.md) → [Dependency System](dependency_system.md) → [Resolver Layer](resolver_layer.md) → [Conventions](conventions.md). (mkdocs sorts the nav alphabetically; follow the prose order.)
 
-## The spine: one `Factor` keys everything
+## One `Factor` keys everything
 
 `Factor = namedtuple('Factor', 'type name')` (`utils.Factor`) is the identity used by **every** dict in the pipeline: the discovery graph, `stochastic_factors` / `static_factors`, `all_factors`, `all_tenors`, and the runtime buffers. One key across many dicts is what lets the layers compose without a translation table.
 

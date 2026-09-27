@@ -80,7 +80,7 @@ ONE_TOUCH = {
     'Object': 'EquityOneTouchOption', 'Reference': 'OT1', 'Currency': 'USD',
     'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ',
     'Buy_Sell': 'Buy', 'Cash_Payoff': 100.0, 'Payoff_Type': 'Cash', 'Barrier_Price': 90.0,
-    'Barrier_Type_One': 'Down', 'Expiry_Date': BASE + pd.Timedelta(days=365),
+    'Barrier_Type': 'Down', 'Expiry_Date': BASE + pd.Timedelta(days=365),
     'Barrier_Monitoring_Frequency': pd.DateOffset(days=0),
 }
 

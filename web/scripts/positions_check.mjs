@@ -32,7 +32,8 @@ const row = (instrument, agreement, portfolio, counterparty, quantity, paths, re
   ({ instrument: hash(instrument), agreement, portfolio, book: 'desk', counterparty, quantity,
      clips: 1, first_lsn: 5, last_lsn: 5, deal_paths: paths, reference, object });
 
-const EM = row('a', 'ISDA-1', 'desk/Rates/EM', 'LEI-A', 1, ['1/0'], 'COLLAR1', 'StructuredDeal');
+const EM = row('a', 'ISDA-1', 'desk/Rates/EM', 'LEI-A', 1, ['1/0', '1/2'], 'COLLAR1',
+               'StructuredDeal');
 const TOP = row('a', 'ISDA-1', 'desk', 'LEI-A', 0.5, ['1/0'], 'COLLAR1', 'StructuredDeal');
 const LEGACY = row('b', 'ISDA-1', 'desk/Rates', 'CPTY_B', -1, ['2/0'], 'FWD1', 'FXForwardDeal');
 const LOST = row('c', 'ISDA-2', 'desk/FX', 'LEI-SUB', 2, [], null, null);
@@ -112,8 +113,9 @@ check('a client tree counts its positions and nothing else',
       CLIENTS.reduce((sum, node) => sum + tree.leaves(node), 0), 4);
 
 // --- the file's nodes
-check('a node of the file holds every position whose instrument sits there; a lost one none',
-      "a node's positions overwritten rather than gathered, which drops the second portfolio",
+check('a node carries every position whose terms it holds first; a later clip and a lost one none',
+      "a node's positions overwritten rather than gathered, which drops the second portfolio; or "
+      + 'every node of the terms mapped, which shows the net twice where the book prices it once',
       [...positions.byPath(POSITIONS)].map(([path, held]) => [path, held.map((p) => p.portfolio)]),
       [['1/0', ['desk/Rates/EM', 'desk']], ['2/0', ['desk/Rates']]]);
 

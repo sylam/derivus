@@ -2252,7 +2252,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
     # work out what we're pricing
 
-    eta = BARRIER_DOWN if 'Down' in deal_data.Instrument.field['Barrier_Type_One'] else BARRIER_UP
+    eta = BARRIER_DOWN if 'Down' in deal_data.Instrument.field['Barrier_Type'] else BARRIER_UP
     buy_or_sell = 1.0 if deal_data.Instrument.field['Buy_Sell'] == 'Buy' else -1.0
     barrier = deal_data.Instrument.field['Barrier_Price']
 
@@ -5140,10 +5140,10 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 sample_tss.append(sample_ts)
                 lambdas.append(alpha * average)
 
-            min_ts = torch.minimum(sample_tss[0].unsqueeze(2), sample_tss[1].unsqueeze(1))  # [T, N, N]
+            min_ts = torch.minimum(sample_tss[0].unsqueeze(2), sample_tss[1].unsqueeze(1))  # [T, N1, N2]
             sum_rho = torch.sum(
                 sample_fts[0].unsqueeze(2) * sample_fts[1].unsqueeze(1) *
-                torch.exp(min_ts * vols.pow(2).unsqueeze(1).unsqueeze(1)), dim=1)
+                torch.exp(min_ts.unsqueeze(3) * vols.pow(2).unsqueeze(1).unsqueeze(1)), dim=1)
 
             M_rho = torch.sum(sum_rho, dim=1)
             MM_rho = (torch.log(M_rho) - torch.log(mu[0]) - torch.log(mu[1])) / (sigma[0] * sigma[1])
@@ -5969,7 +5969,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
                 forwardfx = utils.calc_fx_forward(
                     factor_dep['ForwardFX'], factor_dep['CashFX'],
                     reset_block.np[offset:, utils.RESET_INDEX_Reset_Day],
-                    discounts.time_grid[time_ofs:time_ofs + size], shared)
+                    discount_block.time_grid[time_ofs:time_ofs + size], shared)
 
                 all_resets = utils.join_resets(
                     [past_resets, future_resets * forwardfx], 1, deal_data, forecast_codes)
@@ -5983,9 +5983,12 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
             payoff = torch.stack([torch.sum(x, dim=1) for x in torch.split(
                 all_payoffs, split_payoffs, dim=1)], dim=1)
 
-            payment = cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal] * (
-                    cashflows.tn[:, utils.CASHFLOW_INDEX_Start_Mult] * payoff +
-                    cashflows.tn[:, utils.CASHFLOW_INDEX_FloatMargin])
+            # each column on the payoff's (row, cashflow, scenario) axes - left flat, it broadcast
+            # against the scenarios and priced a second cashflow as a second scenario
+            nominal, multiplier, basis = (cashflows.tn[:, index].reshape(1, -1, 1) for index in (
+                utils.CASHFLOW_INDEX_Nominal, utils.CASHFLOW_INDEX_Start_Mult,
+                utils.CASHFLOW_INDEX_FloatMargin))
+            payment = nominal * (multiplier * payoff + basis)
 
             payments.append(payment)
 
@@ -6292,7 +6295,10 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
 
         index_cum_hazard_T = surv_block.gather_weighted_curve(shared, hazard_samples, multiply_by_time=False)
         base_index = surv_base.gather_weighted_curve(shared, hazard_samples[0].reshape(1,-1),  multiply_by_time=False)
-        g = index_cum_hazard_T/base_index
+        # a zero horizon - the window's opening, once it has started - holds no hazard, the index's
+        # or a name's, so its 0/0 scale is one; masked both sides so no NaN reaches a gradient
+        empty = base_index == 0.0
+        g = torch.where(empty, 1.0, index_cum_hazard_T) / torch.where(empty, 1.0, base_index)
         fwd_hazard_names = torch.stack(
             [g * x.gather_weighted_curve(shared, hazard_samples, multiply_by_time=False) for x in names], dim=3)
 

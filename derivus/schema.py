@@ -131,6 +131,13 @@ class F(object):
 
     `Boolean` is a bare JSON `true`/`false`, not the `'Yes'`/`'No'` a flag is spelled with -
     `bool(param.get(...))` takes `'No'` as true, so the two cannot share a descriptor.
+
+    `sized` says the field is an AMOUNT of the instrument, so a position of q units prices it at q
+    times what was written - a scalar, or a table column. `sized='magnitude'` is an amount the
+    engine takes off another's magnitude - an amortisation step, whatever its principal's sign -
+    so it scales with the position's size and never takes its sign. `side` marks a two-valued
+    field saying which side the instrument is held on - every one a type marks flips for a
+    negative position, its mirror; a type marking none holds one as its sizes signed.
     """
     # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
     # on the value's row arity, never on the token.
@@ -140,11 +147,11 @@ class F(object):
               'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
-                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind', 'convention')
+                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
                  tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None,
-                 convention=False):
+                 convention=False, sized=False, side=False):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
@@ -161,6 +168,9 @@ class F(object):
         self.bind = bind
         # the declared default is what omission MEANS, rather than what a blank panel shows
         self.convention = convention
+        # an amount of the instrument, and the field saying which side of it is held
+        self.sized = sized
+        self.side = side
 
     @property
     def key(self):
@@ -182,6 +192,10 @@ class F(object):
             d['required'] = True
         if self.convention:
             d['convention'] = True
+        if self.sized:
+            d['sized'] = self.sized
+        if self.side:
+            d['side'] = True
         if self.values is not None:
             d['values'] = self.values
         if self.bounds is not None:
@@ -806,7 +820,7 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
     F('Recovery_Rate', 'Text', default='', convention=True, obj='Tuple'),
     F('Description', 'Text', default='', convention=True),
     F('Survival_Probability', 'Text', default='', convention=True, obj='Tuple'),
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
     F('Settlement_Rate', 'Text', default='', convention=True),
     F('Currency', 'Text', default=''),
@@ -816,7 +830,7 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell']),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Currency', 'Text', default=''),
     F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
     F('Equity', 'Text', default='', obj='Tuple'),
@@ -834,7 +848,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
     F('Barrier', 'Float', default=0, convention=True),
     F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
-    F('Units', 'Float', default=0.0),
+    F('Units', 'Float', default=0.0, sized=True),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
     F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Coupon_Observations', 'Table', default='null', convention=True,
@@ -1006,6 +1020,16 @@ def remove_deal(document, deal_path):
         return children.pop(positions[-1])
     except (ValueError, KeyError, IndexError):
         raise ValueError('no deal at path {!r}'.format(deal_path))
+
+
+def instrument_of(node):
+    """The canonical TERMS of a booked node - the deal block with its legs written back under it.
+    One reading, used by the booking, the amendment and the compile alike, so an amended container
+    is an amendment of the instrument that was booked rather than of a different spelling of it."""
+    deal = dict(node['Instrument']['.Deal'])
+    if node.get('Children'):
+        deal['Children'] = node['Children']
+    return deal
 
 
 def quote_plan(block):

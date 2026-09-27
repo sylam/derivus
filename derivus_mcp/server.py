@@ -539,8 +539,10 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
 
     WHERE THE DESK KEEPS A RECORD, three more are required and refuse by name without them:
     `quantity` is the position change in units of the deal - 1 books it as written, -1 closes it,
-    -0.5 unwinds half - `execution_reference` is the venue exec id or ticket id that makes a retry
-    the same fact, and the deal must sit under a `NettingCollateralSet` naming a counterparty.
+    -0.5 unwinds half, the book pricing every position at its net through the fields its type marks
+    `sized` (`describe_instrument_type`) - `execution_reference`
+    is the venue exec id or ticket id that makes a retry the same fact, and the deal must sit under a
+    `NettingCollateralSet` naming a counterparty.
     `agreement` names an agreement `describe_agreements` lists - the set it sits under must be the
     set of that name - `portfolio` the path where the position sits, its top node the book's own
     name (`<book>/Rates/EM`, the book itself if left out), and `price` what it was done at. `actor` is the seat the fact is filed under. A desk that keeps no
