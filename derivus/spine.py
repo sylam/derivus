@@ -67,9 +67,11 @@ LANES = (TELEMETRY, CURIOSITY, STANDING)
 #: record which scope this type demands, so the one lane that files a fact is admitted under it.
 STANDING_TYPE = 'run_completed'
 
-#: The process a settlement file is struck under - `derivus_spine.policy.DESIGNATED_PROCESSES`'s
-#: one member, respelled here so the service can name it without paying for the spine import.
+#: The processes a market is designated for - `derivus_spine.policy.DESIGNATED_PROCESSES`,
+#: respelled here so the service can name them without paying for the spine import: the one a
+#: settlement file is struck under, and the one the book is marked under at each close.
 SETTLEMENT_EXPORT = 'settlement_export'
+PNL = 'pnl'
 
 #: What a tree without the extra is told, with the line that fixes it.
 NO_PACKAGE = ('the book of record is not installed on this box ({}) - {} names a spine home, so '
@@ -711,21 +713,22 @@ def executor(kind=None):
 
 def book(deal, quantity, counterparty, netting_set, execution_reference,
          actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
-         portfolio=None):
+         portfolio=None, currency=None, rate=None):
     """Book a fill against the canonical instrument `deal`, returning the spine's envelope.
 
     `deal` is canonicalised through the engine's encoder and its hash is the instrument id, so
     booking the same strike twice registers one instrument and files two events against it.
     `execution_reference` has no default: it is what makes a retry the same fact. `quantity` is the
     position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
-    where they are stated.
+    where they are stated, a price in another currency with that `currency` and the `rate` the
+    booking crossed it at.
     """
     verbs = package().verbs
     with writing() as log:
         return verbs.book(log, actor(actor_name), canonical(deal), quantity, counterparty,
                           netting_set, execution_reference, book=book_name,
                           effective_time=effective_time, price=price, agreement=agreement,
-                          portfolio=portfolio)
+                          portfolio=portfolio, currency=currency, rate=rate)
 
 
 def declare_entity(entity, name, parent=None, actor_name=None, effective_time=None):
@@ -788,14 +791,71 @@ def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective
                                      effective_time=effective_time)
 
 
-def transition(subject, status, actor_name=None, book_name=None, effective_time=None):
+def transition(subject, status, actor_name=None, book_name=None, effective_time=None,
+               amount=None, asset=None, kind=None, reference=None):
     """Move the state a party put a subject in - a settlement paid, a confirmation matched. The
     subject is a derived cashflow key or an instrument address; the diary's rows are a fold's
-    question and not this verb's."""
+    question and not this verb's. A settlement that moved money states the amount, the asset, its
+    kind and the settlement system's reference - see `derivus_spine.verbs.transition`."""
     verbs = package().verbs
     with writing() as log:
         return verbs.transition(log, actor(actor_name), subject, status, book=book_name,
-                                effective_time=effective_time)
+                                effective_time=effective_time, amount=amount, asset=asset,
+                                kind=kind, reference=reference)
+
+
+def cash(lsn=None):
+    """Every movement of money the record's settlements filed at `lsn`, under the settlement
+    system's own reference - a restated one standing in place of the filing it corrects."""
+    return _rows('cash', lsn)
+
+
+def costs(lsn=None):
+    """What every position cost at `lsn`, at average cost, and what its reductions realised - keyed
+    where the position sits, a split nobody priced reading null."""
+    return _rows('costs', lsn)
+
+
+def attestations():
+    """Every standing attestation, oldest first: the replay tuple and the job, values and result
+    it names."""
+    return _rows('attestations')
+
+
+def closes(market):
+    """Every official close declared on `market`, superseded ones included, in the order they were
+    filed: the position, the values it stands on, and the day it is FOR - the one it states, else
+    the day it is true on."""
+    def walk(log):
+        found = []
+        for frame in log.frames():
+            if frame['event_type'] == 'official_close_declared':
+                body = log.open_body(frame)
+                if body['market'] == market:
+                    found.append({'lsn': frame['lsn'], 'values_hash': body['values_hash'],
+                                  'date': body.get('date') or (
+                                      frame['effective_time'] or frame['record_time'])[:10]})
+        return found
+
+    return folded(walk)
+
+
+def fills(after=None, until=None):
+    """Every fill filed after LSN `after` and at or before `until`, each with where it sits in the
+    record and when it is true."""
+    def walk(log):
+        return [dict(log.open_body(frame), lsn=frame['lsn'], book=frame['book'],
+                     as_of=frame['effective_time'] or frame['record_time'])
+                for frame in log.frames(start_lsn=(after or 0) + 1, end_lsn=until)
+                if frame['event_type'] == 'fill']
+
+    return folded(walk)
+
+
+def stored(digest):
+    """The bytes the store holds at `digest` - a job, a result or a values vector a reading cites,
+    read on this box's own record."""
+    return folded(lambda log: log.store.get(digest))
 
 
 def approve(plan_hash, actor_name=None, book_name=None, effective_time=None):
@@ -824,13 +884,14 @@ def declare_market(name, values, actor_name=None, effective_time=None):
                                     effective_time=effective_time)
 
 
-def declare_close(market, values, actor_name=None, effective_time=None):
-    """Declare the official close on `market` over a values vector. A second close supersedes the
-    first rather than editing it, so a day restated is two facts and both stay readable."""
+def declare_close(market, values, actor_name=None, effective_time=None, date=None):
+    """Declare the official close on `market` for the day `date` over a values vector. A second
+    close supersedes the first rather than editing it, so a day restated is two facts and both stay
+    readable."""
     verbs = package().verbs
     with writing() as log:
         return verbs.declare_close(log, actor(actor_name), market, values,
-                                   effective_time=effective_time)
+                                   effective_time=effective_time, date=date)
 
 
 def file_quote(quote_id, structure, plan_hash, values, solved, edge, request=None, ticket=None,

@@ -48,7 +48,7 @@ from derivus_spine.vocabulary import ADMIN, EVENT_TYPES
 
 import test_spine_imports as imports
 from test_spine import (
-    ACTOR, BOOK, INSTRUMENT, MON, TUE, WED, fill, seeded, synthetic_book)
+    ACTOR, BOOK, INSTRUMENT, MON, OTHER, TUE, WED, fill, seeded, synthetic_book)
 
 #: Where the synthetic book stands, and the two positions its restatement turns on: the first
 #: official close, and the head. The republished print sits at 16, between them.
@@ -153,9 +153,9 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     differently is a red gate rather than a silent change of what a reader sees. The strip's table
     of sentences is committed the same way, because it is data the fixture cannot exercise."""
     home, log, marks = synthetic_book(tmp_path)
-    assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'decisions',
-                               'denials', 'entities', 'lifecycle', 'markets', 'positions',
-                               'quotes'}
+    assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'cash',
+                               'costs', 'decisions', 'denials', 'entities', 'lifecycle',
+                               'markets', 'positions', 'quotes'}
 
     for name in sorted(PROJECTORS):
         projector = PROJECTORS[name]
@@ -496,4 +496,57 @@ def test_the_second_fixture_pins_what_the_synthetic_book_cannot_say(tmp_path):
         'the LATER filing under one id stands, and the backdated one did not win by arriving last'
     assert quoted[0]['booker'] == ACTOR and quoted[0]['ticket'] is None, \
         'a quote filed without a ticket carries the absence rather than somebody else\'s hash'
+    log.close()
+
+
+def test_a_position_costs_its_average_and_a_reduction_realises_against_it(tmp_path):
+    """THE REALISED HALF OF P&L, at average cost. Two lots at 5 and 7 average 6; selling 5 at 9
+    realises 15 and leaves the average where it was; selling 25 at 4 closes the 15 held for a loss
+    of 30 and opens a short of 10 at 4; buying 4 back at 2 realises 8 on the short. A fill with no
+    price leaves what it touched UNKNOWN rather than zero - the realised figure once it closes
+    against an average nobody priced, and the basis while an unpriced lot stays open - and an
+    amendment carries the open basis onto the terms it became while what the old terms realised
+    stays on their row.
+
+    Killing mutations: the average moved by a reduction, which makes the second sale realise
+    against 5.4 instead of 6; the flip's remainder opened at the old average instead of its own
+    price; an unpriced lot read as priced at zero.
+    """
+    home = seeded(tmp_path, 'costs', clips=())
+    log = SpineLog(home)
+    lsn = iter(range(1000))
+
+    def clip(quantity, price=None, portfolio='FX-VANILLA/EM', instrument=INSTRUMENT):
+        body = dict(fill('EXEC-{}'.format(next(lsn)), quantity=quantity, instrument=instrument),
+                    portfolio=portfolio)
+        if price is not None:
+            body['price'] = price
+        log.append('fill', body, actor=ACTOR, book=BOOK)
+
+    def row(instrument, portfolio='FX-VANILLA/EM'):
+        rows = PROJECTORS['costs'].rows(fold(log, PROJECTORS['costs']))
+        return next(dict((k, v) for k, v in found.items() if k in (
+            'quantity', 'basis', 'realised', 'unpriced')) for found in rows
+            if found['instrument'] == instrument and found['portfolio'] == portfolio)
+
+    for quantity, price, after in ((10, 5.0, (10.0, 50.0, 0.0)), (10, 7.0, (20.0, 120.0, 0.0)),
+                                   (-5, 9.0, (15.0, 90.0, 15.0)), (-25, 4.0, (-10.0, -40.0, -15.0)),
+                                   (4, 2.0, (-6.0, -24.0, -7.0))):
+        clip(quantity, price)
+        held = row(INSTRUMENT)
+        assert (held['quantity'], held['basis'], held['realised']) == after, (quantity, held)
+    clip(6)
+    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
+    clip(3, 10.0)
+    assert row(INSTRUMENT) == {'quantity': 3.0, 'basis': 30.0, 'realised': None, 'unpriced': 1}
+
+    clip(2, portfolio='FX-VANILLA/G10')
+    assert row(INSTRUMENT, 'FX-VANILLA/G10')['basis'] is None, 'an unpriced lot is not a zero'
+    clip(-2, 5.0, portfolio='FX-VANILLA/G10')
+    assert row(INSTRUMENT, 'FX-VANILLA/G10') == {
+        'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
+
+    log.append('amendment', {'instrument': INSTRUMENT, 'amended_to': OTHER}, actor=ACTOR, book=BOOK)
+    assert row(OTHER) == {'quantity': 3.0, 'basis': 30.0, 'realised': 0.0, 'unpriced': 1}
+    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
     log.close()

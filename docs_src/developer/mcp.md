@@ -31,7 +31,9 @@ configured once in the web UI, and — where this desk keeps a record — the fi
 what the book owes, whether a close is legal, where the file and the record disagree, the strip of
 what has been recorded, and the official closes - and the paper the book trades under, declared by
 the seat that keeps the legal documents, with a booking's quantity as the position change in units
-of the deal and its portfolio a path under the book, and `book_positions` reading what stands. The
+of the deal and its portfolio a path under the book, `book_positions` reading what stands,
+`book_cash` the money the settlements moved, and `mark_book` and `book_pnl` the close's marks and
+what the book made between them. The
 module docstring stays the maintainer's.
 
 ## The tools
@@ -47,7 +49,7 @@ module docstring stays the maintainer's.
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
 | `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
-| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio` and `price` it may state; a delete records nothing so it takes no seat |
+| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio`, `price` and the price's currency it may state - a consideration in another currency is crossed at the booking's own board; a delete records nothing so it takes no seat |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `describe_calculations` / `configure_calculation` / `run_calculation` | `/calculations` — the desk's own named calculations: listed, saved one at a time (judged against the type's declarations), and run over the live book or one subtree in the curiosity lane |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
@@ -76,9 +78,11 @@ module docstring stays the maintainer's.
 | `declare_market` | `POST /book/markets` — the desk's mark: the book's own values filed under a name, `official` wanting a `mark` seat and a `private/` board naming the seat that declares it |
 | `declare_close` | `POST /book/close` — the official close over those values, behind `close_check`'s own verdict, a second close superseding the first |
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
-| `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on |
+| `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on; where money moved, the amount, asset, kind (payment, fee, collateral, margin), the settlement reference and the value date |
+| `book_cash` | `GET /book/cash` — the money the settlements moved, one movement per reference, and the balances they sum to per kind, subject and asset, as of a date where one is named |
+| `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at the close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named |
 | `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
-| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, and the `deal_paths` where the book file holds it |
+| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, and the `deal_paths` where the book file holds it; an expired deal stands until the day it settles and rolls off on it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 

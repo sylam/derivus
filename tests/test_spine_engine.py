@@ -1053,6 +1053,58 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
+    """The back office's half through the service: a settlement that moved money states the amount,
+    the asset, its kind, the settlement system's reference and the value date, and `/book/cash`
+    reads the movements back with the balances they sum to - the collateral held under an agreement
+    one row, a movement restated under its reference standing in place of the one it corrects, and
+    `date` reading only what had settled by that day. A movement the record could not read back -
+    held under an agreement nobody declared, on a day that is not a day, or described with no
+    amount - refuses by name with nothing recorded.
+
+    Killing mutations: the value date dropped on the way to the verb, which the record refuses as
+    money moved on no day; the `date` filter dropped, which reads a return posted after that day
+    into its balance.
+    """
+    def moved(**body):
+        return CLIENT.post('/book/transition', content=dump(dict({'status': 'settled'}, **body)),
+                           headers=JSON)
+
+    terms = netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']
+    CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                headers=JSON)
+    CLIENT.post('/book/agreements', content=dump({'agreement': CLIENT_SET, 'entity': 'LEI-A',
+                                                  'kind': 'ISDA 2002 with CSA', 'terms': terms}),
+                headers=JSON)
+    head_before = head(recorded)
+    held = dict(subject=CLIENT_SET, amount=1.0, asset='USD', kind='collateral', reference='C-0')
+    for body, said in ((dict(held, subject='ISDA-NOBODY', value_date='2024-06-28'),
+                        'declare the agreement first'),
+                       (dict(held, value_date='28/06/2024'), 'is not a day'),
+                       (dict(held, value_date=None), 'value date'),
+                       (dict(held, amount=None, value_date='2024-06-28'), 'no amount')):
+        refused = moved(**{field: value for field, value in body.items() if value is not None})
+        assert refused.status_code == 422 and said in refused.json()['detail'], (said, refused.text)
+    assert head(recorded) == head_before, 'a refused movement recorded something'
+
+    for amount, reference, day in ((5_000_000.0, 'COL-1', '2024-06-27'),
+                                   (5_000_000.0, 'COL-2', '2024-06-28'),
+                                   (4_000_000.0, 'COL-2', '2024-06-28'),
+                                   (-1_000_000.0, 'COL-3', '2024-07-01')):
+        filed = moved(**dict(held, amount=amount, reference=reference, value_date=day))
+        assert filed.status_code == 200, filed.text
+        assert filed.json()['value_date'] == day and filed.json()['amount'] == amount
+    cash = CLIENT.get('/book/cash').json()
+    assert [(row['reference'], row['amount']) for row in cash['movements']] == [
+        ('COL-1', 5_000_000.0), ('COL-2', 4_000_000.0), ('COL-3', -1_000_000.0)]
+    assert cash['balances'] == [{'kind': 'collateral', 'subject': CLIENT_SET, 'asset': 'USD',
+                                 'amount': 8_000_000.0, 'movements': 3}]
+    that_day = CLIENT.get('/book/cash', params={'date': '2024-06-28'}).json()
+    assert that_day['date'] == '2024-06-28' and that_day['balances'][0]['amount'] == 9_000_000.0
+    assert CLIENT.get('/book/cash', params={'date': 'yesterday'}).status_code == 422
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
 def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, desk):
     """`/book/positions` is the fold at the head joined to the FILE: every position standing under
     its agreement and portfolio, beside the nodes carrying its instrument under that agreement's

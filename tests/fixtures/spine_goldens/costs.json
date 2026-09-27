@@ -1,0 +1,20 @@
+[
+  {
+    "agreement": "CSA-0007",
+    "basis": 0.0,
+    "instrument": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc",
+    "portfolio": "FX-VANILLA",
+    "quantity": 0.0,
+    "realised": 0.0,
+    "unpriced": 2
+  },
+  {
+    "agreement": "CSA-0007",
+    "basis": null,
+    "instrument": "e3d93128a1eb379ecf1ee4b60f87849d34b7e2d32abed682c918c42ead5a3201",
+    "portfolio": "FX-VANILLA",
+    "quantity": 2000000.0,
+    "realised": 0.0,
+    "unpriced": 2
+  }
+]

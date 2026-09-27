@@ -13,8 +13,9 @@ verifies them where it stands and is told when there is something to pull, and o
 ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
 scripted faults beside it, held to nine invariants. **8** adds the paper the book trades under -
 its legal entities and agreements - with every position keyed where it sits, read there and priced
-at its net, and seeds filed where a deployment says. A library, a CLI, nine delegators on `Context`, twelve read
-verbs and eight write verbs on the service, and 363 gates.
+at its net, and seeds filed where a deployment says; **9** the money the settlements moved, what
+every position cost, and the desk's P&L between the closes it marks. A library, a CLI, nine
+delegators on `Context`, fourteen read verbs and nine write verbs on the service, and 368 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -114,8 +115,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 336 of
-the 363 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 341 of
+the 368 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -1074,8 +1075,10 @@ materialisation; its `portfolio` is the book's own name where none is stated.
 **THE BOOK IS READ WHERE IT SITS.** A portfolio is a path whose top node is the book the fill is
 filed under, where its permissions are granted, so a stated one outside it or with an empty segment
 refuses by name at the booking. `GET /book/positions` answers every position standing at the head -
-a closed one stands no more - beside the nodes of the book file carrying its instrument under its
-agreement's set, and the binding reads it as `book_positions`. It is how the web UI groups the
+a closed one stands no more, and one whose deal has expired at the book's date stands until the day
+it settles and rolls off on it, a trade settling at T+2 still held at T+1 - beside the nodes of the
+book file carrying its instrument under its agreement's set, and the binding reads it as
+`book_positions`. It is how the web UI groups the
 book: the Portfolio screen and the blotter show the file's own nesting, the portfolio tree - a
 folder per segment of the path - or the client tree - an entity under the parent declared for it,
 holding its agreements and then the entities under it, every declared one standing whether or not
@@ -1121,6 +1124,87 @@ verb - `tests/test_spine_engine.py` the service's, `web/scripts/positions_check.
 and the grouped blotter, and `tests/test_position_scaling.py` a trial per family of types
 (`tests/trial_<family>.py`), the census holding every type to its declaration and its trial, and
 every declared amount to a trial that states it.
+
+## Increment 9 — the money that moved, and what the book made
+
+**A SETTLEMENT THAT MOVED MONEY SAYS HOW MUCH.** `status_transition` gains four optional fields,
+so a body filed before them validates as it did: the signed `amount` from the bank's side -
+received positive, paid or posted negative - the `asset` it is an amount of (a currency, or a
+security held as collateral), its `kind`, and the settlement system's own `reference`. Money moves
+under `settled` alone, on a value date the settlement states. The kind says what moved: a
+`payment` settles the diary row its subject keys exactly as a bare `settled` does, so the close
+check and the settlement file read it unchanged; a `fee` is money a trade cost that no row
+announced, filed on its instrument; and `collateral` and `margin` move a balance held under an
+agreement the record declares, since collateral arrives through the settlement interface like any
+settlement and the balance per agreement is a fold of those rather than a statement. Only a payment
+moves a state: the other three put nothing in the lifecycle or the blotter.
+
+**THE REFERENCE IS THE MOVEMENT.** Retried under one reference it is one fact; two identical
+movements under two references are two, where the bare tuple would have coalesced them; and an
+amount filed again under its reference restates the one it corrects by the as-of key, naming the
+filing it stood over. The twelfth projector, `cash`, keeps one standing movement per reference, and
+a balance - the collateral under an agreement, what a row settled for, the fees on an instrument -
+is a sum over its rows and stored nowhere. `POST /book/transition` takes the four fields and a
+`value_date`, `GET /book/cash` answers the movements and their balances per kind, subject and asset
+as of a `date` where one is named, and the binding's `file_status` and `book_cash` are the same
+two. Writing an agreement's balance in force into the netting set a collateralised run compiles
+is not built. `tests/test_spine_verbs.py` holds the record's half and `tests/test_spine_engine.py`
+the service's, six mutations red.
+
+**A POSITION COSTS ITS AVERAGE.** The thirteenth projector, `costs`, keys every position as
+`positions` does and carries its `basis` - the open quantity times its average price, signed with
+the position - and what its reductions `realised`: a fill adding to a position adds its quantity
+times its price, one reducing it realises the difference between the price and the average on the
+part it closes, and the rest opens the other way at its own price. The price is the fill's
+CONSIDERATION per unit as written, signed from the desk's side; one agreed in another currency
+than the book reports in is filed with that `currency` and the `rate` the booking crossed it at,
+the booking's own board, so nobody converts a premium by hand and the basis reads it in the book's
+currency. An accepted quote files one too: nothing where its recipe solved a coordinate, the charge
+riding inside the terms, and minus the client's premium where it solved nothing. A fill booked with
+no price leaves what it touched UNKNOWN - the basis while that lot is open, the realised figure
+from the reduction it priced - never a zero, and counts under `unpriced`. An instrument hash is one
+contract, so average cost over identical terms is specific identification per contract.
+
+**A CLOSE IS MARKED, AND THE MARKS ARE ITS OWN NUMBERS.** A close names the calendar `date` it is
+declared FOR. `pnl` joins `settlement_export` as a designated process, and `POST /book/marks`
+values ONE UNIT of every instrument the book holds, or traded since its last marks, each as written
+and filed under its own address, on the values of the close standing under that market - a
+standing run, attested like any other. A position's value is then its quantity times its unit mark
+and every grouping of the book is a sum; and the job the run attests is the book's market and
+instruments as they stood, so a past close replays from the record rather than from a book file
+that has moved since. When the marks are taken is the deployment's end of day, and a fill belongs
+to the business day of the first marks at or after it - an end-of-day cut, never the clock it was
+recorded by.
+
+**THE P&L IS THE MARKS' MOVE PLUS THE CASH, AND A MONTH IS THE SUM OF ITS DAYS.** `GET /book/pnl`
+reads it between the marks of two days, or from the last marks to the book as it stands now - the
+intraday flash, recorded nowhere - per position and in total, in the reporting currency:
+`value_end - value_start + premiums + payments + fees`. The premiums are the fills' own on their
+trade date; a payment is the diary's amount where it determines one, times what the position held
+the day before it fell due, else the position's share of what the settlements moved under the
+row's key, one settled with no amount having moved nothing; a payment and a fee are converted at
+the official close STANDING ON THEIR OWN DAY, after which the money is a cash balance whose
+currency is its holder's and never the trade's. A SETTLEMENT OR A FEE COUNTS IN THE WINDOW IT WAS
+FILED IN - the change in the `cash` fold between the two marks, a restatement counting its
+correction - so a late filing lands in the day it was filed and a day already struck never moves;
+whose it is, is read off the record as it stood on its own day, whatever window it lands in. Every
+figure but the new-deal split is therefore additive: two days sum to the window over both.
+`existing` is what the positions held at the start moved and `trading` what the window's fills
+earned against its end. The realised half is the costs' plus the cash, at AVERAGE COST, which the
+answer names; a position whose last day falls in the window CLOSES there at its settlement value -
+its open basis released to realised, its payoff arriving as the payment it is - and after it stands
+only through the money it still moves, a payoff settling at T+2 counted in the window it settles
+in, and so does one holding nothing, a portfolio unwound before a late fee still taking its share.
+Anything nobody can know - a fill with no price, a payment neither the diary nor a settlement
+states, a settlement against a payment nothing here announces, a missing mark, a day no close
+stands on - is named under `unknown` and `complete` says there was one. A `portfolio`, an `agreement` or a `client` with every entity
+grouped under it narrows it, and the binding's `mark_book` and `book_pnl` are the same two verbs.
+`tests/test_spine_projections.py` and `tests/test_spine_verbs.py` hold the cost arithmetic and the
+consideration, and `tests/test_pnl.py` three marked closes on a real home - every unit mark against
+the instrument valued alone, every row against its own identity, the portfolios summing to the
+book, the two days to the window and a struck day read again unmoved after late filings - every
+killing mutation its docstring names red. The explain - the market's move read off
+the start's quote sensitivities, the carry, the fees, the reserves and the residual - is not built.
 
 ## What is not built yet
 

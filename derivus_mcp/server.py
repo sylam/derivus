@@ -121,7 +121,11 @@ day's close on the record over the values the book is carrying, once close_check
 legal - declare_market is that same act under any other name - export_settlements strikes the
 settlement file for a day, on the market the desk designated for it and on no other, and
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
-what close_check then stops waiting on. THE PAPER the book trades under is declared too, by the seat
+what close_check then stops waiting on - with the amount, asset, kind and settlement reference where
+money moved, including collateral and margin under an agreement, and book_cash reads the movements
+and their balances back. THE P&L: once the day's close is declared, mark_book values one unit of
+every instrument on it, and book_pnl reads what the book made between two marked days or since the
+last marks. THE PAPER the book trades under is declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
 and never a balance, and describe_agreements to read them - a booking then names its agreement and
 its portfolio, a path under the book, and its quantity is the position change in units of the deal,
@@ -524,7 +528,7 @@ def _stated(**fields):
 def book_deal(deal: dict, parent_reference: str | None = None, quantity: float | None = None,
               execution_reference: str | None = None, actor: str | None = None,
               agreement: str | None = None, portfolio: str | None = None,
-              price: float | None = None) -> dict:
+              price: float | None = None, price_currency: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -545,8 +549,11 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     `NettingCollateralSet` naming a counterparty.
     `agreement` names an agreement `describe_agreements` lists - the set it sits under must be the
     set of that name - `portfolio` the path where the position sits, its top node the book's own
-    name (`<book>/Rates/EM`, the book itself if left out), and `price` what it was done at. `actor` is the seat the fact is filed under. A desk that keeps no
-    record ignores all of them.
+    name (`<book>/Rates/EM`, the book itself if left out), and `price` what it was done at - the
+    consideration per unit as written, signed from the desk's side, in `price_currency` where it
+    was agreed in another currency than the book reports in: the service crosses it at the
+    booking's own board, so never convert it by hand. `actor` is the seat the fact is filed
+    under. A desk that keeps no record ignores all of them.
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
@@ -566,7 +573,7 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
         {'action': 'add', 'deal': deal},
         **_stated(parent_reference=parent_reference, quantity=quantity,
                   execution_reference=execution_reference, actor=actor, agreement=agreement,
-                  portfolio=portfolio, price=price))))
+                  portfolio=portfolio, price=price, price_currency=price_currency))))
 
 
 @MCP.tool()
@@ -1514,7 +1521,9 @@ def declare_close(market: str | None = None, date: str | None = None,
 
 
 @MCP.tool()
-def file_status(subject: str, status: str, actor: str | None = None) -> dict:
+def file_status(subject: str, status: str, actor: str | None = None, amount: float | None = None,
+                asset: str | None = None, kind: str | None = None, reference: str | None = None,
+                value_date: str | None = None) -> dict:
     """Say that a payment settled, a confirmation matched, or whatever else moved the state of one
     row - the back office's half of the record.
 
@@ -1524,13 +1533,59 @@ def file_status(subject: str, status: str, actor: str | None = None) -> dict:
     `settled` is the one `close_check` reads - a close does not pass over a payment nobody said had
     moved.
 
+    WHERE MONEY MOVED, say how much: `amount` signed from the bank's side (received positive, paid
+    or posted negative), the `asset` it is an amount of (a currency, or a security for collateral),
+    its `kind` - `payment` against a diary row's key, `fee` against an instrument, `collateral` or
+    `margin` against an agreement the record declares - the settlement system's own `reference`
+    and the `value_date` (`YYYY-MM-DD`) it settled on, all under `settled`. Filed again under one
+    reference, a movement restates the one it corrects; `book_cash` reads them back.
+
     A key the book no longer announces a row for is still RECORDED: the record holds what it was
     told and the reading is a fold, so a late settlement against a paid-away row is a fact rather
     than a refusal. `actor` is the seat it is filed under. Answers `{recorded: {lsn}, subject,
-    status}`, and saying one thing twice is one fact.
+    status}` and what moved, and saying one thing twice is one fact.
     """
     return service().call('POST', '/book/transition', json=dict(
-        {'subject': subject, 'status': status}, **_stated(actor=actor)))
+        {'subject': subject, 'status': status},
+        **_stated(actor=actor, amount=amount, asset=asset, kind=kind, reference=reference,
+                  value_date=value_date)))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_cash(date: str | None = None) -> dict:
+    """The money the record's settlements moved: every movement under the settlement system's
+    reference - its kind, what it settled, the asset, the signed amount and the value date - and
+    the balances they sum to per kind, subject and asset, so collateral held under an agreement is
+    one row. `date` (`YYYY-MM-DD`) reads the movements settled on or before it. A restated movement
+    stands in place of the one it corrects. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/cash', params=_stated(date=date))
+
+
+@MCP.tool()
+def mark_book(actor: str | None = None) -> dict:
+    """Mark the book at the close: one unit of every instrument it holds or traded since its last
+    marks, valued on the close standing under the market the desk designated for `pnl`, and the
+    run attested - which is what every later P&L reads that close from. Call it once the day's close
+    is declared. Refused where no market is designated for `pnl` or it stands on no close. Answers
+    `{result_id, status, market, close_lsn, instruments}`; `poll_result` waits on the run.
+    """
+    return service().call('POST', '/book/marks', json=_stated(actor=actor))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | None = None,
+             agreement: str | None = None, client: str | None = None) -> dict:
+    """The desk's P&L between the marks of two days (`YYYY-MM-DD`), or from the last marks to now
+    where `end` is not named: per position and in total, the values at both ends, the premiums the
+    fills paid, the payments and fees, `existing` (what the positions held moved) and `trading`
+    (what the window's fills earned against the end), and the P&L split realised - at average cost,
+    the cash included - and unrealised. Narrowed by a `portfolio` path, an `agreement` or a `client`
+    entity with everything grouped under it. A figure nobody can know - a fill with no price, a
+    payment nothing determined or settled - is named under `unknown` and `complete` is false.
+    """
+    return service().call('GET', '/book/pnl', params=_stated(
+        start=start, end=end, portfolio=portfolio, agreement=agreement, client=client))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1550,7 +1605,8 @@ def book_positions() -> dict:
     the deal as written - the clips behind it, and `deal_paths` where the book file holds it, the
     path `read_deal` and `amend_deal` take. The portfolio is a path whose top node is the book; the
     client is the counterparty, whose name and parent `describe_agreements` gives. A position closed
-    to zero stands no more. 404 on a box that records nothing.
+    to zero stands no more, and one whose deal has expired stands until the day it settles -
+    `expired` and `settles` say when - and rolls off on that day. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/positions')
 

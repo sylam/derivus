@@ -30,7 +30,8 @@ const { blotter, tree } = positions;
 const hash = (letter) => letter.repeat(64);
 const row = (instrument, agreement, portfolio, counterparty, quantity, paths, reference, object) =>
   ({ instrument: hash(instrument), agreement, portfolio, book: 'desk', counterparty, quantity,
-     clips: 1, first_lsn: 5, last_lsn: 5, deal_paths: paths, reference, object });
+     clips: 1, first_lsn: 5, last_lsn: 5, deal_paths: paths, reference, object, expired: null,
+     settles: null });
 
 const EM = row('a', 'ISDA-1', 'desk/Rates/EM', 'LEI-A', 1, ['1/0', '1/2'], 'COLLAR1',
                'StructuredDeal');
@@ -111,6 +112,13 @@ check('a client holds its agreements and then the entities declared under it, ev
 check('a client tree counts its positions and nothing else',
       'an agreement or a client counted as an item, which puts more positions on a desk than it holds',
       CLIENTS.reduce((sum, node) => sum + tree.leaves(node), 0), 4);
+
+const SETTLING = { ...row('d', 'ISDA-1', 'desk/FX', 'LEI-A', 1, ['3/0'], 'BIN1',
+                          'EquityBarrierBinaryOption'), expired: '2024-06-30', settles: '2024-07-02' };
+check('an expired position still held says when it expired and when it settles',
+      'the leaf read as a live one, which shows a deal past its expiry as if it were still running',
+      seen(positions.portfolioTree([SETTLING])),
+      [['desk', [['FX', [['BIN1', '×1 · ISDA-1 · expired 2024-06-30, settles 2024-07-02']]]]]]);
 
 // --- the file's nodes
 check('a node carries every position whose terms it holds first; a later clip and a lost one none',

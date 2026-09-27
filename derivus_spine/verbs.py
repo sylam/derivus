@@ -53,6 +53,15 @@ LIFECYCLE_TYPES = ('election', 'fixing_observed', 'determination')
 #: and the body it writes cannot part company.
 REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed')
 
+#: What a settlement may move, and the one status money moves under. A `payment` settles the diary
+#: row its subject keys, as a bare `settled` does; a `fee` is money a trade cost that no row
+#: announced, filed on its instrument; `collateral` and `margin` move a balance held under an
+#: agreement. Only a payment moves a state - the other three move money and nothing else.
+PAYMENT, FEE, COLLATERAL, MARGIN = 'payment', 'fee', 'collateral', 'margin'
+MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN)
+HELD = (COLLATERAL, MARGIN)
+SETTLED = 'settled'
+
 
 def check_lane(lane):
     """`lane` if it is one of `LANES`, otherwise `MalformedEvent` naming them."""
@@ -72,7 +81,8 @@ def mints(lane):
 
 
 def book(log, actor, instrument, quantity, counterparty, netting_set, execution_reference,
-         book=None, effective_time=None, price=None, agreement=None, portfolio=None):
+         book=None, effective_time=None, price=None, agreement=None, portfolio=None,
+         currency=None, rate=None):
     """Book a fill, returning the envelope plus the instrument's address.
 
     `instrument` is the canonical JSON of the deal's terms as bytes - the caller canonicalises,
@@ -84,7 +94,10 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
     facts. `quantity` is the signed position CHANGE in units of the instrument - 1 is the instrument
     as written, -1 closes it, -0.5 unwinds half - never a position: position is a fold. `agreement`
     and `portfolio` say where the position sits and `price` what it was done at, each filed only
-    where stated. The instrument blob is fsynced before the event citing it appends.
+    where stated. A price stated in another currency than the book's carries that `currency` and
+    the `rate` the booking crossed it at - units of the book's currency per unit of it - so the
+    consideration is on the record as it was agreed and as it was booked. The instrument blob is
+    fsynced before the event citing it appends.
     """
     address = _blob(log, instrument, 'the canonical instrument')
     if not is_number(quantity):
@@ -101,6 +114,13 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
                 'book: price is {!r} - what a fill was done at is a finite number in the '
                 'instrument\'s own quote, or it is left out'.format(price))
         body['price'] = price
+    if currency is not None or rate is not None:
+        if price is None or not is_number(rate) or rate <= 0:
+            raise MalformedEvent(
+                'book: a price in another currency is the price, its `currency` and the `rate` it '
+                'was crossed at, a positive number - this states price {!r}, currency {!r} and '
+                'rate {!r}'.format(price, currency, rate))
+        body['currency'], body['rate'] = _name(currency, 'currency', 'book'), rate
     for field, value in (('agreement', agreement), ('portfolio', portfolio)):
         if value is not None:
             body[field] = _name(value, field, 'book')
@@ -155,7 +175,8 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
     return log.append(event_type, body, actor=actor, book=book, effective_time=effective_time)
 
 
-def transition(log, actor, subject, status, book=None, effective_time=None):
+def transition(log, actor, subject, status, book=None, effective_time=None, amount=None,
+               asset=None, kind=None, reference=None):
     """Move the operational state a party put a subject in - a settlement paid, a confirmation
     matched - and return the envelope.
 
@@ -167,11 +188,27 @@ def transition(log, actor, subject, status, book=None, effective_time=None):
     WHETHER THE BOOK ANNOUNCES A ROW under that key is not asked here. The record holds what it was
     told and a fold says what answers for it, so a transition against a key the diary has dropped
     is a FACT this verb files and an invariant the oracle reads, never a refusal at the writer.
+
+    A SETTLEMENT THAT MOVED MONEY SAYS HOW MUCH: the signed `amount` from the bank's side -
+    received positive, paid or posted negative - the `asset` it is an amount of, its `kind`, and
+    the settlement system's own `reference`, under which a retry is the same fact, two identical
+    movements are two, and a corrected amount restates the one it corrects. See `_movement`.
     """
-    return log.append('status_transition',
-                      {'subject': _pinned(subject, 'subject'),
-                       'status': _name(status, 'status', 'transition')},
-                      actor=actor, book=book, effective_time=effective_time)
+    body = {'subject': subject, 'status': _name(status, 'status', 'transition')}
+    if amount is None:
+        stated = [field for field, value in (('asset', asset), ('kind', kind),
+                                             ('reference', reference)) if value is not None]
+        if stated:
+            raise MalformedEvent(
+                'transition: {} describe money that moved and no amount was stated - file the '
+                'amount with them, or none of them for a state that moved no money'.format(
+                    ', '.join(stated)))
+        body['subject'] = _pinned(subject, 'subject')
+    else:
+        body.update(_movement(log, subject, status, amount, asset, kind, reference,
+                              effective_time))
+    return log.append('status_transition', body, actor=actor, book=book,
+                      effective_time=effective_time)
 
 
 def approve(log, actor, plan_hash, book=None, effective_time=None):
@@ -214,7 +251,7 @@ def declare_market(log, actor, name, values, effective_time=None):
     return dict(envelope, name=name, values_hash=address)
 
 
-def declare_close(log, actor, market, values, effective_time=None):
+def declare_close(log, actor, market, values, effective_time=None, date=None):
     """Declare the official close on `market` over a values vector, returning the envelope plus the
     vector's address.
 
@@ -226,13 +263,17 @@ def declare_close(log, actor, market, values, effective_time=None):
     The owner rule is `declare_market`'s and is asked here for the same reason: a close is one way
     of declaring what a name stands on, and one landing inside another seat's `private/` namespace
     would be a board its owner never declared and the only reader who can resolve it.
+
+    `date` is the calendar day the close is declared FOR (`YYYY-MM-DD`), which is what a cash
+    movement on that day is converted at - a close struck the next morning is still that day's.
     """
     address = _blob(log, values, 'the values vector this close stands on')
-    envelope = log.append('official_close_declared',
-                          {'market': _own(_name(market, 'market', 'declare_close'), actor,
-                                          'declare_close'),
-                           'values_hash': address},
-                          actor=actor, effective_time=effective_time, blob_refs=(address,))
+    body = {'market': _own(_name(market, 'market', 'declare_close'), actor, 'declare_close'),
+            'values_hash': address}
+    if date is not None:
+        body['date'] = _day(date, 'declare_close')
+    envelope = log.append('official_close_declared', body, actor=actor,
+                          effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, market=market, values_hash=address)
 
 
@@ -522,6 +563,60 @@ def _name(value, field, verb):
         raise MalformedEvent(
             '{}: {} is {!r}, and a name that names nothing is not a name'.format(verb, field, value))
     return value
+
+
+def _movement(log, subject, status, amount, asset, kind, reference, effective_time):
+    """The four fields a settlement that moved money adds to its body, each asserted.
+
+    Money moves under `settled` alone, on a value date the settlement states and never on the day
+    the record heard about it. A `payment` or a `fee` names an address - the diary row it settles,
+    or the instrument a fee was paid on - and `collateral` or `margin` names an agreement THE RECORD
+    DECLARES, the one place such a balance is held: an id nothing declared is a balance nobody can
+    read back under the paper it moved under.
+    """
+    if not is_number(amount) or amount == 0:
+        raise MalformedEvent(
+            'transition: amount is {!r} - money that moved is a finite, non-zero number, signed from '
+            "the bank's side: received positive, paid or posted negative".format(amount))
+    if status != SETTLED:
+        raise MalformedEvent(
+            'transition: money moves under {!r} alone and this says {!r} - file the state without '
+            'an amount, or the amount once it settled'.format(SETTLED, status))
+    if kind not in MOVEMENTS:
+        raise MalformedEvent(
+            'transition: kind is {!r}, not one of {} - a {} settles a diary row, a {} is money a '
+            'trade cost on its instrument, and {} and {} move a balance held under an '
+            'agreement'.format(kind, ', '.join(MOVEMENTS), PAYMENT, FEE, COLLATERAL, MARGIN))
+    if effective_time is None:
+        raise MalformedEvent(
+            'transition: money moves on a value date, and this movement states none - file it with '
+            'the effective time it settled on')
+    if kind in HELD:
+        from .projections import PROJECTORS, fold
+
+        _name(subject, 'subject', 'transition')
+        if subject not in fold(log, PROJECTORS['agreements']):
+            raise MalformedEvent(
+                'transition: {} is held under an agreement and {!r} is none the record declares - '
+                'declare the agreement first, since a balance is read back under the paper it '
+                'moved under'.format(kind, subject))
+    else:
+        _pinned(subject, 'subject')
+    return {'amount': amount, 'asset': _name(asset, 'asset', 'transition'), 'kind': kind,
+            'reference': _name(reference, 'reference', 'transition')}
+
+
+def _day(value, verb):
+    """`value` asserted to be a calendar day, exactly `YYYY-MM-DD` - two spellings of one day would
+    be two facts."""
+    import datetime
+
+    try:
+        if isinstance(value, str) and datetime.date.fromisoformat(value).isoformat() == value:
+            return value
+    except ValueError:
+        pass
+    raise MalformedEvent('{}: date is {!r}, and a day is exactly YYYY-MM-DD'.format(verb, value))
 
 
 def _own(name, actor, verb):

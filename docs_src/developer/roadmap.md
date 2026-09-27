@@ -275,7 +275,9 @@ is recorded so a reader knows which readings rest on it.
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
   stand - one probe read -85.38 against 0, where the tree before read +170.76. The migration the
-  design names, a fill of one under every legacy node, is what makes the close net to nothing.
+  design names, a fill of one under every legacy node, is what makes the close net to nothing -
+  and until it runs, a node no fill booked is outside the desk's P&L, which reads its positions
+  off the record.
 - **An energy leg paying several periods on one day beside others prices NaN** (2026-09-26).
   `pv_energy_cashflows` prices distinct pay days and a leg paying everything on one day, but a leg
   some of whose periods share a pay day and some not marks NaN: the payments want summing onto their
@@ -483,6 +485,18 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   record now - positions keyed by agreement and portfolio, each instrument's terms and each
   agreement's netting set by address - but the book file stays the materialisation and
   `/book/reconcile` is how it is checked.
+- **The P&L's explain, and a screen for it.** `GET /book/pnl` says what the book made - what the
+  held positions moved, what the window's trades earned against the end, the cash, the realised
+  half - and not yet WHY the held positions moved: the market's share read off the start marks'
+  quote sensitivities times the quote moves between the two closes, the carry of the start's book
+  rolled to the end's day, and the residual watched against a threshold. Nor does it carry what a
+  product controller's P&L carries beside the marks: the reserves beside the mid, a new deal's
+  sales margin transferred to sales on day one, and the interest collateral earns, collateral
+  moving being no P&L. The binding and the service are its readers; no web screen shows it.
+- **An agreement's collateral balance compiled into its netting set.** The `cash` fold holds what
+  the settlement interface moved under each agreement, and nothing writes that balance in force into
+  the netting set a collateralised run compiles, which still reads the book file's own
+  `Opening_Balance`.
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,

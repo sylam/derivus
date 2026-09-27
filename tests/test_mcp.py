@@ -84,7 +84,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
                 'export_settlements', 'file_status', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
-                'declare_legal_entity', 'declare_agreement', 'book_positions'}
+                'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
+                'mark_book', 'book_pnl'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -98,7 +99,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market', 'configure_calculation', 'run_calculation',
-                       'declare_legal_entity', 'declare_agreement'}
+                       'declare_legal_entity', 'declare_agreement', 'mark_book'}
 
 
 def read_resource(uri):
@@ -363,6 +364,15 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
         'the next file instructs the payment the desk has already made'
     assert mcp_server.close_check('2099-01-01')['legal'] is True, \
         'the close still waits on a payment the back office said had moved'
+
+    paid = mcp_server.file_status(exported['rows'][0]['key'], 'settled', actor=actor,
+                                  amount=AMOUNT, asset='ZAR', kind='payment',
+                                  reference='SETTLEMENT-1', value_date='2024-06-28')
+    assert paid['amount'] == AMOUNT and paid['recorded']['lsn'] > settled['recorded']['lsn']
+    assert mcp_server.book_cash(date='2024-06-28')['balances'] == [
+        {'kind': 'payment', 'subject': exported['rows'][0]['key'], 'asset': 'ZAR',
+         'amount': AMOUNT, 'movements': 1}]
+    assert mcp_server.book_cash(date='2024-06-27')['movements'] == [], 'settled a day later'
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

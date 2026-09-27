@@ -108,7 +108,7 @@ from .schema import (mapping, deal_at, instrument_of, job_children, quote_plan, 
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire
 from .instruments import construct_instrument
-from . import diary
+from . import diary, pnl
 from .spine import book_name, replay
 
 LOG = logging.getLogger(__name__)
@@ -903,7 +903,7 @@ def held_structure(document, deal_path):
 
 
 def spine_fill(document, deal_path, quantity, execution_reference, actor=None, agreement=None,
-               portfolio=None, price=None):
+               portfolio=None, price=None, price_currency=None):
     """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
 
     THE EVENT GOES FIRST: called after the verdict and before `Book.mutate` writes the file, so a
@@ -916,7 +916,9 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
     declares - its id and its entity - and must sit under the file's set of that name, the set
     being the agreement's materialisation; one naming none takes them off the set it sits inside.
     `portfolio` is the path where the position sits, its top node the book - where permissions are
-    granted - and the book itself where none is stated; `price` is what it was done at.
+    granted - and the book itself where none is stated; `price` is what it was done at, per unit,
+    in `price_currency` where one is stated - crossed at THIS booking's own board, the book's spots,
+    and filed with the currency and the rate, so nobody converts a consideration by hand.
     """
     if not spine.configured():
         return {}
@@ -979,9 +981,11 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
                 'instrument that position is in - book the leg under its netting set, or close the '
                 'structure and book it again with the leg'.format(
                     structure.get('Object'), structure.get('Reference')))
+    currency, rate = consideration(document, price, price_currency)
     return {'recorded': spine.book(
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
+        currency=currency, rate=rate,
         agreement=agreement, portfolio=portfolio or book)}
 
 
@@ -1077,7 +1081,8 @@ def book_deals(request: dict):
             outcome = dict(outcome, _validated=outcome['validate'], **spine_fill(
                 document, outcome['deal_path'], request.get('quantity'),
                 request.get('execution_reference'), request.get('actor'),
-                request.get('agreement'), request.get('portfolio'), request.get('price')))
+                request.get('agreement'), request.get('portfolio'), request.get('price'),
+                request.get('price_currency')))
         return written, outcome
 
     live = live_book()
@@ -1495,8 +1500,8 @@ UNRESOLVED = ('the fixings policy in force orders no source for {}, so the recor
               'print is in force: declare the order and this row answers itself')
 
 #: What a close check is asked for: one day, and nothing that is not one.
-NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date, so ?date= takes exactly '
-             'YYYY-MM-DD - no time, no partial year')
+NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date and money settles on one, '
+             'so a date here is exactly YYYY-MM-DD - no time, no partial year')
 
 #: What a strip is asked to read from: a position, and nothing that is not one.
 NOT_AN_LSN = ('{!r} is not a position: ?since= takes the `lsn` the last page answered, or nothing '
@@ -1844,11 +1849,17 @@ def book_positions():
     under that agreement's set - the first the one the book prices at the net, any later one a
     clip it ignores - and `reference` and `object` the first one's. A position closed to
     zero or amended onto other terms stands no more - the record keeps its history - and one the
-    file does not hold answers no path, which `/book/reconcile` names. 404 where no home is
-    configured.
+    file does not hold answers no path, which `/book/reconcile` names. One whose instrument has
+    EXPIRED at the book's date stands until the day it settles, `expired` and `settles` saying
+    when, and rolls off on that day. 404 where no home is configured.
     """
     document, _ = recording().read()
-    rows = [row for row in spine.positions() if row['quantity']]
+    ended = expiries(document)
+    rows = []
+    for row in spine.positions():
+        expired, settles = ended.get(row['instrument'], (None, None))
+        if row['quantity'] and (expired is None or settles is not None):
+            rows.append(dict(row, expired=expired, settles=settles))
     held = file_positions(document, {row['instrument'] for row in rows})
     answer = []
     for row in rows:
@@ -1859,6 +1870,22 @@ def book_positions():
         answer.append(dict(row, deal_paths=paths, reference=deal.get('Reference'),
                            object=deal.get('Object')))
     return {'positions': answer}
+
+
+def expiries(document):
+    """`{instrument: (expired, settles)}` for every instrument the book's diary says has EXPIRED -
+    the engine's own answer at the book's date - with the last day a payment of it falls after that
+    date, or None once none does: a trade settling at T+2 is still held at T+1."""
+    today = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    rows = diary_of(document)['rows']
+    expired = {row['instrument']: row['due_date'] for row in rows if row['instrument']
+               and row['kind'] == diary.EXPIRY and row['state'] == diary.EXPIRED}
+    settles = {}
+    for row in rows:
+        if (row['instrument'] in expired and row['kind'] == diary.PAYMENT
+                and (row['due_date'] or '') > today):
+            settles[row['instrument']] = max(row['due_date'], settles.get(row['instrument'], ''))
+    return {instrument: (day, settles.get(instrument)) for instrument, day in expired.items()}
 
 
 @app.get('/book/activity', summary="The record's own strip - one line per event")
@@ -1938,12 +1965,19 @@ def book_market_declared(request: dict):
 
 @app.post('/book/transition', summary='Move the state a party put a subject in')
 def book_transition(request: dict):
-    """`{subject, status, actor}` - file the operational state a party moved a subject to.
+    """`{subject, status, actor, amount?, asset?, kind?, reference?, value_date?}` - file the
+    operational state a party moved a subject to.
 
     `subject` is an ADDRESS: the derived cashflow key `GET /book/diary` carries on every row, or
     the instrument a trade books under. This is what a settlement and a confirmation say, and it is
     what `GET /book/close/check` waits on for a payment - a close does not pass over money nobody
     said had moved.
+
+    A SETTLEMENT THAT MOVED MONEY SAYS HOW MUCH: the signed `amount` from the bank's side
+    (received positive, paid or posted negative), the `asset` it is an amount of, its `kind` -
+    `payment` against a diary row's key, `fee` against an instrument, `collateral` or `margin`
+    against an agreement the record declares - the settlement system's own `reference`, and the
+    `value_date` it settled on. `GET /book/cash` reads them back.
 
     A SUBJECT THE DIARY DOES NOT CARRY IS STILL A FACT. The record holds what it was told and a
     fold says what answers for it, so a state filed against a row the book has since paid away
@@ -1952,10 +1986,227 @@ def book_transition(request: dict):
     denial landed, which this verb does not restate. 404 where no home is configured.
     """
     document, _ = recording().read()
-    filed = load(document).transition(request.get('subject'), request.get('status'),
-                                      actor=request.get('actor'), book=book_name(document))
-    return {'recorded': {'lsn': filed['lsn']}, 'subject': request.get('subject'),
-            'status': request.get('status')}
+    value_date = request.get('value_date')
+    filed = load(document).transition(
+        request.get('subject'), request.get('status'), actor=request.get('actor'),
+        book=book_name(document), amount=request.get('amount'), asset=request.get('asset'),
+        kind=request.get('kind'), reference=request.get('reference'),
+        effective_time=None if value_date is None else read_day(value_date) + MIDNIGHT)
+    return dict({'recorded': {'lsn': filed['lsn']}, 'subject': request.get('subject'),
+                 'status': request.get('status')},
+                **{field: request[field] for field in MOVED if request.get(field) is not None})
+
+
+#: What a settlement that moved money adds to a state, and the instant a value date stands for.
+MOVED = ('amount', 'asset', 'kind', 'reference', 'value_date')
+MIDNIGHT = 'T00:00:00.000000Z'
+
+
+@app.get('/book/cash', summary='The money the record\'s settlements moved')
+def book_cash(date: str = None):
+    """`{movements, balances, date}` - every movement of money a settlement filed, and what they sum
+    to per kind, subject and asset: a balance of collateral held under an agreement, the cash a
+    diary row settled for, the fees paid on an instrument.
+
+    A movement restated under its reference stands in place of the one it corrects. `date`
+    (`YYYY-MM-DD`) reads the movements whose value date is on or before it; none reads them all. A
+    balance is a sum over movements and stored nowhere. 404 where no home is configured.
+    """
+    recorded()
+    day = None if date is None else read_day(date)
+    movements = [row for row in spine.cash()
+                 if day is None or row['effective_time'][:10] <= day]
+    balances = {}
+    for row in movements:
+        held = balances.setdefault((row['kind'], row['subject'], row['asset']), {
+            'kind': row['kind'], 'subject': row['subject'], 'asset': row['asset'],
+            'amount': 0.0, 'movements': 0})
+        held['amount'] += row['amount']
+        held['movements'] += 1
+    return {'movements': movements, 'balances': [balances[key] for key in sorted(balances)],
+            'date': day}
+
+
+@app.post('/book/marks', summary='Mark the book at the close the desk designated for P&L')
+def book_marks(request: dict):
+    """`{actor}` - value ONE UNIT of every instrument the book holds, or traded since its last
+    marks, on the close standing under the market the `tiers` policy designates for `pnl`, and
+    attest the run: `{result_id, status, market, close_lsn, instruments}`.
+
+    THE MARKS ARE THE CLOSE'S OWN NUMBERS. Each instrument prices as written under its own address,
+    so a position's value is its quantity times its unit mark and every grouping of the book is a
+    sum; the run is STANDING, so the job it attests - the book's market and the instruments as they
+    stood - is what a later P&L replays the close from. The terms come off the book file, and off
+    the record's own copy where the file no longer holds an instrument. Refused by name where no
+    market is designated for `pnl`, where the one designated stands on a declaration that is not a
+    close, and where the book holds nothing. When the marks run is operating policy. 404 where no
+    home is configured.
+    """
+    document, _ = recording().read()
+    book = book_name(document)
+    market = spine.designated_market(spine.PNL)
+    close = next((row for row in spine.closes(market['name']) if row['lsn'] == market['lsn']), None)
+    if close is None:
+        raise HTTPException(422, 'the market designated for {} is {!r}, and it stands on a '
+                                 'declaration that is not a close - a book is marked at a close, so '
+                                 'declare one (POST /book/close) and mark again'.format(
+                                     spine.PNL, market['name']))
+    marks = pnl.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
+    since = max((row['lsn'] for row in marks.values()), default=0)
+    wanted = {row['instrument'] for row in spine.positions() if row['quantity'] and within_book(
+        row, book)} | {fill['instrument'] for fill in spine.fills(after=since) if fill['book'] == book}
+    if not wanted:
+        raise HTTPException(422, 'book {!r} holds nothing and traded nothing since its last marks, '
+                                 'so there is nothing to mark'.format(book))
+    job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored))
+    answer = execute(dict(job, Patch=json.loads(spine.stored(close['values_hash']).decode('utf-8')),
+                          lane=spine.STANDING, actor=request.get('actor')))
+    return dict(answer, market=market['name'], close_lsn=close['lsn'], instruments=len(wanted))
+
+
+def within_book(row, book):
+    """Whether a position row sits under `book` - its portfolio the book or a path under it."""
+    return row['portfolio'] == book or row['portfolio'].startswith(book + '/')
+
+
+@app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
+def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreement: str = None,
+             client: str = None):
+    """`{currency, start, end, scope, rows, total, complete, unknown}` - what the book made between
+    the marks of two days, or since the last marks where `end` is not named.
+
+    Per position, `value_end - value_start + premiums + payments + fees`: the values its quantity
+    times the unit mark at each end, the premiums at the fills' own prices, the payments at what
+    the diary determines or else what the settlements moved, the fees as settled - a settlement or
+    a fee counting in the window it was FILED in, so a late one lands in the day it was filed and a
+    day already struck never moves. `existing` is
+    what the positions held at the start moved and `trading` what the window's fills earned against
+    the end, which sum with the cash to the P&L; `realised` is at average cost, the cash included,
+    and `unrealised` the rest. A number nobody can know is named under `unknown` and never read as
+    zero, and `complete` says whether there was one. `portfolio` (a path under the book),
+    `agreement` or `client` (an entity, with every entity grouped under it) narrow it; the whole
+    book otherwise. Refused where the day asked for has no marks. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    book = book_name(document)
+    if portfolio is not None and not within_book({'portfolio': portfolio}, book):
+        raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
+                                 'whose top node is the book'.format(portfolio, book))
+    market = spine.designated_market(spine.PNL)
+    marks = pnl.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
+    days = sorted(marks)
+    end_day = None if end is None else read_day(end)
+    start_day = read_day(start) if start is not None else (days[-1] if end_day is None else max(
+        (day for day in days if day < end_day), default=None))
+    for day in [start_day] + ([] if end_day is None else [end_day]):
+        if day not in marks:
+            raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; mark '
+                                     'the book at a close with POST /book/marks'.format(
+                                         day or 'a day before {}'.format(end_day), market['name'],
+                                         ', '.join(days) or 'none'))
+    first = pnl.loaded(marks[start_day], spine.stored)
+    last = (pnl.loaded(marks[end_day], spine.stored) if end_day is not None
+            else live_marks(document, book, first))
+    if last['day'] < first['day'] or (end_day is not None and last['lsn'] <= first['lsn']):
+        raise HTTPException(422, 'the P&L runs forward: the marks of {} do not come after those '
+                                 'of {}'.format(last['day'], first['day']))
+    # a fill's business day is the day of the first marks at or after it - an end-of-day cut, not
+    # the clock it was recorded by - and the day being lived for one after the last
+    cut = sorted((row['lsn'], day) for day, row in marks.items())
+    fills = [dict(fill, day=next((day for lsn, day in cut if lsn >= fill['lsn']), last['day']))
+             for fill in spine.fills(after=first['lsn'], until=last['lsn'])
+             if fill['book'] == book]
+    scope = {'portfolio': portfolio or book, 'agreement': agreement,
+             'clients': None if client is None else clients_under(client)}
+    payments, last_days = window_payments(first, last, fills, document)
+    calculation = first['document']['Calc']['Calculation']
+    closes = [close for close in spine.closes(market['name']) if close['lsn'] <= last['lsn']]
+    answer = pnl.pnl(
+        first, last, spine.costs(first['lsn']), spine.costs(last['lsn']), fills, payments,
+        last_days, pnl.filed(spine.cash(first['lsn']), spine.cash(last['lsn'])),
+        spine.positions(last['lsn']), scope,
+        pnl.rates_on(closes, spine.stored, calculation.get('Currency'),
+                     structures.base_currency(first['document'])),
+        pnl.recorded(cut, spine.costs, lambda after, until: [
+            fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]))
+    return dict(answer, currency=calculation.get('Currency'), scope=dict(
+        scope, clients=None if client is None else sorted(scope['clients'])),
+        **{side: {field: marks_of[field] for field in ('day', 'lsn', 'values_hash', 'job',
+                                                       'result', 'live') if field in marks_of}
+           for side, marks_of in (('start', first), ('end', last))})
+
+
+def live_marks(document, book, since):
+    """The marks of the book as it stands, on the market it carries now: one unit of every
+    instrument it holds or traded since `since`, run here and recorded nowhere."""
+    wanted = {row['instrument'] for row in spine.positions() if row['quantity'] and within_book(
+        row, book)} | {fill['instrument'] for fill in spine.fills(after=since['lsn'])
+                       if fill['book'] == book}
+    job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored))
+    context = load(spine.compiled_job(job, strict=False))
+    _, out = context.run_job()
+    return {'day': structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime(
+        '%Y-%m-%d'), 'lsn': spine.pin()['lsn'], 'units': pnl.unit_marks(as_json(out['Results'])),
+        'live': True}
+
+
+def consideration(document, price, currency):
+    """`(currency, rate)` a fill files beside its `price`: none where the price is stated in the
+    book's own reporting currency, else that currency and what one unit of it is worth in the
+    book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
+    """
+    reporting = (document['Calc']['Calculation'].get('Currency')
+                 or structures.base_currency(document))
+    if currency is None or currency == reporting:
+        return None, None
+    if price is None:
+        raise spine.SpineRefused('this booking states price_currency {!r} and no price - the '
+                                 'currency is what the price is stated in'.format(currency))
+    try:
+        return currency, structures.engine_spot(document, currency, reporting)
+    except ValueError as missing:
+        raise spine.SpineRefused('a price in {} is crossed into {} at the booking\'s own board, '
+                                 'and {}'.format(currency, reporting, missing))
+
+
+def window_payments(first, last, fills, document):
+    """`({address: [payment rows]}, {address: day})` - every payment the diary announces from the
+    start on for the instruments held at the start or traded in the window, per unit, off the
+    start's own job and answered as the record stands at the end, and the last day of each
+    instrument that has one."""
+    marked = first['document']['Calc']
+    own = {node['Instrument']['.Deal']['Reference']: node
+           for node in marked['Deals']['Deals']['Children']}
+    wanted = set(own) | {fill['instrument'] for fill in fills}
+    terms = pnl.held_terms(document, wanted - set(own), spine.stored)
+    job = {'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={'Children': [
+        own[address] for address in sorted(own)] + [pnl.unit_node(address, terms[address])
+                                                    for address in sorted(terms)]}))}
+    context = load(spine.compiled_job(job, strict=False))
+    rows = answered(diary.schedule_of(context, {address: address for address in wanted}),
+                    last['lsn'])
+    found, last_days = {}, {}
+    for row in rows:
+        if row['kind'] == diary.PAYMENT and row['due_date']:
+            found.setdefault(row['instrument'], []).append(row)
+        elif row['kind'] == diary.EXPIRY and row['due_date']:
+            last_days[row['instrument']] = row['due_date']
+    return found, last_days
+
+
+def clients_under(entity):
+    """`entity` and every entity declared under it, however deep - the client a view groups."""
+    parents = {row['entity']: row.get('parent') for row in spine.entities()}
+    if entity not in parents:
+        raise HTTPException(422, 'client {!r} is no entity the record declares'.format(entity))
+    found, grew = {entity}, True
+    while grew:
+        grew = False
+        for child, parent in parents.items():
+            if parent in found and child not in found:
+                found.add(child)
+                grew = True
+    return found
 
 
 #: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
@@ -2245,7 +2496,7 @@ def book_close(request: dict):
                                          '{} {} on {}'.format(row['kind'], row['leg'],
                                                               row['due_date'] or 'every day')
                                          for row in verdict['outstanding'][:8]), day))
-    declared = load(document).declare_close(market, actor=request.get('actor'))
+    declared = load(document).declare_close(market, actor=request.get('actor'), date=day)
     standing = next((row for row in book_markets()['closes'] if row['market'] == market), {})
     return {'recorded': {'lsn': declared['lsn']}, 'market': market, 'date': day,
             'values_hash': declared['values_hash'],
@@ -5182,6 +5433,13 @@ def solved_coordinates(legs):
 MIRROR_AS_WRITTEN = 1.0
 
 
+def mirror_price(quote):
+    """What the desk paid for one unit of the mirror an accepted quote books, in the quote's pricing
+    currency: nothing where the recipe solved a coordinate - the charge rides inside the terms and
+    no premium changes hands - and where it solved nothing, minus the premium the client paid."""
+    return 0.0 if quote['charged_on'] != 'premium' else -float(quote['net'])
+
+
 def spot_failure():
     """The remembered live-spot failure while it is still believed, or None. Read before every
     attempt, so a dead terminal is learned once rather than costing every quote its timeout."""
@@ -5635,7 +5893,8 @@ def book_quote(request: dict):
             outcome = dict(outcome, valuation_configuration=models)
         if written:
             outcome = dict(outcome, **spine_fill(
-                book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, acceptor))
+                book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, acceptor,
+                price=mirror_price(pending['quote'])))
             if verdict is not None:
                 pending_written(path, pending, booked={
                     'lsn': outcome['recorded']['lsn'], 'deal_path': outcome['deal_path']})

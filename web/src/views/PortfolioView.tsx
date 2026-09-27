@@ -152,10 +152,17 @@ const HELD: Record<string, Descriptor> = {
     + 'carrying it onto new terms'),
 };
 
+/** What an expired position still held says: it stands until it settles, and rolls off then. */
+const SETTLING: Record<string, Descriptor> = {
+  Expired: said('Text', 'The day the deal expired - the position is held until it settles'),
+  Settles: said('Text', 'The day it settles, on which it rolls off the book'),
+};
+
 /** Where one position sits and how big it is, as the record says. */
 function Held({ position, paper }: { position: Position; paper: Paper }) {
   return (
-    <DescriptorPanel title={`Position in ${position.portfolio || 'no portfolio'}`} fields={HELD}
+    <DescriptorPanel title={`Position in ${position.portfolio || 'no portfolio'}`}
+                     fields={position.expired ? { ...HELD, ...SETTLING } : HELD}
                      values={{
                        Quantity: position.quantity,
                        Agreement: position.agreement,
@@ -163,6 +170,8 @@ function Held({ position, paper }: { position: Position; paper: Paper }) {
                        Clips: position.clips,
                        First_Fill: `LSN ${position.first_lsn}`,
                        Last_Moved: `LSN ${position.last_lsn}`,
+                       ...(position.expired
+                         ? { Expired: position.expired, Settles: position.settles } : {}),
                      }} />
   );
 }

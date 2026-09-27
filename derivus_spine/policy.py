@@ -64,8 +64,8 @@ DESIGNATIONS_SECTION = 'designations'
 TIER_FIELDS = ('name', 'seat', 'four_eyes', 'max_notional', 'max_tenor_years', 'market')
 
 #: The processes a designation binds, and the whole of them: a name nothing resolves by is a rule
-#: nobody enforces.
-DESIGNATED_PROCESSES = ('settlement_export',)
+#: nobody enforces. `pnl` is the market the book is marked on at each close.
+DESIGNATED_PROCESSES = ('settlement_export', 'pnl')
 
 #: The prefix of a market one seat owns. A designated process never resolves one.
 PRIVATE_MARKET = 'private/'

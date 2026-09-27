@@ -148,12 +148,14 @@ FACT_TYPES = {
     # A fill carries a SIGNED quantity - the position CHANGE in units of the instrument, 1 being the
     # instrument as written - never a position, and an execution reference so a retry is the same
     # fact by construction while two identical clips are two facts. `agreement` and `portfolio` are
-    # where the position sits and `price` what it was done at; a body carrying none of the three
-    # validates exactly as it did before they existed.
+    # where the position sits and `price` what it was done at, with the `currency` it was stated in
+    # and the `rate` the booking crossed it at where that is not the book's own; a body carrying
+    # none of them validates exactly as it did before they existed.
     'fill': _validator('fill', (
         ('instrument', HASH), ('quantity', NUMBER), ('counterparty', TEXT),
         ('netting_set', TEXT), ('execution_reference', TEXT)),
-        optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', TEXT))),
+        optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', TEXT),
+                  ('currency', TEXT), ('rate', NUMBER))),
     # Economics are never edited: an amendment is a new instrument hash linked to the old one.
     'amendment': _validator('amendment', (
         ('instrument', HASH), ('amended_to', HASH))),
@@ -166,13 +168,16 @@ FACT_TYPES = {
     # A determination is a fact about a ruling, attributed to the actor the contract vests it in.
     'determination': _validator('determination', (
         ('subject', TEXT), ('ruling', TEXT))),
+    # A settlement that moved money says how much, of what, what kind of movement it was and the
+    # settlement system's own reference; a body carrying none of the four validates as it did.
     'status_transition': _validator('status_transition', (
-        ('subject', TEXT), ('status', TEXT))),
+        ('subject', TEXT), ('status', TEXT)),
+        optional=(('amount', NUMBER), ('asset', TEXT), ('kind', TEXT), ('reference', TEXT))),
     # A market is a name resolved by a fold over these; officialness is a property of the name.
     'market_declared': _validator('market_declared', (
         ('name', TEXT), ('values_hash', HASH))),
     'official_close_declared': _validator('official_close_declared', (
-        ('market', TEXT), ('values_hash', HASH))),
+        ('market', TEXT), ('values_hash', HASH)), optional=(('date', TEXT),)),
     # A decision over a plan HASH, so an amended plan is a new hash needing new approval.
     'approval': _validator('approval', (('plan_hash', HASH),)),
     'rejection': _validator('rejection', (('plan_hash', HASH), ('reason', TEXT))),

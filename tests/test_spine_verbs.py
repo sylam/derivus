@@ -214,6 +214,88 @@ def test_a_settlement_is_filed_under_its_own_key_and_read_back_under_it(tmp_path
     assert 'book' in str(refusal.value) and DESK in str(refusal.value)
     assert denials(log)[-1][1] == {'subject': DESK, 'verb': 'book', 'book': BOOK,
                                    'attempted_type': 'status_transition'}
+
+
+def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(tmp_path):
+    """MONEY THAT MOVED IS A SETTLEMENT WITH AN AMOUNT. The settlement system files what it moved -
+    signed from the bank's side, of an asset, of a kind, under its own reference, on a value date -
+    and the `cash` fold keeps one standing movement per reference: a retry is one fact, two
+    identical movements under two references are two, and a corrected amount filed under the same
+    reference REPLACES the one it corrects, naming the filing it stood over.
+
+    A payment settles its diary row exactly as a bare `settled` does. A fee, collateral and margin
+    move money and put nothing in a state, and a balance held under an agreement names one the
+    record declares.
+
+    Killing mutations: the fold keyed by subject rather than reference, which merges two identical
+    calls on one agreement into one; a restatement counted beside the movement it corrects; a
+    collateral movement standing in the lifecycle as the agreement's status; an undeclared
+    agreement taken at its word.
+    """
+    home, log = minted(tmp_path)
+    key, instrument = address(b'CF1/fixed/payment/2026-06-28'), address(INSTRUMENT)
+    verbs.declare_agreement(log, MINT, CLIENT, COUNTERPARTY, 'ISDA 2002 with CSA',
+                            b'{"Object":"NettingCollateralSet","Reference":"CSA-0007"}')
+    later = '2026-08-30T00:00:00.000000Z'
+
+    def moved(subject, amount, kind, reference, when=WHEN, asset='USD'):
+        return verbs.transition(log, DESK, subject, 'settled', book=BOOK, effective_time=when,
+                                amount=amount, asset=asset, kind=kind, reference=reference)
+
+    paid = moved(key, 1250.0, 'payment', 'PAY-1')
+    fee = moved(instrument, -25.0, 'fee', 'FEE-1')
+    first = moved(CLIENT, 5_000_000.0, 'collateral', 'COL-1', when=later)
+    assert moved(CLIENT, 5_000_000.0, 'collateral', 'COL-1', when=later)['coalesced'] is True
+    call = moved(CLIENT, 5_000_000.0, 'collateral', 'COL-2', when=later)
+    assert call['lsn'] == first['lsn'] + 1, 'two identical calls under two references are two'
+    corrected = moved(CLIENT, 4_000_000.0, 'collateral', 'COL-2', when=later)
+    moved(CLIENT, -2_000_000.0, 'margin', 'MRG-1', when=later, asset='ZAR')
+
+    rows = {row['reference']: row for row in
+            projections.PROJECTORS['cash'].rows(projections.fold(log, projections.PROJECTORS['cash']))}
+    assert sorted(rows) == ['COL-1', 'COL-2', 'FEE-1', 'MRG-1', 'PAY-1']
+    assert rows['COL-2']['amount'] == 4_000_000.0 and rows['COL-2']['lsn'] == corrected['lsn']
+    assert rows['COL-2']['supersedes_lsn'] == call['lsn'] and rows['COL-1']['supersedes_lsn'] is None
+    assert (rows['PAY-1']['subject'], rows['PAY-1']['kind'], rows['PAY-1']['amount'],
+            rows['PAY-1']['lsn']) == (key, 'payment', 1250.0, paid['lsn'])
+    assert rows['FEE-1']['effective_time'] == WHEN and rows['FEE-1']['lsn'] == fee['lsn']
+    held = sum(row['amount'] for row in rows.values()
+               if row['subject'] == CLIENT and row['kind'] == 'collateral')
+    assert held == 9_000_000.0, 'the collateral held under the agreement'
+
+    standing = projections.fold(log, projections.PROJECTORS['lifecycle'])['transitions']
+    assert sorted(standing) == [key] and standing[key]['status'] == 'settled', \
+        'only a payment moves a state'
+    blotter = projections.fold(log, projections.PROJECTORS['blotter'])
+    assert CLIENT not in blotter and blotter[instrument]['last_fact']['lsn'] == fee['lsn']
+
+    head = log.head()[0]
+    for said, (subject, status, extra), why in (
+            ('amount', (key, 'settled', dict(asset='USD', kind='payment', reference='X')),
+             'no amount'),
+            ('kind', (key, 'settled', dict(amount=1.0, asset='USD', reference='X')), 'kind'),
+            ('coupon', (key, 'settled', dict(amount=1.0, asset='USD', kind='coupon',
+                                             reference='X')), 'kind'),
+            ('zero', (key, 'settled', dict(amount=0.0, asset='USD', kind='payment',
+                                           reference='X')), 'non-zero'),
+            ('matched', (key, 'matched', dict(amount=1.0, asset='USD', kind='payment',
+                                              reference='X')), 'alone'),
+            ('address', ('CF1', 'settled', dict(amount=1.0, asset='USD', kind='payment',
+                                                reference='X')), 'content hash'),
+            ('undeclared', ('CSA-9999', 'settled', dict(amount=1.0, asset='USD',
+                                                        kind='collateral', reference='X')),
+             'declare the agreement first'),
+            ('asset', (key, 'settled', dict(amount=1.0, kind='payment', reference='X')), 'asset'),
+            ('reference', (key, 'settled', dict(amount=1.0, asset='USD', kind='payment')),
+             'reference')):
+        with pytest.raises(MalformedEvent) as refused:
+            verbs.transition(log, DESK, subject, status, book=BOOK, effective_time=WHEN, **extra)
+        assert why in str(refused.value), (said, str(refused.value))
+    with pytest.raises(MalformedEvent) as undated:
+        verbs.transition(log, DESK, key, 'settled', book=BOOK, amount=1.0, asset='USD',
+                         kind='payment', reference='X')
+    assert 'value date' in str(undated.value)
+    assert log.head()[0] == head, 'a refused movement recorded something'
     log.close()
 
 
@@ -1263,3 +1345,38 @@ def test_a_tiers_policy_declared_twice_leaves_the_last_one_in_force(tmp_path):
     # the completed document is what stands, so the catch-all says what it means about four eyes
     assert policy.tiers_in_force(log)['tiers'][1] == {'name': 'desk', 'four_eyes': False}
     log.close()
+
+
+def test_a_consideration_carries_its_currency_and_rate_and_a_close_its_day(tmp_path):
+    """WHAT A FILL WAS DONE AT, AS AGREED AND AS BOOKED. A price stated in another currency than
+    the book's is filed with that currency and the rate the booking crossed it at, so the
+    consideration stands on the record both ways and the cost basis reads it in the book's
+    currency; and a close names the calendar day it is declared FOR, which is what that day's cash
+    is converted at.
+
+    Killing mutations: the rate left out of the basis, which costs a rand premium as dollars; a
+    close's day taken as any string at all.
+    """
+    home, log = minted(tmp_path)
+    booked = verbs.book(log, DESK, INSTRUMENT, 2.0, COUNTERPARTY, CLIENT, 'EXEC-ZAR', book=BOOK,
+                        price=500_000.0, currency='ZAR', rate=0.055)
+    body = log.open_body(next(frame for frame in log.frames() if frame['lsn'] == booked['lsn']))
+    assert (body['price'], body['currency'], body['rate']) == (500_000.0, 'ZAR', 0.055)
+    costs = projections.PROJECTORS['costs'].rows(
+        projections.fold(log, projections.PROJECTORS['costs']))
+    assert costs[0]['basis'] == pytest.approx(2.0 * 500_000.0 * 0.055), 'in the book currency'
+
+    head = log.head()[0]
+    for price, currency, rate in ((1.0, 'ZAR', None), (1.0, None, 0.05), (None, 'ZAR', 0.05),
+                                  (1.0, 'ZAR', 0.0), (1.0, 'ZAR', -0.05), (1.0, '', 0.05)):
+        with pytest.raises(MalformedEvent):
+            verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-BAD', book=BOOK,
+                       price=price, currency=currency, rate=rate)
+    assert log.head()[0] == head, 'a refused consideration recorded something'
+
+    closed = verbs.declare_close(log, MINT, 'official', VALUES, date='2026-08-28')
+    body = log.open_body(next(frame for frame in log.frames() if frame['lsn'] == closed['lsn']))
+    assert body['date'] == '2026-08-28'
+    for day in ('2026-8-28', '28/08/2026', '2026-08-28T00:00:00', ''):
+        with pytest.raises(MalformedEvent):
+            verbs.declare_close(log, MINT, 'official', VALUES, date=day)

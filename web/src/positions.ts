@@ -21,6 +21,9 @@ export type Position = {
   deal_paths: string[];
   reference: string | null;
   object: string | null;
+  /** The day the deal expired, and the day it settles - an expired position stands until then. */
+  expired: string | null;
+  settles: string | null;
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };
@@ -72,13 +75,14 @@ export function clientName(entities: Entity[], id: string | null): string {
 /** One position as a leaf, by the reference a desk knows it by. `other` is the coordinate the tree
  * does not file it by - the agreement in the portfolio tree, the portfolio in the client tree - so
  * the same terms held twice under one folder still read as two things. A position the file does
- * not hold says so. */
+ * not hold says so, and one whose deal has expired says when it settles. */
 function leaf(position: Position, other: string): TreeNode {
   return {
     id: positionId(position),
     label: position.reference ?? `${position.instrument.slice(0, 12)}…`,
     hint: `×${formatNumber(position.quantity)} · ${
-      position.deal_paths.length ? other : 'not in the file'}`,
+      position.deal_paths.length ? other : 'not in the file'}${
+      position.expired ? ` · expired ${position.expired}, settles ${position.settles}` : ''}`,
   };
 }
 

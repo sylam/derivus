@@ -11,7 +11,8 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The projections - positions, the blotter, lifecycle state and the strip, folded out of the log.
+"""The projections - positions, the blotter, lifecycle state, cash and the strip, folded out of the
+log.
 
 A projection is a pure fold. `fold` streams the frames a projector names, applies them in LSN order
 and answers state nobody edited; a knock, an expiry, an accrual, a position and the seat that struck
@@ -38,7 +39,7 @@ from .canon import canonical_bytes, content_hash
 from .errors import SpineRefusal
 from .log import as_of_key, parse_number
 from .policy import FIXINGS_POLICY, FIXINGS_SECTION, in_force
-from .verbs import REPLAY_FIELDS
+from .verbs import HELD, PAYMENT, REPLAY_FIELDS
 
 #: Where a seed is filed, beside `log/` and `blobs/`. Not a blob: a blob is write-once and never
 #: forgotten, and a seed is a file an operator may delete at the cost of one refold.
@@ -144,6 +145,68 @@ class Positions(Projector):
                 for portfolio, row in sorted(portfolios.items())]
 
 
+class Costs(Projector):
+    """What every position cost, at AVERAGE COST, and what its reductions realised - keyed where
+    the position sits, as `positions` keys it.
+
+    `basis` is the open quantity times its average price, signed with the position: a fill adding
+    to a position adds its quantity times its price, and one reducing it realises the difference
+    between the price and the average on the part it closes, the rest opening the other way at its
+    own price. The price is the fill's, per unit of the instrument as written, crossed into the
+    book's currency at the rate the booking filed beside it. A fill booked with no price leaves
+    what it touched UNKNOWN - `basis` null while that lot is open, `realised` null
+    from the reduction it priced on - and counts under `unpriced`, so a split nobody can compute is
+    never read as zero. An amendment carries the open basis onto the instrument the terms became;
+    what the old terms realised stays on their row.
+    """
+
+    name = 'costs'
+    reads = ('fill', 'amendment')
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        if frame['event_type'] == 'amendment':
+            for agreement, under in sorted(state.get(body['instrument'], {}).items()):
+                for portfolio, row in sorted(under.items()):
+                    head = _cost_row(state, body['amended_to'], agreement, portfolio)
+                    head['quantity'] += row['quantity']
+                    head['basis'] = _plus(head['basis'], row['basis'])
+                    head['unpriced'] += row['unpriced']
+                    row['quantity'], row['basis'] = 0.0, 0.0
+            return
+        row = _cost_row(state, body['instrument'], body.get('agreement') or body['netting_set'],
+                        body.get('portfolio') or frame['book'] or '')
+        quantity, held = float(body['quantity']), row['quantity']
+        price = None if body.get('price') is None else float(body['price']) * float(
+            body.get('rate', 1.0))
+        # the part of this fill that closes what is held, and the part that opens beyond it
+        closing = 0.0 if held * quantity >= 0 else (
+            quantity if abs(quantity) <= abs(held) else -held)
+        opening = quantity - closing
+        if closing:
+            average = None if row['basis'] is None else row['basis'] / held
+            row['realised'] = _plus(row['realised'], None if average is None or price is None
+                                    else closing * (average - price))
+            row['basis'] = None if average is None else row['basis'] + closing * average
+        if opening:
+            lot = None if price is None else opening * price
+            row['basis'] = lot if held + closing == 0 else _plus(row['basis'], lot)
+        if price is None:
+            row['unpriced'] += 1
+        row['quantity'] = held + quantity
+        if not row['quantity']:
+            row['basis'] = 0.0
+
+    def rows(self, state):
+        return [_shown(row, instrument=instrument, agreement=agreement, portfolio=portfolio)
+                for instrument, agreements in sorted(state.items())
+                for agreement, portfolios in sorted(agreements.items())
+                for portfolio, row in sorted(portfolios.items())]
+
+
 class Lifecycle(Projector):
     """Every print under its `(index, date, source)` key with the prints it superseded, the
     elections and rulings filed against each instrument, and the status standing under each subject
@@ -166,8 +229,9 @@ class Lifecycle(Projector):
             self._observe(state['fixings'], frame, body)
             return
         if frame['event_type'] == 'status_transition':
-            # A subject is an instrument here and a cashflow key later, so it is filed as given.
-            _stand(state['transitions'], body['subject'], frame, {'status': body['status']})
+            # Only a payment moves a state; a fee or a balance moved money and nothing else.
+            if body.get('kind', PAYMENT) == PAYMENT:
+                _stand(state['transitions'], body['subject'], frame, {'status': body['status']})
             return
         row = state['instruments'].setdefault(
             body.get('instrument') or body['subject'], {'elections': [], 'determinations': []})
@@ -223,6 +287,8 @@ class Blotter(Projector):
 
     def apply(self, state, frame, log):
         body = log.open_body(frame)
+        if body.get('kind') in HELD:
+            return  # a balance held under an agreement, and an agreement is not a trade
         row = state.setdefault(body.get('instrument') or body['subject'],
                                {'netting_set': None, 'quantity': 0.0, 'state': 'live'})
         if frame['event_type'] == 'fill':
@@ -432,6 +498,38 @@ class Agreements(Projector):
         return [_shown(row, agreement=agreement) for agreement, row in sorted(state.items())]
 
 
+class Cash(Projector):
+    """Every movement of money a settlement filed, under the settlement system's own reference: what
+    it settled, its kind, the asset and the signed amount - received positive, paid or posted
+    negative - on the value date it states.
+
+    A second filing under one reference RESTATES the movement and stands by the as-of key, naming
+    the filing it stood over, so a corrected amount replaces the one it corrects rather than
+    counting beside it. A balance - collateral held under an agreement, cash in a currency - is a
+    sum over these rows and stored nowhere.
+    """
+
+    name = 'cash'
+    reads = ('status_transition',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        if 'amount' not in body:
+            return
+        standing = state.get(body['reference'])
+        _stand(state, body['reference'], frame,
+               {'subject': body['subject'], 'kind': body['kind'], 'asset': body['asset'],
+                'amount': float(body['amount']), 'actor': frame['actor'], 'book': frame['book'],
+                'supersedes_lsn': standing['lsn'] if standing else None})
+
+    def rows(self, state):
+        return sorted((_shown(row, reference=reference) for reference, row in state.items()),
+                      key=lambda row: row['lsn'])
+
+
 class Activity(Projector):
     """One line per event, envelope only: where it sits, when it was recorded and when it is true,
     who said it, and the declared sentence about what it was.
@@ -458,8 +556,8 @@ class Activity(Projector):
 
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
-    Positions(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
-    Denials(), Entities(), Agreements(), Activity()))
+    Positions(), Costs(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
+    Denials(), Entities(), Agreements(), Cash(), Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):
@@ -695,6 +793,17 @@ def _position(state, instrument, agreement, portfolio, frame, moved=None):
                             'quantity': 0.0, 'clips': 0, 'amended_to': None,
                             'first_lsn': frame['lsn'], 'last_lsn': frame['lsn']}
     return under[portfolio]
+
+
+def _cost_row(state, instrument, agreement, portfolio):
+    """The costs row under `(instrument, agreement, portfolio)`, opened flat where none stands."""
+    return state.setdefault(instrument, {}).setdefault(agreement, {}).setdefault(
+        portfolio, {'quantity': 0.0, 'basis': 0.0, 'realised': 0.0, 'unpriced': 0})
+
+
+def _plus(held, more):
+    """A sum that stays UNKNOWN once either side is - a cost nobody priced is never a zero."""
+    return None if held is None or more is None else held + more
 
 
 def _seeds(log, folder):

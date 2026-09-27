@@ -716,19 +716,22 @@ class Context:
         return record(event_type, body, actor_name=actor, book_name=book,
                       effective_time=effective_time)
 
-    def transition(self, subject, status, actor=None, book=None, effective_time=None):
+    def transition(self, subject, status, actor=None, book=None, effective_time=None, amount=None,
+                   asset=None, kind=None, reference=None):
         """Move the operational state a party put a subject in - a settlement paid, a confirmation
         matched.
 
         `subject` is the derived cashflow key a diary row carries, or the instrument a trade books
         under. Whether the book still announces a row under that key is a FOLD's question: the
         record holds what it was told, and a state filed against a row that has been paid away is a
-        fact rather than a refusal.
+        fact rather than a refusal. A settlement that moved money also states the signed `amount`,
+        the `asset`, its `kind` and the settlement system's `reference`.
         """
         from .spine import transition as record
 
         return record(subject, status, actor_name=actor, book_name=book,
-                      effective_time=effective_time)
+                      effective_time=effective_time, amount=amount, asset=asset, kind=kind,
+                      reference=reference)
 
     def declare_market(self, name, actor=None, effective_time=None):
         """Point a market NAME at the values vector THIS context is carrying.
@@ -741,8 +744,9 @@ class Context:
 
         return record(name, values_of(self), actor_name=actor, effective_time=effective_time)
 
-    def declare_close(self, market, actor=None, effective_time=None):
-        """Declare the official close on `market` over the values vector THIS context is carrying.
+    def declare_close(self, market, actor=None, effective_time=None, date=None):
+        """Declare the official close on `market` for the day `date` over the values vector THIS
+        context is carrying.
 
         A second close on one market SUPERSEDES the first rather than correcting it, so a day
         restated is two facts and an as-at read taken before the restatement still reads what it
@@ -750,7 +754,8 @@ class Context:
         """
         from .spine import declare_close as record, values_of
 
-        return record(market, values_of(self), actor_name=actor, effective_time=effective_time)
+        return record(market, values_of(self), actor_name=actor, effective_time=effective_time,
+                      date=date)
 
     def approve(self, plan_hash, actor=None, book=None, effective_time=None):
         """Sign a plan hash - the second pair of eyes, recorded as a fact.
