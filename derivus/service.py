@@ -1304,6 +1304,7 @@ def greek_rows(frame):
     """
     table = as_json(frame)['.DataFrame']
     columns = [position for position, name in enumerate(table['columns']) if name != 'Value']
+    level = table['columns'].index('Value') if 'Value' in table['columns'] else None
     depth = {}
     for index in table['index']:
         used = [position for position, value in enumerate(index[1:], 1) if value]
@@ -1314,6 +1315,7 @@ def greek_rows(frame):
         if depth[index[0]]:
             row['tenor'] = list(index[1:1 + depth[index[0]]])
         row['value'] = float(sum(data[position] or 0.0 for position in columns))
+        row['level'] = None if level is None or data[level] is None else float(data[level])
         rows.append(row)
     return rows
 
@@ -1369,24 +1371,28 @@ def quote_context(run):
 
 
 def quote_rows(config):
-    """`(rows, factors)`: `{block, quote, value}` per quote a bootstrap left connected, and the
-    factors those rows stand for. A coupled set publishes ONE leaf under every member's name, its
-    quotes prefixed by the block each came off, so a leaf is read once and each row filed under
-    its own block; a leaf the book never reached carries no gradient and no row."""
+    """`(rows, factors)`: `{block, quote, value, level}` per quote a bootstrap left connected - the
+    derivative and the quote it is taken at - and the factors those rows stand for. A coupled set
+    publishes ONE leaf under every member's name, its quotes prefixed by the block each came off,
+    so a leaf is read once and each row filed under its own block; a leaf the book never reached
+    carries no gradient and no row."""
+    def flat(tensors):
+        return [value for one in tensors for value in one.detach().cpu().reshape(-1).tolist()]
+
     leaves = {}
     for block, (descriptors, leaf) in config.quote_leaves.items():
         leaves.setdefault(id(leaf), (descriptors, leaf, []))[2].append(block)
     rows = []
     for descriptors, leaf, blocks in leaves.values():
-        grads = [one.grad for one in leaf] if isinstance(leaf, (list, tuple)) else [leaf.grad]
-        if any(grad is None for grad in grads):
+        leaf = list(leaf) if isinstance(leaf, (list, tuple)) else [leaf]
+        if any(one.grad is None for one in leaf):
             continue
-        values = [value for grad in grads for value in grad.detach().cpu().reshape(-1).tolist()]
-        for descriptor, value in zip(descriptors, values):
+        for descriptor, value, level in zip(descriptors, flat([one.grad for one in leaf]),
+                                            flat(leaf)):
             named = next((name for name in blocks if descriptor.startswith(name + ': ')), None)
             rows.append({'block': named or blocks[0],
                          'quote': descriptor[len(named) + 2:] if named else descriptor,
-                         'value': value})
+                         'value': value, 'level': level})
     return rows, sorted(map(utils.check_tuple_name, config.calibrated_factors))
 
 
@@ -1854,11 +1860,13 @@ def book_positions():
     when, and rolls off on that day. 404 where no home is configured.
     """
     document, _ = recording().read()
-    ended = expiries(document)
+    standing = [row for row in spine.positions() if row['quantity']]
+    ended = expiries(document, pnl.held_legs(job_children(document),
+                                             {row['instrument'] for row in standing}))
     rows = []
-    for row in spine.positions():
+    for row in standing:
         expired, settles = ended.get(row['instrument'], (None, None))
-        if row['quantity'] and (expired is None or settles is not None):
+        if expired is None or settles is not None:
             rows.append(dict(row, expired=expired, settles=settles))
     held = file_positions(document, {row['instrument'] for row in rows})
     answer = []
@@ -1872,20 +1880,29 @@ def book_positions():
     return {'positions': answer}
 
 
-def expiries(document):
+def expiries(document, holders):
     """`{instrument: (expired, settles)}` for every instrument the book's diary says has EXPIRED -
     the engine's own answer at the book's date - with the last day a payment of it falls after that
-    date, or None once none does: a trade settling at T+2 is still held at T+1."""
+    date, or None once none does: a trade settling at T+2 is still held at T+1. A structure held
+    whole - `holders` maps each of its legs to it - has expired once every leg has, on the latest
+    of their days."""
     today = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
-    rows = diary_of(document)['rows']
-    expired = {row['instrument']: row['due_date'] for row in rows if row['instrument']
-               and row['kind'] == diary.EXPIRY and row['state'] == diary.EXPIRED}
+    rows = [dict(row, instrument=holders.get(row['instrument'], row['instrument']))
+            for row in diary_of(document)['rows']]
+    ends = {}
+    for row in rows:
+        if row['instrument'] and row['kind'] == diary.EXPIRY:
+            ends.setdefault(row['instrument'], []).append(row)
+    expired = {instrument: max(row['due_date'] or '' for row in found)
+               for instrument, found in ends.items()
+               if all(row['state'] == diary.EXPIRED for row in found)}
     settles = {}
     for row in rows:
         if (row['instrument'] in expired and row['kind'] == diary.PAYMENT
                 and (row['due_date'] or '') > today):
             settles[row['instrument']] = max(row['due_date'], settles.get(row['instrument'], ''))
-    return {instrument: (day, settles.get(instrument)) for instrument, day in expired.items()}
+    return {instrument: (day or None, settles.get(instrument))
+            for instrument, day in expired.items()}
 
 
 @app.get('/book/activity', summary="The record's own strip - one line per event")
@@ -2039,8 +2056,9 @@ def book_marks(request: dict):
     stood - is what a later P&L replays the close from. The terms come off the book file, and off
     the record's own copy where the file no longer holds an instrument. Refused by name where no
     market is designated for `pnl`, where the one designated stands on a declaration that is not a
-    close, and where the book holds nothing. When the marks run is operating policy. 404 where no
-    home is configured.
+    close, where that close is for another day than the book's, for a day behind the last one
+    marked - marks run forward - and where the book holds nothing.
+    When the marks run is operating policy. 404 where no home is configured.
     """
     document, _ = recording().read()
     book = book_name(document)
@@ -2051,17 +2069,43 @@ def book_marks(request: dict):
                                  'declaration that is not a close - a book is marked at a close, so '
                                  'declare one (POST /book/close) and mark again'.format(
                                      spine.PNL, market['name']))
+    day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    if close['date'] != day:
+        raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {} '
+                                 '- a day is marked on its own close, so declare the close for {} '
+                                 '(POST /book/close) and mark again'.format(
+                                     market['name'], close['date'], day, day))
     marks = pnl.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
-    since = max((row['lsn'] for row in marks.values()), default=0)
-    wanted = {row['instrument'] for row in spine.positions() if row['quantity'] and within_book(
-        row, book)} | {fill['instrument'] for fill in spine.fills(after=since) if fill['book'] == book}
+    if marks and day < max(marks):
+        raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
+                                 'forward, a day already struck never moves, and a day behind the '
+                                 'last one marked is not marked'.format(max(marks), day))
+    # the marks close the business day where the book was READ, not where the run is attested:
+    # a ticket booked while the run waits on the worker is the next day's
+    head, since = spine.pin()['lsn'], max((row['lsn'] for row in marks.values()), default=0)
+    wanted = {row['instrument'] for row in spine.positions(head) if row['quantity']
+              and within_book(row, book)} | {fill['instrument'] for fill in spine.fills(
+                  after=since, until=head) if fill['book'] == book}
     if not wanted:
         raise HTTPException(422, 'book {!r} holds nothing and traded nothing since its last marks, '
                                  'so there is nothing to mark'.format(book))
-    job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored))
+    job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored), head)
     answer = execute(dict(job, Patch=json.loads(spine.stored(close['values_hash']).decode('utf-8')),
                           lane=spine.STANDING, actor=request.get('actor')))
     return dict(answer, market=market['name'], close_lsn=close['lsn'], instruments=len(wanted))
+
+
+@app.get('/book/marks', summary='The days the book is marked on - where a P&L can run between')
+def book_marked_days():
+    """`{market, days}` - every day the book was marked on the market the desk designated for
+    `pnl`, oldest first, each with the position of its marks: the days `GET /book/pnl` runs
+    between. Refused where no market is designated. 404 where no home is configured."""
+    document, _ = recording().read()
+    market = spine.designated_market(spine.PNL)
+    marks = pnl.marked(book_name(document), spine.closes(market['name']), spine.attestations(),
+                       spine.stored)
+    return {'market': market['name'],
+            'days': [{'day': day, 'lsn': marks[day]['lsn']} for day in sorted(marks)]}
 
 
 def within_book(row, book):
@@ -2071,21 +2115,29 @@ def within_book(row, book):
 
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
 def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreement: str = None,
-             client: str = None):
+             client: str = None, explain: bool = False):
     """`{currency, start, end, scope, rows, total, complete, unknown}` - what the book made between
     the marks of two days, or since the last marks where `end` is not named.
 
     Per position, `value_end - value_start + premiums + payments + fees`: the values its quantity
-    times the unit mark at each end, the premiums at the fills' own prices, the payments at what
-    the diary determines or else what the settlements moved, the fees as settled - a settlement or
-    a fee counting in the window it was FILED in, so a late one lands in the day it was filed and a
-    day already struck never moves. `existing` is
-    what the positions held at the start moved and `trading` what the window's fills earned against
-    the end, which sum with the cash to the P&L; `realised` is at average cost, the cash included,
-    and `unrealised` the rest. A number nobody can know is named under `unknown` and never read as
-    zero, and `complete` says whether there was one. `portfolio` (a path under the book),
-    `agreement` or `client` (an entity, with every entity grouped under it) narrow it; the whole
-    book otherwise. Refused where the day asked for has no marks. 404 where no home is configured.
+    times the unit mark at each end, less what the unit paid that day (`paid_start`, `paid_end`),
+    which the marks still value; the premiums at the fills' own prices, the payments at what the
+    diary determines or else what the settlements moved, the fees as settled - a settlement or a
+    fee counting in the window it was FILED in, so a late one lands in the day it was filed and a
+    day already struck never moves. `existing` is what the positions held at the start moved and
+    `trading` what the window's fills earned against the end, which sum with the cash to the P&L
+    - a split that is null where a position traded to nothing in the window has no mark at the end,
+    the P&L known all the same; `realised` is at average cost, the cash included, and `unrealised`
+    the rest. A number nobody can know is named under `unknown` and never read as zero - a total
+    over one is null - and `complete` says whether there was one. `portfolio` (a path under the
+    book), `agreement` or `client` (an entity, with every entity grouped under it) narrow it; the
+    whole book otherwise. Every row carries the `reference` its terms were booked under.
+
+    `explain` adds WHY the positions the window started with made what they made (`pnl.explain`):
+    the carry of the start's book rolled to the end's day at its own quotes, the market move per
+    risk factor off the start's own sensitivities, and the residual neither explains - three more
+    valuations, run here and recorded nowhere. Refused where the day asked for has no marks. 404
+    where no home is configured.
     """
     document, _ = recording().read()
     book = book_name(document)
@@ -2110,25 +2162,56 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     if last['day'] < first['day'] or (end_day is not None and last['lsn'] <= first['lsn']):
         raise HTTPException(422, 'the P&L runs forward: the marks of {} do not come after those '
                                  'of {}'.format(last['day'], first['day']))
-    # a fill's business day is the day of the first marks at or after it - an end-of-day cut, not
-    # the clock it was recorded by - and the day being lived for one after the last
+    calculation = first['document']['Calc']['Calculation']
+    reporting, base = calculation.get('Currency'), structures.base_currency(first['document'])
+    for marks_of in (first, last):
+        marks_of['rates'] = pnl.rates(marks_of.pop('values', None) or json.loads(
+            spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
+    # a business day ends at its marks - an end-of-day cut, not the clock a fact was recorded by -
+    # and the day being lived after the last
     cut = sorted((row['lsn'], day) for day, row in marks.items())
-    fills = [dict(fill, day=next((day for lsn, day in cut if lsn >= fill['lsn']), last['day']))
-             for fill in spine.fills(after=first['lsn'], until=last['lsn'])
+    if last['lsn'] > cut[-1][0]:
+        cut.append((last['lsn'], last['day']))
+    fills = [fill for fill in spine.fills(after=first['lsn'], until=last['lsn'])
              if fill['book'] == book]
     scope = {'portfolio': portfolio or book, 'agreement': agreement,
              'clients': None if client is None else clients_under(client)}
-    payments, last_days = window_payments(first, last, fills, document)
-    calculation = first['document']['Calc']['Calculation']
-    closes = [close for close in spine.closes(market['name']) if close['lsn'] <= last['lsn']]
-    answer = pnl.pnl(
-        first, last, spine.costs(first['lsn']), spine.costs(last['lsn']), fills, payments,
-        last_days, pnl.filed(spine.cash(first['lsn']), spine.cash(last['lsn'])),
-        spine.positions(last['lsn']), scope,
-        pnl.rates_on(closes, spine.stored, calculation.get('Currency'),
-                     structures.base_currency(first['document'])),
-        pnl.recorded(cut, spine.costs, lambda after, until: [
-            fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]))
+
+    def between(after, until):
+        return [fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]
+
+    def amended(after, until):
+        return spine.amendments(after=after, until=until)
+
+    closes = pnl.rates_on(spine.closes(market['name']), spine.stored, reporting, base)
+
+    def rates(day, lsn):
+        # the day being lived has no close struck on it: the book as it stands prices it, as it
+        # prices what that day paid, and a day between it and the last marks has its own close
+        live = (last.get('live') and day >= last['day'] and day > days[-1]
+                and lsn >= last['lsn'])
+        return last['rates'] if live else closes(day, lsn)
+
+    costs = {side['lsn']: spine.costs(side['lsn']) for side in (first, last)}
+    # the money this book's settlements moved - another book's are its own
+    cash = {side['lsn']: [row for row in spine.cash(side['lsn']) if row['book'] in (None, book)]
+            for side in (first, last)}
+    payments, last_days = window_payments(
+        first, last, fills, {row['amended_to'] for row in amended(first['lsn'], last['lsn'])},
+        document, marks, pnl.filed(cash[first['lsn']], cash[last['lsn']]))
+    answer = pnl.pnl(first, last, {
+        'costs_start': costs[first['lsn']], 'costs_end': costs[last['lsn']],
+        'cash_start': cash[first['lsn']], 'cash_end': cash[last['lsn']], 'fills': fills,
+        'diary': payments, 'last_days': last_days,
+        'positions_end': spine.positions(last['lsn']), 'cut': cut, 'fills_between': between,
+        'rates': rates, 'days': pnl.recorded(cut, spine.costs, between, amended, known=costs)},
+        scope)
+    terms = pnl.held_terms(document, {row['instrument'] for row in answer['rows']}, spine.stored)
+    for row in answer['rows']:
+        row['reference'] = terms[row['instrument']].get('Reference')
+    if explain:
+        answer['explain'] = pnl.explain(answer['rows'], last_days, first['day'], last['day'],
+                                        explaining(first, last, document))
     return dict(answer, currency=calculation.get('Currency'), scope=dict(
         scope, clients=None if client is None else sorted(scope['clients'])),
         **{side: {field: marks_of[field] for field in ('day', 'lsn', 'values_hash', 'job',
@@ -2147,7 +2230,77 @@ def live_marks(document, book, since):
     _, out = context.run_job()
     return {'day': structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime(
         '%Y-%m-%d'), 'lsn': spine.pin()['lsn'], 'units': pnl.unit_marks(as_json(out['Results'])),
-        'live': True}
+        'values': context.market_patch(), 'live': True}
+
+
+#: The explain's three runs keyed by what they read - the two marks and the positions valued - so
+#: a screen asking again pays a lookup. Bounded, like every cache here.
+EXPLAIN_CACHE = OrderedDict()
+EXPLAIN_LIMIT = 8
+
+
+def explaining(first, last, document):
+    """`quantities -> (opened, closed, rolled, note)` - the runs `pnl.explain` asks for: the
+    positions valued on the start's close with first-order sensitivities in its quotes, the same
+    positions on the end's close for the levels their factors stand at there, and the start's
+    close rolled onto the end's day at its own quotes - the day moved, every curve re-authored on it
+    and the market re-bootstrapped, as `POST /book/date` rolls a book."""
+    def run(quantities):
+        key = content_hash({'start': first['job'], 'end': last.get('job') or risk_etag(document),
+                            'quantities': quantities})
+        if key not in EXPLAIN_CACHE:
+            terms = pnl.held_terms(document, set(quantities), spine.stored)
+            opening = held_job(first['document'], terms, quantities)
+            opened, note = sensed(opening)
+            closed, _ = sensed(held_job(last.get('document') or document, terms, quantities))
+            if len(EXPLAIN_CACHE) >= EXPLAIN_LIMIT:
+                EXPLAIN_CACHE.popitem(last=False)
+            EXPLAIN_CACHE[key] = (opened, closed, carried(opening, last['day']), note)
+        EXPLAIN_CACHE.move_to_end(key)
+        return EXPLAIN_CACHE[key]
+
+    return run
+
+
+def held_job(market, terms, quantities):
+    """A job holding `quantities` of the instruments `terms` on the market and day of the job
+    `market` - each instrument's unit held at its quantity, as a position is."""
+    job = pnl.marks_job(market, terms)
+    job['Calc']['Deals']['Deals']['Children'] = [
+        spine.scaled(node, quantities[node['Instrument']['.Deal']['Reference']])
+        for node in job['Calc']['Deals']['Deals']['Children']]
+    return job
+
+
+def sensed(job):
+    """`(reading, note)` - `job` valued with first-order sensitivities, in the quotes its factors
+    are built from where they refit (`quote_context`): its value, `{block, quote, value, level}`
+    per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor."""
+    run = spine.compiled_job(dict(job, Calc=dict(job['Calc'], Calculation=dict(
+        job['Calc']['Calculation'], Greeks='First'))), strict=False)
+    context, note = quote_context(run)
+    _, out = context.run_job()
+    quotes, quoted = quote_rows(context.current_cfg)
+    gradient = out['Results'].get('Greeks_First')
+    return {'value': sum(pnl.unit_marks(as_json(out['Results'])).values()), 'quotes': quotes,
+            'quoted': quoted, 'greeks': [] if gradient is None else greek_rows(gradient)}, note
+
+
+def carried(job, day):
+    """What `job` is worth rolled onto `day` at its own quotes: the day moved, and where it carries
+    curves to re-author and a bootstrap to run, every curve re-authored on it and the market
+    re-solved; refused in the bootstrap's own words where that complains."""
+    rolled = deepcopy(job)
+    market = rolled['Calc']['MergeMarketData']['ExplicitMarketData']
+    if market.get('Market Prices') and market.get('Bootstrapper Configuration'):
+        write, outcome = date_edit(rolled, read_stamp(day))
+        if not write:
+            raise ValueError('the start would not roll onto {}: {}'.format(
+                day, '; '.join(outcome['refused'])))
+    else:
+        stamp_base_date(rolled, read_stamp(day))
+    _, out = load(spine.compiled_job(rolled, strict=False)).run_job()
+    return sum(pnl.unit_marks(as_json(out['Results'])).values())
 
 
 def consideration(document, price, currency):
@@ -2169,29 +2322,70 @@ def consideration(document, price, currency):
                                  'and {}'.format(currency, reporting, missing))
 
 
-def window_payments(first, last, fills, document):
+#: How many marks back a settlement filed against a payment the window's own diary no longer
+#: announces is looked for, from its value date: a business week, past which it is named.
+LOOK_BACK = 5
+
+
+def window_payments(first, last, fills, amended, document, marks, movements):
     """`({address: [payment rows]}, {address: day})` - every payment the diary announces from the
-    start on for the instruments held at the start or traded in the window, per unit, off the
-    start's own job and answered as the record stands at the end, and the last day of each
-    instrument that has one."""
+    start on for the instruments held at the start, traded in the window or `amended` into it, per
+    unit, off the start's own job as the record stood at the end, and the last day of each
+    instrument that has one. A structure held whole is ONE instrument: what its legs pay is its
+    own, keyed as the book's diary keys it, and its last day is the latest of theirs - read in
+    groups that leave each leg to one structure (`pnl.apart`), so restruck terms never share their
+    legs.
+
+    A settlement among `movements` against a payment the start's job no longer announces - one
+    that fell due before the start - is looked for in the diaries of the marks on or before its
+    value date, `LOOK_BACK` of them, which still did, so a late filing lands in the day it was
+    filed; what it finds is its own holder's, whatever the start's legs are held by."""
     marked = first['document']['Calc']
     own = {node['Instrument']['.Deal']['Reference']: node
            for node in marked['Deals']['Deals']['Children']}
-    wanted = set(own) | {fill['instrument'] for fill in fills}
+    wanted = set(own) | {fill['instrument'] for fill in fills} | set(amended)
     terms = pnl.held_terms(document, wanted - set(own), spine.stored)
-    job = {'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={'Children': [
-        own[address] for address in sorted(own)] + [pnl.unit_node(address, terms[address])
-                                                    for address in sorted(terms)]}))}
-    context = load(spine.compiled_job(job, strict=False))
-    rows = answered(diary.schedule_of(context, {address: address for address in wanted}),
-                    last['lsn'])
+    rows = []
+    for units in pnl.apart([own[address] for address in sorted(own)] + [
+            pnl.unit_node(address, terms[address]) for address in sorted(terms)]):
+        found, holders = diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
+            'Children': units}))}, last['lsn'])
+        rows.extend(dict(row, instrument=holders.get(row['instrument'], row['instrument']))
+                    for row in found)
+    keys, earlier = {row['key'] for row in rows}, {}
+    for movement in movements:
+        if movement['kind'] != 'payment' or movement['subject'] in keys:
+            continue
+        for day in sorted((day for day in marks if day < first['day']
+                           and day <= movement['effective_time'][:10]), reverse=True)[:LOOK_BACK]:
+            if day not in earlier:
+                earlier[day] = diary_rows(json.loads(spine.stored(marks[day]['job']).decode(
+                    'utf-8')), last['lsn'])
+            found, legs = earlier[day]
+            hits = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
+                    for row in found if row['key'] == movement['subject']]
+            if hits:
+                rows.extend(hits)
+                keys.add(movement['subject'])
+                break
     found, last_days = {}, {}
-    for row in rows:
+    for row in answered(rows, last['lsn']):
         if row['kind'] == diary.PAYMENT and row['due_date']:
             found.setdefault(row['instrument'], []).append(row)
         elif row['kind'] == diary.EXPIRY and row['due_date']:
-            last_days[row['instrument']] = row['due_date']
+            last_days[row['instrument']] = max(row['due_date'],
+                                               last_days.get(row['instrument'], ''))
     return found, last_days
+
+
+def diary_rows(job, lsn):
+    """`(rows, legs)` - the diary of a marks job's units as the record stood at `lsn`, every row
+    keyed as the book's own diary keys it, and `{leg address: unit}` for every leg of a structure
+    among them."""
+    units = {node['Instrument']['.Deal']['Reference'] for node in job_children(job)}
+    context = load(spine.compiled_job(job, lsn=lsn, strict=False))
+    return (diary.schedule_of(context, dict(booked_instruments(job), **{
+        address: address for address in units})), pnl.held_legs(job_children(job), units))
 
 
 def clients_under(entity):

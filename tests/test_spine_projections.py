@@ -503,14 +503,15 @@ def test_a_position_costs_its_average_and_a_reduction_realises_against_it(tmp_pa
     """THE REALISED HALF OF P&L, at average cost. Two lots at 5 and 7 average 6; selling 5 at 9
     realises 15 and leaves the average where it was; selling 25 at 4 closes the 15 held for a loss
     of 30 and opens a short of 10 at 4; buying 4 back at 2 realises 8 on the short. A fill with no
-    price leaves what it touched UNKNOWN rather than zero - the realised figure once it closes
-    against an average nobody priced, and the basis while an unpriced lot stays open - and an
-    amendment carries the open basis onto the terms it became while what the old terms realised
-    stays on their row.
+    price leaves what it touched UNKNOWN rather than zero - the basis while an unpriced lot stays
+    open, and a reduction closing at no price or against an average nobody priced COUNTED rather
+    than realised as nothing, so the realised figure stays the sum of what could be priced and a
+    later priced trade adds to it - and an amendment carries the open basis onto the terms it became
+    while what the old terms realised, and could not, stays on their row.
 
     Killing mutations: the average moved by a reduction, which makes the second sale realise
     against 5.4 instead of 6; the flip's remainder opened at the old average instead of its own
-    price; an unpriced lot read as priced at zero.
+    price; an unpriced lot read as priced at zero; a reduction nobody priced dropped uncounted.
     """
     home = seeded(tmp_path, 'costs', clips=())
     log = SpineLog(home)
@@ -526,7 +527,7 @@ def test_a_position_costs_its_average_and_a_reduction_realises_against_it(tmp_pa
     def row(instrument, portfolio='FX-VANILLA/EM'):
         rows = PROJECTORS['costs'].rows(fold(log, PROJECTORS['costs']))
         return next(dict((k, v) for k, v in found.items() if k in (
-            'quantity', 'basis', 'realised', 'unpriced')) for found in rows
+            'quantity', 'basis', 'realised', 'unpriced', 'unpriced_reductions')) for found in rows
             if found['instrument'] == instrument and found['portfolio'] == portfolio)
 
     for quantity, price, after in ((10, 5.0, (10.0, 50.0, 0.0)), (10, 7.0, (20.0, 120.0, 0.0)),
@@ -536,17 +537,23 @@ def test_a_position_costs_its_average_and_a_reduction_realises_against_it(tmp_pa
         held = row(INSTRUMENT)
         assert (held['quantity'], held['basis'], held['realised']) == after, (quantity, held)
     clip(6)
-    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
+    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': -7.0, 'unpriced': 1,
+                               'unpriced_reductions': 1}, 'closed at no price: counted, not zero'
     clip(3, 10.0)
-    assert row(INSTRUMENT) == {'quantity': 3.0, 'basis': 30.0, 'realised': None, 'unpriced': 1}
+    clip(-1, 12.0)
+    assert row(INSTRUMENT) == {'quantity': 2.0, 'basis': 20.0, 'realised': -5.0, 'unpriced': 1,
+                               'unpriced_reductions': 1}, 'a later priced trade is still known'
 
     clip(2, portfolio='FX-VANILLA/G10')
     assert row(INSTRUMENT, 'FX-VANILLA/G10')['basis'] is None, 'an unpriced lot is not a zero'
     clip(-2, 5.0, portfolio='FX-VANILLA/G10')
     assert row(INSTRUMENT, 'FX-VANILLA/G10') == {
-        'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
+        'quantity': 0.0, 'basis': 0.0, 'realised': 0.0, 'unpriced': 1,
+        'unpriced_reductions': 1}, 'closed against an average nobody priced: counted'
 
     log.append('amendment', {'instrument': INSTRUMENT, 'amended_to': OTHER}, actor=ACTOR, book=BOOK)
-    assert row(OTHER) == {'quantity': 3.0, 'basis': 30.0, 'realised': 0.0, 'unpriced': 1}
-    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': None, 'unpriced': 1}
+    assert row(OTHER) == {'quantity': 2.0, 'basis': 20.0, 'realised': 0.0, 'unpriced': 1,
+                          'unpriced_reductions': 0}
+    assert row(INSTRUMENT) == {'quantity': 0.0, 'basis': 0.0, 'realised': -5.0, 'unpriced': 1,
+                               'unpriced_reductions': 1}
     log.close()

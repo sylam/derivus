@@ -154,13 +154,16 @@ class Costs(Projector):
     between the price and the average on the part it closes, the rest opening the other way at its
     own price. The price is the fill's, per unit of the instrument as written, crossed into the
     book's currency at the rate the booking filed beside it. A fill booked with no price leaves
-    what it touched UNKNOWN - `basis` null while that lot is open, `realised` null
-    from the reduction it priced on - and counts under `unpriced`, so a split nobody can compute is
-    never read as zero. An amendment carries the open basis onto the instrument the terms became;
-    what the old terms realised stays on their row.
+    what it touched UNKNOWN - `basis` null while that lot is open - and counts under `unpriced`;
+    `realised` is what every reduction it COULD price realised, and `unpriced_reductions` counts
+    the ones it could not, closing at no price or against an average nobody priced, so a realised
+    figure is whole only while that count is nothing and a later priced trade is still known. An
+    amendment carries the open basis onto the instrument the terms became; what the old terms
+    realised stays on their row.
     """
 
     name = 'costs'
+    version = 2
     reads = ('fill', 'amendment')
 
     def initial(self):
@@ -188,8 +191,10 @@ class Costs(Projector):
         opening = quantity - closing
         if closing:
             average = None if row['basis'] is None else row['basis'] / held
-            row['realised'] = _plus(row['realised'], None if average is None or price is None
-                                    else closing * (average - price))
+            if average is None or price is None:
+                row['unpriced_reductions'] += 1
+            else:
+                row['realised'] += closing * (average - price)
             row['basis'] = None if average is None else row['basis'] + closing * average
         if opening:
             lot = None if price is None else opening * price
@@ -798,7 +803,8 @@ def _position(state, instrument, agreement, portfolio, frame, moved=None):
 def _cost_row(state, instrument, agreement, portfolio):
     """The costs row under `(instrument, agreement, portfolio)`, opened flat where none stands."""
     return state.setdefault(instrument, {}).setdefault(agreement, {}).setdefault(
-        portfolio, {'quantity': 0.0, 'basis': 0.0, 'realised': 0.0, 'unpriced': 0})
+        portfolio, {'quantity': 0.0, 'basis': 0.0, 'realised': 0.0, 'unpriced': 0,
+                    'unpriced_reductions': 0})
 
 
 def _plus(held, more):

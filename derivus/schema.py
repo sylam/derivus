@@ -31,6 +31,7 @@ import copy
 import logging
 import numbers
 import re
+from collections import namedtuple
 
 import numpy as np
 import pandas as pd
@@ -102,6 +103,13 @@ AUTHORED = {'Date': ((pd.Timestamp,), '{".Timestamp": "2027-01-15"}'),
             'Integer': ((numbers.Real, utils.Scaled), 'a number')}
 
 
+#: One payment a date settles - the `pricing.cash_settle` call its pricer makes: the field naming the
+#: `currency` (a blank one is the deal's own `Currency`), the field stating the `amount` where the
+#: terms fix it - none where the payoff decides it - and its `sign`, 1 received and -1 paid.
+#: `otherwise` is the date field it settles on where this one is blank.
+Cash = namedtuple('Cash', 'currency amount sign otherwise', defaults=(None, 1.0, None))
+
+
 class Row(object):
     """The ordered fields of one table row - each column a full `F`."""
     __slots__ = ('fields',)
@@ -138,6 +146,9 @@ class F(object):
     so it scales with the position's size and never takes its sign. `side` marks a two-valued
     field saying which side the instrument is held on - every one a type marks flips for a
     negative position, its mirror; a type marking none holds one as its sizes signed.
+
+    `settles` marks a date - a field, or a table's date column - the deal SETTLES cash on, one
+    `Cash` per payment that day, which is what its diary announces (`declared_settlements`).
     """
     # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
     # on the value's row arity, never on the token.
@@ -146,12 +157,12 @@ class F(object):
               'Table': 'Table', 'Container': 'Container',
               'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
-    __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag',
-                 'sub_fields', 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side')
+    __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag', 'sub_fields',
+                 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side', 'settles')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
                  tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None,
-                 convention=False, sized=False, side=False):
+                 convention=False, sized=False, side=False, settles=()):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
@@ -171,6 +182,7 @@ class F(object):
         # an amount of the instrument, and the field saying which side of it is held
         self.sized = sized
         self.side = side
+        self.settles = (settles,) if isinstance(settles, Cash) else tuple(settles)
 
     @property
     def key(self):
@@ -196,6 +208,8 @@ class F(object):
             d['sized'] = self.sized
         if self.side:
             d['side'] = True
+        if self.settles:
+            d['settles'] = [cash._asdict() for cash in self.settles]
         if self.values is not None:
             d['values'] = self.values
         if self.bounds is not None:
@@ -209,6 +223,9 @@ class F(object):
             d['col_names'] = [f.name for f in self.row.fields]
             d['sub_types'] = [{'type': 'dropdown', 'source': f.values} if f.values is not None
                               else dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
+            if any(f.settles for f in self.row.fields):
+                d['settles'] = {f.name: [cash._asdict() for cash in f.settles]
+                                for f in self.row.fields if f.settles}
         if self.sub_fields is not None:
             # a container holds its children, rather than naming entries in a store beside it
             d['sub_fields'] = {f.key: f.descriptor() for f in self.sub_fields}
@@ -242,6 +259,20 @@ def declared_fields(cls):
 def required_fields(cls):
     """Every field a class declares REQUIRED, inherited declarations included."""
     return [key for key, f in declared_fields(cls).items() if f.default is REQUIRED]
+
+
+def declared_settlements(cls):
+    """`[(key, column, cash)]` - every date `cls` declares it settles on: a field's `key`, or a
+    table's with the `column` its rows carry the date in, and each `Cash` paid that day. Read off
+    the most specific group declaring any, so a type's own block stands in place of a shared one it
+    lists - a binary's own settlement date in place of the expiry its option base declares."""
+    for group in reversed(getattr(cls, 'fields', []) or []):
+        found = [(f.key, None, cash) for f in group.fields for cash in f.settles] + [
+            (f.key, position, cash) for f in group.fields if f.row is not None
+            for position, column in enumerate(f.row.fields) for cash in column.settles]
+        if found:
+            return found
+    return []
 
 
 def instrument_fields(deal_type):
@@ -835,7 +866,7 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
     F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
     F('Equity', 'Text', default='', obj='Tuple'),
     F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-    F('Expiry_Date', 'Date', default=''),
+    F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
     F('Payoff_Currency', 'Text', default='', convention=True),
     F('Strike_Price', 'Float', default=0.0),
@@ -850,7 +881,8 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
     F('Units', 'Float', default=0.0, sized=True),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-    F('Autocall_Coupons', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
+    F('Autocall_Coupons', 'Table', default='null', row=Row([
+        F('Date', 'Date', settles=Cash('Payoff_Currency')), F('Value', 'Float')]), tag='DateValueList'),
     F('Coupon_Observations', 'Table', default='null', convention=True,
       row=Row([F('Coupon', 'Date'), F('Observation', 'Date')]),
       description='Which price fixing each coupon is observed on, one row per coupon. Absent - '
@@ -890,7 +922,8 @@ ADMIN = Group('Admin', [
 
 FX_ADMIN = Group('FXAdmin', [
     F('Trade_Date', 'Date', default='', convention=True),
-    F('Delivery_Date', 'Date', default='', convention=True),
+    F('Delivery_Date', 'Date', default='', convention=True,
+      settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
     F('Structure_Reference', 'Text', default='', convention=True)
 ])
 

@@ -407,6 +407,30 @@ is recorded so a reader knows which readings rest on it.
   official close (`projections.seed_at`, which `positions` and `blotter` already use), so a fresh
   process starts where the day started and the state copied is the day's rather than the record's.
   Size: one `read_seed` in `advancing` and a close that mints for these two projectors.
+- **A settlement names no agreement, so the P&L shares what it moved by holdings** (2026-09-28). A
+  payment the diary cannot determine falls to the positions of its instrument by what each held
+  when it fell due, which is exact while every position's settlement is filed and spreads one filed
+  alone across all of them; over positions netting to nothing it cannot be shared at all and is
+  named. One filed against a payment the book's diary has dropped is looked for in the marks of the
+  business week before its value date; beyond it the day it lands in names it while a window
+  reaching back over the payment places it, so those days no longer sum to that window.
+  UNMEASURED; closing the first is an optional agreement on the transition, which the settlement
+  interface knows.
+- **A clip left on old terms shares its reference with the terms an amendment restruck**
+  (2026-09-28). The book's diary gives no key to a reference two terms share, so a row falling due
+  under it can be settled by nothing and the close waits on it until the clip is deleted; and a
+  position partly unwound and then restruck on its coupon day is paid that coupon on the new terms
+  for every unit held before the day, the one unwound included. UNMEASURED.
+- **What a settlement moved is not held against what the engine valued** (2026-09-28). A payment
+  the diary determines books the diary's amount whatever a settlement moved against it, naming
+  nothing, and a floating coupon settled on time for another amount than the engine's own books the
+  difference the next day. A floating-coupon swap bought on its coupon day, ex-coupon, carries the
+  engine's coupon in that day's value and gives it back the next. Each month sums right.
+  UNMEASURED.
+- **The positions read takes its expiries off the book file** (2026-09-28). An expired deal whose
+  node the desk deletes from the file before it settles announces no diary row there, so its
+  position stands with no expiry until something books it to nothing. UNMEASURED; closing it is the
+  diary compiled off the record's own terms, which the P&L's marks already read.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
@@ -485,14 +509,12 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   record now - positions keyed by agreement and portfolio, each instrument's terms and each
   agreement's netting set by address - but the book file stays the materialisation and
   `/book/reconcile` is how it is checked.
-- **The P&L's explain, and a screen for it.** `GET /book/pnl` says what the book made - what the
-  held positions moved, what the window's trades earned against the end, the cash, the realised
-  half - and not yet WHY the held positions moved: the market's share read off the start marks'
-  quote sensitivities times the quote moves between the two closes, the carry of the start's book
-  rolled to the end's day, and the residual watched against a threshold. Nor does it carry what a
-  product controller's P&L carries beside the marks: the reserves beside the mid, a new deal's
-  sales margin transferred to sales on day one, and the interest collateral earns, collateral
-  moving being no P&L. The binding and the service are its readers; no web screen shows it.
+- **What a product controller's P&L carries beside the marks.** `GET /book/pnl` says what the book
+  made and its explain why the held positions moved - carry, market per risk factor, residual - but
+  not the reserves beside the mid, a new deal's sales margin transferred to sales on day one, the
+  interest collateral earns, collateral moving being no P&L, or a future's variation margin, which
+  settles daily and which no future declares. The residual is reported with its share of the held
+  positions' P&L, and no threshold a desk declares watches it.
 - **An agreement's collateral balance compiled into its netting set.** The `cash` fold holds what
   the settlement interface moved under each agreement, and nothing writes that balance in force into
   the netting set a collateralised run compiles, which still reads the book file's own

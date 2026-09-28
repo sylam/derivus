@@ -32,6 +32,7 @@ import pandas as pd
 from .spine import SpineRefused, cashflow_key
 from .pricing import fixed_payments
 from .instruments import Deal, barrier_monitoring_rows
+from .schema import declared_settlements
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, check_rate_name,
@@ -50,7 +51,8 @@ UNREADABLE = 'unreadable'
 DUE, OBSERVED, EXPIRED = 'due', 'observed', 'expired'
 SETTLED = 'settled'
 
-#: The legs that are not a schedule: the deal's own settlement ladder, and its last day.
+#: The legs that are not a schedule: a day the deal's declarations settle one payment on, and its
+#: last day.
 SETTLEMENT, EXPIRY_LEG = 'Settlement', 'Expiry'
 
 #: A physically settled option DELIVERS, and delivering is an act somebody takes - so its expiry
@@ -58,31 +60,27 @@ SETTLEMENT, EXPIRY_LEG = 'Settlement', 'Expiry'
 PHYSICAL = 'Physical'
 ELECTION = 'election'
 
-#: What a deal type declares to the record. `table` is the deal's own observation table and
-#: `column` the cell a print is written into; `index` and `family` name the price factor an
-#: observation is OF; `elects` is the field whose `Physical` vests a choice at expiry; `expires`
-#: is the day the terms are fixed on; and `pays`/`amount` are the fields a deal with NO schedule
-#: of its own settles by - the date falling back to the expiry where the type names no other.
-Terms = namedtuple('Terms', 'table column index family elects expires pays amount',
-                   defaults=(None,) * 8)
+#: What a deal type declares to the record of what it OBSERVES. `table` is the deal's own
+#: observation table and `column` the cell a print is written into; `index` and `family` name the
+#: price factor an observation is OF; `elects` is the field whose `Physical` vests a choice at
+#: expiry; and `expires` is the day the terms are fixed on. What it SETTLES is declared on its
+#: fields (`schema.Cash`).
+Terms = namedtuple('Terms', 'table column index family elects expires', defaults=(None,) * 6)
 
 TERMS = {
     'EquityBarrierOption': Terms('Barrier_Dates', 1, 'Equity', 'EquityPrice',
                                  expires='Expiry_Date'),
     'EquityBarrierBinaryOption': Terms('Barrier_Dates', 1, 'Equity', 'EquityPrice',
-                                       expires='Expiry_Date', pays='Settlement_Date'),
+                                       expires='Expiry_Date'),
     'QEDI_CustomAutoCallSwap': Terms('Price_Fixing', 1, 'Equity', 'EquityPrice'),
     'QEDI_CustomAutoCallSwap_V2': Terms('Price_Fixing', 1, 'Equity', 'EquityPrice'),
     'EquityOptionDeal': Terms(index='Equity', family='EquityPrice', elects='Settlement_Style',
                               expires='Expiry_Date'),
     'FXOptionDeal': Terms(index='Underlying_Currency', family='FxRate',
-                          elects='Settlement_Style', expires='Expiry_Date',
-                          pays='Delivery_Date'),
-    'FXBinaryOption': Terms(index='Underlying_Currency', family='FxRate',
-                            expires='Expiry_Date', pays='Delivery_Date'),
+                          elects='Settlement_Style', expires='Expiry_Date'),
+    'FXBinaryOption': Terms(index='Underlying_Currency', family='FxRate', expires='Expiry_Date'),
     'SwapInterestDeal': Terms(index='Interest_Rate', family='InterestRate'),
     'CFFloatingInterestListDeal': Terms(index='Forecast_Rate', family='InterestRate'),
-    'FixedCashflowDeal': Terms(pays='Payment_Date', amount='Amount'),
 }
 
 
@@ -214,18 +212,20 @@ def _expired(calc, base_date, deal):
 
 def _dropped_rows(deal, instruments):
     """What a deal the compile dropped as EXPIRED still announces: its expiry, and the fixing and
-    the settlement its type declares.
+    the last settlement its type declares.
 
     An option whose expiry is already behind the base date is exactly the deal a catch-up rule
-    exists for - one that fell due and nobody cleared - and the two declared rows are field reads
-    that need no schedule, so the expired branch says what the live one says.
+    exists for - one that fell due and nobody cleared - and the declared rows are field reads that
+    need no schedule, so the expired branch says what the live one last said.
     """
     fields = deal.field
     terms = TERMS.get(fields.get('Object'))
     instrument = instruments.get(fields.get('Reference'))
     rows = [_expiry_row(deal, instruments, EXPIRED)]
     rows.extend(_expiry_fixing(fields, terms, index_named(fields, terms), instrument, rows))
-    rows.extend(_declared_payment(fields, terms, deal.get_settlement_currencies(), instrument))
+    settled = _settled_rows(fields, type(deal), instrument)
+    last = max((row['due_date'] for row in settled), default=None)
+    rows.extend(row for row in settled if row['due_date'] == last)
     return rows
 
 
@@ -250,8 +250,8 @@ def _unreadable_row(calc, base_date, path, deal, instruments):
 
 
 def _deal_rows(deal, compiled, base_date, instruments):
-    """One deal's whole diary: its schedules, its monitoring table, the payment a deal with no
-    schedule declares, and its expiry."""
+    """One deal's whole diary: its schedules, its monitoring table, the payments its declarations
+    settle, and its expiry."""
     fields = deal.field
     terms = TERMS.get(fields.get('Object'))
     instrument = instruments.get(fields.get('Reference'))
@@ -270,8 +270,7 @@ def _deal_rows(deal, compiled, base_date, instruments):
             rows.extend(_fixing_rows(schedule, leg, base_date, index, instrument))
     rows.extend(_barrier_rows(fields, terms, index, instrument))
     rows.extend(_expiry_fixing(fields, terms, index, instrument, rows))
-    if not any(row['kind'] == PAYMENT for row in rows):
-        rows.extend(_declared_payment(fields, terms, settlement, instrument))
+    rows.extend(_settled_rows(fields, type(deal), instrument, since=base_date))
     rows.append(_expiry_row(deal, instruments, DUE))
     return rows
 
@@ -328,26 +327,38 @@ def _barrier_rows(fields, terms, index, instrument):
             in enumerate(barrier_monitoring_rows(fields.get(terms.table) or []))]
 
 
-def _declared_payment(fields, terms, settlement, instrument):
-    """The payment a deal with NO schedule declares: its type's own settlement date, or its expiry
-    where the type names no other, and the amount where a field holds one.
+def _settled_rows(fields, cls, instrument, since=None):
+    """The payments a deal's own declarations settle (`schema.declared_settlements`): one per `Cash`
+    on every date a field or a table's column marks from `since` on - one behind the base date paid,
+    as a schedule's paid row is dropped - in the currency it names, a blank one the deal's own
+    `Currency`, and at the amount its terms state.
 
     `get_settlement_currencies()` is the reval-date accumulator - a barrier registers its
     monitoring days in it - so it is not a payment ladder and is never read as one. AN OPTION'S
     PAYOFF IS NOT IN A FIELD (`Units` times an intrinsic nobody has fixed), so its row is due with
-    `amount: null`: the money still moves, and a close waits for the transition that moved it.
+    `amount: null`: the money still moves, and a close waits for the transition that moved it. A
+    day settling one payment is the `Settlement` leg; one settling several names each by its amount.
     """
-    if terms is None:
-        return []
-    date = fields.get(terms.pays) if terms.pays else None
-    date = date if date is not None else (fields.get(terms.expires) if terms.expires else None)
-    if date is None:
-        return []
-    amount = fields.get(terms.amount) if terms.amount else None
-    return [_row(PAYMENT, instrument, SETTLEMENT, 0, date,
-                 currency=_currency(fields, settlement),
-                 amount=None if amount is None else float(amount),
-                 determined=amount is not None)]
+    declared, rows = declared_settlements(cls), []
+    for key, column, cash in declared:
+        legs = sum(other[:2] == (key, column) for other in declared)
+        days = [fields.get(key)] if column is None else [row[column] for row in fields.get(key) or []]
+        for position, day in enumerate(days):
+            day = day if _stated(day) else fields.get(cash.otherwise) if cash.otherwise else None
+            if not _stated(day) or since is not None and pd.Timestamp(day) < since:
+                continue
+            stated = fields.get(cash.amount) if cash.amount else None
+            amount = None if stated is None else cash.sign * float(stated)
+            rows.append(_row(PAYMENT, instrument,
+                             SETTLEMENT if legs == 1 else cash.amount or cash.currency, position,
+                             day, currency=fields.get(cash.currency) or fields.get('Currency'),
+                             amount=amount, determined=amount is not None))
+    return rows
+
+
+def _stated(day):
+    """Whether a date field holds a day, rather than the blank an unstated one reads as."""
+    return day is not None and not (isinstance(day, str) and not day)
 
 
 def _expiry_fixing(fields, terms, index, instrument, rows):

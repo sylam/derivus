@@ -6,7 +6,8 @@
     "portfolio": "FX-VANILLA",
     "quantity": 0.0,
     "realised": 0.0,
-    "unpriced": 2
+    "unpriced": 2,
+    "unpriced_reductions": 0
   },
   {
     "agreement": "CSA-0007",
@@ -15,6 +16,7 @@
     "portfolio": "FX-VANILLA",
     "quantity": 2000000.0,
     "realised": 0.0,
-    "unpriced": 2
+    "unpriced": 2,
+    "unpriced_reductions": 0
   }
 ]

@@ -80,7 +80,7 @@ module docstring stays the maintainer's.
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
 | `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on; where money moved, the amount, asset, kind (payment, fee, collateral, margin), the settlement reference and the value date |
 | `book_cash` | `GET /book/cash` — the money the settlements moved, one movement per reference, and the balances they sum to per kind, subject and asset, as of a date where one is named |
-| `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at the close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named |
+| `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at its own day's close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named; `explain` takes what the held positions made apart into carry, the market per risk factor and the residual |
 | `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
 | `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, and the `deal_paths` where the book file holds it; an expired deal stands until the day it settles and rolls off on it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
@@ -147,9 +147,9 @@ delete records nothing so it takes no seat. A desk that keeps no record ignores 
 why they are optional rather than required — the tool schema is one contract for both postures, and
 the service's own refusal is what names a missing one. The quantity PRICES: the book's reads price
 every position at its net, and `describe_instrument_type` marks the fields a position scales
-(`sized`, or `magnitude` for an amortisation step, which never takes the short's sign) and the ones
+(`sized`, or `magnitude` for an amortisation step, which never takes the short's sign), the ones
 a short flips (`side`) — a structure and a mark-to-market cross-currency swap mark none, their legs
-carrying the size.
+carrying the size — and the dates it settles cash on that its schedule does not (`settles`).
 
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere, as in the
 web UI's tree, because references are not unique in a book. Another host's booking moves every

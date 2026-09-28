@@ -1567,25 +1567,33 @@ def mark_book(actor: str | None = None) -> dict:
     """Mark the book at the close: one unit of every instrument it holds or traded since its last
     marks, valued on the close standing under the market the desk designated for `pnl`, and the
     run attested - which is what every later P&L reads that close from. Call it once the day's close
-    is declared. Refused where no market is designated for `pnl` or it stands on no close. Answers
-    `{result_id, status, market, close_lsn, instruments}`; `poll_result` waits on the run.
+    is declared. Refused where no market is designated for `pnl`, where it stands on no close or on
+    a close for another day than the book's, and for a day behind the last one marked - marks run
+    forward. Answers `{result_id, status, market, close_lsn, instruments}`; `poll_result` waits on
+    the run.
     """
     return service().call('POST', '/book/marks', json=_stated(actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)
 def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | None = None,
-             agreement: str | None = None, client: str | None = None) -> dict:
+             agreement: str | None = None, client: str | None = None,
+             explain: bool = False) -> dict:
     """The desk's P&L between the marks of two days (`YYYY-MM-DD`), or from the last marks to now
-    where `end` is not named: per position and in total, the values at both ends, the premiums the
-    fills paid, the payments and fees, `existing` (what the positions held moved) and `trading`
-    (what the window's fills earned against the end), and the P&L split realised - at average cost,
-    the cash included - and unrealised. Narrowed by a `portfolio` path, an `agreement` or a `client`
-    entity with everything grouped under it. A figure nobody can know - a fill with no price, a
-    payment nothing determined or settled - is named under `unknown` and `complete` is false.
+    where `end` is not named: per position and in total, the values at both ends - each close being
+    the end of its day, so less what the day paid - the premiums the fills paid, the payments and
+    fees, `existing` (what the positions held moved) and `trading` (what the window's fills earned
+    against the end), and the P&L split realised - at average cost, the cash included - and
+    unrealised. Narrowed by a `portfolio` path, an `agreement` or a `client` entity with everything
+    grouped under it. A figure nobody can know - a fill with no price, a payment nothing determined
+    or settled - is named under `unknown`, a total over it is null and `complete` is false.
+    `explain` adds why the held positions moved - the carry of the start's book to the end's day,
+    the market move per risk factor off the start's sensitivities, and the residual - at the price
+    of three more valuations.
     """
     return service().call('GET', '/book/pnl', params=_stated(
-        start=start, end=end, portfolio=portfolio, agreement=agreement, client=client))
+        start=start, end=end, portfolio=portfolio, agreement=agreement, client=client,
+        explain=explain or None))
 
 
 @MCP.tool(annotations=READ_ONLY)

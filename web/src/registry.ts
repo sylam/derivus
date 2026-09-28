@@ -9,6 +9,7 @@ import { CalculationView } from './views/CalculationView';
 import { CurvesView } from './views/CurvesView';
 import { MarketDataView } from './views/MarketDataView';
 import { MarketPricesView } from './views/MarketPricesView';
+import { PnlView } from './views/PnlView';
 import { PortfolioView } from './views/PortfolioView';
 import { RiskView } from './views/RiskView';
 import { SecuritiesView } from './views/SecuritiesView';
@@ -20,10 +21,11 @@ export type Workspace = { id: string; label: string; view: ComponentType };
 export const WORKSPACES: Workspace[] = [
   { id: 'portfolio', label: 'Portfolio', view: PortfolioView },
   { id: 'blotter', label: 'Blotter', view: BlotterView },
-  // the desk's two data views, beside the blotter they belong to: what the book is worth and what
-  // it moves with, then what it costs per counterparty
+  // the desk's data views, beside the blotter they belong to: what the book is worth and what it
+  // moves with, what it costs per counterparty, and what it made between two marked closes
   { id: 'risk', label: 'Risk', view: RiskView },
   { id: 'xva', label: 'XVA', view: XvaView },
+  { id: 'pnl', label: 'P&L', view: PnlView },
   // the market, in the order it is built: the quotes, the benchmark rows a curve is set up from,
   // the dials that turn them into factors, the factors themselves
   { id: 'prices', label: 'Market Prices', view: MarketPricesView },

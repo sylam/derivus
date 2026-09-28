@@ -165,6 +165,16 @@ OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': 'ZAR', '
 
 BARRIER_WATCHED = dict(BARRIER, Barrier_Dates=[[WATCHED, 108.5]])
 
+#: A forward and an FX swap between the two currencies, each leg a settlement its date declares.
+FX_FORWARD = {'Object': 'FXForwardDeal', 'Reference': 'FWD', 'Buy_Currency': 'USD',
+              'Buy_Amount': 50_000.0, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'ZAR',
+              'Sell_Amount': NOTIONAL, 'Sell_Discount_Rate': 'ZAR', 'Settlement_Date': COUPONS[0]}
+FX_SWAP = {'Object': 'FXSwapDeal', 'Reference': 'FXS', 'Near_Settlement_Date': COUPONS[0],
+           'Far_Settlement_Date': COUPONS[1], 'Near_Buy_Far_Sell_Ccy': 'USD',
+           'Near_Sell_Far_Buy_Ccy': 'ZAR', 'Near_Buy_Far_Sell_Discount_Rate': 'USD',
+           'Near_Sell_Far_Buy_Discount_Rate': 'ZAR', 'Near_Buy_Amount': 50_000.0,
+           'Near_Sell_Amount': NOTIONAL, 'Far_Buy_Amount': 1_010_000.0, 'Far_Sell_Amount': 50_000.0}
+
 
 def job(nodes, factors=None, **calculation):
     """A job document as the objects a market data file holds, with a Hull-White model declared so
@@ -177,7 +187,8 @@ def job(nodes, factors=None, **calculation):
             'System Parameters': {'Base_Currency': 'ZAR', 'Base_Date': BASE},
             'Model Configuration': {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {
                 'InterestRate': 'HullWhite1FactorInterestRateModel'}}},
-            'Price Models': {'HullWhite1FactorInterestRateModel.ZAR': dict(HW1F)},
+            'Price Models': {'HullWhite1FactorInterestRateModel.ZAR': dict(HW1F),
+                             'HullWhite1FactorInterestRateModel.USD': dict(HW1F)},
             'Bootstrapper Configuration': {'InterestRateCurveParameters': {}},
             'Valuation Configuration': {}, 'Price Factors': factors or FACTORS}}}}
 
@@ -268,14 +279,14 @@ def payments(rows):
 
 def realized(deal, tmp_path):
     """The book priced under a credit Monte Carlo with `Generate_Cashflows` on, in float64: what
-    the engine says it actually paid, per day."""
+    the engine says it actually paid, per currency and day."""
     run = dict(job([])['Calc']['Calculation'], Object='CreditMonteCarlo', Batch_Size=32,
                Simulation_Batches=1, Time_grid='0d 24m(3m)', Deflation_Interest_Rate='ZAR',
                Generate_Cashflows='Yes')
     context = derivus.Context().load_json((dump(job([node(deal)], **run)), 'diary-cashflows'))
     _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
-    frame = out['Results']['cashflows']['ZAR']
-    return {str(day.date()): float(frame.loc[day].iloc[0]) for day in frame.index}
+    return {(currency, str(day.date())): float(frame.loc[day].iloc[0])
+            for currency, frame in out['Results']['cashflows'].items() for day in frame.index}
 
 
 @pytest.mark.parametrize('name,deal', [
@@ -283,25 +294,31 @@ def realized(deal, tmp_path):
     ('a principal repaid with the last coupon', fixed_leg('BOND', principal=NOTIONAL)),
     ('two sub-periods on one pay day', sub_period_leg('SUBS')),
     ('two sub-periods COMPOUNDED', sub_period_leg('COMP', compounding='Yes')),
-    ('sold', fixed_leg('SOLD', buy='Sell'))])
+    ('sold', fixed_leg('SOLD', buy='Sell')),
+    ('a forward', FX_FORWARD),
+    ('an FX swap', FX_SWAP)])
 def test_every_payment_the_diary_announces_is_the_run_s_own_cashflow(name, deal, unrecorded,
                                                                      tmp_path):
     """GATE 5. The diary and the pricer spell a payment ONCE - `pricing.fixed_payments` - so the
     assertion is arithmetic on every shape a fixed leg comes in: a coupon carrying a rate AND a
-    principal, two accrual sub-periods paying on one day, the same two compounded, and a sold leg.
-    The engine's own realized cashflow and the diary's announced amount agree to float64 rounding.
+    principal, two accrual sub-periods paying on one day, the same two compounded, and a sold leg;
+    and a forward's and an FX swap's legs, which their settlement dates DECLARE (`schema.Cash`)
+    as their pricers book them through `cash_settle`, each in its own currency. The engine's own
+    realized cashflow and the diary's announced amount agree to float64 rounding.
 
-    Killing mutations, both of which the plain fixture cannot see: the fixed amount REPLACING the
-    rate coupon rather than summing with it (a bond's last payment reads as its principal alone),
-    and the leg's `Compounding` flag ignored (two sub-periods read as their simple sum).
+    Killing mutations, the first two of which the plain fixture cannot see: the fixed amount
+    REPLACING the rate coupon rather than summing with it (a bond's last payment reads as its
+    principal alone), the leg's `Compounding` flag ignored (two sub-periods read as their simple
+    sum), and a paid leg booked received.
     """
     serving(tmp_path, [node(deal)])
     rows = payments(diary_rows()['rows'])
     assert rows and all(row['determined'] for row in rows), 'a fixed leg determines every coupon'
-    assert len({row['due_date'] for row in rows}) == len(rows), 'one PAYMENT per pay day'
+    assert len({(row['currency'], row['due_date']) for row in rows}) == len(rows), \
+        'one PAYMENT per pay day and currency'
 
     paid = realized(deal, tmp_path)
-    announced = {row['due_date']: row['amount'] for row in rows}
+    announced = {(row['currency'], row['due_date']): row['amount'] for row in rows}
     assert set(paid) <= set(announced), (sorted(paid), sorted(announced))
     worst = max(abs(announced[day] - amount) for day, amount in paid.items())
     assert len(paid) == len(rows) and worst < 1e-9, (name, len(paid), len(rows), worst)
@@ -550,6 +567,51 @@ def test_a_monitoring_date_is_never_a_payment_and_a_declared_one_always_is(unrec
     assert not [row for row in payments(rows) if row['due_date'] == str(watched.date())]
 
 
+def declared(fixture, paid=None, base=None):
+    """`(deal, payment rows)` for a fixture's one deal - `paid`, a row settled before the base date,
+    put ahead of its schedule's where given, and the book standing at `base` where given."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', fixture)) as f:
+        document = json.load(f)
+    block = document['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    for table in ('Accumulator_ExpiryDates', 'TARF_ExpiryDates'):
+        if paid is not None and table in block:
+            block[table].insert(0, paid)
+    if base is not None:
+        document['Calc']['Calculation']['Base_Date'] = json.loads(dump({'day': base}))['day']
+    context = service.load(document)
+    (deal,) = [node['Instrument'] for node in context.current_cfg.deals['Deals']['Children']]
+    return deal, payments(diary.schedule_of(context, {deal.field['Reference']: 'f' * 64}))
+
+
+@pytest.mark.parametrize('fixture,table,column', [
+    ('fx_accumulator_job.json', 'Accumulator_ExpiryDates', 1),
+    ('fx_tarf_job.json', 'TARF_ExpiryDates', 1),
+    ('autocall_job.json', 'Autocall_Coupons', 0)])
+def test_a_declared_column_is_a_payment_on_every_day_it_holds(fixture, table, column):
+    """A DAY A TABLE DECLARES SETTLED IS A PAYMENT. An accumulator's and a TARF's settlement column
+    and an autocall's coupon dates are what their pricers settle cash on, so the diary announces a
+    payment on each from the base date on - open, the payoff deciding the amount - in the currency
+    the type declares, where it once announced their fixings and expiry alone. A seasoned deal's
+    paid day stays behind the base date, and one past its last day still waits on that day's
+    settlement, the catch-up a close is held to.
+
+    Killing mutations: a column's declaration unread; the base date not holding back a paid day; an
+    expired deal announcing every day it ever settled.
+    """
+    deal, rows = declared(fixture)
+    base = pd.Timestamp('2024-06-28')
+    days = sorted(str(row[column].date()) for row in deal.field[table] if row[column] >= base)
+    assert rows and sorted(row['due_date'] for row in rows) == days, (rows, days)
+    currency = deal.field.get('Payoff_Currency') or deal.field['Currency']
+    assert all(row['amount'] is None and row['currency'] == currency for row in rows), rows
+    if column == 1:
+        seasoned = declared(fixture, paid=[{'.Timestamp': '2024-05-17'},
+                                           {'.Timestamp': '2024-05-21'}, 1.0])[1]
+        assert sorted(row['due_date'] for row in seasoned) == days, 'the paid day announced'
+        expired = declared(fixture, base=pd.Timestamp(days[-1]) + pd.DateOffset(days=17))[1]
+        assert [row['due_date'] for row in expired] == days[-1:], 'past its last day'
+
+
 def test_a_close_is_asked_for_a_day_and_nothing_else(recorded, tmp_path):
     """`?date=` is the only question this verb answers, so it is PARSED. A string compare answers
     `legal` for an empty string and for a garbage one, which is a wrong answer rather than a
@@ -700,8 +762,9 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     the payoff that print decides - and the close check names both until each has its fact.
 
     Killing mutations: the option announcing its expiry alone, under which the catch-up rule passes
-    over a payoff nobody paid and nobody observed; and the settlement day read off the expiry
-    before the type's own field, under which an FX option's `Delivery_Date` is ignored entirely.
+    over a payoff nobody paid and nobody observed; the settlement day read off the expiry before
+    the type's own field, under which an FX option's `Delivery_Date` is ignored entirely; and no
+    expiry to fall back to, under which one stating none settles nothing.
     """
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')], factors=dict(FACTORS, **EQUITY))
     expiry = str((BASE + pd.DateOffset(days=60)).date())
@@ -717,7 +780,11 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     assert rows[(diary.PAYMENT, expiry)]['amount'] is None
     assert rows[(diary.EXPIRY, expiry)]['needs'] is None, 'cash settlement vests no choice'
 
-    # the settlement day is the TYPE'S OWN field where it declares one, not the expiry
+    # the settlement day is the TYPE'S OWN field where it declares one, not the expiry, which it
+    # falls back to where that field is blank
+    serving(tmp_path, [node(FX_OPTION)], factors=dict(FACTORS, **EQUITY))
+    assert [(row['due_date'], row['currency']) for row in payments(diary_rows()['rows'])] == [
+        (expiry, 'ZAR')], 'in its own currency, the payoff currency it states none of'
     delivery = str((BASE + pd.DateOffset(days=62)).date())
     serving(tmp_path, [node(dict(FX_OPTION, Delivery_Date=BASE + pd.DateOffset(days=62)))],
             factors=dict(FACTORS, **EQUITY))

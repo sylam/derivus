@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    F, REQUIRED, Row, own, DealFields,
+    Cash, F, REQUIRED, Row, own, DealFields,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -1849,7 +1849,7 @@ class FXNonDeliverableForward(Deal):
     fields = [ADMIN, own('FXNonDeliverableForward', [
         F('Sell_Currency', 'Text', default=''),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
-        F('Settlement_Date', 'Date', default=''),
+        F('Settlement_Date', 'Date', default='', settles=Cash('Settlement_Currency')),
         F('Settlement_Currency', 'Text', default=''),
         F('Buy_Amount', 'Float', default=0.0, sized=True),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -1946,8 +1946,12 @@ class FXNonDeliverableForward(Deal):
 
 class FXSwapDeal(Deal):
     fields = [ADMIN, own('FXSwapDeal', [
-        F('Near_Settlement_Date', 'Date', default=''),
-        F('Far_Settlement_Date', 'Date', default=''),
+        F('Near_Settlement_Date', 'Date', default='', settles=(
+            Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'),
+            Cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0))),
+        F('Far_Settlement_Date', 'Date', default='', settles=(
+            Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'),
+            Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
         F('Near_Buy_Far_Sell_Ccy', 'Text', default=''),
         F('Near_Sell_Far_Buy_Ccy', 'Text', default=''),
         F('Near_Buy_Far_Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
@@ -2026,8 +2030,13 @@ class FXSwapDeal(Deal):
             NearSell_rep = utils.calc_fx_cross(
                 factor_dep['NearSellFX'], shared.Report_Currency, near_deal_time, shared)
 
-            near_sell_discount_rate = torch.squeeze(utils.calc_discount_rate(near_sell_discount, near, shared), dim=1)
-            near_buy_discount_rate = torch.squeeze(utils.calc_discount_rate(near_buy_discount, near, shared), dim=1)
+            # the near leg is valued only up to its own date, on the curves read there
+            near_sell_discount_rate = torch.squeeze(utils.calc_discount_rate(
+                utils.calc_time_grid_curve_rate(factor_dep['NearSellDiscount'], near_deal_time, shared),
+                near, shared), dim=1)
+            near_buy_discount_rate = torch.squeeze(utils.calc_discount_rate(
+                utils.calc_time_grid_curve_rate(factor_dep['NearBuyDiscount'], near_deal_time, shared),
+                near, shared), dim=1)
 
             mtm_near = self.field['Near_Buy_Amount'] * near_buy_discount_rate * NearBuy_rep - \
                        self.field['Near_Sell_Amount'] * near_sell_discount_rate * NearSell_rep
@@ -2068,7 +2077,8 @@ class FXForwardDeal(Deal):
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default=''),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
-        F('Settlement_Date', 'Date', default=''),
+        F('Settlement_Date', 'Date', default='', settles=(
+            Cash('Buy_Currency', 'Buy_Amount'), Cash('Sell_Currency', 'Sell_Amount', -1.0))),
         F('Buy_Amount', 'Float', default=0.0, sized=True),
         F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
         F('Buy_Currency', 'Text', default=''),
@@ -2143,7 +2153,7 @@ class FXForwardDeal(Deal):
         pricing.cash_settle(
             shared, self.field['Buy_Currency'], deal_data.Time_dep.deal_time_grid[-1], self.field['Buy_Amount'])
         pricing.cash_settle(
-            shared, self.field['Sell_Currency'], deal_data.Time_dep.deal_time_grid[-1], self.field['Sell_Amount'])
+            shared, self.field['Sell_Currency'], deal_data.Time_dep.deal_time_grid[-1], -self.field['Sell_Amount'])
 
         return self.field['Buy_Amount'] * FX_Buy_rep * buy_discount_rate - \
             self.field['Sell_Amount'] * FX_Sell_rep * sell_discount_rate
@@ -2619,7 +2629,7 @@ class FixedCashflowDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Calendars', 'Text', default='', convention=True),
         F('Amount', 'Float', default=0.0, sized=True),
-        F('Payment_Date', 'Date', default='')
+        F('Payment_Date', 'Date', default='', settles=Cash('Currency', 'Amount'))
 ])]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -3721,7 +3731,8 @@ class EquityBarrierBinaryOption(Deal):
         F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
         F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
-        F('Settlement_Date', 'Date', default='')
+        F('Settlement_Date', 'Date', default='',
+          settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
 ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -3954,7 +3965,8 @@ class EquityBinaryOption(EquityOptionDeal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
-        F('Settlement_Date', 'Date', default='')
+        F('Settlement_Date', 'Date', default='',
+          settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
 ])]
 
     documentation = ('Fx And Equity', [
@@ -4458,7 +4470,7 @@ class EquityOneTouchOption(Deal):
         F('Barrier_Price', 'Float', default=0),
         F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry']),
-        F('Expiry_Date', 'Date', default=''),
+        F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
         F('Equity_Volatility', 'Text', default='', obj='Tuple'),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default='')
@@ -4843,7 +4855,7 @@ class CommodityForwardDeal(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Forward_Date', 'Date', default=''),
-        F('Maturity_Date', 'Date', default=''),
+        F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Commodity', 'Text', default='', obj='Tuple'),
         F('Units', 'Float', default=0.0, sized=True),
         F('Currency', 'Text', default=''),
@@ -5027,7 +5039,7 @@ class CommodityAveragePriceSwapDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Units', 'Float', default=0.0, sized=True),
         F('Fixed_Price', 'Float', default=0.0),
-        F('Settlement_Date', 'Date', default=REQUIRED),
+        F('Settlement_Date', 'Date', default=REQUIRED, settles=Cash('Currency')),
         F('Sampling_Data', 'Table', default=REQUIRED, description='Sampling_Data',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
 ])]
@@ -5148,7 +5160,7 @@ class EquityForwardDeal(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-        F('Maturity_Date', 'Date', default=''),
+        F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Equity', 'Text', default='', obj='Tuple'),
         F('Units', 'Float', default=0.0, sized=True),
         F('Currency', 'Text', default=''),
@@ -5904,7 +5916,7 @@ class FXTARFOptionDeal(Deal):
         # NO `tag`: a tag names the container the WIRE form uses, and this table is read by
         # iterating rows. Tagged `DateEqualList`, the decoder hands over a `utils.DateEqualList`,
         # which is not iterable.
-        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')])),
+        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
         F('Barrier', 'Float', default=0)
 ])]
 
@@ -6081,7 +6093,7 @@ class FXAccumulatorOptionDeal(Deal):
         # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
         # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
-            F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float')]))
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')]))
 ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -6268,7 +6280,7 @@ class FXExtendableForwardDeal(Deal):
         # `Extended` is a lifecycle fact (Yes/No once the exerciser has decided, blank otherwise),
         # never a model output.
         F('Extendable_ExpiryDates', 'Table', default='null', row=Row([
-            F('Fixing Date', 'Date'), F('Settlement Date', 'Date'), F('Value', 'Float'),
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float'),
             F('Extended', 'Text')]))
 ])]
 

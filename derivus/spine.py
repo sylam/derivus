@@ -852,6 +852,17 @@ def fills(after=None, until=None):
     return folded(walk)
 
 
+def amendments(after=None, until=None):
+    """Every amendment filed after LSN `after` and at or before `until`: the terms restruck and the
+    terms they became, with where it sits in the record."""
+    def walk(log):
+        return [dict(log.open_body(frame), lsn=frame['lsn'], book=frame['book'])
+                for frame in log.frames(start_lsn=(after or 0) + 1, end_lsn=until)
+                if frame['event_type'] == 'amendment']
+
+    return folded(walk)
+
+
 def stored(digest):
     """The bytes the store holds at `digest` - a job, a result or a values vector a reading cites,
     read on this box's own record."""

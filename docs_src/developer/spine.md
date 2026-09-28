@@ -15,7 +15,7 @@ scripted faults beside it, held to nine invariants. **8** adds the paper the boo
 its legal entities and agreements - with every position keyed where it sits, read there and priced
 at its net, and seeds filed where a deployment says; **9** the money the settlements moved, what
 every position cost, and the desk's P&L between the closes it marks. A library, a CLI, nine
-delegators on `Context`, fourteen read verbs and nine write verbs on the service, and 368 gates.
+delegators on `Context`, fifteen read verbs and nine write verbs on the service, and 368 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -344,11 +344,19 @@ refuses an undetermined row, and a row naming no currency, BY NAME rather than i
 payment. `due_before` has no default: a settlement file is struck FOR a day.
 
 An `expiry` row carries `needs`, which is `election` where the deal type's terms vest an exercise in
-an actor and null where a fixing determines the payoff. A deal whose compile announces no payment at
-all pays on the settlement date its TYPE declares in the deal-type table, falling back to its
-expiry: `get_settlement_currencies()` is the reval-date accumulator — a barrier registers its
-monitoring days in it — so it is not a payment ladder and is never read as one. AN OPTION WAITS FOR
-TWO THINGS after its expiry, and the table names both: a `fixing` row on the underlying, because a
+an actor and null where a fixing determines the payoff. What a deal settles that its compile builds
+no schedule for is DECLARED on its fields: a date - a field, or a table's date column - carries
+`settles`, one `schema.Cash` per payment that day, naming the field its currency is in, the field
+stating its amount where the terms fix it, and its sign, as its pricer books it through
+`cash_settle`. A forward's settlement date declares its two legs, the one received and the one
+paid, each determined; an FX swap's near and far dates, theirs; a non-deliverable or equity
+forward's, an accumulator's and a TARF's settlement days and an autocall's coupon dates, one open
+payment each; an option's delivery or settlement date, its payoff, falling back to its expiry. The
+most specific block declaring any stands, so a binary's own settlement date stands in place of the
+expiry its option base declares, and a declared day behind the base date has been paid, as a
+schedule's paid row is dropped. `get_settlement_currencies()` is the reval-date accumulator — a
+barrier registers its monitoring days in it — so it is not a payment ladder and is never read as
+one. AN OPTION WAITS FOR TWO THINGS after its expiry: a `fixing` row on the underlying, because a
 European option compiles no reset schedule and its payoff is that day's print; and a `payment` row
 at its settlement date with `amount: null`, because no field holds `Units × max(S−K, 0)` and the
 money still moves. A close does not pass over an unsettled payoff.
@@ -1076,7 +1084,8 @@ materialisation; its `portfolio` is the book's own name where none is stated.
 filed under, where its permissions are granted, so a stated one outside it or with an empty segment
 refuses by name at the booking. `GET /book/positions` answers every position standing at the head -
 a closed one stands no more, and one whose deal has expired at the book's date stands until the day
-it settles and rolls off on it, a trade settling at T+2 still held at T+1 - beside the nodes of the
+it settles and rolls off on it, a trade settling at T+2 still held at T+1 and a structure held whole
+expiring once every leg has - beside the nodes of the
 book file carrying its instrument under its agreement's set, and the binding reads it as
 `book_positions`. It is how the web UI groups the
 book: the Portfolio screen and the blotter show the file's own nesting, the portfolio tree - a
@@ -1161,50 +1170,107 @@ than the book reports in is filed with that `currency` and the `rate` the bookin
 the booking's own board, so nobody converts a premium by hand and the basis reads it in the book's
 currency. An accepted quote files one too: nothing where its recipe solved a coordinate, the charge
 riding inside the terms, and minus the client's premium where it solved nothing. A fill booked with
-no price leaves what it touched UNKNOWN - the basis while that lot is open, the realised figure
-from the reduction it priced - never a zero, and counts under `unpriced`. An instrument hash is one
-contract, so average cost over identical terms is specific identification per contract.
+no price leaves the basis UNKNOWN while that lot is open, never a zero, and counts under
+`unpriced`; a reduction closing at no price or against an average nobody priced is COUNTED under
+`unpriced_reductions` rather than realised as nothing, so `realised` is what every reduction it
+could price realised and a later priced trade is still known. An instrument hash is one contract,
+so average cost over identical terms is specific identification per contract.
 
 **A CLOSE IS MARKED, AND THE MARKS ARE ITS OWN NUMBERS.** A close names the calendar `date` it is
 declared FOR. `pnl` joins `settlement_export` as a designated process, and `POST /book/marks`
 values ONE UNIT of every instrument the book holds, or traded since its last marks, each as written
-and filed under its own address, on the values of the close standing under that market - a
-standing run, attested like any other. A position's value is then its quantity times its unit mark
+and filed under its own address, on the values of the close standing under that market - the close
+declared for the book's own day, one for another day refused - as a standing run, attested like
+any other. A position's value is then its quantity times its unit mark
 and every grouping of the book is a sum; and the job the run attests is the book's market and
 instruments as they stood, so a past close replays from the record rather than from a book file
-that has moved since. When the marks are taken is the deployment's end of day, and a fill belongs
-to the business day of the first marks at or after it - an end-of-day cut, never the clock it was
-recorded by.
+that has moved since. When the marks are taken is the deployment's end of day. They close the
+business day where they READ the book - the job names that position of the record, so a ticket
+booked while the run waits on the worker is the next day's - and a fill belongs to the business day
+of the first marks at or after it, an end-of-day cut, never the clock it was recorded by. The latest
+marks of a day stand, so the last day marked again is restated, and marks run forward: a day behind
+the last one marked is refused, so a close found wrong once a later day is marked stays as struck
+and its error reverses in the next day's P&L.
 
 **THE P&L IS THE MARKS' MOVE PLUS THE CASH, AND A MONTH IS THE SUM OF ITS DAYS.** `GET /book/pnl`
 reads it between the marks of two days, or from the last marks to the book as it stands now - the
-intraday flash, recorded nowhere - per position and in total, in the reporting currency:
-`value_end - value_start + premiums + payments + fees`. The premiums are the fills' own on their
-trade date; a payment is the diary's amount where it determines one, times what the position held
-the day before it fell due, else the position's share of what the settlements moved under the
-row's key, one settled with no amount having moved nothing; a payment and a fee are converted at
-the official close STANDING ON THEIR OWN DAY, after which the money is a cash balance whose
-currency is its holder's and never the trade's. A SETTLEMENT OR A FEE COUNTS IN THE WINDOW IT WAS
-FILED IN - the change in the `cash` fold between the two marks, a restatement counting its
-correction - so a late filing lands in the day it was filed and a day already struck never moves;
-whose it is, is read off the record as it stood on its own day, whatever window it lands in. Every
-figure but the new-deal split is therefore additive: two days sum to the window over both.
-`existing` is what the positions held at the start moved and `trading` what the window's fills
-earned against its end. The realised half is the costs' plus the cash, at AVERAGE COST, which the
-answer names; a position whose last day falls in the window CLOSES there at its settlement value -
-its open basis released to realised, its payoff arriving as the payment it is - and after it stands
-only through the money it still moves, a payoff settling at T+2 counted in the window it settles
-in, and so does one holding nothing, a portfolio unwound before a late fee still taking its share.
-Anything nobody can know - a fill with no price, a payment neither the diary nor a settlement
-states, a settlement against a payment nothing here announces, a missing mark, a day no close
-stands on - is named under `unknown` and `complete` says there was one. A `portfolio`, an `agreement` or a `client` with every entity
+intraday flash, recorded nowhere, the day being lived rated as the book as it stands prices it -
+per position and in total, in the reporting currency:
+`value_end - value_start + premiums + payments + fees`. THE CLOSE IS THE END OF THE DAY: the
+engine values a payment into the marks of the day it falls due, so a position's value is its
+quantity times its unit mark less what the unit PAID that day (`paid_start`, `paid_end`) - every
+payment the diary determines, and every one it does not that a settlement filed by the marks moved,
+per unit held when it fell due; one nothing has settled by then is still the book's and stays in
+its value until a filing moves it, and a window it leaves without the money is named. The premiums
+are the fills' own on their trade date; a payment is the diary's amount where it determines one,
+times what the position held the day before it fell due, else the position's share of what the
+settlements moved under the row's key - one settled with no amount having moved nothing, and one
+over positions netting to nothing NAMED, a settlement naming no agreement to share it by; a payment
+and a fee are converted at the official close STANDING ON THEIR OWN DAY, after which the money is a
+cash balance whose currency is its holder's and never the trade's. A SETTLEMENT OR A FEE COUNTS IN
+THE WINDOW IT WAS FILED IN - the change in the `cash` fold between the two marks, a restatement
+counting its correction - so a late filing lands in the day it was filed, one against a payment the
+diary has since dropped found in the diaries of the marks before it, a business week of them, and a
+day already struck never moves. A MOVEMENT IS READ AS THE RECORD STOOD AT THE END OF THE BUSINESS
+DAY IT COUNTS IN, and a payment the diary determines as it stood at the end of the one it falls due
+in: the close it is
+rated at, so one restated afterwards moves nothing already counted, and whose it is - a payment by
+what each position held when it fell due, a fee by what each traded on its own day, that being its
+value date or the day it was filed where it is dated after that, else by what each held through
+the day, long or short alike, else by what each traded on the record up to it, else by what each
+held when it was filed - terms an amendment struck being traded by no fill - a fee nobody traded
+or held NAMED. Every figure
+but the new-deal split is therefore additive: two days sum to the window over both. `existing` is
+what the positions held at the start moved and `trading` what the window's fills earned against
+its end - null where a position traded to nothing has no mark at the end, which leaves its P&L
+known. The realised half is the costs' plus the cash, at AVERAGE COST, which the answer names; a
+position whose last day falls in the window CLOSES there at its settlement value - its open basis
+released to realised, its payoff arriving as the payment it is - and after it stands only through
+the money it still moves and realises nothing else, a payoff settling at T+2 counted in the window
+it settles in, and so does one holding nothing, a portfolio unwound before a late fee still taking
+its share. A STRUCTURE HELD WHOLE is paid through its legs, keyed as the book's diary keys each,
+closes on its last leg's day and rolls off the positions once every leg has; an AMENDMENT restrikes
+the position onto the terms it became from the START of the business day it was filed in, so what
+falls due that day is paid on those terms, and a leg a restruck structure leaves as it was is paid
+once, to whichever of the two held it when it fell due. Anything nobody can know - a fill with no
+price, a reduction against a lot booked with none, a payment neither the diary nor a settlement
+states, a settlement against a payment nothing here announces or that no position held when it fell
+due, a missing mark, a day no close stands on - is named under `unknown`, a total over it is null,
+and `complete` says there was one. A `portfolio`, an `agreement` or a `client` with every entity
 grouped under it narrows it, and the binding's `mark_book` and `book_pnl` are the same two verbs.
+
+**THE EXPLAIN SAYS WHY THE HELD POSITIONS MOVED, and never assembles the P&L out of its pieces.**
+`explain` on `GET /book/pnl` takes what the positions a window started with made apart into three:
+the CARRY of the start's book rolled to the end's day at its own quotes - the day moved, every
+curve re-authored on it and the market re-bootstrapped as `POST /book/date` rolls a book, a
+position whose last day fell in the window closing at nothing; the MARKET, every risk factor's move
+between the two closes times the start's own sensitivity to it, per quote where the factors are
+built from quotes and per factor for the rest; and the RESIDUAL left over. It is three valuations -
+the positions on the start's close with first-order sensitivities, the same positions on the end's
+close for the levels, and the start rolled - run when asked, recorded nowhere and cached on what
+they read, the carry taking out what a day paid as the values do. Reserves are not carried, so none
+is explained. `GET /book/marks` answers the days the book was marked on, and the web UI's P&L screen
+reads the two: a window between two marked days or to now, narrowed by portfolio, agreement or
+client, the rows and totals with what nobody can know named, and the explain with its residual's
+share - a window ending now offered again once the book moves rather than valued on every write.
 `tests/test_spine_projections.py` and `tests/test_spine_verbs.py` hold the cost arithmetic and the
-consideration, and `tests/test_pnl.py` three marked closes on a real home - every unit mark against
-the instrument valued alone, every row against its own identity, the portfolios summing to the
-book, the two days to the window and a struck day read again unmoved after late filings - every
-killing mutation its docstring names red. The explain - the market's move read off
-the start's quote sensitivities, the carry, the fees, the reserves and the residual - is not built.
+consideration, and `tests/test_pnl.py` holds the P&L on real homes: three marked closes - every
+unit mark against the instrument valued alone, every row against its own identity, the portfolios
+summing to the book, the two days to the window, a struck day read again unmoved after late
+filings, the explain's residual equal to the carry's own move with the rand - and a test for each
+shape a day meets: a coupon on a marked day, fixed and floating, settled on time, late and three
+windows late, a strip bought on its coupon day, the day being lived and one after the last marks
+before it; a structure held whole, one restruck, and one whose leg settles late; an amendment on
+the morning its trade pays, beside fees on the new terms and dated forward and closes restated;
+fees over long and short holdings, a day trade and a position traded to nothing; a payoff over a
+flat net, money nobody held and a fee on nothing held; a forward paid the legs its settlement date
+declares, held alone, as a structure's leg and closed out before it settles; a dead position closed
+out and a lot nobody priced; and a ticket booked while the marks wait, the last day marked again
+and a day behind it - on a book whose name carries the marks' own '@' - every killing mutation
+their docstrings name red. `tests/test_diary.py` holds every payment a date declares against the
+cash the run itself books, a forward's and an FX swap's legs among them, and the days a table
+declares settled. `web/scripts/pnl_check.mjs` holds the screen's own
+arithmetic.
 
 ## What is not built yet
 

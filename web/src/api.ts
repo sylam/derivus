@@ -1,6 +1,7 @@
 // One function per service endpoint, same-origin: vite proxies in dev, the service serves the
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
+import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
@@ -102,6 +103,9 @@ export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
 // the positions standing, each where the file holds it, and the paper they sit under - the two
 // keys the grouped views file the book by
 export const getBookPositions = () => call<{ positions: Position[] }>('GET', '/book/positions');
+// the P&L: the days it can run between, and what the book made between two of them
+export const getMarkedDays = () => call<MarkedDays>('GET', '/book/marks');
+export const getPnl = (query: string) => call<Pnl>('GET', `/book/pnl?${query}`);
 export const getBookEntities = () => call<{ entities: Entity[] }>('GET', '/book/entities');
 export const getBookAgreements = () =>
   call<{ agreements: Agreement[] }>('GET', '/book/agreements');
