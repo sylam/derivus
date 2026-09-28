@@ -121,12 +121,12 @@ def refuse_unpaired_schedule(field, rows, deal_type):
 
 
 def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
-    """Refuse a digital whose `Cash_Payoff` is exactly 0.0.
+    """Refuse a digital whose payoff amount `fieldname` is exactly 0.0.
 
     The leg pays nothing on every path it is in the money, so it prices to zero and the structure
-    it was booked to CANCEL keeps its whole payoff - a leg of no value is not a contra, and
-    `Cash_Payoff` is REQUIRED precisely because 0.0 is falsy and reads as unauthored. A named
-    SKIP, not the fatal class: the netting set prices without the leg and the log names it.
+    it was booked to CANCEL keeps its whole payoff - a leg of no value is not a contra, and the
+    amount is REQUIRED precisely because 0.0 is falsy and reads as unauthored. A named SKIP, not
+    the fatal class: the netting set prices without the leg and the log names it.
     """
     if field[fieldname] == 0.0:
         raise ValueError(
@@ -197,13 +197,14 @@ def barrier_state_at(rows, base_date, barrier, barrier_up, deal_type, reference)
     return hit_on is not None, hit_on
 
 
-def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vanilla_type):
+def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vanilla_type,
+                             **vanilla):
     """A discretely-monitored barrier deal folded against the `Observed` closes already in.
 
-    No decisions left and the level was crossed: the deal IS the vanilla (knock-in) or IS its
-    rebate cashflow at the crossing (knock-out), built as a document of that type. Decisions
-    remain - or nothing crossed - and the deal is unchanged, its resolved rows already behind the
-    pricer's first monitored date.
+    No decisions left and the level was crossed: the deal IS the vanilla (knock-in) - `vanilla`
+    naming what that type calls by another name - or IS its rebate cashflow at the crossing
+    (knock-out), built as a document of that type. Decisions remain - or nothing crossed - and the
+    deal is unchanged, its resolved rows already behind the pricer's first monitored date.
 
     A t0-folded state registers no boundary set, so nothing here reaches the sensitivity
     architecture. Continuous monitoring (no `Barrier_Dates`) needs a daily bar series to fold
@@ -220,7 +221,8 @@ def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vani
         return deal
     if 'In' in barrier_type:
         return became(deal, vanilla_type, calendars, valuation_options,
-                      Settlement_Date=deal.field.get('Settlement_Date') or deal.field['Expiry_Date'])
+                      Settlement_Date=deal.field.get('Settlement_Date') or deal.field['Expiry_Date'],
+                      **vanilla)
     # the rebate is per DEAL and signed by Buy_Sell, which `FixedCashflowDeal` reads off `Amount`
     return became(deal, 'FixedCashflowDeal', calendars, valuation_options,
                   Currency=utils.payoff_currency(deal.field),
@@ -3746,8 +3748,10 @@ class EquityBarrierBinaryOption(Deal):
         super(EquityBarrierBinaryOption, self).__init__(params, valuation_options)
 
     def resolve_history(self, base_date, calendars, valuation_options):
+        # the plain binary pays its cash as `Payoff`, the style it defaults to
         return resolve_discrete_barrier(
-            self, base_date, calendars, valuation_options, 'EquityBinaryOption')
+            self, base_date, calendars, valuation_options, 'EquityBinaryOption',
+            Payoff=self.field['Cash_Payoff'])
 
     def reset(self, calendars):
         super(EquityBarrierBinaryOption, self).reset()
@@ -3949,12 +3953,15 @@ class EquityBinaryOption(EquityOptionDeal):
 
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
-        F('Payoff_Style', 'Text', default='Cash', values=['Cash', 'Asset']),
+        F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='')
 ])]
 
     documentation = ('Fx And Equity', [
         'A vanilla option described [here](definitions.md#european-options)',
+        '',
+        'In the money at expiry it pays **Payoff**: that amount of cash under **Payoff_Style**',
+        '`Cash` (cash-or-nothing), that many units of the equity under `Asset` (asset-or-nothing).',
         '',
         'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
         'is read at the translated strike $K/F_X(T)$, each spread leg at its own.',
@@ -3964,8 +3971,8 @@ class EquityBinaryOption(EquityOptionDeal):
         'either side of the strike, rather than the single-vol closed form, so the vol surface',
         'smile is picked up automatically.',
         '',
-        'A **Cash_Payoff** of exactly 0.0 is refused by name at compile: the leg would price to',
-        'zero on every path and the structure it was booked to cancel would keep its whole payoff.'])
+        'A **Payoff** of exactly 0.0 is refused by name at compile: the leg would price to zero',
+        'on every path and the structure it was booked to cancel would keep its whole payoff.'])
 
     def __init__(self, params, valuation_options):
         super(EquityBinaryOption, self).__init__(params, valuation_options)
@@ -4001,7 +4008,7 @@ class EquityBinaryOption(EquityOptionDeal):
         mtm = pricing.pv_european_option(
             shared, time_grid, deal_data, self.field['Payoff'], moneyness, forward,
             binary=True, digital_spread=spread,
-            payoff_style = self.field['Payoff_Style'].lower()) * fx_rep
+            payoff_style=self.field['Payoff_Style'].lower()) * fx_rep
 
         return mtm
 
@@ -6546,7 +6553,7 @@ class FXEuropeanOption(FXOptionDeal):
 class FXBinaryOption(FXOptionDeal):
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
-        F('Payoff_Style', 'Text', default='Cash', values=['Cash', 'Asset']),
+        F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Strike_Price', 'Float', default=0.0, description=FX_AXIS.format('Strike price')),
         F('Underlying_Currency', 'Text', default=''),
@@ -6560,8 +6567,10 @@ class FXBinaryOption(FXOptionDeal):
 
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX binary (digital) option described'
-                          ' [here](./definitions.md#european-options). Pays a fixed **Cash_Payoff**'
-                          ' amount in **Currency** if the option expires in-the-money.',
+                          ' [here](./definitions.md#european-options). In the money at expiry it'
+                          ' pays **Payoff**: that amount in **Currency** under **Payoff_Style**'
+                          ' `Cash` (cash-or-nothing), that many units of **Underlying_Currency**'
+                          ' under `Asset` (asset-or-nothing).',
                           '',
                           'If the **Relative_Digital_Spread** Valuation Configuration option is set',
                           '(> 0), the digital is priced as a call/put spread of width',

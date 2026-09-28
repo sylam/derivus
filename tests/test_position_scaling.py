@@ -66,7 +66,7 @@ EXTRA = [
     {'Object': 'EquityForwardDeal', 'Reference': 'EQF', 'Currency': 'USD', 'Discount_Rate': 'USD',
      'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Forward_Price': 98.0,
      'Maturity_Date': E, 'Units': 100.0},
-    book.fx_leg('FXBinaryOption', 'BIN', Expiry_Date=E, Cash_Payoff=10_000.0),
+    book.fx_leg('FXBinaryOption', 'BIN', Expiry_Date=E, Payoff=10_000.0),
     # a collar: its container is no option on its legs, so each leg is itself held and flips alone
     {'Object': 'StructuredDeal', 'Reference': 'COLLAR', 'Currency': 'USD', 'Children': [
         book.fx_leg('FXOptionDeal', 'COLLAR_PUT', Expiry_Date=E, Option_Type='Put',

@@ -63,7 +63,7 @@ CASHFLOW = {'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'ZAR'
             'Discount_Rate': 'ZAR', 'Calendars': None, 'Amount': AMOUNT,
             'Payment_Date': BASE + pd.DateOffset(years=2)}
 
-#: `Cash_Payoff` IS this binary's notional, so the declaration makes it required and leaving it out
+#: `Payoff` IS this binary's notional, so the declaration makes it required and leaving it out
 #: is an authoring message rather than a missing factor.
 BINARY = {'Object': 'EquityBinaryOption', 'Reference': 'BIN1', 'Currency': 'USD',
           'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
@@ -360,7 +360,7 @@ def test_a_rejected_booking_touches_nothing(book):
                           headers=JSON).json()
 
     assert outcome['written'] is False
-    assert 'Cash_Payoff is required' in outcome['refused']
+    assert 'Payoff is required' in outcome['refused']
     assert any('EquityPrice.EQ' in message for message in outcome['refused'])
     assert book.read_bytes() == before
     assert CLIENT.get('/book').json()['etag'] == etag
@@ -538,7 +538,7 @@ def test_a_value_outside_its_own_declaration_is_an_authoring_message():
     KILLING MUTATION: `validate_instrument` read the REQUIRED fields and nothing else, so
     `Option_Type: 'Putt'` was written and priced, the pricer's own `== 'Call'` making it a put.
     """
-    document = job(deals=[dict(BINARY, Cash_Payoff=100.0, Option_Type='Putt')],
+    document = job(deals=[dict(BINARY, Payoff=100.0, Option_Type='Putt')],
                    factors=dict(FACTORS, **EQUITY))
 
     assert CLIENT.post('/validate', content=dump(document), headers=JSON).json()['deals'] == {
@@ -2889,7 +2889,7 @@ XCCY = {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': 'XC1', 'MtM_Side': 'P
 
 #: The equity binary completed, so it is a deal the booking would take - which is what makes its
 #: three unseeded factors a VOCABULARY answer rather than an authoring one.
-EQUITY_DEAL = dict(BINARY, Cash_Payoff=AMOUNT)
+EQUITY_DEAL = dict(BINARY, Payoff=AMOUNT)
 
 
 def dependencies(**request):
@@ -4128,7 +4128,7 @@ def test_a_solve_brackets_a_nonlinear_strike(tmp_path):
     service.BOOK = service.Book(str(path))
     try:
         submitted = CLIENT.post('/book/solve', content=dump({
-            'deal': dict(BINARY, Cash_Payoff=100_000.0, Reference='SLV2'),
+            'deal': dict(BINARY, Payoff=100_000.0, Reference='SLV2'),
             'field': 'Strike_Price', 'target': 40_000.0, 'bounds': [80.0, 120.0]}),
             headers=JSON).json()
         service.EXECUTOR.queue.join()
@@ -4202,7 +4202,7 @@ def test_validate_over_http_is_the_verb_verbatim():
     over_http = CLIENT.post('/validate', content=dump(document), headers=JSON).json()
 
     assert over_http == in_process(document).validate()
-    assert over_http == {'deals': {'BIN1': ['Cash_Payoff is required']},
+    assert over_http == {'deals': {'BIN1': ['Payoff is required']},
                          'factors': ['InterestRate.GBP']}
 
 

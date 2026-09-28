@@ -436,7 +436,7 @@ def test_the_schema_tools_are_the_declarations():
     assert 'FXForwardDeal' in listed['types']
 
     binary = mcp_server.describe_instrument_type('EquityBinaryOption')
-    assert 'Cash_Payoff' in binary['required']
+    assert 'Payoff' in binary['required']
     assert binary['fields']['Buy_Sell']['values'] == ['Buy', 'Sell']
     assert binary['accepts_children'] is False
     assert mcp_server.describe_instrument_type('StructuredDeal')['accepts_children'] is True
@@ -973,7 +973,7 @@ def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
     outcome = mcp_server.book_deal(json.loads(dump(BINARY)))
 
     assert outcome['written'] is False
-    assert 'Cash_Payoff is required' in outcome['refused']
+    assert 'Payoff is required' in outcome['refused']
     assert book.read_bytes() == before
 
 

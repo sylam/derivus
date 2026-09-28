@@ -312,7 +312,7 @@ def test_the_digital_barrier_folds_to_its_own_vanilla():
     plain = {'Object': 'EquityBinaryOption', 'Reference': 'BR', 'Currency': 'USD',
              'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ',
              'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
-             'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Cash_Payoff': cash,
+             'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Payoff': cash,
              'Expiry_Date': day(EXPIRY_D), 'Settlement_Date': day(EXPIRY_D)}
     assert mtm(digital) == mtm(plain)
 

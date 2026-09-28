@@ -69,7 +69,7 @@ def _equity_factors(skew=SKEW):
 BINARY = {'Object': 'EquityBinaryOption', 'Reference': 'BIN', 'Currency': 'USD',
           'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
           'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-          'Strike_Price': STRIKE, 'Cash_Payoff': CASH, 'Expiry_Date': EXPIRY,
+          'Strike_Price': STRIKE, 'Payoff': CASH, 'Expiry_Date': EXPIRY,
           'Settlement_Date': EXPIRY}
 
 
@@ -156,7 +156,7 @@ def test_the_default_is_the_single_vol_closed_form():
 def test_a_spread_digital_is_the_two_vanillas_it_replicates():
     """The replication identity, interpolation-agnostic: the SAME document prices the binary with
     the spread on and the two EuropeanOption vanillas the spread is made of - long the low strike,
-    short the high, `Cash_Payoff / (2 eps K)` units each. Both sides query the same surface at the
+    short the high, `Payoff / (2 eps K)` units each. Both sides query the same surface at the
     same strikes, so they must agree to float precision, whatever the smile."""
     units = CASH / (2.0 * EPS * STRIKE)
     deals = [BINARY,
@@ -194,13 +194,36 @@ def test_the_spread_reads_each_leg_at_its_own_vol():
     assert legs == ['-', '+'] and vols[0] > vols[1], organs
 
 
+def test_an_asset_or_nothing_digital_is_the_vanilla_plus_the_strike_times_the_cash_digital():
+    """`Payoff_Style: Asset` pays `Payoff` units of the equity in the money - `(S - K)+` plus `K`
+    cash digitals. Closed form that is `F N(w d1)` at the deal's own vol; under the spread, the
+    vanilla at its strike plus the strike times the two-leg cash spread, each leg at its own vol -
+    exact on the collinear skew, for the call and the put. Every other test here states no style,
+    so a cash payoff is what omitting it means."""
+    discount = CASH * math.exp(-R_USD * T)
+    lo, hi = STRIKE * (1.0 - EPS), STRIKE * (1.0 + EPS)
+    sd = _eq_sigma(STRIKE) * math.sqrt(T)
+    d1 = math.log(EQ_FWD / STRIKE) / sd + 0.5 * sd
+    for kind, w in (('Call', 1.0), ('Put', -1.0)):
+        def vanilla(strike):
+            return _black(EQ_FWD, strike, _eq_sigma(strike)) - (w < 0) * (EQ_FWD - strike)
+
+        spread = w * vanilla(STRIKE) + w * (vanilla(lo) - vanilla(hi)) / (2.0 * EPS)
+        for valuation, expected in ((None, discount * EQ_FWD * _ndtr(w * d1)),
+                                    (SPREAD_ON, discount * spread)):
+            out, _ = _run(_job([dict(BINARY, Payoff_Style='Asset', Option_Type=kind)],
+                               _equity_factors(), valuation=valuation))
+            assert abs(_mtm(out, 'BIN') - expected) / expected < 1e-9, (
+                kind, valuation, _mtm(out, 'BIN'), expected)
+
+
 def test_an_fx_binary_spread_reads_the_fx_smile():
     """The FX twin through its own moneyness convention (forward / strike, `use_forward`): the
     same exact two-leg oracle on the collinear FX smile."""
     deal = {'Object': 'FXBinaryOption', 'Reference': 'FXB', 'Currency': 'USD',
             'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
             'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': FX_SPOT,
-            'Cash_Payoff': CASH, 'Expiry_Date': EXPIRY}
+            'Payoff': CASH, 'Expiry_Date': EXPIRY}
     factors = dict(RATES, **{'FXVol.EUR.USD': _surface(FX_ATM, FX_SKEW)})
     fwd = FX_SPOT * math.exp((R_USD - R_EUR) * T)
     sigma_of = lambda k: FX_ATM + FX_SKEW * (fwd / k - 1.0)

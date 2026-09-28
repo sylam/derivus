@@ -22,7 +22,7 @@ DEALS = [
          Strike_Price=100.0, Units=100.0, Cash_Rebate=500.0, Barrier_Type='Down_And_Out',
          Barrier_Price=90.0, Barrier_Dates=MONTHLY),
     dict(OPTION, Object='EquityBinaryOption', Reference='EQBIN', Option_Type='Call',
-         Strike_Price=105.0, Cash_Payoff=10_000.0),
+         Strike_Price=105.0, Payoff=10_000.0),
     dict(OPTION, Object='EquityBarrierBinaryOption', Reference='EQKOBIN', Option_Type='Call',
          Strike_Price=100.0, Cash_Payoff=10_000.0, Barrier_Type='Up_And_Out', Barrier_Price=120.0,
          Barrier_Dates=MONTHLY),

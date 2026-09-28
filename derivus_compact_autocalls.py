@@ -112,7 +112,9 @@ def check(roles):
         if roles[role]:
             expect(close(total * strike, units, LEVEL), '%s units x strike = %g = the notional %g (the units imply an initial level of %.2f)' % (
                 role, total * strike, units, units / total))
-    payout = sum(deal(x)['Cash_Payoff'] for x in roles['digital'])
+    payout = sum(deal(x)['Payoff'] for x in roles['digital'])
+    expect(all(deal(x).get('Payoff_Style', 'Cash') == 'Cash' for x in roles['digital']),
+           'digital legs pay cash, which is what the fold carries (an asset-or-nothing leg is not)')
     expect(payout <= (1.0 - ratio) * units * (1.0 + LEVEL), 'digital payout %g within the strike-to-barrier gap %g' % (payout, (1.0 - ratio) * units))
     for leg in roles['digital']:
         if ts(deal(leg).get('Settlement_Date', coupons[-1])) != coupons[-1]:

@@ -26,7 +26,8 @@ const CURRENCY_FIELDS = [
 
 const AMOUNT_FIELDS = [
   'Principal', 'Underlying_Amount', 'Amount', 'Buy_Amount', 'Near_Buy_Amount', 'Sell_Amount',
-  'Units', 'Volume', 'Settlement_Amount', 'Cash_Payoff', 'LeverageNotional', 'Opening_Balance',
+  'Units', 'Volume', 'Settlement_Amount', 'Cash_Payoff', 'Payoff', 'LeverageNotional',
+  'Opening_Balance',
 ];
 
 const STRIKE_FIELDS = [
