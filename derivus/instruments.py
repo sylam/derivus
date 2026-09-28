@@ -120,7 +120,7 @@ def refuse_unpaired_schedule(field, rows, deal_type):
                              field.get('Reference', deal_type), deal_type))
 
 
-def refuse_zero_cash_payoff(field, deal_type):
+def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
     """Refuse a digital whose `Cash_Payoff` is exactly 0.0.
 
     The leg pays nothing on every path it is in the money, so it prices to zero and the structure
@@ -128,13 +128,13 @@ def refuse_zero_cash_payoff(field, deal_type):
     `Cash_Payoff` is REQUIRED precisely because 0.0 is falsy and reads as unauthored. A named
     SKIP, not the fatal class: the netting set prices without the leg and the log names it.
     """
-    if field['Cash_Payoff'] == 0.0:
+    if field[fieldname] == 0.0:
         raise ValueError(
-            '{}: {} declares Cash_Payoff 0.0, and a digital that pays nothing is not a deal - it '
+            '{}: {} declares {} 0.0, and a digital that pays nothing is not a deal - it '
             'prices to exactly zero on every path and the leg it was booked to cancel keeps its '
             'whole payoff. Author the amount the leg cancels (derivus_compact_autocalls.py names '
             'it on a six-leg structure), or delete the leg'.format(
-                field.get('Reference', deal_type), deal_type))
+                field.get('Reference', deal_type), deal_type, fieldname))
 
 
 def became(source, deal_type, calendars, valuation_options, **overrides):
@@ -3757,7 +3757,7 @@ class EquityBarrierBinaryOption(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        refuse_zero_cash_payoff(self.field, 'EquityBarrierBinaryOption')
+        refuse_zero_payoff(self.field, 'EquityBarrierBinaryOption')
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
@@ -3948,7 +3948,8 @@ class EquityOptionDeal(Deal):
 class EquityBinaryOption(EquityOptionDeal):
 
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
-        F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+        F('Payoff', 'Float', default=REQUIRED, sized=True),
+        F('Payoff_Style', 'Text', default='Cash', values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='')
 ])]
 
@@ -3973,7 +3974,7 @@ class EquityBinaryOption(EquityOptionDeal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        refuse_zero_cash_payoff(self.field, 'EquityBinaryOption')
+        refuse_zero_payoff(self.field, 'EquityBinaryOption', fieldname='Payoff')
         return super(EquityBinaryOption, self).calc_dependencies(
             base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
@@ -3998,8 +3999,9 @@ class EquityBinaryOption(EquityOptionDeal):
                   pricing.calc_moneyness(strike * (1.0 + eps), spot, forward, deal_data)) if eps else None
 
         mtm = pricing.pv_european_option(
-            shared, time_grid, deal_data, self.field['Cash_Payoff'], moneyness, forward,
-            binary=True, digital_spread=spread) * fx_rep
+            shared, time_grid, deal_data, self.field['Payoff'], moneyness, forward,
+            binary=True, digital_spread=spread,
+            payoff_style = self.field['Payoff_Style'].lower()) * fx_rep
 
         return mtm
 
@@ -6543,10 +6545,10 @@ class FXEuropeanOption(FXOptionDeal):
 
 class FXBinaryOption(FXOptionDeal):
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
-        F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+        F('Payoff', 'Float', default=REQUIRED, sized=True),
+        F('Payoff_Style', 'Text', default='Cash', values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
+        F('Strike_Price', 'Float', default=0.0, description=FX_AXIS.format('Strike price')),
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -6587,14 +6589,16 @@ class FXBinaryOption(FXOptionDeal):
         # spread legs at the deal's own moneyness convention (see EquityBinaryOption.generate)
         eps = self.options['Relative_Digital_Spread']
         spread = (eps,
-                  pricing.calc_moneyness(strike * (1.0 - eps), forward, forward, deal_data,
-                                         use_forward=True, invert_moneyness=invert_moneyness),
-                  pricing.calc_moneyness(strike * (1.0 + eps), forward, forward, deal_data,
-                                         use_forward=True, invert_moneyness=invert_moneyness)) if eps else None
+                  pricing.calc_moneyness(
+                      strike * (1.0 - eps), forward, forward, deal_data,
+                      use_forward=True, invert_moneyness=invert_moneyness),
+                  pricing.calc_moneyness(
+                      strike * (1.0 + eps), forward, forward, deal_data,
+                      use_forward=True, invert_moneyness=invert_moneyness)) if eps else None
 
         mtm = pricing.pv_european_option(
-            shared, time_grid, deal_data, self.field['Cash_Payoff'], moneyness, forward,
-            binary=True, digital_spread=spread) * fx_rep
+            shared, time_grid, deal_data, self.field['Payoff'], moneyness, forward, binary=True,
+            digital_spread=spread, payoff_style=self.field['Payoff_Style'].lower()) * fx_rep
 
         return mtm
 

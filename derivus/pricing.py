@@ -2628,11 +2628,12 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
 
 
 def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward, binary=False,
-                       digital_spread=None):
-    """European option (or, under `binary`, its cash-or-nothing digital) at each scenario date.
-
-    `digital_spread` prices the digital as a tight call/put spread instead of a closed-form binary,
-    which is what puts the smile's dVol/dK term into the price.
+                       digital_spread=None, payoff_style='cash'):
+    """
+    European option or, under `binary`, a cash-or-asset digital at each scenario date.
+    
+    `digital_spread` prices the digital as a tight call/put spread instead of
+    closed form, incorporating the smile's dVol/dK contribution.
     """
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -2649,29 +2650,49 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
         forward = adj['s_adj'] * forward * torch.exp(adj['b_adj'] * shared.one.new(expiry.reshape(-1, 1)))
 
     if binary:
+        w = factor_dep['Option_Type']
+        strike = factor_dep['Strike_Price']
+        buy_sell = factor_dep['Buy_Sell']
+        is_asset = payoff_style == 'asset'
         if digital_spread is not None:
-            # each leg re-queries the surface at its OWN strike. The quanto drift bend (ATM-vol
-            # b_adj) and the compo forward are strike-free and already in `forward`; a compo leg
-            # composes its own strike's vol
+            # Price a tight strike spread, re-querying the smile at each leg.
             eps, m_lo, m_hi = digital_spread
-            strike = factor_dep['Strike_Price']
             legs = []
+
             for shift, m in ((-1.0, m_lo), (1.0, m_hi)):
-                leg_vols = utils.VolSurface.rate(factor_dep['Volatility'], m, expiry, shared)
+                leg_vols = utils.VolSurface.rate(
+                    factor_dep['Volatility'], m, expiry, shared)
+
                 if adj is not None and adj['fx_vol'] is not None:
                     leg_vols = compo_vol(leg_vols, adj['fx_vol'], adj['rho'])
+
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
-                    logging.debug('DIGITAL_SPREAD eps=%.6g strike=%.6g leg=%s vol=%.6g',
-                                  eps, strike, '-+'[shift > 0], float(leg_vols[0].mean()))
+                    logging.debug(
+                        'DIGITAL_SPREAD eps=%.6g strike=%.6g leg=%s vol=%.6g',
+                        eps, strike, '-+'[shift > 0], float(leg_vols[0].mean())
+                    )
+
                 legs.append(utils.black_european_option(
-                    forward, strike * (1.0 + shift * eps), leg_vols, expiry, 1.0,
-                    factor_dep['Option_Type'], shared))
-            value = nominal * factor_dep['Buy_Sell'] * factor_dep['Option_Type'] * (
-                legs[0] - legs[1]) / (2.0 * eps * strike)
+                    forward, strike * (1.0 + shift * eps), leg_vols, expiry, 1.0, w, shared)
+                    )
+
+            # w * (V(K-epsK) - V(K+epsK)) / 2eps = K * cash digital
+            digital_component = w * (legs[0] - legs[1]) / (2.0 * eps)
+            if is_asset:
+                vanilla = utils.black_european_option(
+                    forward, strike, vols, expiry, 1.0, w, shared)
+
+                # asset digital = w * vanilla + K * cash digital
+                digital = w * vanilla + digital_component
+            else:
+                digital = digital_component / strike
         else:
-            value = utils.black_european_option(
-                forward, factor_dep['Strike_Price'], vols, expiry,
-                factor_dep['Buy_Sell'], factor_dep['Option_Type'], shared, cash_payoff=nominal)
+            payoff_kwarg = ({'asset_payoff': 1.0} if is_asset else {'cash_payoff': 1.0})
+
+            digital = utils.black_european_option(
+                forward, strike, vols, expiry, 1.0, w, shared, **payoff_kwarg)
+
+        value = nominal * buy_sell * digital
     else:
         theo_price = utils.black_european_option(
             forward, factor_dep['Strike_Price'], vols, expiry,

@@ -3896,7 +3896,8 @@ def bachelier_european_option(F, X, vol, tenor, buyorsell, callorput, shared, ca
 
     return buyorsell * torch.where(guard, prem, value)
 
-def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared, cash_payoff=0.0, shift=0.0):
+def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared,
+                          cash_payoff=0.0, asset_payoff=0.0, shift=0.0):
     # calculates the black function WITHOUT discounting
 
     if isinstance(tenor, float):
@@ -3938,9 +3939,11 @@ def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared, cash_p
             strike = strike + shift
         d1 = torch.log(forward / strike) / stddev + 0.5 * stddev
         d2 = d1 - stddev
-        if cash_payoff:
-            prem = cash_payoff * norm_cdf(callorput * d2)
-            value = cash_payoff * (callorput * (forward - strike) > 0) * shared.one
+        if cash_payoff or asset_payoff:
+            payoff, d = (cash_payoff, d2) if cash_payoff else (asset_payoff * forward, d1)
+            itm = callorput * (forward - strike) > 0
+            prem = payoff * norm_cdf(callorput * d)
+            value = payoff * itm * shared.one
         else:
             prem = callorput * (forward * norm_cdf(callorput * d1) - strike * norm_cdf(callorput * d2))
             value = torch.relu(callorput * (forward - strike))
