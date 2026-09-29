@@ -1,5 +1,5 @@
-"""FX - the Asians, the one-touch, the partial-time barrier and the extendable forward, beside a
-barrier paying its rebate, as `tests/test_position_scaling.py` trials them."""
+"""FX - the Asians, the one-touch and the no-touch, the partial-time barrier and the extendable
+forward, beside a barrier paying its rebate, as `tests/test_position_scaling.py` trials them."""
 
 import pandas as pd
 
@@ -23,6 +23,10 @@ DEALS = [
                 Sampling_Data_1=[[date, 0.0, 1.0] for date in dates(9, 10, 11, 12)],
                 Sampling_Data_2=[[date, 0.0, 1.0] for date in dates(1, 2, 3, 4)]),
     {'Object': 'FXOneTouchOption', 'Reference': 'FXOT', 'Currency': 'USD',
+     'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+     'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
+     'Barrier_Price': 1.35},
+    {'Object': 'FXNoTouchOption', 'Reference': 'FXNT', 'Currency': 'USD',
      'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
      'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
      'Barrier_Price': 1.35},

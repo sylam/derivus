@@ -4458,23 +4458,37 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
         return field_index
 
 
+#: What a one-touch and a no-touch on an equity share both are - every field but when a one-touch
+#: pays, a no-touch paying at expiry alone.
+EQUITY_TOUCH = own('EquityOneTouchOption', [
+    F('Payoff_Currency', 'Text', default='', convention=True),
+    F('Equity', 'Text', default='', obj='Tuple'),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
+    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
+    F('Barrier_Price', 'Float', default=0),
+    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
+    F('Equity_Volatility', 'Text', default='', obj='Tuple'),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Currency', 'Text', default='')
+])
+
+
 class EquityOneTouchOption(Deal):
-    fields = [ADMIN, own('EquityOneTouchOption', [
-        F('Payoff_Currency', 'Text', default='', convention=True),
-        F('Equity', 'Text', default='', obj='Tuple'),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
-        F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-        F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Barrier_Price', 'Float', default=0),
-        F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
-        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry']),
-        F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default='')
-])]
+    fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
+        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
+], role='Timing')]
+
+    #: paid where the barrier WAS touched - a no-touch pays where it never was
+    no_touch = False
+
+    @property
+    def payment_timing(self):
+        """When the payout is paid - at the `Touch` or at `Expiry` - which a no-touch fixes."""
+        return self.field['Payment_Timing']
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4496,9 +4510,9 @@ class EquityOneTouchOption(Deal):
         # the pricer's closed-form chain has exactly these two branches, and `reset` /
         # `add_grid_dates` read the field before dependencies run - a third value is a malformed
         # program, refused at construction
-        if self.field.get('Payment_Timing', 'Expiry') not in ('Touch', 'Expiry'):
+        if self.payment_timing not in ('Touch', 'Expiry'):
             raise ValueError('EquityOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
-                self.field['Payment_Timing']))
+                self.payment_timing))
 
     def reset(self, calendars):
         super(EquityOneTouchOption, self).reset()
@@ -4507,7 +4521,7 @@ class EquityOneTouchOption(Deal):
 
     def add_grid_dates(self, parser, base_date, grid):
         # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.field['Payment_Timing'] == 'Touch':
+        if self.payment_timing == 'Touch':
             if isinstance(grid, str):
                 grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
                 self.reval_dates.update(grid_dates)
@@ -4523,7 +4537,7 @@ class EquityOneTouchOption(Deal):
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         # don't add any extra reval dates if this is a touch option
         if relative_to_settlement:
-            if self.field['Payment_Timing'] != 'Touch':
+            if self.payment_timing != 'Touch':
                 for curr, fixings in self.settlement_currencies.items():
                     new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
                     self.reval_dates.update(new_dates)
@@ -4603,6 +4617,19 @@ class EquityOneTouchOption(Deal):
         mtm = pv * fx_rep
 
         return mtm
+
+
+class EquityNoTouchOption(EquityOneTouchOption):
+    fields = [ADMIN, EQUITY_TOUCH]
+
+    no_touch = True
+    #: paid at expiry alone, where the barrier was never touched
+    payment_timing = 'Expiry'
+
+    documentation = ('Fx And Equity', [
+        'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates),',
+        'paying **Cash_Payoff** at expiry where the barrier was never touched - the one-touch paid at',
+        'expiry on the same terms is its complement, the two together the discounted payout.'])
 
 
 class EquityBarrierOption(Deal):
@@ -5527,22 +5554,36 @@ class EquitySwapLeg(Deal):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)
 
 
+#: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
+#: pays, a no-touch paying at expiry alone.
+FX_TOUCH = own('FXOneTouchOption', [
+    F('Payoff_Currency', 'Text', default='', convention=True),
+    F('Underlying_Currency', 'Text', default=''),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
+    F('Barrier_Price', 'Float', default=0,
+      description=FX_AXIS.format('Barrier price')),
+    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    F('Expiry_Date', 'Date', default=''),
+    F('FX_Volatility', 'Text', default='', obj='Tuple'),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Currency', 'Text', default='')
+])
+
+
 class FXOneTouchOption(Deal):
-    fields = [ADMIN, FX_ADMIN, own('FXOneTouchOption', [
-        F('Payoff_Currency', 'Text', default='', convention=True),
-        F('Underlying_Currency', 'Text', default=''),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-        F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Barrier_Price', 'Float', default=0,
-          description=FX_AXIS.format('Barrier price')),
-        F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
-        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry']),
-        F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default='')
-])]
+    fields = [ADMIN, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
+        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
+], role='Timing')]
+
+    #: paid where the barrier WAS touched - a no-touch pays where it never was
+    no_touch = False
+
+    @property
+    def payment_timing(self):
+        """When the payout is paid - at the `Touch` or at `Expiry` - which a no-touch fixes."""
+        return self.field['Payment_Timing']
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -5559,9 +5600,9 @@ class FXOneTouchOption(Deal):
         # the pricer's closed-form chain has exactly these two branches, and `reset` /
         # `add_grid_dates` read the field before dependencies run - a third value is a malformed
         # program, refused at construction
-        if self.field.get('Payment_Timing', 'Expiry') not in ('Touch', 'Expiry'):
+        if self.payment_timing not in ('Touch', 'Expiry'):
             raise ValueError('FXOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
-                self.field['Payment_Timing']))
+                self.payment_timing))
 
     def reset(self, calendars):
         super(FXOneTouchOption, self).reset()
@@ -5570,7 +5611,7 @@ class FXOneTouchOption(Deal):
 
     def add_grid_dates(self, parser, base_date, grid):
         # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.field['Payment_Timing'] == 'Touch':
+        if self.payment_timing == 'Touch':
             if isinstance(grid, str):
                 grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
                 self.reval_dates.update(grid_dates)
@@ -5586,7 +5627,7 @@ class FXOneTouchOption(Deal):
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         # don't add any extra reval dates if this is a touch option
         if relative_to_settlement:
-            if self.field['Payment_Timing'] != 'Touch':
+            if self.payment_timing != 'Touch':
                 for curr, fixings in self.settlement_currencies.items():
                     new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
                     self.reval_dates.update(new_dates)
@@ -5650,6 +5691,19 @@ class FXOneTouchOption(Deal):
         mtm = pv * fx_rep
 
         return mtm
+
+
+class FXNoTouchOption(FXOneTouchOption):
+    fields = [ADMIN, FX_ADMIN, FX_TOUCH]
+
+    no_touch = True
+    #: paid at expiry alone, where the barrier was never touched
+    payment_timing = 'Expiry'
+
+    documentation = ('Fx And Equity', [
+        'A path dependent FX Option described [here](#one-touch-and-no-touch-binary-options-and-rebates),',
+        'paying **Cash_Payoff** at expiry where the barrier was never touched - the one-touch paid at',
+        'expiry on the same terms is its complement, the two together the discounted payout.'])
 
 
 class FXBarrierOption(Deal):

@@ -1,4 +1,4 @@
-"""Equity - the share itself and its barrier, binary, one-touch and Asian options, as
+"""Equity - the share itself and its barrier, binary, one-touch, no-touch and Asian options, as
 `tests/test_position_scaling.py` trials them."""
 
 import pandas as pd
@@ -27,6 +27,10 @@ DEALS = [
          Strike_Price=100.0, Cash_Payoff=10_000.0, Barrier_Type='Up_And_Out', Barrier_Price=120.0,
          Barrier_Dates=MONTHLY),
     {'Object': 'EquityOneTouchOption', 'Reference': 'EQOT', 'Currency': 'USD',
+     'Discount_Rate': 'USD', 'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
+     'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Down',
+     'Barrier_Price': 90.0},
+    {'Object': 'EquityNoTouchOption', 'Reference': 'EQNT', 'Currency': 'USD',
      'Discount_Rate': 'USD', 'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
      'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Down',
      'Barrier_Price': 90.0},

@@ -18,6 +18,7 @@ defect. No tolerance here was widened to make it green.
 """
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,9 @@ from derivus import utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
 from crn_ladder import ladder
+import trial_equity
+import trial_fx
+from test_position_scaling import document, marks
 
 BASE = pd.Timestamp('2024-06-28')
 DTYPE = torch.float64
@@ -200,6 +204,44 @@ def test_one_touch_paid_on_touch_settles_and_leaves():
     assert v[-1] < 0.25 * v[0], f'paid-on-touch value should run off, got {np.round(v, 2)}'
 
 
+#: The same terms paid at expiry where the barrier was NEVER touched.
+NO_TOUCH = dict(ONE_TOUCH, Object='EquityNoTouchOption', Reference='NT1')
+
+
+def test_a_no_touch_is_the_one_touch_paid_at_expiry_s_complement():
+    """A NO-TOUCH PAYS WHERE THE BARRIER WAS NEVER TOUCHED, at expiry. Beside the one-touch paid at
+    expiry on the same terms it holds the payout on every path and every date, touched and
+    untouched alike, and the two settle it between them at expiry; alone it is worth the payout
+    less the reflection formula's touch probability; and in a world with rates the pair, on an
+    equity and on an exchange rate, is worth the cashflow paying the payout at expiry.
+
+    Killing mutations: the one-touch's own value carried into the no-touch; a touched path left
+    holding the payout; the untouched paths never settled; a no-touch type priced as a one-touch.
+    """
+    c = _cfg()
+    c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})} for deal in (
+        dict(ONE_TOUCH, Payment_Timing='Expiry'), NO_TOUCH)]
+    _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 512,
+        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
+        'Generate_Cashflows': 'Yes', 'Deflation_Interest_Rate': 'USD'})
+    assert np.abs(out['Results']['mtm'].values - 100.0).max() < 1e-9, 'the pair holds the payout'
+    settled = out['Results']['cashflows']['USD'].loc[BASE + pd.Timedelta(days=365)]
+    assert np.abs(settled.values - 100.0).max() < 1e-9, 'and settles it between them at expiry'
+
+    alone = _profile('0d 3m(3m)', deal=NO_TOUCH).values.mean(axis=1)
+    assert alone[0] == pytest.approx(100.0 * (1.0 - _analytic_touch_probability()), rel=2e-3)
+
+    for family, pair in ((trial_equity, ('EQOT', 'EQNT')), (trial_fx, ('FXOT', 'FXNT'))):
+        deals = [deal for deal in family.DEALS if deal['Reference'] in pair] + [
+            {'Object': 'FixedCashflowDeal', 'Reference': 'PAYOUT', 'Currency': 'USD',
+             'Discount_Rate': 'USD', 'Amount': 10_000.0, 'Payment_Date': trial_fx.E}]
+        marked = {name: float.fromhex(mark) for name, mark in marks(document(SimpleNamespace(
+            DEALS=deals, FACTORS=family.FACTORS, CONFIGURATION=family.CONFIGURATION))).items()}
+        assert marked[pair[0]] + marked[pair[1]] == pytest.approx(marked['PAYOUT'], rel=1e-9), (
+            pair, marked)
+
+
 BARRIER_DEAL = {
     'Object': 'EquityBarrierOption', 'Reference': 'BARR1', 'Currency': 'USD',
     'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
@@ -212,7 +254,8 @@ BARRIER_DEAL = {
 
 @pytest.mark.parametrize('deal,label', [
     (BARRIER_DEAL, 'barrier'),
-    (dict(ONE_TOUCH, Payment_Timing='Expiry'), 'one_touch')])
+    (dict(ONE_TOUCH, Payment_Timing='Expiry'), 'one_touch'),
+    (NO_TOUCH, 'no_touch')])
 def test_aad_delta_matches_bump_and_reprice(deal, label):
     """The gradient has to be the derivative of the value actually reported, so under common random
     numbers a central difference estimates the same derivative without touching the tape.

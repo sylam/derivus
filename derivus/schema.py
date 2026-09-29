@@ -1204,7 +1204,7 @@ mapping = {
                  'YieldInflationCashflowListDeal', 'CashAccountDeal'],
             'New FX Derivative':
                 ['FXNonDeliverableForward', 'FXForwardDeal', 'FXOptionDeal', 'FXBinaryOption',
-                 'FXDiscreteExplicitAsianOption', 'FXOneTouchOption',
+                 'FXDiscreteExplicitAsianOption', 'FXOneTouchOption', 'FXNoTouchOption',
                  'FXBarrierOption', 'FXSwapDeal',
                  'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
                  'FXExtendableForwardDeal',
@@ -1216,7 +1216,7 @@ mapping = {
             'New Equity Derivative':
                 ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',
                  'EquityOptionDeal', 'EquityBinaryOption',
-                 'EquityOneTouchOption', 'QEDI_CustomAutoCallSwap',
+                 'EquityOneTouchOption', 'EquityNoTouchOption', 'QEDI_CustomAutoCallSwap',
                  'QEDI_CustomAutoCallSwap_V2', 'EquitySwapletListDeal',
                  'EquityBarrierOption', 'EquityBarrierBinaryOption',
                  'EquityDiscreteExplicitAsianOption'],
