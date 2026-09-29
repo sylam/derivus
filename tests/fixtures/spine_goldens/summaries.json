@@ -14,6 +14,7 @@
   "market_declared": "a market name was pointed at a values vector",
   "official_close_declared": "the official close was declared",
   "policy_declared": "a policy document was declared",
+  "portfolio_declared": "a portfolio was declared",
   "quote_filed": "a quote was filed",
   "rehash_declared": "a hash algorithm was declared",
   "rejection": "a plan was rejected",

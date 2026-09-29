@@ -26,6 +26,7 @@ with: it asks the chain and never the vocabulary, never scope and never the tag,
 the door a copy of a newer hub - or somebody with a file handle - comes through. That is the door
 the oracle stands behind.
 """
+import hashlib
 import json
 import os
 import sys
@@ -34,7 +35,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus_spine import ChainBroken, SpineLog, oracle, policy, verify_home
+from derivus_spine import CapabilityDenied, ChainBroken, SpineLog, oracle, policy, verify_home
+from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.verbs import STANDING, approve, book, file_quote
 from derivus_spine.vocabulary import cited_blobs
 
@@ -122,7 +124,7 @@ def test_the_report_answers_nine_and_names_what_it_could_not_assess(tmp_path):
     assert sorted(name for name, found in answers.items() if found['held'] is None) == sorted(
         ('copies_agree', 'every_numbers_replay_tuple', 'every_refusal_is_a_denial'))
     assert '2 close(s) over 1 market(s)' in answers['closes_superseded_never_edited']['evidence'][0]
-    assert answers['duplicates_coalesce']['evidence'] == ['21 tag(s) over 21 frame(s)']
+    assert answers['duplicates_coalesce']['evidence'] == ['22 tag(s) over 22 frame(s)']
 
 
 def test_two_homes_that_are_not_copies_of_one_history_are_named(tmp_path):
@@ -177,6 +179,194 @@ def test_a_frame_under_a_seat_the_document_never_scoped_is_named(tmp_path):
     assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
     said = answers['nothing_outside_its_seat']['evidence'][0]
     assert STRANGER in said and 'no book scope' in said and 'the writer would have refused' in said
+
+
+def test_a_node_seat_and_a_node_admin_are_judged_where_the_writer_judged_them(tmp_path):
+    """NOTHING OUTSIDE ITS SEAT, AT A NODE. The writer judges a fill at the portfolio its body names
+    and a node admin's capabilities declaration by what it moves beyond its node, so the oracle
+    opens the same bodies and asks the same two functions: a desk seat's fill into its own node of
+    a book it holds nothing over, and a node admin's declaration moving only rows under its node,
+    both hold - and the same fill forged into the node beside it is named.
+
+    Killing mutations: the oracle judging at the envelope's book, which calls the node fill a
+    forgery; and the oracle not re-running `declarable`, which calls the node admin's legal
+    declaration one.
+    """
+    desk, node = 'subject-desk-two', BOOK + '/FX'
+    home = seeded(tmp_path, 'nodes', clips=())
+    log = SpineLog(home)
+    try:
+        granted(log, ACTOR)
+        rows = [{'subject': desk, 'verb': verb, 'book': node} for verb in ('admin', 'book')]
+        rows += [{'subject': ACTOR, 'verb': 'admin', 'book': '*'}]
+        for grants in (rows, rows + [{'subject': 'subject-desk-three', 'verb': 'book',
+                                      'book': node + '/Options'}]):
+            blob = log.store.put(canonical_document({'grants': grants, 'read': []}))
+            log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
+                       actor=ACTOR if grants is rows else desk, blob_refs=(blob,))
+        log.append('fill', dict(fill('EXEC-NODE'), portfolio=node), actor=desk, book=BOOK)
+        with pytest.raises(CapabilityDenied):
+            log.append('fill', dict(fill('EXEC-BESIDE'), portfolio=BOOK + '/Rates'), actor=desk,
+                       book=BOOK)
+    finally:
+        log.close()
+    held = oracle.report(home)['nothing_outside_its_seat']
+    assert held['held'] is True, held
+
+    answers = oracle.report(planted(
+        home, tmp_path, 'beside', 'fill', dict(fill('EXEC-FORGED'), portfolio=BOOK + '/Rates'),
+        actor=desk, book_name=BOOK))
+    assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+    assert "over '{}/Rates'".format(BOOK) in answers['nothing_outside_its_seat']['evidence'][0]
+
+
+def test_the_writers_own_voice_is_forged_under_a_seat_and_a_seat_is_forged_under_it(tmp_path):
+    """THE WRITER'S OWN VOICE, read off the envelope. A run the hub attests is the writer's alone,
+    so one standing under a seat is that voice forged; and the writer's name on a type its voice
+    does not say is a seat wearing it.
+
+    Killing mutation: the voice read off `capability_denied` alone, which leaves an attestation
+    filed by a desk seat - numbers the hub never ran - reading as a fact of the record.
+    """
+    home = seeded(tmp_path, 'voice', clips=())
+    log = SpineLog(home)
+    try:
+        cited = dict(values_hash=log.store.put(b'{"EURUSD":1.09}'),
+                     job=log.store.put(b'{"Calc":{}}'), result=log.store.put(b'{"mtm":1.0}'))
+    finally:
+        log.close()
+    assert oracle.report(home)['nothing_outside_its_seat']['held'] is True
+
+    attested = dict(plan_hash=PLAN, engine_version='2.0', seed=1, lane=STANDING, **cited)
+    for name, event_type, body, actor in (
+            ('seat-attests', 'run_completed', attested, ACTOR),
+            ('writer-books', 'fill', fill('EXEC-WRITER'), 'writer')):
+        answers = oracle.report(planted(home, tmp_path, name, event_type, body, actor=actor,
+                                        book_name=BOOK))
+        assert oracle.failed(answers) == ['nothing_outside_its_seat'], (name, answers)
+        said = answers['nothing_outside_its_seat']['evidence'][0]
+        assert 'that voice forged' in said and repr(actor) in said, said
+
+
+def test_an_approval_in_the_writers_voice_stands_only_where_the_hub_signs(tmp_path):
+    """THE HUB'S OWN ACT, held to the record around it. The hub signs a ticket in its own voice
+    only under a tiers policy in force, then books it: under a document granting nobody `approve`,
+    an automatic tier's approval followed by the fill carrying its ticket holds - and the same
+    approval put on a copy after a four-eyes ticket was booked unsigned, or where no tiers policy
+    stands, is that voice forged, and `DV_Spine oracle` exits 1 on it.
+
+    Killing mutations: the writer's own frames re-adjudicated against the document, which calls
+    the hub's approval a seat's; and the writer's approval admitted by its voice alone, which lets
+    a forgery clear a four-eyes ticket.
+    """
+    def booked(name, rows, signed):
+        home = seeded(tmp_path, name, clips=())
+        log = SpineLog(home)
+        try:
+            granted(log, ACTOR)
+            policy.declare(log, ACTOR, policy.TIERS_POLICY, {'tiers': rows})
+            file_quote(log, ACTOR, 'Q-1', 'ZeroCostCollar', PLAN, b'{"EURUSD":1.0851}',
+                       {'floor': 1.07}, 4100.0, ticket=TICKET, book=BOOK)
+            if signed:
+                log.own('approval', {'plan_hash': TICKET}, book=BOOK)
+            book(log, ACTOR, b'{"Reference":"CF1"}', -1.0, 'LEI-549300', 'CSA-0007', 'Q-1',
+                 book=BOOK, ticket=TICKET)
+        finally:
+            log.close()
+        return home
+
+    held = oracle.report(booked('automatic', [{'name': 'auto'}], signed=True))
+    assert oracle.failed(held) == [], held
+    for name, where in (('four-eyes', booked('unsigned', TIERS['tiers'], signed=False)),
+                        ('no-workflow', seeded(tmp_path, 'bare', clips=()))):
+        copy = planted(where, tmp_path, name, 'approval', {'plan_hash': TICKET}, actor='writer',
+                       book_name=BOOK)
+        answers = oracle.report(copy)
+        assert oracle.failed(answers) == ['nothing_outside_its_seat'], (name, answers)
+        assert 'that voice forged' in answers['nothing_outside_its_seat']['evidence'][0]
+        assert spine('oracle', '--home', str(copy)).returncode == 1, name
+
+
+def test_a_restrike_judged_narrower_than_what_it_moved_is_named(tmp_path):
+    """AN AMENDMENT IS JUDGED WHERE ITS TERMS ARE HELD, and a portfolio sits in its own book. The
+    oracle re-derives the deepest node holding the terms at the frame before an amendment, off the
+    positions fold, and holds the body's portfolio to it: a restrike judged at the book holding
+    `/FX` and `/Rates` holds, while a copy carrying the FX seat's restrike judged at its own node -
+    the Rates position moved too - is named, and so is a fill filed into another book's tree.
+
+    Killing mutations: the amendment's portfolio trusted as written, which lets a node seat move
+    every holder's position under a judgment at its own node; and the envelope's book not asked of
+    a body's portfolio, which lets a copy carry rows in another book's tree.
+    """
+    terms, restruck = b'{"Reference":"CF-R"}', b'{"Reference":"CF-R","Amount":2}'
+    home = seeded(tmp_path, 'restrike', clips=())
+    log = SpineLog(home)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'book')] + [
+            {'subject': 'subject-fx', 'verb': 'book', 'book': BOOK + '/FX'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+        for execution, node in (('E-FX', '/FX'), ('E-RT', '/Rates')):
+            book(log, ACTOR, terms, 5.0, 'LEI-1', 'CSA-1', execution, book=BOOK,
+                 portfolio=BOOK + node)
+        log.store.put(restruck)
+    finally:
+        log.close()
+    moved = {'instrument': hashlib.sha256(terms).hexdigest(),
+             'amended_to': hashlib.sha256(restruck).hexdigest()}
+    wide = planted(home, tmp_path, 'wide', 'amendment', dict(moved, portfolio=BOOK),
+                   book_name=BOOK)
+    assert oracle.failed(oracle.report(wide)) == []
+    for name, event_type, body, actor, said in (
+            ('narrow', 'amendment', dict(moved, portfolio=BOOK + '/FX'), 'subject-fx',
+             'judged narrower than what it moved'),
+            ('stray', 'fill', dict(fill('E-STRAY'), portfolio='ELSEWHERE/FX'), ACTOR,
+             "outside its own book's tree")):
+        answers = oracle.report(planted(home, tmp_path, name, event_type, body, actor=actor,
+                                        book_name=BOOK))
+        assert oracle.failed(answers) == ['nothing_outside_its_seat'], (name, answers)
+        assert said in answers['nothing_outside_its_seat']['evidence'][0], answers
+
+
+def test_the_firms_own_facts_are_judged_at_the_firm_whatever_their_envelope_names(tmp_path):
+    """A FIRM FACT IS THE FIRM'S. The capabilities document and the official close are read by
+    folds that ignore the book, so a node's admin granting itself admin over `*` and a node's mark
+    seat filing the firm's close are refused whatever book the envelope names, each denial filing
+    `*` - and the same two frames put on a copy are named by the oracle.
+
+    Killing mutation: a firm type judged at its envelope's book, which lets a node seat reach the
+    firm by naming its node.
+    """
+    governor, marks, node = 'subject-gov', 'subject-fx-marks', BOOK + '/FX'
+    home = seeded(tmp_path, 'firm', clips=())
+    log = SpineLog(home)
+    try:
+        rows = [{'subject': ACTOR, 'verb': 'admin', 'book': '*'},
+                {'subject': governor, 'verb': 'admin', 'book': node},
+                {'subject': marks, 'verb': 'mark', 'book': node}]
+        declared = log.store.put(canonical_document({'grants': rows, 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': declared},
+                   actor=ACTOR, blob_refs=(declared,))
+        grab = log.store.put(canonical_document({'grants': rows + [
+            {'subject': governor, 'verb': 'admin', 'book': '*'}], 'read': []}))
+        attempts = ((governor, 'policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': grab}),
+                    (marks, 'official_close_declared', {
+                        'market': 'official', 'values_hash': log.store.put(b'{"USDZAR":18.5}')}))
+        for actor, event_type, body in attempts:
+            with pytest.raises(CapabilityDenied):
+                log.append(event_type, body, actor=actor, book=node)
+        denied = [log.open_body(frame) for frame in log.frames()
+                  if frame['event_type'] == 'capability_denied']
+    finally:
+        log.close()
+    assert denied == [{'subject': actor, 'verb': verb, 'book': '*', 'attempted_type': event_type}
+                      for (actor, event_type, _), verb in zip(attempts, ('admin', 'mark'))]
+    for actor, event_type, body in attempts:
+        answers = oracle.report(planted(home, tmp_path, event_type, event_type, body, actor=actor,
+                                        book_name=node))
+        assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+        assert "over '*'" in answers['nothing_outside_its_seat']['evidence'][0], answers
 
 
 def test_a_refusal_the_script_asked_for_and_a_denial_it_did_not_are_both_named(tmp_path):
@@ -264,8 +454,8 @@ def test_a_standing_run_without_its_attestation_is_named(tmp_path):
                      job=log.store.put(b'{"Calc":{}}'), result=log.store.put(b'{"mtm":1.0}'))
         tuple_ = dict(plan_hash=PLAN, engine_version='2.0', seed=1,
                       values_hash=cited['values_hash'])
-        log.append('run_completed', dict(tuple_, lane=STANDING, **cited), actor=ACTOR,
-                   blob_refs=tuple(cited.values()))
+        log.own('run_completed', dict(tuple_, lane=STANDING, **cited),
+                blob_refs=tuple(cited.values()))
     finally:
         log.close()
 

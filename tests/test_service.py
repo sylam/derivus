@@ -4762,8 +4762,9 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     finally:
         log.close()
     assert len(filed) == 1 and filed[0]['quote_id'] == quote['quote_id']
-    assert filed[0]['ticket'] == service.load(on_disk).plan_hash(), \
-        'the ticket is not the plan this booking left the book at'
+    assert filed[0]['ticket'] == service.spine.ticket(service.load(on_disk).plan_hash(),
+                                                      quote['quote_id']), \
+        'the ticket is not the plan this booking left the book at, under this quote'
 
     marked_id, marked = run(on_disk)
     assert marked['status'] == 'done', marked.get('error')

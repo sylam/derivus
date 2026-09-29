@@ -211,9 +211,37 @@ def test_a_settlement_is_filed_under_its_own_key_and_read_back_under_it(tmp_path
     declare(log, MINT, document(grants=((DESK, 'mark', BOOK),)))
     with pytest.raises(CapabilityDenied) as refusal:
         verbs.transition(log, DESK, key, 'unsettled', book=BOOK)
-    assert 'book' in str(refusal.value) and DESK in str(refusal.value)
-    assert denials(log)[-1][1] == {'subject': DESK, 'verb': 'book', 'book': BOOK,
+    assert 'settle' in str(refusal.value) and DESK in str(refusal.value)
+    assert denials(log)[-1][1] == {'subject': DESK, 'verb': 'settle', 'book': BOOK,
                                    'attempted_type': 'status_transition'}
+
+
+def test_the_back_office_settles_and_the_desk_books_and_neither_does_the_other(tmp_path):
+    """SETTLE IS ITS OWN VERB. What the back office moves - a payment, a confirmation, money held
+    under paper - is a `status_transition`, and a seat granted `settle` files it and is refused a
+    fill, while a seat granted `book` books and is refused the settlement with the denial naming
+    `settle`: the verbs imply nothing about each other.
+
+    Killing mutation: `status_transition` left demanding `book`, which lets every trader settle
+    their own trades and turns the settlements seat away from its own work.
+    """
+    home, log = minted(tmp_path)
+    declare(log, MINT, document(grants=((DESK, 'book', BOOK), (STRANGER, 'settle', BOOK))))
+    key = address(b'CF1/fixed/payment/2026-06-28')
+
+    assert verbs.transition(log, STRANGER, key, 'settled', book=BOOK)['coalesced'] is False
+    with pytest.raises(CapabilityDenied):
+        verbs.book(log, STRANGER, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1', book=BOOK)
+    assert verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1',
+                      book=BOOK)['coalesced'] is False
+    with pytest.raises(CapabilityDenied) as refusal:
+        verbs.transition(log, DESK, key, verbs.CONFIRMED, book=BOOK)
+    assert "no settle scope over 'FX-VANILLA'" in str(refusal.value)
+    assert [body for _, body in denials(log)] == [
+        {'subject': STRANGER, 'verb': 'book', 'book': BOOK, 'attempted_type': 'fill'},
+        {'subject': DESK, 'verb': 'settle', 'book': BOOK, 'attempted_type': 'status_transition'}]
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
 
 
 def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(tmp_path):
@@ -435,8 +463,8 @@ def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
         ('quote_filed', 'book', lambda: verbs.file_quote(
             log, STRANGER, 'Q-1', 'ZeroCostCollar', 'a' * 64, VALUES, {'floor': 17.25}, 4200.0,
             book=BOOK)),
-        ('run_completed', 'book', lambda: verbs.complete_run(
-            log, STRANGER, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)),
+        ('portfolio_declared', 'admin', lambda: verbs.declare_portfolio(
+            log, STRANGER, BOOK + '/Options')),
         ('result_pinned', 'approve', lambda: verbs.pin_result(
             log, STRANGER, claim(), JOB, VALUES, RESULT, executor_of(RESULT, seen=ran),
             book=BOOK)),
@@ -460,6 +488,48 @@ def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
     assert tolerance and len(ran) == 1, \
         'the pin re-executed before the writer refused it - a declared boundary, gated so a change ' \
         'to it is a change to this line'
+    # and the one verb here no seat is scoped for: the hub attests the runs it executed, in the
+    # writer's own voice, whatever the document grants
+    attested = verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)
+    assert attested['actor'] == 'writer' and attested['lsn'] == log.head()[0]
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_fill_carries_its_ticket_and_a_verdict_is_judged_where_it_books(tmp_path):
+    """WHERE A FACT SITS IS WHERE IT IS JUDGED. A fill files the ticket an approval of it signs; an
+    approval, a rejection, an amendment and a quote naming a portfolio are judged at that node, so
+    a seat scoped to one node of a book signs, restrikes and quotes there and is refused all of it
+    at the book above; a node of the tree is a path of named segments.
+
+    Killing mutations: the fill written without its ticket, which leaves every booking unticketed;
+    and a verdict's portfolio dropped on the way to the writer, which judges a node's approver at
+    the book it holds nothing over.
+    """
+    home, log = minted(tmp_path)
+    node, ticket = BOOK + '/Options', 'c' * 64
+    declare(log, MINT, document(grants=((MINT, 'admin', '*'), (DESK, 'approve', node),
+                                        (DESK, 'book', node))))
+    filled = verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1', book=BOOK,
+                        portfolio=node, ticket=ticket)
+    assert log.open_body(log.frame_at(filled['lsn']))['ticket'] == ticket
+    placed = (lambda **at: verbs.approve(log, DESK, ticket, book=BOOK, **at),
+              lambda **at: verbs.reject(log, DESK, ticket, 'the terms moved', book=BOOK, **at),
+              lambda **at: verbs.amend(log, DESK, INSTRUMENT, AMENDED, book=BOOK, **at),
+              lambda **at: verbs.file_quote(log, DESK, 'Q-1', 'Straddle', 'a' * 64, VALUES, {},
+                                            0.0, book=BOOK, **at))
+    for act in placed:
+        with pytest.raises(CapabilityDenied):
+            act()
+        assert act(portfolio=node)['coalesced'] is False
+    assert set(body['book'] for _, body in denials(log)) == {BOOK}
+
+    with pytest.raises(MalformedEvent):
+        verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-2', book=BOOK,
+                   portfolio=node, ticket='not a plan')
+    with pytest.raises(MalformedEvent) as refusal:
+        verbs.declare_portfolio(log, MINT, BOOK + '//Options')
+    assert 'a path of named segments' in str(refusal.value)
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
 
@@ -489,7 +559,7 @@ def test_the_writer_records_a_refusal_it_did_not_itself_make_and_a_repeat_is_one
     assert (again['lsn'], again['coalesced']) == (denied['lsn'], True)
     assert log.head()[0] == denied['lsn'], 'a repeated refusal is a second fact'
     # a firm-level job asks for the wildcard, which is the scope the body records
-    assert log.open_body(log.frame_at(log.refuse(STRANGER, 'book', None, 'run_completed')[
+    assert log.open_body(log.frame_at(log.refuse(STRANGER, 'mark', None, 'run_completed')[
         'lsn']))['book'] == '*'
 
     with pytest.raises(CapabilityDenied) as forged:
@@ -637,11 +707,11 @@ def test_the_lanes_are_three_and_exactly_one_of_them_mints(tmp_path):
 
     for silent in (verbs.TELEMETRY, verbs.CURIOSITY):
         with pytest.raises(MalformedEvent) as refusal:
-            verbs.complete_run(log, MINT, silent, claim(), JOB, VALUES, RESULT, book=BOOK)
+            verbs.complete_run(log, silent, claim(), JOB, VALUES, RESULT, book=BOOK)
         assert silent in str(refusal.value) and 'cited by a fact' in str(refusal.value)
     assert log.head()[0] == 4, 'a lane that mints nothing minted something'
 
-    attested = verbs.complete_run(log, MINT, verbs.STANDING, claim(), JOB, VALUES, RESULT,
+    attested = verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT,
                                   book=BOOK)
     body = log.open_body(log.frame_at(attested['lsn']))
     assert body['lane'] == verbs.STANDING
@@ -661,7 +731,7 @@ def test_an_attestation_checks_the_values_vector_it_is_handed_rather_than_believ
     home, log = minted(tmp_path)
 
     with pytest.raises(MalformedEvent) as refusal:
-        verbs.complete_run(log, MINT, verbs.STANDING, claim(VALUES), JOB, MOVED_VALUES, RESULT,
+        verbs.complete_run(log, verbs.STANDING, claim(VALUES), JOB, MOVED_VALUES, RESULT,
                            book=BOOK)
     said = str(refusal.value)
     assert address(VALUES) in said and address(MOVED_VALUES) in said, said
@@ -721,7 +791,7 @@ def test_a_result_pinned_matching_a_known_tuple_resolves_as_a_cache_hit(tmp_path
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
-    attested = verbs.complete_run(log, MINT, verbs.STANDING, claim(), JOB, VALUES, RESULT,
+    attested = verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT,
                                   book=BOOK)
     ran = []
 
@@ -784,7 +854,7 @@ def test_a_home_that_declared_no_tolerance_policy_pins_nothing_at_all(tmp_path):
     and not even one it already holds as an attestation. The refusal names the document to declare
     and the verb that declares it."""
     home, log = minted(tmp_path)
-    verbs.complete_run(log, MINT, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)
+    verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)
     head = log.head()[0]
 
     with pytest.raises(ReplayRefused) as refusal:
@@ -1156,13 +1226,13 @@ def test_no_attestation_appends_before_the_objects_it_cites_are_on_the_platter(t
     absent = 'f' * 64
 
     with pytest.raises(MissingBlobRefusal) as refusal:
-        log.append('run_completed', dict(claim(), lane=verbs.STANDING, job=absent,
-                                         result=address(RESULT)), actor=MINT, book=BOOK)
+        log.own('run_completed', dict(claim(), lane=verbs.STANDING, job=absent,
+                                      result=address(RESULT)), book=BOOK)
     assert absent in str(refusal.value)
     assert log.head()[0] == 4
 
     # through the verb, the same body lands: the bytes go first
-    assert verbs.complete_run(log, MINT, verbs.STANDING, claim(), JOB, VALUES, RESULT,
+    assert verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT,
                               book=BOOK)['lsn'] == 5
     log.close()
     assert verify_home(home)['events'] == 5
@@ -1179,9 +1249,9 @@ def test_a_replay_claim_is_four_coordinates_and_no_fifth(tmp_path):
                    dict(claim(), engine_version=''), dict(claim(), seed=1.5),
                    dict(claim(), plan_hash='short')):
         with pytest.raises(MalformedEvent):
-            verbs.complete_run(log, MINT, verbs.STANDING, broken, JOB, VALUES, RESULT, book=BOOK)
+            verbs.complete_run(log, verbs.STANDING, broken, JOB, VALUES, RESULT, book=BOOK)
 
-    seedless = verbs.complete_run(log, MINT, verbs.STANDING, claim(seed=None), JOB, VALUES,
+    seedless = verbs.complete_run(log, verbs.STANDING, claim(seed=None), JOB, VALUES,
                                   RESULT, book=BOOK)
     assert log.open_body(log.frame_at(seedless['lsn']))['seed'] is None
     log.close()
@@ -1213,18 +1283,25 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
     """The versioned governance act: three new types with three validators, three verb scopes and
     three `BLOB_FIELDS` rows, and every earlier type validating exactly what it validated before.
 
-    The verb scopes are the interesting half. An attestation and a quote are BOOK; a promotion is
+    The verb scopes are the interesting half. A quote is BOOK; an attestation is the WRITER's own,
+    the hub saying what it ran, and so not a type a submitter is told it may name; a promotion is
     APPROVE, because giving standing to a tuple this hub never witnessed is a second pair of eyes on
     somebody else's claim.
+
+    Killing mutation: `SUBMITTABLE` taken over every part but the denial's, which advertises the
+    attestation and the snapshot - doors only the writer's own voice opens - to every submitter.
     """
     from derivus_spine.vocabulary import (
         BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, FACT_TYPES, PROVENANCE_TYPES, SUBMITTABLE, validate)
 
     assert set(PROVENANCE_TYPES) == {'run_completed', 'result_pinned', 'quote_filed'}
     assert set(PROVENANCE_TYPES).isdisjoint(FACT_TYPES), 'a fourth mouth, not a fourth fact'
-    assert set(PROVENANCE_TYPES) <= set(EVENT_TYPES) and set(PROVENANCE_TYPES) <= set(SUBMITTABLE)
+    assert set(PROVENANCE_TYPES) <= set(EVENT_TYPES)
+    # what a submitter may name never advertises a type only the writer's own voice files
+    assert set(SUBMITTABLE) == set(EVENT_TYPES) - {
+        'capability_denied', 'run_completed', 'snapshot_registered'}
 
-    assert EVENT_VERB['run_completed'] == 'book' and EVENT_VERB['quote_filed'] == 'book'
+    assert EVENT_VERB['run_completed'] == 'writer' and EVENT_VERB['quote_filed'] == 'book'
     assert EVENT_VERB['result_pinned'] == 'approve'
     assert BLOB_FIELDS['run_completed'] == ('job', 'result', 'values_hash')
     assert BLOB_FIELDS['result_pinned'] == ('job', 'result', 'values_hash', 'tolerance_policy')
@@ -1240,8 +1317,9 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
     with pytest.raises(MalformedEvent) as refusal:
         validate('approval', {'plan_hash': 'a' * 64, 'why': 'because'})
     assert 'carries why beyond plan_hash' in str(refusal.value)
-    with pytest.raises(UnknownEventType):
+    with pytest.raises(UnknownEventType) as refusal:
         validate('knocked_out', {})
+    assert 'quote_filed' in str(refusal.value) and 'run_completed' not in str(refusal.value)
 
 
 def test_the_optional_field_is_not_an_extension_point():
@@ -1334,7 +1412,7 @@ def test_a_tiers_policy_declared_twice_leaves_the_last_one_in_force(tmp_path):
     first = policy.declare(log, MINT, policy.TIERS_POLICY,
                            {'tiers': [{'name': 'desk', 'four_eyes': True}]})
     second = policy.declare(log, MINT, policy.TIERS_POLICY, {
-        'tiers': [{'name': 'auto', 'seat': 'policy/tiers/auto'}, {'name': 'desk'}],
+        'tiers': [{'name': 'auto', 'max_tenor_years': 1.0}, {'name': 'desk'}],
         'designations': {'settlement_export': 'official'}})
 
     assert [tier['name'] for tier in policy.tiers_in_force(log)['tiers']] == ['auto', 'desk']

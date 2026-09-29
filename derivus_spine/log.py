@@ -34,15 +34,15 @@ from pathlib import Path
 
 from .canon import canonical_bytes
 from .capability import (
-    CAPABILITIES_POLICY, CAPABILITY_EVENTS, UNREADABLE, apply_event, build_state, denial_body,
-    evaluate, parse_document, verb_for)
+    ANY_BOOK, CAPABILITIES_POLICY, CAPABILITY_EVENTS, UNREADABLE, apply_event, beyond, build_state,
+    denial_body, evaluate, parse_document, scope_of, stray, verb_for)
 from .errors import (
     CapabilityDenied, ChainBroken, CollisionRefusal, HomeMissing, MalformedEvent,
     MissingBlobRefusal, SealedBodyUnreadable, WriterBusy)
 from .seal import Keys
 from .store import BlobStore
 from .vocabulary import (
-    FIRM_CLASS, RECOVERY, WRITER, WRITER_TYPES, cited_blobs, classify, is_hash, validate)
+    FIRM_CLASS, RECOVERY, WRITER, WRITER_VOICE, cited_blobs, classify, is_hash, validate)
 
 LOG = logging.getLogger(__name__)
 
@@ -230,8 +230,8 @@ class SpineLog:
 
     def __init__(self, home):
         self._lock = None
-        # The writer's own voice, off. Set only around the internal denial path, which is the one
-        # place the reserved type may be spoken and the one append that is never gated.
+        # The writer's own voice, off. Set only around `own`, the one path that stamps the reserved
+        # actor and the one append that is never gated.
         self._reserved = False
         self.home = Path(home)
         self.log = self.home / 'log'
@@ -392,6 +392,12 @@ class SpineLog:
             raise MalformedEvent(
                 'book is {!r}: a book is a non-empty name or None for the firm-level facts - '
                 'policy, checkpoints, official market declarations'.format(book))
+        named = stray(event_type, body, book)
+        if named is not None:
+            raise MalformedEvent(
+                '{}: the portfolio {!r} is not under the book {!r} the fact is filed in - a '
+                'portfolio is a node of its own book\'s tree, and this would put rows in another '
+                'book\'s; file it under the book the node sits in'.format(event_type, named, book))
         if effective_time is not None:
             check_time(effective_time)
         self._authorize(event_type, body, actor, book)
@@ -543,34 +549,40 @@ class SpineLog:
 
         Enforcement activates by declaration for the document verbs; break-glass is gated from
         event one instead, no declaration granting it and so no declaration's absence opening it. A
-        refusal is itself a fact - `capability_denied` under the writer's own name, appended before
+        refusal is itself a fact - `capability_denied` in the writer's own voice, appended before
         the raise.
 
-        Three checks, in order: the reserved type, which must be refused whether or not a document
-        exists, then scope, then the document itself, so a malformed policy is met at the moment it
-        is declared.
+        Four checks, in order: the writer's own voice, which no submitter speaks and no seat names
+        whether or not a document exists; then scope, at `scope_of`; then, where a node admin
+        declares the capabilities document, what it moves beyond its nodes; then the document
+        itself, so a malformed policy is met at the moment it is declared.
         """
-        if event_type in WRITER_TYPES and not self._reserved:
-            raise CapabilityDenied(
-                '{0} is the writer\'s own voice and no submitter appends one: a denial is a fact '
-                'ABOUT a refusal, emitted by the writer under the actor {1!r} on the path that '
-                'refuses - read the denials back off the log (they are ordinary chained events), '
-                'and do not write one'.format(event_type, WRITER))
         if self._reserved:
             return
-        doc, genesis = self._capability_state()
         verb = verb_for(event_type)
+        if actor == WRITER or verb == WRITER:
+            raise CapabilityDenied(
+                '{0} under {1!r} is the writer\'s own voice, which no submitter speaks: {2!r} is '
+                'the record\'s own name and never a seat, and {3} are filed by the writer alone, '
+                'through `SpineLog.own` - a denial is read back off the log, and a run or a '
+                'snapshot is attested by the hub that took it'.format(
+                    event_type, actor, WRITER, ', '.join(
+                        name for name in WRITER_VOICE if verb_for(name) == WRITER)))
+        doc, genesis = self.capabilities()
+        scope = scope_of(event_type, body, book)
         # By declaration for the document verbs, from event one for the RECOVERY handle: the
         # handle is not in a document, so "no document yet" cannot mean anybody may pull it.
         if (doc is not None or verb == RECOVERY) \
-                and not evaluate(doc, genesis, actor, verb, book):
-            scope = book if book is not None else '*'
-            denial = self._deny(actor, verb, book, event_type)
-            raise CapabilityDenied(
-                'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. The '
-                'refusal is itself recorded at LSN {5}'.format(
-                    actor, verb, scope, event_type,
-                    self._why(doc, genesis, actor, verb, scope), denial['lsn']))
+                and not evaluate(doc, genesis, actor, verb, scope):
+            moved = self._beyond(event_type, body, doc, actor)
+            if moved != []:
+                denial = self.refuse(actor, verb, scope, event_type)
+                shown = ANY_BOOK if scope is None else scope
+                raise CapabilityDenied(
+                    'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. '
+                    'The refusal is itself recorded at LSN {5}'.format(
+                        actor, verb, shown, event_type,
+                        self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
         if event_type == 'policy_declared' and isinstance(body, dict) \
                 and body.get('policy') == CAPABILITIES_POLICY:
             blob = body.get('blob')
@@ -583,12 +595,32 @@ class SpineLog:
             parse_document(self.store.get(blob),
                            'the capabilities document {}'.format(blob))
 
-    def _why(self, doc, genesis, actor, verb, scope):
+    def _beyond(self, event_type, body, doc, actor):
+        """What a capabilities declaration moves beyond its declarer's `admin` nodes, or None where
+        this is no such declaration or its declarer administers nothing - `capability.beyond`'s
+        answer, over a document that reads."""
+        if event_type != 'policy_declared' or body.get('policy') != CAPABILITIES_POLICY \
+                or not isinstance(doc, dict) or not is_hash(body.get('blob')):
+            return None
+        try:
+            declared = parse_document(self.store.get(body['blob']), 'the declaration')
+        except (CapabilityDenied, CollisionRefusal, MissingBlobRefusal):
+            return None
+        return beyond(doc, declared, actor)
+
+    def _why(self, doc, genesis, actor, verb, scope, moved=None):
         """The middle of a denial message: what the record says, and what would change it.
 
-        Three cases have three sentences - a stranger at the break-glass handle, a document that
-        will not read, and a document that simply grants nothing here.
+        Four cases have four sentences - a stranger at the break-glass handle, a document that
+        will not read, a node admin moving what its nodes do not reach, and a document that simply
+        grants nothing here.
         """
+        if moved:
+            return (
+                'the capabilities document in force here makes it admin of nodes that do not reach '
+                '{} - a node admin moves the grant rows under its own nodes and nothing else, a '
+                'read row being a key to every body and a `*` row the firm\'s. Have an admin over '
+                '`*` declare it'.format(', '.join(repr(row) for row in moved)))
         if verb == RECOVERY:
             return (
                 'the break-glass seat this home named at genesis is {!r}, and that grant is the '
@@ -607,7 +639,7 @@ class SpineLog:
             'a declaration stranded the last admin - recover through the break-glass seat genesis '
             'named'.format(actor, verb, scope))
 
-    def _capability_state(self):
+    def capabilities(self):
         """`(document, genesis)` in force at this head, folded once and then kept current.
 
         Built the first time an append needs it and updated as later ones land, so a writer does not
@@ -622,27 +654,32 @@ class SpineLog:
             self._capability = build_state(self)
         return (self._capability['doc'], self._capability['genesis'])
 
-    def refuse(self, subject, verb, book, attempted_type):
-        """Record a refusal somebody else made, in the writer's own voice.
+    def own(self, event_type, body, book=None, effective_time=None, blob_refs=()):
+        """Append a fact in the writer's own voice, under `WRITER`, and return its envelope.
 
-        A caller that turns a seat away BEFORE the append - queue admission, which refuses work
-        rather than a fact - lands the denial the authorization hook would have landed, instead of
-        learning to forge a reserved type. `attempted_type` is what the refused act would have said.
+        The one path that stamps the reserved actor, and never gated: the types only the writer
+        files - a denial, a run or a snapshot the hub attests - and an automatic tier's approval.
         """
-        return self._deny(subject, verb, book, attempted_type)
-
-    def _deny(self, subject, verb, book, attempted_type):
-        """Append the refusal as a fact under the writer's own name, and return its envelope.
-
-        The one path that may speak the reserved type, and the one append that is never gated. A
-        second identical denial coalesces onto the first by the ordinary tag rule.
-        """
+        if event_type not in WRITER_VOICE:
+            raise CapabilityDenied(
+                'a {} is a seat\'s to file and never the writer\'s own: its own voice files {} and '
+                'nothing else'.format(event_type, ', '.join(WRITER_VOICE)))
         self._reserved = True
         try:
-            return self.append('capability_denied',
-                               denial_body(subject, verb, book, attempted_type), actor=WRITER)
+            return self.append(event_type, body, WRITER, book=book, effective_time=effective_time,
+                               blob_refs=blob_refs)
         finally:
             self._reserved = False
+
+    def refuse(self, subject, verb, book, attempted_type):
+        """Record a refusal as a fact in the writer's own voice, and return its envelope.
+
+        The authorization hook and a caller that turns a seat away BEFORE the append - queue
+        admission, which refuses work rather than a fact - land the same row, `attempted_type`
+        being what the refused act would have said. A second identical denial coalesces onto the
+        first by the ordinary tag rule.
+        """
+        return self.own('capability_denied', denial_body(subject, verb, book, attempted_type))
 
     def _claim(self):
         """Take this home's writer claim and re-read the head under it. Idempotent; raises
@@ -666,7 +703,11 @@ class SpineLog:
                 'remove the line that results; close the other SpineLog (`log.close()`) or stop '
                 'the other process, then append again'.format(path))
         self._lock = handle
+        kept, head = self._capability, self.head()
         self._scan()
+        if self.head() == head:
+            # nothing landed since the fold was taken, so the scan read the inputs it folded
+            self._capability = kept
 
     def _scan(self):
         """Open the log: stream the segments, check what the stored fields claim, index them.

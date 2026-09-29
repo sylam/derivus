@@ -37,8 +37,8 @@ from pathlib import Path
 from derivus import spine as seam
 from derivus_mcp import server as binding
 from derivus_spine.capability import ANY_BOOK, CAPABILITIES_POLICY, canonical_document
-from derivus_spine.verbs import CURIOSITY, STANDING
-from derivus_spine.vocabulary import ADMIN, APPROVE, BOOK, FIRM_CLASS, MARK, VALIDATE
+from derivus_spine.verbs import CONFIRMED, CURIOSITY, SETTLED, STANDING
+from derivus_spine.vocabulary import ADMIN, APPROVE, BOOK, FIRM_CLASS, MARK, SETTLE, VALIDATE
 
 #: The seats at this desk. Pseudonymous references, as every subject in the record is.
 SALES = 'subject-sales'
@@ -52,22 +52,22 @@ AUDIT = 'subject-audit'
 STRANGER = 'subject-nobody'
 
 #: The book the desk's own document names, which is the scope every desk grant is over. Control is
-#: scoped over `*` instead: the close, the mark and a standing attestation are firm-level facts.
+#: scoped over `*` instead: the close and the mark are firm-level facts.
 DESK_BOOK = 'service'
 
-#: seat -> the `(verb, scope)` grants it holds. THE SIX IMPLY NOTHING ABOUT EACH OTHER, so a seat
-#: that prices says `validate` and a seat that books says both, and every DESK grant is over the
-#: desk's own book - a ticket is the plan this book would have, so one `approve` grant answers both
-#: the tier's automatic signature and the second seat's own. Control is scoped over `*` because the
-#: mark, the close and a standing attestation are firm-level facts.
+#: seat -> the `(verb, scope)` grants it holds. THE VERBS IMPLY NOTHING ABOUT EACH OTHER, so a seat
+#: that prices says `validate`, a seat that books says both, and the back office settles; every
+#: DESK grant is over the desk's own book, a ticket being the plan this book would have. Control is
+#: scoped over `*` because the mark and the close are firm-level facts, and a standing run asks
+#: `mark` over the book it values - the hub attests it in its own voice.
 GRANTS = {
     SALES: ((VALIDATE, DESK_BOOK),),
     TRADER: ((BOOK, DESK_BOOK), (VALIDATE, DESK_BOOK), (APPROVE, DESK_BOOK)),
     RISK: ((APPROVE, DESK_BOOK), (VALIDATE, DESK_BOOK)),
-    CONFIRMATIONS: ((BOOK, DESK_BOOK), (VALIDATE, DESK_BOOK)),
-    SETTLEMENTS: ((BOOK, DESK_BOOK), (VALIDATE, DESK_BOOK)),
+    CONFIRMATIONS: ((SETTLE, DESK_BOOK), (VALIDATE, DESK_BOOK)),
+    SETTLEMENTS: ((SETTLE, DESK_BOOK), (VALIDATE, DESK_BOOK)),
     AUDIT: ((VALIDATE, DESK_BOOK),),
-    CONTROL: ((ADMIN, ANY_BOOK), (MARK, ANY_BOOK), (BOOK, ANY_BOOK), (VALIDATE, ANY_BOOK)),
+    CONTROL: ((ADMIN, ANY_BOOK), (MARK, ANY_BOOK), (VALIDATE, ANY_BOOK)),
 }
 
 #: The workflow the day runs under: one tier, wanting a human other than the booker, and the board
@@ -93,9 +93,6 @@ CLIENT = 'CLIENT_A'
 CLOSE_DATE = '2024-06-28'
 #: What a settlement file struck for everything the book owes asks for.
 FAR_FUTURE = '2099-01-01'
-#: The states the two back-office seats move a row to. `settled` is the diary's own word for a
-#: payment that has been made; `confirmed` is a state the diary reads as no state at all.
-SETTLED, CONFIRMED = 'settled', 'confirmed'
 #: What `/book/reconcile` can say the file and the record disagree about - the reading the desk's
 #: own control against a second writer is, and what audit writes into the script.
 DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'quantity_mismatch')

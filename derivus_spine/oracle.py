@@ -30,14 +30,16 @@ this home or this script could not put, and `evidence` is the rows that decided 
 """
 from .canon import canonical_bytes, content_hash
 from .capability import (
-    CAPABILITIES_POLICY, CAPABILITY_EVENTS, apply_event, evaluate, initial_state, verb_for)
+    CAPABILITIES_POLICY, CAPABILITY_EVENTS, SCOPED_TYPES, apply_event, declarable, deepest,
+    evaluate, initial_state, scope_of, stray, under, verb_for)
 from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog
 from .policy import TIERS_POLICY, in_force
 from .projections import PROJECTORS, fold
 from .store import BlobStore
+from .tiers import standing_verdict
 from .vocabulary import (
-    BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, RECOVERY, WRITER, WRITER_TYPES, cited_blobs, is_hash,
+    BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, RECOVERY, WRITER, WRITER_VOICE, cited_blobs, is_hash,
     is_text)
 from .verbs import REPLAY_FIELDS, STANDING
 from .verify import NOT_ASSESSED, verify_home
@@ -50,6 +52,8 @@ INVARIANTS = ('copies_agree', 'nothing_outside_its_seat', 'every_refusal_is_a_de
 
 #: The one projector that opens no body, which is the whole of what a keyless copy can compare.
 KEYLESS_PROJECTORS = ('activity',)
+#: The fold an amendment is held against: where the terms it restrikes were held.
+POSITIONS = PROJECTORS['positions']
 
 #: The script's one section, and the keys an act of it may carry - each read by one invariant. An
 #: act naming none of them is a step the oracle has no question about.
@@ -108,15 +112,24 @@ def copies_agree(log, against, entitled):
 def nothing_outside_its_seat(log, entitled):
     """Every frame's own append re-adjudicated, and the writer's decision re-reached.
 
-    `verb_for` names what a type demands and `evaluate` answers it against the capability state
-    BEFORE the frame - folded forward by `apply_event`, the writer's own step, rather than by one
-    `state_at` per position, which is the same answer at the length of the record instead of its
-    square. The reserved type and the genesis grants need no exception: `evaluate` answers the
-    writer's verb yes and a home with no document in force yes, exactly as the append did.
+    `verb_for` names what a type demands and `evaluate` answers it at `scope_of` - the firm for the
+    firm's own facts, the portfolio a body names, a declared node's parent, else the envelope's
+    book - against the capability state BEFORE the frame, folded forward by `apply_event`, the
+    writer's own step, rather than by one `state_at` per position, which is the same answer at the
+    length of the record instead of its square. A node admin's capabilities declaration the grants
+    refuse is re-run through `declarable`, as the writer ran it; the writer's own voice is never
+    gated, and a home with no document in force answers yes, exactly as the append did.
+
+    Three things a frame says are held to the record around it, as the writer or the hub made
+    them: a portfolio sits under its own book; an amendment is judged at a node covering every
+    position it moves, the deepest one holding its old terms at the frame before it - the
+    `positions` fold advanced beside the capability state; and an approval in the writer's own
+    voice is the hub's, which signs only where a tiers policy is in force and books the ticket
+    after it signs.
 
     The ENVELOPE HALF stands without a key: a type no verb declares is a write nobody could be
-    scoped for, and a denial under any name but the writer's is a submitter forging the one voice
-    that is never gated.
+    scoped for, a type only the writer files under any other name is that voice forged, and the
+    writer's own name on anything its voice does not say is a seat wearing it.
 
     A COPY THAT HOLDS THE FRAMES AND NOT THE DOCUMENT cannot put the entitled half at all. The
     capabilities fold answers `UNREADABLE` for a blob that is gone - fail-closed, because inside
@@ -125,37 +138,82 @@ def nothing_outside_its_seat(log, entitled):
     first, and a copy that lacks it is told to follow with `--blobs`.
     """
     state, failures, read = initial_state(), [], 0
+    positions, signed, booked, workflow = POSITIONS.initial(), [], {}, None
     for frame in log.frames():
         read += 1
         event_type, actor, verb = frame['event_type'], frame['actor'], verb_for(frame['event_type'])
+        own = actor == WRITER
         if event_type not in EVENT_VERB:
             failures.append(
                 'LSN {}: a {} demands no declared verb, so the append was gated by nothing'.format(
                     frame['lsn'], event_type))
-        if event_type in WRITER_TYPES and actor != WRITER:
+        if (verb == WRITER) != own and not (own and event_type in WRITER_VOICE):
             failures.append(
-                'LSN {}: a {} stands under {!r} and the writer speaks that type alone - a denial '
-                'under a submitter\'s name is the one voice that is never gated, forged'.format(
-                    frame['lsn'], event_type, actor))
+                'LSN {}: a {} stands under {!r} - the writer\'s own voice files {} and nothing '
+                'else, and no seat files a type only it does, so this is that voice forged'.format(
+                    frame['lsn'], event_type, actor, ', '.join(WRITER_VOICE)))
         if not entitled:
             continue
+        body = log.open_body(frame) if event_type in CAPABILITY_EVENTS + SCOPED_TYPES else None
         doc, genesis = state['doc'], state['genesis']
-        if (doc is not None or verb == RECOVERY) \
-                and not evaluate(doc, genesis, actor, verb, frame['book']):
-            failures.append(
-                'LSN {}: {!r} held no {} scope over {!r} when the {} landed, so this frame is on '
-                'the platter and the writer would have refused it'.format(
-                    frame['lsn'], actor, verb, frame['book'] or '*', event_type))
+        scope = scope_of(event_type, body, frame['book'])
+        held = own or (doc is None and verb != RECOVERY) or evaluate(
+            doc, genesis, actor, verb, scope)
+        failures.extend(_placed(frame, body, positions))
+        if event_type in POSITIONS.reads:
+            POSITIONS.apply(positions, frame, log)
+        if event_type == 'policy_declared' and body.get('policy') == TIERS_POLICY \
+                and is_hash(body.get('blob')):
+            workflow = frame['lsn']
+        if own and event_type == 'approval':
+            signed.append((frame['lsn'], body.get('plan_hash'), workflow))
+        if event_type == 'fill':
+            booked[body.get('ticket')] = frame['lsn']
         if event_type in CAPABILITY_EVENTS:
-            body = log.open_body(frame)
             if _undeclared(log, body):
                 return unasked(
                     'LSN {} declares the capabilities document {} and this copy does not hold it, '
                     'so every frame after it was judged under a document that is not here - follow '
                     'with `--blobs` and ask again'.format(frame['lsn'], body['blob']))
             apply_event(state, event_type, actor, body, log.store)
+            held = held or (body.get('policy') == CAPABILITIES_POLICY and isinstance(doc, dict)
+                            and isinstance(state['doc'], dict)
+                            and declarable(doc, state['doc'], actor))
+        if not held:
+            failures.append(
+                'LSN {}: {!r} held no {} scope over {!r} when the {} landed, so this frame is on '
+                'the platter and the writer would have refused it'.format(
+                    frame['lsn'], actor, verb, scope or '*', event_type))
+    failures.extend(
+        'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
+        'ticket only under a tiers policy in force and books it after, so this is that voice '
+        'forged'.format(lsn, ticket, 'no tiers policy in force' if since is None
+                        else 'no fill after it booking that ticket')
+        for lsn, ticket, since in signed if since is None or booked.get(ticket, 0) < lsn)
     return answer(failures, [
         '{} frame(s) re-adjudicated{}'.format(read, '' if entitled else ' by envelope alone')])
+
+
+def _placed(frame, body, positions):
+    """Why a frame's portfolio is not where the writer would have let it stand - the sentence,
+    none where it is: under its own book, and for an amendment covering every position it moves,
+    which `positions` - the fold at the frame before it - holds under that book."""
+    event_type, book = frame['event_type'], frame['book']
+    named = stray(event_type, body, book)
+    if named is not None:
+        return ['LSN {}: the {} names the portfolio {!r} and is filed under the book {!r} - a '
+                'portfolio outside its own book\'s tree, which the writer refuses'.format(
+                    frame['lsn'], event_type, named, book)]
+    named = body.get('portfolio') if event_type == 'amendment' else None
+    holders = [] if named is None else sorted(
+        portfolio for rows in positions.get(body['instrument'], {}).values()
+        for portfolio, row in rows.items() if row['quantity'] and under(portfolio, book))
+    node = deepest(holders)
+    if node is None or under(node, named):
+        return []
+    return ['LSN {}: the amendment is judged at {!r} and moves the positions held at {}, the '
+            'deepest node holding them being {!r} - a restrike judged narrower than what it '
+            'moved'.format(frame['lsn'], named, ', '.join(holders), node)]
 
 
 def _undeclared(log, body):
@@ -203,11 +261,11 @@ def an_amended_plan_is_a_new_approval(log):
     Two readings, `quotes` x `decisions`. A ticket is the plan the acceptance leaves the book at,
     so two quotes sharing one would be one signature reaching two trades. And where the record
     carries a WORKFLOW - a tiers policy in force at the position the fill landed - a quote's ticket
-    carries a standing approval by a seat that is not the one that booked it, whether the tier
-    signed under its own seat or waited for a human. Where no workflow is declared the desk declared
-    no second pair of eyes, which is stated rather than failed - and a copy that cannot READ the
-    workflow cannot put the question at all, which is the posture of a follower that pulled frames
-    and no blobs.
+    carries a standing approval by a seat that is not the one that booked it, whether the hub
+    signed it in its own voice under an automatic tier or a second seat did under four eyes. Where
+    no workflow is declared the desk declared no second pair of eyes, which is stated rather than
+    failed - and a copy that cannot READ the workflow cannot put the question at all, which is the
+    posture of a follower that pulled frames and no blobs.
     """
     quotes = PROJECTORS['quotes'].rows(fold(log, PROJECTORS['quotes']))
     plans = fold(log, PROJECTORS['decisions'])['plans']
@@ -240,15 +298,20 @@ def an_amended_plan_is_a_new_approval(log):
 def _signed(frame, quote, verdicts, workflow):
     """Why this fill's ticket is not signed - the sentences, none where it is.
 
-    THE LATEST VERDICT STANDS, by LSN, which is what `tiers.standing_approval` answers on the
-    booking path; a rejection filed after an approval is what the record says last.
+    THE LATEST VERDICT STANDS, by LSN and the booker's own not read - `tiers.standing_verdict`,
+    what the booking path answers under four eyes; a rejection filed after an approval is what the
+    record says last.
     """
     if quote['ticket'] is None:
         return ['LSN {}: the fill books the quote {!r}, which pinned no ticket - there is no plan '
                 'for a seat to have signed'.format(frame['lsn'], quote['quote_id'])]
     if workflow is None:
         return []
-    standing = max(verdicts, key=lambda verdict: verdict['lsn']) if verdicts else None
+    standing = standing_verdict({'four_eyes': True}, quote['booker'], verdicts)
+    if standing is None and verdicts:
+        return ['LSN {}: {!r} struck the quote {!r} and signed its own ticket, every verdict on it '
+                'being its own - the booker and the approver are one seat'.format(
+                    frame['lsn'], quote['booker'], quote['quote_id'])]
     if standing is None or standing['verdict'] != 'approval':
         return ['LSN {}: the fill books the quote {!r} at the ticket {} under a workflow, and the '
                 'record holds {}'.format(
@@ -256,10 +319,6 @@ def _signed(frame, quote, verdicts, workflow):
                     'no verdict on that plan' if standing is None else
                     'a {} at LSN {} as the verdict standing'.format(
                         standing['verdict'], standing['lsn']))]
-    if standing['actor'] == quote['booker']:
-        return ['LSN {}: {!r} struck the quote {!r} and signed its own ticket at LSN {} - the '
-                'booker and the approver are one seat'.format(
-                    frame['lsn'], standing['actor'], quote['quote_id'], standing['lsn'])]
     return []
 
 

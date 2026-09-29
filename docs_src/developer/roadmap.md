@@ -345,7 +345,7 @@ is recorded so a reader knows which readings rest on it.
   per LSN: 11.3 ms at 2,005 events, paid once per read because a reader never claims the home and
   so cannot hold a handle across one. A strip's FIRST paint pays it twice over, since a page with
   no `?since=` folds from genesis by design. Queue admission rides the same open once per submitted
-  job (`capability.state_at`, 1.2 ms at 21 events and 20.5 ms at 1,994), which is still under a
+  job (the capability fold, 1.2 ms at 21 events and 20.5 ms at 1,994), which is still under a
   fiftieth of the cheapest job it gates, so nothing caches it. The remedy is a checkpointed index
   beside `log/` - derivable, disposable and verified the way a seed is - and the question it asks
   is what invalidates one when a second process appends.
@@ -389,11 +389,24 @@ is recorded so a reader knows which readings rest on it.
   on a tick that moves one pillar inside the epsilon and one outside it.
 - **No rejection is filed automatically** (2026-09-23). A ticket that falls in no tier answers
   `refused` with every sentence of the route it took, and the acceptance stands, but nothing files
-  a `rejection` against it: a verdict is a SEAT's decision and the tiers policy names no seat for
-  one. A desk wanting the refusal on the record calls `POST /book/quote/reject` under a seat of its
-  own. Size: UNMEASURED and not measurable — it is a document decision rather than a number. Closing
-  it means the tiers document declaring who signs a refusal, one field on a tier and one branch in
-  the tier step, and the question it asks is whose signature a desk wants on a "no".
+  a `rejection` against it: the hub's own voice signs an automatic tier's approval and says nothing
+  against a ticket. A desk wanting the refusal on the record calls `POST /book/quote/reject` under a
+  seat of its own. Size: UNMEASURED and not measurable — it is a document decision rather than a
+  number. Closing it means the writer's own voice filing a `rejection` where the route admits no
+  tier, one type in that voice and one branch in the tier step, and the question it asks is whether
+  a desk wants the hub's signature on a "no".
+- **The oracle judges history by the verb map deployed now** (2026-09-29). A type moved between
+  verbs - a settlement to `settle`, a run's replay tuple to the writer's own voice - reads every
+  frame filed under the old verb as outside its seat, so a record written before the move is named
+  by the oracle while the desk on it runs unchanged. No home outside the gates predates it. The
+  remedy is the map in force declared on the record at an LSN, read the way a policy is, so a frame
+  is judged by the grammar it was filed under: one reserved policy and one read in `verb_for`.
+- **A copy forging the hub's approval and a fill after it passes the oracle alone** (2026-09-29).
+  The oracle holds a writer-filed approval where a tiers policy stood and a fill carrying its
+  ticket followed; a copy that forges both, under a policy declaring no automatic tier, is caught
+  only by copies agreeing with the hub. Reading the policy at the approval and requiring a tier the
+  hub may sign for closes it: three lines in the oracle's voice rule. Signed history ends at the
+  last checkpoint either way.
 - **A booking's tier step advances a fold this process holds, and it is still linear in the rows it
   mints** (2026-09-23). `spine.route_ticket` folds `decisions` and `markets` on every acceptance,
   and both open a body per row: folding from genesis costs 0.164 ms per decision filed, so a desk
@@ -406,7 +419,9 @@ is recorded so a reader knows which readings rest on it.
   second service on the same home pays it again. One remedy answers all three: a seed minted at the
   official close (`projections.seed_at`, which `positions` and `blotter` already use), so a fresh
   process starts where the day started and the state copied is the day's rather than the record's.
-  Size: one `read_seed` in `advancing` and a close that mints for these two projectors.
+  Size: one `read_seed` in `advancing` and a close that mints for these two projectors. The
+  restrike pays the same copy over `positions` since it reads where the terms are held: about
+  240 ms against 130 on a 2,005-event home holding 2,047 instruments, 72 ms of it the copy.
 - **A settlement names no agreement, so the P&L shares what it moved by holdings** (2026-09-28). A
   payment the diary cannot determine falls to the positions of its instrument by what each held
   when it fell due, which is exact while every position's settlement is filed and spreads one filed

@@ -40,17 +40,16 @@ from derivus_spine import (
 MINT = 'subject-deployment'
 BOOKER = 'subject-desk-one'
 APPROVER = 'subject-desk-two'
-AUTO_SEAT = 'policy/tiers/auto'
 
 #: The board the quote was struck on, and a board it was not.
 VALUES = 'a' * 64
 MOVED = 'b' * 64
 
-#: Three tiers in the order they are read: an automatic seat with all three checks, a human tier
-#: capping size alone, and the catch-all that declares no check at all.
+#: Three tiers in the order they are read: an automatic tier with all three checks, a four-eyes
+#: tier capping size alone, and the catch-all that declares no check at all.
 POLICY = {
     'tiers': [
-        {'name': 'auto', 'seat': AUTO_SEAT, 'market': 'official',
+        {'name': 'auto', 'market': 'official',
          'max_notional': {'amount': 5_000_000.0, 'currency': 'USD'}, 'max_tenor_years': 2.0},
         {'name': 'senior', 'four_eyes': True,
          'max_notional': {'amount': 25_000_000.0, 'currency': 'USD'}},
@@ -60,8 +59,8 @@ POLICY = {
 }
 STANDING = {'official': VALUES}
 #: The same three tiers as the parser COMPLETES them - the one default this shape has, written in
-#: before the bytes are hashed, on every tier that names no seat.
-COMPLETED = {'tiers': [POLICY['tiers'][0],
+#: before the bytes are hashed: a tier is automatic unless it says otherwise.
+COMPLETED = {'tiers': [dict(POLICY['tiers'][0], four_eyes=False),
                        POLICY['tiers'][1],
                        {'name': 'board', 'four_eyes': False}],
              'designations': POLICY['designations']}
@@ -113,13 +112,16 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
         ('note', dict(POLICY, note='why')),
         ('tiers', {'tiers': []}),
         ('tiers', {'tiers': {'auto': {}}}),
-        ('tier 1', {'tiers': [{'seat': AUTO_SEAT}]}),
+        ('tier 1', {'tiers': [{'four_eyes': True}]}),
         ('declared twice', {'tiers': [{'name': 'auto'}, {'name': 'auto'}]}),
         ('currency', {'tiers': [{'name': 'auto', 'max_notional': {'amount': 1.0}}]}),
         ('max_notional', {'tiers': [{'name': 'auto', 'max_notional': 5_000_000.0}]}),
         ('max_tenor_years', {'tiers': [{'name': 'auto', 'max_tenor_years': -1.0}]}),
         ('escalates_to', {'tiers': [{'name': 'auto', 'escalates_to': 'desk'}]}),
-        ('four_eyes', {'tiers': [{'name': 'auto', 'seat': AUTO_SEAT, 'four_eyes': True}]}),
+        ('four_eyes', {'tiers': [{'name': 'auto', 'four_eyes': 'yes'}]}),
+        # an automatic approval is the hub's own act, so a seat to sign it under is refused by name
+        ('names the seat', {'tiers': [{'name': 'auto', 'seat': 'policy/tiers/auto'}]}),
+        ('scope', {'tiers': [{'name': 'fx', 'scope': 'BANK//FX'}]}),
         ('firmness', {'tiers': [{'name': 'auto', 'pillar_seconds': 900}]}),
         ('firmness', {'tiers': [{'name': 'auto', 'values_seconds': 30}]}),
         ('firmness', {'tiers': [{'name': 'auto', 'firm': True}]}),
@@ -149,13 +151,11 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
 
 def test_one_workflow_is_one_blob_however_the_operator_spelled_its_defaults():
     """The module's own law, applied to the whole document rather than to one key of it. A tier
-    that names no seat is completed with `four_eyes` false and an absent `designations` is
-    completed with an empty object, BEFORE the bytes are hashed - so three spellings of one
-    workflow are one blob and one governance history, and two desks that wrote out what they meant
-    do not read as two decisions.
+    is completed with `four_eyes` false - automatic - and an absent `designations` with an empty
+    object, BEFORE the bytes are hashed - so three spellings of one workflow are one blob and one
+    governance history, and two desks that wrote out what they meant do not read as two decisions.
 
-    Killing mutation: `_completed` returning `dict(tier)` for every tier, which is the shipped
-    behaviour before this round and splits the three below into two blobs.
+    Killing mutation: the tier stored as written, which splits the three below into two blobs.
     """
     spellings = ({'tiers': [{'name': 'desk'}]},
                  {'tiers': [{'name': 'desk'}], 'designations': {}},
@@ -165,13 +165,6 @@ def test_one_workflow_is_one_blob_however_the_operator_spelled_its_defaults():
     assert len(blobs) == 1, 'one workflow spelled three ways is not one blob'
     assert blobs.pop() == canonical_bytes(
         {'tiers': [{'name': 'desk', 'four_eyes': False}], 'designations': {}})
-
-    # a tier that names a SEAT is completed with no four_eyes at all: the two keys together are
-    # refused, and an automatic seat never books
-    seated = policy.canonical_policy(policy.TIERS_POLICY,
-                                     {'tiers': [{'name': 'auto', 'seat': AUTO_SEAT}]})
-    assert seated == canonical_bytes(
-        {'tiers': [{'name': 'auto', 'seat': AUTO_SEAT}], 'designations': {}})
 
 
 # --------------------------------------------------------------------------------------------
@@ -186,7 +179,7 @@ def test_the_first_tier_whose_checks_pass_is_the_one_that_applies():
     a desk shown a route never has to re-derive the comparison to believe it.
     """
     auto = tiers.assess(POLICY, ticket(), STANDING)
-    assert (auto['tier'], auto['seat']) == ('auto', AUTO_SEAT)
+    assert sorted(auto) == ['checks', 'refusals', 'tier'] and auto['tier'] == 'auto'
     assert auto['refusals'] == []
     assert [(row['check'], row['value'], row['bound']) for row in auto['checks']] == [
         ('max_notional', 1_000_000.0, CAP), ('max_tenor_years', 1.0, 2.0),
@@ -194,7 +187,7 @@ def test_the_first_tier_whose_checks_pass_is_the_one_that_applies():
     assert all(row['passed'] and row['tier'] == 'auto' for row in auto['checks'])
 
     senior = tiers.assess(POLICY, ticket(usd=10_000_000.0), STANDING)
-    assert (senior['tier'], senior['seat']) == ('senior', None)
+    assert senior['tier'] == 'senior'
     assert read(senior, 'auto', 'max_notional') == {
         'tier': 'auto', 'check': 'max_notional', 'value': 10_000_000.0, 'bound': CAP,
         'passed': False}
@@ -204,7 +197,7 @@ def test_the_first_tier_whose_checks_pass_is_the_one_that_applies():
     assert [row['tier'] for row in senior['checks']] == ['auto', 'auto', 'auto', 'senior']
 
     board = tiers.assess(POLICY, ticket(usd=100_000_000.0, tenor=5.0), STANDING)
-    assert (board['tier'], board['seat']) == ('board', None)
+    assert board['tier'] == 'board'
     assert len(board['refusals']) == 3, board['refusals']
     assert not any(row['tier'] == 'board' for row in board['checks']), \
         'the catch-all declares no check, so there was nothing to read'
@@ -342,8 +335,11 @@ def test_the_evaluator_is_pure_over_plain_data():
 def test_the_latest_verdict_stands_and_four_eyes_reads_who_filed_it():
     """A verdict is never withdrawn, so what stands is what was filed LAST - by LSN, so the order a
     caller hands the list in cannot change the answer. Four eyes is a rule about subjects on one
-    ticket: the approver may not be the booker, and the same approval stands where the tier does
-    not ask for it.
+    ticket: the booker's own verdicts are not read, and the same approval stands where the tier
+    does not ask for it.
+
+    Killing mutation: the booker's verdict read as the latest under four eyes, which lets a booker
+    withdraw another seat's rejection by approving after it.
     """
     four_eyes = POLICY['tiers'][1]
     open_tier = {'name': 'senior'}
@@ -369,25 +365,42 @@ def test_the_latest_verdict_stands_and_four_eyes_reads_who_filed_it():
     assert tiers.standing_approval(open_tier, BOOKER, own) == (11, None), \
         'a tier that does not ask for four eyes refused the booker anyway'
 
-    # FOUR EYES READS THE VERDICT THAT STANDS, not whichever row the list happens to start with.
-    # Both orders are gated because each catches the other's mistake: the booker's own approval
-    # arriving LAST behind another seat's row must still be refused, and an approval by another
-    # seat arriving last behind the booker's own must still stand.
+    # FOUR EYES DOES NOT READ THE BOOKER AT ALL, whichever end of the list its rows sit at: its
+    # approval after another seat's rejection withdraws nothing, and another seat's approval stands
+    # whether the booker's own verdict came before it or after it.
     behind = [verdict('rejection', APPROVER, 8, 'the terms moved under it'),
               verdict('approval', BOOKER, 11)]
-    lsn, why = tiers.standing_approval(four_eyes, BOOKER, behind)
-    assert lsn is None and 'one seat' in why, why
+    for handed in (behind, list(reversed(behind))):
+        lsn, why = tiers.standing_approval(four_eyes, BOOKER, handed)
+        assert lsn is None and 'rejection' in why and 'LSN 8' in why, why
     ahead = [verdict('approval', BOOKER, 8), verdict('approval', APPROVER, 11)]
-    assert tiers.standing_approval(four_eyes, BOOKER, ahead) == (11, None)
-    # and handed either way up: the actor is the STANDING verdict's, never the list's first or last
-    assert tiers.standing_approval(four_eyes, BOOKER, list(reversed(ahead))) == (11, None)
-    lsn, why = tiers.standing_approval(four_eyes, BOOKER, list(reversed(behind)))
-    assert lsn is None and 'one seat' in why, why
+    after = [verdict('approval', APPROVER, 8), verdict('rejection', BOOKER, 11, 'withdrawn')]
+    for handed, standing in ((ahead, 11), (list(reversed(ahead)), 11), (after, 8)):
+        assert tiers.standing_approval(four_eyes, BOOKER, handed) == (standing, None), handed
 
-    # an automatic tier signs under its own seat, so asking this of one is a refusal by name
-    with pytest.raises(MalformedEvent) as refusal:
-        tiers.standing_approval(POLICY['tiers'][0], BOOKER, own)
-    assert AUTO_SEAT in str(refusal.value) and 'automatic tier' in str(refusal.value)
+
+def test_a_tier_covering_a_node_is_read_for_a_ticket_booking_into_it_and_skipped_otherwise():
+    """A TIER'S SCOPE IS A NODE, read before its checks: a ticket booking into `BANK/FX` or under
+    it may fall in a tier covering `BANK/FX`, and one booking into `BANK/FXO`, into `BANK` above it
+    or naming no portfolio at all falls through to the next tier with the route saying why - a
+    tier covering nothing the ticket books into is not a tier it can be signed under. A tier
+    covering `*` covers every ticket, as a grant at `*` reaches every node.
+
+    Killing mutations: the scope matched without the `/`, which routes a `BANK/FXO` ticket through
+    the FX desk's own tier; and `*` read as a node's name, which routes nothing through it.
+    """
+    scoped = {'tiers': [{'name': 'fx', 'scope': 'BANK/FX', 'four_eyes': True}, {'name': 'board'}]}
+    for portfolio, expected in (('BANK/FX', 'fx'), ('BANK/FX/Options', 'fx'),
+                                ('BANK/FXO', 'board'), ('BANK', 'board'), (None, 'board')):
+        verdict = tiers.assess(scoped, dict(ticket(), portfolio=portfolio), STANDING)
+        assert verdict['tier'] == expected, (portfolio, verdict)
+        assert read(verdict, 'fx', 'scope') == {'tier': 'fx', 'check': 'scope', 'value': portfolio,
+                                                'bound': 'BANK/FX', 'passed': expected == 'fx'}
+        if expected == 'board':
+            assert "the 'fx' tier covers BANK/FX" in verdict['refusals'][0], verdict['refusals']
+    everything = policy.parse_tiers({'tiers': [{'name': 'all', 'scope': '*'}]}, 'the firm')
+    assert [tiers.assess(everything, dict(ticket(), portfolio=portfolio), STANDING)['tier']
+            for portfolio in ('BANK', 'BANK/FX', None)] == ['all', 'all', 'all']
 
 
 def test_check_raises_tier_refused_carrying_the_sentences_assess_lists():

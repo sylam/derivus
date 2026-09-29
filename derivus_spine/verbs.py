@@ -56,11 +56,12 @@ REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed')
 #: What a settlement may move, and the one status money moves under. A `payment` settles the diary
 #: row its subject keys, as a bare `settled` does; a `fee` is money a trade cost that no row
 #: announced, filed on its instrument; `collateral` and `margin` move a balance held under an
-#: agreement. Only a payment moves a state - the other three move money and nothing else.
+#: agreement. Only a payment moves a state - the other three move money and nothing else. A trade
+#: matched with its counterparty is `confirmed`, filed against its fill key.
 PAYMENT, FEE, COLLATERAL, MARGIN = 'payment', 'fee', 'collateral', 'margin'
 MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN)
 HELD = (COLLATERAL, MARGIN)
-SETTLED = 'settled'
+SETTLED, CONFIRMED = 'settled', 'confirmed'
 
 
 def check_lane(lane):
@@ -82,7 +83,7 @@ def mints(lane):
 
 def book(log, actor, instrument, quantity, counterparty, netting_set, execution_reference,
          book=None, effective_time=None, price=None, agreement=None, portfolio=None,
-         currency=None, rate=None):
+         currency=None, rate=None, ticket=None):
     """Book a fill, returning the envelope plus the instrument's address.
 
     `instrument` is the canonical JSON of the deal's terms as bytes - the caller canonicalises,
@@ -96,8 +97,9 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
     and `portfolio` say where the position sits and `price` what it was done at, each filed only
     where stated. A price stated in another currency than the book's carries that `currency` and
     the `rate` the booking crossed it at - units of the book's currency per unit of it - so the
-    consideration is on the record as it was agreed and as it was booked. The instrument blob is
-    fsynced before the event citing it appends.
+    consideration is on the record as it was agreed and as it was booked. `ticket` is the plan an
+    approval of this booking signs. The instrument blob is fsynced before the event citing it
+    appends.
     """
     address = _blob(log, instrument, 'the canonical instrument')
     if not is_number(quantity):
@@ -121,22 +123,23 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
                 'was crossed at, a positive number - this states price {!r}, currency {!r} and '
                 'rate {!r}'.format(price, currency, rate))
         body['currency'], body['rate'] = _name(currency, 'currency', 'book'), rate
-    for field, value in (('agreement', agreement), ('portfolio', portfolio)):
-        if value is not None:
-            body[field] = _name(value, field, 'book')
-    envelope = log.append('fill', body, actor=actor, book=book, effective_time=effective_time,
+    if ticket is not None:
+        body['ticket'] = _pinned(ticket, 'ticket')
+    envelope = log.append('fill', _placed(body, 'book', agreement=agreement, portfolio=portfolio),
+                          actor=actor, book=book, effective_time=effective_time,
                           blob_refs=(address,))
     return dict(envelope, instrument=address)
 
 
-def amend(log, actor, instrument, amended_to, book=None, effective_time=None):
+def amend(log, actor, instrument, amended_to, book=None, effective_time=None, portfolio=None):
     """Amend a booked deal: a new instrument hash linked to the old one. Returns the envelope plus
     both addresses.
 
     Economics are never edited, so this is a second row saying these terms became those. Both
     instruments are registered because both are cited; the old one dedups to the address it already
     has, so a deal booked before this home existed still closes referentially. Terms that
-    canonicalise to the same hash raise `MalformedEvent`.
+    canonicalise to the same hash raise `MalformedEvent`. `portfolio` is the deepest node holding
+    every position in the terms, which is where it is judged.
     """
     was = _blob(log, instrument, 'the canonical instrument as it was')
     now = _blob(log, amended_to, 'the canonical instrument as amended')
@@ -145,7 +148,8 @@ def amend(log, actor, instrument, amended_to, book=None, effective_time=None):
             'amend: the amended terms canonicalise to the same instrument {} - an amendment is a '
             'NEW instrument hash linked to the old one, so terms that did not move are not an '
             'amendment; file the operational fact as a status_transition instead'.format(was))
-    envelope = log.append('amendment', {'instrument': was, 'amended_to': now},
+    envelope = log.append('amendment', _placed({'instrument': was, 'amended_to': now}, 'amend',
+                                               portfolio=portfolio),
                           actor=actor, book=book, effective_time=effective_time,
                           blob_refs=(was, now))
     return dict(envelope, instrument=was, amended_to=now)
@@ -211,26 +215,39 @@ def transition(log, actor, subject, status, book=None, effective_time=None, amou
                       effective_time=effective_time)
 
 
-def approve(log, actor, plan_hash, book=None, effective_time=None):
-    """Sign a plan: an approval over the hash that identifies the ticket.
+def approve(log, actor, plan_hash, book=None, effective_time=None, portfolio=None):
+    """Sign a plan: an approval over the hash that identifies the ticket, judged at the `portfolio`
+    the ticket books into where one is named.
 
     Retried by the same seat it COALESCES onto the LSN it already has, since the semantic tuple
     carries no clock of the writer's own - a second signature of one plan by one seat is one fact.
     An amended plan is a different hash and so is a different signature.
     """
-    return log.append('approval', {'plan_hash': _pinned(plan_hash, 'plan_hash')},
+    return log.append('approval', _placed({'plan_hash': _pinned(plan_hash, 'plan_hash')},
+                                          'approve', portfolio=portfolio),
                       actor=actor, book=book, effective_time=effective_time)
 
 
-def reject(log, actor, plan_hash, reason, book=None, effective_time=None):
-    """Refuse a plan, with the reason on the row.
+def reject(log, actor, plan_hash, reason, book=None, effective_time=None, portfolio=None):
+    """Refuse a plan, with the reason on the row, judged where `approve` is.
 
     The reason is required and has no default: a verdict is never withdrawn, so a rejection nobody
     can read the grounds of is one nothing can be filed against later.
     """
-    return log.append('rejection', {'plan_hash': _pinned(plan_hash, 'plan_hash'),
-                                    'reason': _name(reason, 'reason', 'reject')},
+    return log.append('rejection', _placed({'plan_hash': _pinned(plan_hash, 'plan_hash'),
+                                            'reason': _name(reason, 'reason', 'reject')},
+                                           'reject', portfolio=portfolio),
                       actor=actor, book=book, effective_time=effective_time)
+
+
+def declare_portfolio(log, actor, path, effective_time=None):
+    """Declare a node of the desk's tree - a path whose top node is the book it is filed under -
+    and return the envelope. Judged at its parent, so `admin` at `BANK/FX` declares
+    `BANK/FX/Options` and a book itself is the firm's to declare. One path declared twice by one
+    seat is one fact."""
+    return log.append('portfolio_declared', {'path': path}, actor=actor,
+                      book=_name(path, 'path', 'declare_portfolio').split('/')[0],
+                      effective_time=effective_time)
 
 
 def declare_market(log, actor, name, values, effective_time=None):
@@ -309,7 +326,7 @@ def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time
 
 
 def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
-               request=None, ticket=None, book=None, effective_time=None):
+               request=None, ticket=None, book=None, effective_time=None, portfolio=None):
     """File a quote: two hashes pinned, what was solved, and what the desk took for it.
 
     Two hashes because a quote goes stale in two unrelated ways (see `firmness`). `values` is the
@@ -321,9 +338,9 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
     under its class key, so shredding that key erases the utterance while the chain still verifies.
     The same string in the envelope would be permanent.
 
-    `ticket` is the plan hash of the book with this quote's mirror spliced in - what an approval
-    would sign, and a different hash for every quote struck against one unmoved book. Optional,
-    because a body filed before it existed validates exactly as it did.
+    `ticket` is the plan an approval of this quote would sign, a different hash for every quote,
+    and `portfolio` the node it books into. Optional, because a body filed before them validates
+    exactly as it did.
     """
     address = _blob(log, values, 'the values vector this quote was struck on')
     body = {'quote_id': _name(quote_id, 'quote_id', 'file_quote'),
@@ -334,14 +351,15 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
         body['request'] = request
     if ticket is not None:
         body['ticket'] = _pinned(ticket, 'ticket')
-    envelope = log.append('quote_filed', body, actor=actor, book=book,
-                          effective_time=effective_time, blob_refs=(address,))
+    envelope = log.append('quote_filed', _placed(body, 'file_quote', portfolio=portfolio),
+                          actor=actor, book=book, effective_time=effective_time,
+                          blob_refs=(address,))
     return dict(envelope, quote_id=quote_id, plan_hash=body['plan_hash'], values_hash=address)
 
 
-def complete_run(log, actor, lane, claim, job, values, result, book=None, effective_time=None):
-    """The standing lane's attestation at birth, by the executor that produced the numbers. Returns
-    the envelope plus the three addresses.
+def complete_run(log, lane, claim, job, values, result, book=None, effective_time=None):
+    """The standing lane's attestation at birth, in the writer's own voice: the hub that executed
+    the run is what says it ran. Returns the envelope plus the three addresses.
 
     `claim` is the replay tuple as the engine reports it; `job`, `values` and `result` are the three
     objects that make it checkable, as bytes. The values address is checked against the claimed
@@ -359,9 +377,8 @@ def complete_run(log, actor, lane, claim, job, values, result, book=None, effect
     body['job'] = _blob(log, job, 'the job document')
     body['result'] = _blob(log, result, 'the result')
     body['values_hash'] = _values(log, values, body['values_hash'])
-    envelope = log.append('run_completed', body, actor=actor, book=book,
-                          effective_time=effective_time,
-                          blob_refs=(body['job'], body['result'], body['values_hash']))
+    envelope = log.own('run_completed', body, book=book, effective_time=effective_time,
+                       blob_refs=(body['job'], body['result'], body['values_hash']))
     return dict(envelope, **body)
 
 
@@ -563,6 +580,14 @@ def _name(value, field, verb):
         raise MalformedEvent(
             '{}: {} is {!r}, and a name that names nothing is not a name'.format(verb, field, value))
     return value
+
+
+def _placed(body, verb, **named):
+    """`body` with every name in `named` that is stated - where a fact sits, filed only where the
+    caller said, each asserted to name something."""
+    body.update((field, _name(value, field, verb)) for field, value in named.items()
+                if value is not None)
+    return body
 
 
 def _movement(log, subject, status, amount, asset, kind, reference, effective_time):

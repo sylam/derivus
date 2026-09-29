@@ -18,19 +18,25 @@ rather than a patch, so the state at a position is the last declaration at or be
 
     {"grants": [{"subject": s, "verb": v, "book": b}], "read": [{"subject": s, "class": c}]}
 
+A grant's `book` is a NODE - a book, or a path under it - and reaches every path below it, so a
+grant at `BANK/FX` covers `BANK/FX/Options` and neither `BANK/FXO` nor `BANK`. What an append is
+judged at is `scope_of`: the firm for the firm's own facts, the portfolio a body names, a declared
+node's parent, else its book.
+
 Nothing here holds state that outlives the call. Three authorizations live outside the document -
 genesis grants (read once and not surviving a document, so a declaration can strand the last admin,
 deliberately), break-glass (the genesis seat alone, anyone else refused by name and the reach
-recorded as a `capability_denied`), and the writer's own denial verb, never gated. A capabilities
+recorded as a `capability_denied`), and the writer's own voice, never gated. A capabilities
 blob doctored under its own address, or gone from the store, folds to `UNREADABLE` - in force and
 granting nothing - rather than raising, which inside the writer's hook would take every append with
 it. Enforcement activates BY DECLARATION: with no document in the log, `evaluate` is not consulted.
 """
 import json
+from os.path import commonprefix
 
 from .canon import canonical_bytes
 from .errors import CapabilityDenied, CollisionRefusal, MissingBlobRefusal
-from .vocabulary import ADMIN, EVENT_VERB, FIRM_CLASS, RECOVERY, VERBS, WRITER
+from .vocabulary import ADMIN, EVENT_VERB, FIRM_CLASS, RECOVERY, VERBS, is_path, is_text
 
 #: The policy names this fold reads. The first two are genesis's own, respelled here rather than
 #: imported: `genesis` imports the writer, and the writer imports this module.
@@ -46,10 +52,22 @@ CAPABILITY_EVENTS = ('policy_declared', 'break_glass_used')
 #: all, which is the only scope that reaches policy, checkpoints and official market declarations.
 ANY_BOOK = '*'
 
+#: The types whose body names the portfolio they are about - the node they are judged at.
+PORTFOLIO_TYPES = ('fill', 'amendment', 'quote_filed', 'approval', 'rejection')
+#: The types `scope_of` opens a body for: those, and a declared node judged at its parent.
+SCOPED_TYPES = PORTFOLIO_TYPES + ('portfolio_declared',)
+#: The firm's own facts - said of every book at once, so judged at the firm whatever book an
+#: envelope names.
+FIRM_TYPES = ('policy_declared', 'market_declared', 'official_close_declared', 'fixing_observed',
+              'snapshot_registered', 'run_completed', 'entity_declared', 'agreement_declared',
+              'checkpoint', 'retention_declared', 'rehash_declared', 'seat_enrolled', 'key_wrapped')
+
 #: The document's two sections and the fields of each row, closed exactly as an event body is.
 GRANT_FIELDS = ('book', 'subject', 'verb')
 READ_FIELDS = ('class', 'subject')
 DOCUMENT_SECTIONS = ('grants', 'read')
+#: Verbs a document granted before they retired: read past in a stored document, refused in a new.
+RETIRED_VERBS = ('draft',)
 
 
 class _Unreadable(object):
@@ -80,11 +98,13 @@ def verb_for(event_type):
     return EVENT_VERB.get(event_type, ADMIN)
 
 
-def parse_document(raw, where):
+def parse_document(raw, where, stored=False):
     """The capabilities document in `raw`, parsed, shape-checked and required to be canonical.
 
     `where` names the document in refusals, which are `CapabilityDenied`. The canonical requirement
     keeps one policy to one blob, so the same decision spelled two ways cannot become two histories.
+    A `stored` document is one already on the record, read in the grammar it was declared under -
+    a grant of a retired verb read past, a node as written - while a new one is held to today's.
     """
     try:
         document = json.loads(bytes(raw).decode('utf-8'))
@@ -94,16 +114,16 @@ def parse_document(raw, where):
             'authorizes nothing; declare a well-formed replacement through `DV_Spine grant '
             '--file`, or recover admin through break-glass if this one is already in force'.format(
                 where))
-    _shape(document, where)
+    _shape(document, where, stored)
     if canonical_bytes(document) != bytes(raw):
         raise CapabilityDenied(
             '{}: the capabilities blob is not the canonical spelling of what it says - one policy '
             'must be one blob or the record holds two histories of one decision; store it as '
             '`canonical_bytes(document)`, which is what `DV_Spine grant --file` does'.format(where))
-    return document
+    return dict(document, grants=[grant for grant in document['grants'] if grant['verb'] in VERBS])
 
 
-def _shape(document, where):
+def _shape(document, where, stored=False):
     """Check every section, row and field of `document`, raising `CapabilityDenied` naming the
     first that is wrong.
 
@@ -137,10 +157,15 @@ def _shape(document, where):
                 if not isinstance(row[name], str) or row[name] == '':
                     refuse('{}[{}].{} is {!r}, and a name that names nothing is not a name'.format(
                         section, position, name, row[name]))
-            if section == 'grants' and row['verb'] not in VERBS:
+            if section == 'grants' and row['verb'] not in VERBS + (RETIRED_VERBS if stored else ()):
                 refuse('grants[{}].verb is {!r}, which is not one of the scopes ({}) - the '
                        'verbs are closed, so a document cannot invent authority'.format(
                            position, row['verb'], ', '.join(VERBS)))
+            if section == 'grants' and not stored and row['book'] != ANY_BOOK \
+                    and not is_path(row['book']):
+                refuse('grants[{}].book is {!r}: a node is a book or a path of named segments '
+                       'under it, and an empty segment would reach every path beside it'.format(
+                           position, row['book']))
 
 
 def canonical_document(document, where='this capabilities document'):
@@ -191,10 +216,11 @@ def apply_event(state, event_type, actor, body, store):
             if isinstance(grant, dict) and isinstance(grant.get('subject'), str):
                 genesis['break_glass'] = grant['subject']
     elif policy == CAPABILITIES_POLICY:
-        # A complete replacement, and where a recovered admin stops being one: carrying that grant
-        # past the next declaration would be the one admin no policy could revoke.
+        # A complete replacement, and where a recovered admin stops being one once it or an admin
+        # over `*` declares - a node admin's own declaration leaves the recovery standing.
+        was = state['doc']
         state['doc'] = _declared_document(body.get('blob'), store)
-        if state['doc'] is not UNREADABLE:
+        if state['doc'] is not UNREADABLE and evaluate(was, genesis, actor, ADMIN, None):
             genesis['recovered'] = ()
     return state
 
@@ -207,7 +233,8 @@ def _declared_document(blob, store):
     rescue, so it folds to a value instead.
     """
     try:
-        return parse_document(store.get(blob), 'the capabilities document {}'.format(blob))
+        return parse_document(store.get(blob), 'the capabilities document {}'.format(blob),
+                              stored=True)
     except (CapabilityDenied, CollisionRefusal, MissingBlobRefusal):
         return UNREADABLE
 
@@ -239,22 +266,52 @@ def state_at(log, lsn=None):
     return (state['doc'], state['genesis'])
 
 
-def evaluate(doc, genesis, subject, verb, book):
-    """Whether `subject` may exercise `verb` over `book`. The one authorization function.
+def under(path, node):
+    """Whether `path` is the node `node` or a path below it."""
+    return path == node or path.startswith(node + '/')
+
+
+def deepest(paths):
+    """The deepest node every one of `paths` sits at or under, or None for none - where an
+    amendment moving the positions held at them is judged."""
+    return '/'.join(commonprefix([path.split('/') for path in paths])) or None
+
+
+def scope_of(event_type, body, book):
+    """The scope an append of `event_type` is judged at: None for the firm's own facts, which only
+    `*` reaches whatever their envelope names, a declared node's PARENT, the portfolio a body
+    names, else the envelope's `book`. The writer and the oracle both ask it, so the two cannot
+    part company."""
+    if event_type in FIRM_TYPES:
+        return None
+    named = body.get('path' if event_type == 'portfolio_declared' else 'portfolio') \
+        if isinstance(body, dict) else None
+    if event_type == 'portfolio_declared':
+        return named.rpartition('/')[0] or None if is_text(named) else book
+    return named if event_type in PORTFOLIO_TYPES and is_text(named) else book
+
+
+def stray(event_type, body, book):
+    """The portfolio a body names outside the book its envelope names, or None: a node sits in its
+    own book's tree, so the writer refuses such a body and the oracle names one."""
+    named = body.get('portfolio') if event_type in PORTFOLIO_TYPES and isinstance(body, dict) \
+        else None
+    return named if is_text(named) and (book is None or not under(named, book)) else None
+
+
+def evaluate(doc, genesis, subject, verb, scope):
+    """Whether `subject` may exercise `verb` at `scope`. The one authorization function.
 
     Pure: no log, store, clock or home, so the same inputs answer the same way on the hub, on a
     replica and in a gate; `doc` and `genesis` come from `state_at`. Precedence, highest first: the
-    writer's own verb, the genesis recovery seat, a recovered admin (until the next declaration
-    lands, the only grant not held in a document), then the document - or, with no document in the
-    log, yes. An unreadable document grants nothing, and the first two rules are what rescue the
-    home.
+    genesis recovery seat, a recovered admin (until it or an admin over `*` next declares, the only
+    grant not held in a document), then the document - or, with no document in the log, yes. An
+    unreadable document grants nothing, and the first two rules are what rescue the home.
 
-    Book matching: `*` matches every book and the firm-level facts that carry no book at all; a
-    named grant matches only its own book and never a book-less event.
+    Scope matching: `*` matches every node and the firm-level facts that carry none; a named grant
+    matches its node and every path under it, and never a firm-level fact.
     """
     seats = genesis or {}
-    if verb == WRITER:
-        return True
     if verb == RECOVERY:
         seat = seats.get('break_glass')
         return seat is None or subject == seat
@@ -264,14 +321,42 @@ def evaluate(doc, genesis, subject, verb, book):
         return True
     if doc is UNREADABLE:
         return False
-    for grant in doc.get('grants', ()):
-        if grant.get('subject') != subject or grant.get('verb') != verb:
-            continue
-        if grant.get('book') == ANY_BOOK:
-            return True
-        if book is not None and grant.get('book') == book:
-            return True
-    return False
+    return any(grant['subject'] == subject and grant['verb'] == verb and (
+        grant['book'] == ANY_BOOK or scope is not None and under(scope, grant['book']))
+        for grant in doc['grants'])
+
+
+def holds_any(doc, subject, verb, book):
+    """Whether `subject` holds `verb` over `book` or at any node under it - what a queue asks, since
+    a seat working one node of a book is admitted to price the book."""
+    return evaluate(doc, None, subject, verb, book) or (
+        doc is not UNREADABLE and book is not None and any(
+            grant['subject'] == subject and grant['verb'] == verb and under(grant['book'], book)
+            for grant in doc['grants']))
+
+
+def beyond(old, new, subject):
+    """What replacing `old` with `new` moves that `subject`'s own `admin` nodes do not reach: the
+    rows as `(subject, verb, node)`, a read row's verb being `read` - none under `admin` over `*`,
+    and None where the subject administers nothing. A read row is a key to every body and a `*`
+    row sits under no node, so a node admin moves neither."""
+    nodes = [grant['book'] for grant in old['grants']
+             if grant['subject'] == subject and grant['verb'] == ADMIN]
+    if ANY_BOOK in nodes:
+        return []
+
+    def outside(doc):
+        return set((row['subject'], 'read', row['class']) for row in doc['read']) | set(
+            (row['subject'], row['verb'], row['book']) for row in doc['grants']
+            if not any(under(row['book'], node) for node in nodes))
+
+    return sorted(outside(old) ^ outside(new)) if nodes else None
+
+
+def declarable(old, new, subject):
+    """Whether `subject` may declare the document `new` in place of `old`: admin over `*`, or over
+    some node with nothing `beyond` it moved."""
+    return beyond(old, new, subject) == []
 
 
 def read_subjects(doc, entitlement_class=FIRM_CLASS):

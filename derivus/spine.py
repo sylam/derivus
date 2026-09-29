@@ -32,8 +32,10 @@ every call, and it does not fall back to the CLI's `~/.derivus_spine` default - 
 not minted is a named refusal rather than a quiet fall-back.
 
 Every event carries a pseudonymous subject reference and the service has no auth of its own, so the
-actor is what the caller names, else `DV_SPINE_ACTOR`, else a refusal - inventing one would put a
-name in the record nobody chose.
+actor is what the caller names - never the writer's reserved one - and, on a record declaring no
+capabilities document, `DV_SPINE_ACTOR` where the caller named none; under a document an unnamed
+act is refused, since inventing a seat would put a name in the record nobody chose. `hub()` is the
+deployment's own seat, which the poll paths no request signs run under.
 
 One writer: the spine claims its home exclusively at the first append, so `writing()` holds a
 process-wide lock for the length of one act and closes the handle after it. And every `SpineRefusal`
@@ -41,6 +43,7 @@ is re-raised as `SpineRefused`, a `ValueError` carrying the spine's sentence une
 verbs' `except ValueError -> 422` handlers surface the library's own wording.
 """
 import contextlib
+import hashlib
 import json
 import numbers
 import os
@@ -63,8 +66,8 @@ CURIOSITY = 'curiosity'
 STANDING = 'standing'
 LANES = (TELEMETRY, CURIOSITY, STANDING)
 
-#: What the standing lane MINTS, respelled beside the lanes for the same reason: `admit` asks the
-#: record which scope this type demands, so the one lane that files a fact is admitted under it.
+#: What the standing lane MINTS, respelled beside the lanes for the same reason: a standing job the
+#: queue turns away is recorded as a refusal of this type.
 STANDING_TYPE = 'run_completed'
 
 #: The processes a market is designated for - `derivus_spine.policy.DESIGNATED_PROCESSES`,
@@ -82,6 +85,13 @@ NO_PACKAGE = ('the book of record is not installed on this box ({}) - {} names a
 NO_ACTOR = ('no actor for this append: every event carries the pseudonymous subject reference that '
             'submitted it, so name one on the request or set {} - a record that invented an actor '
             'would be a record naming somebody who never spoke')
+#: What an act naming no seat is told once a capabilities document is in force.
+UNNAMED = ('no actor for this act, and a capabilities document is in force here: every act is '
+           'admitted and filed under the seat the request names, so name one - the deployment\'s '
+           'own seat, {}, is the one the poll paths no request signs run under')
+#: What an act naming the writer's reserved actor is told.
+RESERVED = ('{!r} is the record\'s own voice and never a seat: the writer alone files under it - '
+            'name the seat that is acting')
 
 #: One writer, one act at a time. The spine answers `WriterBusy` to a second holder of the home;
 #: this lock keeps a request thread and the compute worker from meeting that over their own book.
@@ -137,12 +147,26 @@ def package():
     return derivus_spine
 
 
-def actor(named=None):
-    """Who this append is attributed to: the caller's name, else `DV_SPINE_ACTOR`, else a refusal."""
-    subject = named or os.environ.get(SPINE_ACTOR)
-    if not subject:
+def actor(named=None, log=None):
+    """Who this act is attributed to: the seat the caller named - else, where no capabilities
+    document is in force, `DV_SPINE_ACTOR` - and never the writer's reserved name, whoever says it.
+    `log` is a handle already open on the home, whose state says what is in force."""
+    spine = package()
+    if not named and (folded(spine.capability.state_at) if log is None
+                      else log.capabilities())[0] is not None:
+        raise SpineRefused(UNNAMED.format(SPINE_ACTOR))
+    subject = named or hub()
+    if subject is None:
         raise SpineRefused(NO_ACTOR.format(SPINE_ACTOR))
+    if subject == spine.vocabulary.WRITER:
+        raise SpineRefused(RESERVED.format(subject))
     return subject
+
+
+def hub():
+    """The deployment's own seat, `DV_SPINE_ACTOR`, or None where it names none - what the jobs no
+    request signs run under: the diary read, the tick and the securities verification."""
+    return os.environ.get(SPINE_ACTOR) or None
 
 
 def where():
@@ -243,9 +267,9 @@ def blob(digest, actor_name=None):
     spine = package()
 
     def read(log):
-        document, _ = spine.capability.state_at(log)
+        document, _ = log.capabilities()
         if document is not None:
-            subject = actor(actor_name)
+            subject = actor(actor_name, log)
             if subject not in spine.capability.read_subjects(document):
                 raise SpineRefused(
                     'actor {0!r} is not admitted to read the {1} class here, so these bytes are '
@@ -339,6 +363,26 @@ def cashflow_key(instrument_hash, leg, kind, date):
     """
     return package().content_hash(
         {'instrument': instrument_hash, 'leg': leg, 'kind': kind, 'date': date})
+
+
+def ticket(plan_hash, execution_reference):
+    """What an approval of one booking signs: the content hash of the plan the book has once it
+    lands and the reference it is executed under - one booking's alone, where a plan restored by
+    deleting and re-adding a deal would be every such booking's."""
+    return package().content_hash(
+        {'plan_hash': plan_hash, 'execution_reference': execution_reference})
+
+
+def fill_key(instrument, execution_reference):
+    """The stable id of one fill, which a confirmation is filed against: the content hash of its
+    instrument and the reference it was executed under."""
+    return package().content_hash(
+        {'instrument': instrument, 'execution_reference': execution_reference})
+
+
+def under(path, node):
+    """Whether `path` is the node `node` or a path below it - the record's own reading."""
+    return package().capability.under(path, node)
 
 
 def pin():
@@ -713,22 +757,31 @@ def executor(kind=None):
 
 def book(deal, quantity, counterparty, netting_set, execution_reference,
          actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
-         portfolio=None, currency=None, rate=None):
+         portfolio=None, currency=None, rate=None, ticket=None):
     """Book a fill against the canonical instrument `deal`, returning the spine's envelope.
 
     `deal` is canonicalised through the engine's encoder and its hash is the instrument id, so
     booking the same strike twice registers one instrument and files two events against it.
     `execution_reference` has no default: it is what makes a retry the same fact. `quantity` is the
-    position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
-    where they are stated, a price in another currency with that `currency` and the `rate` the
-    booking crossed it at.
+    position change in units of the instrument; `agreement`, `portfolio`, `price` and the `ticket`
+    an approval signs are filed where they are stated, a price in another currency with that
+    `currency` and the `rate` the booking crossed it at. Once any node under the book is declared,
+    a portfolio below the book is one of them - read off the tree ADVANCED on this handle.
     """
-    verbs = package().verbs
+    spine = package()
     with writing() as log:
-        return verbs.book(log, actor(actor_name), canonical(deal), quantity, counterparty,
-                          netting_set, execution_reference, book=book_name,
-                          effective_time=effective_time, price=price, agreement=agreement,
-                          portfolio=portfolio, currency=currency, rate=rate)
+        if portfolio not in (None, book_name):
+            declared = sorted(path for path in advancing(log, spine.projections.PROJECTORS[
+                'portfolios']) if spine.capability.under(path, book_name))
+            if declared and portfolio not in declared:
+                raise SpineRefused(
+                    'this booking names portfolio {!r}, and book {!r} books into itself or a node '
+                    'declared under it - {} - so declare the node first, at its parent'.format(
+                        portfolio, book_name, ', '.join(declared)))
+        return spine.verbs.book(log, actor(actor_name, log), canonical(deal), quantity,
+                                counterparty, netting_set, execution_reference, book=book_name,
+                                effective_time=effective_time, price=price, agreement=agreement,
+                                portfolio=portfolio, currency=currency, rate=rate, ticket=ticket)
 
 
 def declare_entity(entity, name, parent=None, actor_name=None, effective_time=None):
@@ -736,7 +789,7 @@ def declare_entity(entity, name, parent=None, actor_name=None, effective_time=No
     who holds it is the deployment's grant."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.declare_entity(log, actor(actor_name), entity, name, parent=parent,
+        return verbs.declare_entity(log, actor(actor_name, log), entity, name, parent=parent,
                                     effective_time=effective_time)
 
 
@@ -745,8 +798,22 @@ def declare_agreement(agreement, entity, kind, terms, actor_name=None, effective
     compiled into, canonicalised through the engine's encoder and filed by address."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.declare_agreement(log, actor(actor_name), agreement, entity, kind,
+        return verbs.declare_agreement(log, actor(actor_name, log), agreement, entity, kind,
                                        canonical(terms), effective_time=effective_time)
+
+
+def declare_portfolio(path, actor_name=None, effective_time=None):
+    """Declare a node of the desk's tree, judged at its parent - `admin` there, or over `*` for a
+    book itself."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.declare_portfolio(log, actor(actor_name, log), path,
+                                       effective_time=effective_time)
+
+
+def portfolios(lsn=None):
+    """Every node of the desk's tree declared at `lsn`: its path, and who declared it when."""
+    return _rows('portfolios', lsn)
 
 
 def positions(lsn=None):
@@ -775,11 +842,19 @@ def agreements(lsn=None):
 
 
 def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None):
-    """Record that these terms became those terms - a new instrument hash linked to the old one."""
-    verbs = package().verbs
+    """Record that these terms became those terms - a new instrument hash linked to the old one -
+    judged at the deepest node holding every position in them under the book, read off the
+    positions ADVANCED on this handle and never stated by a caller."""
+    spine = package()
+    was = hashlib.sha256(canonical(deal)).hexdigest()
     with writing() as log:
-        return verbs.amend(log, actor(actor_name), canonical(deal), canonical(amended_to),
-                           book=book_name, effective_time=effective_time)
+        held = advancing(log, spine.projections.PROJECTORS['positions']).get(was, {})
+        return spine.verbs.amend(
+            log, actor(actor_name, log), canonical(deal), canonical(amended_to), book=book_name,
+            effective_time=effective_time, portfolio=spine.capability.deepest([
+                portfolio for rows in held.values() for portfolio, row in rows.items()
+                if row['quantity'] and book_name is not None
+                and spine.capability.under(portfolio, book_name)]))
 
 
 def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective_time=None):
@@ -787,8 +862,8 @@ def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective
     refused - see `derivus_spine.verbs.apply_lifecycle`."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.apply_lifecycle(log, actor(actor_name), event_type, body, book=book_name,
-                                     effective_time=effective_time)
+        return verbs.apply_lifecycle(log, actor(actor_name, log), event_type, body,
+                                     book=book_name, effective_time=effective_time)
 
 
 def transition(subject, status, actor_name=None, book_name=None, effective_time=None,
@@ -799,7 +874,7 @@ def transition(subject, status, actor_name=None, book_name=None, effective_time=
     kind and the settlement system's reference - see `derivus_spine.verbs.transition`."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.transition(log, actor(actor_name), subject, status, book=book_name,
+        return verbs.transition(log, actor(actor_name, log), subject, status, book=book_name,
                                 effective_time=effective_time, amount=amount, asset=asset,
                                 kind=kind, reference=reference)
 
@@ -842,14 +917,39 @@ def closes(market):
 
 def fills(after=None, until=None):
     """Every fill filed after LSN `after` and at or before `until`, each with where it sits in the
-    record and when it is true."""
+    record, who booked it and when it is true."""
     def walk(log):
         return [dict(log.open_body(frame), lsn=frame['lsn'], book=frame['book'],
-                     as_of=frame['effective_time'] or frame['record_time'])
+                     actor=frame['actor'], as_of=frame['effective_time'] or frame['record_time'])
                 for frame in log.frames(start_lsn=(after or 0) + 1, end_lsn=until)
                 if frame['event_type'] == 'fill']
 
     return folded(walk)
+
+
+def status_of(fills, decisions, tiers_at):
+    """`{lsn: status}` per fill: `approved`, `rejected` or `pending` by the verdict standing over its
+    ticket, and `unticketed` where it carries none or no tiers policy stood when it landed.
+
+    `fills` are `fills()` rows, `decisions` the `decisions` rows and `tiers_at(lsn)` the tiers
+    document in force at a position. A tier is automatic unless it declares `four_eyes`, and an
+    automatic one is the hub's own approval filed before the fill, so a ticket the hub never signed
+    is under four eyes: a seat other than its booker signs it, the booker's own verdicts not read.
+    """
+    spine = package()
+    plans = dict((row['plan_hash'], row['verdicts']) for row in decisions['plans'])
+    status = {}
+    for fill in fills:
+        verdicts = plans.get(fill.get('ticket'), [])
+        if fill.get('ticket') is None or tiers_at(fill['lsn']) is None:
+            status[fill['lsn']] = 'unticketed'
+            continue
+        standing = spine.tiers.standing_verdict({'four_eyes': not any(
+            verdict['verdict'] == 'approval' and verdict['actor'] == spine.vocabulary.WRITER
+            for verdict in verdicts)}, fill['actor'], verdicts) or {}
+        status[fill['lsn']] = {'approval': 'approved', 'rejection': 'rejected'}.get(
+            standing.get('verdict'), 'pending')
+    return status
 
 
 def amendments(after=None, until=None):
@@ -874,15 +974,22 @@ def approve(plan_hash, actor_name=None, book_name=None, effective_time=None):
     already has; an amended plan is a different hash and so is a different signature."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.approve(log, actor(actor_name), plan_hash, book=book_name,
+        return verbs.approve(log, actor(actor_name, log), plan_hash, book=book_name,
                              effective_time=effective_time)
+
+
+def hub_approve(plan_hash, book_name=None):
+    """An automatic tier's approval of `plan_hash`, in the writer's own voice: the workflow an admin
+    declared decides it rather than a seat. Retried, it coalesces onto the LSN it already has."""
+    with writing() as log:
+        return log.own('approval', {'plan_hash': plan_hash}, book=book_name)
 
 
 def reject(plan_hash, reason, actor_name=None, book_name=None, effective_time=None):
     """Refuse a plan hash with the reason on the row - the check, what it measured and the bound."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.reject(log, actor(actor_name), plan_hash, reason, book=book_name,
+        return verbs.reject(log, actor(actor_name, log), plan_hash, reason, book=book_name,
                             effective_time=effective_time)
 
 
@@ -891,7 +998,7 @@ def declare_market(name, values, actor_name=None, effective_time=None):
     enforces - a check here would be a second place to get it wrong."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.declare_market(log, actor(actor_name), name, values,
+        return verbs.declare_market(log, actor(actor_name, log), name, values,
                                     effective_time=effective_time)
 
 
@@ -901,7 +1008,7 @@ def declare_close(market, values, actor_name=None, effective_time=None, date=Non
     readable."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.declare_close(log, actor(actor_name), market, values,
+        return verbs.declare_close(log, actor(actor_name, log), market, values,
                                    effective_time=effective_time, date=date)
 
 
@@ -912,18 +1019,18 @@ def file_quote(quote_id, structure, plan_hash, values, solved, edge, request=Non
     an approval of this quote would sign."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.file_quote(log, actor(actor_name), quote_id, structure, plan_hash, values,
-                                solved, edge, request=request, ticket=ticket, book=book_name,
-                                effective_time=effective_time)
+        return verbs.file_quote(log, actor(actor_name, log), quote_id, structure, plan_hash,
+                                values, solved, edge, request=request, ticket=ticket,
+                                book=book_name, effective_time=effective_time)
 
 
-def complete_run(claim, lane, job, values, result, actor_name=None, book_name=None):
-    """Attest a standing run at birth. A telemetry or curiosity lane mints nothing and should not
-    reach here; the verb refuses one that does rather than dropping it quietly."""
+def complete_run(claim, lane, job, values, result, book_name=None):
+    """Attest a standing run at birth, in the writer's own voice: the hub that ran it says so. A
+    telemetry or curiosity lane mints nothing and should not reach here; the verb refuses one that
+    does rather than dropping it quietly."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.complete_run(log, actor(actor_name), lane, claim, job, values, result,
-                                  book=book_name)
+        return verbs.complete_run(log, lane, claim, job, values, result, book=book_name)
 
 
 def pin_result(claim, job, values, result, actor_name=None, book_name=None, effective_time=None,
@@ -931,7 +1038,7 @@ def pin_result(claim, job, values, result, actor_name=None, book_name=None, effe
     """Promote a replay claim this hub did not witness, through re-execution or a cache hit."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.pin_result(log, actor(actor_name), claim, job, values, result,
+        return verbs.pin_result(log, actor(actor_name, log), claim, job, values, result,
                                 execute or executor(), book=book_name,
                                 effective_time=effective_time)
 
@@ -999,15 +1106,16 @@ def route_ticket(plan_hash, terms, booker, lsn=None):
     declared no tiers - which is the flow that books.
 
     `plan_hash` is the ticket ITSELF, the plan a decision is filed over; `terms` is what the checks
-    read, `{notional_in, tenor_years, values_hash}`, as `tiers.assess` takes it. The composition
-    nothing else performs: the `tiers` document in force, the evaluator over it, the market names
-    standing, and - for a tier that wants a human - the verdicts standing over that plan. One open
-    of the log for all four, and both folds ADVANCE (`advancing`) rather than re-walk: this runs on
-    every acceptance, inside the write closure, and the rows it opens are the ones this verb mints.
+    read, `{notional_in, tenor_years, values_hash, portfolio}`, as `tiers.assess` takes it. The
+    composition nothing else performs: the `tiers` document in force, the evaluator over it, the
+    market names standing, and - for a tier under four eyes - the verdicts standing over that plan.
+    One open of the log for all four, and both folds ADVANCE (`advancing`) rather than re-walk: this
+    runs on every acceptance, inside the write closure, and the rows it opens are the ones this verb
+    mints.
 
-    `{tier, seat, refusals, approval_lsn, waits_on}`: a `tier` of None with the route's own
-    sentences under `refusals` is a ticket no tier admits; a `seat` is the subject an automatic
-    approval signs under; `approval_lsn` is the verdict that stands and `waits_on` names what is
+    `{tier, four_eyes, refusals, approval_lsn, waits_on}`: a `tier` of None with the route's own
+    sentences under `refusals` is a ticket no tier admits; a tier without `four_eyes` is automatic,
+    the hub's own approval; `approval_lsn` is the verdict that stands and `waits_on` names what is
     missing where none does.
     """
     def routed(log):
@@ -1018,12 +1126,12 @@ def route_ticket(plan_hash, terms, booker, lsn=None):
         markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn)['names']
         verdict = spine.tiers.assess(
             document, terms, dict((name, row['values_hash']) for name, row in markets.items()))
-        answer = {'tier': verdict['tier'], 'seat': verdict['seat'],
+        tier = next((row for row in document[spine.policy.TIERS_SECTION]
+                     if row['name'] == verdict['tier']), {})
+        answer = {'tier': verdict['tier'], 'four_eyes': tier.get('four_eyes'),
                   'refusals': verdict['refusals'], 'approval_lsn': None, 'waits_on': None}
-        if verdict['tier'] is None or verdict['seat'] is not None:
+        if not tier.get('four_eyes'):
             return answer
-        tier = next(row for row in document[spine.policy.TIERS_SECTION]
-                    if row['name'] == verdict['tier'])
         decisions = spine.projections.PROJECTORS['decisions']
         answer['approval_lsn'], answer['waits_on'] = spine.tiers.standing_approval(
             tier, booker, _verdicts(decisions.rows(advancing(log, decisions, lsn)), plan_hash))
@@ -1053,7 +1161,7 @@ def resolve_market(name, actor=None, process=None):
     reaches it here. The two rules are checked independently: with `process` named, the market must
     ALSO be the one the tiers policy designates for it, which no private name ever is.
     """
-    asking = actor or os.environ.get(SPINE_ACTOR)
+    asking = actor or hub()
 
     def fold(log):
         spine = package()
@@ -1121,12 +1229,10 @@ def admit(lane, actor_name=None, book=None):
 
     THE QUEUE IS THE ONE WAY IN. `pin_result` has no HTTP verb, so a submission is the whole of what
     an unscoped actor could make this box pay for, and the question is asked once where every job
-    passes rather than in each verb. What it asks for is THE SCOPE THE APPEND WILL NEED, verb and
-    book together: a standing run files a FIRM-LEVEL `run_completed`, so it is admitted under that
-    type's own verb over the firm-level scope only a `*` grant reaches, and a seat that gets past
-    here is a seat whose attestation lands - asking over the job's own book instead would admit the
-    ordinary desk seat and let it pay for a Monte Carlo the writer then refuses. Every other lane
-    mints nothing, wants `validate`, and is admitted over the book its document names.
+    passes rather than in each verb. A STANDING run is numbers a fact is about to cite - the hub
+    attests them in its own voice - so it asks `mark` over the book the job marks; every other lane
+    mints nothing and asks `validate` over the book or any node under it, a seat working one node
+    of a book being admitted to price the book.
 
     Enforcement activates BY DECLARATION, as it does at the writer: with no capabilities document in
     force every job is admitted and this box is the single-user instrument it was. Under one, an
@@ -1135,24 +1241,31 @@ def admit(lane, actor_name=None, book=None):
     repeat coalescing onto the LSN it already has.
     """
     spine = package()
-    document, genesis = folded(lambda log: spine.capability.state_at(log))
-    if document is None:
+
+    def asked(log):
+        document, genesis = log.capabilities()
+        if document is None:
+            return None
+        subject = actor(actor_name, log)
+        verb = spine.vocabulary.MARK if lane == STANDING else spine.vocabulary.VALIDATE
+        held = (spine.capability.evaluate(document, genesis, subject, verb, book)
+                if lane == STANDING else spine.capability.holds_any(document, subject, verb, book))
+        return None if held else (subject, verb)
+
+    refused = folded(asked)
+    if refused is None:
         return
-    verb, book = ((spine.capability.verb_for(STANDING_TYPE), None) if lane == STANDING
-                  else (spine.vocabulary.VALIDATE, book))
-    subject = actor(actor_name)
-    if spine.capability.evaluate(document, genesis, subject, verb, book):
-        return
+    subject, verb = refused
     with writing() as log:
         # the type the lane would have filed, or the lane itself where it files none
         denial = log.refuse(subject, verb, book,
                             STANDING_TYPE if lane == STANDING else (lane or CURIOSITY))
     raise SpineRefused(
         'actor {0!r} holds no {1} scope over {2!r}, so this job is not queued and nothing runs: '
-        'the hub\'s compute is reached through the queue and the queue asks first, so work whose '
-        'facts this seat could not file is work this box does not pay for. Declare a document '
-        'granting ({0!r}, {1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself '
-        'recorded at LSN {3}'.format(
+        'the hub\'s compute is reached through the queue and the queue asks first, so work this '
+        'seat is not scoped for is work this box does not pay for. Declare a document granting '
+        '({0!r}, {1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself recorded at '
+        'LSN {3}'.format(
             subject, verb, book if book is not None else spine.capability.ANY_BOOK,
             denial['lsn']))
 

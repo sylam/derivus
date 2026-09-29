@@ -26,10 +26,11 @@ already holds a log raises `HomeExists`.
 from pathlib import Path
 
 from .checkpoint import write_checkpoint
-from .errors import HomeExists
+from .errors import CapabilityDenied, HomeExists
 from .log import SpineLog
 from .seal import Keys
 from .store import BlobStore
+from .vocabulary import WRITER
 
 #: The three genesis policy names, spelled at the mint rather than in a caller: they are the shape
 #: a replica folds.
@@ -43,8 +44,13 @@ def init_home(home, actor):
     written.
 
     Directories, then keys, then the published verifying key blob, then the four genesis events
-    through the ordinary writer. Raises `HomeExists` if `home` already holds a log.
+    through the ordinary writer. Raises `HomeExists` if `home` already holds a log, and refuses the
+    writer's own name before anything is minted.
     """
+    if actor == WRITER:
+        raise CapabilityDenied(
+            '{!r} is the record\'s own voice and never a seat, so no home is minted in its name - '
+            'nothing was written; name the deployment\'s own seat'.format(actor))
     home = Path(home)
     log_dir = home / 'log'
     if log_dir.is_dir() and any(log_dir.glob('segment-*.jsonl')):

@@ -39,7 +39,7 @@ from copy import deepcopy
 from . import content_hash
 from .diary import SETTLED
 from .schema import instrument_of, job_children, mapping, tables_of
-from .spine import book_name
+from .spine import book_name, under
 
 #: The book a marks job files under - a name no book carries, so the compile writes no position
 #: into it and every instrument prices as the one unit it was written as.
@@ -201,8 +201,7 @@ def loaded(marks, stored):
 def within(row, portfolio=None, agreement=None, clients=None):
     """Whether a position row sits in the scope asked for: under a portfolio path, under one
     agreement, or with a counterparty among `clients` - the whole book where nothing is named."""
-    return ((portfolio is None or row['portfolio'] == portfolio
-             or row['portfolio'].startswith(portfolio + '/'))
+    return ((portfolio is None or under(row['portfolio'], portfolio))
             and (agreement is None or row['agreement'] == agreement)
             and (clients is None or row.get('counterparty') in clients))
 
@@ -674,8 +673,7 @@ def _booked(positions, movement):
     """The positions a movement is shared across: those under the book it was filed for, every
     one where it names none."""
     book = movement.get('book')
-    return [key for key in positions
-            if not book or key[2] == book or key[2].startswith(book + '/')]
+    return [key for key in positions if not book or under(key[2], book)]
 
 
 def _carrying(key, movement, flows):

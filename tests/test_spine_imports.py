@@ -278,8 +278,7 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
     assert spine('init', '--home', home).returncode == 0
     path = tmp_path / 'tiers.json'
     path.write_text(json.dumps({
-        'tiers': [{'name': 'auto', 'seat': 'policy/tiers/auto',
-                   'max_notional': {'amount': 5000000.0, 'currency': 'USD'}},
+        'tiers': [{'name': 'auto', 'max_notional': {'amount': 5000000.0, 'currency': 'USD'}},
                   {'name': 'desk', 'four_eyes': True}],
         'designations': {'settlement_export': 'official'}}), encoding='utf-8')
 

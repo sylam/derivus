@@ -23,8 +23,9 @@ invariants over what this home holds, against what a day's script says was asked
 The identity verbs are `enroll` (mint a seat keypair), `grant` (declare a capabilities document),
 `rewrap` (wrap the class key to whoever the document now admits), `name` (the mutable display-name
 side table) and `whoami` (verify an OIDC token against a JWKS the deployment hands in as a file).
-The policy verbs are `declare` (put any reserved policy document on the record from a JSON file)
-and `policy` (report what is in force). Nothing here listens or stores a secret.
+The policy verbs are `declare` (put any reserved policy document on the record from a JSON file),
+`policy` (report what is in force) and `portfolio` (declare a node of the desk's tree, at its
+parent). Nothing here listens or stores a secret.
 
 Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
 the call rather than captured at import. The home verbs are spelled out individually since each
@@ -325,6 +326,17 @@ def do_policy(args):
         log.close()
 
 
+def do_portfolio(args):
+    """Declare a node of the desk's tree and report the declaration - `admin` at its parent, or over
+    `*` for a book itself."""
+    from derivus_spine import verbs
+    log = SpineLog(spine_home(args.home))
+    try:
+        return report(verbs.declare_portfolio(log, args.actor, args.path))
+    finally:
+        log.close()
+
+
 def do_whoami(args):
     """Verify an OIDC id token against a JWKS file and report the pseudonymous subject reference.
 
@@ -357,6 +369,7 @@ ARGUMENTS = {
     'file': {'help': 'the JSON policy document, parsed and canonicalised into the store'},
     'name': {'nargs': '?', 'default': None,
              'help': 'the reserved policy to report; every one of them where no name is given'},
+    'path': {'help': 'the node to declare: the book, then named segments under it'},
     '--display': {'default': None, 'help': 'the display name to write into the side table'},
     '--erase': {'action': 'store_true',
                 'help': 'erase this subject\'s display name; the log is not touched'},
@@ -383,12 +396,15 @@ IDENTITY_VERBS = (
 )
 
 #: The same four-tuple for the policy verbs - the policy-file editor this deployment has, in its
-#: CLI form: one verb that declares a document and one that reports what is standing.
+#: CLI form: one verb that declares a document, one that reports what is standing, and one that
+#: declares a node of the tree the grants and tiers name.
 POLICY_VERBS = (
     ('declare', 'declare a reserved policy document from a JSON file',
      ('policy', 'file', '--actor'), do_declare),
     ('policy', 'report the reserved policies in force with the blob and LSN each stands at',
      ('name',), do_policy),
+    ('portfolio', 'declare a node of the desk\'s tree, judged at its parent',
+     ('path', '--actor'), do_portfolio),
 )
 
 

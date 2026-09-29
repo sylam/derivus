@@ -47,12 +47,12 @@ from derivus_spine import (
     UnknownEventType, canonical_bytes, init_home, verify_home, write_checkpoint)
 from derivus_spine import capability, cli, genesis
 from derivus_spine.capability import (
-    ANY_BOOK, CAPABILITIES_POLICY, UNREADABLE, canonical_document, evaluate, read_subjects,
-    state_at, verb_for)
+    ANY_BOOK, CAPABILITIES_POLICY, UNREADABLE, canonical_document, declarable, evaluate,
+    holds_any, read_subjects, scope_of, state_at, under, verb_for)
 from derivus_spine.vocabulary import (
     ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK,
-    PROVENANCE_TYPES, RECOVERY, REFERENCE_TYPES, VERBS, WRITER, WRITER_TYPES, BLOB_FIELDS,
-    classify, validate)
+    PROVENANCE_TYPES, RECOVERY, REFERENCE_TYPES, SETTLE, VALIDATE, VERBS, WRITER, WRITER_TYPES,
+    BLOB_FIELDS, classify, validate)
 
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
@@ -70,9 +70,11 @@ BOOKED = hashlib.sha256(TERMS).hexdigest()
 AMENDED = hashlib.sha256(RESTRUCK).hexdigest()
 WHEN = '2026-08-29T09:15:00.000000Z'
 
-#: Every type whose append demands one of the six document verbs. Computed, not typed out: the
-#: sweep below asserts its own fixture covers exactly this set.
+#: Every type whose append demands one of the document verbs. Computed, not typed out: the sweep
+#: below asserts its own fixture covers exactly this set.
 VERB_BEARING = frozenset(name for name, verb in EVENT_VERB.items() if verb in VERBS)
+#: A book, a node under it, and the two paths a prefix match without the slash would confuse.
+BANK, FX, OPTIONS, FXO, RATES = 'BANK', 'BANK/FX', 'BANK/FX/Options', 'BANK/FXO', 'BANK/Rates'
 
 
 # --------------------------------------------------------------------------------------------
@@ -101,9 +103,10 @@ def minted(tmp_path, name='home'):
     return home, log
 
 
-def fill(reference, book=BOOK_ONE):
-    return {'instrument': BOOKED, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
-            'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference}
+def fill(reference, book=BOOK_ONE, **placed):
+    return dict({'instrument': BOOKED, 'quantity': 1000000.0, 'netting_set': 'CSA-0007',
+                 'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'execution_reference': reference},
+                **placed)
 
 
 def denials(log):
@@ -122,13 +125,12 @@ def attempts(log):
     Blobs are put first for the types whose bodies name them, so the same table drives the denial
     sweep (where closure is never reached) and the granted appends (where it is).
     """
-    surface = log.store.put(b'{"surface":"the vol cube of 2026-08-26"}')
     values = log.store.put(b'{"EURUSD":1.0851}')
     retention = log.store.put(b'{"tape":"90 days, then the logged reduction"}')
     seat = log.store.put(b'a seat public key, 32 bytes in the real thing')
     wrap = log.store.put(b'{"algorithm":"x25519-hkdf-sha256-aesgcm-v1"}')
-    # increment 3's three, which carry blobs of their own: the job a plan recompiles from, the
-    # result, the values vector, and the tolerance policy a pin was held to
+    # a pin's blobs: the job a plan recompiles from, the result, the values vector, and the
+    # tolerance policy it was held to
     job = log.store.put(b'{"Calc":{"Calculation":{"Object":"BaseValuation"}}}')
     produced = log.store.put(b'{"mtm":1234.5}')
     tolerance = log.store.put(b'{"tolerances":{"mtm":1e-09}}')
@@ -137,8 +139,8 @@ def attempts(log):
         ('fill', fill('EXEC-1'), BOOK_ONE),
         ('amendment', {'instrument': BOOKED, 'amended_to': AMENDED}, BOOK_ONE),
         ('election', {'instrument': HASH_A, 'choice': 'exercise'}, BOOK_ONE),
+        # settle: what the back office moves
         ('status_transition', {'subject': HASH_A, 'status': 'confirmed'}, BOOK_ONE),
-        ('snapshot_registered', {'blob': surface}, BOOK_ONE),
         ('approval', {'plan_hash': HASH_B}, BOOK_ONE),
         ('rejection', {'plan_hash': HASH_B, 'reason': 'the booker and the approver are one seat'},
          BOOK_ONE),
@@ -154,10 +156,9 @@ def attempts(log):
         ('checkpoint', {'lsn': 1, 'event_hash': HASH_A, 'signature': 'de' * 32}, None),
         ('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': seat}, None),
         ('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': wrap}, None),
-        # book: an attestation and a quote are things a desk puts on the record
-        ('run_completed', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
-                           'seed': 1, 'lane': 'standing', 'job': job, 'result': produced},
-         BOOK_ONE),
+        # admin at the PARENT of the node declared, which for a node of a book is the book
+        ('portfolio_declared', {'path': BOOK_ONE + '/Options'}, BOOK_ONE),
+        # book: a quote is a thing a desk puts on the record
         ('quote_filed', {'quote_id': 'Q-1', 'structure': 'ZeroCostCollar', 'plan_hash': HASH_A,
                          'values_hash': values, 'solved': {'floor': 17.25}, 'edge': 4200.0},
          BOOK_ONE),
@@ -229,7 +230,7 @@ def test_the_break_glass_handle_is_gated_from_event_one_and_not_by_declaration(t
     assert log.append('break_glass_used', {'reason': 'the hub was rebuilt'},
                       actor=MINT)['coalesced'] is False
     assert log.append('fill', fill('EXEC-1'), actor=STRANGER,
-                      book=BOOK_ONE)['coalesced'] is False, 'the six verbs wait for a declaration'
+                      book=BOOK_ONE)['coalesced'] is False, 'the document verbs wait for one'
 
     log.close()
     assert verify_home(home)['events'] == SpineLog(home).head()[0]
@@ -267,7 +268,7 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
     expected = []
     for event_type, body, book in table:
         verb = verb_for(event_type)
-        scope = book if book is not None else ANY_BOOK
+        scope = scope_of(event_type, body, book) or ANY_BOOK
         head = log.head()[0]
         with pytest.raises(CapabilityDenied) as refusal:
             log.append(event_type, body, actor=STRANGER, book=book)
@@ -309,25 +310,53 @@ def test_a_repeated_refusal_is_one_fact_because_it_is_one_fact(tmp_path):
     assert verify_home(home)['events'] == log.head()[0]
 
 
-def test_the_writers_own_denial_is_not_a_type_a_submitter_may_speak(tmp_path):
-    """`capability_denied` is the writer's voice. The public append refuses it BY NAME whether or
-    not a document is in force, because the alternative is a submitter writing the record's account
-    of its own refusal - and it refuses without appending anything, since a denial about an attempt
-    that never entered the vocabulary is a fact about nothing."""
+def test_the_writers_own_voice_is_no_seat_and_files_only_its_own(tmp_path):
+    """THE WRITER'S OWN VOICE. A denial, a run the hub attests and a snapshot it took are the
+    writer's alone: the public append refuses each BY NAME under any other actor, whether or not a
+    document is in force and under a seat holding every verb over everything - and refuses the
+    reserved name itself on any type, since it is the record's voice and never a seat. Each refusal
+    appends nothing: a denial about an attempt at the writer's own voice is a fact about nothing.
+
+    `SpineLog.own` is the one mouth that files under it, never gated - a document granting nothing
+    to anybody stops none of the three - and it files a seat's type for nobody.
+
+    Killing mutations: `run_completed` left demanding `book`, which lets a desk seat attest a run
+    the hub never executed; the reserved actor checked by type alone, which lets a submitter file a
+    fill in the writer's name before any document exists; and `own` open to every type, which is
+    an ungated door around every grant.
+    """
     home, log = minted(tmp_path)
     body = {'subject': DESK, 'verb': BOOK, 'book': BOOK_ONE, 'attempted_type': 'fill'}
+    values = log.store.put(b'{"EURUSD":1.0851}')
+    job, produced = log.store.put(b'{"Calc":{}}'), log.store.put(b'{"mtm":1.0}')
+    theirs = (('capability_denied', body),
+              ('run_completed', {'plan_hash': HASH_A, 'values_hash': values, 'seed': 1,
+                                 'engine_version': '0.1.0', 'lane': 'standing', 'job': job,
+                                 'result': produced}),
+              ('snapshot_registered', {'blob': values}))
     head = log.head()
 
-    with pytest.raises(CapabilityDenied) as refusal:
-        log.append('capability_denied', body, actor=MINT)
-    assert 'capability_denied' in str(refusal.value) and WRITER in str(refusal.value)
-    assert log.head() == head, 'the reserved refusal wrote nothing'
+    for declared in (None, document(grants=tuple((MINT, verb, ANY_BOOK) for verb in VERBS))):
+        if declared is not None:
+            declare(log, MINT, declared)
+            head = log.head()
+        for event_type, said in theirs:
+            with pytest.raises(CapabilityDenied) as refusal:
+                log.append(event_type, said, actor=MINT, book=BOOK_ONE)
+            assert event_type in str(refusal.value) and 'own voice' in str(refusal.value)
+        with pytest.raises(CapabilityDenied) as refusal:
+            log.append('fill', fill('EXEC-1'), actor=WRITER, book=BOOK_ONE)
+        assert 'never a seat' in str(refusal.value)
+        assert log.head() == head and not denials(log), 'a refusal of the voice wrote something'
 
-    # and still refused once enforcement is on, under an actor holding admin over everything
-    declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK),)))
-    with pytest.raises(CapabilityDenied):
-        log.append('capability_denied', body, actor=MINT)
-    assert not denials(log), 'the writer minted a denial about a type nobody may submit'
+    # the one mouth, under a document granting nobody anything - and never for a seat's type
+    declare(log, MINT, document())
+    for event_type, said in theirs[1:]:
+        filed = log.own(event_type, said, book=BOOK_ONE)
+        assert filed['actor'] == WRITER and filed['coalesced'] is False, event_type
+    with pytest.raises(CapabilityDenied) as refusal:
+        log.own('fill', fill('EXEC-1'), book=BOOK_ONE)
+    assert "a fill is a seat's" in str(refusal.value)
 
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
@@ -393,10 +422,9 @@ def test_the_evaluator_is_one_pure_function_over_a_document_and_a_fold():
     # is the property break-glass exists to answer rather than a defect to paper over
     assert evaluate(doc, seats, MINT, ADMIN, None) is False
     assert evaluate(None, seats, STRANGER, ADMIN, None) is True, 'no document, no enforcement'
-    # the two authorizations outside every document: the writer's own is unconditional (a denial
-    # that could be denied is a regress), the recovery is the GENESIS SEAT's and nobody else's -
-    # it must survive a document that stranded every admin and still be a gated write path
-    assert evaluate(doc, seats, WRITER, WRITER, None) is True
+    # the authorization outside every document that is asked here: the recovery is the GENESIS
+    # SEAT's and nobody else's - it must survive a document that stranded every admin and still be
+    # a gated write path (the writer's own voice is never asked at all: `SpineLog.own`)
     assert evaluate(doc, seats, MINT, RECOVERY, None) is True
     assert evaluate(doc, seats, STRANGER, RECOVERY, None) is False
     assert evaluate(None, seats, STRANGER, RECOVERY, None) is False, 'the seat, doc or no doc'
@@ -414,6 +442,174 @@ def test_the_evaluator_is_one_pure_function_over_a_document_and_a_fold():
     assert read_subjects(doc) == ()
     assert read_subjects(document(read=((DESK, 'firm'), (STRANGER, 'desk-two')))) == (DESK,)
     assert read_subjects(None) == ()
+
+
+def test_a_grant_at_a_node_reaches_every_path_under_it_and_nothing_beside_it(tmp_path):
+    """SCOPE IS A PATH. A grant at `BANK/FX` covers `BANK/FX/Options` and neither `BANK/FXO`,
+    which shares its letters, nor `BANK`, which is above it. What an append is judged at is
+    `scope_of` - the firm for the firm's own facts whatever the envelope names, the portfolio a
+    body names, a declared node's parent, else the book - so a desk seat files a fill into its own
+    node of a book it holds nothing over, and a fill naming a node beside its own is refused with
+    the denial filing the scope that was wanted. A queue asks `holds_any`: a seat working one node
+    prices the book.
+
+    Killing mutations: `under` without the `/`, which lets a `BANK/FX` grant reach `BANK/FXO`; the
+    scope read off the envelope rather than the body, which refuses the desk its own node's fill;
+    a firm type judged at its envelope, which lets a node seat reach the firm by naming its node;
+    and `_shape` accepting a node with an empty segment, `BANK/`, which reads as every path beside
+    it.
+    """
+    assert [under(path, FX) for path in (FX, OPTIONS, FXO, BANK)] == [True, True, False, False]
+    doc = document(grants=((DESK, BOOK, FX), (DESK, VALIDATE, OPTIONS)))
+    assert [evaluate(doc, {}, DESK, BOOK, scope) for scope in (FX, OPTIONS, FXO, BANK, None)] == [
+        True, True, False, False, False]
+    assert holds_any(doc, DESK, VALIDATE, BANK) and holds_any(doc, DESK, VALIDATE, OPTIONS)
+    assert not holds_any(doc, DESK, VALIDATE, RATES)
+    assert not holds_any(doc, STRANGER, VALIDATE, BANK)
+    assert not evaluate(doc, {}, DESK, VALIDATE, BANK), 'admission is the only question asked below'
+    assert (scope_of('fill', fill('E', portfolio=OPTIONS), BANK),
+            scope_of('fill', fill('E'), BANK),
+            scope_of('portfolio_declared', {'path': OPTIONS}, BANK),
+            scope_of('portfolio_declared', {'path': BANK}, BANK),
+            scope_of('election', {'portfolio': OPTIONS}, BANK)) == (
+        OPTIONS, BANK, FX, None, BANK), 'a body is read where its type names a portfolio'
+    assert [scope_of(event_type, {}, FX) for event_type in (
+        'policy_declared', 'official_close_declared', 'fixing_observed', 'run_completed')] == [
+        None] * 4, 'a firm fact judged at the node its envelope names'
+
+    home, log = minted(tmp_path)
+    declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, FX))))
+    assert log.append('fill', fill('EXEC-1', portfolio=OPTIONS), actor=DESK,
+                      book=BANK)['coalesced'] is False
+    for placed in (RATES, FXO, None):
+        with pytest.raises(CapabilityDenied) as refusal:
+            log.append('fill', fill('EXEC-2', **({'portfolio': placed} if placed else {})),
+                       actor=DESK, book=BANK)
+        assert repr(placed or BANK) in str(refusal.value), placed
+        assert denials(log)[-1][2] == {'subject': DESK, 'verb': BOOK, 'book': placed or BANK,
+                                      'attempted_type': 'fill'}
+
+    for broken in ('BANK/', 'BANK//FX', '/BANK'):
+        with pytest.raises(CapabilityDenied) as refusal:
+            canonical_document(document(grants=((DESK, BOOK, broken),)))
+        assert 'empty segment' in str(refusal.value), broken
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_node_admin_declares_only_what_its_nodes_reach(tmp_path):
+    """SCOPED ADMIN, and the tree it grows. A seat holding `admin` at `BANK/FX` declares the
+    capabilities document in place of the one in force where everything it moves sits under its
+    node: a trader's `book` at `BANK/FX/Options` lands. A `BANK/Rates` row, a `BANK/FXO` row, a
+    `read` row - a key to every body - and a `*` row are all beyond it, each refused with the rows
+    it moved named and the denial landed; `declarable` answers the writer's question as a pure
+    function. The same seat declares its node's child and is refused its sibling's, a node being
+    judged at its parent, and a book is the firm's to declare.
+
+    Killing mutations: the grant rows compared without the read rows, which lets a node admin wrap
+    the firm's class key to a seat of its choosing; `under` without the slash (the `BANK/FXO`
+    row); and the scoped arm dropped, which leaves every node admin a stranger to the document.
+    """
+    from derivus_spine.verbs import declare_portfolio
+
+    home, log = minted(tmp_path)
+    rows = ((MINT, ADMIN, ANY_BOOK), (GOVERNOR, ADMIN, FX), (MARKER, BOOK, RATES))
+    base = document(grants=rows, read=((MINT, 'firm'),))
+    declare(log, MINT, base)
+    grown = document(grants=rows + ((DESK, BOOK, OPTIONS),), read=((MINT, 'firm'),))
+    assert declarable(base, grown, GOVERNOR) and declarable(base, grown, MINT)
+    assert not declarable(base, grown, DESK), 'a seat administering nothing declares nothing'
+    assert declare(log, GOVERNOR, grown)['coalesced'] is False
+
+    for moved, named in (
+            (document(grants=rows[:2] + ((MARKER, APPROVE, RATES), (DESK, BOOK, OPTIONS)),
+                      read=((MINT, 'firm'),)), (MARKER, APPROVE, RATES)),
+            (document(grants=rows + ((DESK, BOOK, OPTIONS), (DESK, BOOK, FXO)),
+                      read=((MINT, 'firm'),)), (DESK, BOOK, FXO)),
+            (document(grants=rows + ((DESK, BOOK, OPTIONS),), read=((MINT, 'firm'),
+                                                                     (DESK, 'firm'))),
+             (DESK, 'read', 'firm')),
+            (document(grants=rows + ((DESK, BOOK, OPTIONS), (DESK, BOOK, ANY_BOOK)),
+                      read=((MINT, 'firm'),)), (DESK, BOOK, ANY_BOOK))):
+        assert not declarable(grown, moved, GOVERNOR), named
+        with pytest.raises(CapabilityDenied) as refusal:
+            declare(log, GOVERNOR, moved)
+        assert repr(named) in str(refusal.value), (named, str(refusal.value))
+    assert [body for _, _, body in denials(log)] == [
+        {'subject': GOVERNOR, 'verb': ADMIN, 'book': ANY_BOOK, 'attempted_type': 'policy_declared'}]
+    assert state_at(log)[0] == grown, 'a refused declaration moved the document'
+
+    assert declare_portfolio(log, GOVERNOR, OPTIONS)['coalesced'] is False
+    for beside, scope in ((RATES + '/Swaps', RATES), (FX, BANK), (BANK, ANY_BOOK)):
+        with pytest.raises(CapabilityDenied):
+            declare_portfolio(log, GOVERNOR, beside)
+        assert denials(log)[-1][2] == {'subject': GOVERNOR, 'verb': ADMIN, 'book': scope,
+                                      'attempted_type': 'portfolio_declared'}, beside
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_portfolio_outside_its_own_book_is_refused_before_anyone_is_asked(tmp_path):
+    """A NODE SITS IN ITS OWN BOOK'S TREE. A seat holding `book` over one book files a fill
+    enveloped there naming a node of another book, or that other book itself - rows a read of the
+    other book picks up - and a verdict naming a node outside its book: the writer refuses each by
+    name before it asks who is filing, so no denial lands and the head does not move.
+
+    Killing mutation: `stray` answering None, which files the seat's rows into a book it holds
+    nothing over.
+    """
+    home, log = minted(tmp_path)
+    declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_TWO),
+                                        (DESK, APPROVE, BOOK_TWO))))
+    before = log.head()
+    for event_type, body in (('fill', fill('EXEC-1', portfolio=FX + '/x')),
+                             ('fill', fill('EXEC-2', portfolio=BANK)),
+                             ('amendment', {'instrument': BOOKED, 'amended_to': AMENDED,
+                                            'portfolio': FX}),
+                             ('approval', {'plan_hash': HASH_A, 'portfolio': FX})):
+        with pytest.raises(MalformedEvent) as refusal:
+            log.append(event_type, body, actor=DESK, book=BOOK_TWO)
+        assert 'is not under the book {!r}'.format(BOOK_TWO) in str(refusal.value), event_type
+    assert log.head() == before and denials(log) == []
+    log.close()
+
+
+def test_a_node_admins_declaration_leaves_a_recovery_standing(tmp_path):
+    """BREAK-GLASS OUTLASTS A NODE. The genesis seat recovering a home whose last admin over `*` a
+    declaration stranded stays admin until it, or an admin over `*`, declares: a node admin's
+    declaration inside its own node lands and leaves the recovery where it was, so the firm's
+    recovery is not raced away by a desk.
+
+    Killing mutation: the recovery cleared by any readable declaration, which lets the node admin
+    end it.
+    """
+    home, log = minted(tmp_path)
+    stranded = ((GOVERNOR, ADMIN, FX), (DESK, BOOK, FX))
+    declare(log, MINT, document(grants=stranded))
+    log.append('break_glass_used', {'reason': 'the last admin over * was stranded'}, actor=MINT)
+    declare(log, GOVERNOR, document(grants=stranded + ((DESK, VALIDATE, FX),)))
+    assert state_at(log)[1]['recovered'] == (MINT,)
+    declare(log, MINT, document(grants=stranded + ((MINT, ADMIN, ANY_BOOK),)))
+    assert state_at(log)[1]['recovered'] == (), 'the recovered seat declared and it still stands'
+    log.close()
+
+
+def test_a_stored_document_is_read_in_the_grammar_it_was_declared_under():
+    """THE RECORD'S OWN VERSION RULE. A document on the record granting a verb that has since
+    retired, `draft`, reads with that grant dropped and every other standing - a node spelled as
+    written - while a new declaration naming it is refused by name.
+
+    Killing mutation: a stored document read in today's grammar, which folds a home written before
+    the verb retired to UNREADABLE and refuses every document verb in it.
+    """
+    grants = [{'subject': MINT, 'verb': verb, 'book': ANY_BOOK} for verb in ('admin', 'draft')]
+    raw = canonical_bytes({'grants': grants + [{'subject': DESK, 'verb': BOOK, 'book': 'BANK/'}],
+                           'read': []})
+    with pytest.raises(CapabilityDenied) as refusal:
+        capability.parse_document(raw, 'a new declaration')
+    assert "'draft'" in str(refusal.value)
+    assert capability.parse_document(raw, 'the stored one', stored=True)['grants'] == [
+        grants[0], {'subject': DESK, 'verb': BOOK, 'book': 'BANK/'}]
 
 
 # --------------------------------------------------------------------------------------------
@@ -689,8 +885,10 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
     assert set(EVENT_VERB) == set(EVENT_TYPES)
     assert set(EVENT_VERB.values()) <= set(VERBS) | {RECOVERY, WRITER}
     assert EVENT_VERB['break_glass_used'] == RECOVERY
-    assert EVENT_VERB['capability_denied'] == WRITER
-    assert VERB_BEARING == set(EVENT_TYPES) - {'break_glass_used', 'capability_denied'}
+    assert EVENT_VERB['status_transition'] == SETTLE
+    writers = {'capability_denied', 'run_completed', 'snapshot_registered'}
+    assert set(name for name, verb in EVENT_VERB.items() if verb == WRITER) == writers
+    assert VERB_BEARING == set(EVENT_TYPES) - {'break_glass_used'} - writers
     # fails closed: a type nobody taught the map demands governance
     assert verb_for('a_type_from_the_future') == ADMIN
 
@@ -837,3 +1035,32 @@ def test_the_grant_verb_refuses_a_file_it_cannot_read_and_says_which(tmp_path, c
     assert 'not JSON' in capsys.readouterr().err
 
     assert SpineLog(home).head() == head, 'a refused grant moved the head'
+
+
+def test_the_portfolio_verb_declares_a_node_and_init_refuses_the_writers_name(tmp_path, capsys):
+    """Two mouths of the tree and the voice. `portfolio` declares a node through the ordinary
+    writer, judged at its parent - the admin over `*` declares `BANK/FX`, a stranger is refused
+    with exit 1 and the denial landed - and `init` refuses the writer's own name before a byte is
+    minted, so a real seat can mint the home afterwards.
+
+    Killing mutation: the reserved name refused only at the genesis append, which leaves keys a
+    second mint refuses to overwrite.
+    """
+    from derivus_spine.projections import PROJECTORS, fold
+
+    home, log = minted(tmp_path)
+    declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK),)))
+    log.close()
+    assert cli.main(['portfolio', FX, '--home', str(home), '--actor', MINT]) == 0
+    assert json.loads(capsys.readouterr().out)['event_type'] == 'portfolio_declared'
+    assert cli.main(['portfolio', RATES, '--home', str(home), '--actor', STRANGER]) == 1
+    assert 'no admin scope over {!r}'.format(BANK) in capsys.readouterr().err
+    log = SpineLog(home)
+    assert [row['path'] for row in PROJECTORS['portfolios'].rows(
+        fold(log, PROJECTORS['portfolios']))] == [FX]
+    assert denials(log)[-1][2]['attempted_type'] == 'portfolio_declared'
+
+    minting = tmp_path / 'minting'
+    assert cli.main(['init', '--home', str(minting), '--actor', WRITER]) == 1
+    assert 'never a seat' in capsys.readouterr().err and not minting.exists()
+    assert cli.main(['init', '--home', str(minting), '--actor', MINT]) == 0

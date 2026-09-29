@@ -52,7 +52,7 @@ from test_spine import (
 
 #: Where the synthetic book stands, and the two positions its restatement turns on: the first
 #: official close, and the head. The republished print sits at 16, between them.
-HEAD = 21
+HEAD = 22
 CLOSE = 15
 #: The key the book's observations are filed under, and the administrators that print it.
 INDEX = 'EURUSD-ECB'
@@ -124,9 +124,9 @@ def closed_book(tmp_path):
     marks['tolerance'] = declare(log, ACTOR, TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-6}})
     claim = {'plan_hash': marks['plan'], 'values_hash': marks['values'],
              'engine_version': 'derivus-1.0', 'seed': 1}
-    marks['attested'] = complete_run(log, ACTOR, STANDING, claim, b'{"Calc": {"first": true}}',
+    marks['attested'] = complete_run(log, STANDING, claim, b'{"Calc": {"first": true}}',
                                      values, b'{"mtm": 1.0}', book=BOOK)
-    complete_run(log, ACTOR, STANDING, claim, b'{"Calc": {"second": true}}', values,
+    complete_run(log, STANDING, claim, b'{"Calc": {"second": true}}', values,
                  b'{"mtm": 2.0}', book=BOOK)
     file_quote(log, 'subject-desk-two', 'Q-1', 'ZeroCostCollar', marks['plan'], values,
                {'floor': 17.10}, 4100.0, ticket=marks['plan'], book=BOOK)
@@ -155,7 +155,7 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     home, log, marks = synthetic_book(tmp_path)
     assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'cash',
                                'costs', 'decisions', 'denials', 'entities', 'lifecycle',
-                               'markets', 'positions', 'quotes'}
+                               'markets', 'portfolios', 'positions', 'quotes'}
 
     for name in sorted(PROJECTORS):
         projector = PROJECTORS[name]
@@ -235,7 +235,8 @@ def test_a_republished_print_supersedes_by_as_of_key_and_the_first_is_still_read
 
     rows = PROJECTORS['lifecycle'].rows(fold(log, PROJECTORS['lifecycle']))['fixings']
     assert [(row['source'], row['value']) for row in rows] == [(BFIX, 1.0900), (ECB, 1.0857)]
-    assert rows[1]['supersedes'] == [{'value': 1.0851, 'lsn': 14}, {'value': 1.0800, 'lsn': 23}]
+    assert rows[1]['supersedes'] == [{'value': 1.0851, 'lsn': 14},
+                                     {'value': 1.0800, 'lsn': HEAD + 2}]
     assert rows[1]['lsn'] == 16 and log.open_body(log.frame_at(14))['value'] == 1.0851
     log.close()
 
@@ -347,7 +348,7 @@ def test_a_fold_never_claims_the_home_and_sees_the_next_append(tmp_path):
 
     claim = {'plan_hash': marks['plan'], 'values_hash': marks['restated'],
              'engine_version': 'derivus-1.0', 'seed': 1}
-    complete_run(log, ACTOR, STANDING, claim, b'{"Calc": {}}', b'{"EURUSD":1.0857}',
+    complete_run(log, STANDING, claim, b'{"Calc": {}}', b'{"EURUSD":1.0857}',
                  b'{"mtm": 1.0}', book=BOOK)
 
     rows = attestations.rows(fold(reader, attestations))
@@ -378,7 +379,7 @@ def test_a_fixing_with_no_declared_source_refuses_and_the_order_is_the_authority
 
     declare(log, ACTOR, FIXINGS_POLICY, {'sources': {INDEX: [BFIX, ECB]}})
     stood = fixings_at(log)[(INDEX, DATE)]
-    assert (stood['source'], stood['value'], stood['lsn']) == (BFIX, 1.0900, 22)
+    assert (stood['source'], stood['value'], stood['lsn']) == (BFIX, 1.0900, HEAD + 1)
     assert fixings_at(log, sources={INDEX: [ECB, BFIX]})[(INDEX, DATE)]['source'] == ECB
 
     with pytest.raises(MalformedEvent):

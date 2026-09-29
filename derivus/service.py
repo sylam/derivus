@@ -176,8 +176,8 @@ JOB_SKELETON = {'Calc': {
 #: tuple that id was hashed from, and - under a configured spine home - the attestation LANE, the job
 #: document it is checkable from, and the seat and book the QUEUE admits it under. All default to
 #: None, so an existing caller mints nothing and asks for the firm-level scope. A verb that takes an
-#: `actor` states it; the POLL PATHS state none, because the metronome and the diary are the
-#: deployment's own and `DV_SPINE_ACTOR` is the whole of the name they have.
+#: `actor` states it; the POLL PATHS state `spine.hub()`, because the metronome and the diary are
+#: the deployment's own and `DV_SPINE_ACTOR` is the whole of the name they have.
 Job = namedtuple('Job', 'result_id context replay lane evidence actor book',
                  defaults=(None, None, None, None))
 
@@ -222,7 +222,8 @@ def attest(submitted, result):
     """Append the standing lane's `run_completed` for a job whose numbers exist, answering the
     envelope. `result` is the canonical result bytes; `attests` has already said yes.
 
-    Telemetry and curiosity mint nothing, so this is a no-op on every job carrying no standing lane.
+    The attestation is the hub's own - it ran the job - so it is filed in the writer's voice, the
+    seat that asked having been admitted at the queue. Telemetry and curiosity mint nothing.
 
     A refusal here FAILS THE RUN: a run whose attestation was refused has not acquired standing, and
     serving its numbers as though it had is the unbacked citation the rule exists to prevent.
@@ -232,7 +233,7 @@ def attest(submitted, result):
     quote's numbers are cited by is the acceptance, and that is where they are recorded.
     """
     return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
-                              submitted.evidence['values'], result, actor_name=submitted.actor)
+                              submitted.evidence['values'], result)
 
 
 def attested(envelope):
@@ -693,6 +694,12 @@ def execute(job: dict):
     A STANDING run must post its DOCUMENT: an attestation carries the job the plan recompiles from
     and `Context.save_json` is not a complete round trip, so a `plan_id` refuses with the remedy.
     """
+    return executed(job, book_name(job))
+
+
+def executed(job, book):
+    """`/execute`'s act, the queue admitting the job over `book`: the job's own, or the book the
+    marks a close is valued at belong to."""
     try:
         # the PLAN is terms plus the observations the record holds, so what runs and what an
         # auditor recompiles are one document. Without a home this is the document as posted
@@ -713,8 +720,7 @@ def execute(job: dict):
             evidence = evidence_for(job, context)
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
-    submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'),
-                    book_name(job))
+    submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'), book)
     calculation = context.current_cfg.deals['Calculation']
     answer = {'result_id': submitted.result_id,
               'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
@@ -903,7 +909,7 @@ def held_structure(document, deal_path):
 
 
 def spine_fill(document, deal_path, quantity, execution_reference, actor=None, agreement=None,
-               portfolio=None, price=None, price_currency=None):
+               portfolio=None, price=None, price_currency=None, ticket=None):
     """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
 
     THE EVENT GOES FIRST: called after the verdict and before `Book.mutate` writes the file, so a
@@ -916,15 +922,17 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
     declares - its id and its entity - and must sit under the file's set of that name, the set
     being the agreement's materialisation; one naming none takes them off the set it sits inside.
     `portfolio` is the path where the position sits, its top node the book - where permissions are
-    granted - and the book itself where none is stated; `price` is what it was done at, per unit,
-    in `price_currency` where one is stated - crossed at THIS booking's own board, the book's spots,
-    and filed with the currency and the rate, so nobody converts a consideration by hand.
+    granted - and the book itself where none is stated; once any node of the book's tree is
+    declared it is the book or a declared node. `price` is what it was done at, per unit, in
+    `price_currency` where one is stated - crossed at THIS booking's own board, the book's spots,
+    and filed with the currency and the rate, so nobody converts a consideration by hand. `ticket`
+    is the plan an approval of this booking signs.
     """
     if not spine.configured():
         return {}
     book = book_name(document)
     segments = portfolio.split('/') if portfolio else []
-    if book is not None and segments and (segments[0] != book or '' in segments):
+    if book is not None and segments and ('' in segments or not spine.under(portfolio, book)):
         named = [segment for segment in segments if segment]
         raise spine.SpineRefused(
             'this booking names portfolio {!r}, and a portfolio is a path of named segments whose '
@@ -986,7 +994,7 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
         currency=currency, rate=rate,
-        agreement=agreement, portfolio=portfolio or book)}
+        agreement=agreement, portfolio=portfolio or book, ticket=ticket)}
 
 
 def spine_amendment(document, deal_path, before, actor=None):
@@ -994,7 +1002,8 @@ def spine_amendment(document, deal_path, before, actor=None):
 
     Economics are never edited, so this is a second row rather than a changed one, and both
     instruments are registered because both are cited - the old one dedups onto the address it
-    already has.
+    already has. It is judged at the deepest node holding every position in the old terms, which
+    `spine.amend` reads off the positions fold under the book lock.
     """
     if not spine.configured():
         return {}
@@ -1717,14 +1726,14 @@ def diary_etag(document):
                          'calculation': document['Calc']['Calculation']})
 
 
-def diary_of(document, actor=None):
+def diary_of(document, actor):
     """The book's diary, computed on a MISS and cached under the etag of everything a compile
     reads - the `/book/risk` discipline with the compile on the QUEUE rather than on the request
     thread. Two asks over an unmoved book are ONE job: the result id is that etag's own, so the
     second submission coalesces onto the first and both are served the id they share.
 
-    `actor` is the seat the QUEUE admits the compile under, which the settlement export and the
-    close name and the two reads leave to the deployment's own.
+    `actor` is the seat the QUEUE admits the compile under: the request's, where the settlement
+    export and the close name one, and `spine.hub()` on the reads, which are the deployment's own.
 
     ADMISSION IS ASKED BEFORE THE CACHE IS READ. `submit` asks for every job that reaches the queue,
     which is the miss; a HIT reaches no queue, and a warm cache that answered a seat the cold one
@@ -1888,7 +1897,7 @@ def expiries(document, holders):
     of their days."""
     today = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
     rows = [dict(row, instrument=holders.get(row['instrument'], row['instrument']))
-            for row in diary_of(document)['rows']]
+            for row in diary_of(document, spine.hub())['rows']]
     ends = {}
     for row in rows:
         if row['instrument'] and row['kind'] == diary.EXPIRY:
@@ -1999,7 +2008,7 @@ def book_transition(request: dict):
     A SUBJECT THE DIARY DOES NOT CARRY IS STILL A FACT. The record holds what it was told and a
     fold says what answers for it, so a state filed against a row the book has since paid away
     lands rather than refusing; what reads the two against each other is a projection. A seat the
-    capabilities document does not scope for `book` is refused in the record's own words with the
+    capabilities document does not scope for `settle` is refused in the record's own words with the
     denial landed, which this verb does not restate. 404 where no home is configured.
     """
     document, _ = recording().read()
@@ -2083,15 +2092,14 @@ def book_marks(request: dict):
     # the marks close the business day where the book was READ, not where the run is attested:
     # a ticket booked while the run waits on the worker is the next day's
     head, since = spine.pin()['lsn'], max((row['lsn'] for row in marks.values()), default=0)
-    wanted = {row['instrument'] for row in spine.positions(head) if row['quantity']
-              and within_book(row, book)} | {fill['instrument'] for fill in spine.fills(
-                  after=since, until=head) if fill['book'] == book}
+    wanted = marked_instruments(book, since, head)
     if not wanted:
         raise HTTPException(422, 'book {!r} holds nothing and traded nothing since its last marks, '
                                  'so there is nothing to mark'.format(book))
     job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored), head)
-    answer = execute(dict(job, Patch=json.loads(spine.stored(close['values_hash']).decode('utf-8')),
-                          lane=spine.STANDING, actor=request.get('actor')))
+    # admitted over the book it marks: the job's own name is the marks', which no grant names
+    answer = executed(dict(job, Patch=json.loads(spine.stored(close['values_hash']).decode(
+        'utf-8')), lane=spine.STANDING, actor=request.get('actor')), book)
     return dict(answer, market=market['name'], close_lsn=close['lsn'], instruments=len(wanted))
 
 
@@ -2108,9 +2116,12 @@ def book_marked_days():
             'days': [{'day': day, 'lsn': marks[day]['lsn']} for day in sorted(marks)]}
 
 
-def within_book(row, book):
-    """Whether a position row sits under `book` - its portfolio the book or a path under it."""
-    return row['portfolio'] == book or row['portfolio'].startswith(book + '/')
+def marked_instruments(book, since, head=None):
+    """Every instrument `book` holds at `head` - the record's own where none is named - or traded
+    after LSN `since`: what its marks value."""
+    return {row['instrument'] for row in spine.positions(head) if row['quantity']
+            and spine.under(row['portfolio'], book)} | {
+        fill['instrument'] for fill in spine.fills(after=since, until=head) if fill['book'] == book}
 
 
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
@@ -2141,7 +2152,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     """
     document, _ = recording().read()
     book = book_name(document)
-    if portfolio is not None and not within_book({'portfolio': portfolio}, book):
+    if portfolio is not None and not spine.under(portfolio, book):
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
                                  'whose top node is the book'.format(portfolio, book))
     market = spine.designated_market(spine.PNL)
@@ -2222,9 +2233,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
 def live_marks(document, book, since):
     """The marks of the book as it stands, on the market it carries now: one unit of every
     instrument it holds or traded since `since`, run here and recorded nowhere."""
-    wanted = {row['instrument'] for row in spine.positions() if row['quantity'] and within_book(
-        row, book)} | {fill['instrument'] for fill in spine.fills(after=since['lsn'])
-                       if fill['book'] == book}
+    wanted = marked_instruments(book, since['lsn'])
     job = pnl.marks_job(document, pnl.held_terms(document, wanted, spine.stored))
     context = load(spine.compiled_job(job, strict=False))
     _, out = context.run_job()
@@ -2613,7 +2622,7 @@ def book_diary(due_before: str = None):
     administrator whose print satisfied a fixing.
     """
     document, _ = live_book().read()
-    answer = diary_of(document)
+    answer = diary_of(document, spine.hub())
     rows = answered(answer['rows'])
     if due_before:
         day = read_day(due_before)
@@ -2654,7 +2663,7 @@ def book_close_check(date: str):
     """
     day = read_day(date)
     document, _ = recording().read()
-    return close_verdict(answered(diary_of(document)['rows']), day)
+    return close_verdict(answered(diary_of(document, spine.hub())['rows']), day)
 
 
 @app.post('/book/close', summary='Declare the official close - behind the check\'s own verdict')
@@ -4033,7 +4042,7 @@ def submit_bloomberg(scope, routine=False):
     # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
     # and the lane is declared rather than left blank so the absence is a readable decision
     submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
-                    book=book_name(document))
+                    actor=spine.hub(), book=book_name(document))
     # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
@@ -4388,7 +4397,8 @@ def book_securities_verify(request: dict):
     # a verification is an ACT against the terminal rather than a function of the files, so the
     # submission clock names it: two verifications of one scope are two trips
     result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY)
+    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY,
+                    actor=spine.hub())
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
@@ -5508,12 +5518,12 @@ def board_age(document, quoted_at):
     return max(measured) if measured else None
 
 
-def quote_ticket(document, deal, parent_reference=None, models=None):
-    """THE TICKET: the plan hash of this book AS THE ACCEPTANCE WOULD LEAVE IT - the quote's MIRROR
-    spliced in and its pinned spot models merged - which is what an approval of this quote signs,
-    and a different hash for every quote struck against one unmoved book.
+def quote_ticket(document, deal, quote_id, parent_reference=None, models=None):
+    """THE TICKET: `spine.ticket` of the plan this book has AS THE ACCEPTANCE WOULD LEAVE IT - the
+    quote's MIRROR spliced in and its pinned spot models merged - and the quote id the fill books
+    under, which is what an approval of this quote signs and a hash no other quote shares.
 
-    Both halves are the booking's own seams, `splice_deal` and `structures.pin_models`, so the ticket
+    Both halves are the booking's own seams, `splice_deal` and `structures.pin_models`, so the plan
     is the plan and not a near one: a fitted strip books a `Valuation Configuration` entry beside its
     deal, and that entry is PLAN, so a ticket taken without it would be a hash no booking ever
     reaches. One function, read when the quote is struck and again when it is accepted, so the plan a
@@ -5528,7 +5538,7 @@ def quote_ticket(document, deal, parent_reference=None, models=None):
     splice_deal(booked, instrument_of(booked_node(structures.mirror(deal))), parent_reference)
     if models:
         structures.pin_models(booked, deal, models)
-    return load(booked).plan_hash()
+    return spine.ticket(load(booked).plan_hash(), quote_id)
 
 
 def quote_expiry(deal):
@@ -5548,7 +5558,8 @@ def quote_expiry(deal):
 
 
 def quote_terms(document, pending):
-    """What a tiers policy is handed about this quote: `{notional_in, tenor_years, values_hash}`.
+    """What a tiers policy is handed about this quote: `{notional_in, tenor_years, values_hash,
+    portfolio}`, the portfolio being the book an acceptance books into.
 
     THE NOTIONAL IS STATED, NEVER CROSSED BY A POLICY CHECK. Its OWN currency needs no market data
     and is always there; every other currency is one this book can VALUE it in, crossed at the
@@ -5581,7 +5592,8 @@ def quote_terms(document, pending):
     expires = quote_expiry(pending['deal'])
     base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
     return {'notional_in': stated, 'values_hash': pending['pinned']['values_hash'],
-            'tenor_years': None if expires is None else (expires - base).days / 365.0}
+            'tenor_years': None if expires is None else (expires - base).days / 365.0,
+            'portfolio': book_name(document)}
 
 
 def check_pins(pending, document, quote_id):
@@ -5821,8 +5833,8 @@ class StructureJob:
             # a TICKET is a plan and a plan does not read a spot, so the live one this copy now
             # carries cannot move it: this is the hash the acceptance re-derives off the book,
             # the quote's own model pin included because the booking merges it
-            pinned['ticket'] = quote_ticket(self.document, outcome['deal'], self.netting_set,
-                                            outcome['valuation_configuration'])
+            pinned['ticket'] = quote_ticket(self.document, outcome['deal'], outcome['quote_id'],
+                                            self.netting_set, outcome['valuation_configuration'])
             # the values vector travels as JSON and canonicalises back to the hash beside it, so
             # the acceptance files the vector this quote was struck on and not a second reading
             record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))
@@ -5920,28 +5932,22 @@ def tier_step(document, pending, ticket, acceptor):
     block is the `tier` the booking reports beside it.
 
     NO TIERS POLICY IS TODAY'S FLOW - enforcement activates by declaration, as the capabilities
-    document does. With one in force the FIRST tier whose every declared check passes applies: one
-    naming a SEAT signs automatically under it, one naming none wants a standing human approval over
-    this ticket, and a ticket no tier admits answers every sentence the route collected. The
-    ACCEPTANCE STANDS in all three - it is already on the record - so what is decided here is only
-    whether the trade books.
-
-    A seat the capabilities document does not scope for `approve` lands a `capability_denied` in the
-    record's own voice and the booking waits: an automatic tier that cannot sign is a workflow to
-    fix rather than a trade to wave through.
+    document does. With one in force the FIRST tier covering the ticket's portfolio whose every
+    declared check passes applies: an automatic one is signed by the hub in the writer's own voice,
+    one under four eyes wants a standing approval over this ticket by a seat other than the booker,
+    and a ticket no tier admits answers every sentence the route collected. The ACCEPTANCE STANDS in
+    all three - it is already on the record - so what is decided here is only whether the trade
+    books.
     """
     route = spine.route_ticket(ticket, quote_terms(document, pending), acceptor)
     if route is None:
         return {}
     if route['tier'] is None:
         return {'written': False, 'refused': route['refusals']}
-    tier = {'name': route['tier'], 'seat': route['seat'], 'approval_lsn': route['approval_lsn']}
-    if route['seat'] is not None:
-        try:
-            tier['approval_lsn'] = spine.approve(
-                ticket, actor_name=route['seat'], book_name=book_name(document))['lsn']
-        except spine.SpineRefused as denied:
-            return {'written': False, 'tier': tier, 'waits_on': str(denied)}
+    tier = {'name': route['tier'], 'four_eyes': route['four_eyes'],
+            'approval_lsn': route['approval_lsn']}
+    if not route['four_eyes']:
+        tier['approval_lsn'] = spine.hub_approve(ticket, book_name=book_name(document))['lsn']
     elif route['approval_lsn'] is None:
         return {'written': False, 'tier': tier, 'waits_on': route['waits_on']}
     return {'tier': tier}
@@ -6054,9 +6060,9 @@ def book_quote(request: dict):
         # read above: this runs under the book lock and that read did not
         verdict = check_pins(pending, book, quote_id)
         acceptor = None if verdict is None else spine.actor(request.get('actor'))
-        recorded = {}
+        recorded, ticket = {}, None
         if verdict is not None:
-            ticket = quote_ticket(book, pending['deal'], parent, models)
+            ticket = quote_ticket(book, pending['deal'], quote_id, parent, models)
             if ticket != pending['pinned'].get('ticket'):
                 raise HTTPException(
                     422, 'quote {} pinned the ticket {} and this pending file books {} against the '
@@ -6088,7 +6094,7 @@ def book_quote(request: dict):
         if written:
             outcome = dict(outcome, **spine_fill(
                 book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, acceptor,
-                price=mirror_price(pending['quote'])))
+                price=mirror_price(pending['quote']), ticket=ticket))
             if verdict is not None:
                 pending_written(path, pending, booked={
                     'lsn': outcome['recorded']['lsn'], 'deal_path': outcome['deal_path']})
@@ -6112,9 +6118,8 @@ def decided_quote(request, verb):
     A second identical decision by one seat coalesces onto the LSN it already has.
 
     ONE SCOPE FOR AN APPROVAL, and it is the job's own book: a ticket is the plan THIS book would
-    have, so a seat scoped to approve over its own book signs by hand exactly as the tier signs
-    automatically for it. Filing the human verdict firm-level would leave those two verdicts of one
-    ticket needing two grants.
+    have, so a seat scoped to approve over that book signs it, where a verdict filed firm-level
+    would want a grant over every book there is.
     """
     quote_id = request.get('quote_id')
     document, _ = recording().read()
@@ -6139,11 +6144,10 @@ def book_quote_approve(request: dict):
     """`{quote_id, actor}` - approve the ticket an accepted quote minted, so a tier that wants a
     human can be satisfied and the acceptance retried.
 
-    The approval is over the PLAN this quote would leave the book at, so it reaches this quote and
-    no other and an amended mirror is a new hash by construction, and it is filed under the job's
-    OWN BOOK - the scope the tier's automatic signature uses, so one grant answers both. A seat the
-    capabilities document does not scope for `approve` there is refused in the record's own words,
-    with the denial landed.
+    The approval is over the TICKET this quote minted, so it reaches this quote and no other and an
+    amended mirror is a new hash by construction, and it is filed under the job's OWN BOOK. A seat
+    the capabilities document does not scope for `approve` there is refused in the record's own
+    words, with the denial landed.
     """
     return decided_quote(request, lambda ticket, body, book: spine.approve(
         ticket, actor_name=body.get('actor'), book_name=book))

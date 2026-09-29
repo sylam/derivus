@@ -1058,3 +1058,44 @@ def test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_fo
     closed()
     refused = CLIENT.post('/book/marks', content=dump({'actor': ACTOR}), headers=JSON)
     assert refused.status_code == 422 and 'marks run forward' in refused.text, refused.text
+
+
+def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded, desk):
+    """THE MARKS ARE ADMITTED OVER THE BOOK THEY VALUE. A standing run asks `mark` over the book its
+    job values, and a marks job is filed under the marks' own name, so `/book/marks` hands the
+    queue the book it marks: a seat granted `mark` over this book alone marks it, one granted it
+    over another book is turned away naming this one, and the run is attested by the hub in the
+    writer's own voice rather than by the seat that asked.
+
+    Killing mutation: the marks job admitted over its own name, which nothing but `*` reaches.
+    """
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+
+    designated(recorded, fixings=False)
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    closed()
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': 'admin', 'book': '*'},
+            {'subject': 'subject-marks', 'verb': 'mark', 'book': BOOK},
+            {'subject': 'subject-elsewhere', 'verb': 'mark', 'book': 'elsewhere'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+    finally:
+        log.close()
+
+    refused = CLIENT.post('/book/marks', content=dump({'actor': 'subject-elsewhere'}),
+                          headers=JSON)
+    assert refused.status_code == 422, refused.text
+    assert "no mark scope over '{}'".format(BOOK) in refused.json()['detail'], refused.text
+    answer = CLIENT.post('/book/marks', content=dump({'actor': 'subject-marks'}), headers=JSON)
+    assert answer.status_code == 200, answer.text
+    assert drained(answer.json())['status'] == 'done'
+    log = SpineLog(recorded)
+    try:
+        assert [frame['actor'] for frame in log.frames()
+                if frame['event_type'] == 'run_completed'] == ['writer']
+    finally:
+        log.close()
+    assert [row['day'] for row in CLIENT.get('/book/marks').json()['days']] == ['2024-06-28']

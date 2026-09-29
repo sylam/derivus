@@ -58,7 +58,7 @@ import derivus
 from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at, splice_deal, walk_job_deals
-from derivus_spine import SpineLog, init_home, verify_home
+from derivus_spine import SpineLog, canonical_bytes, init_home, verify_home
 from derivus_spine import policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
@@ -290,12 +290,13 @@ def holding(counter=itertools.count()):
     """Back the one worker up behind a barrier and answer it. The queue is drained first, so what
     waits behind the barrier is only what the gate puts there. Each barrier is filed under its own
     name: the result store is content-addressed, so a second under one name would coalesce onto the
-    first, never be dequeued, and hang the gate instead of failing it.
+    first, never be dequeued, and hang the gate instead of failing it. No request signs it, so it
+    runs under the deployment's own seat, as the poll paths do.
     """
     service.EXECUTOR.queue.join()
     barrier = Barrier()
-    service.EXECUTOR.submit(
-        service.Job('barrier-{}'.format(next(counter)), barrier, {}), service.HEAVY)
+    service.EXECUTOR.submit(service.Job('barrier-{}'.format(next(counter)), barrier, {},
+                                        actor=spine.hub()), service.HEAVY)
     return barrier
 
 
@@ -536,41 +537,60 @@ def test_a_standing_run_that_coalesces_onto_one_in_flight_is_attested_when_it_la
 
 def test_an_attestation_the_record_refuses_fails_the_run_it_was_for(recorded, desk):
     """A standing run whose attestation is refused has NOT acquired standing, so serving its numbers
-    would be the unbacked citation the lane rule prevents. The refusal travels as the run's own
-    error and the record holds the denial and nothing else.
+    would be the unbacked citation the lane rule prevents. The attestation is the HUB's own act, so
+    no document refuses it: a seat's grant withdrawn while the run waits behind a barrier costs it
+    nothing. What refuses it is the record itself - a home whose `blobs/` went away while the run
+    waited is not a home - and then the refusal travels as the run's own error with nothing filed.
 
-    THE QUEUE ASKS FOR THE SCOPE THE APPEND WILL NEED, so the two checks can only disagree where the
-    DOCUMENT MOVED between them: the worker is held behind a barrier, the job is admitted under a
-    `book` grant over `*`, that grant is withdrawn while the run waits, and the attestation meets a
-    document the submission never saw. Anything else would be the hub paying for a Monte Carlo the
-    record was always going to refuse - increment 3's own boundary, which this closes.
+    THE QUEUE ASKS THE REQUEST'S SEAT FOR `mark` OVER THE JOB'S OWN BOOK, so the ordinary desk seat
+    - `book` over its book, `validate` everywhere - is turned away before the Monte Carlo is paid
+    for, the refusal naming that book.
+
+    Killing mutations: the attestation filed under the requester, which a grant withdrawn behind
+    the barrier then refuses; and admission still asking `book` over `*`, which admits the desk seat
+    to numbers the hub attests as standing.
     """
-    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate', 'book')])
+    marking = [(ACTOR, verb, '*') for verb in ('admin', 'validate', 'mark')]
+    entitle(recorded, marking)
     barrier = holding()
     try:
         assert barrier.running.wait(WORKER_SECONDS), 'the worker never picked the barrier up'
-        submitted = submit(own_job('UNSCOPED'), lane=spine.STANDING)
+        submitted = submit(own_job('WITHDRAWN'), lane=spine.STANDING, actor=ACTOR)
         assert submitted['status'] == 'queued', submitted
-        entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
-        standing = head(recorded)
+        entitle(recorded, [(ACTOR, 'admin', '*')])
     finally:
         barrier.released.set()
-
     result = drained(submitted)
-    assert result['status'] == 'error'
-    assert 'run_completed' in result['error'] and ACTOR in result['error']
-    assert [event_type for _, event_type, _ in facts(recorded)][standing:] == \
-        ['capability_denied'], 'the record kept an attestation nobody was scoped for'
+    assert result['status'] == 'done', result.get('error')
+    assert facts(recorded)[-1][1] == 'run_completed' and result['attested']['lsn'] == head(recorded)
 
-    # and the ordinary desk seat - `book` over its own book and nothing firm-level - never reaches
-    # the executor at all, because the fact it would file is firm-level
+    # not the first document again: one policy is one blob, so a repeat would coalesce onto the
+    # frame it already has and leave the withdrawal in force
+    entitle(recorded, marking + [(DESK_TWO, 'validate', 'spine-desk')])
+    blobs = recorded / 'blobs'
+    barrier = holding()
+    try:
+        assert barrier.running.wait(WORKER_SECONDS), 'the worker never picked the barrier up'
+        submitted = submit(own_job('UNHOMED'), lane=spine.STANDING, actor=ACTOR)
+        assert submitted['status'] == 'queued', submitted
+        standing = head(recorded)
+        blobs.rename(recorded / 'blobs-away')
+    finally:
+        barrier.released.set()
+    try:
+        result = drained(submitted)
+    finally:
+        (recorded / 'blobs-away').rename(blobs)
+    assert result['status'] == 'error' and 'there is no blobs/' in result['error'], result
+    assert head(recorded) == standing, 'the record kept an attestation it could not hold'
+
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
             + [(ACTOR, 'book', 'spine-desk')])
     stored = dict(service.EXECUTOR.results)
-    turned = CLIENT.post('/execute', content=dump(dict(own_job('UNADMITTED'),
-                                                       lane=spine.STANDING)), headers=JSON)
-    assert turned.status_code == 422 and 'book' in turned.json()['detail']
-    assert "over '*'" in turned.json()['detail'], 'the queue asked over the job\'s own book'
+    turned = CLIENT.post('/execute', content=dump(dict(own_job('UNADMITTED'), lane=spine.STANDING,
+                                                       actor=ACTOR)), headers=JSON)
+    assert turned.status_code == 422, turned.text
+    assert "no mark scope over 'spine-desk'" in turned.json()['detail'], turned.text
     assert service.EXECUTOR.results == stored, 'the queue ran a job it had refused'
 
 
@@ -761,9 +781,11 @@ def test_the_context_verbs_book_amend_and_file_the_three_lifecycle_facts(recorde
         'counterparty': 'LEI-5493001KJTIIGC8Y1R12', 'netting_set': 'CSA-0007',
         'execution_reference': 'EXEC-1'}
 
+    # judged at the deepest node holding the terms, which the seam reads - here the book itself
     linked = context.amend(CASHFLOW, amended, book='spine-desk')
     assert facts(recorded, 'amendment')[0][2] == {
-        'instrument': derivus.content_hash(CASHFLOW), 'amended_to': derivus.content_hash(amended)}
+        'instrument': derivus.content_hash(CASHFLOW), 'amended_to': derivus.content_hash(amended),
+        'portfolio': 'spine-desk'}
     assert linked['amended_to'] == derivus.content_hash(amended)
 
     context.apply_lifecycle('election', {'instrument': derivus.content_hash(CASHFLOW),
@@ -1051,6 +1073,99 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     assert {(row['agreement'], row['portfolio']) for row in rows} == {
         (CLIENT_SET, 'spine-desk/Rates/EM'), (CLIENT_SET, 'spine-desk')}
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded, desk):
+    """THE TREE IS DECLARED, BOOK BY BOOK. A book declaring no node books wherever its paths say,
+    whatever another book declared; once any node of it stands, a fill books into the book itself
+    or a node declared under it, an undeclared path refusing by name with the file untouched. An
+    amendment names the deepest node holding every position in the terms it restrikes - read off
+    the positions fold under the book lock, never stated by a caller - which is where it is judged.
+
+    Killing mutations: the declared nodes read across every book, which refuses a book another
+    book's tree has nothing to do with; and the restrike judged at the first position holding the
+    terms rather than at the node holding them all.
+    """
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    def booking(execution, portfolio, reference='CF-TREE'):
+        return CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': dict(CASHFLOW, Reference=reference, Amount=250_000.0),
+            'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': execution,
+            'portfolio': portfolio}), headers=JSON)
+
+    spine.declare_portfolio('another-book/Rates')
+    assert booking('EXEC-FREE', 'spine-desk/Anywhere', 'CF-FREE').json()['written'] is True
+    for path in ('spine-desk/FX', 'spine-desk/FX/Options', 'spine-desk/FX/Spot'):
+        spine.declare_portfolio(path)
+    assert [row['path'] for row in spine.portfolios()] == [
+        'another-book/Rates', 'spine-desk/FX', 'spine-desk/FX/Options', 'spine-desk/FX/Spot']
+    before = desk.read_bytes()
+    refused = booking('EXEC-NOWHERE', 'spine-desk/Rates')
+    assert refused.status_code == 422 and 'declare the node first' in refused.json()['detail']
+    assert desk.read_bytes() == before, 'a refused booking moved the file'
+
+    held = [booking(execution, portfolio).json() for execution, portfolio in (
+        ('EXEC-OPT', 'spine-desk/FX/Options'), ('EXEC-SPOT', 'spine-desk/FX/Spot'))]
+    assert all(answer['written'] for answer in held), held
+    assert booking('EXEC-ROOT', 'spine-desk', 'CF-ROOT').json()['written'] is True
+    amended = CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': held[0]['deal_path'],
+        'fields': {'Amount': 260_000.0}}), headers=JSON).json()
+    assert amended['written'] is True, amended
+    assert facts(recorded, 'amendment')[0][2]['portfolio'] == 'spine-desk/FX'
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_fill_reads_approved_rejected_pending_or_unticketed_off_what_stands():
+    """PENDING IS DERIVED, never filed: a fill's status is read off the verdicts standing over its
+    ticket when it is asked. The latest verdict stands, so a rejection after an approval reads
+    rejected and an approval after that approved again; under four eyes - every ticket the hub did
+    not sign in its own voice - the booker's own verdicts are not read at all, so its approval
+    clears nothing, withdraws no other seat's rejection and its rejection withdraws no other seat's
+    approval, while a ticket an automatic tier signed reads approved; and a fill carrying no ticket,
+    or booked where no tiers policy stood at ITS position, is unticketed. A ticket is one booking's
+    alone, so two bookings restoring one plan are two tickets, and a fill's key is its instrument
+    under its execution reference.
+
+    Killing mutations: the status read off the first verdict, which reads a rejected ticket
+    approved; four eyes ignored, which lets a booker clear their own ticket; the booker's verdict
+    read as the latest, which flips a signed ticket back to pending; and the tiers policy read at
+    the head rather than at the fill, which reads a fill booked before any workflow as owing one.
+    """
+    def verdict(kind, actor, lsn):
+        return {'verdict': kind, 'actor': actor, 'reason': None, 'lsn': lsn}
+
+    ticket, signed = spine.ticket('a' * 64, 'EXEC-1'), spine.ticket('a' * 64, 'EXEC-2')
+    assert ticket != signed and len(ticket) == 64
+    assert spine.fill_key('c' * 64, 'EXEC-1') != spine.fill_key('c' * 64, 'EXEC-2')
+    fills = [{'lsn': 10, 'actor': ACTOR, 'ticket': ticket}, {'lsn': 11, 'actor': ACTOR},
+             {'lsn': 12, 'actor': ACTOR, 'ticket': signed}]
+
+    def status(verdicts, tiers_at=lambda lsn: {'tiers': []}):
+        return spine.status_of(fills, {'plans': [
+            {'plan_hash': ticket, 'verdicts': verdicts},
+            {'plan_hash': signed, 'verdicts': [verdict('approval', 'writer', 9)]}]}, tiers_at)
+
+    assert status([]) == {10: 'pending', 11: 'unticketed', 12: 'approved'}
+    assert status([verdict('approval', DESK_TWO, 13)])[10] == 'approved'
+    assert status([verdict('approval', DESK_TWO, 13),
+                   verdict('rejection', DESK_TWO, 14)])[10] == 'rejected'
+    assert status([verdict('rejection', DESK_TWO, 14), verdict('approval', DESK_TWO, 15),
+                   verdict('approval', DESK_TWO, 13)])[10] == 'approved'
+    assert status([verdict('approval', ACTOR, 13)])[10] == 'pending', 'the booker signed alone'
+    for verdicts, standing in (
+            ([verdict('rejection', DESK_TWO, 13)], 'rejected'),
+            ([verdict('rejection', DESK_TWO, 13), verdict('approval', ACTOR, 14)], 'rejected'),
+            ([verdict('approval', DESK_TWO, 13), verdict('approval', ACTOR, 14)], 'approved'),
+            ([verdict('approval', DESK_TWO, 13), verdict('rejection', ACTOR, 14)], 'approved')):
+        assert status(verdicts)[10] == standing, verdicts
+    assert set(status([verdict('approval', DESK_TWO, 13)], lambda lsn: None).values()) == {
+        'unticketed'}
+    assert status([], lambda lsn: {'tiers': []} if lsn == 12 else None) == {
+        10: 'unticketed', 11: 'unticketed', 12: 'approved'}, 'a workflow read at the head'
 
 
 def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
@@ -1366,7 +1481,8 @@ def test_a_quote_records_nothing_and_files_what_the_acceptance_will(recorded, qu
     assert spine.canonical(pinned['values']) == spine.values_of(context)
     assert derivus.content_hash(pinned['values']) == pinned['values_hash'], \
         'the vector on the file is not the one the hash beside it names'
-    assert pinned['ticket'] == service.quote_ticket(document, filed['deal'], CLIENT_SET)
+    assert pinned['ticket'] == service.quote_ticket(document, filed['deal'], quote['quote_id'],
+                                                    CLIENT_SET)
     assert pinned['ticket'] != pinned['plan_hash'], 'the ticket is the book plus this quote'
     # the board was stamped at 16:30 on the base date, so the age is the wall clock since then
     assert pinned['pillar_age'] == pytest.approx(
@@ -1497,8 +1613,9 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     held = [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']
             if child['Instrument']['.Deal'].get('Buy_Sell')][0]
     assert held != bought, 'the desk took the same side as its client'
-    assert body['ticket'] == service.load(landed).plan_hash(), \
-        'the ticket is not the plan this booking left the book at'
+    assert body['ticket'] == spine.ticket(service.load(landed).plan_hash(), quote['quote_id']), \
+        'the ticket is not the plan this booking left the book at, under this quote'
+    assert fill_body['ticket'] == body['ticket'], 'the fill does not carry what was signed'
 
     retried = accept(quote).json()
     assert retried['written'] is False
@@ -1965,7 +2082,6 @@ def test_an_edited_pending_file_no_longer_says_what_was_quoted(recorded, quoting
 # --------------------------------------------------------------------------------------------
 # The tier step, inside the acceptance closure.
 
-AUTO_SEAT = 'policy/tiers/auto'
 DESK_TWO = 'subject-desk-two'
 
 #: A cap the collar's million dollars sits comfortably under, and one it does not.
@@ -1990,63 +2106,117 @@ def entitle(home, grants):
         log.close()
 
 
-def test_an_automatic_tier_signs_under_its_seat_between_the_quote_and_the_fill(recorded, quoting):
-    """A tier naming a SEAT signs for itself, and the order is the whole point: the acceptance, then
-    the approval under the tier's own subject, then the fill. Three facts at consecutive LSNs, so an
-    auditor reading the log in order sees a trade authorised before it was booked.
+def test_a_home_written_before_the_seats_retired_still_books_exports_marks_and_verifies(recorded,
+                                                                                         quoting):
+    """THE RECORD'S OWN VERSION RULE, end to end. A home carries the two documents as an earlier
+    grammar spelled them, put on the record as data: a capabilities document granting `draft`
+    beside every verb it then had, and a tiers policy whose automatic tier names the seat it signed
+    under. Read tolerantly - the retired grant dropped, the seated tier read as the automatic one
+    it was - the desk accepts a quote through the hub's own approval, strikes its settlement file
+    and marks its book at the designated close, reads its P&L, and the oracle holds over it.
 
-    Killing mutation: the approval appended after the fill, which records every automatic booking as
-    having been signed off afterwards.
+    Killing mutations: a stored document read in today's grammar - the capabilities one folding to
+    UNREADABLE, which refuses the quote, and the tiers one refused at every read, which refuses the
+    acceptance, the export and the marks.
+    """
+    from derivus_spine import oracle
+    from gates.spine_game.red import forged
+
+    log = opened(recorded)
+    try:
+        drafted = log.store.put(canonical_bytes({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in (
+                'admin', 'book', 'draft', 'validate', 'approve', 'mark', 'document')], 'read': []}))
+        log.accept(forged(log, 'policy_declared', {'policy': CAPABILITIES_POLICY,
+                                                   'blob': drafted}, ACTOR))
+        seated = log.store.put(canonical_bytes({
+            'designations': {'pnl': 'official', 'settlement_export': 'official'},
+            'tiers': [{'name': 'auto', 'seat': ACTOR}]}))
+    finally:
+        log.close()
+    log = opened(recorded)
+    try:
+        log.append('policy_declared', {'policy': policy.TIERS_POLICY, 'blob': seated},
+                   actor=ACTOR, blob_refs=(seated,))
+    finally:
+        log.close()
+
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor=ACTOR)
+    booked = accept(quote, actor=ACTOR).json()
+    assert booked['written'] is True and booked['tier']['four_eyes'] is False, booked
+    for path, body in (('/book/close', {'actor': ACTOR}), ('/book/marks', {'actor': ACTOR}),
+                       ('/book/settlements', {'due_before': '2024-07-31', 'actor': ACTOR})):
+        answer = CLIENT.post(path, content=dump(body), headers=JSON)
+        assert answer.status_code == 200, (path, answer.text)
+        if path == '/book/marks':
+            assert drained(answer.json())['status'] == 'done'
+    assert CLIENT.get('/book/pnl').status_code == 200
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
+def test_the_seam_refuses_the_writers_name_whoever_names_it(recorded, monkeypatch):
+    """THE RESERVED NAME IS NOBODY'S, whoever says it: an act naming `writer`, and one naming
+    nobody where `DV_SPINE_ACTOR` says `writer` and no document is in force, are refused at the
+    seam in its own sentence, and nothing is written.
+
+    Killing mutation: the seam passing the name through, which leaves the refusal to the writer and
+    a poll path reading the deployment's seat off the environment unguarded.
+    """
+    before = head(recorded)
+    for named, deployment in (('writer', ACTOR), (None, 'writer')):
+        monkeypatch.setenv('DV_SPINE_ACTOR', deployment)
+        with pytest.raises(spine.SpineRefused) as refused:
+            spine.book(CASHFLOW, 1.0, 'CPTY_A', CLIENT_SET, 'EXEC-VOICE', actor_name=named,
+                       book_name='spine-desk')
+        assert 'name the seat that is acting' in str(refused.value), (named, deployment)
+    assert head(recorded) == before
+
+
+def test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fill(recorded,
+                                                                                    quoting):
+    """A tier is AUTOMATIC unless it declares `four_eyes`, and its approval is the hub's own act -
+    filed in the writer's voice, the workflow an admin declared deciding it rather than a seat - so
+    a document scoping NOBODY to approve stops none of it. The order is the whole point: the
+    acceptance, the approval, the fill, three facts at consecutive LSNs, so an auditor reading the
+    log in order sees a trade authorised before it was booked; the fill carries the ticket that
+    approval signed.
+
+    Killing mutations: the approval appended after the fill, which records every automatic booking
+    as signed off afterwards; and the approval filed under the acceptor, which a document scoping
+    it for nothing but booking refuses, holding back every trade the workflow was declared to pass.
     """
     declare(recorded, policy.TIERS_POLICY, tiers(
-        {'name': 'auto', 'seat': AUTO_SEAT, 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
         {'name': 'desk', 'four_eyes': True}))
-    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    # `validate` beside the rest: quoting is a curiosity job the queue asks that scope for, and the
+    # verbs imply nothing about each other here or at the writer - nobody holds `approve`
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('validate', 'book', 'mark', 'admin')])
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor=ACTOR)
 
-    booked = accept(quote).json()
-    assert booked['written'] is True
-    assert booked['tier']['name'] == 'auto' and booked['tier']['seat'] == AUTO_SEAT
+    booked = accept(quote, actor=ACTOR).json()
+    assert booked['written'] is True, booked
+    assert booked['tier'] == {'name': 'auto', 'four_eyes': False,
+                              'approval_lsn': typed(recorded, 'approval')[0][0]}
 
     steps = typed(recorded, 'quote_filed', 'approval', 'fill')
     assert [event_type for _, event_type in steps] == ['quote_filed', 'approval', 'fill']
     assert [lsn for lsn, _ in steps] == list(range(steps[0][0], steps[0][0] + 3))
     _, _, signed = facts(recorded, 'approval')[0]
     assert signed == {'plan_hash': booked['accepted']['ticket']}
-    assert booked['tier']['approval_lsn'] == steps[1][0]
-    assert verify_home(recorded)['events'] == head(recorded)
-
-
-def test_a_seat_the_document_does_not_scope_leaves_the_acceptance_standing(recorded, quoting):
-    """An automatic tier whose seat holds no `approve` grant cannot sign, so nothing books - but the
-    ACCEPTANCE STANDS, because the client took the price and that is a fact whatever the workflow
-    then says. The denial is a chained fact in the writer's own voice, the file is byte-identical,
-    and the answer names the seat and the scope it lacks.
-
-    Killing mutation: the `quote_filed` appended after the tier step, which loses the acceptance of
-    every quote a misconfigured workflow holds back.
-    """
-    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto', 'seat': AUTO_SEAT}))
-    # `validate` beside the rest: quoting is a curiosity job and 5c's queue asks for that scope
-    # before it runs one, and the six verbs imply nothing about each other here or at the writer
-    entitle(recorded, [(ACTOR, verb, '*')
-                       for verb in ('validate', 'book', 'mark', 'admin', 'approve')])
-    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
-    before = quoting.read_bytes()
-
-    booked = accept(quote).json()
-    assert booked['written'] is False and quoting.read_bytes() == before
-    assert booked['accepted']['lsn'] == facts(recorded, 'quote_filed')[0][0]
-    assert AUTO_SEAT in booked['waits_on'] and 'approve' in booked['waits_on']
-    assert facts(recorded, 'fill') == [] and facts(recorded, 'approval') == []
-
-    _, _, denial = facts(recorded, 'capability_denied')[0]
-    assert denial['subject'] == AUTO_SEAT and denial['verb'] == 'approve'
+    assert facts(recorded, 'fill')[0][2]['ticket'] == booked['accepted']['ticket']
+    assert facts(recorded, 'capability_denied') == []
+    log = opened(recorded)
+    try:
+        assert [frame['actor'] for frame in log.frames()
+                if frame['event_type'] == 'approval'] == ['writer']
+    finally:
+        log.close()
     assert verify_home(recorded)['events'] == head(recorded)
 
 
 def test_a_desk_tier_waits_for_a_second_seat_and_books_on_the_verdict_that_stands(recorded,
                                                                                   quoting):
-    """THE TWO-ACT DESK TIER, through the service. A tier naming no seat wants a human: the first
+    """THE TWO-ACT DESK TIER, through the service. A four-eyes tier wants a second seat: the first
     acceptance files the quote and answers `waits_on` with the file untouched, the ACCEPTOR's own
     approval does not satisfy four eyes, a rejection filed after it is what the record says LAST -
     the answer naming its LSN and its reason - and an approval by another seat after that is what
@@ -2064,7 +2234,7 @@ def test_a_desk_tier_waits_for_a_second_seat_and_books_on_the_verdict_that_stand
     waiting = accept(quote).json()
     ticket = waiting['accepted']['ticket']
     assert waiting['written'] is False and quoting.read_bytes() == before
-    assert waiting['tier'] == {'name': 'desk', 'seat': None, 'approval_lsn': None}
+    assert waiting['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None}
     assert 'no verdict is filed' in waiting['waits_on']
 
     signed = CLIENT.post('/book/quote/approve',
@@ -2110,7 +2280,7 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
         'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 0.0}
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
     declare(recorded, policy.TIERS_POLICY, tiers(
-        {'name': 'auto', 'seat': AUTO_SEAT, 'max_notional': {'amount': BIG, 'currency': 'EUR'}}))
+        {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'EUR'}}))
 
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     pending = pending_of(quoting.parent, quote)
@@ -2162,24 +2332,24 @@ def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quotin
     assert service.quote_expiry({'Object': 'StructuredDeal'}) is None
 
     for rows, expected, said in (
-            ([{'name': 'auto', 'seat': AUTO_SEAT,
-               'max_notional': {'amount': SMALL, 'currency': 'USD'}},
+            ([{'name': 'auto', 'max_notional': {'amount': SMALL, 'currency': 'USD'}},
               {'name': 'desk', 'four_eyes': True}], 'desk', 'caps max_notional'),
-            ([{'name': 'auto', 'seat': AUTO_SEAT, 'max_tenor_years': 0.5},
+            ([{'name': 'auto', 'max_tenor_years': 0.5},
               {'name': 'desk', 'four_eyes': True}], 'desk', 'caps max_tenor_years'),
-            ([{'name': 'auto', 'seat': AUTO_SEAT,
-               'max_notional': {'amount': BIG, 'currency': 'JPY'}},
+            ([{'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'JPY'}},
               {'name': 'desk', 'four_eyes': True}], 'desk', 'not stated in JPY'),
             # a million dollars is 54,054 rand on this book's own axis, so a 100,000 rand cap
             # admits it - and refuses it if the notional was stated without being crossed
-            ([{'name': 'auto', 'seat': AUTO_SEAT,
-               'max_notional': {'amount': SMALL, 'currency': 'ZAR'}},
+            ([{'name': 'auto', 'max_notional': {'amount': SMALL, 'currency': 'ZAR'}},
               {'name': 'desk', 'four_eyes': True}], 'auto', None),
-            ([{'name': 'auto', 'seat': AUTO_SEAT, 'market': 'eod'},
+            ([{'name': 'auto', 'market': 'eod'},
               {'name': 'desk', 'four_eyes': True}], 'desk', 'nothing in this record has declared'),
-            ([{'name': 'auto', 'seat': AUTO_SEAT, 'market': 'official'}], 'auto', None),
-            ([{'name': 'auto', 'seat': AUTO_SEAT,
-               'max_notional': {'amount': SMALL, 'currency': 'USD'}}], None, 'caps max_notional')):
+            ([{'name': 'auto', 'market': 'official'}], 'auto', None),
+            # a tier covering a node the acceptance does not book into is read past
+            ([{'name': 'auto', 'scope': 'spine-desk/FX'},
+              {'name': 'desk', 'four_eyes': True}], 'desk', 'covers spine-desk/FX'),
+            ([{'name': 'auto', 'max_notional': {'amount': SMALL, 'currency': 'USD'}}], None,
+             'caps max_notional')):
         declare(recorded, policy.TIERS_POLICY, tiers(*rows))
         quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
         pending = pending_of(quoting.parent, quote)
@@ -2619,7 +2789,11 @@ def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
     second = filed(recorded, 'official_close_declared',
                    {'market': 'official', 'values_hash': restated})
     snapshot = stored(recorded, b'{"surface":"the vol cube"}')
-    filed(recorded, 'snapshot_registered', {'blob': snapshot}, book=CLIENT_SET)
+    log = opened(recorded)
+    try:
+        log.own('snapshot_registered', {'blob': snapshot}, book=CLIENT_SET)
+    finally:
+        log.close()
 
     answer = CLIENT.get('/book/markets').json()
     assert answer['lsn'] == head(recorded)
@@ -2967,7 +3141,7 @@ def test_a_market_declared_through_the_service_stands_under_the_name_it_was_give
 
     # the seat that may BOOK is not the seat that may MARK, and the refusal is itself a fact
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('book', 'admin')])
-    unscoped = CLIENT.post('/book/markets', json={'name': 'dealer'})
+    unscoped = CLIENT.post('/book/markets', json={'name': 'dealer', 'actor': ACTOR})
     assert unscoped.status_code == 422 and 'mark' in unscoped.json()['detail']
     assert facts(recorded, 'capability_denied')[0][2] == {
         'subject': ACTOR, 'verb': 'mark', 'book': '*', 'attempted_type': 'market_declared'}
@@ -3013,7 +3187,7 @@ def test_with_no_document_in_force_the_queue_admits_every_job(recorded, desk):
     assert head(recorded) == at, 'a what-if moved the record'
 
 
-def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk, monkeypatch):
+def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk):
     """THE QUEUE IS THE HUB'S COMPUTE AND IT ASKS FIRST. `pin_result` has no HTTP verb, so a
     submission is the whole of what an unscoped seat could make this box spend, and the check sits
     in `submit` - where every queued job passes - rather than in each verb.
@@ -3028,13 +3202,14 @@ def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk
     exactly what it was - counted, never believed. Asking again is ONE fact, the denial coalescing
     onto the LSN it already has. The same seat granted `validate` over this book prices, and A
     TUPLE ALREADY IN THE STORE IS ASKED ABOUT AGAIN: content addressing dedupes NUMBERS, so a seat
-    whose grant has since been withdrawn is refused at the queue rather than served them. An
-    unnamed actor under a document is refused by name, because a job nobody signed for is one the
-    record could not attribute.
+    whose grant has since been withdrawn is refused at the queue rather than served them. A request
+    naming no seat under a document is refused by name, the deployment's own seat - which does
+    price - being the poll paths' alone: a job nobody signed for is one the record could not
+    attribute.
 
     Killing mutations: the check taken after `queue.put`, which pays for the run and then refuses
     it; the check taken only where the tuple is new, after which a seat asking for numbers the
-    store already holds is served them; the actor read off the environment rather than the request,
+    store already holds is served them; an unnamed request falling back on the environment's seat,
     which lets the one grant a ticking desk cannot withhold admit every anonymous what-if; and the
     job's own book dropped, which asks for a scope no desk document grants.
     """
@@ -3068,40 +3243,43 @@ def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk
     withdrawn, ran = priced('under-a-document')
     assert withdrawn.status_code == 422 and not ran, 'the store answered a seat the queue refuses'
 
-    # and the deployment's own seat still prices, which is the grant that keeps the desk ticking
-    deployment, ran = priced('deployment', actor=None)
+    # the deployment's own seat prices when a request names it, which is the grant that keeps the
+    # desk ticking - and a request naming nobody is not taken for it
+    deployment, ran = priced('deployment', actor=ACTOR)
     assert deployment.status_code == 200 and ran, deployment.text
-    monkeypatch.delenv(spine.SPINE_ACTOR)
     unnamed, ran = priced('unnamed', actor=None)
     assert unnamed.status_code == 422 and not ran
+    assert 'no actor for this act' in unnamed.json()['detail']
     assert spine.SPINE_ACTOR in unnamed.json()['detail']
     assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_the_scope_the_queue_asks_for_is_the_one_the_jobs_lane_will_mint(recorded):
-    """WHAT A JOB IS ADMITTED UNDER IS WHAT ITS LANE WILL FILE. A standing run files a
-    `run_completed`, so the queue asks for THAT TYPE's own verb and a seat scoped only to validate
-    is turned away before the Monte Carlo rather than after it - where increment 3's boundary left
-    it, the hub paying for an execution the writer would then refuse.
-
-    And the seat asked about is THE REQUEST'S where it names one: the same job posted under a seat
-    the document scopes for `book` runs, and the attestation is filed under that seat rather than
-    under the deployment's own, so what was admitted and what was recorded are one name.
+def test_the_scope_the_queue_asks_for_is_the_seats_own_and_the_hub_attests(recorded):
+    """WHAT A STANDING RUN IS ADMITTED UNDER IS `mark` OVER ITS BOOK, asked of the REQUEST's seat:
+    numbers a fact is about to cite are a mark of that book, and a seat scoped only to validate is
+    turned away before the Monte Carlo rather than after it. A `mark`-only seat is admitted, and
+    the attestation is the hub's - filed in the writer's own voice, the seat having asked and the
+    hub having run it - so a seat's grant over a book never reaches a fact only the hub may file.
+    Under a document a request naming no seat is refused by name, the deployment's own being the
+    poll paths' alone.
 
     Killing mutations: one verb asked for every lane, which either stops every what-if on a booking
-    desk or lets a validate-only seat mint attestations; and the request's actor read for admission
-    and not for the append, which records somebody else's run.
+    desk or lets a validate-only seat mint attestations; the attestation filed under the requester,
+    which a seat could then file for numbers the hub never ran; and an unnamed request falling back
+    on the deployment's seat, which admits every anonymous caller as the hub.
     """
     assert (spine.STANDING_TYPE, spine.SETTLEMENT_EXPORT) == (
         'run_completed', policy.DESIGNATED_PROCESSES[0])
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
-            + [(DESK_TWO, 'book', '*')])
+            + [(DESK_TWO, 'mark', 'spine-desk')])
     standing = dict(own_job('admission'), lane=spine.STANDING)
 
-    refused = CLIENT.post('/execute', content=dump(standing), headers=JSON)
-    assert refused.status_code == 422 and 'book' in refused.json()['detail'], refused.text
-    assert ACTOR in refused.json()['detail'], 'the queue asked about a seat nobody named'
+    refused = CLIENT.post('/execute', content=dump(dict(standing, actor=ACTOR)), headers=JSON)
+    assert refused.status_code == 422, refused.text
+    assert "{!r} holds no mark scope over 'spine-desk'".format(ACTOR) in refused.json()['detail']
     assert facts(recorded, 'capability_denied')[0][2]['attempted_type'] == spine.STANDING_TYPE
+    anonymous = CLIENT.post('/execute', content=dump(standing), headers=JSON)
+    assert anonymous.status_code == 422 and 'no actor for this act' in anonymous.json()['detail']
     assert facts(recorded, 'run_completed') == []
 
     ran = submit(standing, actor=DESK_TWO)
@@ -3110,7 +3288,7 @@ def test_the_scope_the_queue_asks_for_is_the_one_the_jobs_lane_will_mint(recorde
     log = opened(recorded)
     try:
         assert [frame['actor'] for frame in log.frames()
-                if frame['event_type'] == 'run_completed'] == [DESK_TWO]
+                if frame['event_type'] == 'run_completed'] == ['writer']
     finally:
         log.close()
     assert verify_home(recorded)['events'] == head(recorded)

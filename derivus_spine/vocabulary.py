@@ -25,11 +25,11 @@ declared string must be non-empty.
 
 `BLOB_FIELDS` declares which of a body's hashes name bytes in the store, so referential closure is
 asked the same way by the writer and by a verifier over a log it did not write - not every 64-hex
-field is a blob. The closed set is in five parts because five different mouths speak it
-(`FACT_TYPES`, `CUSTODY_TYPES`, `PROVENANCE_TYPES`, `REFERENCE_TYPES`, `WRITER_TYPES`),
-`EVENT_TYPES` is the union `validate` consults, and `EVENT_VERB` names the capability verb each
-type demands - with `break_glass_used` answering to the genesis seat alone and `capability_denied`
-never gated.
+field is a blob. The closed set is in five parts by what each says (`FACT_TYPES`,
+`CUSTODY_TYPES`, `PROVENANCE_TYPES`, `REFERENCE_TYPES`, `WRITER_TYPES`), `EVENT_TYPES` is the
+union `validate` consults, and `EVENT_VERB` names the capability verb each type demands - with
+`break_glass_used` answering to the genesis seat alone, and the types only the writer files, in
+its own voice (`WRITER`), never gated and never a seat's, wherever their part puts them.
 `classify` derives the entitlement class from provenance, so a reclassification is one declaration.
 """
 import math
@@ -82,6 +82,11 @@ def is_coordinates(value):
             and all(is_text(name) and is_number(number) for name, number in value.items()))
 
 
+def is_path(value):
+    """Whether `value` is a node of the desk's tree: named segments joined by `/`, a book first."""
+    return is_text(value) and '' not in value.split('/')
+
+
 #: `(description, predicate)` per field kind, spelled once so every refusal words it the same way.
 #: Appended to, never reordered - the constants below are indexes into this tuple.
 KINDS = (
@@ -91,8 +96,9 @@ KINDS = (
     ('a whole number', is_integer),
     ('a whole number or null', is_maybe_integer),
     ('an object of name -> finite number', is_coordinates),
+    ('a path of named segments', is_path),
 )
-HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES = range(6)
+HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH = range(7)
 
 
 def _validator(event_type, fields, open_body=False, optional=()):
@@ -149,16 +155,17 @@ FACT_TYPES = {
     # instrument as written - never a position, and an execution reference so a retry is the same
     # fact by construction while two identical clips are two facts. `agreement` and `portfolio` are
     # where the position sits and `price` what it was done at, with the `currency` it was stated in
-    # and the `rate` the booking crossed it at where that is not the book's own; a body carrying
-    # none of them validates exactly as it did before they existed.
+    # and the `rate` the booking crossed it at where that is not the book's own, and `ticket` the
+    # plan an approval of it signs; a body carrying none of them validates as it did before.
     'fill': _validator('fill', (
         ('instrument', HASH), ('quantity', NUMBER), ('counterparty', TEXT),
         ('netting_set', TEXT), ('execution_reference', TEXT)),
-        optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', TEXT),
-                  ('currency', TEXT), ('rate', NUMBER))),
-    # Economics are never edited: an amendment is a new instrument hash linked to the old one.
+        optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', PATH),
+                  ('currency', TEXT), ('rate', NUMBER), ('ticket', HASH))),
+    # Economics are never edited: an amendment is a new instrument hash linked to the old one,
+    # judged at the deepest node holding every position in it.
     'amendment': _validator('amendment', (
-        ('instrument', HASH), ('amended_to', HASH))),
+        ('instrument', HASH), ('amended_to', HASH)), optional=(('portfolio', PATH),)),
     'election': _validator('election', (
         ('instrument', HASH), ('choice', TEXT))),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different
@@ -178,9 +185,11 @@ FACT_TYPES = {
         ('name', TEXT), ('values_hash', HASH))),
     'official_close_declared': _validator('official_close_declared', (
         ('market', TEXT), ('values_hash', HASH)), optional=(('date', TEXT),)),
-    # A decision over a plan HASH, so an amended plan is a new hash needing new approval.
-    'approval': _validator('approval', (('plan_hash', HASH),)),
-    'rejection': _validator('rejection', (('plan_hash', HASH), ('reason', TEXT))),
+    # A decision over a plan HASH, so an amended plan is a new hash needing new approval, judged
+    # at the portfolio the ticket books into where one is named.
+    'approval': _validator('approval', (('plan_hash', HASH),), optional=(('portfolio', PATH),)),
+    'rejection': _validator('rejection', (('plan_hash', HASH), ('reason', TEXT)),
+                            optional=(('portfolio', PATH),)),
     'snapshot_registered': _validator('snapshot_registered', (('blob', HASH),)),
     # No blob class reduces or expires except through one of these.
     'retention_declared': _validator('retention_declared', (
@@ -189,6 +198,8 @@ FACT_TYPES = {
     'break_glass_used': _validator('break_glass_used', (('reason', TEXT),)),
     # Open-bodied: a policy document's shape is versioned by the policy itself.
     'policy_declared': _validator('policy_declared', (('policy', TEXT),), open_body=True),
+    # A node of the desk's tree, declared at its parent: a book's own path is the firm's to declare.
+    'portfolio_declared': _validator('portfolio_declared', (('path', PATH),)),
     'checkpoint': _validator('checkpoint', (
         ('lsn', INTEGER), ('event_hash', HASH), ('signature', TEXT))),
 }
@@ -216,11 +227,11 @@ PROVENANCE_TYPES = {
     # solved against, which refuses where the book moved. `request` is the relayed client utterance,
     # optional and erased by shredding the class key; `ticket` is the plan the book has once this
     # acceptance lands - the mirror spliced in AND the quote's model pin merged - which is what an
-    # approval signs.
+    # approval signs; `portfolio` is where it books.
     'quote_filed': _validator('quote_filed', (
         ('quote_id', TEXT), ('structure', TEXT), ('plan_hash', HASH), ('values_hash', HASH),
         ('solved', COORDINATES), ('edge', NUMBER)),
-        optional=(('request', TEXT), ('ticket', HASH))),
+        optional=(('request', TEXT), ('ticket', HASH), ('portfolio', PATH))),
 }
 
 
@@ -250,9 +261,9 @@ REFERENCE_TYPES = {
         ('agreement', TEXT), ('entity', TEXT), ('kind', TEXT), ('terms', HASH))),
 }
 
-#: The writer's own voice, and the whole of it: a denial is a decision and so is appended rather
-#: than logged. Said by the writer about a submitter, so the public append refuses this type by name
-#: (log.py) and only the internal denial path emits it, under the actor `writer`.
+#: The writer's own type: a denial is a decision and so is appended rather than logged. Said by the
+#: writer about a submitter, so the public append refuses this type by name (log.py) and only the
+#: writer's own voice, `SpineLog.own`, files it under the actor `writer`.
 WRITER_TYPES = {
     'capability_denied': _validator('capability_denied', (
         ('subject', TEXT), ('verb', TEXT), ('book', TEXT), ('attempted_type', TEXT))),
@@ -266,22 +277,17 @@ EVENT_TYPES.update(PROVENANCE_TYPES)
 EVENT_TYPES.update(REFERENCE_TYPES)
 EVENT_TYPES.update(WRITER_TYPES)
 
-#: What a submitter may name, and what an unknown-type refusal lists. `capability_denied` is
-#: excluded: it would advertise a door that is bolted.
-SUBMITTABLE = tuple(sorted(set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)
-                           | set(REFERENCE_TYPES)))
-
-#: The capability verbs a policy document grants, spelled once. `draft` and `validate` name work
-#: that happens before the log, so no event type demands them; they are here because the document
-#: granting them is evaluated by the same function. Each is an ACT - who performs it is the
-#: deployment's grant, never a name here.
-DRAFT, VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, ADMIN = (
-    'draft', 'validate', 'book', 'approve', 'mark', 'document', 'admin')
-VERBS = (DRAFT, VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, ADMIN)
+#: The capability verbs a policy document grants, spelled once. `validate` names work that happens
+#: before the log - the queue asks for it - so no event type demands it. Each is an ACT: who
+#: performs it is the deployment's grant, never a name here.
+VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, ADMIN = (
+    'validate', 'book', 'approve', 'mark', 'document', 'settle', 'admin')
+VERBS = (VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, ADMIN)
 
 #: The two authorizations that come from no policy document, named as pseudo-verbs so one evaluator
 #: answers every append. `RECOVERY` is the break-glass path, declared at genesis and answerable to
-#: the seat genesis named; `WRITER` is both the writer's denial pseudo-verb and the actor it uses.
+#: the seat genesis named; `WRITER` is the pseudo-verb of the types only the writer files and the
+#: actor its own voice uses - a name no seat may take.
 RECOVERY = 'break_glass'
 WRITER = 'writer'
 
@@ -296,10 +302,9 @@ EVENT_VERB = {
     'fill': BOOK,
     'amendment': BOOK,
     'election': BOOK,
-    'status_transition': BOOK,
-    'snapshot_registered': BOOK,
-    'run_completed': BOOK,
     'quote_filed': BOOK,
+    # settle: what the back office moves - a payment, a confirmation, money held under paper.
+    'status_transition': SETTLE,
     # approve: the second pair of eyes, and the only verb whose refusal is also a decision.
     'approval': APPROVE,
     'rejection': APPROVE,
@@ -314,6 +319,7 @@ EVENT_VERB = {
     'agreement_declared': DOCUMENT,
     # admin: governance, custody and the deployment attesting to its own position.
     'policy_declared': ADMIN,           # every policy, capabilities included - see the strand rule
+    'portfolio_declared': ADMIN,        # at the parent of its path - `capability.scope_of`
     'retention_declared': ADMIN,
     'rehash_declared': ADMIN,
     'checkpoint': ADMIN,
@@ -322,7 +328,18 @@ EVENT_VERB = {
     # Outside the document verbs, and outside any document.
     'break_glass_used': RECOVERY,       # the genesis seat's, doc or no doc; anyone else's is denied
     'capability_denied': WRITER,        # never gated, or a denial could itself be denied
+    'run_completed': WRITER,            # the hub attesting the runs it executed
+    'snapshot_registered': WRITER,      # and the snapshots it took
 }
+
+#: Everything the writer's own voice says: the types only it files, and an automatic tier's
+#: approval - which the workflow an admin declared decides, rather than a seat.
+WRITER_VOICE = tuple(sorted(name for name, verb in EVENT_VERB.items() if verb == WRITER)) + (
+    'approval',)
+
+#: What a submitter may name, and what an unknown-type refusal lists: never a type only the
+#: writer's own voice files, which would advertise a door that is bolted.
+SUBMITTABLE = tuple(sorted(name for name, verb in EVENT_VERB.items() if verb != WRITER))
 
 
 def classify(event_type, book):

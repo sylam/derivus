@@ -69,6 +69,7 @@ SUMMARIES = {
     'rehash_declared': 'a hash algorithm was declared',
     'break_glass_used': 'the recovery seat was used',
     'policy_declared': 'a policy document was declared',
+    'portfolio_declared': 'a portfolio was declared',
     'checkpoint': 'the head was signed',
     'run_completed': 'a standing run attested its numbers',
     'result_pinned': 'a replayed result was pinned',
@@ -503,6 +504,25 @@ class Agreements(Projector):
         return [_shown(row, agreement=agreement) for agreement, row in sorted(state.items())]
 
 
+class Portfolios(Projector):
+    """Every node of the desk's tree declared, under its path: who declared it, and when.
+
+    A path declared again stands by the as-of key, as every keyed row here does.
+    """
+
+    name = 'portfolios'
+    reads = ('portfolio_declared',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        _stand(state, log.open_body(frame)['path'], frame, {'actor': frame['actor']})
+
+    def rows(self, state):
+        return [_shown(row, path=path) for path, row in sorted(state.items())]
+
+
 class Cash(Projector):
     """Every movement of money a settlement filed, under the settlement system's own reference: what
     it settled, its kind, the asset and the signed amount - received positive, paid or posted
@@ -562,7 +582,7 @@ class Activity(Projector):
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
     Positions(), Costs(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
-    Denials(), Entities(), Agreements(), Cash(), Activity()))
+    Denials(), Entities(), Agreements(), Portfolios(), Cash(), Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):

@@ -171,7 +171,7 @@
     "summary": "a hash algorithm was declared"
   },
   {
-    "actor": "subject-desk-one",
+    "actor": "writer",
     "book": "FX-VANILLA",
     "effective_time": null,
     "event_type": "snapshot_registered",
@@ -187,5 +187,14 @@
     "lsn": 21,
     "record_time": "the writer stamped this",
     "summary": "the recovery seat was used"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": "FX-VANILLA",
+    "effective_time": null,
+    "event_type": "portfolio_declared",
+    "lsn": 22,
+    "record_time": "the writer stamped this",
+    "summary": "a portfolio was declared"
   }
 ]

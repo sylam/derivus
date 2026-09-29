@@ -19,31 +19,35 @@ at a catch-all declaring none, and a ticket reaching the end of a list without o
 at all - an answer rather than a default, because a workflow nobody declared is not one a booking
 may invent.
 
-Three checks and no fourth. SIZE is a cap in the cap's OWN currency, read against the notionals the
-caller states: a ticket whose notional is not stated in that currency FAILS that tier by name, which
-is the safe direction and keeps every check here off the market. TENOR is the ticket's own years.
-MARKET is the values vector the quote pinned, which must be the one standing under the name the tier
-prices on. Staleness is deliberately absent: how old a board may be is `firmness`'s one window,
-enforced on every booking before any tier is read.
+A tier's SCOPE is read first: a tier covering a node applies only to a ticket booking into that node
+or under it, and one covering `*` to every ticket, as a grant's does. Then three checks. SIZE is a cap in the cap's OWN currency, read against the notionals
+the caller states: a ticket whose notional is not stated in that currency FAILS that tier by name,
+which is the safe direction and keeps every check here off the market. TENOR is the ticket's own
+years. MARKET is the values vector the quote pinned, which must be the one standing under the name
+the tier prices on. Staleness is deliberately absent: how old a board may be is `firmness`'s one
+window, enforced on every booking before any tier is read.
 
 Pure functions over plain data - a parsed policy, a ticket and the market names standing - holding
 no log, clock, store or home, so the same inputs answer the same way on the hub, on a replica and in
 a gate. `assess` returns a verdict; `check` raises the same answer as `TierRefused`.
 """
+from .capability import ANY_BOOK, under
 from .errors import MalformedEvent, TierRefused
-from .vocabulary import is_hash, is_number, is_text
+from .vocabulary import is_hash, is_number, is_path, is_text
 
-#: The three checks, in the order a tier is read in. Spelled as the policy's own field names, so a
-#: verdict, a refusal and a gate all name the key a desk would edit.
+#: The scope and the three checks, in the order a tier is read in. Spelled as the policy's own
+#: field names, so a verdict, a refusal and a gate all name the key a desk would edit.
+SCOPE = 'scope'
 NOTIONAL = 'max_notional'
 TENOR = 'max_tenor_years'
 MARKET = 'market'
-CHECKS = (NOTIONAL, TENOR, MARKET)
+CHECKS = (SCOPE, NOTIONAL, TENOR, MARKET)
 
 #: check -> what its declared bound must be for a ticket to be comparable against it. The
 #: declaration parser holds a document to the same shapes; this module is handed plain data
 #: everywhere else, so it asserts them itself rather than trusting the hand that built them.
-BOUNDS = {NOTIONAL: lambda cap: (isinstance(cap, dict) and is_number(cap.get('amount'))
+BOUNDS = {SCOPE: is_path,
+          NOTIONAL: lambda cap: (isinstance(cap, dict) and is_number(cap.get('amount'))
                                  and is_text(cap.get('currency'))),
           TENOR: is_number, MARKET: is_text}
 
@@ -53,6 +57,9 @@ APPROVAL = 'approval'
 #: reason -> the sentence a tier fails on. A ticket over a cap, a ticket the cap cannot see and a
 #: market nobody declared are three different remedies, so they are three different wordings.
 FAILED = {
+    'outside_scope':
+        'the {tier} tier covers {bound} and this ticket books into {value!r} - it is read for a '
+        'ticket in that node or under it',
     'over_notional':
         'the {tier} tier caps {check} at {bound[amount]} {bound[currency]} and this ticket is '
         '{value} of it - book it under a tier that admits the size, or split the clip',
@@ -76,17 +83,17 @@ FAILED = {
 
 
 def assess(policy, ticket, standing):
-    """The verdict on one ticket: `{tier, seat, checks, refusals}`.
+    """The verdict on one ticket: `{tier, checks, refusals}`.
 
     `policy` is what `policy.tiers_in_force` answers. `ticket` is `{notional_in: {currency: amount},
-    tenor_years, values_hash}` - the CALLER states the notional in every currency it can, so no
-    check here reads a market. `standing` is `{market name: values_hash}` off the `markets` fold.
+    tenor_years, values_hash, portfolio}` - the CALLER states the notional in every currency it
+    can, so no check here reads a market. `standing` is `{market name: values_hash}` off the
+    `markets` fold.
 
-    `tier` is the first tier whose every declared check passed, and `seat` the subject an automatic
-    approval signs under, `None` where the tier wants a human. `checks` reports every check read,
-    per tier, with the value measured and the bound declared, so a desk shown a verdict never has to
-    re-derive the comparison; `refusals` is one sentence per failure of every tier that was tried,
-    which is also the route the ticket took.
+    `tier` is the first tier whose scope covers the ticket and whose every declared check passed.
+    `checks` reports every check read, per tier, with the value measured and the bound declared, so
+    a desk shown a verdict never has to re-derive the comparison; `refusals` is one sentence per
+    failure of every tier that was tried, which is also the route the ticket took.
     """
     for what, mapping in (('the ticket', ticket), ('the markets standing', standing),
                           ('the ticket\'s notional_in',
@@ -103,7 +110,7 @@ def assess(policy, ticket, standing):
                 'tiers: the ticket states {!r} of {}: a notional is an AMOUNT of a currency and '
                 'never a sign, so a cap cannot be compared against one - state the size the ticket '
                 'deals and put which way it goes on the trade'.format(amount, currency))
-    verdict = {'tier': None, 'seat': None, 'checks': [], 'refusals': []}
+    verdict = {'tier': None, 'checks': [], 'refusals': []}
     for tier in _tiers(policy):
         marked = standing.get(tier.get(MARKET))
         failures = []
@@ -120,7 +127,7 @@ def assess(policy, ticket, standing):
         if failures:
             verdict['refusals'].extend(failures)
             continue
-        verdict['tier'], verdict['seat'] = tier['name'], tier.get('seat')
+        verdict['tier'] = tier['name']
         return verdict
     return verdict
 
@@ -138,35 +145,36 @@ def check(policy, ticket, standing):
     return verdict
 
 
-def standing_approval(tier, booker, verdicts):
-    """`(lsn, None)` where a verdict already approves this ticket, `(None, reason)` where none does.
+def standing_verdict(tier, booker, verdicts):
+    """The verdict standing on a ticket, or None: THE LATEST BY LSN, which the record makes unique,
+    so the order a caller hands them in cannot change the answer. Under `four_eyes` the booker's own
+    verdicts are not read at all - a booker neither signs its ticket nor withdraws another seat's
+    verdict by filing one after it."""
+    counted = [verdict for verdict in verdicts
+               if not (tier.get('four_eyes') and verdict['actor'] == booker)]
+    return max(counted, key=lambda verdict: verdict['lsn']) if counted else None
 
-    THE LATEST VERDICT STANDS, by LSN, which the record makes unique - so the order a caller hands
-    them in cannot change the answer. A verdict is never withdrawn, and a rejection filed after an
-    approval is what the record says last. Under `four_eyes` the approver may not be the booker,
-    read off the verdict that STANDS rather than off any other row in the list. Scope is not
-    re-checked here - the writer refused an unscoped approval at the append, so every verdict in the
-    fold was a seat's.
+
+def standing_approval(tier, booker, verdicts):
+    """`(lsn, None)` where the verdict standing approves this ticket, `(None, reason)` where none
+    does.
+
+    A verdict is never withdrawn, so a rejection filed after an approval is what the record says
+    last. Scope is not re-checked here - the writer refused an unscoped approval at the append, so
+    every verdict in the fold was a seat's or the hub's own.
     """
-    if tier.get('seat') is not None:
-        raise MalformedEvent(
-            'tiers: the {!r} tier signs under the seat {!r}, so it asks for no standing approval - '
-            'an automatic tier approves under its own seat, and demanding a human here would be a '
-            'second workflow the document did not declare'.format(tier.get('name'), tier['seat']))
-    if not verdicts:
-        return (None, 'no verdict is filed against this ticket, and the {!r} tier names no seat of '
-                      'its own - it is signed by a human or it is not signed'.format(
-                          tier.get('name')))
-    latest = max(verdicts, key=lambda verdict: verdict['lsn'])
+    latest = standing_verdict(tier, booker, verdicts)
+    if latest is None and verdicts:
+        return (None, 'every verdict on this ticket is {!r}\'s own and {!r} booked it, which the '
+                      '{!r} tier refuses: the booker and the approver are one seat - have another '
+                      'seat sign it'.format(booker, booker, tier.get('name')))
+    if latest is None:
+        return (None, 'no verdict is filed against this ticket, and the {!r} tier wants a seat '
+                      'other than the booker to sign it'.format(tier.get('name')))
     if latest['verdict'] != APPROVAL:
         return (None, 'the latest verdict on this ticket is a {} at LSN {} for {!r} - a verdict is '
                       'never withdrawn, so what stands is what was filed last; file an approval to '
                       'move it'.format(latest['verdict'], latest['lsn'], latest.get('reason')))
-    if tier.get('four_eyes') and latest['actor'] == booker:
-        return (None, 'the latest approval at LSN {} is {!r}\'s own and {!r} booked this ticket, '
-                      'which the {!r} tier refuses: the booker and the approver are one seat - have '
-                      'another seat sign it'.format(
-                          latest['lsn'], latest['actor'], booker, tier.get('name')))
     return (latest['lsn'], None)
 
 
@@ -198,8 +206,9 @@ def _tiers(policy):
             if check in tier and not BOUNDS[check](tier[check]):
                 raise MalformedEvent(
                     'tiers: the {!r} tier declares {} as {!r}, which is not a bound a ticket can be '
-                    'compared against - a notional cap is {{amount, currency}}, a tenor bound is a '
-                    'number and a market is a name, as the declaration parser answers them'.format(
+                    'compared against - a scope is a node, a notional cap is {{amount, currency}}, '
+                    'a tenor bound is a number and a market is a name, as the declaration parser '
+                    'answers them'.format(
                         tier['name'], check, tier[check]))
     return tiers
 
@@ -211,6 +220,10 @@ def _read(name, tier, ticket, standing):
     check that could not be made is not a check that was satisfied.
     """
     bound = tier[name]
+    if name == SCOPE:
+        value = ticket.get('portfolio')
+        return (value, bound, None if bound == ANY_BOOK or is_text(value) and under(value, bound)
+                else 'outside_scope')
     if name == NOTIONAL:
         value = ticket['notional_in'].get(bound['currency'])
         if not is_number(value):

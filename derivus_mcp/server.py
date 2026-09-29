@@ -1268,14 +1268,14 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
 def approve_quote(quote_id: str, actor: str) -> dict:
     """Sign an accepted quote, so a desk tier that wants a second pair of eyes is satisfied.
 
-    Call this when `book_quote` came back `{written: false}` with a `tier` naming a seat and no
-    `waits_on` this conversation can fix by itself - then call `book_quote` again, which books on
+    Call this when `book_quote` came back `{written: false}` with a `tier` under four eyes and a
+    `waits_on` this conversation cannot fix by itself - then call `book_quote` again, which books on
     the standing approval. `actor` is the seat that signs and is REQUIRED: where the tier declares
     four eyes it may not be the one that accepted the quote, and a seat the desk has not scoped for
     approvals is refused in the record's own words.
 
-    The signature is over the PLAN this quote would leave the book at, so it reaches this quote and
-    no other; a re-quote is a new ticket and wants its own. Answers `{recorded: {lsn}, ticket}`,
+    The signature is over the TICKET this quote minted, so it reaches this quote and no other; a
+    re-quote is a new ticket and wants its own. Answers `{recorded: {lsn}, ticket}`,
     and signing twice is one fact.
     """
     return service().call('POST', '/book/quote/approve',

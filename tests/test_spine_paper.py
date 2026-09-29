@@ -69,35 +69,36 @@ def test_a_position_is_keyed_where_it_sits(tmp_path):
     `None`; the portfolio fallback to the book removed files it under an empty key.
     """
     home = seeded(tmp_path, clips=())
+    emerging, g10 = BOOK + '/Rates/EM', BOOK + '/Rates/G10'
     log = SpineLog(home)
     log.append('fill', fill('EXEC-V1', quantity=1.0), actor=ACTOR, book=BOOK, effective_time=MON)
     for reference, quantity, agreement, portfolio in (
-            ('EXEC-OPEN', 1.0, 'ISDA-A', 'Rates/EM'),
-            ('EXEC-UNWIND', -0.5, 'ISDA-A', 'Rates/EM'),
-            ('EXEC-DEALER', -1.0, 'ISDA-B', 'Rates/EM'),
-            ('EXEC-G10', 1.0, 'ISDA-A', 'Rates/G10')):
+            ('EXEC-OPEN', 1.0, 'ISDA-A', emerging),
+            ('EXEC-UNWIND', -0.5, 'ISDA-A', emerging),
+            ('EXEC-DEALER', -1.0, 'ISDA-B', emerging),
+            ('EXEC-G10', 1.0, 'ISDA-A', g10)):
         book(log, ACTOR, TERMS, quantity, 'LEI-5493001KJTIIGC8Y1R12', agreement, reference,
              book=BOOK, effective_time=TUE, price=101.25, agreement=agreement,
              portfolio=portfolio)
     positions = PROJECTORS['positions']
     assert keyed(positions.rows(fold(log, positions))) == [
         (INSTRUMENT, 'CSA-0007', BOOK, 1.0, 1, None),
-        (INSTRUMENT, 'ISDA-A', 'Rates/EM', 0.5, 2, None),
-        (INSTRUMENT, 'ISDA-A', 'Rates/G10', 1.0, 1, None),
-        (INSTRUMENT, 'ISDA-B', 'Rates/EM', -1.0, 1, None)]
+        (INSTRUMENT, 'ISDA-A', emerging, 0.5, 2, None),
+        (INSTRUMENT, 'ISDA-A', g10, 1.0, 1, None),
+        (INSTRUMENT, 'ISDA-B', emerging, -1.0, 1, None)]
 
     log.append('amendment', {'instrument': INSTRUMENT, 'amended_to': OTHER},
                actor=ACTOR, book=BOOK, effective_time=WED)
     moved = keyed(positions.rows(fold(log, positions)))
     assert moved == [
         (INSTRUMENT, 'CSA-0007', BOOK, 0.0, 0, OTHER),
-        (INSTRUMENT, 'ISDA-A', 'Rates/EM', 0.0, 0, OTHER),
-        (INSTRUMENT, 'ISDA-A', 'Rates/G10', 0.0, 0, OTHER),
-        (INSTRUMENT, 'ISDA-B', 'Rates/EM', 0.0, 0, OTHER),
+        (INSTRUMENT, 'ISDA-A', emerging, 0.0, 0, OTHER),
+        (INSTRUMENT, 'ISDA-A', g10, 0.0, 0, OTHER),
+        (INSTRUMENT, 'ISDA-B', emerging, 0.0, 0, OTHER),
         (OTHER, 'CSA-0007', BOOK, 1.0, 1, None),
-        (OTHER, 'ISDA-A', 'Rates/EM', 0.5, 2, None),
-        (OTHER, 'ISDA-A', 'Rates/G10', 1.0, 1, None),
-        (OTHER, 'ISDA-B', 'Rates/EM', -1.0, 1, None)], 'a row is never dropped'
+        (OTHER, 'ISDA-A', emerging, 0.5, 2, None),
+        (OTHER, 'ISDA-A', g10, 1.0, 1, None),
+        (OTHER, 'ISDA-B', emerging, -1.0, 1, None)], 'a row is never dropped'
 
     # the price rides the fill it was dealt on, and a body without the three validates as before
     bodies = [log.open_body(frame) for frame in log.frames() if frame['event_type'] == 'fill']

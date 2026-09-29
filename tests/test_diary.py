@@ -1063,7 +1063,8 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
     assert 'not determined' in undetermined.json()['detail'], undetermined.text
 
     # the export names the seat its COMPILE is queued under, which is the REQUEST's and not the
-    # deployment's, and the question is asked whether or not the cache can already answer it
+    # deployment's - a request naming none refused by name rather than taken for it - and the
+    # question is asked whether or not the cache can already answer it
     other = 'subject-desk-two'
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [fixed_leg()])])
     log = SpineLog(recorded)
@@ -1078,4 +1079,5 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
                        json={'due_before': ever, 'actor': other}).status_code == 200
     assert service.BOOK_DIARY_CACHE, 'nothing was cached, so the next ask proves nothing'
     unnamed = CLIENT.post('/book/settlements', json={'due_before': ever})
-    assert unnamed.status_code == 422 and ACTOR in unnamed.json()['detail'], unnamed.text
+    assert unnamed.status_code == 422, unnamed.text
+    assert 'no actor for this act' in unnamed.json()['detail'], unnamed.text

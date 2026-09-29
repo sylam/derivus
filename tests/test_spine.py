@@ -572,15 +572,14 @@ def test_an_event_citing_an_absent_blob_does_not_append(tmp_path):
     absent = hashlib.sha256(b'a surface nobody stored').hexdigest()
 
     with pytest.raises(MissingBlobRefusal) as refusal:
-        log.append('snapshot_registered', {'blob': absent}, actor=ACTOR, book=BOOK,
-                   blob_refs=(absent,))
+        log.own('snapshot_registered', {'blob': absent}, book=BOOK, blob_refs=(absent,))
     assert absent in str(refusal.value), refusal.value
 
     # And with nothing declared at all: what the BODY says lives in the store is checked too, so an
     # unfsynced blob preceding its event is unrepresentable in the writer path rather than merely
-    # discouraged - a submitter cannot get past the law by forgetting to mention it.
+    # discouraged - a filer cannot get past the law by forgetting to mention it.
     with pytest.raises(MissingBlobRefusal) as refusal:
-        log.append('snapshot_registered', {'blob': absent}, actor=ACTOR, book=BOOK)
+        log.own('snapshot_registered', {'blob': absent}, book=BOOK)
     assert absent in str(refusal.value) and 'blob' in str(refusal.value), refusal.value
 
     assert log.head() == head and SpineLog(home).head() == head
@@ -589,8 +588,8 @@ def test_an_event_citing_an_absent_blob_does_not_append(tmp_path):
     # And the same event, once the blob is there, appends.
     stored = log.store.put(b'a surface nobody stored')
     assert stored == absent
-    assert log.append('snapshot_registered', {'blob': absent}, actor=ACTOR, book=BOOK,
-                      blob_refs=(absent,))['lsn'] == head[0] + 1
+    assert log.own('snapshot_registered', {'blob': absent}, book=BOOK,
+                   blob_refs=(absent,))['lsn'] == head[0] + 1
     assert verify_home(home)['events'] == head[0] + 1
 
 
@@ -606,7 +605,7 @@ def test_a_cited_blob_that_went_quietly_is_caught_by_the_manifest(tmp_path):
     home = seeded(tmp_path)
     log = SpineLog(home)
     surface = log.store.put(b'{"pillars":[0.0810,0.0790,0.0785]}')
-    registered = log.append('snapshot_registered', {'blob': surface}, actor=ACTOR, book=BOOK)
+    registered = log.own('snapshot_registered', {'blob': surface}, book=BOOK)
     log.close()
     assert verify_home(home)['events'] == registered['lsn']
     assert surface in set(SpineLog(home).store.walk())
@@ -709,7 +708,8 @@ def synthetic_book(tmp_path):
     recorded after Wednesday's), a backdated amendment behind it, an exercise election, an approval
     and a second seat's rejection, a determination and a status transition, an administrator's
     republished fixing under the same key, and a backdated observation after an official close -
-    answered by a NEW close, never an edit. Every fact in the closed vocabulary reaches the writer.
+    answered by a NEW close, never an edit - and last a node of the book's tree. Every fact in the
+    closed vocabulary reaches the writer, the snapshot in the writer's own voice.
 
     Answers `(home, log, marks)`.
     """
@@ -754,9 +754,10 @@ def synthetic_book(tmp_path):
     log.append('retention_declared', {'blob_class': 'tape', 'policy_blob': marks['policy']},
                actor=ACTOR)
     log.append('rehash_declared', {'algorithm': 'sha256'}, actor=ACTOR)
-    log.append('snapshot_registered', {'blob': marks['snapshot']}, actor=ACTOR, book=BOOK)
+    log.own('snapshot_registered', {'blob': marks['snapshot']}, book=BOOK)
     log.append('break_glass_used', {'reason': 'the grant declaration stranded the last admin'},
                actor=ACTOR)
+    log.append('portfolio_declared', {'path': BOOK + '/Options'}, actor=ACTOR, book=BOOK)
     return home, log, marks
 
 
@@ -771,15 +772,15 @@ def test_the_synthetic_book_reads_as_of_and_as_at_across_a_restatement(tmp_path)
     rule under its own key.
     """
     home, log, marks = synthetic_book(tmp_path)
-    assert verify_home(home) == {'mode': 'entitled', 'events': 21, 'checkpoints_verified': 1,
-                                 'head_lsn': 21, 'head_hash': log.head()[1]}
+    assert verify_home(home) == {'mode': 'entitled', 'events': 22, 'checkpoints_verified': 1,
+                                 'head_lsn': 22, 'head_hash': log.head()[1]}
     assert set(frame['event_type'] for frame in log.frames()) == set(FACT_TYPES), \
         'every fact in the closed vocabulary reaches the writer in this fixture'
 
     pairs = [(frame, log.open_body(frame)) for frame in log.frames(start_lsn=5)]
     as_at = [frame['lsn'] for frame, _ in pairs]
     as_of = [frame['lsn'] for frame, _ in sorted(pairs, key=lambda pair: as_of_key(pair[0]))]
-    assert as_at == list(range(5, 22)), 'as-at is LSN order and needs no key'
+    assert as_at == list(range(5, 23)), 'as-at is LSN order and needs no key'
     assert as_of != as_at, 'a book holding a late booking must read differently as of'
     assert as_of.index(6) < as_of.index(5), 'the Monday fill is true before the Wednesday one'
     assert as_of.index(7) < as_of.index(5), 'and so is the amendment backdated behind it'

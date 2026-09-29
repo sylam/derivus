@@ -37,7 +37,7 @@ import json
 
 from .canon import canonical_bytes
 from .errors import MalformedEvent, ReplayRefused, SpineRefusal
-from .vocabulary import is_hash, is_number, is_text
+from .vocabulary import is_hash, is_number, is_path, is_text
 
 #: The policy names this module reads, and the whole of them. Reserved the way `capabilities` is: a
 #: declaration under one of these names is read by a verb, so this module owns its shape.
@@ -59,9 +59,10 @@ FIXINGS_SECTION = 'sources'
 TIERS_SECTION = 'tiers'
 DESIGNATIONS_SECTION = 'designations'
 
-#: What a tier may declare. The first three name it and say who signs; the last three are CHECKS,
+#: What a tier may declare. The first two name it and say whether a second seat signs - a tier is
+#: AUTOMATIC, the hub signing in its own voice, unless it declares `four_eyes`; the rest are CHECKS,
 #: and a key a tier omits is a check it does not make, so a tier declaring none is the catch-all.
-TIER_FIELDS = ('name', 'seat', 'four_eyes', 'max_notional', 'max_tenor_years', 'market')
+TIER_FIELDS = ('name', 'four_eyes', 'scope', 'max_notional', 'max_tenor_years', 'market')
 
 #: The processes a designation binds, and the whole of them: a name nothing resolves by is a rule
 #: nobody enforces. `pnl` is the market the book is marked on at each close.
@@ -199,18 +200,17 @@ def parse_tiers(document, where):
     """Check `document` as a tiers policy and return it COMPLETED. `where` names it in refusals.
 
     An ORDERED list of tiers, and the market each designated process resolves by name. A tier
-    declares a unique name, optionally the seat an automatic approval signs under, and its checks -
-    a key it omits is a check it does not make, so a tier declaring none is the catch-all the list
-    ends at. Staleness is not among them: pillar age and book staleness are the firmness policy's
-    two windows, checked on every booking before a tier is read, so a tier restating one is refused
-    here rather than making one question two standards.
+    declares a unique name, whether a second seat signs, the node it covers and its checks - a key
+    it omits is a check it does not make, so a tier declaring none is the catch-all the list ends
+    at. Staleness is not among them: pillar age and book staleness are the firmness policy's two
+    windows, checked on every booking before a tier is read, so a tier restating one is refused
+    here rather than making one question two standards. A `seat` is refused by name - an automatic
+    approval is the hub's own act - and a stored one read past by `in_force`.
 
     WHAT IS STORED IS THE COMPLETED DOCUMENT, `parse_firmness`'s practice: the two defaults this
-    shape has - `four_eyes` false on a tier that names no seat, and an empty `designations` - are
-    written in before the bytes are hashed, so one workflow is ONE BLOB however the operator spelled
-    it and two desks declaring the same rules do not get two governance histories of one decision.
-    A tier that names a seat is completed with no `four_eyes` at all: the two keys together are
-    refused, and an automatic seat never books.
+    shape has - `four_eyes` false, and an empty `designations` - are written in before the bytes
+    are hashed, so one workflow is ONE BLOB however the operator spelled it and two desks declaring
+    the same rules do not get two governance histories of one decision.
     """
     def refuse(sentence):
         raise MalformedEvent('{}: {}'.format(where, sentence))
@@ -233,17 +233,8 @@ def parse_tiers(document, where):
     named = set()
     for position, tier in enumerate(tiers):
         _tier(tier, position, named, refuse)
-    return {TIERS_SECTION: [_completed(tier) for tier in tiers],
+    return {TIERS_SECTION: [dict({'four_eyes': False}, **tier) for tier in tiers],
             DESIGNATIONS_SECTION: _designations(document, refuse)}
-
-
-def _completed(tier):
-    """`tier` with its one default written in: `four_eyes` false where the tier names no seat.
-
-    A seated tier is left alone - it may not carry the key at all - so the completed document says
-    of every tier exactly one thing about whether the approver may be the booker.
-    """
-    return dict(tier) if 'seat' in tier else dict({'four_eyes': False}, **tier)
 
 
 def _tier(tier, position, named, refuse):
@@ -263,23 +254,22 @@ def _tier(tier, position, named, refuse):
                'apart, or drop the one that says nothing'.format(at))
     named.add(name)
     _unstaled(tier, at, refuse)
+    if 'seat' in tier:
+        refuse('{} names the seat {!r} - an automatic approval is the hub\'s own act, filed in '
+               'the writer\'s voice, so a tier is automatic unless it declares four_eyes true; '
+               'drop the seat'.format(at, tier['seat']))
     surplus = sorted(set(tier) - set(TIER_FIELDS))
     if surplus:
         refuse('{} carries {} beyond {} - the document is closed at the field level; a check nobody '
                'reads is a bound nobody enforces'.format(
                    at, ', '.join(surplus), ', '.join(TIER_FIELDS)))
-    if 'seat' in tier and not is_text(tier['seat']):
-        refuse('{} signs under seat {!r}, and a seat that names nothing signs nothing - name the '
-               'subject the approval is attributed to, or leave the key out and let a human '
-               'sign'.format(at, tier['seat']))
     if 'four_eyes' in tier and not isinstance(tier['four_eyes'], bool):
         refuse('{} declares four_eyes {!r}: it is true or false, and a value that is neither says '
                'nothing about whether the approver may be the booker'.format(
                    at, tier['four_eyes']))
-    if 'seat' in tier and 'four_eyes' in tier:
-        refuse('{} declares both a seat ({!r}) and four_eyes - an automatic seat never books, so '
-               'the key would say nothing here; drop four_eyes, or drop the seat and let a human '
-               'sign'.format(at, tier['seat']))
+    if 'scope' in tier and not is_path(tier['scope']):
+        refuse('{} covers the scope {!r}: a scope is a node - a book, or a path of named segments '
+               'under it'.format(at, tier['scope']))
     if 'max_notional' in tier:
         _cap(tier['max_notional'], at, refuse)
     if 'max_tenor_years' in tier and (not is_number(tier['max_tenor_years'])
@@ -343,13 +333,13 @@ def _public(market, whose, refuse):
     """`market` asserted to be a name the firm declared rather than one seat's own.
 
     One check for the two places a policy points at a market. A designated process resolves the
-    firm's board, and a tier's `market` decides whether an AUTOMATIC seat signs - the same character
-    of decision - so neither may rest on a scratch board one seat declared for itself.
+    firm's board, and a tier's `market` decides whether the hub signs AUTOMATICALLY - the same
+    character of decision - so neither may rest on a scratch board one seat declared for itself.
     """
     if market.startswith(PRIVATE_MARKET):
         refuse('{} names the market {!r}: a {} market is one seat\'s own, and neither a designated '
-               'process nor a tier deciding whether an automatic seat signs prices on one - name '
-               'the market the firm declared'.format(whose, market, PRIVATE_MARKET))
+               'process nor a tier deciding whether the hub signs automatically prices on one - '
+               'name the market the firm declared'.format(whose, market, PRIVATE_MARKET))
 
 
 def _unstaled(carrying, whose, refuse):
@@ -416,7 +406,8 @@ def in_force(log, policy, lsn=None):
 
     A declaration whose blob no longer answers for it raises `MalformedEvent` rather than folding to
     a sentinel: unlike the capabilities fold, this one is called by a verb, so a refusal bricks
-    nothing.
+    nothing. A document is read in the grammar it was declared under: a tier's retired `seat` is
+    read past, a seated tier having been how an automatic one was spelled.
     """
     blob, at = None, None
     for frame in log.frames(end_lsn=lsn):
@@ -444,6 +435,11 @@ def in_force(log, policy, lsn=None):
         raise MalformedEvent(
             '{} is not JSON - the blob was altered under its own address; restore blobs/ from a '
             'verified replica, or declare a replacement'.format(where))
+    if policy == TIERS_POLICY and isinstance(document, dict) \
+            and isinstance(document.get(TIERS_SECTION), list):
+        document = dict(document, tiers=[dict((key, value) for key, value in tier.items()
+                                              if key != 'seat') if isinstance(tier, dict) else tier
+                                         for tier in document[TIERS_SECTION]])
     return (blob, PARSERS[policy](document, where), at)
 
 
