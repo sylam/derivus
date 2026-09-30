@@ -39,10 +39,10 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_spine import (
-    CapabilityDenied, ChainBroken, SpineLog, collateral, oracle, policy, verify_home)
+    CapabilityDenied, ChainBroken, SpineLog, oracle, policy, verify_home)
 from derivus_spine.canon import canonical_bytes, content_hash
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
-from derivus_spine.projections import PROJECTORS, fold
+from derivus_spine.projections import CSA, PROJECTORS, fold
 from derivus_spine.verbs import (
     STANDING, amendment, approve, book, declare_agreement, declare_close, declare_entity,
     declare_portfolio, file_quote, transition)
@@ -867,7 +867,7 @@ def test_a_close_nobody_marked_is_named(tmp_path):
 
 
 def test_a_call_the_formula_does_not_give_is_named(tmp_path):
-    """THE CALL IS THE FORMULA: every call a seat read is `collateral.call` over the exposure and
+    """THE CALL IS THE FORMULA: every call a seat read is `CSA.call` over the exposure and
     the spots it was read at, the `cash` fold at the read's position held as of its day and the
     terms the agreement stood on there - so terms restated after the read do not reach back into
     it. A read a dollar off the formula, or reporting a balance the record does not hold, is named;
@@ -898,7 +898,7 @@ def test_a_call_the_formula_does_not_give_is_named(tmp_path):
     finally:
         log.close()
     fx = {'USD': 1.0}
-    read = dict(collateral.call(500.0, {'USD': 40.0}, collateral.csa(terms), fx),
+    read = dict(CSA.call(500.0, {'USD': 40.0}, CSA.of(terms), fx),
                 agreement='CSA-1', date='2026-08-26', lsn=at, exposure=500.0, fx=fx,
                 held={'USD': 40.0}, unknown=[])
     assert read['call'] == 360.0
@@ -918,7 +918,7 @@ def test_a_call_the_formula_does_not_give_is_named(tmp_path):
         answers = oracle.report(home, script=script({'called': [wrong]}))
         assert oracle.failed(answers) == ['the_call_is_the_formula'], answers
         assert answers['the_call_is_the_formula']['evidence'][0] == named + said
-    blank = dict(read, unknown=unknown, **dict.fromkeys(collateral.WORKED))
+    blank = dict(read, unknown=unknown, **dict.fromkeys(CSA.WORKED))
     assert oracle.report(home, script=script({'called': [blank]}))[
         'the_call_is_the_formula']['held'] is None
 

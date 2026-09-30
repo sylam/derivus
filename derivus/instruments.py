@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, F, REQUIRED, Row, own, DealFields,
+    Cash, F, Observes, REQUIRED, Row, own, DealFields,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -665,6 +665,11 @@ class Deal(object):
     #: them in `post_process`; a leaf - an option, a cashflow list, a deposit - cannot. The engine
     #: recurses on `Children` being PRESENT, never on the type.
     accepts_children = False
+
+    #: What the type observes (`schema.Observes`) - the index a fixing is of, the table a print
+    #: fills, the choice its expiry vests. Read through `schema.OBSERVES`, which holds each type's
+    #: own declaration and never a parent's, as `vernacular` is read.
+    observes = None
 
     #: The `SpotModel` values this deal type HONOURS, declared the way a process declares
     #: `factor_types`. The base declares GBM only, so a type that never wrote a non-GBM pricer
@@ -2258,6 +2263,7 @@ class DepositDeal(Deal):
     Flows discount on **Discount_Rate**, defaulting to the currency's own curve.
     """
     vernacular = 'deposit, money-market deposit, placement'
+    observes = Observes('Interest_Rate', 'InterestRate')
     fields = [ADMIN, own('DepositDeal', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -2363,6 +2369,7 @@ class DepositDeal(Deal):
 class SwapInterestDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
+    observes = Observes('Interest_Rate', 'InterestRate')
     fields = [ADMIN, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
@@ -2695,6 +2702,7 @@ class FixedCashflowDeal(Deal):
 
 class CFFloatingInterestListDeal(Deal):
     vernacular = 'floating-rate note, floating leg, FRN'
+    observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Rate_Adjustment_Method', 'Text', default='None', convention=True, values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
@@ -3745,6 +3753,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     vernacular = 'barrier digital, knock-in digital, knock-out binary'
+    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
@@ -3870,6 +3879,7 @@ class EquityBarrierBinaryOption(Deal):
 
 class EquityOptionDeal(Deal):
     vernacular = 'equity option, stock option, vanilla call or put'
+    observes = Observes('Equity', 'EquityPrice', elects='Settlement_Style', expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityOptionDeal', [
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -4049,6 +4059,7 @@ class EquityBinaryOption(EquityOptionDeal):
 
 class QEDI_CustomAutoCallSwap(Deal):
     vernacular = 'autocall, autocallable, phoenix, snowball'
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1)
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -4421,6 +4432,7 @@ class QEDI_CustomAutoCallSwap(Deal):
 
 class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
     vernacular = 'autocall swap, autocallable swap, phoenix swap'
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1)
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -4660,6 +4672,7 @@ class EquityNoTouchOption(EquityOneTouchOption):
 
 class EquityBarrierOption(Deal):
     vernacular = 'equity barrier option, knock-in, knock-out'
+    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True),
         F('Units', 'Float', default=0.0, sized=True),
@@ -6567,6 +6580,8 @@ class FXExtendableForwardDeal(Deal):
 
 class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
+    observes = Observes('Underlying_Currency', 'FxRate', elects='Settlement_Style',
+                        expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
@@ -6661,6 +6676,7 @@ class FXEuropeanOption(FXOptionDeal):
 
 class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
+    observes = Observes('Underlying_Currency', 'FxRate', expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
@@ -6968,6 +6984,7 @@ class DealDefaultSwap(Deal):
 
 class FRADeal(Deal):
     vernacular = 'forward rate agreement, FRA'
+    observes = Observes('Interest_Rate', 'InterestRate')
     fields = [ADMIN, own('FRADeal', [
         F('Use_Known_Rate', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Known_Rate', 'Float', default=0, convention=True, obj='Percent'),

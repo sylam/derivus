@@ -33,7 +33,6 @@ this home or this script could not put, and `evidence` is the rows that decided 
 import json
 import math
 
-from . import collateral
 from .canon import canonical_bytes, content_hash
 from .capability import (
     CAPABILITIES_POLICY, CAPABILITY_EVENTS, PORTFOLIO_TYPES, SCOPED_TYPES, apply_event,
@@ -44,7 +43,7 @@ from .log import GENESIS_PREV, SpineLog, as_of_key
 from .policy import (
     DESIGNATIONS_SECTION, TIERS_POLICY, TOLERANCE_POLICY, TOLERANCE_SECTION, compare, in_force,
     tiers_in_force)
-from .projections import PROJECTORS, fold
+from .projections import CSA, PROJECTORS, fold
 from .store import BlobStore
 from .vocabulary import (
     ADMIN, BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, RECOVERY, WRITER, WRITER_VOICE, cited_blobs,
@@ -674,7 +673,7 @@ def _tied(log, answers, tolerances):
 
 def _marks(log):
     """Every marks run the record attested - `{book, day, lsn, attested, values_hash, job, result}`,
-    as `pnl.marked` reads one: `lsn` the position its job's name cuts the book at, which a run
+    as `PnL.marked` reads one: `lsn` the position its job's name cuts the book at, which a run
     attested before it cannot have read, else where it was attested. `SpineRefusal` where a job's
     blob is not here."""
     found = []
@@ -825,13 +824,13 @@ def every_close_marked(log):
 
 
 def the_call_is_the_formula(log, script):
-    """Every collateral call a seat read is `collateral.call` over the record's own cash and the
+    """Every collateral call a seat read is `CSA.call` over the record's own cash and the
     agreement's declared terms at the position the read names, and the balance it reported is the
     record's.
 
     The balance is the `cash` fold at the read's `lsn` held as of its `date` and the dials are the
     terms the `agreements` fold stood on there, both advanced ONCE forward through the reads in LSN
-    order (`_walked`), so the service's `held` and every figure `collateral.WORKED` names are
+    order (`_walked`), so the service's `held` and every figure `CSA.WORKED` names are
     compared as the numbers they are. The exposure and `fx` are compiles - the P&L's value of the
     positions under the agreement at a close, and the close's spots in its currency - so both are
     DATA this trusts as the service answered them. A call nobody could work out carries no numbers
@@ -851,30 +850,29 @@ def the_call_is_the_formula(log, script):
             for call in reads[lsn]:
                 named = '{} on {} at LSN {}'.format(call['agreement'], call['date'], lsn)
                 if call.get('unknown'):
-                    carried = [field for field in collateral.WORKED if call.get(field) is not None]
+                    carried = [field for field in CSA.WORKED if call.get(field) is not None]
                     if carried:
                         failures.append('{}: the call names what nobody can know and carries {} '
                                         'anyway'.format(named, ', '.join(carried)))
                     continue
                 declared = agreements.get(call['agreement'])
                 if declared is not None and declared['terms'] not in terms:
-                    terms[declared['terms']] = collateral.csa(
+                    terms[declared['terms']] = CSA.of(
                         json.loads(log.store.get(declared['terms']).decode('utf-8')))
                 if declared is None or terms[declared['terms']] is None:
                     failures.append('{}: the record holds no collateralising terms under it '
                                     'there'.format(named))
                     continue
                 if call['date'] not in balances:
-                    balances[call['date']] = collateral.held(movements, call['date'])
-                held = balances[call['date']].get(call['agreement'], collateral.NOTHING)[
+                    balances[call['date']] = CSA.held(movements, call['date'])
+                held = balances[call['date']].get(call['agreement'], CSA.NOTHING)[
                     'collateral']
-                said = dict(collateral.call(call['exposure'], held, terms[declared['terms']],
-                                            call['fx']), held=held)
+                said = dict(CSA.call(call['exposure'], held, terms[declared['terms']], call['fx']),
+                            held=held)
                 worked += 1
                 failures.extend('{}: the service answered {} {!r} and the formula over the record '
                                 'says {!r}'.format(named, field, call.get(field), said[field])
-                                for field in collateral.WORKED + (('held',) if 'held' in call
-                                                                  else ())
+                                for field in CSA.WORKED + (('held',) if 'held' in call else ())
                                 if call.get(field) != said[field])
     except SpineRefusal as missing:
         return unasked('a call is held to the terms an agreement declared and this copy does not '

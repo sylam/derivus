@@ -473,7 +473,7 @@ is recorded so a reader knows which readings rest on it.
   the principal as trading P&L, `complete: true` and nothing named. Once the export pays it and the
   day is marked, the same figure stands in the official window, now named `no position held when
   it fell due` and `complete: false`. Two sites: a determined row read through what was held
-  before the day (`pnl._payments`), and a settled one (`pnl._holdings`). Size S-M: the owner read
+  before the day (`PnL._payments`), and a settled one (`PnL._holdings`). Size S-M: the owner read
   at the end of the due day for a position opened on it, and the question whether the premium or
   the payment is the consideration.
 - **A window's diary is compiled off its start's market, trades done in it included** (2026-09-30).
@@ -491,11 +491,21 @@ is recorded so a reader knows which readings rest on it.
   its own P&L sees the other desk's instrument and settlement reference named there, a read the
   narrowing does not narrow. An unknown naming no instrument cannot be narrowed by the rows at all.
   Size: the list narrowed by the rows it names and a rule for the unplaced ones, a few lines.
-- **An FRA's reset names no index, so its fixing day cannot close** (2026-09-30). The diary's
-  `TERMS` table declares the index of a swap and a floating cashflow list and of no other floating
-  type: an FRA's reset row reads `index: null`, no print satisfies it, and `close_check` waits on
-  it for ever - so the day it resets gets no close, no marks and no P&L. Size S: one `Terms` row
-  per type - the FRA first, the caps, floors and swaptions beside it - and a gate per row.
+- **Twelve types announce fixings that name no index** (2026-09-30). A fixing row is answered by
+  a print filed under the index it names, which a type declares as `observes`; a row naming none
+  is answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no
+  close, no marks and no P&L. The swap, the floating list, the FRA and the deposit declare
+  theirs, and read a reset the record has printed off the curve until their known-rate tables are
+  filled from the record at compile as an observation table is - a day's move on one reset. A
+  blank index field, which the compile resolves to the currency's curve, still announces its
+  fixings under none. Undeclared: the FX accumulator, TARF, extendable forward and both Asians,
+  the equity Asian, the equity swap leg and swaplet list, the inflation list, and the floating
+  energy deal, energy option and commodity average-price swap - each reads its fixings off a table
+  of its own that decides its payoff, so a close passing on a print its mark ignores would be the
+  worse failure. Beside them a swaption announces no expiry of its own, its legs reading as a live
+  swap's, and an equity binary no expiry fixing where the FX one does. Size: a declaration per
+  type once its table is filled from the record, the barrier-state row under Designed, not built;
+  the census in `tests/test_diary.py` names every type still open.
 - **One `settle` verb is the whole back office** (2026-09-30). Settlements, confirmations and
   collateral each hold `settle`, so each worklist lists the others' payments, clips and calls, and
   confirmations may pay or post collateral: separation of duties inside the back office is not
@@ -696,7 +706,7 @@ every risk-neutral calibration inherits.
   `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
   The full suite runs at campaign boundaries with the tree held still.
 - **The standing readings every landing runs**: sixteen banked documents of the autocall
-  validation campaign under the lognormal and Hull-White laws, 5,487 floats compared bit for bit
+  validation campaign under the lognormal and Hull-White laws, 5,471 floats compared bit for bit
   against their bank, and one lognormal target redemption forward compared to the bit
   (`-0x1.2b36cda3bf2d4p+5`). That document declares no estimator, so it pins the default; the
   crisp path it used to pin reads `-0x1.2c48f36318e38p+5`, one `'No'` away. The documents, their

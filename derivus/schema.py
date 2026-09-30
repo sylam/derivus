@@ -58,6 +58,9 @@ SHAPED = tuple(BLANK)
 #: the same declarations, so neither can drift.
 FACTOR_FIELDS = {}
 
+#: `{deal type: Observes}`, off each type's OWN `observes` by `emit_instrument` - never a parent's.
+OBSERVES = {}
+
 #: The VALUE keys of a `Market Prices` quote row, for every family at once. Read by both
 #: `update_market_quote`'s tick guard and `partition_market_price`'s projection.
 MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
@@ -108,6 +111,11 @@ AUTHORED = {'Date': ((pd.Timestamp,), '{".Timestamp": "2027-01-15"}'),
 #: terms fix it - none where the payoff decides it - and its `sign`, 1 received and -1 paid.
 #: `otherwise` is the date field it settles on where this one is blank.
 Cash = namedtuple('Cash', 'currency amount sign otherwise', defaults=(None, 1.0, None))
+
+#: What a deal type OBSERVES, as its own `observes`: `index` the field naming the factor a fixing is
+#: OF and `family` its type, `table` its observation table and `column` the cell a print fills,
+#: `elects` the field whose `Physical` vests a choice at expiry, `expires` the day the terms fix.
+Observes = namedtuple('Observes', 'index family table column elects expires', defaults=(None,) * 4)
 
 
 class Row(object):
@@ -303,6 +311,13 @@ def stated(day):
     return day is not None and not (isinstance(day, str) and not day)
 
 
+def index_named(fields, terms):
+    """The price factor an observation of this deal is OF, spelled as the engine spells a factor
+    name - `EquityPrice.SPX`, `InterestRate.ZAR` - or None where the type names no index."""
+    named = fields.get(terms.index) if terms is not None and terms.index else None
+    return '{}.{}'.format(terms.family, '.'.join(utils.check_rate_name(named))) if named else None
+
+
 def instrument_fields(deal_type):
     """Every JSON key one deal TYPE declares, off the emitted store - the reading a wire block's
     `Object` reaches, and the descriptors `describe_instrument_type` publishes."""
@@ -469,7 +484,7 @@ def emit_instrument(module):
     layout order. A section OWNS its descriptors, so `Payment_Timing` is `Touch`/`Expiry` on a
     one-touch and `End`/`Begin`/`Discounted` on a cashflow leg and both are right. `containers` is
     read off `Deal.accepts_children`, so a client renders it without importing the engine, and
-    `vernacular` off each type's own plain names - never a parent's.
+    `vernacular` off each type's own plain names - never a parent's, as `OBSERVES` is filled.
     """
     types, sections, containers, vernacular = {}, {}, [], {}
     for deal_type, cls in vars(module).items():
@@ -478,6 +493,8 @@ def emit_instrument(module):
             continue
         types[deal_type] = [g.name for g in groups]
         vernacular[deal_type] = cls.__dict__.get('vernacular')
+        if cls.__dict__.get('observes') is not None:
+            OBSERVES[deal_type] = cls.__dict__['observes']
         if getattr(cls, 'accepts_children', False):
             containers.append(deal_type)
         for g in groups:

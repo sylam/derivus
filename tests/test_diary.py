@@ -33,7 +33,8 @@ day, in float64 where the engine's own accumulation order is the only difference
   * THE DIARY NEVER RUNS ON THE POLL PATH: two asks over an unmoved book are one queued job, and a
     booking between them is a second.
 """
-import ast
+import builtins
+import dis
 import inspect
 import json
 import os
@@ -49,7 +50,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rates_world
 import derivus
-from derivus import diary, service, spine, utils
+import test_position_scaling as trials
+from derivus import instruments, schema, service, spine, utils
+from derivus.calculation import Diary, construct_calculation
 from derivus.config import CustomJsonEncoder
 from derivus_spine import SpineLog, capability, init_home, policy, vocabulary
 
@@ -247,7 +250,7 @@ def settle(home, key):
     """
     log = SpineLog(home)
     try:
-        return log.append('status_transition', {'subject': key, 'status': diary.SETTLED},
+        return log.append('status_transition', {'subject': key, 'status': spine.SETTLED},
                           actor=ACTOR, book='diary-desk')
     finally:
         log.close()
@@ -271,7 +274,7 @@ def diary_rows(**params):
 
 
 def payments(rows):
-    return [row for row in rows if row['kind'] == diary.PAYMENT]
+    return [row for row in rows if row['kind'] == Diary.PAYMENT]
 
 
 # --------------------------------------------------------------------------------------------
@@ -333,10 +336,11 @@ def test_the_diary_reads_the_legs_the_binding_binds(unrecorded, tmp_path):
     """
     serving(tmp_path, [node(swap())])
     legs = {row['leg'] for row in diary_rows()['rows']}
-    assert legs == {'FixedCashflows', 'FloatCashflows', 'FloatCashflows.Resets', diary.EXPIRY_LEG}
+    assert legs == {'FixedCashflows', 'FloatCashflows', 'FloatCashflows.Resets', Diary.EXPIRY_LEG}
 
     context = service.load(service.BOOK.read()[0])
-    compiled, _ = diary._compiled(context)
+    compiled = construct_calculation('Diary', context.current_cfg)
+    compiled.execute(dict(context.current_cfg.deals['Calculation'], Run_Date=str(BASE.date())))
     walked = {leg for deal in compiled.netting_sets.deals()
               for leg, _ in utils.walk_schedules(deal.Factor_dep)}
     assert walked == {'FixedCashflows', 'FloatCashflows'}
@@ -390,14 +394,14 @@ def test_a_derived_key_attaches_a_settlement_fact(recorded, tmp_path):
     assert booked['written'] is True, booked
 
     row = sorted(payments(diary_rows()['rows']), key=lambda found: found['due_date'])[0]
-    assert vocabulary.is_hash(row['key']) and row['state'] == diary.DUE
+    assert vocabulary.is_hash(row['key']) and row['state'] == Diary.DUE
     assert row['key'] == spine.cashflow_key(
         row['instrument'], row['leg'], row['kind'], row['due_date'])
 
     settle(recorded, row['key'])
     after = {found['key']: found['state'] for found in diary_rows()['rows']}
-    assert after[row['key']] == diary.SETTLED
-    assert sum(1 for state in after.values() if state == diary.SETTLED) == 1
+    assert after[row['key']] == spine.SETTLED
+    assert sum(1 for state in after.values() if state == spine.SETTLED) == 1
 
 
 # --------------------------------------------------------------------------------------------
@@ -426,47 +430,48 @@ def test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name(unrecorde
 
     ever = '2099-01-01'
     with pytest.raises(ValueError) as refusal:
-        diary.export_settlements(rows, 'a' * 64, ever)
+        spine.export_settlements(rows, 'a' * 64, ever)
     assert 'not determined' in str(refusal.value) and floating[0]['leg'] in str(refusal.value)
 
-    exported = diary.export_settlements(fixed, 'a' * 64, ever)
+    exported = spine.export_settlements(fixed, 'a' * 64, ever)
     assert exported['values_hash'] == 'a' * 64 and len(exported['rows']) == len(fixed)
     assert exported['totals']['ZAR'] == pytest.approx(sum(row['amount'] for row in fixed))
 
     with pytest.raises(ValueError) as unnamed:
-        diary.export_settlements([dict(fixed[0], currency=None)], 'a' * 64, ever)
+        spine.export_settlements([dict(fixed[0], currency=None)], 'a' * 64, ever)
     assert 'no currency' in str(unnamed.value)
 
     cutoff = min(row['due_date'] for row in fixed)
-    trimmed = diary.export_settlements(fixed, 'a' * 64, cutoff)
+    trimmed = spine.export_settlements(fixed, 'a' * 64, cutoff)
     assert [row['due_date'] for row in trimmed['rows']] == [cutoff], 'a later payment travelled'
     assert trimmed['due_before'] == cutoff
-    assert diary.export_settlements(fixed, 'a' * 64, '1999-01-01')['rows'] == []
+    assert spine.export_settlements(fixed, 'a' * 64, '1999-01-01')['rows'] == []
 
 
 def test_the_exporter_reads_the_diary_and_the_official_market_and_nothing_else(unrecorded):
     """GATE 9. Provable two ways: the signature takes the rows and ONE market hash and no other
-    object, and the module reaches neither the service nor a Context to find anything else.
+    object, and the function's body names nothing but its arguments, the row vocabulary and
+    builtins - read off its code object and the ones nested in it, an import inside it counted - so
+    it reaches neither the service nor a Context to find anything else.
 
-    Killing mutation: an import of `service` or of `Context` into the diary module - the exporter
-    could then read a live book and the file it wrote would no longer be a function of its
-    arguments.
+    Killing mutation: the exporter naming `service` or `Context` - it could then read a live book
+    and the file it wrote would no longer be a function of its arguments.
     """
-    assert list(inspect.signature(diary.export_settlements).parameters) == [
+    assert list(inspect.signature(spine.export_settlements).parameters) == [
         'rows', 'official_values_hash', 'due_before']
 
-    source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          'derivus', 'diary.py')
-    absolute, relative = set(), set()
-    for found in ast.walk(ast.parse(open(source, encoding='utf-8').read())):
-        if isinstance(found, ast.Import):
-            absolute.update(alias.name.split('.')[0] for alias in found.names)
-        elif isinstance(found, ast.ImportFrom):
-            (relative if found.level else absolute).add((found.module or '').split('.')[0])
-    assert absolute <= {'collections', 'numpy', 'pandas'}, absolute
-    assert relative <= {'spine', 'pricing', 'instruments', 'utils', 'calculation',
-                        'schema'}, relative
-    assert 'service' not in relative and 'Context' not in relative
+    def named(code):
+        for op in dis.get_instructions(code):
+            if op.opname in ('LOAD_GLOBAL', 'LOAD_NAME', 'IMPORT_NAME', 'IMPORT_FROM'):
+                yield op.opname, op.argval
+        for const in code.co_consts:
+            if isinstance(const, type(code)):
+                yield from named(const)
+
+    code = spine.export_settlements.__code__
+    reached = set(named(code))
+    assert not code.co_freevars and not [name for op, name in reached if op.startswith('IMPORT')]
+    assert {name for _, name in reached} - set(dir(builtins)) <= {'Diary', 'SETTLED'}, reached
 
 
 # --------------------------------------------------------------------------------------------
@@ -489,7 +494,7 @@ def test_the_close_check_is_the_catch_up_rule(recorded, tmp_path):
     verdict = CLIENT.get('/book/close/check', params={'date': day}).json()
     assert verdict['legal'] is False and verdict['due'] == 1
     outstanding = verdict['outstanding'][0]
-    assert outstanding['kind'] == diary.PAYMENT
+    assert outstanding['kind'] == Diary.PAYMENT
     assert outstanding['due_date'] == str((COUPONS[0] + LAG).date())
 
     settle(recorded, outstanding['key'])
@@ -527,10 +532,10 @@ def test_a_print_nobody_ordered_a_source_for_leaves_the_read_standing(recorded, 
         log.close()
 
     rows = diary_rows()['rows']
-    unresolved = [row for row in rows if row['kind'] == diary.FIXING and row['reason']]
+    unresolved = [row for row in rows if row['kind'] == Diary.FIXING and row['reason']]
     assert unresolved, 'the swap names InterestRate.ZAR and no policy orders it'
     assert all('InterestRate.ZAR' in row['reason'] for row in unresolved)
-    assert all(row['source'] is None and row['state'] == diary.DUE for row in unresolved)
+    assert all(row['source'] is None and row['state'] == Diary.DUE for row in unresolved)
 
     verdict = CLIENT.get('/book/close/check', params={'date': '2030-01-01'}).json()
     assert verdict['legal'] is False
@@ -555,16 +560,55 @@ def test_a_monitoring_date_is_never_a_payment_and_a_declared_one_always_is(unrec
 
     rows = diary_rows()['rows']
     monitoring = [row for row in rows if row['due_date'] == str(watched.date())]
-    assert {row['kind'] for row in monitoring} == {diary.BARRIER, diary.FIXING}, monitoring
+    assert {row['kind'] for row in monitoring} == {Diary.BARRIER, Diary.FIXING}, monitoring
 
     declared = {row['due_date']: row for row in payments(rows)
-                if row['leg'] == diary.SETTLEMENT}
+                if row['leg'] == Diary.SETTLEMENT}
     cash = declared[str(COUPONS[0].date())]
     assert cash['amount'] == NOTIONAL and cash['determined'] is True and cash['currency'] == 'ZAR'
     payoff = declared[str((BASE + pd.DateOffset(days=365)).date())]
     assert payoff['amount'] is None and payoff['determined'] is False, 'a payoff is not a field'
     assert set(declared) == {cash['due_date'], payoff['due_date']}
     assert not [row for row in payments(rows) if row['due_date'] == str(watched.date())]
+
+
+#: The types announcing a fixing or a monitoring day under no index: each reads its fixings off its
+#: own schedule, and a close passing on a print its mark ignores is a silent wrong number.
+UNOBSERVED = {'FXAccumulatorOptionDeal', 'FXTARFOptionDeal', 'FXExtendableForwardDeal',
+              'FXDiscreteExplicitAsianOption', 'FXDiscreteExplicitDoubleAsianOption',
+              'EquityDiscreteExplicitAsianOption', 'EquitySwapLeg', 'EquitySwapletListDeal',
+              'YieldInflationCashflowListDeal', 'FloatingEnergyDeal', 'EnergySingleOption',
+              'CommodityAveragePriceSwapDeal'}
+
+
+def test_every_fixing_names_the_index_its_type_declares():
+    """THE CENSUS. Every type's own `observes` is sound - the type declares the field naming the
+    index, whose factors include the family, a Table wide enough for the column a print fills, and
+    the fields electing at expiry and expiring - and over one deal of every type, the trial books,
+    the types announcing a fixing or a monitoring day under no index are EXACTLY `UNOBSERVED`: a
+    type gaining a declaration leaves it, and a new floating type cannot join it silently.
+
+    Killing mutations: `FRADeal.observes` deleted, which puts the FRA back among the types naming
+    no index; a declaration naming a field its type does not declare.
+    """
+    for name, observes in schema.OBSERVES.items():
+        fields = schema.declared_fields(getattr(instruments, name))
+        factors, table = getattr(instruments, name).factor_fields, fields.get(observes.table)
+        assert observes.index in fields and observes.family in factors.get(observes.index, ()), name
+        assert observes.table is None or table is not None and table.type == 'Table' and len(
+            table.row.fields) > observes.column, name
+        assert {observes.elects, observes.expires} - {None} <= set(fields), name
+    unnamed = set()
+    for family in trials.FAMILIES.values():
+        document = trials.document(family)
+        kinds = {node['Instrument']['.Deal']['Reference']: node['Instrument']['.Deal']['Object']
+                 for node in trials.nodes(document['Calc']['Deals']['Deals']['Children'])}
+        context = derivus.Context()
+        context.load_json((json.dumps(document), 'census'))
+        unnamed.update(kinds.get(row['instrument']) for row in spine.diary(
+            context, {reference: reference for reference in kinds})
+            if row['kind'] in (Diary.FIXING, Diary.BARRIER) and row['index'] is None)
+    assert unnamed == UNOBSERVED, sorted(unnamed ^ UNOBSERVED, key=str)
 
 
 def declared(fixture, paid=None, base=None):
@@ -580,7 +624,7 @@ def declared(fixture, paid=None, base=None):
         document['Calc']['Calculation']['Base_Date'] = json.loads(dump({'day': base}))['day']
     context = service.load(document)
     (deal,) = [node['Instrument'] for node in context.current_cfg.deals['Deals']['Children']]
-    return deal, payments(diary.schedule_of(context, {deal.field['Reference']: 'f' * 64}))
+    return deal, payments(spine.diary(context, {deal.field['Reference']: 'f' * 64}))
 
 
 @pytest.mark.parametrize('fixture,table,column', [
@@ -646,8 +690,8 @@ def test_an_expiry_that_vests_a_choice_blocks_a_close_until_somebody_elects(reco
     assert booked['written'] is True, booked
 
     verdict = CLIENT.get('/book/close/check', params={'date': '2030-01-01'}).json()
-    vests = [row for row in verdict['outstanding'] if row['needs'] == diary.ELECTION]
-    assert len(vests) == 1 and vests[0]['kind'] == diary.EXPIRY
+    vests = [row for row in verdict['outstanding'] if row['needs'] == Diary.ELECTION]
+    assert len(vests) == 1 and vests[0]['kind'] == Diary.EXPIRY
     assert verdict['legal'] is False
 
     derivus.Context().load_json((dump(job([])), 'elect')).apply_lifecycle(
@@ -656,7 +700,7 @@ def test_an_expiry_that_vests_a_choice_blocks_a_close_until_somebody_elects(reco
     assert [row for row in cleared['outstanding'] if row['needs']] == []
 
     cash = diary_rows()['rows']
-    settled = [row for row in cash if row['kind'] == diary.EXPIRY and row['needs']]
+    settled = [row for row in cash if row['kind'] == Diary.EXPIRY and row['needs']]
     assert settled == [], 'the election answered every expiry that vested one'
 
 
@@ -665,7 +709,7 @@ def test_a_cash_settled_expiry_never_vests_a_choice(unrecorded, tmp_path):
     its expiry leaves nobody a choice and never blocks a close."""
     serving(tmp_path, [node(dict(OPTION, Reference='EQO_CASH', Settlement_Style='Cash'))],
             factors=dict(FACTORS, **EQUITY))
-    rows = [row for row in diary_rows()['rows'] if row['kind'] == diary.EXPIRY]
+    rows = [row for row in diary_rows()['rows'] if row['kind'] == Diary.EXPIRY]
     assert rows and all(row['needs'] is None for row in rows)
 
 
@@ -696,7 +740,7 @@ def test_a_read_never_refuses_over_the_books_own_undeclared_index(recorded, tmp_
     verdict = CLIENT.get('/book/close/check', params={'date': '2099-01-01'})
     assert verdict.status_code == 200, verdict.text
     assert verdict.json()['legal'] is False
-    assert {row['key'] for row in unresolved if row['kind'] == diary.FIXING} <= {
+    assert {row['key'] for row in unresolved if row['kind'] == Diary.FIXING} <= {
         row['key'] for row in verdict.json()['outstanding']}
 
     # and the PLAN still refuses: strictness is what separates a plan from a read
@@ -775,10 +819,10 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     assert booked['written'] is True, booked
 
     rows = {(row['kind'], row['due_date']): row for row in diary_rows()['rows']}
-    assert (diary.FIXING, expiry) in rows and (diary.PAYMENT, expiry) in rows
-    assert rows[(diary.FIXING, expiry)]['index'] == 'EquityPrice.EQ'
-    assert rows[(diary.PAYMENT, expiry)]['amount'] is None
-    assert rows[(diary.EXPIRY, expiry)]['needs'] is None, 'cash settlement vests no choice'
+    assert (Diary.FIXING, expiry) in rows and (Diary.PAYMENT, expiry) in rows
+    assert rows[(Diary.FIXING, expiry)]['index'] == 'EquityPrice.EQ'
+    assert rows[(Diary.PAYMENT, expiry)]['amount'] is None
+    assert rows[(Diary.EXPIRY, expiry)]['needs'] is None, 'cash settlement vests no choice'
 
     # the settlement day is the TYPE'S OWN field where it declares one, not the expiry, which it
     # falls back to where that field is blank
@@ -791,7 +835,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     paid = [row for row in payments(diary_rows()['rows'])]
     assert [row['due_date'] for row in paid] == [delivery], 'the payment stood on the expiry'
     assert [row['due_date'] for row in diary_rows()['rows']
-            if row['kind'] == diary.FIXING] == [expiry], 'the fixing is the expiry day'
+            if row['kind'] == Diary.FIXING] == [expiry], 'the fixing is the expiry day'
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [dict(OPTION,
                                                                Settlement_Style='Cash')])],
             factors=dict(FACTORS, **EQUITY))
@@ -799,7 +843,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     after = str((BASE + pd.DateOffset(days=61)).date())
     verdict = CLIENT.get('/book/close/check', params={'date': after}).json()
     assert verdict['legal'] is False
-    assert {row['kind'] for row in verdict['outstanding']} == {diary.FIXING, diary.PAYMENT}
+    assert {row['kind'] for row in verdict['outstanding']} == {Diary.FIXING, Diary.PAYMENT}
 
     log = SpineLog(recorded)
     try:
@@ -808,7 +852,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
         log.append('fixing_observed', {'index': 'EquityPrice.EQ', 'date': expiry,
                                        'source': 'EXCHANGE', 'value': 133.0}, actor=ACTOR)
         log.append('status_transition',
-                   {'subject': rows[(diary.PAYMENT, expiry)]['key'], 'status': diary.SETTLED},
+                   {'subject': rows[(Diary.PAYMENT, expiry)]['key'], 'status': spine.SETTLED},
                    actor=ACTOR, book='diary-desk')
     finally:
         log.close()
@@ -845,24 +889,24 @@ def test_an_option_that_expired_yesterday_still_blocks_the_close(name, deal, rec
 
     day = str(yesterday.date())
     rows = {(row['kind'], row['due_date']): row for row in diary_rows()['rows']}
-    assert rows[(diary.EXPIRY, day)]['state'] == diary.EXPIRED
-    assert (diary.FIXING, day) in rows and (diary.PAYMENT, day) in rows, sorted(rows)
+    assert rows[(Diary.EXPIRY, day)]['state'] == Diary.EXPIRED
+    assert (Diary.FIXING, day) in rows and (Diary.PAYMENT, day) in rows, sorted(rows)
 
     verdict = CLIENT.get('/book/close/check', params={'date': '2099-01-01'}).json()
     assert verdict['legal'] is False, name
-    assert {row['kind'] for row in verdict['outstanding']} >= {diary.FIXING, diary.PAYMENT}
+    assert {row['kind'] for row in verdict['outstanding']} >= {Diary.FIXING, Diary.PAYMENT}
 
     log = SpineLog(recorded)
     try:
         policy.declare(log, ACTOR, policy.FIXINGS_POLICY,
-                       {'sources': {rows[(diary.FIXING, day)]['index']: ['EXCHANGE']}})
-        log.append('fixing_observed', {'index': rows[(diary.FIXING, day)]['index'], 'date': day,
+                       {'sources': {rows[(Diary.FIXING, day)]['index']: ['EXCHANGE']}})
+        log.append('fixing_observed', {'index': rows[(Diary.FIXING, day)]['index'], 'date': day,
                                        'source': 'EXCHANGE', 'value': 18.0}, actor=ACTOR)
         log.append('status_transition',
-                   {'subject': rows[(diary.PAYMENT, day)]['key'], 'status': diary.SETTLED},
+                   {'subject': rows[(Diary.PAYMENT, day)]['key'], 'status': spine.SETTLED},
                    actor=ACTOR, book='diary-desk')
-        if rows[(diary.EXPIRY, day)]['needs']:
-            log.append('election', {'instrument': rows[(diary.EXPIRY, day)]['instrument'],
+        if rows[(Diary.EXPIRY, day)]['needs']:
+            log.append('election', {'instrument': rows[(Diary.EXPIRY, day)]['instrument'],
                                     'choice': 'exercise'}, actor=ACTOR, book='diary-desk')
     finally:
         log.close()
@@ -883,16 +927,16 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     bill again with the row rendered beside it.
     """
     serving(tmp_path, [node(dict(FX_OPTION, Reference='NOVOL'))], factors=FACTORS)
-    rows = [row for row in diary_rows()['rows'] if row['kind'] == diary.UNREADABLE]
+    rows = [row for row in diary_rows()['rows'] if row['kind'] == Diary.UNREADABLE]
     assert len(rows) == 1, diary_rows()['rows']
-    assert rows[0]['leg'] == '0' and rows[0]['state'] == diary.UNREADABLE
+    assert rows[0]['leg'] == '0' and rows[0]['state'] == Diary.UNREADABLE
     assert rows[0]['due_date'] is None and rows[0]['amount'] is None and rows[0]['key'] is None
     assert 'NOVOL' in rows[0]['reason'] and 'FXOptionDeal' in rows[0]['reason']
     assert 'FXVol' in rows[0]['reason'], rows[0]['reason']
 
     verdict = CLIENT.get('/book/close/check', params={'date': '2020-01-01'}).json()
     assert verdict['legal'] is False, 'a day with nothing due was still not legal'
-    assert [row['kind'] for row in verdict['outstanding']] == [diary.UNREADABLE]
+    assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
 
 
 def test_the_diary_never_runs_on_the_poll_path(unrecorded, tmp_path):
@@ -955,7 +999,7 @@ def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_p
 
     after = str((BASE + pd.DateOffset(days=61)).date())
     refused = CLIENT.post('/book/close', json={'date': after})
-    assert refused.status_code == 422 and diary.FIXING in refused.json()['detail'], refused.text
+    assert refused.status_code == 422 and Diary.FIXING in refused.json()['detail'], refused.text
     for garbage in ('', '2024', 'not-a-day', '2024-06-28T16:30'):
         assert CLIENT.post('/book/close', json={'date': garbage}).status_code == 422, garbage
     assert at(recorded) == head, 'a refused close moved the record'
@@ -1049,7 +1093,7 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
     assert exported['market'] == {'name': 'official', 'values_hash': marked['values_hash'],
                                   'lsn': marked['recorded']['lsn']}, 'a named market was resolved'
 
-    direct = diary.export_settlements(diary_rows()['rows'], marked['values_hash'], ever)
+    direct = spine.export_settlements(diary_rows()['rows'], marked['values_hash'], ever)
     # `values_hash` is the exporter's own statement of the board; `market` is the record's, the
     # name it resolved under and the position that name stands at
     assert (exported['rows'], exported['totals'], exported['due_before'],

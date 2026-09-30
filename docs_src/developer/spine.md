@@ -19,7 +19,7 @@ every position cost, and the desk's P&L between the closes it marks; and the sea
 granted at the nodes of a declared tree, the hub's own facts in the writer's voice, and a trade's
 pending read rather than filed; and the collateral each agreement calls on a marked close, its
 balance written into the plan. A library, a CLI, nine delegators on `Context`, eighteen read verbs
-and ten write verbs on the service, and 410 gates.
+and ten write verbs on the service, and 412 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -119,8 +119,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 378 of
-the 410 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 379 of
+the 412 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -331,9 +331,9 @@ answers), a print superseded twice, and two verdicts read in the order they were
 
 ## Increment 4b — the diary, the LSN pin, and the plan as a fold
 
-**The diary is the compile's own schedule, re-emitted.** `derivus/diary.py`'s `schedule_of(context)`
-runs the COMPILE half of a base valuation — the market built, every deal constructed and its
-schedules bound — and stops before the structure resolves; then it reads what it just bound through
+**The diary is the compile's own schedule, re-emitted.** `spine.diary(context)` runs the `Diary`
+calculation, the COMPILE half of a base valuation — the market built, every deal constructed and its
+schedules bound — stopped before the structure resolves; it reads what it just bound through
 `utils.walk_schedules`, which is the walk `utils.bind_schedules` itself takes. One walk, so the leg
 names a settlement reference is built from cannot drift from the binding.
 
@@ -344,10 +344,10 @@ day, summed, and compounded where the leg's own terms compound. A bond repaying 
 its last coupon announces the sum, and two accrual sub-periods paying on one day announce one
 payment. A schedule carrying RESETS determines nothing — its amount is a floating pricer's and the
 diary does not spell a second one — so its rows read `amount: null, determined: false`: **a null
-amount is never written as 0.0**, and `export_settlements(rows, official_values_hash, due_before)` —
-which takes the diary, one market hash and the day the file settles, and reaches nothing else —
-refuses an undetermined row, and a row naming no currency, BY NAME rather than instructing a wrong
-payment. `due_before` has no default: a settlement file is struck FOR a day.
+amount is never written as 0.0**, and `spine.export_settlements` — which takes the diary, one
+market hash and the day the file settles, and reaches nothing else — refuses an undetermined row,
+and a row naming no currency, BY NAME rather than instructing a wrong payment. `due_before` has no
+default: a settlement file is struck FOR a day.
 
 An `expiry` row carries `needs`, which is `election` where the deal type's terms vest an exercise in
 an actor and null where a fixing determines the payoff. What a deal settles that its compile builds
@@ -374,10 +374,10 @@ four through the record's own canonicaliser, so it is 64 lowercase hex and passe
 vocabulary does not grow for it. The four are unique because a row IS one `(leg, kind, date)`. The
 POSITION was refused: a schedule drops the rows it has paid as the book rolls, so positions renumber
 under the settlement references already filed and a transition settling February would read, after
-the roll, as settling August. A date does not move. `derivus/diary.py` asks the seam for the key and
-imports nothing of the record itself, so on a box without the extra a row carries `key: null` and
-everything else. A book rolled PAST a coupon keeps every surviving row's key and loses only the row
-that was paid.
+the roll, as settling August. A date does not move. The calculation names each row's deal by its
+`Reference` and knows nothing of the record; `spine.diary` stamps the instrument and asks for the
+key, so on a box without the extra a row carries `key: null` and everything else. A book rolled
+PAST a coupon keeps every surviving row's key and loses only the row that was paid.
 
 **The book file is the fold's SUBJECT, not its output.** It keeps its content — the market data is
 not in the fold at all, and a hand edit is the desk's own act — and gains `Spine: {lsn, head,
@@ -404,8 +404,8 @@ pin. `events_behind` counts every event since the file was written and `position
 and amendments among them — a policy or an attestation moves the first and no row here.
 
 **The plan is terms plus the observations the record holds.** `spine.compiled_job(document, lsn)`
-walks the job's deals, and for each one whose type declares an observation table — the deal-type
-table in `derivus/diary.py`, read by the compiler and the diary alike and never spelled twice —
+walks the job's deals, and for each one whose type declares an observation table — the type's own
+`observes` (`schema.OBSERVES`), read by the compiler and the diary alike and never spelled twice —
 writes the fixing in force at `lsn` into the cell that type declares it in, for a day ON OR BEFORE
 the job's own base date: a print carries its date as text, so a forward-dated one is a legal fact
 and writing it would price a barrier as observed on a day that has not happened. `/execute` and
@@ -577,10 +577,10 @@ was composed in exactly one place — and answers `{name, values_hash, values}` 
 `patch_market` takes. A name nobody declared REFUSES rather than falling back on whatever market is
 loaded, which is the whole point of binding a process to a market by name; with `process` named, it
 must be the market the tiers policy designates for that process, and a home designating nothing
-refuses too. **A NAME RESOLVES TO ITS LATEST DECLARATION BY LSN, and an official close is one way of
-declaring one**: a close moves what the name answers and a later declaration moves it back, so a
-reader cannot be handed yesterday's board on a market the desk has since closed. The close a market
-stands on is its latest BY DAY, ties by LSN, so a past day restated never unseats a later day's. A
+refuses too. **A NAME RESOLVES TO ITS LATEST DECLARATION BY AS-OF KEY, and an official close is
+one way of declaring one**: a close moves what the name answers and a later declaration moves it
+back, so a reader cannot be handed yesterday's board on a market the desk has since closed. The
+close a market stands on is its latest BY DAY, so a past day restated never unseats a later day's. A
 `private/<subject>/<name>` market resolves for the subject ITS NAME NAMES, and `declare_market`
 refuses a private name whose subject is not the seat declaring it — self-declared means
 self-declared, so the name and the fold cannot disagree about who owns a board. The ownership rule
@@ -779,7 +779,7 @@ export at another is unrepresentable rather than merely refused. A home designat
 designating a name nothing stands under, refuse at SUBMISSION with the declaration that fixes it,
 before a row is compiled. The rows are the DIARY's — the same job on the compute queue at a base
 valuation's cost class that `GET /book/diary` caches, never a second compile path — and the answer is
-`diary.export_settlements`' own, plus the market block and the count: an undetermined amount, and a row
+the exporter's own, plus the market block and the count: an undetermined amount, and a row
 naming no currency, refuse by name, because instructing a payment of zero is a wrong payment rather
 than a missing one. Two keys say two things and are spelled apart: `values_hash` is the BOARD the
 file was struck on, which is the exporter's own statement over the rows it exported, and `market` is
@@ -1041,10 +1041,10 @@ could not put — a question nobody asked is never a question that held. The fou
     restated after its day's marks is a READING - marks run forward, so the day reads as it was
     marked - named in the evidence and never failed;
 14. **the call is the formula** — every collateral call the script read is
-    `derivus_spine.collateral.call` over the exposure and the spots (`fx`) the service answered -
+    `projections.CSA.call` over the exposure and the spots (`fx`) the service answered -
     compiles this TRUSTS, as data - with the `cash` fold at the read's `lsn` held as of its `date`
     and the terms the `agreements` fold stood on there, both folded ONCE forward through the reads:
-    the service's `held` and every figure `collateral.WORKED` names are compared as the numbers they
+    the service's `held` and every figure `CSA.WORKED` names are compared as the numbers they
     are. A call nobody could work out carries no numbers and is not worked - one that carries them
     is named - and a script whose every call was unknown puts no question.
 
@@ -1387,9 +1387,9 @@ declares, held alone, as a structure's leg and closed out before it settles; a d
 out and a lot nobody priced; and a ticket booked while the marks wait, the last day marked again
 and a day behind it - on a book whose name carries the marks' own '@' - every killing mutation
 their docstrings name red. `tests/test_diary.py` holds every payment a date declares against the
-cash the run itself books, a forward's and an FX swap's legs among them, and the days a table
-declares settled. `web/scripts/pnl_check.mjs` holds the screen's own
-arithmetic.
+cash the run itself books, a forward's and an FX swap's legs among them, the days a table
+declares settled, and the census of what every trial type observes. `web/scripts/pnl_check.mjs`
+holds the screen's own arithmetic.
 
 ## Seats, nodes and the hub's own voice
 
@@ -1569,8 +1569,8 @@ and the seeded tree - every killing mutation their docstrings name red.
 
 ## Collateral — the call on a close, and the balance in the plan
 
-**THE CALL IS A READING, AND ONE FORMULA WITH THE ENGINE'S.** `derivus_spine/collateral.py` is a
-CSA's arithmetic at one date, pure and stdlib, so the service runs it and the oracle can. `csa`
+**THE CALL IS A READING, AND ONE FORMULA WITH THE ENGINE'S.** `projections.CSA` is a credit support
+annex's arithmetic at one date, pure and stdlib, so the service runs it and the oracle can. `of`
 reads an agreement's declared terms as the engine reads them - every `CreditSupportList` at its
 first value, the balance currency the agreement's where unstated, and each cash row of
 `Collateral_Assets` at its `Haircut_Posted`, the one haircut the engine reads, whichever side holds
@@ -1590,7 +1590,7 @@ named, refused by name where the day has no marks - in the agreement's currency:
 entity, currency, exposure, fx, held, margin, required, balance, call, direction,
 minimum_transfer, unknown}`, `fx` the close's spots in that currency, so with the exposure a call
 replays off the record, which the oracle's fourteenth does. The exposure is read off the P&L -
-`pnl.pnl` over the close alone, sharing
+`spine.PnL.pnl` over the close alone, sharing
 `valued_between` with the P&L's own read - as the set's recursion reads it under the marks job's
 `Exclude_Paid_Today`: where the set holds the day's payments, the engine's default, the P&L's value
 of each position with what the unit paid that day added back, its quantity times its unit mark;

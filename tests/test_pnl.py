@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus import pnl, service, spine
+from derivus import service, spine
 from derivus.config import as_json
 from derivus_mcp import server as binding
 from derivus_spine import SpineLog, init_home, oracle, policy, verbs
@@ -1085,8 +1085,8 @@ def test_a_past_day_restated_after_today_s_close_restates_that_day_alone(recorde
     assert [(row['date'], row['lsn'], row['supersedes_lsn']) for row in CLIENT.get(
         '/book/markets').json()['closes']] == [('2024-07-01', today['lsn'], None)]
     marked()
-    on = pnl.rates_on(spine.closes('official'), spine.stored, 'USD', 'USD')
-    assert on('2024-06-28', restated['recorded']['lsn']) == pnl.rates(json.loads(spine.stored(
+    on = spine.PnL.rates_on(spine.closes('official'), spine.stored, 'USD', 'USD')
+    assert on('2024-06-28', restated['recorded']['lsn']) == spine.PnL.rates(json.loads(spine.stored(
         restated['values_hash']).decode('utf-8')), 'USD', 'USD') != on('2024-06-28', today['lsn'])
     assert oracle.report(recorded)['closes_superseded_never_edited']['held'] is True
 

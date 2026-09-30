@@ -14,12 +14,12 @@
 """The collateral call - a CSA's arithmetic at one date, and the balance the record holds written
 into the plan - held to the engine's own recursion.
 
-`derivus_spine.collateral` is pure over plain data, so most of this file hands it numbers, exact
-in binary so every assertion is an equality. The engine gates run a collateralised credit Monte
-Carlo over a job the record compiled: the balance the record holds is the one the engine starts
-from, and on every path the spine's call is the engine's own transfer - its required support where
-the engine moved the balance, the balance where it did not - on the day a deal under the set pays
-too, under either reading of that day's payment.
+`derivus_spine.projections.CSA` is pure over plain data, so most of this file hands it numbers,
+exact in binary so every assertion is an equality. The engine gates run a collateralised credit
+Monte Carlo over a job the record compiled: the balance the record holds is the one the engine
+starts from, and on every path the spine's call is the engine's own transfer - its required support
+where the engine moved the balance, the balance where it did not - on the day a deal under the set
+pays too, under either reading of that day's payment.
 """
 import json
 import os
@@ -33,10 +33,12 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import derivus
-from derivus import collateral as reading, spine, utils
+from derivus import spine, utils
 from derivus.instruments import NettingCollateralSet
 from derivus.schema import declared_fields
-from derivus_spine import collateral, init_home
+from derivus.spine import Collateral
+from derivus_spine import init_home
+from derivus_spine.projections import CSA
 
 ACTOR = 'subject-collateral'
 BASE, NEXT = '2024-06-28', '2024-06-29'
@@ -79,20 +81,20 @@ def test_the_dials_are_read_as_the_engine_reads_them():
 
     Killing mutation: the first row's rating read as its amount, which puts every threshold at 1.
     """
-    dials = collateral.csa(HAIRCUTS)
+    dials = CSA.of(HAIRCUTS)
     stated = TERMS['Credit_Support_Amounts']
-    for dial in collateral.DIALS:
+    for dial in CSA.DIALS:
         assert dials[dial] == utils.CreditSupportList(stated[dial]['.CreditSupportList']).value()
     assert dials['Received_Threshold'] == 2_000_000.0, 'the first rating, not the last'
     twice = listed((1, 5.0), (2, 6.0), (1, 7.0))
-    assert collateral.csa(dict(TERMS, Credit_Support_Amounts=dict(stated, Minimum_Posted=twice)))[
+    assert CSA.of(dict(TERMS, Credit_Support_Amounts=dict(stated, Minimum_Posted=twice)))[
         'Minimum_Posted'] == utils.CreditSupportList(twice['.CreditSupportList']).value() == 7.0
     assert dials['haircuts'] == {'USD': float(utils.Percent(50.0))}
     assert (dials['Agreement_Currency'], dials['Balance_Currency']) == ('ZAR', 'EUR')
-    assert collateral.csa(dict(TERMS, Balance_Currency=''))['Balance_Currency'] == 'ZAR'
-    assert collateral.csa(dict(TERMS, Collateralized='False')) is None
-    assert collateral.csa({'Object': 'NettingCollateralSet'}) is None
-    bare = collateral.csa(dict(TERMS, Credit_Support_Amounts={
+    assert CSA.of(dict(TERMS, Balance_Currency=''))['Balance_Currency'] == 'ZAR'
+    assert CSA.of(dict(TERMS, Collateralized='False')) is None
+    assert CSA.of({'Object': 'NettingCollateralSet'}) is None
+    bare = CSA.of(dict(TERMS, Credit_Support_Amounts={
         'Received_Threshold': listed((1, 5.0))}))
     assert (bare['Independent_Amount'], bare['Received_Threshold'], bare['Posted_Threshold'],
             bare['haircuts']) == (0.0, 5.0, None, {})
@@ -107,8 +109,8 @@ def test_the_support_required_is_the_engine_s_own_at():
     Killing mutation: the thresholds read in the agreement's currency uncrossed, which puts the
     received threshold at 2,000,000 dollars and calls nothing on a 300,000 exposure.
     """
-    dials = collateral.csa(TERMS)
-    assert [collateral.required(exposure, dials, FX) for exposure in (
+    dials = CSA.of(TERMS)
+    assert [CSA.required(exposure, dials, FX) for exposure in (
         300_000.0, 125_000.0, 0.0, -100_000.0, -250_000.0)] == [
         176_000.0, 1_000.0, 1_000.0, 1_000.0, -149_000.0]
 
@@ -122,17 +124,17 @@ def test_a_call_clears_its_minimum_strictly_on_the_side_it_falls():
 
     Killing mutation: `>=` for the minimum transfer, which calls 20,000 at exactly the minimum.
     """
-    dials = collateral.csa(TERMS)
-    at, over = (collateral.call(exposure, {}, dials, FX) for exposure in (144_000.0, 144_000.5))
+    dials = CSA.of(TERMS)
+    at, over = (CSA.call(exposure, {}, dials, FX) for exposure in (144_000.0, 144_000.5))
     assert (at['required'], at['balance'], at['call'], at['direction'], at['minimum_transfer']) \
         == (20_000.0, 0.0, 0.0, None, 20_000.0)
-    assert (over['call'], over['direction']) == (20_000.5, collateral.CALL)
+    assert (over['call'], over['direction']) == (20_000.5, CSA.CALL)
     held = {'EUR': 24_800.0}
-    at, over = (collateral.call(0.0, holding, dials, FX) for holding in (
+    at, over = (CSA.call(0.0, holding, dials, FX) for holding in (
         held, {'EUR': 24_800.5}))
     assert (at['balance'], at['call'], at['direction'], at['minimum_transfer']) == (
         31_000.0, 0.0, None, 30_000.0)
-    assert (over['call'], over['direction']) == (-30_000.625, collateral.POST)
+    assert (over['call'], over['direction']) == (-30_000.625, CSA.POST)
 
 
 def test_a_haircut_is_the_engine_s_haircut_posted_on_either_side():
@@ -144,10 +146,10 @@ def test_a_haircut_is_the_engine_s_haircut_posted_on_either_side():
     Killing mutation: `Haircut_Received` taken on what the bank holds, which values 100,000 dollars
     held at 75,000.
     """
-    dials = collateral.csa(HAIRCUTS)
-    assert collateral.valued({'USD': 100_000.0}, dials, FX) == 50_000.0
-    assert collateral.valued({'USD': -100_000.0}, dials, FX) == -50_000.0
-    assert collateral.valued({'EUR': 8.0, 'USD': 4.0}, dials, FX) == 12.0
+    dials = CSA.of(HAIRCUTS)
+    assert CSA.valued({'USD': 100_000.0}, dials, FX) == 50_000.0
+    assert CSA.valued({'USD': -100_000.0}, dials, FX) == -50_000.0
+    assert CSA.valued({'EUR': 8.0, 'USD': 4.0}, dials, FX) == 12.0
 
 
 def test_collateral_and_margin_are_two_balances_and_the_call_reads_the_first():
@@ -170,15 +172,15 @@ def test_collateral_and_margin_are_two_balances_and_the_call_reads_the_first():
                  moved('collateral', 'CSA-1', 'EUR', 999.0, NEXT),
                  moved('collateral', 'CSA-2', 'EUR', 7.0, BASE),
                  moved('fee', 'CSA-1', 'EUR', 3.0, BASE)]
-    balances = collateral.held(movements, BASE)
+    balances = CSA.held(movements, BASE)
     assert balances == {'CSA-1': {'collateral': {'EUR': 24_800.0, 'ZAR': 160_000.0},
                                   'margin': {'EUR': 500_000.0}},
                         'CSA-2': {'collateral': {'EUR': 7.0}, 'margin': {}}}
-    assert collateral.held(movements)['CSA-1']['collateral']['EUR'] == 25_799.0
+    assert CSA.held(movements)['CSA-1']['collateral']['EUR'] == 25_799.0
     held = balances['CSA-1']
-    said = collateral.call(0.0, held['collateral'], collateral.csa(TERMS), FX)
+    said = CSA.call(0.0, held['collateral'], CSA.of(TERMS), FX)
     assert (said['balance'], said['call'], said['direction']) == (41_000.0, -40_000.0,
-                                                                  collateral.POST)
+                                                                  CSA.POST)
 
 
 def test_nothing_is_rounded_where_the_terms_declare_no_rounding():
@@ -192,9 +194,9 @@ def test_nothing_is_rounded_where_the_terms_declare_no_rounding():
         part.key for field in declared for part in field.sub_fields or ()]
     assert not [name for name in names if 'round' in name.lower()], \
         'a rounding the terms declare is one the call must read'
-    dials = collateral.csa(TERMS)
-    said = collateral.call(144_000.123, {}, dials, FX)
-    assert said['call'] == collateral.required(144_000.123, dials, FX) != round(said['call'], 2)
+    dials = CSA.of(TERMS)
+    said = CSA.call(144_000.123, {}, dials, FX)
+    assert said['call'] == CSA.required(144_000.123, dials, FX) != round(said['call'], 2)
 
 
 def test_a_mark_nobody_has_is_named_and_calls_nothing():
@@ -222,11 +224,11 @@ def test_a_mark_nobody_has_is_named_and_calls_nothing():
                   'LEI-1', 'terms': dict(TERMS, Agreement_Currency='', Balance_Currency='')}]
     gold = [{'kind': 'collateral', 'subject': agreement, 'asset': 'XAU', 'amount': 1.0,
              'effective_time': BASE + 'T00:00:00.000000Z'} for agreement in ('CSA-3', 'CSA-4')]
-    unknown, known, uncrossed, unstated = reading.calls(close, valued, agreements, gold, BASE)
+    unknown, known, uncrossed, unstated = Collateral.calls(close, valued, agreements, gold, BASE)
     assert (unknown['exposure'], unknown['call'], unknown['direction'], unknown['unknown']) == (
         None, None, None, valued['unknown'])
     assert (known['exposure'], known['direction'], known['unknown']) == (
-        300_000.0 / FX['ZAR'], collateral.CALL, []), 'in rand, the agreement currency'
+        300_000.0 / FX['ZAR'], CSA.CALL, []), 'in rand, the agreement currency'
     assert (uncrossed['call'], uncrossed['unknown']) == (None, [
         {'instrument': None, 'what': 'the close carries no spot for XAU'}])
     assert (unstated['call'], unstated['unknown']) == (None, [
@@ -324,8 +326,8 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     assert held[opened] == pytest.approx(21_600.0 * FX['EUR'], rel=1e-14), \
         'the engine opens on the balance written'
 
-    dials = collateral.csa(TERMS)
-    said = [collateral.call(float(exposure), holding, dials, FX) for exposure in gross]
+    dials = CSA.of(TERMS)
+    said = [CSA.call(float(exposure), holding, dials, FX) for exposure in gross]
     required = np.array([call['required'] for call in said])
     moved = held[later] != held[opened]
     assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
@@ -335,7 +337,7 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     assert said[0]['balance'] == 27_000.0
     directions = [call['direction'] for call in said]
     regimes = np.where(gross > 125_000.0, 1, np.where(gross < -100_000.0, -1, 0))
-    for count in ([directions.count(side) for side in (collateral.CALL, collateral.POST, None)]
+    for count in ([directions.count(side) for side in (CSA.CALL, CSA.POST, None)]
                   + [int(np.sum(regimes == side)) for side in (1, 0, -1)]):
         assert count >= 200, 'the paths do not span both thresholds and both minimums'
 
@@ -367,7 +369,7 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
     Killing mutations: the day's payment never added back, which parts from the engine's default;
     the payment added back under `Exclude_Paid_Today` too; the setting read inverted.
     """
-    holding, dials = {'EUR': 21_600.0}, collateral.csa(TERMS)
+    holding, dials = {'EUR': 21_600.0}, CSA.of(TERMS)
     for excluded in (False, True):
         job = engine_job(TERMS)
         netting = job['Calc']['Deals']['Deals']['Children'][0]
@@ -389,16 +391,16 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
         moved = later != held[reported.index(pd.Timestamp(BASE))]
         gross = result['GrossMTM'][0][dates.index(pd.Timestamp(NEXT))]
         paid = out['Results']['cashflows']['USD'].loc[pd.Timestamp(NEXT)].to_numpy()
-        assert reading.paid_today(job) is not excluded
+        assert Collateral.paid_today(job) is not excluded
 
         def calls(today):
             # each path a P&L row: four units, each worth the gross less the day's payment
-            return [collateral.call(reading.exposure('CSA-1', {'rows': [{
+            return [CSA.call(Collateral.exposure('CSA-1', {'rows': [{
                 'agreement': 'CSA-1', 'value_end': float(total - cash), 'quantity_end': 4.0,
                 'paid_end': float(cash) / 4.0}]}, FX, 'USD', today), holding, dials, FX)
                 for total, cash in zip(gross, paid)]
 
-        said, other = calls(reading.paid_today(job)), calls(not reading.paid_today(job))
+        said, other = calls(Collateral.paid_today(job)), calls(not Collateral.paid_today(job))
         assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
             'the spine calls on another exposure than the set recurses on'
         assert later[moved] == pytest.approx(

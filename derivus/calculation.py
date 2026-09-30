@@ -23,11 +23,15 @@ from functools import reduce
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
 from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
-from .instruments import (Deal, get_fxrate_factor, get_survival_component, get_interest_factor,
-                          get_survival_factor)
-from .pricing import SensitivitiesEstimator
+from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_survival_component,
+                          get_interest_factor, get_survival_factor)
+from .pricing import SensitivitiesEstimator, fixed_payments
 from . import utils, pricing
-from .schema import F, REQUIRED, Row, declared_defaults
+from .schema import (F, OBSERVES, REQUIRED, Row, declared_defaults, declared_settlements,
+                     index_named, settlement_days)
+from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
+                    CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
+                    RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
 from .hedge_runtime import construct_hedge_runtime
 from .hedge_bundle import Bundle, run_hedge_execution, HedgeRuntimeExecutionResult
 from .hedge_solver import StreamingSolve
@@ -2290,6 +2294,288 @@ class Base_Revaluation(Calculation):
                 self.gradient_index[name] = (np.zeros((1, 3), dtype=np.int64), 1)
 
         return {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Results': self.report()}
+
+
+class Diary(Base_Revaluation):
+    """The diary - every payment, fixing and expiry the book's own compile announces, as JSON rows.
+
+    THE COMPILE'S SCHEDULE RE-EMITTED. The deals are constructed and their schedules bound exactly
+    as a valuation binds them and then READ rather than priced, reached by `utils.walk_schedules` -
+    the one walk the binding itself takes - so the diary and the pricer cannot disagree about a
+    payment: they are the same schedule. Nothing here learns about users, workflow or storage: a
+    row names its deal's `Reference`, and `spine.diary` stamps its instrument and derived key.
+
+    A NULL AMOUNT IS NEVER WRITTEN AS 0.0. A floating leg's amount is not determined until its
+    resets fix, and a settlement file carrying 0.0 for one is an instruction to pay nothing - so the
+    row says `determined: false`, and `export_settlements` refuses it by name rather than exporting
+    a zero.
+    """
+
+    #: What a row announces. A `barrier` row is a monitoring date rather than a due thing: what the
+    #: level did is read off the fixing that satisfies it, and a close never waits on one.
+    PAYMENT, FIXING, EXPIRY, BARRIER = 'payment', 'fixing', 'expiry', 'barrier'
+
+    #: What a deal the compile could not read announces. Not a due thing - a reading of the book
+    #: that says the book could not be read - and a close is never legal while one stands.
+    UNREADABLE = 'unreadable'
+
+    #: Where a row stands. The compile answers these three; `settled` is the record's own answer
+    #: and is stamped by whoever holds the log.
+    DUE, OBSERVED, EXPIRED = 'due', 'observed', 'expired'
+
+    #: The legs that are not a schedule: a day the deal's declarations settle one payment on, and
+    #: its last day.
+    SETTLEMENT, EXPIRY_LEG = 'Settlement', 'Expiry'
+
+    #: A physically settled option DELIVERS, and delivering is an act somebody takes - so its expiry
+    #: vests a choice and the diary says so.
+    PHYSICAL = 'Physical'
+    ELECTION = 'election'
+
+    def execute(self, params):
+        """Every payment, fixing and expiry this job's deals carry, as rows naming each deal by its
+        `Reference`, unsorted: `Base_Revaluation.execute`'s compile half, READ rather than priced.
+
+        A deal the compile LEFT OUT is read off the loaded tree instead: expired, and it announces
+        what a live one of its type announces, or unreadable, and it announces why. The compiled
+        tree is matched to the loaded one by reference, so two deals sharing one - which the book's
+        own positional path is the answer to - are read as the live one.
+        """
+        params = declared_defaults(type(self), params)
+        base_date = pd.Timestamp(params['Run_Date'])
+        self.params = params
+        shared = self.update_factors(params, base_date)
+        self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
+        self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
+                                 shared.one, deal_level_mtm=True)
+        rows, live = [], set()
+        for deal_data in self.netting_sets.deals():
+            live.add(deal_data.Instrument.field.get('Reference'))
+            rows.extend(self._deal_rows(deal_data.Instrument, deal_data.Factor_dep, base_date))
+        for path, deal in self._leaves(self.config.deals['Deals']['Children']):
+            if deal.field.get('Reference') in live:
+                continue
+            rows.extend(self._dropped_rows(deal) if self._expired(base_date, deal)
+                        else [self._unreadable_row(base_date, path, deal)])
+        return rows
+
+    @classmethod
+    def _leaves(cls, children, path=()):
+        """Every LEAF deal of a compiled config's tree, as `(deal path, deal)`. A container is its
+        structure and carries no schedule of its own."""
+        for position, node in enumerate(children):
+            if node.get('Ignore') == 'True' or not isinstance(node.get('Instrument'), Deal):
+                continue
+            if node.get('Children'):
+                yield from cls._leaves(node['Children'], path + (position,))
+            else:
+                yield '/'.join(map(str, path + (position,))), node['Instrument']
+
+    def _expired(self, base_date, deal):
+        """Whether the compile left this deal out because it has EXPIRED - the engine's own expiry
+        answer, and the only one used."""
+        return DealStructure.calc_time_dependency(base_date, deal, self.time_grid) is None
+
+    @classmethod
+    def _dropped_rows(cls, deal):
+        """What a deal the compile dropped as EXPIRED still announces: its expiry, and the fixing
+        and the last settlement its type declares.
+
+        An option whose expiry is already behind the base date is exactly the deal a catch-up rule
+        exists for - one that fell due and nobody cleared - and the declared rows are field reads
+        that need no schedule, so the expired branch says what the live one last said.
+        """
+        fields = deal.field
+        terms = OBSERVES.get(fields.get('Object'))
+        reference = fields.get('Reference')
+        rows = [cls._expiry_row(deal, cls.EXPIRED)]
+        rows.extend(cls._expiry_fixing(fields, terms, index_named(fields, terms), reference, rows))
+        settled = cls._settled_rows(fields, type(deal), reference)
+        last = max((row['due_date'] for row in settled), default=None)
+        rows.extend(row for row in settled if row['due_date'] == last)
+        return rows
+
+    def _unreadable_row(self, base_date, path, deal):
+        """The one row a deal the compile COULD NOT READ leaves: where it sits and what the engine
+        said.
+
+        A deal skipped for a price factor the market data has no block for has no schedule, no
+        expiry and, without this, no trace at all - and a close check answering `legal` on a book
+        it could not read is a clean bill nobody earned. The dependency build is asked once more,
+        for this deal alone, so the row carries the engine's own sentence rather than a paraphrase
+        of it.
+        """
+        try:
+            deal.calc_dependencies(base_date, self.static_factors, self.stoch_factors,
+                                   self.all_factors, self.all_tenors, self.time_grid,
+                                   self.config.holidays)
+            said = 'the compile left this deal out and reading it again raised nothing'
+        except Exception as error:
+            said = '{}'.format(error)
+        return self._row(self.UNREADABLE, deal.field.get('Reference'), path, 0, None,
+                         state=self.UNREADABLE, reason='{} ({}): {}'.format(
+                             deal.field.get('Reference'), deal.field.get('Object'), said))
+
+    @classmethod
+    def _deal_rows(cls, deal, compiled, base_date):
+        """One deal's whole diary: its schedules, its monitoring table, the payments its
+        declarations settle, and its expiry."""
+        fields = deal.field
+        terms = OBSERVES.get(fields.get('Object'))
+        reference = fields.get('Reference')
+        index = index_named(fields, terms)
+        settlement = deal.get_settlement_currencies()
+        rows = []
+        for leg, schedule in walk_schedules(compiled):
+            currency = cls._currency(fields, settlement)
+            if isinstance(schedule, TensorCashFlows):
+                rows.extend(cls._payment_rows(schedule, cls._compiled_at(compiled, leg), leg,
+                                              base_date, currency, reference))
+                if schedule.Resets is not None:
+                    rows.extend(cls._fixing_rows(schedule.Resets, leg + '.Resets', base_date,
+                                                 index, reference))
+            elif isinstance(schedule, TensorResets):
+                rows.extend(cls._fixing_rows(schedule, leg, base_date, index, reference))
+        rows.extend(cls._barrier_rows(fields, terms, index, reference))
+        rows.extend(cls._expiry_fixing(fields, terms, index, reference, rows))
+        rows.extend(cls._settled_rows(fields, type(deal), reference, since=base_date))
+        rows.append(cls._expiry_row(deal, cls.DUE))
+        return rows
+
+    @classmethod
+    def _payment_rows(cls, schedule, compiled, leg, base_date, currency, reference):
+        """A leg's PAYMENTS - one per pay day, not one per schedule row.
+
+        The amount is `pricing.fixed_payments`', the line the pricer discounts: the rate coupon and
+        the fixed amount of every row sharing that day, summed, compounded where the leg's terms
+        compound. A schedule carrying RESETS is not determined and says so - its amount is a
+        floating pricer's and the diary does not spell a second one.
+        """
+        determined = schedule.Resets is None
+        rows = schedule.schedule
+        days, index, counts = np.unique(rows[:, CASHFLOW_INDEX_Pay_Day], return_index=True,
+                                        return_counts=True)
+        amounts = fixed_payments(
+            rows[:, CASHFLOW_INDEX_FixedRate] * rows[:, CASHFLOW_INDEX_Year_Frac],
+            rows[:, CASHFLOW_INDEX_Nominal], rows[:, CASHFLOW_INDEX_FixedAmt], index, counts,
+            bool(compiled.get('Compounding', False)))
+        return [cls._row(cls.PAYMENT, reference, leg, position,
+                         base_date + pd.Timedelta(days=int(day)), currency=currency,
+                         notional=float(rows[index[position], CASHFLOW_INDEX_Nominal]),
+                         amount=float(amounts[position]) if determined else None,
+                         determined=determined)
+                for position, day in enumerate(days)]
+
+    @staticmethod
+    def _compiled_at(compiled, leg):
+        """The compiled block a leg's schedule sits in, which is where its `Compounding` flag is."""
+        for step in leg.split('.')[:-1]:
+            compiled = compiled[step] if isinstance(compiled, dict) else compiled[int(step)]
+        return compiled if isinstance(compiled, dict) else {}
+
+    @classmethod
+    def _fixing_rows(cls, resets, leg, base_date, index, reference):
+        """A reset schedule's observations, each one already fixed where its value is on the row."""
+        rows = []
+        for position, row in enumerate(resets.schedule):
+            observed = float(row[RESET_INDEX_Value])
+            due = base_date + pd.Timedelta(days=int(row[RESET_INDEX_Reset_Day]))
+            rows.append(cls._row(cls.FIXING, reference, leg, position, due, index=index,
+                                 observed=observed or None,
+                                 state=cls.OBSERVED if observed else cls.DUE))
+        return rows
+
+    @classmethod
+    def _barrier_rows(cls, fields, terms, index, reference):
+        """The deal's own monitoring table: a date and the close it fixed at, through the one
+        reader that already tolerates both shapes of the row."""
+        if terms is None or terms.table is None:
+            return []
+        return [cls._row(cls.BARRIER, reference, terms.table, position, date, index=index,
+                         observed=observed, state=cls.OBSERVED if observed is not None else cls.DUE)
+                for position, (date, observed)
+                in enumerate(barrier_monitoring_rows(fields.get(terms.table) or []))]
+
+    @classmethod
+    def _settled_rows(cls, fields, deal_type, reference, since=None):
+        """The payments a deal's own declarations settle (`schema.declared_settlements`): one per
+        `Cash` on every date a field or a table's column marks from `since` on - one behind the base
+        date paid, as a schedule's paid row is dropped - in the currency it names, a blank one the
+        deal's own `Currency`, and at the amount its terms state.
+
+        `get_settlement_currencies()` is the reval-date accumulator - a barrier registers its
+        monitoring days in it - so it is not a payment ladder and is never read as one. AN OPTION'S
+        PAYOFF IS NOT IN A FIELD (`Units` times an intrinsic nobody has fixed), so its row is due
+        with `amount: null`: the money still moves, and a close waits for the transition that moved
+        it. A day settling one payment is the `Settlement` leg; one settling several names each by
+        its amount.
+        """
+        declared, rows = declared_settlements(deal_type), []
+        for key, column, cash, position, day in settlement_days(fields, declared):
+            legs = sum(other[:2] == (key, column) for other in declared)
+            if day is None or since is not None and pd.Timestamp(day) < since:
+                continue
+            stated = fields.get(cash.amount) if cash.amount else None
+            amount = None if stated is None else cash.sign * float(stated)
+            rows.append(cls._row(cls.PAYMENT, reference, cls.SETTLEMENT if legs == 1
+                                 else cash.amount or cash.currency, position, day,
+                                 currency=fields.get(cash.currency) or fields.get('Currency'),
+                                 amount=amount, determined=amount is not None))
+        return rows
+
+    @classmethod
+    def _expiry_fixing(cls, fields, terms, index, reference, rows):
+        """The observation a deal's EXPIRY needs, where the compile builds no reset schedule for it.
+
+        A European option's payoff is its underlying's print on the expiry day, and nothing in the
+        compiled tree announces it - so a close after expiry would wait for nothing at all. A deal
+        whose own schedules already announce a fixing on that day announces it once.
+        """
+        day = fields.get(terms.expires) if terms is not None and terms.expires else None
+        if day is None or index is None:
+            return []
+        date = pd.Timestamp(day).date().isoformat()
+        if any(row['kind'] == cls.FIXING and row['due_date'] == date for row in rows):
+            return []
+        return [cls._row(cls.FIXING, reference, cls.EXPIRY_LEG, 0, day, index=index)]
+
+    @classmethod
+    def _expiry_row(cls, deal, state):
+        """One row per deal at the last day it can pay, carrying what its expiry leaves to an actor:
+        `election` where the terms vest a choice, and null where a fixing determines the payoff."""
+        fields = deal.field
+        terms = OBSERVES.get(fields.get('Object'))
+        dates = deal.get_reval_dates()
+        elects = terms is not None and terms.elects and fields.get(terms.elects) == cls.PHYSICAL
+        return cls._row(cls.EXPIRY, fields.get('Reference'), cls.EXPIRY_LEG, 0,
+                        max(dates) if dates else None, needs=cls.ELECTION if elects else None,
+                        state=state)
+
+    @classmethod
+    def _row(cls, kind, reference, leg, position, due, **named):
+        """One diary row: every declared field present, its deal named by its `reference`."""
+        date = None if due is None else pd.Timestamp(due).date().isoformat()
+        row = {'reference': reference, 'leg': leg, 'schedule_index': position, 'kind': kind,
+               'currency': None, 'amount': None, 'determined': False, 'notional': None,
+               'index': None, 'source': None, 'observed': None, 'needs': None, 'reason': None,
+               'state': cls.DUE, 'due_date': date}
+        row.update(named)
+        return row
+
+    @staticmethod
+    def _currency(fields, settlement):
+        """The currency a deal settles in: its OWN field, else the one currency its reval dates
+        hold.
+
+        Never a guess at which currency's date set carries the day: a two-currency deal's legs share
+        a maturity, so that guess labels one leg with the other's currency and a settlement file
+        nets the two. A deal whose legs really do settle apart is a container whose children are
+        the legs, and each child names its own.
+        """
+        currency = fields.get('Currency')
+        if isinstance(currency, str) and currency:
+            return currency
+        return next(iter(settlement)) if len(settlement) == 1 else None
 
 
 class HedgeMonteCarlo(Credit_Monte_Carlo):
