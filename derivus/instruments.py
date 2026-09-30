@@ -681,6 +681,10 @@ class Deal(object):
     #: against is known. The one seam by which base-vs-foreign reaches a deal's compile surface.
     base_currency = None
 
+    #: `System Parameters.Exclude_Deals_With_Missing_Market_Data` read `Yes`, as the compile guard
+    #: stamps it: a deal that cannot be priced is skipped, where `No` refuses the run naming it.
+    exclude_unpriceable = True
+
     def __init__(self, params, valuation_options):
         # a declared model this type cannot honour is a malformed program, not a market-data miss
         spot_model = valuation_options.get('SpotModel', 'None')
@@ -756,10 +760,11 @@ class Deal(object):
     def calculate(self, shared, time_grid, deal_data):
         """Generate the theo price and interpolate it onto the report grid.
 
-        A pricing failure is logged and swallowed into a scalar-0 mark. Running out of memory is
-        not a pricing failure: swallowing it drops the deal from `DealStructure.tensor_marks`,
-        which an inner-MC fork reads as an expired contract, so `utils.is_fatal_pricing_error`
-        re-raises that class of error."""
+        A pricing failure is logged and swallowed into a scalar-0 mark, or refuses the run naming
+        the deal where the document says `Exclude_Deals_With_Missing_Market_Data: No`. Running out
+        of memory is not a pricing failure: swallowing it drops the deal from
+        `DealStructure.tensor_marks`, which an inner-MC fork reads as an expired contract, so
+        `utils.is_fatal_pricing_error` re-raises that class of error."""
         try:
             mtm = self.generate(shared, time_grid, deal_data)
             return pricing.interpolate(mtm, shared, time_grid, deal_data)
@@ -768,6 +773,11 @@ class Deal(object):
                 deal_data.Instrument.field.get("Reference"), e.args))
             if utils.is_fatal_pricing_error(e):
                 raise
+            if not self.exclude_unpriceable:
+                raise utils.UnpriceableSchedule(
+                    'Deal {} could not be priced - {}. The run refuses it rather than mark it at '
+                    'nothing: System Parameters.Exclude_Deals_With_Missing_Market_Data is No'.format(
+                        deal_data.Instrument.field.get('Reference'), e.args)) from e
             return 0.0 * shared.one
 
     def build_features(self, shared, time_grid, deal_data):
@@ -2875,9 +2885,9 @@ class YieldInflationCashflowListDeal(Deal):
     def validate(self):
         """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at.
 
-        TensorCashFlows.index stores the value when there is one and a negative day offset when
-        there is not, measured from base_date if no reference date was given - so supplying
-        neither prices against the wrong index level rather than failing.
+        TensorCashFlows.index flags a reference stating no value and reads it off its date, the
+        base date where none was given - so supplying neither prices against the base date's
+        reference rather than failing.
         """
         for i, cashflow in enumerate((self.field.get('Cashflows') or {}).get('Items') or []):
             for ref in ('Base', 'Final'):
@@ -7352,8 +7362,6 @@ class EnergySingleOption(Deal):
             base_date, time_grid, 1, {'Items': [field['cashflow']]},
             reference_factor, forward_sample, fx_sample, calendars)
         field_index['Cashflow'] = cashflow
-        # measured in days from the reference factor's own start date
-        field_index['Basedate'] = (base_date - reference_factor.start_date).days
 
         field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors,

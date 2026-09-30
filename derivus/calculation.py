@@ -86,7 +86,7 @@ class DealStructure(object):
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
                               all_factors, all_tenors, time_grid, calendars, stats, unit,
-                              valuation_options=None):
+                              valuation_options=None, refused=None):
         """Compile `deal` into this structure. A structure's deals are netted off before
         the structure's own rules are applied.
 
@@ -95,9 +95,11 @@ class DealStructure(object):
         compile refusal like any other.
 
         A compile failure is logged and the deal is SKIPPED, which lets a portfolio of thousands
-        survive one deal it cannot bind. `utils.is_fatal_pricing_error` is the exception, and the
-        same predicate `Deal.calculate` reads one layer down: a framework fault, or a schedule
-        refused by name, must not become a deal that marks at nothing on a job reporting success.
+        survive one deal it cannot bind - or, where `refused` is a list, the engine's sentence joins
+        it for the run to refuse, and the deal compiled is stamped to refuse in its pricer too.
+        `utils.is_fatal_pricing_error` is the exception, and the same predicate `Deal.calculate`
+        reads one layer down: a framework fault, or a schedule refused by name, must not become a
+        deal that marks at nothing on a job reporting success.
         """
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
@@ -106,8 +108,9 @@ class DealStructure(object):
                 deal.field['Object'], deal.field.get('Reference'), e.args))
             if utils.is_fatal_pricing_error(e):
                 raise
-            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            self.skip(deal, e, stats, refused)
             return
+        deal.exclude_unpriceable = refused is None
 
         deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
         if deal_time_dep is not None:
@@ -125,7 +128,17 @@ class DealStructure(object):
                     deal.field['Object'], deal.field.get('Reference'), e.args))
                 if utils.is_fatal_pricing_error(e):
                     raise
-                stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+                self.skip(deal, e, stats, refused)
+
+    @staticmethod
+    def skip(deal, error, stats, refused):
+        """A deal the compile could not read: counted under `Deals Skipped`, or its sentence kept in
+        `refused` where the run refuses such a deal."""
+        if refused is None:
+            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+        else:
+            refused.append('{0} {1} {2}'.format(deal.field['Object'], deal.field.get('Reference'),
+                                                error.args))
 
     def finalize_struct(self, base_date, time_grid):
         all_report_dates = [set(
@@ -303,6 +316,11 @@ class ScenarioTimeGrid(object):
 
 class Calculation(object):
 
+    #: Whether this calculation VALUES its book - the act a document's
+    #: `Exclude_Deals_With_Missing_Market_Data: No` refuses an unreadable or unpriceable deal for; a
+    #: compile that only reads the book skips one whatever the document says.
+    valuation = True
+
     def __init__(self, config, prec=torch.float32, device=torch.device('cpu')):
         """Construct a new calculation - all calculations set up their own tensors."""
 
@@ -438,13 +456,16 @@ class Calculation(object):
 
         return df
 
-    def set_deal_structures(self, deals, output, unit, deal_level_mtm=False):
+    def set_deal_structures(self, deals, output, unit, deal_level_mtm=False, refused=None):
         """Compile the deal tree. `unit` is the calculation's dtype/device anchor: a deal's
         schedules are BOUND to it as they compile, so the tensor half's birthday is this walk.
 
         The BASE CURRENCY is stamped here and only here: a deal is constructed before the book it
         prices against is known, and base-vs-foreign decides which leg of an FX pair carries a spot
-        model's law (`utils.spot_model_currency`).
+        model's law (`utils.spot_model_currency`). The document's
+        `Exclude_Deals_With_Missing_Market_Data` is read here too, by a `valuation` alone: `Yes`,
+        the default, skips a deal that cannot be read or priced; `No` hands the compile guard
+        `refused` and refuses the run once the whole tree is read, naming every deal it holds.
 
         The job's whole `Valuation Configuration` is handed down for the same reason: a deal whose
         observations leave it no decisions compiles as ANOTHER type (`Deal.resolve_history`), and
@@ -455,9 +476,12 @@ class Calculation(object):
         A node that never became a `Deal` REFUSES here rather than failing to take the stamp: one
         misspelt `Object` in an imported book would otherwise make the whole book unpriceable
         without naming which deal, so every such node is named at once."""
-        base_currency = utils.check_rate_name(
-            self.config.params['System Parameters']['Base_Currency'])
+        system = self.config.params['System Parameters']
+        base_currency = utils.check_rate_name(system['Base_Currency'])
+        exclude = not self.valuation or system.get(
+            'Exclude_Deals_With_Missing_Market_Data', 'Yes') != 'No'
         valuation_options = self.config.params.get('Valuation Configuration', {})
+        top, refused = refused is None, [] if refused is None and not exclude else refused
         for node in deals:
             instrument = node['Instrument']
             if node.get('Ignore') == 'True':
@@ -470,7 +494,7 @@ class Calculation(object):
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
-                self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm)
+                self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm, refused)
                 output.add_structure_to_structure(
                     struct, self.base_date, self.static_factors, self.stoch_factors, self.all_factors,
                     self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
@@ -479,7 +503,12 @@ class Calculation(object):
             output.add_deal_to_structure(
                 self.base_date, instrument, self.static_factors, self.stoch_factors, self.all_factors,
                 self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
-                valuation_options)
+                valuation_options, refused)
+        if top and refused:
+            raise utils.UnpriceableSchedule(
+                'System Parameters.Exclude_Deals_With_Missing_Market_Data is No, so the run refuses '
+                'every deal it could not read rather than skip it: {}. Supply what each names, or '
+                'set the switch to Yes to value the book without them'.format('; '.join(refused)))
 
 
 #: The quasi-random stream's fixed identity: the scramble seed of every Sobol engine and the offset
@@ -2318,6 +2347,10 @@ class Diary(Base_Revaluation):
     #: What a deal the compile could not read announces. Not a due thing - a reading of the book
     #: that says the book could not be read - and a close is never legal while one stands.
     UNREADABLE = 'unreadable'
+
+    #: The book READ rather than valued: that row is how a reading refuses, so the compile skips an
+    #: unreadable deal whatever `Exclude_Deals_With_Missing_Market_Data` says.
+    valuation = False
 
     #: Where a row stands. The compile answers these three; `settled` is the record's own answer
     #: and is stamped by whoever holds the log.

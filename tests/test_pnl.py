@@ -609,6 +609,39 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
         100_000.0 * 18.0), 'a day between the last marks and the one being lived: its own close'
 
 
+@pytest.mark.parametrize('switch', [None, 'Yes', 'No'])
+def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk, switch):
+    """A READING NEVER 500s. A digital marked with its book whose surface then leaves the market:
+    the live window's own valuation cannot price it. With `Exclude_Deals_With_Missing_Market_Data`
+    left out or `Yes` the P&L answers with the digital named under `unknown`, no mark at the end;
+    `No` refuses that valuation, and the read answers 422 in the engine's own sentence, naming it.
+
+    Killing mutation: the refusal left unmapped, which is a 500 on the live P&L.
+    """
+    body = json.loads(desk.read_text())
+    if switch is not None:
+        body['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+            'Exclude_Deals_With_Missing_Market_Data'] = switch
+        desk.write_text(json.dumps(body, indent=2), newline='\n')
+    designated(recorded)
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    booked(BINARY, 1.0, 'EXEC-Q', BOOK + '/FX', 5_000.0)
+    closed_and_marked()
+    body = json.loads(desk.read_text())
+    body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop('VolatilityGrid.EQ')
+    desk.write_text(json.dumps(body, indent=2), newline='\n')
+
+    answer = CLIENT.get('/book/pnl', params={'start': START.strftime('%Y-%m-%d')})
+    digital = instrument_of('EQ-BIN')
+    if switch == 'No':
+        assert answer.status_code == 422, answer.text
+        assert 'is No' in answer.json()['detail'] and digital in answer.json()['detail'], answer.text
+    else:
+        assert answer.status_code == 200, answer.text
+        assert answer.json()['unknown'] == [
+            {'instrument': digital, 'what': 'no mark at the end - the run could not price it'}]
+
+
 def structure(reference, legs):
     return {'Object': 'StructuredDeal', 'Reference': reference, 'Currency': 'ZAR',
             'Children': [{'Instrument': {'.Deal': leg}} for leg in legs]}

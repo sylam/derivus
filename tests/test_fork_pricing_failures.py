@@ -22,6 +22,7 @@ one whose Hermite coefficients cover the whole block.
 """
 import copy
 import json as jsonlib
+import math
 import os
 import sys
 
@@ -32,8 +33,10 @@ import pytest
 import torch
 
 import derivus as rf
+import test_declared_defaults as book
 from derivus import instruments, utils
 from derivus.calculation import HedgeMonteCarlo
+from derivus.config import CustomJsonEncoder
 
 # the one-cashflow job every service gate is built on, reused rather than re-authored: the
 # degenerate leg below needs a real USD/ZAR market and a real `BaseValuation`, and that document
@@ -141,6 +144,15 @@ def _cfg(t_min):
     return cfg
 
 
+def _skipping(cfg):
+    """`cfg` stating `Exclude_Deals_With_Missing_Market_Data: Yes` over its market file's `No`, so
+    a deal that cannot be read or priced reaches the hedge's own checks."""
+    cfg = copy.deepcopy(cfg)
+    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+        'Exclude_Deals_With_Missing_Market_Data'] = 'Yes'
+    return cfg
+
+
 def _run(cfg, name, forks=None):
     """One JSON-only run. `forks` collects every inner-MC fork's outputs when a caller wants to
     inspect what the solver was handed."""
@@ -166,7 +178,9 @@ def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
     contract, but on a hedge book a skipped tradable shrinks the solver's menu and a skipped
     liability halves the target, so the solve reports a confident answer to a different problem.
     Measured before the guard: an APS leg whose basis law could not state its projection dropped n*
-    from -44.8 to -22.1 with nothing but an ERROR log. Both roles raise, naming the leg."""
+    from -44.8 to -22.1 with nothing but an ERROR log. Both roles raise, naming the leg - under a
+    document skipping such a deal, by the hedge's own check, and under the fixture's own
+    `Exclude_Deals_With_Missing_Market_Data: No`, by the document's refusal first."""
     for role, block, patch in (
             ('liability', 'Liabilities', {'Currency': 'XXX'}),
             ('tradable', 'Tradable_Instruments', {'Sampling_Type': 'NOPE', 'Currency': 'XXX'})):
@@ -177,8 +191,10 @@ def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
                             ['FloatingEnergyDeal']['PLAT_JUL29'])
         leg.update(patch)
         src['BROKEN_LEG'] = leg
+        with pytest.raises(utils.UnpriceableSchedule, match='is No.*BROKEN_LEG'):
+            _run(copy.deepcopy(cfg), f'broken_{role}_refused')
         with pytest.raises(Exception, match=f'{role} legs failed to compile.*BROKEN_LEG'):
-            _run(copy.deepcopy(cfg), f'broken_{role}')
+            _run(_skipping(cfg), f'broken_{role}')
 
 
 def test_an_averaging_tradable_is_priced_not_retired():
@@ -273,9 +289,9 @@ def test_a_failed_tradable_inside_a_fork_stops_the_run():
 
 def test_a_skipped_tradable_leaves_a_loud_hole_in_the_fork():
     """The tradable half of the fork's degenerate-pricing guard. A non-distinguished failure still
-    skips (correctly), but inside a fork the missing mark is indistinguishable from an expired
-    contract — so the fork checks that every tradable still live in its dependency list produced
-    one, mirroring the liability's shape check."""
+    skips (correctly) on a document that skips such a deal, but inside a fork the missing mark is
+    indistinguishable from an expired contract — so the fork checks that every tradable still live
+    in its dependency list produced one, mirroring the liability's shape check."""
     original = instruments.CommodityFutureDeal.generate
     original_fork = HedgeMonteCarlo._run_inner_mc_at_t
     in_fork = {'v': False}
@@ -296,7 +312,7 @@ def test_a_skipped_tradable_leaves_a_loud_hole_in_the_fork():
     HedgeMonteCarlo._run_inner_mc_at_t = fork
     try:
         with pytest.raises(RuntimeError, match="tradable pricing failed for \\['PL_OCT_2026'\\]"):
-            _run(_cfg(t_min=115), 'skipped_tradable')
+            _run(_skipping(_cfg(t_min=115)), 'skipped_tradable')
     finally:
         instruments.CommodityFutureDeal.generate = original
         HedgeMonteCarlo._run_inner_mc_at_t = original_fork
@@ -472,3 +488,69 @@ def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
                   DealStructure.resolve_structure):
         body = inspect.getsource(guard)
         assert 'is_fatal_pricing_error' in body and 'raise' in body, guard.__name__
+
+
+# --------------------------------------------------------------------------------------------
+# The document's own switch: a deal that cannot be read or priced skips, or refuses the run
+# --------------------------------------------------------------------------------------------
+GOOD = book.fx_leg('FXOptionDeal', 'FXO', Expiry_Date=book.WORLD_EXPIRY)
+NO_STRIKE = {key: value for key, value in book.fx_leg(
+    'FXOptionDeal', 'FXO_NO_STRIKE', Expiry_Date=book.WORLD_EXPIRY).items() if key != 'Strike_Price'}
+NO_SURFACE = book.fx_leg('FXOptionDeal', 'FXO_NO_SURFACE', Expiry_Date=book.WORLD_EXPIRY,
+                         FX_Volatility='EUR.JPY')
+
+
+def _switched(switch, deals):
+    """The declared-defaults book over `deals` with `Exclude_Deals_With_Missing_Market_Data` stated
+    `switch`, or left out at None: its Stats and `{reference: mark}`."""
+    job = book.book(deals)
+    if switch is not None:
+        job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+            'Exclude_Deals_With_Missing_Market_Data'] = switch
+    context = rf.Context()
+    context.load_json((jsonlib.dumps(job, cls=CustomJsonEncoder), 'switched'))
+    _, result = context.run_job()
+    table = result['Results']['mtm']
+    return result['Stats'], dict(zip(table['Reference'], table['Value']))
+
+
+def test_a_document_saying_no_refuses_every_deal_its_compile_could_not_read():
+    """An FX option beside one missing its strike and one on a surface the market lacks. Under
+    `Yes`, and with the switch left out, the two are skipped and counted and the option marks as it
+    marks alone; under `No` the run refuses naming both in the engine's own sentence, the one held
+    inside a structure included, the whole tree read before the refusal.
+
+    Killing mutations: the switch read by nothing, so the `No` document completes with two deals
+    skipped; the refusal raised at the first such deal, naming one; the refusals not handed down a
+    structure, so the nested deal is refused alone.
+    """
+    alone = _switched(None, [GOOD])[1]['FXO']
+    for switch in (None, 'Yes'):
+        stats, marks = _switched(switch, [GOOD, NO_STRIKE, NO_SURFACE])
+        assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (1, 2), stats
+        assert marks['FXO'] == alone != 0.0
+    held = {'Object': 'StructuredDeal', 'Reference': 'HELD', 'Currency': 'USD',
+            'Children': [NO_SURFACE]}
+    for deals in ([GOOD, NO_STRIKE, NO_SURFACE], [GOOD, NO_STRIKE, held]):
+        with pytest.raises(utils.UnpriceableSchedule) as refused:
+            _switched('No', deals)
+        assert "FXOptionDeal FXO_NO_STRIKE ('Strike_Price',)" in str(refused.value)
+        assert "FXOptionDeal FXO_NO_SURFACE ('Cannot find FXVol.EUR.JPY',)" in str(refused.value)
+
+
+def test_a_document_saying_no_refuses_a_deal_its_pricer_could_not_value():
+    """A swaption stated by its terms alone compiles and refuses in its pricer, its legs being what
+    value it. Beside a priced option it is skipped under `Yes`, its row carrying no value, and under
+    `No` the run refuses naming it in the engine's own sentence.
+
+    Killing mutation: the pricing guard reading no switch, which marks the swaption at nothing on a
+    `No` run that completes.
+    """
+    terms = {key: value for key, value in next(
+        deal for deal in book.BOOK if deal['Reference'] == 'SWPT').items() if key != 'Children'}
+    stats, marks = _switched('Yes', [GOOD, terms])
+    assert stats.get('Deals loaded') == 2 and 'Deals Skipped' not in stats, stats
+    assert math.isnan(marks['SWPT']) and marks['FXO'] != 0.0, marks
+    with pytest.raises(utils.UnpriceableSchedule, match=(
+            r"Deal SWPT could not be priced - \('generate in SwaptionDeal - Not implemented yet',\)")):
+        _switched('No', [GOOD, terms])

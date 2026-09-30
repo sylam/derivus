@@ -244,19 +244,6 @@ is recorded so a reader knows which readings rest on it.
   the opposite failure to the one the convention/placeholder split closes: UNMEASURED, because
   there is no reading to compare against. Each is either wired to the branch it names or deleted
   with the branch.
-- **An energy option reads each sample's volatility over about 127 years** (2026-09-26).
-  `pv_energy_option` measures a sample's time as its reset day less the valuation time, and
-  `TensorCashFlows.energy` stores that day as an Excel serial date, so every sample's variance
-  accumulates over the serial number rather than to its fixing; the base date
-  `EnergySingleOption.calc_dependencies` computes for the conversion is never read. A four-month
-  option struck at 82 on an 81.5 forward at 30% marks 72.80 per unit where Black gives about 5.5. No
-  document prices one.
-- **An inflation list reads a reference DATE as a reference LEVEL** (2026-09-26). `TensorCashFlows`
-  stores a cashflow's reference date as minus its days from the base in the slot a known index level
-  uses, and `get_index_val` reads every non-negative entry as a level: a base reference date 90 days
-  back prices exactly as a stated level of 90.0, one on the base date as a level of 0, marking
-  infinity, and a list mixing stated base values with future base dates reads the dates as levels,
-  -50,220.81 against +39,974.69 on one linker. A list stating its base print prices right.
 - **A deposit's amortisation comes back at maturity** (2026-09-26). An amortising `DepositDeal`
   accrues on the reduced balance and repays its full `Amount` at maturity, so no step's principal is
   paid on its own date. UNMEASURED against an oracle; the mark stays linear in the position.
@@ -264,7 +251,22 @@ is recorded so a reader knows which readings rest on it.
   in-place error on the recurrence in `expected_rate_gaussian_copula`. Read from the code alone, a
   simulated row also scales each name's hazard by the index's cumulative hazard at the FIRST row's
   horizons, which on a static curve is (s - t)/s of it: UNMEASURED, a credit Monte Carlo of a basket
-  being what would measure it.
+  being what would measure it. Under one whose names' hazards are simulated it is skipped on a
+  shape (`size of tensor a (25) must match ... b (3)`, in `expected_rate_gaussian_copula`) and the
+  run reports success; with the curves static it prices, -303,933 either way (2026-09-30).
+- **A structure or a swaption outside a netting set breaks a credit Monte Carlo's dates**
+  (2026-09-30). The root takes its report dates from its sub-structures alone
+  (`DealStructure.finalize_struct`), so a `StructuredDeal` or a `SwaptionDeal` at the top of the
+  tree raises `Shape of passed values is (20, 256), indices imply (15, 256)`; the same deals under a
+  netting set price.
+- **A Hull-White on the EUR curve beside a lognormal EURUSD reads NaN on every EURUSD deal**
+  (2026-09-30); with EURUSD static instead, `FXOneTouchOption` trips a CUDA device-side gather
+  assert that poisons the process. Both measured on the fx trial family; the cause is not.
+- **`index_reference` clamps an unpublished month to the last print** (2026-09-30), which a credit
+  Monte Carlo then reads as that month's level, and `calc_index` assumes references arrive in time
+  order. Read from the code, not measured.
+- **The single Asian clamps a seasoned deep-in-the-money call's strike** (2026-09-30), valuing it
+  as the forward less 1e-5. Read from the code, not measured.
 - **An autocall V2's floating margin is declared a number and read as a basis** (2026-09-26).
   `Floating_Margin` is declared a `Float` and `QEDI_CustomAutoCallSwap_V2.calc_dependencies` reads
   `.amount` off it, so a margin stated as the number the store publishes skips the deal; only the
@@ -282,22 +284,15 @@ is recorded so a reader knows which readings rest on it.
   design names, a fill of one under every legacy node, is what makes the close net to nothing -
   and until it runs, a node no fill booked is outside the desk's P&L, which reads its positions
   off the record.
-- **An energy leg paying several periods on one day beside others prices NaN** (2026-09-26).
-  `pv_energy_cashflows` prices distinct pay days and a leg paying everything on one day, but a leg
-  some of whose periods share a pay day and some not marks NaN: the payments want summing onto their
-  unique pay days before they are discounted.
-- **The FX double Asian does not price under a credit Monte Carlo** (2026-09-26). Its pricer returns
-  one value where the exposure grid asks for one per row, so the run refuses on the shape; a base
-  valuation prices it, inside an independent Monte Carlo's standard error.
-- **A deal the compile could not read still lets the job report success** (2026-09-22). A
-  placeholder a document does not say — the key absent, or carrying a `null` — is refused by name
-  at booking, so it cannot reach a pricer through
-  `POST /book/deals`; a document loaded from disk, an emitter's benchmark or a legacy file can
-  still carry one, and `DealStructure.add_deal_to_structure` logs `<type> <reference> <key> -
-  Skipped`, counts it under `Deals Skipped` and the run finishes green. `Stats` carries the count
-  and the diary files the deal as unreadable, but nothing makes the run itself fail:
-  `System Parameters.Exclude_Deals_With_Missing_Market_Data` is declared `Yes`/`No` and documented
-  as raising on `No`, and no module reads it.
+- **A deal that fails in its pricer is counted nowhere** (2026-09-30). Under
+  `System Parameters.Exclude_Deals_With_Missing_Market_Data: No` a valuation refuses by name a deal
+  it cannot compile or price, and a read that values the book answers that sentence as a 422;
+  under `Yes`, the default, the compile guard skips and counts the deal under `Deals Skipped` while
+  `Deal.calculate` swallows a pricing failure into a zero mark that no count carries, and three
+  guards read the switch not at all - `add_structure_to_structure`, `resolve_structure`'s
+  `post_process` guard and the netting set dropped for holding a NaN. Counting the pricer's skip is
+  a list on the shared state folded into `Stats` by the two closed `execute` methods, about six
+  lines.
 - **A blank table has two wire spellings and they are not one value** (2026-09-22). A widget writes
   an empty Table as JSON `null`, which the loader reads as `None`; the same table written as its
   own container (`{".DateList": []}`) reads as an empty `DateList`, and a `utils` container defines

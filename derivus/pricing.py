@@ -5111,15 +5111,18 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
             past_sample_factor = [utils.calc_time_grid_spot_rate(
                 past_factor, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
                 for past_factor in past_factor_list]
-            past_samples = past_sample_factor[0] if len(
-                past_sample_factor) == 1 else past_sample_factor[0] / past_sample_factor[1]
+            # a static spot answers one row and one column however many samples and paths ask, so
+            # it is held flat across them
+            past_samples = (past_sample_factor[0] if len(
+                past_sample_factor) == 1 else past_sample_factor[0] / past_sample_factor[1]).expand(
+                sim_samples.shape[0], -1)
 
-        full_sample = torch.cat(
-            [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
+        full_sample = utils.concat_resets(
+            [torch.cat(known_resets, dim=0), past_samples], 0) if known_resets else past_samples
         dual_sample = samples.dual()
         dual_samples.append(dual_sample)
-        # the samples carry their weights already applied
-        all_samples.append(full_sample * dual_sample.tn[:, utils.RESET_INDEX_Weight].reshape(-1, 1))
+        # the samples carry their weights already applied, each fixing its own row's
+        all_samples.append(full_sample * dual_sample.tn[:full_sample.shape[0], utils.RESET_INDEX_Weight].reshape(-1, 1))
         # this sample's index relative to the merged resets above
         start_samples.append({x: y for x, y in zip(start_idx, sample_idx)})
 
@@ -5127,22 +5130,25 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
             utils.split_counts([discount, spot, forward, b], counts, shared)):
         t_block = discount_block.time_grid
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
+        # each leg's samples fixed by this block, keyed by the block's merged sample count
+        fixed = [leg_start[start_index[index]] for leg_start in start_samples]
+        # the realized averages so far
+        lambdas = [alpha * torch.sum(all_sample[:n], dim=0)
+                   for alpha, all_sample, n in zip(alphas, all_samples, fixed)]
+        K_bar = factor_dep['Alpha_0'] * factor_dep['Strike'] - lambdas[0] + lambdas[1]
+        live = [n < dual_sample.np.shape[0] for n, dual_sample in zip(fixed, dual_samples)]
 
-        # moment matching only applies before expiry
-        if tenor_block.any():
+        # moment matching only applies before expiry, and to a leg with samples still to fix
+        if tenor_block.any() and any(live):
             # at-the-money vols
             moneyness_block = (forward_block if use_forwards else spot_block) / spot_block
             moneyness = 1.0 / moneyness_block if invert_moneyness else moneyness_block
             vols = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, daycount_fn(tenor_block), shared)
 
-            mu = []
-            sigma = []
-            lambdas = []
-            sample_fts = []
-            sample_tss = []
-
-            for alpha, start_idx, dual_sample, all_sample in zip(alphas, start_samples, dual_samples, all_samples):
-                sample_index_t = start_idx[index]
+            mu, sigma, sample_fts, sample_tss = {}, {}, {}, {}
+            for leg, (dual_sample, sample_index_t) in enumerate(zip(dual_samples, fixed)):
+                if not live[leg]:
+                    continue
                 sample_ts = carry_block.new(
                     daycount_fn(dual_sample.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
                                 t_block[:, utils.TIME_GRID_MTM, np.newaxis]))
@@ -5151,8 +5157,6 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 sample_ft = weight_t * torch.exp(
                     torch.unsqueeze(carry_block, dim=1) * torch.unsqueeze(sample_ts, dim=2))
                 M1 = torch.sum(sample_ft, dim=1)
-                # the realized average so far
-                average = torch.sum(all_sample[:sample_index_t], dim=0)
 
                 product_t = sample_ft * torch.exp(
                     torch.unsqueeze(sample_ts, dim=2) * torch.unsqueeze(vols * vols, dim=1))
@@ -5162,30 +5166,34 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 # the clamp keeps the root defined, so the gradients are not NaN
                 MM = torch.log(M2) - 2.0 * torch.log(M1)
                 MM_ok = MM.clamp(min=1e-6)
-                vol_t = torch.sqrt(MM_ok)
+                mu[leg], sigma[leg] = M1, torch.sqrt(MM_ok)
+                sample_fts[leg], sample_tss[leg] = sample_ft, sample_ts
 
-                mu.append(M1)
-                sigma.append(vol_t)
-                sample_fts.append(sample_ft)
-                sample_tss.append(sample_ts)
-                lambdas.append(alpha * average)
+            if all(live):
+                min_ts = torch.minimum(sample_tss[0].unsqueeze(2), sample_tss[1].unsqueeze(1))  # [T, N1, N2]
+                sum_rho = torch.sum(
+                    sample_fts[0].unsqueeze(2) * sample_fts[1].unsqueeze(1) *
+                    torch.exp(min_ts.unsqueeze(3) * vols.pow(2).unsqueeze(1).unsqueeze(1)), dim=1)
 
-            min_ts = torch.minimum(sample_tss[0].unsqueeze(2), sample_tss[1].unsqueeze(1))  # [T, N1, N2]
-            sum_rho = torch.sum(
-                sample_fts[0].unsqueeze(2) * sample_fts[1].unsqueeze(1) *
-                torch.exp(min_ts.unsqueeze(3) * vols.pow(2).unsqueeze(1).unsqueeze(1)), dim=1)
+                M_rho = torch.sum(sum_rho, dim=1)
+                MM_rho = (torch.log(M_rho) - torch.log(mu[0]) - torch.log(mu[1])) / (sigma[0] * sigma[1])
 
-            M_rho = torch.sum(sum_rho, dim=1)
-            MM_rho = (torch.log(M_rho) - torch.log(mu[0]) - torch.log(mu[1])) / (sigma[0] * sigma[1])
-            K_bar = factor_dep['Alpha_0'] * factor_dep['Strike'] - lambdas[0] + lambdas[1]
-
-            theo_price = factor_dep['Buy_Sell'] * utils.Bjerksund_Stensland(
-                factor_dep['Option_Type'], -factor_dep['Option_Type'],
-                -factor_dep['Option_Type'] * K_bar, alphas[0] * spot_block * mu[0], alphas[1] * spot_block * mu[1],
-                K_bar, sigma[0], sigma[1], MM_rho, factor_dep['Option_Type'])
+                theo_price = factor_dep['Buy_Sell'] * utils.Bjerksund_Stensland(
+                    factor_dep['Option_Type'], -factor_dep['Option_Type'],
+                    -factor_dep['Option_Type'] * K_bar, alphas[0] * spot_block * mu[0], alphas[1] * spot_block * mu[1],
+                    K_bar, sigma[0], sigma[1], MM_rho, factor_dep['Option_Type'])
+            else:
+                # a fully fixed leg is its realised average, a constant in K_bar, so this is Black on
+                # the live leg: struck at K_bar on the first, at -K_bar with the option type turned on
+                # the second, and exercised for certain at a strike at or below zero
+                leg = live.index(True)
+                sign = 1.0 - 2.0 * leg
+                forward_leg, strike = alphas[leg] * spot_block * mu[leg], sign * K_bar
+                option = sign * factor_dep['Option_Type']
+                theo_price = torch.where(strike > 0.0, utils.black_european_option(
+                    forward_leg, strike, sigma[leg], 1.0, factor_dep['Buy_Sell'], option, shared),
+                    factor_dep['Buy_Sell'] * torch.relu(option * (forward_leg - strike)))
         else:
-            lambdas = [alpha * all_sample.sum(axis=0) for alpha, all_sample in zip(alphas, all_samples)]
-            K_bar = factor_dep['Alpha_0'] * factor_dep['Strike'] - lambdas[0] + lambdas[1]
             theo_price = factor_dep['Buy_Sell'] * smooth_relu(-factor_dep['Option_Type'] * K_bar)
 
         discount_rates = torch.squeeze(
@@ -5258,13 +5266,13 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
 
             forwardfx = utils.calc_fx_forward(
                 factor_dep['ForwardFX'], factor_dep['CashFX'],
-                sample_t.np[:, utils.RESET_INDEX_Start_Day], t_block, shared)
+                sample_t.np[:, utils.RESET_INDEX_Reset_Day], t_block, shared)
 
             sample_ft = weight_t * future_resets * forwardfx
 
-            # the tenor each sample's vol is read at
+            # the tenor each sample's vol is read at: from the row's own time to the sample's day
             sample_block = daycount_fn(
-                sample_t.np[:, utils.RESET_INDEX_Start_Day].reshape(1, -1)
+                sample_t.np[:, utils.RESET_INDEX_Reset_Day].reshape(1, -1)
                 - t_block[:, utils.TIME_GRID_MTM, np.newaxis])
 
             M1 = torch.sum(sample_ft, dim=1)
@@ -5774,7 +5782,8 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
         index_t = torch.unsqueeze(last_index_block, dim=1) / utils.calc_discount_rate(
             forecast_block, dates, shared)
 
-        # rows straddling the last publication mix published prints with projections
+        # rows straddling the last publication mix published prints with projections, a static
+        # index's one column broadcasting against the prints' batch
         if dates[dates < 0].any():
             future_indices = (dates >= 0).all(axis=1).argmin()
             future_index_t, past_index_t = torch.split(
@@ -5786,41 +5795,39 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
                 past_resets_t, future_resets_t = torch.split(
                     mixed_indices, (future_resets, mixed_dates.size - future_resets))
                 mixed_indices_t.append(
-                    torch.cat([sim_schedule[:future_resets], future_resets_t], dim=0))
+                    utils.concat_resets([sim_schedule[:future_resets], future_resets_t], 0))
 
-            values = weight * torch.cat([future_index_t, torch.stack(mixed_indices_t)], dim=0)
+            values = weight * utils.concat_resets([future_index_t, torch.stack(mixed_indices_t)], 0)
         else:
             values = weight * index_t
 
         if resets_per_cf > 1:
             return torch.sum(values.reshape(
-                last_pub_block.shape[0], -1, resets_per_cf, shared.simulation_batch), dim=2)
+                last_pub_block.shape[0], -1, resets_per_cf, values.shape[-1]), dim=2)
         else:
             return values
 
-    def get_index_val(cash_index_vals, schedule, sim_schedule, resets_per_cf, offset):
-        """A cashflow's index reference: its declared value if it has one, else the projection."""
-        if (cash_index_vals.np < 0).any():
-            num_known = cash_index_vals.np[cash_index_vals.np > 0].size
-            reset_offset = resets_per_cf * (offset + num_known)
-            if num_known:
-                known_indices = cash_index_vals.tn[cash_index_vals.np < 0].reshape(
-                    1, -1, 1).expand(last_pub_block.shape[0], -1, shared.simulation_batch)
-                return torch.cat([known_indices, calc_index(
-                    schedule[reset_offset:], sim_schedule[reset_offset:])], dim=1)
-            else:
-                return calc_index(schedule[reset_offset:], sim_schedule[reset_offset:])
-        else:
-            return cash_index_vals.tn.reshape(1, -1, 1)
+    def get_index_val(cash_index_vals, stated, schedule, sim_schedule, resets_per_cf, offset):
+        """A cashflow's index reference: the level it states where its flag says it states one,
+        else its reference date's prints and projection off its own resets."""
+        levels = cash_index_vals.tn.reshape(1, -1, 1)
+        if stated.np.all():
+            return levels
+        reset_offset = resets_per_cf * offset
+        projected = calc_index(schedule[reset_offset:], sim_schedule[reset_offset:])
+        return torch.where(stated.tn.reshape(1, -1, 1) > 0, levels, projected)
 
     def filter_resets(resets, index):
-        """Every reset the outer grid has reached: the declared prints, then the simulated ones."""
+        """Every reset the outer grid has reached: the declared prints, then the simulated ones -
+        a static index answering one row and one column however many resets ask."""
         known_resets = resets.known_resets(shared.simulation_batch)
         sim_resets = resets.schedule[(resets.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
                                      (resets.schedule[:, utils.RESET_INDEX_Reset_Day] <=
                                       deal_time[:, utils.TIME_GRID_MTM].max())]
-        old_resets = utils.calc_time_grid_spot_rate(index, sim_resets[:, :utils.RESET_INDEX_Scenario + 1], shared)
-        return torch.cat([torch.cat(known_resets, dim=0), old_resets], dim=0) if known_resets else old_resets
+        old_resets = utils.calc_time_grid_spot_rate(
+            index, sim_resets[:, :utils.RESET_INDEX_Scenario + 1], shared).expand(sim_resets.shape[0], -1)
+        return utils.concat_resets(
+            [torch.cat(known_resets, dim=0), old_resets], 0) if known_resets else old_resets
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -5861,11 +5868,11 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         all_base_index_vals = get_index_val(
-            cashflows[:, utils.CASHFLOW_INDEX_BaseReference], base_resets.dual(),
-            all_base_resets, resets_per_cf, start_index[index])
+            cashflows[:, utils.CASHFLOW_INDEX_BaseReference], cashflows[:, utils.CASHFLOW_INDEX_BaseStated],
+            base_resets.dual(), all_base_resets, resets_per_cf, start_index[index])
         all_final_index_vals = get_index_val(
-            cashflows[:, utils.CASHFLOW_INDEX_FinalReference], final_resets.dual(),
-            all_final_resets, resets_per_cf, start_index[index])
+            cashflows[:, utils.CASHFLOW_INDEX_FinalReference], cashflows[:, utils.CASHFLOW_INDEX_FinalStated],
+            final_resets.dual(), all_final_resets, resets_per_cf, start_index[index])
 
         interest = (cashflows.tn[:, utils.CASHFLOW_INDEX_FixedRate] *
                     cashflows.tn[:, utils.CASHFLOW_INDEX_Year_Frac]).reshape(1, -1, 1)
@@ -6023,6 +6030,10 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
             payments.append(payment)
 
         all_payments = torch.cat(payments, dim=0)
+        # rows sharing a pay day sum onto it, the discounts being one column per pay day
+        if (cash_counts > 1).any():
+            all_payments = torch.stack([payment.sum(dim=1) for payment in torch.split(
+                all_payments, tuple(cash_counts), dim=1)], dim=1)
 
         cash_settle(shared, factor_dep['SettleCurrency'],
                     np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), all_payments[-1][0])

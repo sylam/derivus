@@ -939,6 +939,42 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
 
 
+def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_refuses(recorded, tmp_path):
+    """THE SWITCH IS THE VALUATION'S. `Exclude_Deals_With_Missing_Market_Data: No` refuses a run
+    that values a deal nobody can read; the diary READS the book, and its answer to such a deal is
+    the `unreadable` row a close waits on. So that book answers the diary and the close check
+    exactly as the same book saying `Yes` - the row filed, `legal: false` - while valuing it still
+    refuses, naming the deal.
+
+    Killing mutation: the diary's compile reading the switch, which answers the read 422 where it
+    filed the row.
+    """
+    answers = {}
+    for seed, switch in ((2, 'Yes'), (3, 'No')):
+        # a seed of its own: the diary's etag is the deals and the calculation, so the second
+        # compile would otherwise be the first one's stored result
+        document = job([node(dict(FX_OPTION, Reference='NOVOL'))], FACTORS, Random_Seed=seed)
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+            'Exclude_Deals_With_Missing_Market_Data'] = switch
+        path = tmp_path / 'book.json'
+        path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+        service.BOOK = service.Book(str(path))
+        service.BOOK_DIARY_CACHE.clear()
+        answers[switch] = (diary_rows()['rows'], CLIENT.get(
+            '/book/close/check', params={'date': '2020-01-01'}).json())
+    assert answers['No'] == answers['Yes']
+    rows, verdict = answers['No']
+    unreadable = [row for row in rows if row['kind'] == Diary.UNREADABLE]
+    assert len(unreadable) == 1 and 'NOVOL' in unreadable[0]['reason'], rows
+    assert verdict['legal'] is False
+    assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
+
+    context = derivus.Context()
+    context.load_json((path.read_text(), 'valued'))
+    with pytest.raises(utils.UnpriceableSchedule, match=r"is No.*FXOptionDeal NOVOL \('Cannot find"):
+        context.run_job()
+
+
 def test_the_diary_never_runs_on_the_poll_path(unrecorded, tmp_path):
     """GATE 14. Two asks over an unmoved book are ONE compile: the result id is the etag's own, so
     the second submission would coalesce onto the first and the cache never reaches it. A booking

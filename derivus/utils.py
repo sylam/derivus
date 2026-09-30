@@ -76,9 +76,11 @@ CASHFLOW_INDEX_Start_Adj = 7
 CASHFLOW_INDEX_FXResetValue = 8
 CASHFLOW_INDEX_End_Adj = 8
 
-# used by inflation cashflows
+# used by inflation cashflows: each reference's stated level, and 1 where one is stated
 CASHFLOW_INDEX_BaseReference = 9
 CASHFLOW_INDEX_FinalReference = 10
+CASHFLOW_INDEX_BaseStated = 12
+CASHFLOW_INDEX_FinalStated = 13
 CASHFLOW_OFFSET_Settle = 2
 
 # Number of resets/fixings for this cashflow (0 for fixed cashflows)
@@ -2193,13 +2195,13 @@ class TensorCashFlows(TensorSchedule):
                              position * cashflow['Notional'], cashflow['Rate_Multiplier'], cashflow['Yield'].amount, 0.0,
                              0.0])
 
-                # attach the base and final reference dates to the cashflow
+                # attach the stated base and final reference levels to the cashflow, and whether each
+                # is stated: one that is not is read off its reference date's resets below
+                base_value, final_value = cashflow['Base_Reference_Value'], cashflow['Final_Reference_Value']
                 cashflow_reset_offsets.append(
-                    [cashflow['Base_Reference_Value'] if cashflow['Base_Reference_Value'] else -(
-                            base_reference_date - base_date).days,
-                     cashflow['Final_Reference_Value'] if cashflow['Final_Reference_Value'] else -(
-                             final_reference_date - base_date).days,
-                     Pay_Date if settlement_date is None else -(settlement_date - base_date).days])
+                    [base_value or 0.0, final_value or 0.0,
+                     Pay_Date if settlement_date is None else -(settlement_date - base_date).days,
+                     float(bool(base_value)), float(bool(final_value))])
 
                 if isBond:
                     index_reference(
