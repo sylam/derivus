@@ -1,7 +1,8 @@
 // Drives `src/spine.ts` where the eye cannot: the page a poll merges onto the strip it holds, the
 // strip under a doorbell stream whose beats are dropped, duplicated and reordered, the verdict the
 // banner reads off the reconcile lists, what a fold at the head is asked for, the two transitions
-// the store holds it by, and the shape the markets panel renders. Every check names the MUTATION
+// the store holds it by, the shape the markets panel renders, and when the worklist is asked for
+// and what its banner says. Every check names the MUTATION
 // it kills - the change to the module that would still typecheck, still render, and still be
 // wrong.
 //
@@ -247,6 +248,48 @@ check('a desk that records nothing is never asked',
       [spine.wantsReconcile(null, null, ETAG), spine.wantsReconcile(null, ETAG, MOVED)],
       [false, false]);
 
+check('a netting set off its paper is drift, named after the three lists',
+      'the paper mismatch left out of the drift test, which reads a client set a hand edit moved '
+      + 'off its agreement as clean',
+      [spine.reconcileVerdict(PINNED, { ...CLEAN, terms_mismatch: [
+        { agreement: 'ISDA-A', deal_path: '1', fields: ['Liquidation_Period'] }] }).state,
+       spine.reconcileVerdict(PINNED, { ...CLEAN, terms_mismatch: [
+        { agreement: 'ISDA-A', deal_path: '1', fields: ['Liquidation_Period'] }] }).line],
+      ['drifted', 'file and record disagree: 0 in record not in file, 0 in file not in record, '
+        + '0 quantity mismatches, 1 netting set off the paper']);
+
+// --- wantsWorklist and worklistLine: THE RECORD'S HEAD asks, and the counts say how much waits
+// an approval moves the head and no position, which is exactly what a worklist row waits on; a
+// write re-pins the file at the head the record already stood at, which a tick does all day
+const SIGNED = { ...PINNED, events_behind: 1 };
+const REPINNED = { ...SIGNED, lsn: SIGNED.lsn + 1, events_behind: 0 };
+check('the worklist is asked for where the head moved, a verdict moving no position included',
+      'the ask gated on `positions_behind` - the counts - after which a ticket signed, a payment '
+      + 'settled or a close marked never leaves the banner, none of them moving a position',
+      [spine.wantsWorklist(SIGNED, spine.worklistAt(PINNED)),
+       spine.wantsWorklist(PINNED, spine.worklistAt(PINNED)),
+       spine.wantsWorklist(null, null)],
+      [true, false, false]);
+check('a file written at the head the record stands at asks nothing',
+      'the ask keyed on the file\'s pin or its etag, which re-reads the worklist on every tick - '
+      + 'telemetry that moves no fact a row waits on',
+      [spine.wantsWorklist(REPINNED, spine.worklistAt(SIGNED)),
+       spine.worklistAt({ ...PINNED, lsn: null, events_behind: null })],
+      [false, '']);
+const ROW = (kind, key) => ({ kind, what: `${key} waits`, key, lsn: 7, since: '2024-06-28' });
+const NOTHING = { date: '2024-06-28', pending: [], payments: [], unconfirmed: [], unmarked: [],
+                  rejected: [], counts: { pending: 0, payments: 0, unconfirmed: 0, unmarked: 0,
+                                          rejected: 0 } };
+check('the banner counts what each list holds and says nothing where none waits',
+      'the line built from every list whatever it holds, which lights a banner reading `0 tickets '
+      + 'to sign` over a desk with nothing to do; the rows counted in place of the counts, which '
+      + 'says 200 where 2,000 wait; or the plural spelled into the words',
+      [spine.worklistLine(NOTHING), spine.worklistLine(null), spine.worklistLine({
+        ...NOTHING, pending: [ROW('pending', 't1'), ROW('pending', 't2')],
+        rejected: [ROW('rejected', 't3')],
+        counts: { ...NOTHING.counts, pending: 2037, rejected: 1 } })],
+      ['', '', '2037 tickets to sign · 1 rejected trade standing']);
+
 // --- the store's two transitions, which are this module's and answer the SAME OBJECT
 const held = { spine: PINNED, rows: HELD, reconcile: AHEAD, reconciledAt: ETAG };
 check('a beat that moved neither the rows nor the pin answers the record it was handed',
@@ -293,7 +336,7 @@ check('the shaping leaves the answer it was handed standing',
       [MARKETS.closes.map((close) => close.lsn), MARKETS.names.map((name) => name.lsn),
        MARKETS.snapshots.map((shot) => shot.lsn)], [[14, 17], [12, 13], [19, 20]]);
 
-console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 12 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

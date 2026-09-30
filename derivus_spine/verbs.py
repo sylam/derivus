@@ -97,10 +97,23 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
     and `portfolio` say where the position sits and `price` what it was done at, each filed only
     where stated. A price stated in another currency than the book's carries that `currency` and
     the `rate` the booking crossed it at - units of the book's currency per unit of it - so the
-    consideration is on the record as it was agreed and as it was booked. `ticket` is the plan an
+    consideration is on the record as it was agreed and as it was booked. `ticket` is what an
     approval of this booking signs. The instrument blob is fsynced before the event citing it
     appends.
     """
+    body = fill(log, instrument, quantity, counterparty, netting_set, execution_reference,
+                price=price, agreement=agreement, portfolio=portfolio, currency=currency,
+                rate=rate)
+    if ticket is not None:
+        body['ticket'] = _pinned(ticket, 'ticket')
+    envelope = log.append('fill', body, actor=actor, book=book, effective_time=effective_time)
+    return dict(envelope, instrument=body['instrument'])
+
+
+def fill(log, instrument, quantity, counterparty, netting_set, execution_reference, price=None,
+         agreement=None, portfolio=None, currency=None, rate=None):
+    """The body `book` files, every field it asserts checked and the instrument blob fsynced -
+    what a caller routing the fill first asks the writer about before anything appends."""
     address = _blob(log, instrument, 'the canonical instrument')
     if not is_number(quantity):
         raise MalformedEvent(
@@ -123,12 +136,7 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
                 'was crossed at, a positive number - this states price {!r}, currency {!r} and '
                 'rate {!r}'.format(price, currency, rate))
         body['currency'], body['rate'] = _name(currency, 'currency', 'book'), rate
-    if ticket is not None:
-        body['ticket'] = _pinned(ticket, 'ticket')
-    envelope = log.append('fill', _placed(body, 'book', agreement=agreement, portfolio=portfolio),
-                          actor=actor, book=book, effective_time=effective_time,
-                          blob_refs=(address,))
-    return dict(envelope, instrument=address)
+    return _placed(body, 'book', agreement=agreement, portfolio=portfolio)
 
 
 def amend(log, actor, instrument, amended_to, book=None, effective_time=None, portfolio=None):
@@ -141,6 +149,15 @@ def amend(log, actor, instrument, amended_to, book=None, effective_time=None, po
     canonicalise to the same hash raise `MalformedEvent`. `portfolio` is the deepest node holding
     every position in the terms, which is where it is judged.
     """
+    body = amendment(log, instrument, amended_to, portfolio=portfolio)
+    envelope = log.append('amendment', body, actor=actor, book=book,
+                          effective_time=effective_time)
+    return dict(envelope, instrument=body['instrument'], amended_to=body['amended_to'])
+
+
+def amendment(log, instrument, amended_to, portfolio=None):
+    """The body `amend` files, both instruments' blobs fsynced and terms that did not move
+    refused - what a caller routing the restrike first asks the writer about."""
     was = _blob(log, instrument, 'the canonical instrument as it was')
     now = _blob(log, amended_to, 'the canonical instrument as amended')
     if was == now:
@@ -148,11 +165,7 @@ def amend(log, actor, instrument, amended_to, book=None, effective_time=None, po
             'amend: the amended terms canonicalise to the same instrument {} - an amendment is a '
             'NEW instrument hash linked to the old one, so terms that did not move are not an '
             'amendment; file the operational fact as a status_transition instead'.format(was))
-    envelope = log.append('amendment', _placed({'instrument': was, 'amended_to': now}, 'amend',
-                                               portfolio=portfolio),
-                          actor=actor, book=book, effective_time=effective_time,
-                          blob_refs=(was, now))
-    return dict(envelope, instrument=was, amended_to=now)
+    return _placed({'instrument': was, 'amended_to': now}, 'amend', portfolio=portfolio)
 
 
 def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None):

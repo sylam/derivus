@@ -79,7 +79,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'patch_market_values', 'describe_securities', 'configure_securities',
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
-                'book_quote', 'approve_quote', 'reject_quote', 'calibrate_spot_model',
+                'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
+                'reject_ticket', 'worklist', 'declare_portfolio', 'describe_portfolios',
+                'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
                 'export_settlements', 'file_status', 'describe_calculations',
@@ -94,7 +96,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'approve_quote', 'reject_quote', 'declare_market', 'declare_close',
+                       'approve_quote', 'reject_quote', 'approve_ticket', 'reject_ticket',
+                       'declare_portfolio', 'declare_market', 'declare_close',
                        'export_settlements', 'file_status',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
@@ -429,20 +432,34 @@ def test_every_waiting_tool_is_async_and_takes_the_context():
 
 def test_the_schema_tools_are_the_declarations():
     """Non-vacuous both ways: the merge carries a known required field, and the containers answer
-    is the store's - the thing C2 emitted precisely so this tool needs no engine."""
+    is the store's - the thing C2 emitted precisely so this tool needs no engine. A type is found by
+    the plain names a desk says for it as well as by its class name: `NDF` is in no class name. A
+    type a phrase names WHOLE comes first: `payer swap` is the swap before the swaption, and a
+    `deliverable forward` the forward before the non-deliverable one.
+
+    Killing mutations: a type looked up by its class name alone, which answers `NDF` with nothing;
+    and the matches left in declaration order, which offers a desk the NDF for a deliverable one.
+    """
     listed = mcp_server.list_instrument_types()
     assert listed['groups'] == derivus.schema.mapping['Instrument']['groups']
     assert listed['containers'] == derivus.schema.mapping['Instrument']['containers']
+    assert listed['vernacular'] == derivus.schema.mapping['Instrument']['vernacular']
     assert 'FXForwardDeal' in listed['types']
 
     binary = mcp_server.describe_instrument_type('EquityBinaryOption')
-    assert 'Payoff' in binary['required']
+    assert 'Payoff' in binary['required'] and 'digital' in binary['vernacular']
     assert binary['fields']['Buy_Sell']['values'] == ['Buy', 'Sell']
     assert binary['accepts_children'] is False
     assert mcp_server.describe_instrument_type('StructuredDeal')['accepts_children'] is True
 
     with pytest.raises(ToolError, match='FXForwardDeal'):
         mcp_server.describe_instrument_type('fxforward')
+    with pytest.raises(ToolError, match='Close matches: FXNonDeliverableForward$'):
+        mcp_server.describe_instrument_type('NDF')
+    with pytest.raises(ToolError, match='Close matches: SwapInterestDeal, SwaptionDeal$'):
+        mcp_server.describe_instrument_type('payer swap')
+    with pytest.raises(ToolError, match='Close matches: FXForwardDeal, FXNonDeliverableForward$'):
+        mcp_server.describe_instrument_type('Deliverable Forward')
 
     calc = mcp_server.describe_calculation_type('BaseValuation')
     assert 'Currency' in calc['fields']
@@ -679,10 +696,14 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeyp
     the signed quantity, the execution reference and the seat the service demands under a home, and
     without them it refuses in the SERVICE's own words rather than in a paraphrase here.
 
-    And the two-act desk tier runs through the binding exactly as it does through the service: the
-    acceptance is filed, the booking waits on a second seat, `approve_quote` under another one
-    satisfies it and the retry books. Nothing is monkeypatched - a real home under tmp, a real
+    And the desk tier under four eyes runs through the binding exactly as it does through the
+    service: the acceptance books the trade PENDING into the node the quote named, `approve_quote`
+    under another seat clears it, and a second acceptance is told it is already booked; the tree
+    and the worklist read back what waits. Nothing is monkeypatched - a real home under tmp, a real
     policy declared through the record's own verb, the fault injected as DATA.
+
+    Killing mutation: `solve_structure` not sending the `portfolio` it takes, which books the trade
+    at the book and leaves the node the desk named empty.
     """
     from derivus_spine import SpineLog, init_home, policy
 
@@ -729,17 +750,25 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeyp
         quote = asyncio.run(mcp_server.solve_structure('ZeroCostCollar', {
             'pair': 'USDZAR', 'expiry': '1Y', 'notional': 1_000_000.0,
             'notional_currency': 'USD', 'floor': 1.0 / (SPOT * 0.95)},
-            netting_set='CLIENT_A', actor='subject-desk-one'))
-        waiting = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
-        assert waiting['written'] is False and waiting['tier']['name'] == 'desk'
-        assert 'no verdict is filed' in waiting['waits_on']
+            netting_set='CLIENT_A', actor='subject-desk-one', portfolio='service/FX'))
+        assert mcp_server.declare_portfolio('service/FX', actor='subject-desk-one')['path']
+        assert [row['path'] for row in mcp_server.describe_portfolios()['portfolios']] == [
+            'service/FX']
+        pending = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
+        assert pending['written'] is True and pending['tier']['name'] == 'desk'
+        assert 'no verdict is filed' in pending['waits_on']
+        waits = mcp_server.worklist(actor='subject-desk-one')['pending']
+        assert [row['key'] for row in waits] == [pending['ticket']]
+        held = [row for row in mcp_server.book_positions()['positions']
+                if row['portfolio'] == 'service/FX']
+        assert [(row['status'], row['pending']) for row in held] == [('pending', 1.0)]
 
         signed = mcp_server.approve_quote(quote['quote_id'], 'subject-desk-two')
-        assert signed['ticket'] == waiting['accepted']['ticket']
-        accepted = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
-        assert accepted['written'] is True and accepted['tier']['approval_lsn'] == signed[
-            'recorded']['lsn']
-        assert accepted['accepted'] == waiting['accepted'], 'a retry minted a second acceptance'
+        assert signed['ticket'] == pending['accepted']['ticket'] == pending['ticket']
+        assert (signed['portfolio'], signed['status']) == ('service/FX', 'approved')
+        again = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
+        assert again['written'] is False and again['booked'], 'a second acceptance booked again'
+        assert mcp_server.worklist()['pending'] == []
     finally:
         service.BOOK = None
 

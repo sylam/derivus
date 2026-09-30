@@ -33,7 +33,8 @@ what has been recorded, and the official closes - and the paper the book trades 
 the seat that keeps the legal documents, with a booking's quantity as the position change in units
 of the deal and its portfolio a path under the book, `book_positions` reading what stands,
 `book_cash` the money the settlements moved, and `mark_book` and `book_pnl` the close's marks and
-what the book made between them. The
+what the book made between them - and that every booking is a ticket, a trade a second seat must
+sign booking PENDING, with `worklist` saying what waits on whom. The
 module docstring stays the maintainer's.
 
 ## The tools
@@ -41,21 +42,23 @@ module docstring stays the maintainer's.
 | | |
 | --- | --- |
 | `desk_status` | `GET /book/status` — the desk in ONE read: the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a terminal is present |
-| `list_instrument_types` | every bookable type, the create-menu grouping, and `containers` |
-| `describe_instrument_type` | one type's fields as declared — required, defaults, valid values |
+| `list_instrument_types` | every bookable type, the create-menu grouping, `containers`, and each type's `vernacular` - the plain names a desk says for it |
+| `describe_instrument_type` | one type's fields as declared — required, defaults, valid values — a name that is no type answered with the types whose name or vernacular holds it |
 | `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs or the variations each is dealt as, the recipe |
 | `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
 | `describe_configuration` | every dial the book's bootstrap can be set with, per section, at the default it stands at |
 | `job_skeleton` | the envelope, as a job that loads |
 | `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
 | `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
-| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio`, `price` and the price's currency it may state - a consideration in another currency is crossed at the booking's own board; a delete records nothing so it takes no seat |
+| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio`, `price` and the price's currency it may state - a consideration in another currency is crossed at the booking's own board - and the `notional` and `notional_currency` a tiers policy reads; a delete records nothing so it takes no seat |
 | `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
 | `describe_calculations` / `configure_calculation` / `run_calculation` | `/calculations` — the desk's own named calculations: listed, saved one at a time (judged against the type's declarations), and run over the live book or one subtree in the curiosity lane |
 | `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
 | `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the MID, strikes solved with the two-way charged on them, the mid and the edge said, the pending trade filed under its id. Records nothing |
-| `book_quote` | `POST /book/quote` — the ACCEPTANCE: the client took the price, so the quote is recorded and its mirror booked, refused exactly as a booking is |
-| `approve_quote` / `reject_quote` | `POST /book/quote/approve` \| `/reject` — a seat's decision over an accepted quote's ticket, where the desk's tiers policy wants a second pair of eyes |
+| `book_quote` | `POST /book/quote` — the ACCEPTANCE: the client took the price, so the quote is recorded and its mirror booked into the `portfolio` the quote stated, refused exactly as a booking is, and PENDING where the desk's tiers want a second seat |
+| `approve_ticket` / `reject_ticket` | `POST /book/approve` \| `/reject` — a seat's verdict over the ticket a booking carries, filed where it books; `approve_quote` / `reject_quote` are the same for an accepted quote named by its id |
+| `worklist` | `GET /book/worklist` — what waits on the seat asking, each list what one verb acts on where it holds it: tickets to sign, payments due, fills to confirm, closes to mark, rejected trades standing, each row keyed where its clearing fact is filed, `counts` beside the newest 200 of each |
+| `declare_portfolio` / `describe_portfolios` | `/book/portfolios` — a node of the book's tree declared at its parent, and the tree read back |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
 | `describe_curve` | the book's curves as definitions — rows, conventions, and the interpolation each is built under with the source that named it — and, with none named, the seed's own entries a desk can set up |
@@ -82,7 +85,7 @@ module docstring stays the maintainer's.
 | `book_cash` | `GET /book/cash` — the money the settlements moved, one movement per reference, and the balances they sum to per kind, subject and asset, as of a date where one is named |
 | `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at its own day's close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named; `explain` takes what the held positions made apart into carry, the market per risk factor and the residual |
 | `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
-| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, and the `deal_paths` where the book file holds it; an expired deal stands until the day it settles and rolls off on it |
+| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, the `deal_paths` where the book file holds it, and the `status` its tickets read with the `pending` quantity; an expired deal stands until the day it settles and rolls off on it |
 | `validate_book` / `describe_book` | the read verbs over the live document |
 | `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
 
@@ -91,8 +94,8 @@ module docstring stays the maintainer's.
 A host offers **prompts** as commands a user picks and **resources** as documents it can open, so
 both are contract the way a tool schema is. Three prompts, each a short numbered walk the model
 follows with the tools: `quote_a_structure` (describe, solve, report the legs at market terms,
-accept only on the client's word, and where a tier waits, the second seat's approval and then
-accept again), `import_a_legacy_book` (the deals wrapped as one
+accept only on the client's word, and where a tier wants a second seat, its approval of the
+trade booked pending), `import_a_legacy_book` (the deals wrapped as one
 `NettingCollateralSet` and booked in one call, then marked), and `morning_desk_check` (status,
 tick where there is a terminal, the mark, and every XVA row older than today).
 
@@ -143,13 +146,16 @@ that compiles it instead of making the whole book unpriceable.
 endpoint additionally requires a signed `quantity`, an `execution_reference` and an enclosing
 `NettingCollateralSet` naming a counterparty (`spine_fill`), and every write verb attributes its
 fact to a seat: `book_deal` takes all four, `amend_deal` and `solve_structure` take `actor`, and a
-delete records nothing so it takes no seat. A desk that keeps no record ignores them all, which is
-why they are optional rather than required — the tool schema is one contract for both postures, and
-the service's own refusal is what names a missing one. The quantity PRICES: the book's reads price
-every position at its net, and `describe_instrument_type` marks the fields a position scales
-(`sized`, or `magnitude` for an amortisation step, which never takes the short's sign), the ones
-a short flips (`side`) — a structure and a mark-to-market cross-currency swap mark none, their legs
-carrying the size — and the dates it settles cash on that its schedule does not (`settles`).
+delete records nothing so it takes no seat. The record's reads take `actor` too - the seat reading,
+which sees the rows under the nodes it holds any grant at - and where the service checks who is
+asking the binding sends `DV_SPINE_TOKEN` as its bearer, the token's subject being the seat. A desk
+that keeps no record ignores them all, which is why they are optional rather than required — the
+tool schema is one contract for both postures, and the service's own refusal is what names a missing
+one. The quantity PRICES: the book's reads price every position at its net, and
+`describe_instrument_type` marks the fields a position scales (`sized`, or `magnitude` for an
+amortisation step, which never takes the short's sign), the ones a short flips (`side`) — a
+structure and a mark-to-market cross-currency swap mark none, their legs carrying the size — and the
+dates it settles cash on that its schedule does not (`settles`).
 
 **Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere, as in the
 web UI's tree, because references are not unique in a book. Another host's booking moves every
@@ -203,10 +209,13 @@ often as the client asks. `book_quote(quote_id, actor)` is the ACCEPTANCE: calle
 word, it records the quote and books the MIRROR of the pending deal (a quote is client paper, a book
 holds the bank's position) over the same validate-before-write seam, and the file stays afterwards.
 Between the two the market moves, which the answer REPORTS under `market` and never refuses. Where
-the desk's `tiers` policy wants a second seat the acceptance comes back `{written: false}` with
-`accepted`, `tier` and `waits_on`: that seat calls `approve_quote(quote_id, actor)` — or
-`reject_quote(quote_id, reason, actor)` — and the model calls `book_quote` again. The `quote_a_structure`
-prompt walks the same five steps.
+the desk's `tiers` policy wants a second seat the trade books all the same and reads PENDING, the
+answer carrying `accepted`, `tier` and `waits_on`: that seat calls `approve_quote(quote_id, actor)`
+— or `reject_quote(quote_id, reason, actor)`, which leaves the trade standing rejected — and nobody
+books it again. A direct booking is a ticket the same way, signed with `approve_ticket`, and so is
+an amendment: `amend_deal` states the `notional` it deals and, under four eyes, the position reads
+pending on the restrike's ticket. `solve_structure` states the `portfolio` a quote books into once
+accepted. The `quote_a_structure` prompt walks the same five steps.
 
 **A waiting tool speaks while it waits.** A desktop host cuts a tool call that stays quiet for about
 a minute and resets that clock on every progress notification, and the runs behind these verbs are

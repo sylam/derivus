@@ -68,48 +68,47 @@ def play(table, out):
 
 
 def approve_your_own_ticket(table, out):
-    """The booker signs their own ticket, and four eyes is what refuses.
+    """The booker signs their own ticket, and four eyes is what reads through it.
 
-    The approval APPENDS - the trader is scoped to approve, and a seat signing a plan is a fact -
-    and the booking still waits, because what four eyes asks is WHO signed rather than whether
-    anybody did.
+    The acceptance books the trade PENDING and the approval APPENDS - the trader is scoped to
+    approve, and a seat signing a plan is a fact - and the trade still reads pending, because what
+    four eyes asks is WHO signed rather than whether anybody did.
     """
     table.standing['red_quote'] = quote = roles.quote(table, roles.SALES, 'the adversary')
     binding.book_quote(quote, actor=roles.TRADER)
     signed = binding.approve_quote(quote, roles.TRADER)
-    answer = binding.book_quote(quote, actor=roles.TRADER)
     table.did(roles.TRADER, 'approve_quote (own ticket)', recorded=signed['recorded']['lsn'],
-              refused=answer.get('waits_on'))
+              refused=signed['status'])
     return _row('approve your own ticket',
-                'the tier refuses - the booker and the approver are one seat - and no fill lands',
-                answer.get('waits_on'))
+                'the booker and the approver are one seat, so the trade stays pending',
+                'the ticket reads {}'.format(signed['status']))
 
 
 def wear_a_second_name(table, out):
     """One subject under two display names, neither of which the record reads.
 
     The side table outside the log is mutable by design - it is where a name a person answers to
-    lives - so moving it is not an attack on the record, and the refusal naming the SUBJECT is what
-    says the record was never reading it.
+    lives - so moving it is not an attack on the record, and the verdicts standing under the
+    SUBJECT are what say the record was never reading it.
     """
     for mask in MASKS:
         set_display_name(table.home, roles.TRADER, mask)
-    answer = binding.book_quote(table.standing['red_quote'], actor=roles.TRADER)
-    table.did(roles.TRADER, 'book_quote under a second display name',
-              refused=answer.get('waits_on'))
+    signed = binding.approve_quote(table.standing['red_quote'], roles.TRADER)
+    table.did(roles.TRADER, 'approve_quote under a second display name', refused=signed['status'])
+    signers = table.read(lambda log: sorted(set(
+        frame['actor'] for frame in log.frames() if frame['event_type'] == 'approval')))
     return _row('collude under two display names',
-                'the refusal names the subject {!r} and neither mask'.format(roles.TRADER),
-                answer.get('waits_on'))
+                'the verdicts name the subject {!r} and neither mask'.format(roles.TRADER),
+                'the ticket reads {} under {}'.format(signed['status'], signers))
 
 
 def race_two_acceptances(table, out):
     """Two acceptances of one quote at once: one fill, at one LSN.
 
-    The second seat signs first, so both threads meet a bookable quote - what orders them is the
-    book's own lock, and the pending file's `booked` is what the loser reads.
+    Both threads meet a bookable quote - what orders them is the book's own lock, and the loser
+    meets the book the winner moved, or the pending file's `booked`.
     """
-    quote = table.standing['red_quote']
-    binding.approve_quote(quote, roles.RISK)
+    quote = roles.quote(table, roles.SALES, 'the adversary, racing')
     answers = []
 
     def accept():
@@ -139,7 +138,7 @@ def replay_an_old_approval(table, out):
     table.did(roles.TRADER, 'book_quote on another ticket\'s approval',
               refused=answer.get('waits_on') or answer.get('refused'))
     return _row('replay an old approval against an amended ticket',
-                'the new ticket carries no verdict, so the booking waits and no fill lands',
+                'the new ticket carries no verdict, so the trade books pending',
                 answer.get('waits_on') or answer.get('refused'))
 
 

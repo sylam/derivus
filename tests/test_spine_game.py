@@ -41,7 +41,7 @@ from gates.spine_game import faults, play, red, roles
 #: objective -> the words the RECORD answered it with. The objective's own `expected` is the
 #: sentence the harness wrote down; this is where that sentence has to appear in the answer.
 ANSWERED = {
-    'approve your own ticket': 'the booker and the approver are one seat',
+    'approve your own ticket': 'the ticket reads pending',
     'collude under two display names': roles.TRADER,
     'race two acceptances of one quote': '1 fill(s)',
     'replay an old approval against an amended ticket': 'no verdict is filed against this ticket',
@@ -84,9 +84,10 @@ def rows(home, name):
 
 
 def test_the_blue_day_holds_every_invariant_on_three_replicas(blue):
-    """THE ACCEPTANCE TEST. A desk marks, strikes a settlement file, quotes, accepts, signs, books,
-    confirms, attests the close's numbers and declares it; two followers pull every frame; and all
-    nine invariants hold on the hub and on the copy that materialized a key.
+    """THE ACCEPTANCE TEST. A desk marks, strikes a settlement file, quotes, accepts - the trade
+    booking pending under four eyes - signs, confirms, attests the close's numbers and declares it;
+    two followers pull every frame; and all nine invariants hold on the hub and on the copy that
+    materialized a key.
 
     The seventh is assessed HERE and nowhere else: the diary is a compile of the book rather than a
     fold of the record, so the keys come out of the hub's own process and the question is put with
@@ -104,7 +105,8 @@ def test_the_blue_day_holds_every_invariant_on_three_replicas(blue):
         assert [name for name in oracle.INVARIANTS
                 if reports[copy][name]['held'] is not True] == [], reports[copy]
 
-    assert [act['act'] for act in script['acts']].count('book_quote (retry)') == 1
+    assert next(act for act in script['acts'] if act['act'] == 'approve_quote')[
+        'status'] == 'approved', 'the second seat did not clear the trade'
     # the day's own control against a SECOND WRITER, which `red` names as the answer to one: the
     # file and the record disagree about nothing, every deal in it having been booked through the hub
     assert next(act for act in script['acts'] if act['act'] == 'book_reconcile')[

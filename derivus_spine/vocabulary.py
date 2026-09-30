@@ -163,9 +163,10 @@ FACT_TYPES = {
         optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', PATH),
                   ('currency', TEXT), ('rate', NUMBER), ('ticket', HASH))),
     # Economics are never edited: an amendment is a new instrument hash linked to the old one,
-    # judged at the deepest node holding every position in it.
+    # judged at the deepest node holding every position in it, and a trade of its own - `ticket`.
     'amendment': _validator('amendment', (
-        ('instrument', HASH), ('amended_to', HASH)), optional=(('portfolio', PATH),)),
+        ('instrument', HASH), ('amended_to', HASH)),
+        optional=(('portfolio', PATH), ('ticket', HASH))),
     'election': _validator('election', (
         ('instrument', HASH), ('choice', TEXT))),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different

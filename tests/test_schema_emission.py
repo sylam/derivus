@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -106,6 +107,47 @@ def test_the_store_is_generated():
     assert declared_classes(), 'no class declares `fields` - these gates are vacuous'
     assert INSTRUMENT['types'] == schema.emit_instrument(instruments)[0], (
         'the Instrument store is not the emitted view - a hand-written copy has come back')
+
+
+def test_every_deal_type_carries_its_own_plain_names():
+    """A model asks for "an NDF" or "a cap", so every emitted deal type carries the names a desk
+    says for it, published as `vernacular` - its OWN, read off the class and never its parent's, so
+    a binary is never called the option it subclasses. The scratch pair holds the own-attr rule
+    where every real type already names itself.
+
+    Killing mutation: the name read through `getattr`, which hands a type declaring none its
+    parent's words - the scratch child then reads 'a parent'.
+    """
+    named = INSTRUMENT['vernacular']
+    assert set(named) == set(INSTRUMENT['types'])
+    assert [deal_type for deal_type in sorted(named) if not named[deal_type]
+            or named[deal_type] != vars(getattr(instruments, deal_type)).get('vernacular')] == []
+    scratch = types.ModuleType('scratch')
+    scratch.Parent = type('Parent', (), {'fields': [instruments.ADMIN], 'vernacular': 'a parent'})
+    scratch.Child = type('Child', (scratch.Parent,), {'fields': [instruments.ADMIN]})
+    assert schema.emit_instrument(scratch)[3] == {'Parent': 'a parent', 'Child': None}
+
+
+#: The deal types whose own declarations name no day they settle, expire or mature on: containers
+#: dated by what they hold, and schedules no field of theirs declares as settling.
+UNDATED = ('CFFixedInterestListDeal', 'CFFixedListDeal', 'CFFloatingInterestListDeal',
+           'CashAccountDeal', 'EnergySingleOption', 'EquityDeal', 'EquitySwapletListDeal',
+           'FixedEnergyDeal', 'FloatingEnergyDeal', 'NettingCollateralSet', 'StructuredDeal',
+           'YieldInflationCashflowListDeal')
+
+
+def test_every_deal_type_names_the_days_its_tenor_is_read_off():
+    """A TENOR IS READ OFF DECLARATIONS (`schema.tenor_fields`): the dates a type declares it
+    settles on and the fields it declares for an expiry or a maturity. Every emitted type answers
+    one, or is named here as declaring none - so a type added with neither is one a tenor cap
+    refuses by name, and somebody decided it would be.
+
+    Killing mutation: the settlement dates left out of the tenor, which dates a forward, a
+    cashflow and every strip by nothing.
+    """
+    assert sorted(deal_type for deal_type in INSTRUMENT['types']
+                  if not schema.tenor_fields(getattr(instruments, deal_type))) == list(UNDATED)
+    assert schema.tenor_fields(instruments.FXForwardDeal)[0][0] == 'Settlement_Date'
 
 
 def test_the_fields_shim_serves_the_same_objects():

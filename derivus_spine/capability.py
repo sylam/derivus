@@ -277,6 +277,15 @@ def deepest(paths):
     return '/'.join(commonprefix([path.split('/') for path in paths])) or None
 
 
+def holders(positions, instrument, book):
+    """The portfolios under `book` at which `positions`, the positions fold's state, holds
+    `instrument` at a quantity other than nothing - what a restrike of it moves, and so where
+    it is judged."""
+    return sorted(portfolio for rows in positions.get(instrument, {}).values()
+                  for portfolio, row in rows.items()
+                  if row['quantity'] and book is not None and under(portfolio, book))
+
+
 def scope_of(event_type, body, book):
     """The scope an append of `event_type` is judged at: None for the firm's own facts, which only
     `*` reaches whatever their envelope names, a declared node's PARENT, the portfolio a body
@@ -333,6 +342,18 @@ def holds_any(doc, subject, verb, book):
         doc is not UNREADABLE and book is not None and any(
             grant['subject'] == subject and grant['verb'] == verb and under(grant['book'], book)
             for grant in doc['grants']))
+
+
+def nodes(doc, subject, verb=None):
+    """The nodes `subject` holds `verb` at - any verb where none is named - or None where nothing
+    narrows it: no document in force, or such a grant over `*`. A document that will not read
+    grants nothing."""
+    if doc is None:
+        return None
+    held = [] if doc is UNREADABLE else [grant['book'] for grant in doc['grants']
+                                         if grant['subject'] == subject
+                                         and verb in (None, grant['verb'])]
+    return None if ANY_BOOK in held else held
 
 
 def beyond(old, new, subject):

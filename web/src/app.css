@@ -66,6 +66,8 @@ body {
 
 .version { color: var(--text-muted); font-size: 12px; font-family: var(--mono); }
 
+.seat { width: 12em; font-size: 12px; font-family: var(--mono); }
+
 .source-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 10px; border-radius: 999px;
@@ -347,6 +349,9 @@ table.blotter tr.selected td { background: var(--accent-soft); }
 
 /* the roll-off emphasis: the scan target, so it reads before anything else on the row */
 table.blotter tr.rolling td:first-child { border-left-color: var(--warn); }
+
+/* a rejected trade stands until somebody closes it */
+table.blotter td.rejected { color: var(--bad); }
 
 table.blotter tr.rolling td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
 

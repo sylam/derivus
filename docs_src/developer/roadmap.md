@@ -390,8 +390,8 @@ is recorded so a reader knows which readings rest on it.
 - **No rejection is filed automatically** (2026-09-23). A ticket that falls in no tier answers
   `refused` with every sentence of the route it took, and the acceptance stands, but nothing files
   a `rejection` against it: the hub's own voice signs an automatic tier's approval and says nothing
-  against a ticket. A desk wanting the refusal on the record calls `POST /book/quote/reject` under a
-  seat of its own. Size: UNMEASURED and not measurable — it is a document decision rather than a
+  against a ticket. A desk wanting the refusal on the record calls `POST /book/reject` under a seat
+  of its own. Size: UNMEASURED and not measurable — it is a document decision rather than a
   number. Closing it means the writer's own voice filing a `rejection` where the route admits no
   tier, one type in that voice and one branch in the tier step, and the question it asks is whether
   a desk wants the hub's signature on a "no".
@@ -408,7 +408,7 @@ is recorded so a reader knows which readings rest on it.
   hub may sign for closes it: three lines in the oracle's voice rule. Signed history ends at the
   last checkpoint either way.
 - **A booking's tier step advances a fold this process holds, and it is still linear in the rows it
-  mints** (2026-09-23). `spine.route_ticket` folds `decisions` and `markets` on every acceptance,
+  mints** (2026-09-23). A booking's route folds `decisions`, and `markets` under a tiers policy,
   and both open a body per row: folding from genesis costs 0.164 ms per decision filed, so a desk
   two thousand decisions in would pay about 330 ms inside the write closure. The pair `fold` already
   takes is held per projector and advanced instead, which is 0.026 ms per decision — 6.3× cheaper,
@@ -422,6 +422,8 @@ is recorded so a reader knows which readings rest on it.
   Size: one `read_seed` in `advancing` and a close that mints for these two projectors. The
   restrike pays the same copy over `positions` since it reads where the terms are held: about
   240 ms against 130 on a 2,005-event home holding 2,047 instruments, 72 ms of it the copy.
+  An approval pays it over both folds to answer the status its verdict leaves: about 210 ms
+  on the same home with 30 bookings more, its own fsync among it.
 - **A settlement names no agreement, so the P&L shares what it moved by holdings** (2026-09-28). A
   payment the diary cannot determine falls to the positions of its instrument by what each held
   when it fell due, which is exact while every position's settlement is filed and spreads one filed
@@ -542,7 +544,7 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   `Credit_Monte_Carlo`, the same two-run seam with a different calculation in it; a ratio-solve
   primitive for participating forwards beside it.
 - **Service layer, what remains** — SSE for progress, a cost estimate that reads the real grid,
-  auth with budget caps, and the two market-building verbs served to the MCP binding alone: the
+  budget caps per seat, and the two market-building verbs served to the MCP binding alone: the
   dependency walk and the set-up have no screen, so a desk reads a refused booking's want-list
   through a model rather than beside the book. The Securities screen's join stays read-only too: it
   names the knot quoted off a drifted or unmapped ticker, and the fix is a curve row or a seed

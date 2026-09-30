@@ -695,7 +695,7 @@ class Context:
         from .spine import book as record
 
         return record(deal, quantity, counterparty, netting_set, execution_reference,
-                      actor_name=actor, book_name=book, effective_time=effective_time)
+                      actor_name=actor, book_name=book, effective_time=effective_time)['recorded']
 
     def amend(self, deal, amended_to, actor=None, book=None, effective_time=None):
         """Record that these terms became those terms - a NEW instrument hash linked to the old one.
@@ -703,7 +703,7 @@ class Context:
         from .spine import amend as record
 
         return record(deal, amended_to, actor_name=actor, book_name=book,
-                      effective_time=effective_time)
+                      effective_time=effective_time)['recorded']
 
     def apply_lifecycle(self, event_type, body, actor=None, book=None, effective_time=None):
         """File an election, a fixing observation or a determination - and nothing else.

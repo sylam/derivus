@@ -81,9 +81,12 @@ the book's own calculation and the record never move.
 QUOTING IS NOT BOOKING. solve_structure gives a price and records nothing - quote as often as
 the client asks. book_quote is the ACCEPTANCE: call it when the client TAKES the price, and it
 is what records the quote and books the trade. Between the two the market moves, which is
-reported and never refused. Where the desk's policy wants a second seat the acceptance comes
-back {written: false} with a tier and waits_on: that seat calls approve_quote(quote_id, actor),
-or reject_quote(quote_id, reason, actor), and then book_quote again.
+reported and never refused. EVERY BOOKING IS A TICKET: where the desk's policy wants a second
+seat the trade books all the same and reads PENDING - the answer carries a tier and waits_on -
+and that seat signs it with approve_quote(quote_id, actor), or approve_ticket(ticket, actor)
+for a direct booking; reject_quote and reject_ticket file the other verdict, the trade standing
+rejected until somebody closes it. Never book it a second time. worklist names what waits on
+somebody: tickets to sign, payments due, fills to confirm, closes to mark, rejected trades.
 
 THE WIRE FORMS a deal is written in: dates {".Timestamp": "YYYY-MM-DD"}, periods
 {".DateOffset": "3M"}, percentages {".Percent": 2.5}, numbers as numbers; a curve or a surface
@@ -127,9 +130,12 @@ and their balances back. THE P&L: once the day's close is declared, mark_book va
 every instrument on it, and book_pnl reads what the book made between two marked days or since the
 last marks. THE PAPER the book trades under is declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
-and never a balance, and describe_agreements to read them - a booking then names its agreement and
-its portfolio, a path under the book, and its quantity is the position change in units of the deal,
-1 booking it as written; book_positions reads what stands, each where it sits."""
+and never a balance, and describe_agreements to read them - a booking then names its agreement, the
+first one under it bringing its netting set, and its portfolio, a path under the book or a node
+declared on it (declare_portfolio, describe_portfolios), and its quantity is the position change in
+units of the deal, 1 booking it as written; book_positions reads what stands, each where it sits
+with the status its tickets read, and worklist what waits on the seat asking. The record's reads
+take the seat reading as actor: a seat that acts at one node of the book reads that node's rows."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -150,6 +156,9 @@ class Service:
                          else os.getenv('RF_SERVICE_URL', 'http://127.0.0.1:8000')).rstrip('/')
         self.session = session if session is not None else requests.Session()
         self.transport = {} if session is not None else {'timeout': timeout}
+        # where the service checks who is asking, the ID token every call carries
+        if os.getenv('DV_SPINE_TOKEN'):
+            self.transport['headers'] = {'Authorization': 'Bearer ' + os.getenv('DV_SPINE_TOKEN')}
 
     def request(self, method, path, **kwargs):
         try:
@@ -286,11 +295,13 @@ def list_instrument_types() -> dict:
     list of bookable type names, and `containers` names the types that can HOLD other deals - a
     structured deal over its legs, a netting set over a book. Only a container may be named as
     `parent_reference` in `book_deal`. Type names are exact class names (`FXForwardDeal`,
-    `QEDI_CustomAutoCallSwap`), not descriptions.
+    `QEDI_CustomAutoCallSwap`), not descriptions; `vernacular` gives each the plain names a desk
+    says for it, so "an NDF" or "a cap" is looked up there.
     """
     instrument = service().call('GET', '/schema')['Instrument']
     return {'groups': instrument['groups'], 'containers': instrument['containers'],
-            'types': sorted(instrument['types']), 'count': len(instrument['types'])}
+            'types': sorted(instrument['types']), 'vernacular': instrument['vernacular'],
+            'count': len(instrument['types'])}
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -310,20 +321,28 @@ def describe_instrument_type(deal_type: str) -> dict:
     curves are named by a string that must match a `Price Factors` block. `accepts_children` says
     whether this type can hold other deals.
 
-    `deal_type` is one of the names `list_instrument_types` returns, spelled exactly.
+    `deal_type` is one of the names `list_instrument_types` returns, spelled exactly; a name that is
+    not one is answered with the types whose name or `vernacular` holds it, those it names whole
+    first.
     """
     schema = service().call('GET', '/schema')['Instrument']
     sections = schema['types'].get(deal_type)
     if sections is None:
-        close = [t for t in schema['types'] if deal_type.lower() in t.lower()]
+        asked = deal_type.strip().lower()
+        said = {t: [name.strip().lower() for name in schema['vernacular'][t].split(',')]
+                for t in schema['types']}
+        close = sorted((t for t in schema['types'] if asked in t.lower()
+                        or any(asked in name for name in said[t])),
+                       key=lambda t: asked not in said[t])
         raise ToolError('{!r} is not a deal type. {}'.format(
             deal_type, 'Close matches: {}'.format(', '.join(close)) if close
             else 'Call list_instrument_types for the full list.'))
     fields = {}
     for section in sections:
         fields.update(schema['sections'][section])
-    return {'deal_type': deal_type, 'sections': sections,
-            'accepts_children': deal_type in schema['containers'], 'fields': fields,
+    return {'deal_type': deal_type, 'vernacular': schema['vernacular'][deal_type],
+            'sections': sections, 'accepts_children': deal_type in schema['containers'],
+            'fields': fields,
             'required': [key for key, meta in fields.items() if meta.get('required')]}
 
 
@@ -528,7 +547,8 @@ def _stated(**fields):
 def book_deal(deal: dict, parent_reference: str | None = None, quantity: float | None = None,
               execution_reference: str | None = None, actor: str | None = None,
               agreement: str | None = None, portfolio: str | None = None,
-              price: float | None = None, price_currency: str | None = None) -> dict:
+              price: float | None = None, price_currency: str | None = None,
+              notional: float | None = None, notional_currency: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -545,7 +565,8 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     `quantity` is the position change in units of the deal - 1 books it as written, -1 closes it,
     -0.5 unwinds half, the book pricing every position at its net through the fields its type marks
     `sized` (`describe_instrument_type`) - `execution_reference`
-    is the venue exec id or ticket id that makes a retry the same fact, and the deal must sit under a
+    is the venue exec id or ticket id that makes a booking sent again the one it was - answered
+    `booked` where it stands, and refused under other fields - and the deal must sit under a
     `NettingCollateralSet` naming a counterparty.
     `agreement` names an agreement `describe_agreements` lists - the set it sits under must be the
     set of that name - `portfolio` the path where the position sits, its top node the book's own
@@ -554,6 +575,14 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     was agreed in another currency than the book reports in: the service crosses it at the
     booking's own board, so never convert it by hand. `actor` is the seat the fact is filed
     under. A desk that keeps no record ignores all of them.
+
+    EVERY BOOKING IS A TICKET, which the answer carries: where the desk's tiers policy caps sizes
+    or tenors, state the `notional` and `notional_currency` the whole trade deals, its `quantity`
+    already in it - a cap reads what is stated and nothing else - and a tier wanting a second seat
+    books it PENDING with `waits_on`, which another seat clears with `approve_ticket`; a ticket no
+    tier admits books nothing and names every bound it broke. An amendment is a ticket too, routed
+    the same way. An `agreement` whose netting set the book does not carry yet is brought by its
+    first booking, out of the terms legal declared.
 
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
@@ -573,12 +602,14 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
         {'action': 'add', 'deal': deal},
         **_stated(parent_reference=parent_reference, quantity=quantity,
                   execution_reference=execution_reference, actor=actor, agreement=agreement,
-                  portfolio=portfolio, price=price, price_currency=price_currency))))
+                  portfolio=portfolio, price=price, price_currency=price_currency,
+                  notional=notional, notional_currency=notional_currency))))
 
 
 @MCP.tool()
 def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
-               actor: str | None = None) -> dict:
+               actor: str | None = None, notional: float | None = None,
+               notional_currency: str | None = None) -> dict:
     """Change one or more fields of a booked deal - "make the notional 3m", "move settlement a
     week". `fields` MERGES into the deal at `deal_path` (from `read_book`); every other field
     stands. The same validate-before-write contract as `book_deal`: a refusal comes back as
@@ -587,10 +618,13 @@ def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
     `{".Percent": 2.5}`, plain numbers as numbers. `reference` names the deal you read at that
     path: another host's booking moves every position, and a path that no longer holds it refuses
     rather than amending whoever sits there now. `actor` is the seat the amendment is filed under
-    where the desk keeps a record."""
+    where the desk keeps a record. A RESTRIKE IS A TICKET: where the desk's tiers policy is in
+    force it is routed as `book_deal` is, on the `notional` and `notional_currency` it states, and
+    under four eyes the position reads PENDING until another seat signs (`approve_ticket`)."""
     return _booking(service().call('POST', '/book/deals', json=dict(
         {'action': 'amend', 'deal_path': deal_path, 'fields': fields},
-        **_stated(reference=reference, actor=actor))))
+        **_stated(reference=reference, actor=actor, notional=notional,
+                  notional_currency=notional_currency))))
 
 
 @MCP.tool()
@@ -1118,7 +1152,8 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
 @MCP.tool()
 async def solve_structure(structure: str, params: dict, netting_set: str | None = None,
                           margin: dict | None = None, actor: str | None = None,
-                          wait_seconds: float = 120.0, ctx: Context = None) -> dict:
+                          portfolio: str | None = None, wait_seconds: float = 120.0,
+                          ctx: Context = None) -> dict:
     """Quote a whole structure against the live book - the collar, strangle and seagull verb, and
     the one to reach for instead of composing legs by hand: the structure declares its own legs,
     their conventions and the order they solve in, so the finance does not depend on this
@@ -1193,12 +1228,14 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     service's own tmp. Two identical asks are two quotes, each with its own id and its own files -
     a quote is an act, not a lookup. A quote is also FIRM ONLY FOR A WINDOW where the book declares
     one (`Quote Policy.firm_seconds`, ten minutes by default): accept it while it is fresh, or
-    re-quote. `actor` is the seat the quote is attributed to where the desk keeps a record.
+    re-quote. `actor` is the seat the quote is attributed to where the desk keeps a record, and
+    `portfolio` the node the trade books into once accepted - a path under the book, the book's
+    own where none is named - stated with the price.
     """
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/structure',
         json=dict({'structure': structure, 'params': params, 'netting_set': netting_set,
-                   'margin': margin}, **_stated(actor=actor)))
+                   'margin': margin}, **_stated(actor=actor, portfolio=portfolio)))
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
@@ -1242,11 +1279,12 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
     WHERE THE DESK KEEPS A RECORD the answer says more. THE MARKET MOVING IS NEWS, NOT A REFUSAL:
     `market` reports the values the quote was struck on, the ones standing now and whether they
     moved. What does refuse is the book having moved under the solve and a board that was already
-    stale when the price was given. And where a `tiers` policy is in force the booking may WAIT:
-    the answer then carries `accepted` - the acceptance is filed either way - with `tier` and
-    `waits_on` saying which seat owes a signature, or `refused` where no tier admits the ticket.
-    Have that seat call `approve_quote(quote_id, actor)`, then call this again. `actor` is the seat
-    the acceptance and the fill are filed under.
+    stale when the price was given. And where a `tiers` policy is in force the ticket is routed:
+    the answer carries `accepted` - the acceptance is filed either way - and `tier`, and under a
+    tier wanting a second seat the trade books PENDING with `waits_on` saying why: have that seat
+    call `approve_quote(quote_id, actor)` - never accept again. `refused` beside `accepted` is a
+    ticket no tier admits. `actor` is the seat the acceptance and the fill are filed under; the
+    trade books into the `portfolio` the quote stated.
 
     TWO REFUSALS WEAR ONE SHAPE and `accepted` is the tell. `{written: false, refused: [...]}` with
     no `accepted` is the book declining the deal - read the messages, fix, book again. The same two
@@ -1265,33 +1303,44 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
 
 
 @MCP.tool()
-def approve_quote(quote_id: str, actor: str) -> dict:
-    """Sign an accepted quote, so a desk tier that wants a second pair of eyes is satisfied.
+def approve_ticket(ticket: str, actor: str) -> dict:
+    """Sign the ticket a booking carries - the second pair of eyes a tier under four eyes wants.
 
-    Call this when `book_quote` came back `{written: false}` with a `tier` under four eyes and a
-    `waits_on` this conversation cannot fix by itself - then call `book_quote` again, which books on
-    the standing approval. `actor` is the seat that signs and is REQUIRED: where the tier declares
-    four eyes it may not be the one that accepted the quote, and a seat the desk has not scoped for
-    approvals is refused in the record's own words.
-
-    The signature is over the TICKET this quote minted, so it reaches this quote and no other; a
-    re-quote is a new ticket and wants its own. Answers `{recorded: {lsn}, ticket}`,
-    and signing twice is one fact.
+    Call it when a booking came back PENDING, `tier` under four eyes with `waits_on`: the trade is
+    already booked, and this is what clears it. `actor` is the seat that signs and is REQUIRED: the
+    booker's own signature is filed and clears nothing, and a seat the desk has not scoped to
+    approve where the ticket books is refused in the record's own words. The verdict is filed where
+    the booking sits, read off the record. Answers `{recorded: {lsn}, ticket, portfolio, status}`,
+    `status` what the trade reads now; signing twice is one fact.
     """
-    return service().call('POST', '/book/quote/approve',
-                          json={'quote_id': quote_id, 'actor': actor})
+    return service().call('POST', '/book/approve', json={'ticket': ticket, 'actor': actor})
+
+
+@MCP.tool()
+def reject_ticket(ticket: str, reason: str, actor: str) -> dict:
+    """Refuse the ticket a booking carries, with the reason on the row.
+
+    A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
+    approval is what the record says, and a later approval moves it back. The trade happened, so a
+    rejected one STANDS until somebody closes it, and `worklist` names it. `reason` is required.
+    Answers `{recorded: {lsn}, ticket, portfolio, status}`.
+    """
+    return service().call('POST', '/book/reject',
+                          json={'ticket': ticket, 'reason': reason, 'actor': actor})
+
+
+@MCP.tool()
+def approve_quote(quote_id: str, actor: str) -> dict:
+    """`approve_ticket` for an accepted quote, named by its id rather than its ticket - the
+    signature is over the ticket the acceptance minted, so it reaches this quote and no other."""
+    return service().call('POST', '/book/approve', json={'quote_id': quote_id, 'actor': actor})
 
 
 @MCP.tool()
 def reject_quote(quote_id: str, reason: str, actor: str) -> dict:
-    """Refuse an accepted quote, with the reason on the row.
-
-    A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
-    approval is what the record says, and a later approval moves it back. `reason` is required -
-    a verdict nobody can read the grounds of is one nothing can be filed against later. Answers
-    `{recorded: {lsn}, ticket}`.
-    """
-    return service().call('POST', '/book/quote/reject',
+    """`reject_ticket` for an accepted quote, named by its id - the reason on the row, and the
+    trade standing rejected until somebody closes it."""
+    return service().call('POST', '/book/reject',
                           json={'quote_id': quote_id, 'reason': reason, 'actor': actor})
 
 
@@ -1408,7 +1457,7 @@ async def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_reconcile() -> dict:
+def book_reconcile(actor: str | None = None) -> dict:
     """Where the book file and the book of record disagree - the record read AT ITS HEAD.
 
     A READING, never a refusal. The file is the desk's working copy and the record is what is true,
@@ -1420,13 +1469,15 @@ def book_reconcile() -> dict:
     The record is folded AT ITS HEAD, so a booking whose file write never landed is exactly what
     shows up here. `events_behind` counts every event since the file was written and
     `positions_behind` the fills and amendments among them; an empty answer with both at 0 is a
-    desk whose copy is exactly the record. 404 on a box that records nothing.
+    desk whose copy is exactly the record; `terms_mismatch` names a client's netting set whose
+    paper is not what legal declared. `actor` is the seat reading. 404 on a box that records
+    nothing.
     """
-    return service().call('GET', '/book/reconcile')
+    return service().call('GET', '/book/reconcile', params=_stated(actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_diary(due_before: str | None = None) -> dict:
+def book_diary(due_before: str | None = None, actor: str | None = None) -> dict:
     """Everything the book OWES or is owed: every payment, fixing and expiry its deals carry.
 
     The compile's own schedule, so the diary and the pricer cannot disagree about a payment. A row
@@ -1438,10 +1489,11 @@ def book_diary(due_before: str | None = None) -> dict:
     fact names the row by.
 
     `due_before='YYYY-MM-DD'` trims it to what falls due by a day. Cached on the book's own content
-    and computed on the compute queue, so asking again after nothing moved costs nothing.
+    and computed on the compute queue, so asking again after nothing moved costs nothing. `actor`
+    is the seat reading.
     """
     return service().call('GET', '/book/diary',
-                          params={} if due_before is None else {'due_before': due_before})
+                          params=_stated(due_before=due_before, actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1461,7 +1513,8 @@ def close_check(date: str) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_activity(since: int | None = None, limit: int = 200) -> dict:
+def book_activity(since: int | None = None, limit: int = 200,
+                  actor: str | None = None) -> dict:
     """The record's own strip: one line per event - where it sits, when it was recorded and when
     it is TRUE, who said it, and the declared sentence for what it was.
 
@@ -1470,11 +1523,11 @@ def book_activity(since: int | None = None, limit: int = 200) -> dict:
     again with the one you were given reaches every event in turn - that is how a whole record is
     read without holding it at once; with no `since` it is the NEWEST `limit` rows and the `lsn`
     is the head. The strip opens no body, so it reads EVERY type - including one this hub has no
-    sentence for, which renders its own name rather than dropping out of the sequence. 404 on a
-    box that records nothing.
+    sentence for, which renders its own name rather than dropping out of the sequence. `actor` is
+    the seat reading. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/activity', params=dict(
-        {} if since is None else {'since': since}, limit=limit))
+        _stated(since=since, actor=actor), limit=limit))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1552,14 +1605,15 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_cash(date: str | None = None) -> dict:
+def book_cash(date: str | None = None, actor: str | None = None) -> dict:
     """The money the record's settlements moved: every movement under the settlement system's
     reference - its kind, what it settled, the asset, the signed amount and the value date - and
     the balances they sum to per kind, subject and asset, so collateral held under an agreement is
     one row. `date` (`YYYY-MM-DD`) reads the movements settled on or before it. A restated movement
-    stands in place of the one it corrects. 404 on a box that records nothing.
+    stands in place of the one it corrects. `actor` is the seat reading. 404 on a box that
+    records nothing.
     """
-    return service().call('GET', '/book/cash', params=_stated(date=date))
+    return service().call('GET', '/book/cash', params=_stated(date=date, actor=actor))
 
 
 @MCP.tool()
@@ -1578,7 +1632,7 @@ def mark_book(actor: str | None = None) -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | None = None,
              agreement: str | None = None, client: str | None = None,
-             explain: bool = False) -> dict:
+             explain: bool = False, actor: str | None = None) -> dict:
     """The desk's P&L between the marks of two days (`YYYY-MM-DD`), or from the last marks to now
     where `end` is not named: per position and in total, the values at both ends - each close being
     the end of its day, so less what the day paid - the premiums the fills paid, the payments and
@@ -1589,11 +1643,11 @@ def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | 
     or settled - is named under `unknown`, a total over it is null and `complete` is false.
     `explain` adds why the held positions moved - the carry of the start's book to the end's day,
     the market move per risk factor off the start's sensitivities, and the residual - at the price
-    of three more valuations.
+    of three more valuations. `actor` is the seat reading, every total summed over what it sees.
     """
     return service().call('GET', '/book/pnl', params=_stated(
         start=start, end=end, portfolio=portfolio, agreement=agreement, client=client,
-        explain=explain or None))
+        explain=explain or None, actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1607,16 +1661,50 @@ def describe_agreements() -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_positions() -> dict:
+def book_positions(actor: str | None = None) -> dict:
     """The book's positions as the record holds them, one row per instrument under an agreement and
     a portfolio: the counterparty, the NET quantity in units of the deal - the fills summed, 1 being
     the deal as written - the clips behind it, and `deal_paths` where the book file holds it, the
     path `read_deal` and `amend_deal` take. The portfolio is a path whose top node is the book; the
     client is the counterparty, whose name and parent `describe_agreements` gives. A position closed
     to zero stands no more, and one whose deal has expired stands until the day it settles -
-    `expired` and `settles` say when - and rolls off on that day. 404 on a box that records nothing.
+    `expired` and `settles` say when - and rolls off on that day. `status` is what its tickets read
+    - `rejected`, `pending`, `approved` or `unticketed` - and `pending` the quantity awaiting a
+    second seat; a pending trade prices and settles all the same. `actor` is the seat reading. 404
+    on a box that records nothing.
     """
-    return service().call('GET', '/book/positions')
+    return service().call('GET', '/book/positions', params=_stated(actor=actor))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def worklist(actor: str | None = None) -> dict:
+    """What waits on the seat asking, read off what stands - nothing here is filed, so a row leaves
+    the moment its fact lands. Five lists, each what one verb acts on where `actor` holds it, each
+    row `{kind, what, key, lsn, since}` with `key` what the clearing fact is filed against:
+    `pending` tickets to sign (`approve_ticket`, for an approve seat), `payments` due by the book's
+    day nobody settled and `unconfirmed` fills (`file_status` against the key, for a settle seat),
+    `unmarked` closes (`mark_book`, for a mark seat), and `rejected` trades still standing, which
+    a book seat closes out. `counts` says how many each list holds; each list answers the newest
+    200. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/worklist', params=_stated(actor=actor))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_portfolios() -> dict:
+    """The book's declared tree: every node the record declares, with the seat that declared it and
+    where. Once any node of a book stands, a booking sits in the book itself or a declared node.
+    404 on a box that records nothing."""
+    return service().call('GET', '/book/portfolios')
+
+
+@MCP.tool()
+def declare_portfolio(path: str, actor: str | None = None) -> dict:
+    """Declare a node of the book's tree - `<book>/FX/Options` - judged at its parent: a seat with
+    `admin` there declares it, and the book itself is the firm's to declare. Answers
+    `{recorded: {lsn}, path}`; declaring one path twice is one fact."""
+    return service().call('POST', '/book/portfolios',
+                          json=dict({'path': path}, **_stated(actor=actor)))
 
 
 @MCP.tool()
@@ -1734,10 +1822,11 @@ def quote_a_structure(structure: str, pair: str, notional: str, notional_currenc
         '4. book_quote(quote_id) ONLY on the user\'s word that the CLIENT ACCEPTED - that is what '
         'records the quote and books the trade. Nothing is recorded before it. A quote is firm '
         'for a window; past it, re-quote.\n'
-        '5. If the answer is {{written: false}} with a tier and waits_on, the desk\'s policy wants '
-        'another seat: have it call approve_quote(quote_id, actor), then book_quote again. With '
-        '`refused` BESIDE `accepted` no tier admits the ticket - say which bound it broke, and do '
-        'not re-quote. A moved market is reported under `market` and is never a refusal.'.format(
+        '5. If the answer carries a tier with waits_on, the trade is booked PENDING and the '
+        'desk\'s policy wants another seat: have it call approve_quote(quote_id, actor) - never '
+        'accept again. With `refused` BESIDE `accepted` no tier admits the ticket - say which '
+        'bound it broke, and do not re-quote. A moved market is reported under `market` and is '
+        'never a refusal.'.format(
             structure, pair, notional, notional_currency, expiry,
             ', netting_set {!r}'.format(client) if client else ''))
 

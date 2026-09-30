@@ -31,13 +31,12 @@ this home or this script could not put, and `evidence` is the rows that decided 
 from .canon import canonical_bytes, content_hash
 from .capability import (
     CAPABILITIES_POLICY, CAPABILITY_EVENTS, SCOPED_TYPES, apply_event, declarable, deepest,
-    evaluate, initial_state, scope_of, stray, under, verb_for)
+    evaluate, holders, initial_state, scope_of, stray, under, verb_for)
 from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog
 from .policy import TIERS_POLICY, in_force
 from .projections import PROJECTORS, fold
 from .store import BlobStore
-from .tiers import standing_verdict
 from .vocabulary import (
     BLOB_FIELDS, EVENT_TYPES, EVENT_VERB, RECOVERY, WRITER, WRITER_VOICE, cited_blobs, is_hash,
     is_text)
@@ -54,6 +53,8 @@ INVARIANTS = ('copies_agree', 'nothing_outside_its_seat', 'every_refusal_is_a_de
 KEYLESS_PROJECTORS = ('activity',)
 #: The fold an amendment is held against: where the terms it restrikes were held.
 POSITIONS = PROJECTORS['positions']
+#: What carries a ticket - a trade, and a restrike of one.
+TICKETED = ('fill', 'amendment')
 
 #: The script's one section, and the keys an act of it may carry - each read by one invariant. An
 #: act naming none of them is a step the oracle has no question about.
@@ -167,7 +168,7 @@ def nothing_outside_its_seat(log, entitled):
             workflow = frame['lsn']
         if own and event_type == 'approval':
             signed.append((frame['lsn'], body.get('plan_hash'), workflow))
-        if event_type == 'fill':
+        if event_type in TICKETED:
             booked[body.get('ticket')] = frame['lsn']
         if event_type in CAPABILITY_EVENTS:
             if _undeclared(log, body):
@@ -188,7 +189,7 @@ def nothing_outside_its_seat(log, entitled):
         'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
         'ticket only under a tiers policy in force and books it after, so this is that voice '
         'forged'.format(lsn, ticket, 'no tiers policy in force' if since is None
-                        else 'no fill after it booking that ticket')
+                        else 'no fill or restrike after it carrying that ticket')
         for lsn, ticket, since in signed if since is None or booked.get(ticket, 0) < lsn)
     return answer(failures, [
         '{} frame(s) re-adjudicated{}'.format(read, '' if entitled else ' by envelope alone')])
@@ -205,15 +206,13 @@ def _placed(frame, body, positions):
                 'portfolio outside its own book\'s tree, which the writer refuses'.format(
                     frame['lsn'], event_type, named, book)]
     named = body.get('portfolio') if event_type == 'amendment' else None
-    holders = [] if named is None else sorted(
-        portfolio for rows in positions.get(body['instrument'], {}).values()
-        for portfolio, row in rows.items() if row['quantity'] and under(portfolio, book))
-    node = deepest(holders)
+    held = [] if named is None else holders(positions, body['instrument'], book)
+    node = deepest(held)
     if node is None or under(node, named):
         return []
     return ['LSN {}: the amendment is judged at {!r} and moves the positions held at {}, the '
             'deepest node holding them being {!r} - a restrike judged narrower than what it '
-            'moved'.format(frame['lsn'], named, ', '.join(holders), node)]
+            'moved'.format(frame['lsn'], named, ', '.join(held), node)]
 
 
 def _undeclared(log, body):
@@ -256,70 +255,48 @@ def every_refusal_is_a_denial(log, script):
 
 
 def an_amended_plan_is_a_new_approval(log):
-    """Every fill booked against a quote books at a ticket a second seat gave standing to.
+    """Every ticket is one trade's, and a restrike is a trade of its own.
 
-    Two readings, `quotes` x `decisions`. A ticket is the plan the acceptance leaves the book at,
-    so two quotes sharing one would be one signature reaching two trades. And where the record
-    carries a WORKFLOW - a tiers policy in force at the position the fill landed - a quote's ticket
-    carries a standing approval by a seat that is not the one that booked it, whether the hub
-    signed it in its own voice under an automatic tier or a second seat did under four eyes. Where
-    no workflow is declared the desk declared no second pair of eyes, which is stated rather than
-    failed - and a copy that cannot READ the workflow cannot put the question at all, which is the
-    posture of a follower that pulled frames and no blobs.
+    A ticket is the plan a trade leaves and the trade's own fields, so every event carrying one
+    files one trade - a retry the writer took twice, two seats filing one execution - and one
+    carried by two different trades is one signature reaching both. And where the record
+    carries a WORKFLOW - a tiers policy in force at the
+    position an amendment landed - the amendment carries a ticket of its own, so the position it
+    restrikes stands on no approval over the ticket it had: whether one stands over the new one is
+    the position's STATUS, derived and never failed. Where no workflow is declared the desk
+    declared no second pair of eyes, which is stated rather than failed - and a copy that cannot
+    READ the workflow cannot put the question at all, which is the posture of a follower that
+    pulled frames and no blobs.
     """
-    quotes = PROJECTORS['quotes'].rows(fold(log, PROJECTORS['quotes']))
-    plans = fold(log, PROJECTORS['decisions'])['plans']
-    by_id = dict((row['quote_id'], row) for row in quotes)
-    tickets, failures, booked = {}, [], 0
-    for row in quotes:
-        held = tickets.setdefault(row['ticket'], row['quote_id'])
-        if row['ticket'] is not None and held != row['quote_id']:
-            failures.append(
-                'the quotes {!r} and {!r} share the ticket {} - one approval would reach two '
-                'trades'.format(held, row['quote_id'], row['ticket']))
-    for frame in log.frames():
-        if frame['event_type'] != 'fill':
-            continue
-        quote = by_id.get(log.open_body(frame)['execution_reference'])
-        if quote is None:
-            continue
-        booked += 1
-        try:
-            workflow = in_force(log, TIERS_POLICY, frame['lsn'])[1]
-        except SpineRefusal as unreadable:
-            return unasked(
-                'whether a fill owed a signature is the workflow document\'s question and this '
-                'copy cannot read it ({}) - follow with `--blobs` and ask again'.format(unreadable))
-        failures.extend(_signed(frame, quote, plans.get(quote['ticket'], []), workflow))
-    return answer(failures, [
-        '{} quote(s) filed, {} booked, {} plan(s) ruled on'.format(len(quotes), booked, len(plans))])
-
-
-def _signed(frame, quote, verdicts, workflow):
-    """Why this fill's ticket is not signed - the sentences, none where it is.
-
-    THE LATEST VERDICT STANDS, by LSN and the booker's own not read - `tiers.standing_verdict`,
-    what the booking path answers under four eyes; a rejection filed after an approval is what the
-    record says last.
-    """
-    if quote['ticket'] is None:
-        return ['LSN {}: the fill books the quote {!r}, which pinned no ticket - there is no plan '
-                'for a seat to have signed'.format(frame['lsn'], quote['quote_id'])]
-    if workflow is None:
-        return []
-    standing = standing_verdict({'four_eyes': True}, quote['booker'], verdicts)
-    if standing is None and verdicts:
-        return ['LSN {}: {!r} struck the quote {!r} and signed its own ticket, every verdict on it '
-                'being its own - the booker and the approver are one seat'.format(
-                    frame['lsn'], quote['booker'], quote['quote_id'])]
-    if standing is None or standing['verdict'] != 'approval':
-        return ['LSN {}: the fill books the quote {!r} at the ticket {} under a workflow, and the '
-                'record holds {}'.format(
-                    frame['lsn'], quote['quote_id'], quote['ticket'],
-                    'no verdict on that plan' if standing is None else
-                    'a {} at LSN {} as the verdict standing'.format(
-                        standing['verdict'], standing['lsn']))]
-    return []
+    tickets, failures, restruck = {}, [], 0
+    try:
+        in_force(log, TIERS_POLICY)
+        for frame in log.frames():
+            if frame['event_type'] not in TICKETED:
+                continue
+            body = log.open_body(frame)
+            ticket = body.get('ticket')
+            trade = (frame['event_type'], {field: value for field, value in body.items()
+                                           if field != 'ticket'}, frame['lsn'])
+            if ticket is not None and tickets.setdefault(ticket, trade)[:2] != trade[:2]:
+                failures.append(
+                    'LSN {}: the {} carries the ticket {} that LSN {} carried for another '
+                    'trade - one approval would reach two trades'.format(
+                        frame['lsn'], frame['event_type'], ticket, tickets[ticket][2]))
+            if frame['event_type'] != 'amendment':
+                continue
+            restruck += 1
+            if ticket is None and in_force(log, TIERS_POLICY, frame['lsn'])[1] is not None:
+                failures.append(
+                    'LSN {}: the amendment restrikes {} under a workflow and carries no ticket - '
+                    'the position it moved stands on the approvals over the ticket it had, which '
+                    'nobody gave these terms'.format(frame['lsn'], body['instrument']))
+    except SpineRefusal as unreadable:
+        return unasked(
+            'whether a restrike owed a signature is the workflow document\'s question and this '
+            'copy cannot read it ({}) - follow with `--blobs` and ask again'.format(unreadable))
+    return answer(failures, ['{} ticket(s) filed, {} restrike(s) read'.format(
+        len(tickets), restruck)])
 
 
 def closes_superseded_never_edited(log):

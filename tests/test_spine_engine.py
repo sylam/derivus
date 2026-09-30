@@ -41,6 +41,7 @@ reaching for a default home. That is the regression bar, asserted first.
   * THE DUAL WRITE'S ORDER: the event goes first and the book file follows, and a booking the
     record refuses leaves the file byte-identical.
 """
+import asyncio
 import hashlib
 import itertools
 import json
@@ -62,6 +63,8 @@ from derivus_spine import SpineLog, canonical_bytes, init_home, verify_home
 from derivus_spine import policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
+import test_spine_identity
+
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
 RATE, SPOT, AMOUNT = 0.02, 18.5, 1_000_000.0
@@ -81,6 +84,8 @@ FACTORS = {
     'InterestRate.ZAR': {'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                          'Curve': utils.Curve([], [[0.0, RATE], [5.0, RATE]])}}
 CSA = {'.CreditSupportList': [[0.0, 0.0]]}
+#: The identity gates' own IdP - keys minted in-process, the JWKS spelled from them by hand.
+idp = test_spine_identity.idp
 COLLAR = {'pair': 'USDZAR', 'expiry': '1Y', 'notional': AMOUNT,
           'notional_currency': 'USD', 'floor': USDZAR * 0.95}
 
@@ -1119,53 +1124,57 @@ def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded
     assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_a_fill_reads_approved_rejected_pending_or_unticketed_off_what_stands():
-    """PENDING IS DERIVED, never filed: a fill's status is read off the verdicts standing over its
-    ticket when it is asked. The latest verdict stands, so a rejection after an approval reads
-    rejected and an approval after that approved again; under four eyes - every ticket the hub did
-    not sign in its own voice - the booker's own verdicts are not read at all, so its approval
-    clears nothing, withdraws no other seat's rejection and its rejection withdraws no other seat's
-    approval, while a ticket an automatic tier signed reads approved; and a fill carrying no ticket,
-    or booked where no tiers policy stood at ITS position, is unticketed. A ticket is one booking's
-    alone, so two bookings restoring one plan are two tickets, and a fill's key is its instrument
-    under its execution reference.
+def test_a_ticket_reads_approved_rejected_pending_or_unticketed_off_what_stands():
+    """PENDING IS DERIVED, never filed: what a position's ticket reads is the verdict standing over
+    it when it is asked. The latest verdict stands, so a rejection after an approval reads rejected
+    and an approval after that approved again; under four eyes - every ticket the hub did not sign
+    in its own voice - the booker's own verdicts are not read at all, so its approval clears
+    nothing, withdraws no other seat's rejection and its rejection withdraws no other seat's
+    approval, while a ticket an automatic tier signed reads approved; and an entry carrying no
+    ticket, or filed where no tiers policy stood at ITS position, is unticketed. A ticket is the
+    trade: the plan it leaves and its own fields, so the same trade derived again is the same
+    ticket and one differing in either is another, and a fill's key is its instrument under its
+    execution reference.
 
     Killing mutations: the status read off the first verdict, which reads a rejected ticket
     approved; four eyes ignored, which lets a booker clear their own ticket; the booker's verdict
     read as the latest, which flips a signed ticket back to pending; and the tiers policy read at
-    the head rather than at the fill, which reads a fill booked before any workflow as owing one.
+    the head rather than at the entry, which reads a fill booked before any workflow as owing one.
     """
     def verdict(kind, actor, lsn):
         return {'verdict': kind, 'actor': actor, 'reason': None, 'lsn': lsn}
 
-    ticket, signed = spine.ticket('a' * 64, 'EXEC-1'), spine.ticket('a' * 64, 'EXEC-2')
-    assert ticket != signed and len(ticket) == 64
+    trade = {'execution_reference': 'EXEC-1', 'quantity': 1.0}
+    ticket = spine.ticket('a' * 64, trade)
+    signed = spine.ticket('a' * 64, dict(trade, quantity=2.0))
+    assert ticket == spine.ticket('a' * 64, dict(trade)) and len(ticket) == 64, \
+        'one trade derived twice is two tickets'
+    assert len({ticket, signed, spine.ticket('b' * 64, trade)}) == 3, 'two trades share a ticket'
     assert spine.fill_key('c' * 64, 'EXEC-1') != spine.fill_key('c' * 64, 'EXEC-2')
-    fills = [{'lsn': 10, 'actor': ACTOR, 'ticket': ticket}, {'lsn': 11, 'actor': ACTOR},
-             {'lsn': 12, 'actor': ACTOR, 'ticket': signed}]
+    tickets = [{'lsn': 10, 'actor': ACTOR, 'ticket': ticket},
+               {'lsn': 11, 'actor': ACTOR, 'ticket': None},
+               {'lsn': 12, 'actor': ACTOR, 'ticket': signed}]
 
-    def status(verdicts, tiers_at=lambda lsn: {'tiers': []}):
-        return spine.status_of(fills, {'plans': [
-            {'plan_hash': ticket, 'verdicts': verdicts},
-            {'plan_hash': signed, 'verdicts': [verdict('approval', 'writer', 9)]}]}, tiers_at)
+    def status(verdicts, since=1):
+        return spine.status_of(tickets, {
+            'plans': {ticket: verdicts, signed: [verdict('approval', 'writer', 9)]},
+            'policies': {} if since is None else {policy.TIERS_POLICY: {'since': since}}})
 
-    assert status([]) == {10: 'pending', 11: 'unticketed', 12: 'approved'}
-    assert status([verdict('approval', DESK_TWO, 13)])[10] == 'approved'
+    assert status([]) == ['pending', 'unticketed', 'approved']
+    assert status([verdict('approval', DESK_TWO, 13)])[0] == 'approved'
     assert status([verdict('approval', DESK_TWO, 13),
-                   verdict('rejection', DESK_TWO, 14)])[10] == 'rejected'
+                   verdict('rejection', DESK_TWO, 14)])[0] == 'rejected'
     assert status([verdict('rejection', DESK_TWO, 14), verdict('approval', DESK_TWO, 15),
-                   verdict('approval', DESK_TWO, 13)])[10] == 'approved'
-    assert status([verdict('approval', ACTOR, 13)])[10] == 'pending', 'the booker signed alone'
+                   verdict('approval', DESK_TWO, 13)])[0] == 'approved'
+    assert status([verdict('approval', ACTOR, 13)])[0] == 'pending', 'the booker signed alone'
     for verdicts, standing in (
             ([verdict('rejection', DESK_TWO, 13)], 'rejected'),
             ([verdict('rejection', DESK_TWO, 13), verdict('approval', ACTOR, 14)], 'rejected'),
             ([verdict('approval', DESK_TWO, 13), verdict('approval', ACTOR, 14)], 'approved'),
             ([verdict('approval', DESK_TWO, 13), verdict('rejection', ACTOR, 14)], 'approved')):
-        assert status(verdicts)[10] == standing, verdicts
-    assert set(status([verdict('approval', DESK_TWO, 13)], lambda lsn: None).values()) == {
-        'unticketed'}
-    assert status([], lambda lsn: {'tiers': []} if lsn == 12 else None) == {
-        10: 'unticketed', 11: 'unticketed', 12: 'approved'}, 'a workflow read at the head'
+        assert status(verdicts)[0] == standing, verdicts
+    assert set(status([verdict('approval', DESK_TWO, 13)], None)) == {'unticketed'}
+    assert status([], 12) == ['unticketed', 'unticketed', 'approved'], 'a workflow read at the head'
 
 
 def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
@@ -1460,8 +1469,9 @@ def test_a_quote_records_nothing_and_files_what_the_acceptance_will(recorded, qu
     the head rather than on a filtered count - and the fourteen others die in `DV_HOME/tmp`.
 
     What the file carries is everything the acceptance will file: the book's two hashes, the values
-    vector behind them canonicalising back to the hash it is filed under, the TICKET the acceptance
-    re-derives off this same book, the age of the oldest stamped pillar, and who quoted it.
+    vector behind them canonicalising back to the hash it is filed under, the PLAN the acceptance
+    leaves this same book at, the age of the oldest stamped pillar, who quoted it and where it
+    books.
 
     Killing mutation: `/book/structure` left in the standing lane, which files a `quote_filed` for
     every price a salesperson ever says out loud.
@@ -1481,9 +1491,9 @@ def test_a_quote_records_nothing_and_files_what_the_acceptance_will(recorded, qu
     assert spine.canonical(pinned['values']) == spine.values_of(context)
     assert derivus.content_hash(pinned['values']) == pinned['values_hash'], \
         'the vector on the file is not the one the hash beside it names'
-    assert pinned['ticket'] == service.quote_ticket(document, filed['deal'], quote['quote_id'],
-                                                    CLIENT_SET)
-    assert pinned['ticket'] != pinned['plan_hash'], 'the ticket is the book plus this quote'
+    assert pinned['plan'] == service.mirrored_plan(document, filed['deal'], CLIENT_SET)
+    assert pinned['plan'] != pinned['plan_hash'], 'the plan is the book plus this quote'
+    assert filed['portfolio'] == 'spine-desk', 'a quote naming no node books into its book'
     # the board was stamped at 16:30 on the base date, so the age is the wall clock since then
     assert pinned['pillar_age'] == pytest.approx(
         service.quote_age(SNAPPED.isoformat(), filed['quoted_at']), rel=1e-6)
@@ -1566,11 +1576,11 @@ def typed(home, *event_types):
 def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(recorded, quoting):
     """THE ACCEPTANCE IS WHERE THE RECORD MOVES. With no tiers policy the flow is what it was: the
     `quote_filed` under the ACCEPTOR's seat, then the `fill` citing the quote id as its execution
-    reference, at consecutive LSNs, then the file. The quote carries the TICKET the acceptance
-    re-derived, which is the plan an approval of it would sign.
+    reference, at consecutive LSNs, then the file. The quote and the fill carry ONE ticket - the
+    plan the booking left the book at and the fill as it is filed.
 
-    THE TICKET IS HELD AGAINST THE WORLD, not against itself: the plan the quote WOULD leave the
-    book at is the plan it DID leave it at, read off the file the booking wrote.
+    THE PLAN IS HELD AGAINST THE WORLD, not against itself: the plan the quote pinned the book WOULD
+    be left at is the plan it WAS left at, read off the file the booking wrote.
 
     AND AN ACCEPTANCE THAT BOOKED IS TOLD SO BY NAME. The booking was itself a move of the book, so
     the plan check would send a salesperson to re-quote a trade the desk has already done; the
@@ -1578,8 +1588,8 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     coalesces is the one a tier held back, which is the desk tier's own gate.
 
     Killing mutations: the fill appended before the quote, which files a trade against a quote the
-    record does not yet hold; `quote_ticket` splicing at the root, which mints a ticket for a plan
-    no booking reaches.
+    record does not yet hold; `mirrored_plan` splicing at the root, which pins a plan no booking
+    reaches.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET,
                      request='the client wants a year of downside at zero cost')
@@ -1591,12 +1601,12 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     filed, fill = typed(recorded, 'quote_filed', 'fill')
     assert filed[1] == 'quote_filed' and fill[1] == 'fill'
     assert fill[0] == filed[0] + 1, 'the quote and its fill are not one act'
-    assert booked['accepted'] == {'lsn': filed[0], 'ticket': struck['ticket']}
+    assert booked['accepted'] == {'lsn': filed[0], 'ticket': booked['ticket']}
     assert pending_of(quoting.parent, quote)['accepted'] == booked['accepted']
 
     _, _, body = facts(recorded, 'quote_filed')[0]
     assert body['quote_id'] == quote['quote_id'] and body['structure'] == 'ZeroCostCollar'
-    assert body['ticket'] == struck['ticket'] and body['plan_hash'] == struck['plan_hash']
+    assert body['ticket'] == booked['ticket'] and body['plan_hash'] == struck['plan_hash']
     assert body['request'].startswith('the client wants')
     assert len(body['solved']) == 1 and body['edge'] == pytest.approx(quote['edge'])
     assert blob(recorded, body['values_hash']) == spine.canonical(struck['values'])
@@ -1613,8 +1623,11 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     held = [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']
             if child['Instrument']['.Deal'].get('Buy_Sell')][0]
     assert held != bought, 'the desk took the same side as its client'
-    assert body['ticket'] == spine.ticket(service.load(landed).plan_hash(), quote['quote_id']), \
-        'the ticket is not the plan this booking left the book at, under this quote'
+    assert struck['plan'] == service.load(landed).plan_hash(), \
+        'the quote pinned a plan this booking did not leave the book at'
+    assert fill_body['ticket'] == spine.ticket(struck['plan'], {
+        field: value for field, value in fill_body.items() if field != 'ticket'}), \
+        'the ticket is not the plan it left and the fill as filed'
     assert fill_body['ticket'] == body['ticket'], 'the fill does not carry what was signed'
 
     retried = accept(quote).json()
@@ -2214,53 +2227,45 @@ def test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fi
     assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_a_desk_tier_waits_for_a_second_seat_and_books_on_the_verdict_that_stands(recorded,
-                                                                                  quoting):
-    """THE TWO-ACT DESK TIER, through the service. A four-eyes tier wants a second seat: the first
-    acceptance files the quote and answers `waits_on` with the file untouched, the ACCEPTOR's own
-    approval does not satisfy four eyes, a rejection filed after it is what the record says LAST -
-    the answer naming its LSN and its reason - and an approval by another seat after that is what
-    books. Four acceptances of one quote, ONE `quote_filed`: the tuples carry no `effective_time`,
-    so the writer's own duplicate rule coalesces them onto the LSN they already have.
+def test_a_four_eyes_acceptance_books_pending_and_reads_the_verdict_that_stands(recorded,
+                                                                                 quoting):
+    """UNDER FOUR EYES THE TRADE LANDS AND WAITS ON ITS STATUS. The acceptance files the quote and
+    books the fill carrying its ticket, reading PENDING with `waits_on` saying why - a pending
+    trade prices, settles and exports all the same - and the verdicts are filed over that ticket
+    where it books: the ACCEPTOR's own approval clears nothing, a rejection filed after it is what
+    the record says LAST, and another seat's approval after that is what stands. A second
+    acceptance is told the quote is already booked: ONE `quote_filed`, ONE fill.
 
-    Killing mutations: `standing_approval` reading the first verdict in the list rather than the
-    latest by LSN, which books on an approval a rejection has since overtaken; and the four-eyes
-    test read against any row of the list rather than the one that stands.
+    Killing mutations: the fill held back under four eyes, which leaves the acceptance booking
+    nothing; and the status read with the booker's own verdicts, which clears a ticket its own
+    booker signed.
     """
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
-    before = quoting.read_bytes()
-
-    waiting = accept(quote).json()
-    ticket = waiting['accepted']['ticket']
-    assert waiting['written'] is False and quoting.read_bytes() == before
-    assert waiting['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None}
-    assert 'no verdict is filed' in waiting['waits_on']
-
-    signed = CLIENT.post('/book/quote/approve',
-                         json={'quote_id': quote['quote_id'], 'actor': ACTOR}).json()
-    assert signed['ticket'] == ticket
-    own = accept(quote).json()
-    assert own['written'] is False and 'one seat' in own['waits_on']
-    assert quoting.read_bytes() == before
-
-    # a rejection filed LAST is what stands, whatever was approved before it
-    rejected = CLIENT.post('/book/quote/reject', json={
-        'quote_id': quote['quote_id'], 'actor': DESK_TWO, 'reason': 'the client is over limit'})
-    stale = accept(quote).json()
-    assert stale['written'] is False
-    assert str(rejected.json()['recorded']['lsn']) in stale['waits_on']
-    assert 'the client is over limit' in stale['waits_on']
-
-    # and an approval after the rejection is what the record says last
-    approved = CLIENT.post('/book/quote/approve',
-                           json={'quote_id': quote['quote_id'], 'actor': DESK_TWO}).json()
     booked = accept(quote).json()
-    assert booked['written'] is True and booked['tier']['name'] == 'desk'
-    assert booked['tier']['approval_lsn'] == approved['recorded']['lsn']
-    assert len(facts(recorded, 'fill')) == 1
-    assert [lsn for lsn, _ in typed(recorded, 'quote_filed')] == [waiting['accepted']['lsn']], \
-        'four acceptances of one quote minted more than one fact'
+    ticket = booked['accepted']['ticket']
+    assert booked['written'] is True and booked['ticket'] == ticket, booked
+    assert booked['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None}
+    assert 'no verdict is filed' in booked['waits_on']
+    fill = facts(recorded, 'fill')[0][2]
+    assert fill['ticket'] == ticket
+
+    def standing():
+        row = next(row for row in CLIENT.get('/book/positions').json()['positions']
+                   if row['instrument'] == fill['instrument'])
+        return row['status'], row['pending']
+
+    assert standing() == ('pending', 1.0)
+    for actor, verb, status in ((ACTOR, 'approve', 'pending'), (DESK_TWO, 'reject', 'rejected'),
+                                (DESK_TWO, 'approve', 'approved')):
+        decided = CLIENT.post('/book/' + verb, json={
+            'quote_id': quote['quote_id'], 'actor': actor, 'reason': 'the client is over limit'})
+        assert decided.json()['ticket'] == ticket and decided.json()['status'] == status, verb
+        assert standing()[0] == status, (actor, verb)
+    assert standing()[1] == 0.0
+    retried = accept(quote).json()
+    assert retried['written'] is False and 'already on the book' in retried['note']
+    assert len(facts(recorded, 'fill')) == len(facts(recorded, 'quote_filed')) == 1
     assert verify_home(recorded)['events'] == head(recorded)
 
 
@@ -2284,7 +2289,7 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
 
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     pending = pending_of(quoting.parent, quote)
-    terms = service.quote_terms(json.loads(quoting.read_text()), pending)
+    terms = terms_of(json.loads(quoting.read_text()), pending)
     assert 'EUR' not in terms['notional_in'] and set(terms['notional_in']) == {'USD', 'ZAR'}
 
     # THE OTHER DIRECTION, with the zero on top: the NOTIONAL's own currency unvalued. Its amount
@@ -2293,7 +2298,7 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
     unvalued = json.loads(quoting.read_text())
     unvalued['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
         'FxRate.USD']['Spot'] = 0.0
-    assert service.quote_terms(unvalued, pending)['notional_in'] == {'USD': AMOUNT}
+    assert terms_of(unvalued, pending)['notional_in'] == {'USD': AMOUNT}
     before = quoting.read_bytes()
 
     answer = accept(quote).json()
@@ -2303,33 +2308,43 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
     assert head(recorded) == answer['accepted']['lsn'], 'the acceptance is not the last fact'
 
 
+def terms_of(document, pending):
+    """What the tiers read of a pending quote, as the acceptance hands them over."""
+    return service.ticket_terms(document, pending['quote']['params'], pending['deal'],
+                                pending['pinned']['values_hash'])
+
+
 def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quoting):
     """The three checks, each one driving the route through the SERVICE rather than the evaluator.
 
-    Over the cap escalates to the tier that admits it; over every tier answers `refused` with every
-    sentence of the route AND the acceptance standing, since the client took the price whatever the
-    policy says about it. A cap in a currency this book carries no rate for fails ITS tier by name -
-    the safe direction, and the one a conversion inside a policy check would lose - while a cap in a
-    currency it DOES price reads the notional CROSSED at the book's own spot, which is the case that
-    tells a stated notional from an unconverted one. And the market check passes on the name the
-    book's own board is declared under and fails on one nothing declared.
+    Over the cap escalates to the tier that admits it, whose fill lands pending; over every tier
+    answers `refused` with every sentence of the route AND the acceptance standing, since the
+    client took the price whatever the policy says about it. A cap in a currency this book carries
+    no rate for fails ITS tier by name - the safe direction, and the one a conversion inside a
+    policy check would lose - while a cap in a currency it DOES price reads the notional CROSSED at
+    the book's own spot, which is the case that tells a stated notional from an unconverted one.
+    And the market check passes on the name the book's own board is declared under and fails on
+    one nothing declared.
 
     A TICKET NO TIER ADMITS FILES NO REJECTION: the route's sentences are an answer, and a verdict
     is a seat's decision the policy names no seat for, so the head stands at the acceptance.
 
-    Killing mutation: `quote_expiry` answering nothing, which routes every ticket past a tier that
+    Killing mutation: `deal_expiry` answering nothing, which routes every ticket past a tier that
     bounds the tenor.
     """
     declared = spine.declare_market('official', spine.values_of(
         service.load(service.BOOK.read()[0])))
-    # both branches of the expiry, read directly: a vanilla leg names its own day and an accrual
-    # leg names the last settlement of its strip
-    assert service.quote_expiry({'Object': 'StructuredDeal', 'Children': [
+    # both branches of the expiry, read directly: a vanilla leg names its own day, an accrual leg
+    # the last settlement of its strip, and a swaption the later of its expiry and its maturity
+    assert service.deal_expiry({'Object': 'StructuredDeal', 'Children': [
         {'Instrument': {'.Deal': {'Object': 'FXAccumulatorOptionDeal', 'Accumulator_ExpiryDates': [
             [{'.Timestamp': '2026-03-30'}, {'.Timestamp': '2026-04-01'}, 0.0],
             [{'.Timestamp': '2026-06-30'}, {'.Timestamp': '2026-07-02'}, 0.0]]}}}]}) == \
         pd.Timestamp('2026-07-02')
-    assert service.quote_expiry({'Object': 'StructuredDeal'}) is None
+    assert service.deal_expiry({'Object': 'SwaptionDeal', 'Option_Expiry_Date': {
+        '.Timestamp': '2025-06-30'}, 'Swap_Maturity_Date': {'.Timestamp': '2030-06-30'}}) == \
+        pd.Timestamp('2030-06-30')
+    assert service.deal_expiry({'Object': 'StructuredDeal'}) is None
 
     for rows, expected, said in (
             ([{'name': 'auto', 'max_notional': {'amount': SMALL, 'currency': 'USD'}},
@@ -2355,11 +2370,9 @@ def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quotin
         pending = pending_of(quoting.parent, quote)
         answer = accept(quote).json()
 
-        if expected == 'auto':
-            assert answer['written'] is True and answer['tier']['name'] == 'auto', rows
-        elif expected == 'desk':
-            assert answer['written'] is False and answer['tier']['name'] == 'desk', rows
-            assert 'no verdict is filed' in answer['waits_on']
+        if expected is not None:
+            assert answer['written'] is True and answer['tier']['name'] == expected, rows
+            assert (expected == 'desk') == ('no verdict is filed' in answer.get('waits_on', ''))
         else:
             assert answer['written'] is False and 'tier' not in answer, rows
             assert any(said in one for one in answer['refused']), answer['refused']
@@ -2369,9 +2382,420 @@ def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quotin
         assert answer['accepted']['lsn'] > declared['lsn'], 'the acceptance did not stand'
         # the sentence the ticket's route collected, which is what "fails that tier by name" means
         if said is not None:
-            route = spine.route_ticket(pending['pinned']['ticket'], service.quote_terms(
+            route = spine.route_ticket(answer['ticket'], terms_of(
                 json.loads(quoting.read_text()), pending), ACTOR)
             assert any(said in one for one in route['refusals']), (rows, route['refusals'])
+
+
+def ticketed(execution, amount=250_000.0, **body):
+    """One direct booking under the client's set by the desk's own seat, as `/book/deals`
+    answers it."""
+    return CLIENT.post('/book/deals', content=dump(dict(
+        {'action': 'add', 'deal': dict(CASHFLOW, Reference=execution, Amount=amount),
+         'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': execution,
+         'actor': ACTOR}, **body)), headers=JSON)
+
+
+def with_client(path):
+    """The book with the client's netting set on it, as the file holds one."""
+    document = json.loads(path.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
+    """EVERY BOOKING IS A TICKET. A direct booking's fill carries a ticket over the plan the book
+    has WITH it and the fill as filed, and where a tiers policy is in force it is routed on the
+    notional it STATES and the tenor its terms name, as an acceptance is: under the cap the hub
+    signs in its own voice and then the fill lands, approved; over it the fill lands PENDING under
+    four eyes, the booker's own approval clearing nothing and another seat's clearing it; a tier
+    covering the node the booking sits at reads it; and a booking no tier admits - a cap it states
+    no notional against, a tenor cap it settles past - books nothing.
+
+    Killing mutations: the ticket taken before the splice, which is the book's own plan and every
+    booking's; and a tier's scope read at the book rather than where the booking sits, which routes
+    a node's booking past the node's own tier.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'fx', 'scope': 'spine-desk/FX'},
+        {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
+
+    signed = ticketed('EXEC-AUTO', notional=AMOUNT, notional_currency='USD').json()
+    fill = facts(recorded, 'fill')[-1]
+    assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1}
+    assert fill[2]['ticket'] == signed['ticket'] == spine.ticket(
+        service.load(json.loads(desk.read_text())).plan_hash(), {
+            field: value for field, value in fill[2].items() if field != 'ticket'}), \
+        'the ticket is not the plan the book has with this booking'
+    assert facts(recorded, 'approval')[-1][2] == {'plan_hash': signed['ticket']}
+
+    waiting = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD').json()
+    assert waiting['written'] is True and waiting['tier']['name'] == 'desk'
+    assert 'no verdict is filed' in waiting['waits_on']
+    placed = ticketed('EXEC-FX', notional=10 * BIG, notional_currency='USD',
+                      portfolio='spine-desk/FX').json()
+    assert placed['tier']['name'] == 'fx', 'the node\'s own tier was read past'
+
+    def status(execution):
+        return next(row['status'] for row in CLIENT.get('/book/positions').json()['positions']
+                    if row['reference'] == execution)
+
+    assert [status(execution) for execution in ('EXEC-AUTO', 'EXEC-BIG', 'EXEC-FX')] == [
+        'approved', 'pending', 'approved']
+    for seat, reads in ((ACTOR, 'pending'), (DESK_TWO, 'approved')):
+        decided = CLIENT.post('/book/approve', json={'ticket': waiting['ticket'], 'actor': seat})
+        assert decided.json()['status'] == reads == status('EXEC-BIG'), seat
+
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'capped', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'short', 'max_tenor_years': 1.0}))
+    before, head_before = desk.read_bytes(), head(recorded)
+    refused = ticketed('EXEC-NONE').json()
+    assert refused['written'] is False and 'recorded' not in refused, refused
+    assert any('not stated in USD' in one for one in refused['refused'])
+    assert any('caps max_tenor_years' in one for one in refused['refused']), refused['refused']
+    assert desk.read_bytes() == before and head(recorded) == head_before, \
+        'a booking no tier admits booked something'
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+#: Two desks' approvers, each at its own node of the book.
+FX_SEAT, RATES_SEAT = 'subject-fx-approver', 'subject-rates-approver'
+
+
+def test_a_verdict_is_filed_where_its_ticket_books(recorded, desk):
+    """A VERDICT IS FILED WHERE THE TICKET BOOKS, read off the record and never off the caller: a
+    seat granted `approve` at a node signs what books there, and one at another node is refused
+    with the denial landed however it names its own node; a ticket nothing carries has nothing to
+    rule on.
+
+    And the hub signs an automatic tier's ticket only where its booker may book: a seat that may
+    not is refused at the fill with the denial landed, and no approval stands over a ticket
+    nothing books.
+
+    Killing mutations: the verdict filed at the portfolio the caller names, which lets the Rates
+    approver sign an FX ticket by naming Rates; and the dry authorization skipped, which leaves the
+    writer's voice on a ticket its fill was refused.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    for path in ('spine-desk/FX', 'spine-desk/Rates'):
+        spine.declare_portfolio(path)
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate')] + [
+        (FX_SEAT, 'approve', 'spine-desk/FX'), (RATES_SEAT, 'approve', 'spine-desk/Rates')])
+    booked = ticketed('EXEC-FX', portfolio='spine-desk/FX').json()
+    assert booked['written'] is True and 'waits_on' in booked, booked
+
+    denied = CLIENT.post('/book/approve', json={'ticket': booked['ticket'], 'actor': RATES_SEAT,
+                                                'portfolio': 'spine-desk/Rates'})
+    assert denied.status_code == 422 and "over 'spine-desk/FX'" in denied.json()['detail']
+    assert facts(recorded, 'capability_denied')[-1][2]['book'] == 'spine-desk/FX'
+    signed = CLIENT.post('/book/approve', json={'ticket': booked['ticket'], 'actor': FX_SEAT})
+    assert signed.status_code == 200, signed.text
+    assert (signed.json()['portfolio'], signed.json()['status']) == ('spine-desk/FX', 'approved')
+    assert facts(recorded, 'approval')[-1][2]['portfolio'] == 'spine-desk/FX'
+    nothing = CLIENT.post('/book/approve', json={'ticket': 'e' * 64, 'actor': FX_SEAT})
+    assert nothing.status_code == 422 and 'nothing on the record carries' in nothing.json()[
+        'detail']
+
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
+    signatures = len(facts(recorded, 'approval'))
+    stray = ticketed('EXEC-STRAY', portfolio='spine-desk/FX', actor=FX_SEAT)
+    assert stray.status_code == 422, stray.text
+    assert facts(recorded, 'capability_denied')[-1][2]['attempted_type'] == 'fill'
+    assert len(facts(recorded, 'approval')) == signatures, 'the hub signed a ticket nothing books'
+
+
+def standing_of(reference):
+    """`(status, pending)` of the position the file holds under `reference`."""
+    return next((row['status'], row['pending'])
+                for row in CLIENT.get('/book/positions').json()['positions']
+                if row['reference'] == reference)
+
+
+def restruck(deal_path, **fields):
+    """An amendment of the deal at `deal_path` by the desk's own seat, as `/book/deals` answers."""
+    return CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': deal_path, 'fields': fields, 'actor': ACTOR}),
+        headers=JSON).json()
+
+
+def confirmed(key, value_date):
+    """A confirmation matched on `value_date`, filed against a clip's key by the desk's own seat."""
+    assert CLIENT.post('/book/transition', content=dump({
+        'subject': key, 'status': 'confirmed', 'value_date': value_date, 'actor': ACTOR}),
+        headers=JSON).status_code == 200
+
+
+def test_a_restrike_is_a_trade_and_the_position_reads_its_ticket(recorded, desk):
+    """AN AMENDMENT IS A TICKET TOO. A trade of two clips booked under four eyes, each signed by a
+    second seat and confirmed, reads approved; restruck by its booker to a hundred times its
+    amount, the amendment carries a ticket of its own over the plan it leaves and is routed as a
+    booking is - so the position it moved reads PENDING on it, the worklist naming that ticket once
+    for both clips, the approvals over the fills reaching nothing it restruck - and a second seat's
+    signature clears it. Every clip it restruck keeps the key it was filled under and is due a
+    re-confirmation, which one filed since clears. Under an automatic tier the hub signs the
+    restrike before it lands; one no tier admits writes nothing; and the oracle holds.
+
+    Killing mutations: the positions fold carrying the restruck clips' tickets onto the terms they
+    became, which reads a restrike nobody signed as approved; a restruck clip keyed on the terms it
+    became, which waits on a key nothing was filed under; a confirmation filed before the restrike
+    still counted, which leaves the amended trade confirmed as it was; and a row per clip, which
+    lists one restrike twice.
+    """
+    from derivus_spine import oracle
+
+    def unconfirmed():
+        return sorted(row['key'] for row in CLIENT.get('/book/worklist').json()['unconfirmed'])
+
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    booked = ticketed('EXEC-1', amount=1_000.0).json()
+    keys = []
+    for clip, reference in ((booked, 'EXEC-1'), (ticketed(
+            'EXEC-1', amount=1_000.0, execution_reference='EXEC-1B').json(), 'EXEC-1B')):
+        CLIENT.post('/book/approve', json={'ticket': clip['ticket'], 'actor': DESK_TWO})
+        keys.append(spine.fill_key(clip['recorded']['instrument'], reference))
+        confirmed(keys[-1], '2024-06-28')
+    assert standing_of('EXEC-1') == ('approved', 0.0) and unconfirmed() == []
+
+    amended = restruck(booked['deal_path'], Amount=100_000.0)
+    assert amended['written'] is True and amended['tier']['name'] == 'desk', amended
+    assert 'no verdict is filed' in amended['waits_on']
+    assert facts(recorded, 'amendment')[-1][2]['ticket'] == amended['ticket'] != booked['ticket']
+    assert standing_of('EXEC-1') == ('pending', 2.0), 'the fill\'s approval reached the restrike'
+    assert [row['key'] for row in CLIENT.get('/book/worklist').json()['pending']] == [
+        amended['ticket']]
+    assert unconfirmed() == sorted(keys), 'a restruck clip is due no re-confirmation'
+    signed = CLIENT.post('/book/approve', json={'ticket': amended['ticket'], 'actor': DESK_TWO})
+    assert signed.json()['status'] == 'approved' and standing_of('EXEC-1') == ('approved', 0.0)
+    confirmed(keys[0], '2024-06-29')
+    assert unconfirmed() == [keys[1]], 'a re-confirmation cleared nothing'
+
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
+    automatic = restruck(booked['deal_path'], Amount=50_000.0)
+    assert automatic['tier'] == {'name': 'auto', 'four_eyes': False,
+                                 'approval_lsn': facts(recorded, 'amendment')[-1][0] - 1}
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'capped', 'max_notional': {'amount': BIG, 'currency': 'USD'}}))
+    before, at = desk.read_bytes(), head(recorded)
+    refused = restruck(booked['deal_path'], Amount=60_000.0)
+    assert refused['written'] is False and any('not stated in USD' in one
+                                               for one in refused['refused'])
+    assert desk.read_bytes() == before and head(recorded) == at, 'a restrike no tier admits landed'
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
+def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):
+    """A TICKET IS THE TRADE: the plan it leaves and its own fields. A delete records nothing, so a
+    deal deleted and booked again as it was - its reference, quantity and price - is the trade the
+    record never lost: answered `booked` at the fill it has, the file taking it back and nothing
+    filed, signed as it was. Booked again under that reference at another quantity it is refused
+    by name; under a reference of its own at that quantity, on the plan the first left, it is a new
+    ticket, PENDING under four eyes; and a position reads the worst of its clips, so a clip signed
+    after it hides nothing.
+
+    Killing mutations: the trade left out of the ticket, which hands a second execution on the same
+    plan the approval over the first; a trade the file lost answered without putting it back, which
+    leaves the file behind the record for good; and the position read off its latest ticket alone,
+    which reads it approved once a later clip is signed.
+    """
+    from derivus_spine import oracle
+
+    def deleted(booked):
+        assert CLIENT.post('/book/deals', content=dump({
+            'action': 'delete', 'deal_path': booked['deal_path']}), headers=JSON).json()['written']
+
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    first = ticketed('EXEC-1', amount=1_000.0).json()
+    CLIENT.post('/book/approve', json={'ticket': first['ticket'], 'actor': DESK_TWO})
+    deleted(first)
+    again = ticketed('EXEC-1', amount=1_000.0).json()
+    assert again['written'] is True and again['booked'] == {
+        'lsn': first['recorded']['lsn'], 'deal_path': first['deal_path']}, again
+    assert len(facts(recorded, 'fill')) == 1 and standing_of('EXEC-1') == ('approved', 0.0)
+    assert CLIENT.get('/book/reconcile').json()['in_record_not_in_file'] == []
+    assert 'its own reference' in ticketed('EXEC-1', amount=1_000.0, quantity=100.0).json()[
+        'detail']
+    deleted(again)
+    more = ticketed('EXEC-1', amount=1_000.0, quantity=100.0, execution_reference='EXEC-1B').json()
+    assert more['ticket'] != first['ticket'] and 'no verdict is filed' in more['waits_on']
+    assert standing_of('EXEC-1') == ('pending', 100.0), 'one clip\'s approval cleared a second'
+    third = ticketed('EXEC-1', amount=1_000.0, quantity=2.0, execution_reference='EXEC-1C').json()
+    CLIENT.post('/book/approve', json={'ticket': third['ticket'], 'actor': DESK_TWO})
+    assert standing_of('EXEC-1') == ('pending', 100.0), 'a signed clip hid one nobody signed'
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
+def test_a_trade_sent_again_is_answered_where_it_stands(recorded, desk):
+    """A TRADE IS TAKEN ONCE. A client that never saw its answer sends the same booking again after
+    it landed: the fill standing under its key - its instrument and execution reference - with the
+    fields it states is answered `booked` by name, where it landed, and nothing is spliced or
+    filed, even once the trade is restruck; sent again at another quantity it is refused by name, a
+    second execution wanting its own reference. A restrike sent again after it landed is answered
+    the same way.
+
+    Killing mutations: the check dropped, which books the trade sent again as a second clip; the
+    fields ignored, which answers a changed quantity as already booked; a clip's fields read at the
+    restrike governing it, which refuses the booking sent again once it is restruck; and a restrike
+    that landed filed again, which refuses it as terms that did not move.
+    """
+    with_client(desk)
+    first = ticketed('EXEC-1', amount=1_000.0).json()
+    before, at = desk.read_bytes(), head(recorded)
+    landed = {'lsn': first['recorded']['lsn'], 'deal_path': first['deal_path']}
+    again = ticketed('EXEC-1', amount=1_000.0).json()
+    assert again['written'] is False and again['booked'] == landed, again
+    assert again['note'].startswith("execution 'EXEC-1' is on the record at LSN")
+    assert desk.read_bytes() == before and head(recorded) == at, 'a trade sent again moved the book'
+    other = ticketed('EXEC-1', amount=1_000.0, quantity=2.0).json()['detail']
+    assert 'quantity 2.0 where it filed 1 ' in other and 'its own reference' in other, other
+    assert desk.read_bytes() == before and head(recorded) == at
+
+    amended = restruck(first['deal_path'], Amount=5_000.0)
+    before, at = desk.read_bytes(), head(recorded)
+    assert ticketed('EXEC-1', amount=1_000.0).json()['booked'] == landed
+    sent = restruck(first['deal_path'], Amount=5_000.0)
+    assert sent['written'] is False and sent['booked'] == {
+        'lsn': amended['recorded']['lsn'], 'deal_path': first['deal_path']}, sent
+    assert desk.read_bytes() == before and head(recorded) == at, 'a restrike sent again moved it'
+
+
+def test_a_retry_lands_every_event_on_the_lsn_it_already_has(recorded, desk):
+    """THE RECORD TAKES A TRADE BEFORE THE FILE DOES, so a retry is how a lost file write is healed,
+    and a retry files nothing. A booking under an automatic tier whose file write was lost - the
+    book file put back as it was - sent again is answered at the fill the record holds, the file
+    taking it back: one clip, one node, one approval. A restrike retried the same way is answered
+    at the restrike that landed, the file taking back the terms it became.
+
+    Killing mutations: a trade the file lost answered without putting it back, which leaves the
+    file behind the record for good; and a restrike that landed filed again rather than answered.
+    """
+    from derivus_spine import oracle
+
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
+    lost = desk.read_bytes()
+    booked = ticketed('EXEC-R').json()
+    desk.write_bytes(lost)
+    again = ticketed('EXEC-R').json()
+    assert again['written'] is True and again['booked'] == {
+        'lsn': booked['recorded']['lsn'], 'deal_path': booked['deal_path']}, again
+    lost = desk.read_bytes()
+    amended = restruck(booked['deal_path'], Amount=500_000.0)
+    desk.write_bytes(lost)
+    again = restruck(booked['deal_path'], Amount=500_000.0)
+    assert again['written'] is True and again['booked'] == {
+        'lsn': amended['recorded']['lsn'], 'deal_path': booked['deal_path']}, again
+    assert [len(facts(recorded, kind)) for kind in ('fill', 'amendment', 'approval')] == [1, 1, 2]
+    reconciled = CLIENT.get('/book/reconcile').json()
+    assert reconciled['in_record_not_in_file'] == reconciled['quantity_mismatch'] == []
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
+def test_a_retried_acceptance_lands_every_event_on_the_lsn_it_already_has(recorded, quoting):
+    """THE RECORD'S OWN IDEMPOTENCY HOLDS FOR AN ACCEPTANCE, its ticket being the plan it leaves the
+    book at and the fill's own fields. Refused by a cap no tier admits it under, accepted again,
+    and accepted once more after the desk lifts the cap, one quote files ONE `quote_filed`; and
+    where the files the act wrote are lost after the record took it - the book and the pending
+    file put back as they were - the retry lands the hub's approval and the fill on the LSNs they
+    already have and the book takes the trade once.
+
+    Killing mutation: the head put back in the ticket, which files the quote again at every retry.
+    """
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'capped', 'max_notional': {'amount': 1.0, 'currency': 'USD'}}))
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    pending = quoting.parent / 'tmp' / (quote['quote_id'] + '.json')
+    refused = accept(quote).json()
+    assert refused['written'] is False and refused['refused'], refused
+    assert accept(quote).json()['accepted'] == refused['accepted'], 'a retry filed the quote again'
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
+    lost = quoting.read_bytes(), pending.read_bytes()
+    booked = accept(quote).json()
+    assert booked['written'] is True and booked['accepted'] == refused['accepted'], booked
+    acts = typed(recorded, 'quote_filed', 'approval', 'fill')
+    assert [kind for _, kind in acts] == ['quote_filed', 'approval', 'fill']
+    landed = json.loads(quoting.read_text())
+
+    quoting.write_bytes(lost[0])
+    pending.write_bytes(lost[1])
+    retried = accept(quote).json()
+    assert retried['written'] is True and retried['recorded']['lsn'] == acts[-1][0], retried
+    assert typed(recorded, 'quote_filed', 'approval', 'fill') == acts, 'a retry filed a second fact'
+    held = booked['deal_path'].rpartition('/')[0]
+    assert len(deal_at(json.loads(quoting.read_text()), held)['Children']) == len(
+        deal_at(landed, held)['Children']), 'the book took the trade twice'
+    assert pending_of(quoting.parent, quote)['booked']['lsn'] == acts[-1][0]
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_every_refusal_a_booking_meets_comes_before_the_hub_signs(recorded, quoting):
+    """AN UNTAMPERED HUB NEVER FAILS ITS OWN ORACLE. Under an automatic tier the hub signs a ticket
+    in its own voice and books it next, so everything that could refuse the booking is asked
+    FIRST: a node nobody declared, a quantity or a price that is not a number, an execution
+    reference that is not a name, a seat holding no `book` there - on a direct booking and on an
+    acceptance alike, and an acceptance naming a `portfolio` its quote did not - each refused by
+    name with no approval standing, while a clean booking signs and lands.
+
+    Killing mutations: the dry authorization skipped, which signs a ticket the append then refuses -
+    an approval the oracle names as the writer's voice forged; and a stale acceptance `portfolio`
+    ignored, which books where the quote said while the caller named somewhere else.
+    """
+    from derivus_spine import oracle
+
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
+    spine.declare_portfolio('spine-desk/FX')
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate')])
+    for case in ({'portfolio': 'spine-desk/Fx'}, {'quantity': '1'}, {'quantity': True},
+                 {'execution_reference': 12345}, {'price': '1.5'},
+                 {'actor': 'subject-stranger'}):
+        answer = ticketed('EXEC-BAD', **case)
+        assert answer.status_code == 422, (case, answer.text)
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, portfolio='spine-desk/Fx',
+                     actor=ACTOR)
+    assert 'a node declared under it' in accept(quote, actor=ACTOR).json()['detail']
+    stale = accept(quote, actor=ACTOR, portfolio='spine-desk/FX').json()['detail']
+    assert "the 'spine-desk/FX' this one names is refused" in stale, stale
+    assert facts(recorded, 'approval') == facts(recorded, 'fill') == facts(
+        recorded, 'quote_filed') == []
+    assert ticketed('EXEC-GOOD').json()['written'] is True
+    assert len(facts(recorded, 'approval')) == len(facts(recorded, 'fill')) == 1
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
+#: A deliverable FX forward: its tenor is the day it settles, and it names no expiry or maturity.
+FORWARD = {'Object': 'FXForwardDeal', 'Reference': 'FWD', 'Buy_Currency': 'USD',
+           'Buy_Amount': AMOUNT, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'ZAR',
+           'Sell_Amount': AMOUNT * SPOT, 'Sell_Discount_Rate': 'ZAR'}
+
+
+def test_a_trade_is_as_long_as_the_last_day_its_declarations_name(recorded, desk):
+    """A TENOR IS READ OFF DECLARATIONS: the latest day a type declares it settles on, expires or
+    matures on (`schema.tenor_fields`). A one-year forward books under a five-year tenor cap and
+    one settling in six years is refused by it by name - the forward names no expiry or maturity,
+    so its settlement IS its tenor.
+
+    Killing mutation: the tenor read off the fields named for an expiry or a maturity alone, which
+    dates a forward by nothing and refuses every forward under every tenor cap.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'short', 'max_tenor_years': 5.0}))
+
+    def forward(years):
+        return CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': dict(FORWARD, Reference='FWD-{}Y'.format(years),
+                                          Settlement_Date=BASE + pd.DateOffset(years=years)),
+            'parent_reference': CLIENT_SET, 'quantity': 1.0,
+            'execution_reference': 'EXEC-{}Y'.format(years), 'actor': ACTOR}), headers=JSON).json()
+
+    assert forward(1)['written'] is True
+    refused = forward(6)
+    assert refused['written'] is False and any('caps max_tenor_years' in one
+                                               for one in refused['refused']), refused
 
 
 # --------------------------------------------------------------------------------------------
@@ -2391,15 +2815,14 @@ def test_a_decision_on_a_quote_nobody_accepted_refuses_by_name(recorded, quoting
     remembered position.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
-    refused = CLIENT.post('/book/quote/approve',
-                          json={'quote_id': quote['quote_id'], 'actor': ACTOR})
+    refused = CLIENT.post('/book/approve', json={'quote_id': quote['quote_id'], 'actor': ACTOR})
     assert refused.status_code == 422 and 'accept it first' in refused.json()['detail']
 
     waiting = declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
-    assert accept(quote).json()['written'] is False, 'the tier let it book and moved the plan'
+    assert accept(quote).json()['written'] is True, 'the tier held the booking back'
     second = quote_of('ZeroCostCollar', dict(COLLAR, notional=AMOUNT / 2),
                       netting_set=CLIENT_SET)
-    assert accept(second).json()['written'] is False
+    assert accept(second).json()['written'] is True
 
     path = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
     filed = json.loads(path.read_text())
@@ -2410,14 +2833,14 @@ def test_a_decision_on_a_quote_nobody_accepted_refuses_by_name(recorded, quoting
     # the second quote's own position: a real `quote_filed`, and not this quote's
     filed['accepted']['lsn'] = elsewhere['accepted']['lsn']
     path.write_text(json.dumps(filed, indent=2), newline='\n')
-    other = CLIENT.post('/book/quote/reject', json={
+    other = CLIENT.post('/book/reject', json={
         'quote_id': quote['quote_id'], 'actor': ACTOR, 'reason': 'nothing doing'})
     assert other.status_code == 422
     assert second['quote_id'] in other.json()['detail'] and 'and not' in other.json()['detail']
 
     filed['accepted']['lsn'] = waiting['lsn']
     path.write_text(json.dumps(filed, indent=2), newline='\n')
-    wrong_type = CLIENT.post('/book/quote/reject', json={
+    wrong_type = CLIENT.post('/book/reject', json={
         'quote_id': quote['quote_id'], 'actor': ACTOR, 'reason': 'nothing doing'})
     assert wrong_type.status_code == 422 and 'in this record and not the quote' in \
         wrong_type.json()['detail']
@@ -2425,7 +2848,7 @@ def test_a_decision_on_a_quote_nobody_accepted_refuses_by_name(recorded, quoting
     # and a position past the head is the record saying so, not a traceback
     filed['accepted']['lsn'] = 10_000
     path.write_text(json.dumps(filed, indent=2), newline='\n')
-    beyond = CLIENT.post('/book/quote/approve',
+    beyond = CLIENT.post('/book/approve',
                          json={'quote_id': quote['quote_id'], 'actor': ACTOR})
     assert beyond.status_code == 422 and 'no LSN 10000' in beyond.json()['detail']
 
@@ -3315,3 +3738,251 @@ def test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat(recorde
         assert ACTOR in refused and 'validate' in refused, refused
     assert facts(recorded, 'capability_denied')[-1][2]['attempted_type'] == spine.TELEMETRY
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+# --------------------------------------------------------------------------------------------
+# The paper's set, reads by node, and the seat a token proves.
+
+def agreed(agreement, counterparty, entity='LEI-A'):
+    """An entity and an agreement with it on the record through the service, its terms the
+    netting set `netting_set` spells for `counterparty`."""
+    assert CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': entity}),
+                       headers=JSON).status_code == 200
+    answer = CLIENT.post('/book/agreements', content=dump(
+        {'agreement': agreement, 'entity': entity, 'kind': 'ISDA 2002',
+         'terms': netting_set(agreement, counterparty)['Instrument']['.Deal']}), headers=JSON)
+    assert answer.status_code == 200, answer.text
+
+
+def surviving(path, *counterparties):
+    """The book with a survival curve per counterparty, which a netting set naming one prices on."""
+    document = json.loads(path.read_text())
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    for counterparty in counterparties:
+        factors['SurvivalProb.' + counterparty] = json.loads(dump({
+            'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])}))
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def test_the_first_booking_under_a_declared_agreement_brings_its_set(recorded, desk):
+    """THE SET IS THE AGREEMENT'S MATERIALISATION, so the first booking naming a declared agreement
+    whose set the file does not carry brings it - spliced at the root out of the terms legal
+    declared, the booking sitting under it - and every later one books under the set that is
+    there. What the set itself wants that the book lacks - its counterparty's survival curve - is
+    newly said, so it refuses by name with the file untouched. `/book/reconcile` holds the file's
+    set to the declared paper: a field moved is named, and a balance - settlement state - is not.
+
+    Killing mutations: every booking splicing the set again, which gives the second booking a
+    second set; and the balance read as paper, which names every set a balance was written into.
+    """
+    surviving(desk, 'CPTY_A')
+    agreed('ISDA-A', 'CPTY_A')
+    agreed('ISDA-Z', 'CPTY_Z')
+    before = desk.read_bytes()
+    wants = ticketed('EXEC-Z', agreement='ISDA-Z', parent_reference=None).json()
+    assert wants['written'] is False and wants['refused'] == [
+        'no market data for SurvivalProb.CPTY_Z'], wants
+    assert desk.read_bytes() == before, 'a refused booking brought its set anyway'
+
+    for execution in ('EXEC-1', 'EXEC-2'):
+        booked = ticketed(execution, agreement='ISDA-A', parent_reference=None).json()
+        assert booked['written'] is True, booked
+    held = [path for path, node in service.netting_sets(json.loads(desk.read_text()))
+            if node['Instrument']['.Deal']['Reference'] == 'ISDA-A']
+    assert len(held) == 1, 'a second booking brought a second set'
+    assert [(fill['agreement'], fill['counterparty']) for _, _, fill in facts(recorded, 'fill')] \
+        == [('ISDA-A', 'LEI-A')] * 2
+    assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == []
+
+    document = json.loads(desk.read_text())
+    written = deal_at(document, held[0])['Instrument']['.Deal']
+    written.update(Opening_Balance=500_000.0)
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == [], \
+        'settlement state read as paper'
+    written.update(Liquidation_Period=10.0)
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == [{
+        'agreement': 'ISDA-A', 'deal_path': held[0], 'fields': ['Liquidation_Period']}]
+
+
+def test_a_quote_for_a_declared_agreement_brings_its_set_where_the_client_accepts(recorded,
+                                                                                  quoting):
+    """THE QUOTE PATH MATERIALISES AS THE BOOKING DOES: a quote named for a declared agreement
+    whose set the file lacks prices on its own copy with the set spliced in - its pins and ticket
+    the book as the acceptance will leave it - and moves nothing, and the acceptance splices the
+    same set, under which the mirror books.
+
+    Killing mutation: the quote verb left to refuse a set the file lacks, which makes a direct
+    booking the only way to open a declared agreement.
+    """
+    surviving(quoting, 'CPTY_B')
+    agreed('ISDA-B', 'CPTY_B', entity='LEI-B')
+    before = quoting.read_bytes()
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set='ISDA-B')
+    assert quoting.read_bytes() == before, 'a quote moved the book'
+    booked = accept(quote).json()
+    assert booked['written'] is True, booked
+    held = [path for path, node in service.netting_sets(json.loads(quoting.read_text()))
+            if node['Instrument']['.Deal']['Reference'] == 'ISDA-B']
+    assert len(held) == 1 and booked['deal_path'].startswith(held[0] + '/')
+
+
+#: A seat reading one node of the book.
+DESK_FX = 'subject-desk-fx'
+
+
+def test_a_seat_reads_the_rows_under_the_nodes_it_acts_at(recorded, desk):
+    """READS BY NODE. A seat granted any verb at a node - `validate`, or `approve` alone - reads
+    the positions, the diary and the reconcile rows under it and nothing beside it; one granted
+    `validate` over `*` reads the whole book, and so does a read no seat signs on a box checking no
+    token - the deployment's own view. Money and the strip are the book's, so a node seat reads
+    neither. This is PRESENTATION while one class key opens every body, which the page says.
+
+    Killing mutation: the positions filtered by the book their envelope names rather than the node
+    they sit at, which shows a node seat nothing at all.
+    """
+    with_client(desk)
+    for path in ('spine-desk/FX', 'spine-desk/Rates'):
+        spine.declare_portfolio(path)
+    for execution, node in (('CF-FX', 'spine-desk/FX'), ('CF-RATES', 'spine-desk/Rates')):
+        assert ticketed(execution, portfolio=node).json()['written'] is True
+
+    def read(path, seat=None):
+        answer = CLIENT.get(path, params={} if seat is None else {'actor': seat})
+        assert answer.status_code == 200, answer.text
+        return answer.json()
+
+    def references(seat=None):
+        return sorted(row['reference'] for row in read('/book/positions', seat)['positions'])
+
+    assert references() == references(DESK_FX) == ['CF-FX', 'CF-RATES'], 'no document narrows'
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate', 'settle')] + [
+        (DESK_FX, 'validate', 'spine-desk/FX'), (RATES_SEAT, 'approve', 'spine-desk/Rates')])
+    fx = service.booked_instruments(json.loads(desk.read_text()))['CF-FX']
+    assert CLIENT.post('/book/transition', content=dump({
+        'subject': fx, 'status': 'settled', 'amount': -100.0, 'asset': 'ZAR', 'kind': 'fee',
+        'reference': 'FEE-FX', 'value_date': '2024-06-28', 'actor': ACTOR}),
+        headers=JSON).status_code == 200
+    assert references(DESK_FX) == ['CF-FX'] and references(ACTOR) == ['CF-FX', 'CF-RATES']
+    assert references(RATES_SEAT) == ['CF-RATES'], 'a seat reads nothing it may approve'
+    assert references() == ['CF-FX', 'CF-RATES'], 'an unnamed read is the deployment\'s view'
+    assert {row['instrument'] for row in read('/book/diary', DESK_FX)['rows']} == {fx}
+    assert len({row['instrument'] for row in read('/book/diary', ACTOR)['rows']}) == 3
+    assert read('/book/cash', DESK_FX)['movements'] == []
+    assert [row['reference'] for row in read('/book/cash', ACTOR)['movements']] == ['FEE-FX']
+
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'][-1]['Children'].clear()
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    lost = {seat: [row['instrument'] for row in read('/book/reconcile', seat)[
+        'in_record_not_in_file']] for seat in (DESK_FX, ACTOR)}
+    assert len(lost[ACTOR]) == 2 and lost[DESK_FX] == [fx]
+    assert read('/book/activity', DESK_FX)['rows'] == [] and read('/book/activity', ACTOR)['rows']
+    assert read('/book/activity', DESK_FX)['lsn'] == head(recorded), 'the cursor stood still'
+
+
+def test_a_read_naming_its_seat_needs_no_deployment_seat_where_nothing_is_enforced(recorded, desk,
+                                                                                   monkeypatch):
+    """A READ NEVER RUNS UNDER ITS REQUESTER, and on a home declaring no capabilities document it
+    needs no seat at all: the worklist, the diary and the positions answer a seat named on the read
+    with `DV_SPINE_ACTOR` unset, the diary compile being the hub's own cache. Under a document the
+    compile runs under the deployment's seat, which every poll path already requires.
+
+    Killing mutation: the read's compile admitted under the seat the read names, which files that
+    seat's denial of a read under a document.
+    """
+    with_client(desk)
+    assert ticketed('CF-READ').json()['written'] is True
+    monkeypatch.delenv('DV_SPINE_ACTOR')
+    for path in ('/book/worklist', '/book/diary', '/book/positions'):
+        answer = CLIENT.get(path, params={'actor': DESK_FX})
+        assert answer.status_code == 200, (path, answer.text)
+    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')] + [
+        (DESK_FX, 'approve', 'spine-desk')])
+    for path in ('/book/worklist', '/book/diary', '/book/positions'):
+        answer = CLIENT.get(path, params={'actor': DESK_FX})
+        assert answer.status_code == 200, (path, answer.text)
+    assert facts(recorded, 'capability_denied') == [], 'a read filed a denial'
+
+
+def asked(path, authorization=None):
+    """A request as the service's token dependency meets it, for the path a gate names."""
+    from starlette.requests import Request
+
+    return Request({'type': 'http', 'method': 'GET', 'scheme': 'http', 'root_path': '',
+                    'server': ('testserver', 80), 'path': path, 'query_string': b'',
+                    'headers': [] if authorization is None else [
+                        (b'authorization', authorization.encode('ascii'))]})
+
+
+def test_a_bearer_token_names_the_seat_and_nothing_else_does(recorded, desk, tmp_path, idp,
+                                                            monkeypatch):
+    """THE SEAT FROM A TOKEN. Where the deployment names a key set every request carries an ID
+    token its identity provider signed, verified here against that set: none, or a bad one, is a
+    401 in the verifier's words; the token's subject is who a fact is filed under whatever the body
+    leaves out, and a body naming another seat is refused. The doorbell carries a position and
+    nothing else and asks for no token. A READ RUNS UNDER NO REQUESTER: the diary its compile needs
+    is the hub's own, admitted under `DV_SPINE_ACTOR`, so a seat holding no `validate` reads what it
+    acts on and files no denial. A key set that does not read is a named refusal, never a 500. With
+    no key set named nothing is checked: the body's actor stands.
+
+    Killing mutations: the dependency made synchronous, which sets the seat in a threadpool copy of
+    the request's context the endpoint never sees - and the fill lands under `DV_SPINE_ACTOR`; and
+    the read's compile run under its bearer, which refuses a seat that may only approve and files
+    the denial of a read.
+    """
+    import time
+
+    with_client(desk)
+    assert ticketed('EXEC-OFF', actor='subject-said').json()['written'] is True
+    keys = tmp_path / 'jwks.json'
+    keys.write_text(json.dumps(idp.jwks))
+    for name, value in (('DV_SPINE_JWKS', str(keys)),
+                        ('DV_SPINE_ISSUER', test_spine_identity.ISSUER),
+                        ('DV_SPINE_AUDIENCE', test_spine_identity.AUDIENCE)):
+        monkeypatch.setenv(name, value)
+    now = time.time()
+    token = test_spine_identity.rs256(idp.rsa_key, test_spine_identity.claims(
+        exp=now + 300.0, iat=now - 10.0, nbf=now - 10.0))
+    signed = dict(JSON, authorization='Bearer ' + token)
+
+    bare = CLIENT.get('/book')
+    assert bare.status_code == 401 and 'Authorization: Bearer' in bare.json()['detail']
+    head_, payload, signature = token.split('.')
+    forged = CLIENT.get('/book', headers={'authorization': 'Bearer ' + '.'.join(
+        [head_, payload, test_spine_identity.flip(signature)])})
+    assert forged.status_code == 401 and 'signature' in forged.json()['detail']
+
+    booked = CLIENT.post('/book/deals', headers=signed, content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference='EXEC-ON', Amount=250_000.0),
+        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'EXEC-ON'}))
+    assert booked.json()['written'] is True, booked.text
+    log = opened(recorded)
+    try:
+        actors = [frame['actor'] for frame in log.frames() if frame['event_type'] == 'fill']
+    finally:
+        log.close()
+    assert actors == ['subject-said', test_spine_identity.SUBJECT], \
+        'the fill is not filed under the token\'s subject'
+    impostor = CLIENT.post('/book/deals', headers=signed, content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference='EXEC-NOT', Amount=250_000.0),
+        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'EXEC-NOT',
+        'actor': ACTOR}))
+    assert impostor.status_code == 422 and 'bearer token' in impostor.json()['detail']
+    asyncio.run(service.bearer(asked(service.DOORBELL)))
+    with pytest.raises(service.HTTPException):
+        asyncio.run(service.bearer(asked('/book')))
+
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate')] + [
+        (test_spine_identity.SUBJECT, 'approve', '*')])
+    denials = len(facts(recorded, 'capability_denied'))
+    for path in ('/book/diary', '/book/worklist', '/book/positions'):
+        answer = CLIENT.get(path, headers=signed)
+        assert answer.status_code == 200, (path, answer.text)
+    assert len(facts(recorded, 'capability_denied')) == denials, 'a read filed a denial'
+    assert spine.hub() == ACTOR, 'a thread no request started lost the deployment\'s seat'
+    monkeypatch.setenv('DV_SPINE_JWKS', str(tmp_path / 'missing.json'))
+    unread = CLIENT.get('/book', headers=signed)
+    assert unread.status_code == 401 and 'does not read as a key set' in unread.json()['detail']

@@ -24,16 +24,23 @@ export type Position = {
   /** The day the deal expired, and the day it settles - an expired position stands until then. */
   expired: string | null;
   settles: string | null;
+  /** What its tickets read - `rejected`, `pending`, `approved` or `unticketed` - and the quantity
+   * awaiting a second seat. Workflow, not economics: a pending trade prices all the same. */
+  status: string;
+  pending: number;
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };
 export type Agreement = { agreement: string; entity: string; kind: string };
 
-/** What the grouped views read: the positions standing, and the paper they sit under. */
-export type Paper = { positions: Position[]; entities: Entity[]; agreements: Agreement[] };
+/** What the grouped views read: the positions standing, the paper they sit under, and the nodes
+ * of the book's tree the record declares. */
+export type Paper = {
+  positions: Position[]; entities: Entity[]; agreements: Agreement[]; nodes: string[];
+};
 
 /** The paper of a desk that has read none - or records nothing. */
-export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [] };
+export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [], nodes: [] };
 
 /** How a screen groups the book: as the file nests it, or by one of the record's two keys. */
 export type Grouping = 'book' | 'portfolio' | 'client';
@@ -94,25 +101,29 @@ function ordered(nodes: TreeNode[], rank: (node: TreeNode) => number): TreeNode[
     .map((node) => (node.children ? { ...node, children: ordered(node.children, rank) } : node));
 }
 
-/** The portfolio tree: a folder per segment of each position's path, the book outermost, and the
+/** The portfolio tree: a folder per segment of each position's path and of every node the record
+ * DECLARES - standing whether or not anything is booked under it - the book outermost, and the
  * folders under one ahead of the positions filed in it. */
-export function portfolioTree(positions: Position[]): TreeNode[] {
+export function portfolioTree(positions: Position[], nodes: string[] = []): TreeNode[] {
   const top: TreeNode[] = [];
   const folders = new Map<string, TreeNode>();
-  for (const position of positions) {
+  const folder = (portfolio: string): TreeNode[] => {
     let level = top;
     let path = '';
-    for (const segment of position.portfolio ? position.portfolio.split('/') : []) {
+    for (const segment of portfolio ? portfolio.split('/') : []) {
       path = path ? `${path}/${segment}` : segment;
       if (!folders.has(path)) {
-        const folder = { id: `${GROUP}portfolio:${path}`, label: segment, group: true, children: [] };
-        folders.set(path, folder);
-        level.push(folder);
+        const made = { id: `${GROUP}portfolio:${path}`, label: segment, group: true, children: [] };
+        folders.set(path, made);
+        level.push(made);
       }
       level = folders.get(path)!.children!;
     }
-    level.push(leaf(position, position.agreement));
-  }
+    return level;
+  };
+  nodes.forEach(folder);
+  positions.forEach((position) => folder(position.portfolio).push(
+    leaf(position, position.agreement)));
   return ordered(top, (node) => (node.group ? 0 : 1));
 }
 

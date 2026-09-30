@@ -1,11 +1,12 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities,
-  getBookPositions, getBookRisk, getBookStatus, getBookXva, getSchema, postDescribe,
+  getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getSchema,
+  postDescribe,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
-import { ActivityStrip, ReconcileBanner } from './components/Record';
+import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
 import { pinnedAt, ringsAhead } from './spine';
 import { AppContext, INITIAL, reducer } from './state';
@@ -137,11 +138,12 @@ export function App() {
     if (state.source?.kind !== 'book' || !paperWanted) return;
     let live = true;
     dispatch({ type: 'PAPER_FETCHING' });
-    Promise.all([getBookPositions(), getBookEntities(), getBookAgreements()])
-      .then(([held, legal, signed]) => {
+    Promise.all([getBookPositions(), getBookEntities(), getBookAgreements(), getBookPortfolios()])
+      .then(([held, legal, signed, tree]) => {
         if (live) {
           dispatch({ type: 'PAPER_LOADED', paper: {
-            positions: held.positions, entities: legal.entities, agreements: signed.agreements } });
+            positions: held.positions, entities: legal.entities, agreements: signed.agreements,
+            nodes: tree.portfolios.map((node) => node.path) } });
         }
       })
       .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
@@ -179,10 +181,12 @@ export function App() {
           <h1><span>▮</span> derivus</h1>
           <DocumentLoader />
           <span className="spacer" />
+          <SeatControl />
           {state.schema && <span className="version">engine {state.schema.engine_version}</span>}
         </header>
         <JobHeader />
         <ReconcileBanner />
+        <WorklistBanner />
         <nav className="tabs">
           {WORKSPACES.map((workspace) => (
             <button

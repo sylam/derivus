@@ -86,6 +86,12 @@ check('a position files under a folder per segment of its path, folders ahead of
         ['Rates', [['EM', [['COLLAR1', '×1 · ISDA-1']]], ['FWD1', '×-1 · ISDA-1']]],
         ['COLLAR1', '×0.5 · ISDA-1']]]]);
 
+check('a node the record declares is a folder whether or not anything is booked under it',
+      'the declared nodes dropped, which shows a desk\'s own tree only where it already trades; '
+      + 'or a declared node filed flat, which puts desk/FX/Options beside desk/FX',
+      seen(positions.portfolioTree([], ['desk/FX/Options', 'desk/Credit'])),
+      [['desk', [['Credit', []], ['FX', [['Options', []]]]]]]);
+
 check('the same terms in two portfolios are two leaves with two ids',
       'a leaf keyed by its deal path, which gives both one id and selects them as one',
       [new Set(ids(PORTFOLIOS)).size === ids(PORTFOLIOS).length,

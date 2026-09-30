@@ -279,6 +279,27 @@ export type Reconcile = {
   quantity_mismatch: {
     instrument: string; record_clips: number; file_nodes: number; record_quantity: number;
   }[];
+  /** A client's netting set whose paper is not what legal declared, with the fields that moved. */
+  terms_mismatch: { agreement: string; deal_path: string; fields: string[] }[];
+};
+
+/** One row of `GET /book/worklist`: what waits, and `key` the fact that clears it is filed
+ * against - a ticket, a diary key, a fill's own key, a day. */
+export type WorkRow = {
+  kind: string; what: string; key: string; lsn: number | null; since: string | null;
+};
+
+/** `GET /book/worklist` - five lists of what waits on the seat asking, read off what stands, so a
+ * row leaves when its fact lands: how many each holds, and the newest of them. */
+export type Worklist = {
+  date: string;
+  counts: { pending: number; payments: number; unconfirmed: number; unmarked: number;
+            rejected: number };
+  pending: WorkRow[];
+  payments: WorkRow[];
+  unconfirmed: WorkRow[];
+  unmarked: WorkRow[];
+  rejected: WorkRow[];
 };
 
 // ---- the curves half of the market: /book/curve -------------------------------------------------

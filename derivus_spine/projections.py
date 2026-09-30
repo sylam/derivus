@@ -40,6 +40,7 @@ from .errors import SpineRefusal
 from .log import as_of_key, parse_number
 from .policy import FIXINGS_POLICY, FIXINGS_SECTION, in_force
 from .verbs import HELD, PAYMENT, REPLAY_FIELDS
+from .vocabulary import is_hash
 
 #: Where a seed is filed, beside `log/` and `blobs/`. Not a blob: a blob is write-once and never
 #: forgotten, and a seed is a file an operator may delete at the cost of one refold.
@@ -110,10 +111,16 @@ class Positions(Projector):
     its book. An amendment carries every position FORWARD onto the instrument the amended terms
     hash to, each under its own key, the old row standing at zero naming where it went; a row is
     never dropped - a position closed out is a fact about the book, not an absence.
+
+    `tickets` are its clips under the ticket that books each - its fill's, or the restrike's that
+    restruck it - every clip keeping the instrument and execution reference it was filled under,
+    the key its confirmation is filed against, and the LSN of that fill: `{ticket, lsn, actor,
+    at, quantity, instrument, execution_reference, fill}`. So what a position reads is a fold
+    and no fill is reopened.
     """
 
     name = 'positions'
-    version = 2
+    version = 3
     reads = ('fill', 'amendment')
 
     def initial(self):
@@ -128,6 +135,9 @@ class Positions(Projector):
             row['quantity'] += float(body['quantity'])
             row['clips'] += 1
             row['last_lsn'] = frame['lsn']
+            row['tickets'].append(_ticketed(frame, body, {
+                'quantity': float(body['quantity']), 'instrument': body['instrument'],
+                'execution_reference': body['execution_reference'], 'fill': frame['lsn']}))
             return
         for agreement, under in sorted(state.get(body['instrument'], {}).items()):
             for portfolio, row in sorted(under.items()):
@@ -135,8 +145,9 @@ class Positions(Projector):
                 head['quantity'] += row['quantity']
                 head['clips'] += row['clips']
                 head['last_lsn'] = frame['lsn']
+                head['tickets'].extend(_ticketed(frame, body, clip) for clip in row['tickets'])
                 row['amended_to'] = body['amended_to']
-                row['quantity'], row['clips'] = 0.0, 0
+                row['quantity'], row['clips'], row['tickets'] = 0.0, 0, []
                 row['last_lsn'] = frame['lsn']
 
     def rows(self, state):
@@ -372,7 +383,8 @@ class Attestations(Projector):
 
 class Decisions(Projector):
     """The verdicts filed against each plan hash, in the order they were filed, and the policy
-    document standing under each name.
+    document standing under each name with the position the first one that names a document
+    stood from.
 
     A verdict is never withdrawn: a second seat's rejection sits beside the first's approval, and
     what a deployment does with two verdicts is the deployment's rule. A policy is the opposite -
@@ -380,6 +392,7 @@ class Decisions(Projector):
     """
 
     name = 'decisions'
+    version = 2
     reads = ('approval', 'rejection', 'policy_declared')
 
     def initial(self):
@@ -388,7 +401,10 @@ class Decisions(Projector):
     def apply(self, state, frame, log):
         body = log.open_body(frame)
         if frame['event_type'] == 'policy_declared':
-            state['policies'][body['policy']] = {'blob': body.get('blob'), 'lsn': frame['lsn']}
+            since = state['policies'].get(body['policy'], {}).get('since')
+            state['policies'][body['policy']] = {
+                'blob': body.get('blob'), 'lsn': frame['lsn'],
+                'since': since or (frame['lsn'] if is_hash(body.get('blob')) else None)}
             return
         state['plans'].setdefault(body['plan_hash'], []).append(
             {'verdict': frame['event_type'], 'actor': frame['actor'],
@@ -816,8 +832,15 @@ def _position(state, instrument, agreement, portfolio, frame, moved=None):
         under[portfolio] = {'book': frame['book'] if moved is None else moved['book'],
                             'counterparty': None if moved is None else moved['counterparty'],
                             'quantity': 0.0, 'clips': 0, 'amended_to': None,
-                            'first_lsn': frame['lsn'], 'last_lsn': frame['lsn']}
+                            'first_lsn': frame['lsn'], 'last_lsn': frame['lsn'], 'tickets': []}
     return under[portfolio]
+
+
+def _ticketed(frame, body, clip):
+    """One entry of a position's `tickets`: a clip under the ticket the fill or restrike `body`
+    carries, who filed that and when it is true."""
+    return dict(clip, ticket=body.get('ticket'), lsn=frame['lsn'], actor=frame['actor'],
+                at=as_of_key(frame)[0])
 
 
 def _cost_row(state, instrument, agreement, portfolio):

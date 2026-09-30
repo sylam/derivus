@@ -6,8 +6,30 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
   CalculationsAnswer, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, Reconcile,
-  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult,
+  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult, Worklist,
 } from './types';
+
+/** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
+ * seat the settings control names - which the record files a write under, and reads by. */
+export const TOKEN = 'derivus.token';
+export const SEAT = 'derivus.seat';
+
+/** One of the two, or nothing where storage is blocked or holds none. */
+export function stored(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** The seat a request names: the settings control's, where no token proves one. */
+const seat = () => (stored(TOKEN) ? '' : stored(SEAT));
+
+/** A write's body naming the seat, and a read's path asking as it - which `call` does. */
+const signed = <T extends object>(body: T) => (seat() ? { ...body, actor: seat() } : body);
+const seated = (path: string) => (seat()
+  ? `${path}${path.includes('?') ? '&' : '?'}actor=${encodeURIComponent(seat())}` : path);
 
 export class ApiError extends Error {
   status: number;
@@ -31,9 +53,13 @@ export function failure(error: unknown): { status: number | null; error: string 
 }
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const token = stored(TOKEN);
+  const response = await fetch(method === 'GET' ? seated(path) : path, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
@@ -54,7 +80,7 @@ export const getSchema = () => call<Schema>('GET', '/schema');
 export const getBook = () => call<BookResponse>('GET', '/book');
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/deals',
-    { action: 'amend', deal_path: dealPath, fields });
+    signed({ action: 'amend', deal_path: dealPath, fields }));
 // the market tick, one endpoint and two vocabularies: a price factor's values, or whole quote
 // blocks - which the verb value-updates and bootstraps in the same atomic write
 const postMarket = (body: Record<string, unknown>) =>
@@ -100,9 +126,13 @@ export const getBookActivity = (since: number | '') =>
 export const DOORBELL = '/spine/doorbell';
 export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
 export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
-// the positions standing, each where the file holds it, and the paper they sit under - the two
-// keys the grouped views file the book by
+// what waits on somebody, asked where the head or the file moved and never on the beat
+export const getWorklist = () => call<Worklist>('GET', '/book/worklist');
+// the positions standing, each where the file holds it with the status its ticket reads, the paper
+// they sit under and the declared tree - the keys the grouped views file the book by
 export const getBookPositions = () => call<{ positions: Position[] }>('GET', '/book/positions');
+export const getBookPortfolios = () =>
+  call<{ portfolios: { path: string }[] }>('GET', '/book/portfolios');
 // the P&L: the days it can run between, and what the book made between two of them
 export const getMarkedDays = () => call<MarkedDays>('GET', '/book/marks');
 export const getPnl = (query: string) => call<Pnl>('GET', `/book/pnl?${query}`);
@@ -116,11 +146,11 @@ export const saveCalculation = (name: string, calculation: Record<string, unknow
   call<CalculationOutcome>('POST', '/calculations', { name, calculation });
 export const runCalculation = (name: string, dealPath?: string) =>
   call<{ result_id: string; status: string }>('POST', '/calculations/run',
-    dealPath === undefined ? { name } : { name, deal_path: dealPath });
+    signed(dealPath === undefined ? { name } : { name, deal_path: dealPath }));
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>
-  call<{ result_id: string; status: string }>('POST', '/execute', doc);
+  call<{ result_id: string; status: string }>('POST', '/execute', signed(doc));
 export const getResult = (id: string) => call<ResultSummary>('GET', `/results/${id}`);
 export const getTable = (id: string, table: string, offset = 0, limit?: number) =>
   call<TablePage>('GET', `/results/${id}/${table}?offset=${offset}${

@@ -275,6 +275,34 @@ def declared_settlements(cls):
     return []
 
 
+def tenor_fields(cls):
+    """`[(key, column, cash)]` - where a deal of type `cls` states the days it settles, expires or
+    matures on: the settlement dates it declares, then every field it declares for an expiry or a
+    maturity that settles nothing, with `cash` None."""
+    declared = declared_settlements(cls)
+    return declared + [(key, None, None) for key in declared_fields(cls)
+                       if key.endswith(('Expiry_Date', 'Maturity_Date'))
+                       and all(entry[0] != key for entry in declared)]
+
+
+def settlement_days(fields, declared):
+    """`(key, column, cash, position, day)` for every day `fields` states under `declared` - a
+    field's own, or each row's in a table's column - an unstated one read off the field its `Cash`
+    names instead, and None where that states none either."""
+    for key, column, cash in declared:
+        days = [fields.get(key)] if column is None else [
+            row[column] for row in fields.get(key) or []]
+        for position, day in enumerate(days):
+            if not stated(day) and cash is not None and cash.otherwise:
+                day = fields.get(cash.otherwise)
+            yield key, column, cash, position, day if stated(day) else None
+
+
+def stated(day):
+    """Whether a date field holds a day, rather than the blank an unstated one reads as."""
+    return day is not None and not (isinstance(day, str) and not day)
+
+
 def instrument_fields(deal_type):
     """Every JSON key one deal TYPE declares, off the emitted store - the reading a wire block's
     `Object` reaches, and the descriptors `describe_instrument_type` publishes."""
@@ -433,25 +461,28 @@ def deal_descriptor(field):
 
 
 def emit_instrument(module):
-    """The `types`, `sections` and `containers` of `mapping['Instrument']`, from the classes.
+    """The `types`, `sections`, `containers` and `vernacular` of `mapping['Instrument']`, from the
+    classes.
 
     Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass
     inheriting its parent's declaration is not a second deal type. Declaration order is the UI's
     layout order. A section OWNS its descriptors, so `Payment_Timing` is `Touch`/`Expiry` on a
     one-touch and `End`/`Begin`/`Discounted` on a cashflow leg and both are right. `containers` is
-    read off `Deal.accepts_children`, so a client renders it without importing the engine.
+    read off `Deal.accepts_children`, so a client renders it without importing the engine, and
+    `vernacular` off each type's own plain names - never a parent's.
     """
-    types, sections, containers = {}, {}, []
+    types, sections, containers, vernacular = {}, {}, [], {}
     for deal_type, cls in vars(module).items():
         groups = cls.__dict__.get('fields') if isinstance(cls, type) else None
         if not isinstance(groups, list):
             continue
         types[deal_type] = [g.name for g in groups]
+        vernacular[deal_type] = cls.__dict__.get('vernacular')
         if getattr(cls, 'accepts_children', False):
             containers.append(deal_type)
         for g in groups:
             sections.setdefault(g.name, {f.key: deal_descriptor(f) for f in g.fields})
-    return types, sections, sorted(containers)
+    return types, sections, sorted(containers), vernacular
 
 
 def emit_factor(module):
@@ -1132,7 +1163,7 @@ from . import structures  # noqa: E402
 MARKET_QUOTE_CONTAINERS = quote_containers(bootstrappers)
 MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 
-_types, _sections, _containers = emit_instrument(instruments)
+_types, _sections, _containers, _vernacular = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 #: After `emit_factor`, which is what fills `FACTOR_FIELDS` - see `value_clocks`.
 VALUE_CLOCKS = value_clocks()
@@ -1224,6 +1255,8 @@ mapping = {
         },
         'sections': _sections,
         'types': _types,
-        'containers': _containers
+        'containers': _containers,
+        # the plain names a desk says for each type
+        'vernacular': _vernacular
     }
 }

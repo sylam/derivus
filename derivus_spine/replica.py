@@ -64,13 +64,15 @@ class Hub:
     """The hub as a replica reaches it: two reads and a stream, over `urllib.request`.
 
     `actor` is the seat the blob read is served under, which a chain-only follower never needs -
-    the chain is re-derived over ciphertext and a frames read opens no body.
+    the chain is re-derived over ciphertext and a frames read opens no body. `token` is the ID
+    token every read carries where the hub checks who is asking.
     """
 
-    def __init__(self, url, actor=None, timeout=TIMEOUT):
+    def __init__(self, url, actor=None, timeout=TIMEOUT, token=None):
         self.url = url.rstrip('/')
         self.actor = actor
         self.timeout = timeout
+        self.token = token
 
     def __repr__(self):
         return 'Hub({!r})'.format(self.url)
@@ -106,7 +108,9 @@ class Hub:
     def _open(self, path):
         """The hub's answer at `path`, or `HubUnreachable` naming what happened to the request."""
         try:
-            return urllib.request.urlopen(self.url + path, timeout=self.timeout)
+            return urllib.request.urlopen(urllib.request.Request(self.url + path, headers={
+                'Authorization': 'Bearer ' + self.token} if self.token else {}),
+                timeout=self.timeout)
         except (IOError, OSError, ValueError) as unreachable:
             raise HubUnreachable(
                 '{}{} did not answer ({}): a replica pulls what the hub serves and writes nothing '

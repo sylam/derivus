@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_spine import CapabilityDenied, ChainBroken, SpineLog, oracle, policy, verify_home
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
-from derivus_spine.verbs import STANDING, approve, book, file_quote
+from derivus_spine.verbs import STANDING, amendment, book, file_quote
 from derivus_spine.vocabulary import cited_blobs
 
 from gates.spine_game.red import forged
@@ -75,9 +75,9 @@ def planted(home, out, name, event_type, body, actor=ACTOR, book_name=None, tag=
     return where
 
 
-def quoted(tmp_path, name, ticket=TICKET, approver=None, second=None):
-    """A home carrying a workflow, a quote at `ticket`, whatever verdict `approver` filed, and a
-    fill booked against that quote. `second` files a second quote at the same ticket.
+def traded(tmp_path, name, tickets, restrike=(), workflow=True):
+    """A home - under a workflow where `workflow` - carrying one fill per ticket in `tickets`,
+    then a restrike of the terms they hold per entry of `restrike`, each carrying that ticket.
 
     The spine's own verbs and no engine anywhere near them - what a booking puts on the record is
     plain data, so the shape invariant four reads is buildable without a pricer.
@@ -85,16 +85,18 @@ def quoted(tmp_path, name, ticket=TICKET, approver=None, second=None):
     home = seeded(tmp_path, name, clips=())
     log = SpineLog(home)
     try:
-        policy.declare(log, ACTOR, policy.TIERS_POLICY, TIERS)
-        values = b'{"EURUSD":1.0851}'
-        file_quote(log, ACTOR, 'Q-1', 'ZeroCostCollar', PLAN, values, {'floor': 1.07}, 4100.0,
-                   ticket=ticket, book=BOOK)
-        if second is not None:
-            file_quote(log, ACTOR, second, 'Accumulator', PLAN, values, {'strike': 1.05}, 900.0,
-                       ticket=ticket, book=BOOK)
-        if approver is not None:
-            approve(log, approver, ticket, book=BOOK)
-        book(log, ACTOR, b'{"Reference":"CF1"}', -1.0, 'LEI-549300', 'CSA-0007', 'Q-1', book=BOOK)
+        if workflow:
+            policy.declare(log, ACTOR, policy.TIERS_POLICY, TIERS)
+        terms = b'{"Reference":"CF1"}'
+        for position, ticket in enumerate(tickets):
+            book(log, ACTOR, terms, 1.0, 'LEI-549300', 'CSA-0007', 'EXEC-{}'.format(position),
+                 book=BOOK, ticket=ticket)
+        for position, ticket in enumerate(restrike):
+            became = '{{"Reference":"CF1","Amount":{}}}'.format(position + 2).encode()
+            body = amendment(log, terms, became)
+            log.append('amendment', body if ticket is None else dict(body, ticket=ticket),
+                       actor=ACTOR, book=BOOK)
+            terms = became
     finally:
         log.close()
     return home
@@ -399,27 +401,41 @@ def test_a_refusal_the_script_asked_for_and_a_denial_it_did_not_are_both_named(t
     assert missing['held'] is False and 'the record holds none' in missing['evidence'][0]
 
 
-def test_a_fill_booked_at_a_ticket_nobody_else_signed_is_named(tmp_path):
-    """AN AMENDED PLAN IS A NEW APPROVAL, read as `quotes` x `decisions`. Three ways it breaks and
-    one way it holds: no verdict at the ticket, the booker's own signature on it, two quotes sharing
-    one ticket, and a second seat signing.
+def test_a_ticket_filed_twice_and_a_restrike_nobody_routed_are_named(tmp_path):
+    """AN AMENDED PLAN IS A NEW APPROVAL: every ticket is one trade's. Two different trades
+    carrying one ticket - a fill and another fill, or a fill and a restrike - are named, one
+    approval reaching both, while one trade two seats filed is one trade and holds; and under a
+    workflow a restrike carrying no ticket is named, the position it moved standing on the
+    approvals over the ticket it had. Tickets of their own hold, pending or not - a status and
+    never a failure - and with no workflow a restrike owes none.
 
-    Killing mutation: the standing approval read off the FIRST verdict rather than the latest by
-    LSN, which lets a rejection filed after an approval book anyway.
+    Killing mutations: a second filing of one ticket let through, which lets one approval clear a
+    clip nobody signed; a ticket read as one filing, which names a trade two seats filed; and a
+    restrike carrying no ticket let through under a workflow, which reads the restruck position on
+    approvals nobody gave its terms.
     """
-    unsigned = oracle.report(quoted(tmp_path, 'unsigned'))
-    assert oracle.failed(unsigned) == ['an_amended_plan_is_a_new_approval'], unsigned
-    assert 'no verdict on that plan' in unsigned['an_amended_plan_is_a_new_approval']['evidence'][0]
+    held = oracle.report(traded(tmp_path, 'held', [TICKET, PLAN], restrike=['c' * 64]))
+    assert oracle.failed(held) == [], held
+    retold = traded(tmp_path, 'retold', [TICKET])
+    log = SpineLog(retold)
+    try:
+        log.append('fill', next(log.open_body(frame) for frame in log.frames()
+                                if frame['event_type'] == 'fill'), actor=STRANGER, book=BOOK)
+    finally:
+        log.close()
+    assert oracle.failed(oracle.report(retold)) == [], 'one trade two seats filed was named'
 
-    own = oracle.report(quoted(tmp_path, 'own', approver=ACTOR))
-    assert oracle.failed(own) == ['an_amended_plan_is_a_new_approval'], own
-    assert 'signed its own ticket' in own['an_amended_plan_is_a_new_approval']['evidence'][0]
+    twice = oracle.report(traded(tmp_path, 'twice', [TICKET, TICKET]))
+    assert oracle.failed(twice) == ['an_amended_plan_is_a_new_approval'], twice
+    assert 'for another trade' in twice['an_amended_plan_is_a_new_approval']['evidence'][0]
+    reused = oracle.report(traded(tmp_path, 'reused', [TICKET], restrike=[TICKET]))
+    assert oracle.failed(reused) == ['an_amended_plan_is_a_new_approval'], reused
 
-    shared = oracle.report(quoted(tmp_path, 'shared', approver='subject-desk-two', second='Q-2'))
-    assert 'share the ticket' in shared['an_amended_plan_is_a_new_approval']['evidence'][0]
-
-    signed = oracle.report(quoted(tmp_path, 'signed', approver='subject-desk-two'))
-    assert oracle.failed(signed) == [], signed
+    unrouted = oracle.report(traded(tmp_path, 'unrouted', [TICKET], restrike=[None]))
+    assert oracle.failed(unrouted) == ['an_amended_plan_is_a_new_approval'], unrouted
+    assert 'carries no ticket' in unrouted['an_amended_plan_is_a_new_approval']['evidence'][0]
+    free = oracle.report(traded(tmp_path, 'free', [None], restrike=[None], workflow=False))
+    assert oracle.failed(free) == [], free
 
 
 def test_a_close_no_validating_writer_wrote_is_named(tmp_path):

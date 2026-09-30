@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { getBookReconcile } from '../api';
+import { SEAT, TOKEN, failure, getBookReconcile, getWorklist, stored } from '../api';
 import { stampText } from '../desk';
-import { reconcileVerdict, wantsReconcile } from '../spine';
+import {
+  reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
+} from '../spine';
 import { useApp, type AppState } from '../state';
-import type { Reconcile } from '../types';
+import type { Reconcile, Worklist } from '../types';
 
 /** The record's own block, and null where this client is not looking at the LIVE BOOK: the record
  * is the deployment's and says nothing about a copy opened from somebody's disk. */
@@ -57,8 +59,83 @@ export function ReconcileBanner() {
   );
 }
 
-/** The three lists as one table, each row named by its INSTRUMENT ADDRESS - the identity both
- * sides are compared on, so a renamed deal is two rows rather than a clean reconcile. */
+/** What waits on this seat, beside the reconcile banner: five lists read off what stands, so a row
+ * leaves the moment its fact lands, and a rejected trade is named for as long as it stands. Asked
+ * where the record's head moved (`wantsWorklist`), never on the beat or the file alone - the answer
+ * compiles the diary - and nothing at all where nothing waits; a read that failed says so.
+ */
+export function WorklistBanner() {
+  const { state } = useApp();
+  const [open, setOpen] = useState(false);
+  const [held, setHeld] = useState<{
+    worklist: Worklist | null; error: string | null; at: string | null }>(
+    { worklist: null, error: null, at: null });
+  const spine = recorded(state);
+  const at = worklistAt(spine);
+
+  useEffect(() => {
+    if (!wantsWorklist(spine, held.at)) return;
+    let live = true;
+    getWorklist()
+      .then((worklist) => { if (live) setHeld({ worklist, error: null, at }); })
+      .catch((error) => {
+        if (live) setHeld({ worklist: null, error: failure(error).error, at });
+      });
+    return () => { live = false; };
+    // the answer's own position is not a dependency: it moves BECAUSE of this fetch
+  }, [at]);
+
+  if (held.error) {
+    return <div className="recordbar drifted"><span>worklist unread: {held.error}</span></div>;
+  }
+  const line = worklistLine(held.worklist);
+  if (!line || !held.worklist) return null;
+  const { date: _, counts: __, ...lists } = held.worklist;
+  return (
+    <div className="recordbar behind">
+      <span>{line}</span>
+      <button className="ghost" onClick={() => setOpen(!open)}>
+        {open ? 'hide' : 'show'} what waits
+      </button>
+      {open && (
+        <div className="rows">
+          <table className="data">
+            <tbody>
+              {Object.values(lists).flat().map((row) => (
+                <tr key={`${row.kind}/${row.key}/${row.lsn}`}>
+                  <td>{row.kind}</td>
+                  <td>{row.what}</td>
+                  <td className="mono" title={row.key}>{row.key.slice(0, 12)}</td>
+                  <td>{row.since ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Who this browser acts as where the service checks no token: the seat a write is filed under
+ * and a read narrowed to, kept in this browser. A stored sign-in token names the seat instead. */
+export function SeatControl() {
+  const [seat, setSeat] = useState(stored(SEAT));
+  if (stored(TOKEN)) return <span className="hint">signed in</span>;
+  return (
+    <input className="seat" placeholder="seat" value={seat} title="the seat this desk acts as"
+           onChange={(event) => {
+             setSeat(event.target.value);
+             try {
+               localStorage.setItem(SEAT, event.target.value);
+             } catch { /* storage blocked: the seat lasts the page */ }
+           }} />
+  );
+}
+
+/** The lists as one table, each row named by its INSTRUMENT ADDRESS - the identity both sides are
+ * compared on, so a renamed deal is two rows rather than a clean reconcile - and a client's set off
+ * its paper by the agreement it materialises. */
 function Divergences({ reconcile }: { reconcile: Reconcile }) {
   return (
     <div className="rows">
@@ -79,6 +156,11 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
                         instrument={row.instrument}
                         detail={`${row.file_nodes} in the file, ${row.record_clips} recorded`}
                         number={row.record_quantity} />
+          ))}
+          {(reconcile.terms_mismatch ?? []).map((row) => (
+            <Divergence key={`paper-${row.deal_path}`} what="the set is off its paper"
+                        instrument={row.agreement}
+                        detail={`${row.fields.join(', ')} at ${row.deal_path}`} />
           ))}
         </tbody>
       </table>

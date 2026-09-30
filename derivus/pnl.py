@@ -39,7 +39,7 @@ from copy import deepcopy
 from . import content_hash
 from .diary import SETTLED
 from .schema import instrument_of, job_children, mapping, tables_of
-from .spine import book_name, under
+from .spine import book_name, under, visible
 
 #: The book a marks job files under - a name no book carries, so the compile writes no position
 #: into it and every instrument prices as the one unit it was written as.
@@ -198,12 +198,14 @@ def loaded(marks, stored):
     return dict(marks, document=read(marks['job']), units=unit_marks(read(marks['result'])))
 
 
-def within(row, portfolio=None, agreement=None, clients=None):
+def within(row, portfolio=None, agreement=None, clients=None, sight=None):
     """Whether a position row sits in the scope asked for: under a portfolio path, under one
-    agreement, or with a counterparty among `clients` - the whole book where nothing is named."""
+    agreement, with a counterparty among `clients`, and where a seat whose `sight` this is sees it
+    (`spine.visible`) - the whole book where nothing is named."""
     return ((portfolio is None or under(row['portfolio'], portfolio))
             and (agreement is None or row['agreement'] == agreement)
-            and (clients is None or row.get('counterparty') in clients))
+            and (clients is None or row.get('counterparty') in clients)
+            and bool(visible([row], sight)))
 
 
 def rates(values, reporting, base):

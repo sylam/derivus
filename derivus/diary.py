@@ -32,7 +32,7 @@ import pandas as pd
 from .spine import SpineRefused, cashflow_key
 from .pricing import fixed_payments
 from .instruments import Deal, barrier_monitoring_rows
-from .schema import declared_settlements
+from .schema import declared_settlements, settlement_days
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, check_rate_name,
@@ -340,25 +340,17 @@ def _settled_rows(fields, cls, instrument, since=None):
     day settling one payment is the `Settlement` leg; one settling several names each by its amount.
     """
     declared, rows = declared_settlements(cls), []
-    for key, column, cash in declared:
+    for key, column, cash, position, day in settlement_days(fields, declared):
         legs = sum(other[:2] == (key, column) for other in declared)
-        days = [fields.get(key)] if column is None else [row[column] for row in fields.get(key) or []]
-        for position, day in enumerate(days):
-            day = day if _stated(day) else fields.get(cash.otherwise) if cash.otherwise else None
-            if not _stated(day) or since is not None and pd.Timestamp(day) < since:
-                continue
-            stated = fields.get(cash.amount) if cash.amount else None
-            amount = None if stated is None else cash.sign * float(stated)
-            rows.append(_row(PAYMENT, instrument,
-                             SETTLEMENT if legs == 1 else cash.amount or cash.currency, position,
-                             day, currency=fields.get(cash.currency) or fields.get('Currency'),
-                             amount=amount, determined=amount is not None))
+        if day is None or since is not None and pd.Timestamp(day) < since:
+            continue
+        stated = fields.get(cash.amount) if cash.amount else None
+        amount = None if stated is None else cash.sign * float(stated)
+        rows.append(_row(PAYMENT, instrument,
+                         SETTLEMENT if legs == 1 else cash.amount or cash.currency, position,
+                         day, currency=fields.get(cash.currency) or fields.get('Currency'),
+                         amount=amount, determined=amount is not None))
     return rows
-
-
-def _stated(day):
-    """Whether a date field holds a day, rather than the blank an unstated one reads as."""
-    return day is not None and not (isinstance(day, str) and not day)
 
 
 def _expiry_fixing(fields, terms, index, instrument, rows):

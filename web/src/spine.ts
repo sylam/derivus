@@ -9,7 +9,7 @@
 
 import { plural } from './desk';
 import type {
-  ActivityPage, ActivityRow, BookMarkets, Doorbell, MarketClose, Reconcile, SpineBlock,
+  ActivityPage, ActivityRow, BookMarkets, Doorbell, MarketClose, Reconcile, SpineBlock, Worklist,
 } from './types';
 
 /** How many strip rows a client holds. The service caps a page at 200 and this caps what has been
@@ -32,6 +32,7 @@ export function reconciledAs(reconcile: Reconcile | null): string | null {
     reconcile.in_record_not_in_file.map((row) => [row.instrument, row.quantity]),
     reconcile.in_file_not_in_record.map((row) => [row.instrument, row.deal_path]),
     reconcile.quantity_mismatch.map((row) => [row.instrument, row.record_clips, row.file_nodes]),
+    (reconcile.terms_mismatch ?? []).map((row) => [row.agreement, row.fields]),
   ]);
 }
 
@@ -86,6 +87,8 @@ export type Verdict = {
   recordOnly: number;
   fileOnly: number;
   mismatched: number;
+  /** Netting sets whose paper is not what legal declared. */
+  terms: number;
 };
 
 /** `held` with `page` merged into it: LSN order, no row twice, the newest `cap` kept.
@@ -132,14 +135,16 @@ export function reconcileVerdict(spine: SpineBlock | null | undefined,
     recordOnly: reconcile?.in_record_not_in_file.length ?? 0,
     fileOnly: reconcile?.in_file_not_in_record.length ?? 0,
     mismatched: reconcile?.quantity_mismatch.length ?? 0,
+    terms: reconcile?.terms_mismatch?.length ?? 0,
   };
   if (!spine) return { state: 'none', line: '', ...counts };
-  if (counts.fileOnly > 0 || counts.mismatched > 0
+  if (counts.fileOnly > 0 || counts.mismatched > 0 || counts.terms > 0
       || counts.recordOnly > counts.positions) {
     return {
       state: 'drifted', ...counts,
       line: `file and record disagree: ${counts.recordOnly} in record not in file, `
-        + `${counts.fileOnly} in file not in record, ${counts.mismatched} quantity mismatches`,
+        + `${counts.fileOnly} in file not in record, ${counts.mismatched} quantity mismatches${
+          counts.terms ? `, ${plural(counts.terms, 'netting set')} off the paper` : ''}`,
     };
   }
   if (counts.recordOnly === 0) return { state: 'clean', line: '', ...counts };
@@ -148,6 +153,34 @@ export function reconcileVerdict(spine: SpineBlock | null | undefined,
     line: `record ahead by ${plural(counts.events, 'event')}`
       + ` (${plural(counts.positions, 'position')})`,
   };
+}
+
+/** Where a worklist answer was read: the RECORD's head - the pin and how far the record has moved
+ * past it - so any move of the head asks again, an approval included, which moves no position,
+ * while a file write that re-pins at the same head, a tick among them, asks nothing. */
+export function worklistAt(spine: SpineBlock | null): string | null {
+  return spine === null ? null
+    : `${spine.lsn === null ? '' : spine.lsn + (spine.events_behind ?? 0)}`;
+}
+
+/** Whether the banner owes a `/book/worklist`: the head moved since the answer in hand. Never on
+ * the beat, and never on the file alone - the answer compiles the diary on a miss. */
+export function wantsWorklist(spine: SpineBlock | null, heldAt: string | null): boolean {
+  return spine !== null && heldAt !== worklistAt(spine);
+}
+
+/** The worklist's lists, as the words the banner counts them in. */
+const WAITING: [keyof Worklist['counts'], string, string][] = [
+  ['pending', 'ticket', 'to sign'], ['payments', 'payment', 'due unsettled'],
+  ['unconfirmed', 'fill', 'to confirm'], ['unmarked', 'close', 'to mark'],
+  ['rejected', 'rejected trade', 'standing'],
+];
+
+/** The banner's one line: every list that holds anything, by its count - the rows are the newest
+ * of them - and nothing where all five are empty. A row is a thing somebody has to do. */
+export function worklistLine(worklist: Worklist | null): string {
+  return worklist === null ? '' : WAITING.filter(([list]) => worklist.counts[list])
+    .map(([list, noun, rest]) => `${plural(worklist.counts[list], noun)} ${rest}`).join(' · ');
 }
 
 /** A close with what it stands over said out loud: a close is superseded by a NEW close rather

@@ -16,8 +16,8 @@ its legal entities and agreements - with every position keyed where it sits, rea
 at its net, and seeds filed where a deployment says; **9** the money the settlements moved, what
 every position cost, and the desk's P&L between the closes it marks; and the seats - seven verbs
 granted at the nodes of a declared tree, the hub's own facts in the writer's voice, and a trade's
-pending read rather than filed. A library, a CLI, nine delegators on `Context`, fifteen read verbs
-and nine write verbs on the service, and 390 gates.
+pending read rather than filed. A library, a CLI, nine delegators on `Context`, seventeen read verbs
+and ten write verbs on the service, and 404 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -117,8 +117,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 358 of
-the 390 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 372 of
+the 404 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -623,27 +623,27 @@ cares about the one that comes back. `POST /book/structure` therefore runs in th
 files nothing: the head does not move on a quote, asserted as absence on the head. What it writes is
 the pending file, and under a home that file now carries everything the acceptance will file — the
 book's two hashes, the values vector behind them as JSON that canonicalises back to its own hash, the
-TICKET, the age of the board, `quoted_by` and the relayed client `request`. The fourteen quotes
-nobody accepts die in `DV_HOME/tmp`.
+PLAN the acceptance leaves the book at, the age of the board, the `portfolio` it books into (stated
+with the price, the book's own by default), `quoted_by` and the relayed client `request`. The
+fourteen quotes nobody accepts die in `DV_HOME/tmp`.
 
-**THE TICKET hashes the plan of the book AS THE ACCEPTANCE WOULD LEAVE IT** — this quote's MIRROR
-spliced in and its pinned spot models merged, through the booking's own two seams (`splice_deal` and
-`structures.pin_models`) and never a second spelling — together with the quote id the fill books
-under (`spine.ticket`, one function for every booking). It is what an approval signs, so it reaches
-this quote and no other and an amended mirror is a new hash by construction, and its plan is the one
-the booking DOES leave: a fitted strip books a `Valuation Configuration` entry beside its deal, that
-entry is plan, and a ticket taken without it would be a hash no booking ever reaches. Computed by
-ONE function, at the quote and again at the acceptance, so the plan a decision is filed over and the
-plan a booking checks cannot be two numbers. A plan does not read a spot, so the live one the
-quote's own copy carries cannot move it; and a pin whose parameters the book no longer carries
-refuses where the ticket is re-derived, before anything appends.
+**THE PLAN IS THE BOOK AS THE ACCEPTANCE WOULD LEAVE IT** (`pinned.plan`, `mirrored_plan`) — this
+quote's MIRROR spliced in and its pinned spot models merged, through the booking's own two seams
+(`splice_deal` and `structures.pin_models`) and never a second spelling: a fitted strip books a
+`Valuation Configuration` entry beside its deal, that entry is plan, and a plan taken without it
+would be one no booking ever reaches. The acceptance reaches it by booking and refuses where the two
+are not one number, so the file still says what was quoted. A plan does not read a spot, so the live
+one the quote's own copy carries cannot move it; and a pin whose parameters the book no longer
+carries refuses before anything appends. The TICKET an approval signs is minted AT the acceptance:
+`spine.ticket` over that plan and the fill as it is filed - the quote and the fill carry the one
+ticket, and no other trade ever does.
 
 **`POST /book/quote` IS THE ACCEPTANCE**, and the booking where the policy admits it. In order, and
 every refusal before anything appends: the desk's own `Quote Policy.firm_seconds`, which is a promise
 to a client and comes first; the PLAN, an equality, refused where the book moved under the solve; the
 PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says it
-was already too old and refusing nothing where a home declared none; and the TICKET, re-derived from
-the pending deal and this book, refused where the file no longer says what was quoted. Then the
+was already too old and refusing nothing where a home declared none; and the PLAN the acceptance
+leaves the book at, refused where it is not the one the quote pinned. Then the
 MARKET, which is REPORTED as `{pinned, current, moved}` and NEVER refused: between a quote and the
 client's word the board may move materially and we follow the spine as usual, the desk's own window
 being the promise that bounds it. `firmness` is the one module that answers all four, and its
@@ -673,24 +673,28 @@ With no home nothing appends and the edit keeps `Book.mutate`'s optimistic passe
 the lock costs: 2 ms of read and write against the 80 ms a booking's own verdict takes. What a lock
 orders is the writers that ask for it: **the hub is the gatekeeper and the file is its projection**,
 so a write that asks for neither — an editor saving `book.json` behind the service — is not a race
-to be ordered but a divergence `/book/reconcile` names. In that closure: `quote_filed` under the
-ACCEPTOR's seat, carrying the ticket and the pending values; then the tier step; then the `fill`
-under the acceptor with the quote id as its execution reference; then the book file. The pending file
-gains `accepted: {lsn, ticket}` in the same act, which is what lets a decision seek to ONE frame
-instead of folding every quote the desk has ever struck, and `booked: {lsn, deal_path}` when the
-fill lands. A retried acceptance coalesces every event onto the LSN it already has — the tuples
-carry no `effective_time`, so this is asserted rather than built, and it is what a desk tier's
-second act does. One that already BOOKED is told so by name: the booking was itself a move of the
-book, so the plan check would send a salesperson to re-quote a trade the desk has already done, and
-`booked` on the file answers `{written: false, booked}` before any of it. And AN EVENT APPENDED
-BEFORE A LATER REFUSAL STANDS: the client took the price, which is a fact whatever the workflow then
-says, so a held-back booking still answers `accepted` and leaves the file byte-identical.
+to be ordered but a divergence `/book/reconcile` names. In that closure the mirror is spliced and
+validated first, a refusal touching nothing; then ONE ACT OF THE WRITER (`spine.routed`):
+`quote_filed` under the ACCEPTOR's seat, carrying the fill's ticket and the pending values; then the
+tier step; then the `fill` under the acceptor with the quote id as its execution reference, at the
+quote's portfolio, one posted with the acceptance refused by name; then the book file. The pending
+file gains `accepted: {lsn, ticket}`, which is what lets a decision seek to ONE frame instead of
+folding every quote the desk has ever struck, and `booked: {lsn, deal_path}` when the fill lands. An
+acceptance retried is the same act, every event of it landing on the LSN it already has - after a
+tier refused it, after the desk moved its tiers, after the files it wrote were lost - so one quote
+files one `quote_filed` and books once. One that already BOOKED is told so by name: the booking was
+itself a move of the book, so the plan check would send a salesperson to re-quote a trade the desk
+has already done, and `booked` on the file answers `{written: false, booked}` before any of it. And
+A QUOTE FILED BEFORE A TIER REFUSES STANDS: the client took the price, which is a fact whatever the
+workflow then says, so a booking no tier admits still answers `accepted` and leaves the file
+byte-identical.
 
 **The tier step is enforcement by declaration.** No `tiers` policy in force is today's flow and the
-fill lands unsigned. With one in force `spine.route_ticket` composes the document, the evaluator, the
-market names standing and — for a tier wanting a human — the verdicts over this ticket, in ONE open
-of the log. **Both folds ADVANCE rather than re-walk** (`spine.advancing`): this runs on every
-acceptance, inside the write closure and so under the book lock, and the rows it
+fill lands unsigned. With one in force `spine.routed` composes the document, the evaluator, the
+market names standing and — for a tier wanting a human — the verdicts over this ticket, on the
+writer's own handle; a home whose decisions fold names no tiers policy walks nothing more. **Both
+folds ADVANCE rather than re-walk** (`spine.advancing`): this runs on every booking and every
+restrike, inside the write closure and so under the book lock, and the rows it
 opens a body for are the very ones it mints — an approval per desk-tier booking and one per automatic
 signature. Folding them from genesis costs **0.164 ms per decision filed**, the same per-body price
 the `quotes` fold pays, so a desk two thousand decisions in would pay about 330 ms to book a trade.
@@ -707,20 +711,21 @@ The ticket states its notional in its OWN currency, which needs no market data, 
 other this book can VALUE it in, crossed at the book's own spots; a currency whose cross is not a
 finite positive number — a spot block installed and not yet ticked carries its declared zero — is
 simply not among them, so a cap in it fails ITS tier by name instead of taking down a closure that
-has already filed the quote. The ticket's portfolio is the book the acceptance books into. An
-AUTOMATIC tier is signed by the hub in the writer's own voice between the acceptance and the fill,
-three facts at consecutive LSNs, the fill carrying the ticket - the workflow an admin declared decides
-it, so no capabilities document can hold it back. A four-eyes tier answers `{written: false, accepted,
-tier, waits_on}` — a NORMAL return, because the model's next move is to get it signed — and a ticket
-no tier admits answers `refused` carrying every sentence of the route it took. **That last wears the
-VALIDATION refusal's shape**, `{written: false, refused: [...]}`, and `accepted` is what tells them
-apart: one touched nothing, the other is a price the client took that the desk's own policy will not
-book. **No automatic rejection is filed**: a rejection is a seat's decision and the policy names no
-seat for one.
+has already filed the quote. The ticket's portfolio is the node the quote named, the book's own by
+default. An AUTOMATIC tier is signed by the hub in the writer's own voice between the
+acceptance and the fill, three facts at consecutive LSNs, the fill carrying the ticket - the
+workflow an admin declared decides it, so no capabilities document can hold it back. Under a
+four-eyes tier the trade BOOKS and reads PENDING, the answer carrying its `tier` and `waits_on`,
+until another seat signs; and a ticket no tier admits answers `refused` carrying every sentence of
+the route it took. **That last wears the VALIDATION refusal's shape**, `{written: false, refused:
+[...]}`, and `accepted` is what tells them apart: one touched nothing, the other is a price the
+client took that the desk's own policy will not book. **No automatic rejection is filed**: a
+rejection is a seat's decision and the policy names no seat for one.
 
-**The decision verbs.** `POST /book/quote/approve` and `/reject` take the quote id and file over
-`accepted.ticket` under the caller's own seat. A quote nobody accepted refuses by name — there is no
-ticket to rule on before the client has taken the price — and `spine.quote_at(lsn, quote_id)` is
+**The decision verbs.** `POST /book/approve` and `/reject` take a quote id and file over
+`accepted.ticket` under the caller's own seat, where the booking sits. A quote nobody accepted
+refuses by name — there is no ticket to rule on before the client has taken the price — and
+`spine.quote_at(lsn, quote_id)` is
 `Log.frame_at`'s seek by BYTE OFFSET followed by one body, refusing where that position holds another
 type or another quote, so a pending file copied from another home is caught rather than believed and
 the read costs the same whatever the desk has quoted. Approving twice is one fact, and the LATEST verdict
@@ -730,8 +735,8 @@ it back.
 **The binding closes its own warning.** `book_deal` carries the `quantity`, `execution_reference` and
 `actor` a recorded desk requires, `amend_deal` and `solve_structure` carry `actor`, `book_quote` is
 documented as the acceptance, and `approve_quote`/`reject_quote` are the second seat's. The server
-`INSTRUCTIONS` and the `quote_a_structure` prompt say the walk: quote, the client's word, accept, and
-where the desk's policy wants a second seat, its approval, then accept again.
+`INSTRUCTIONS` and the `quote_a_structure` prompt say the walk: quote, the client's word, accept,
+and where the desk's policy wants a second seat, its approval of the trade booked pending.
 
 ## Increment 5c — the mark, the close, the settlement file, and the queue that asks first
 
@@ -951,20 +956,24 @@ or this script could not put — a question nobody asked is never a question tha
    exactly as the append did. A portfolio outside its own book is named, an amendment is held to the
    deepest node holding its terms at the frame before it - the `positions` fold advanced beside the
    capability state - and an approval in the writer's voice to the hub's own act: a tiers policy in
-   force, and the fill carrying its ticket after it. The ENVELOPE HALF stands without a key — a type
-   no verb declares is a write nobody could be scoped for, a type only the writer files under any
-   other name is its voice forged, and the writer's name on anything its voice does not say is a seat
-   wearing it;
+   force, and a fill or a restrike carrying its ticket after it - an untampered hub never strands
+   one, every refusal its booking can meet coming first, and a crash between the two fsyncs is the
+   one way an approval stands alone until the act is retried, which is right to name. The ENVELOPE
+   HALF stands without a key — a type no verb declares is a write nobody could be scoped for, a type
+   only the writer files under any other name is its voice forged, and the writer's name on anything
+   its voice does not say is a seat wearing it;
 3. **every refusal is a denial** — what the script says was refused AT THE WRITER is in the
    `denials` fold and nothing else is, matched on the four fields the writer files rather than on a
    position, since a seat refused twice coalesces. A refusal that never reached the writer mints
    nothing BY DESIGN, so it is stated as the boundary it is and its absence is what the set equality
    asserts;
-4. **an amended plan is a new approval** — `quotes` × `decisions`: no two quote ids share a ticket,
-   and where the record carries a workflow at the position a fill landed, that fill's quote carries
-   a standing approval by a seat that is not the one that booked it, the booker's own verdicts not
-   read. Where no tiers policy stands
-   the desk declared no second pair of eyes, which is stated rather than failed;
+4. **an amended plan is a new approval** — every ticket is one trade's: every event carrying one
+   files the same trade - a retry the writer took twice, two seats filing one execution - and two
+   different trades carrying one are named; and where the record carries a workflow at the position
+   an amendment landed, the amendment carries a ticket of its own, so the position it restruck
+   stands on no approval over the ticket it had. Whether one stands over the new one is a STATUS,
+   derived and never failed. Where no tiers policy stands the desk declared no second pair of eyes,
+   which is stated rather than failed;
 5. **closes superseded, never edited** — THE SUPERSESSION HALF IS THE FOLD'S OWN and is not
    asserted, because it cannot be broken from a platter: `Markets.apply` COMPUTES `supersedes_lsn`
    off the row standing before the frame and files it only where the as-of key is later, so a close
@@ -1020,7 +1029,7 @@ office had no verb until this increment, which is what playing the day found.
 and filing the refusal as a fact; a REFUSAL is a tier, a window or a validator turning an act away
 before any append, which mints nothing; and some attempts are answered by the record simply CARRYING
 what happened. Approving your own ticket appends the approval — a seat signing a plan is a fact —
-and the booking still waits, because four eyes asks WHO signed. Wearing a second display name
+and the trade still reads pending, because four eyes asks WHO signed. Wearing a second display name
 changes a mutable side table outside the log and the refusal still names the subject. Two
 acceptances raced leave one fill at one LSN and the loser told the book moved. An approval over one
 plan does not reach another, a re-quote being a new ticket by construction. A booked trade restated
@@ -1061,8 +1070,8 @@ and name its address, so `BLOB_FIELDS` lists `fill.instrument` and `amendment`'s
 closure resolves them and a follower pulling `--blobs` asks for them, which is the difference
 between a copy of the record and a copy with every position in it and the terms behind none.
 
-**ONE SCOPE FOR AN APPROVAL.** A ticket is the plan THIS book would have, so a seat's verdict is
-filed under the job's own book, or the node the ticket books into where the verdict names one; an
+**ONE SCOPE FOR AN APPROVAL.** A ticket is one trade THIS book books, so a seat's verdict is filed
+under the job's own book, or the node the ticket books into where the verdict names one; an
 automatic tier's is the hub's own.
 
 ## Increment 8 — the paper, and where a position sits
@@ -1091,7 +1100,8 @@ a holding (settlement state, never paper), or refused by their own declarations,
 a `GET` beside each, and the binding's `declare_legal_entity`, `declare_agreement` and
 `describe_agreements`. A booking naming an `agreement` takes its counterparty from the agreement's
 entity and must sit under the file's set of that name, the set being the agreement's
-materialisation; its `portfolio` is the book's own name where none is stated.
+materialisation, which the first booking under a declared agreement brings; its `portfolio` is the
+book's own name where none is stated.
 
 **THE BOOK IS READ WHERE IT SITS.** A portfolio is a path whose top node is the book the fill is
 filed under, where its permissions are granted, so a stated one outside it or with an empty segment
@@ -1124,8 +1134,8 @@ net of nothing is no deal, and the same terms' second node under one set is the 
 ignored rather than priced twice - ignored and not removed, so every path a verb resolved against
 the file still names its node. The desk's reads price the compiled book - the consolidated risk, the
 XVA recalc, the what-if, a named calculation and a quote's risk-impact step - beside `/execute`,
-`/prepare` and the diary, which always did; a quote's pins and its ticket stay the file's, which is
-what the acceptance re-derives them from. Every type a position can be held in declares its sizes
+`/prepare` and the diary, which always did; a quote's pins and its plan stay the file's, which is
+what the acceptance holds them against. Every type a position can be held in declares its sizes
 beside its trial - a structure and a mark-to-market cross-currency swap through their legs - and
 held at half a unit each marks exactly half and held short exactly minus, to the bit; a block
 stating none of the amounts its type declares refuses by name rather than pricing one unit. A
@@ -1299,7 +1309,8 @@ path that stamps that actor and never gated. The public append refuses those typ
 actor and the reserved actor on any type, the seam refuses the name whether a request or
 `DV_SPINE_ACTOR` says it, and `init` refuses it before a byte is minted. An automatic tier's
 approval is that voice too: the workflow an admin declared decides it, and the oracle holds one
-only where a tiers policy stood and the fill carrying its ticket came after it. A standing run is
+only where a tiers policy stood and a fill or restrike carrying its ticket came after it. A standing
+run is
 admitted under the requester's `mark` over the book its job values and attested by the hub. Under a
 capabilities document a request naming no seat is refused by name; `spine.hub()`, `DV_SPINE_ACTOR`,
 is the deployment's own seat and the poll paths' alone. A document on the record is read in the
@@ -1317,9 +1328,9 @@ envelope's book - one function the writer asks and the oracle asks again, the de
 scope that was wanted. A `portfolio` outside the envelope's book is refused by name before anyone
 is asked, a node sitting in its own book's tree. The queue asks `capability.holds_any`: a seat that
 may `validate` one node of a book is admitted to price the book. An amendment's `portfolio` is the
-deepest node holding every position in the terms it restrikes (`capability.deepest`), read by
-`spine.amend` off the positions fold advanced under the book lock and never stated by a caller; the
-oracle re-derives it at the frame before and names one judged narrower than what it moved.
+deepest node holding every position in the terms it restrikes (`capability.holders`), read by
+`spine.amend` off the positions fold advanced under the book lock and never stated by a caller;
+the oracle re-derives it at the frame before and names one judged narrower than what it moved.
 
 **THE TREE IS DECLARED.** `portfolio_declared {path}` puts a node on the record, judged at its
 parent: `admin` at `BANK/FX` declares `BANK/FX/Options`, and a book is the firm's to declare. The
@@ -1339,19 +1350,108 @@ the rows moved outside; the oracle runs the same function over the same two docu
 admin's declaration leaves a break-glass recovery standing: the recovered seat stays admin until
 it, or an admin over `*`, declares.
 
-**PENDING IS DERIVED, NEVER FILED.** A fill carries the `ticket` an approval of it signs -
-`spine.ticket(plan_hash, execution_reference)`, the content hash of the plan the book has once it
-lands and the reference it is executed under, so a plan restored by deleting and re-adding a deal
-is still two tickets - and `spine.status_of(fills, decisions, tiers_at)` reads each fill
-`approved`, `rejected` or `pending` off the verdict standing over its ticket, or `unticketed` where
-it carries none or no tiers policy stood when it landed. A ticket the hub did not sign is under
-four eyes, so its booker's own verdicts are not read (`tiers.standing_verdict`): its approval clears
-nothing and withdraws no other seat's rejection, and its rejection withdraws no other seat's
-approval. `spine.fill_key(instrument, execution_reference)` is a fill's own key, which a
-`confirmed` transition is filed against. A tier is automatic unless it declares `four_eyes`, may
-cover a `scope` read before its checks - `*` covering every ticket - and a `seat` is refused by
-name. An acceptance books at the book itself, so it is read by a tier covering the book, never by
-one scoped to a node below it.
+**THE TICKET IS THE TRADE.** A fill carries the `ticket` an approval of it signs -
+`spine.ticket(plan_hash, trade)`, the content hash of the plan the book has once it lands and the
+trade's own fields as its event files them - so an act the writer is handed again is the same fact,
+coalescing onto the LSN it already has. AN AMENDMENT IS A TICKET TOO, over the plan the restrike
+leaves and its own fields. AND A TRADE IS TAKEN ONCE: `/book/deals` answers a booking whose fill
+already stands under its key - the instrument and the execution reference - with the fields it
+states as `{written: false, booked: {lsn, deal_path}}` with nothing spliced or filed, the file
+taking the trade back and nothing filed where it had lost it, a client that never saw its answer
+sending the same execution again; one stating other fields under that reference is refused by name,
+a second execution wanting its own; and a restrike sent again after it landed is answered the same
+way (`spine._booked`, `spine._restruck`). A fill's clip keeps the LSN it was filed at, so the key
+finds the fields it filed. The `positions` fold carries each clip under the ticket that books it -
+its fill's, or the restrike's that restruck it - keeping the instrument and execution reference it
+was filled under (`tickets`, version 3), so `spine.standing` reads every position off the positions
+and decisions folds, both advanced and no fill reopened: each ticket `approved`, `rejected` or
+`pending` off the verdict standing over it (`spine.status_of`), or `unticketed` where it carries
+none or no tiers policy stood when it landed - the decisions fold keeping where the first stood
+(version 2) - the position the first of `spine.STATUSES` among them and `pending` the quantity
+awaiting a second seat. A ticket the hub did not sign is under four eyes, so its booker's own
+verdicts are not read (`tiers.standing_verdict`): its approval clears nothing and withdraws no other
+seat's rejection, and its rejection withdraws no other seat's approval. Under an automatic tier they
+are read, so a booker's approval after another seat's rejection stands - that tier declared no
+second pair of eyes. `spine.fill_key(instrument, execution_reference)` is a clip's own key, kept
+through every restrike, which a `confirmed` transition is filed against. A tier is automatic unless
+it declares `four_eyes`, may cover a `scope` read before its checks - `*` covering every ticket -
+and a `seat` is refused by name.
+
+**EVERY BOOKING IS ROUTED IN ONE ACT OF THE WRITER** (`spine.routed`), a fill and a restrike alike:
+the body built, which asserts its shape; the tree read; and `SpineLog.admits` asking the vocabulary
+and the seat's scope with nothing written - so EVERY REFUSAL A FILL OR A RESTRIKE CAN MEET COMES
+BEFORE THE HUB SIGNS - then the ticket, then the route on the writer's own handle, then
+an automatic tier's approval in the hub's voice, then the event. The route reads the notional the
+trade STATES (`notional`, `notional_currency`, the whole trade's) crossed at the book's own spots as
+a quote's is (`ticket_terms`), the tenor its type's declarations name (`schema.tenor_fields`: the
+latest day it declares it settles, expires or matures on - a forward's settlement, a strip's last
+row - none failing a tenor cap by name and nothing compiled under the lock) and the book's values.
+Under four eyes the event LANDS carrying its ticket and reads pending, a trade that prices, settles
+and exports all the same, the status being workflow and not economics; a restruck position reads
+the restrike's ticket; and a ticket no tier admits writes nothing. A crash between the approval and
+the event is the one way an approval can stand alone, and the oracle naming it is right until the
+act is retried: the approval coalesces and the event lands after it.
+`POST /book/approve` and `/book/reject` take a `ticket`, or a `quote_id` its acceptance's pending
+file resolves, and file the verdict at the deepest node holding every position the ticket stands in
+- read off the record and never off the caller, so an approver at one node does not sign another's
+ticket by naming its own; a quote's ticket no tier admitted is ruled where the quote was filed.
+`GET /book/positions` answers each position's `tickets`, `status` and `pending`, and a REJECTED
+TRADE STANDS: it happened, and it is somebody's to close.
+
+**THE SET IS THE AGREEMENT'S MATERIALISATION.** A booking naming a declared agreement whose netting
+set the book file does not carry brings it - the declared terms spliced at the root, the booking's
+parent where it names none - with the verdict's baseline taken before, so what the set itself wants
+the book lacks, its counterparty's survival curve among it, is newly said and refuses by name. A
+quote named for such an agreement splices the same set on its own copy, so its pins and its plan
+are the book as the acceptance leaves it, and the acceptance splices it again: one materialisation
+for the three, where a refusal would have made a direct booking the only way to open a new client.
+`/book/reconcile` gains `terms_mismatch` - every set of the file materialising a declared agreement
+whose paper is not the declared terms, with the fields that moved, its `Children`, its balance and
+every holding's amount left out as positions and settlement state.
+
+**READS BY NODE.** A seat that holds any grant at nodes (`spine.sight`, `capability.nodes`) reads
+the rows under them through one `spine.visible` - a seat that may act at a node sees the rows it
+acts on: the positions, the P&L with every total summed over those rows alone, the diary and the
+reconcile rows by the positions their instruments sit in - their amounts the book's own compile at
+the instrument's net across every node, presentation and never a per-node compile - and the money
+and the strip by the book their envelope names, so a node seat reads neither. A grant over `*`, a
+home with no document, and a read no seat signs on a box checking no token read the whole book - the
+last is the deployment's own view, since a filter a self-declared name could lift protects nothing
+it withholds. A READ RUNS UNDER NO REQUESTER: the diary it compiles is the hub's own cache, admitted
+under `DV_SPINE_ACTOR` with the request's seat set aside (`spine.deployed`), so no read files a
+denial. Risk, XVA, `/book` and `/results` stay hub-wide. THIS IS PRESENTATION while classification
+is dormant: one class key opens every body, so a seat holding a `read` row reads every frame whole
+off `/spine/frames`, and the filter stops being presentation the day a second class exists.
+
+**THE WORKLIST.** `GET /book/worklist` is five lists of what waits on the seat asking, read off what
+stands, each what one verb acts on where the seat holds it, each row `{kind, what, key, lsn,
+since}` with `key` what the clearing fact is filed against: tickets pending a second seat, one row
+each, for `approve`; payments due by the book's day nobody settled - the close check's own verdict,
+a fee settling nothing - and clips no `confirmed` status filed since their own ticket stands
+against, at the key they were filled under (`spine.fill_key`) - a restrike making a re-confirmation
+due, one stating the day it was matched - for `settle`; closes on the market designated for P&L on a
+DAY after the last one marked - marks run forward, so no earlier day is owed - for `mark` over the
+book; and rejected trades still standing in a position, for `book`. `counts` says how many each list
+holds and each answers the newest `WORKLIST_ROWS` (the strip's 200). Nothing is filed for it, so a
+row leaves the moment its fact lands; the binding's `worklist` asks it, and the web UI's banner
+beside the reconcile banner asks it where the RECORD's head moved (`wantsWorklist`) - never on the
+beat, and never on the file alone, a tick being telemetry.
+
+**THE TREE HAS MOUTHS.** `GET` and `POST /book/portfolios` read and declare the tree - the binding's
+`describe_portfolios` and `declare_portfolio` - and the web UI's portfolio tree is seeded from it, a
+declared node a folder whether or not anything is booked under it.
+
+**THE SEAT FROM A TOKEN.** Naming a key set - `DV_SPINE_JWKS`, a JWKS file, with `DV_SPINE_ISSUER`
+and `DV_SPINE_AUDIENCE` - makes every request but the doorbell carry an ID token that set verifies,
+locally and nothing fetched; none or a bad one is a 401 in the verifier's words. One ASYNC global
+dependency sets the subject in the request's own context (`spine.REQUESTER`) - a sync one sets it in
+a threadpool copy the endpoint never sees - and `spine.actor` answers it, a request naming another
+seat refused and none ever taken for the hub; the metronome's thread and a read's own compile run
+under `DV_SPINE_ACTOR`. The key set is read once per version of its file, and one that does not
+read refuses `DV_Service` at startup and a request by name - never a 500. Unset, nothing is checked
+and a request's seat is what it says. The web UI sends a stored sign-in token, else the seat its
+settings control names as `actor` on the writes a seat signs and on every read; the binding and a
+follower send `DV_SPINE_TOKEN`.
 
 `tests/test_spine_capability.py` holds the voice, the node, scoped admin, the portfolio outside its
 book, the recovery, the stored document and the `portfolio` verb; `test_spine_verbs.py` the settle
@@ -1359,16 +1459,26 @@ verb and a verdict judged where it books; `test_spine_tiers.py` the scope and th
 `test_spine_oracle.py` the node seat, the forged voice, the hub's approval, the restrike and the
 firm's facts; `test_spine_engine.py` the queue's `mark`, the unnamed request, the reserved name, the
 automatic tier, a home in the earlier grammar, the tree, the restrike and the status; and
-`tests/test_pnl.py` the marks admitted over their book - every killing mutation their docstrings
-name red.
+`tests/test_pnl.py` the marks admitted over their book. `test_spine_engine.py` holds the service's
+half too - a booking routed as a ticket, a restrike routed as one, a trade sent again answered where
+it stands and refused under other fields, a booking, a restrike and an acceptance retried landing
+where they stand, every refusal before the hub signs, a forward dated by its settlement, the
+acceptance pending then signed, a verdict filed where its ticket books, the agreement's set brought
+by its first booking and its first quote, reads by node, a read under no requester and the seat from
+a token - `tests/test_pnl.py` the worklist by verb and by count, a structure's legs at its node and
+a node's P&L, `test_spine_oracle.py` a ticket filed twice and a restrike nobody routed,
+`test_schema_emission.py` the tenor census, `test_mcp.py` the walk through the binding and the
+lookup by plain name, and `web/scripts/spine_check.mjs` and `positions_check.mjs` the banner's ask
+and the seeded tree - every killing mutation their docstrings name red.
 
 ## What is not built yet
 
 No DuckDB and no reading plane: every question a desk asks the record is a fold, the largest fold
 state is 167 bytes per event, and the trigger is one projector's state passing a declared budget.
 The network is READ-ONLY and localhost's: tokens are verified rather than fetched, the three reads a
-replica uses serve and never take, and no write path is exposed beyond the box — under that posture
-`actor` is ATTRIBUTION rather than authentication, and the honest control is the bind address. No
+replica uses serve and never take, and no write path is exposed beyond the box — under that posture,
+with no key set named, `actor` is ATTRIBUTION rather than authentication and the honest control is
+the bind address; with one named, the seat is the verified token's subject. No
 class-key rotation (rewrap adds recipients; rotation is a later logged event). The external anchor
 hook is the checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data,
 out of scope by the design's own sentence.

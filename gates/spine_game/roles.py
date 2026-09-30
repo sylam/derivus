@@ -95,7 +95,8 @@ CLOSE_DATE = '2024-06-28'
 FAR_FUTURE = '2099-01-01'
 #: What `/book/reconcile` can say the file and the record disagree about - the reading the desk's
 #: own control against a second writer is, and what audit writes into the script.
-DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'quantity_mismatch')
+DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'quantity_mismatch',
+               'terms_mismatch')
 #: How long a seat waits on the hub's compute before it says so rather than hanging the day.
 WAIT_SECONDS = 600.0
 
@@ -245,27 +246,23 @@ def quote_the_client(table):
 def accept_the_price(table):
     """The trader: the client took the price, so record the quote and book the trade.
 
-    Under a workflow the acceptance is filed and the booking WAITS, which is a normal answer - the
+    Under a workflow wanting a second seat the trade books PENDING, which is a normal answer - the
     client's price is a fact whatever the desk's own policy then says.
     """
-    waiting = binding.book_quote(table.standing['quote'], actor=TRADER)
-    table.did(TRADER, 'book_quote', accepted=waiting['accepted']['lsn'], written=waiting['written'],
-              refused=None if waiting['written'] else
-              'the {} tier holds the booking: {}'.format(waiting['tier']['name'],
-                                                         waiting['waits_on']))
+    booked = binding.book_quote(table.standing['quote'], actor=TRADER)
+    table.did(TRADER, 'book_quote', accepted=booked['accepted']['lsn'], written=booked['written'],
+              pending=booked.get('waits_on'))
 
 
 def sign_the_ticket(table):
-    """The second seat: sign the plan this acceptance leaves the book at, and let the trade book.
+    """The second seat: sign the plan this acceptance left the book at, which clears the trade.
 
-    The signature is over the TICKET, so it reaches this quote and no other, and the trader's own
-    retry is what books - one seat accepts and a second signs, which is the whole of four eyes.
+    The signature is over the TICKET, so it reaches this quote and no other - one seat accepts and
+    a second signs, which is the whole of four eyes.
     """
     signed = binding.approve_quote(table.standing['quote'], RISK)
-    table.did(RISK, 'approve_quote', recorded=signed['recorded']['lsn'], ticket=signed['ticket'])
-    booked = binding.book_quote(table.standing['quote'], actor=TRADER)
-    table.did(TRADER, 'book_quote (retry)', written=booked['written'],
-              recorded=booked['recorded']['lsn'])
+    table.did(RISK, 'approve_quote', recorded=signed['recorded']['lsn'], ticket=signed['ticket'],
+              status=signed['status'])
 
 
 def confirm_the_trade(table):

@@ -118,10 +118,11 @@ def do_follow(args):
     `--interval` seconds where it does not or where the stream drops, and the same catch-up either
     way. `--blobs` pulls the bytes the frames cite, which wants a home that can open its bodies; a
     chain-only replica pulls frames alone. `--verify` re-derives the whole chain on every beat
-    rather than the range that beat landed, which the first catch-up does regardless.
+    rather than the range that beat landed, which the first catch-up does regardless. Where the
+    hub checks who is asking, `DV_SPINE_TOKEN` is the ID token every read carries.
     """
     from derivus_spine import replica
-    hub = replica.Hub(args.url, actor=args.actor)
+    hub = replica.Hub(args.url, actor=args.actor, token=os.environ.get('DV_SPINE_TOKEN'))
     log = SpineLog(spine_home(args.home))
     try:
         if args.once:

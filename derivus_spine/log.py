@@ -381,25 +381,7 @@ class SpineLog:
         tuple contains it, so a writer-stamped default would make the second submission of one
         booking a second fact. A null reads as of when it was recorded (`as_of_key`).
         """
-        self._claim()
-        validate(event_type, body)
-        if not isinstance(actor, str) or actor == '':
-            raise MalformedEvent(
-                'actor is {!r}: every event carries the pseudonymous subject reference that '
-                'submitted it - pass the actor rather than letting the record forget who '
-                'spoke'.format(actor))
-        if book is not None and (not isinstance(book, str) or book == ''):
-            raise MalformedEvent(
-                'book is {!r}: a book is a non-empty name or None for the firm-level facts - '
-                'policy, checkpoints, official market declarations'.format(book))
-        named = stray(event_type, body, book)
-        if named is not None:
-            raise MalformedEvent(
-                '{}: the portfolio {!r} is not under the book {!r} the fact is filed in - a '
-                'portfolio is a node of its own book\'s tree, and this would put rows in another '
-                'book\'s; file it under the book the node sits in'.format(event_type, named, book))
-        if effective_time is not None:
-            check_time(effective_time)
+        self._checked(event_type, body, actor, book, effective_time)
         self._authorize(event_type, body, actor, book)
         record_time = now_stamp()
 
@@ -544,21 +526,40 @@ class SpineLog:
         envelope['coalesced'] = True
         return envelope
 
-    def _authorize(self, event_type, body, actor, book):
-        """The enforcement hook: may this actor say this, and is what they are saying evaluable?
+    def admits(self, event_type, body, actor, book=None, effective_time=None):
+        """Whether `append` would take this fact, asked writing nothing: every refusal it meets
+        before its scope check raised here, and False where the seat's scope refuses it - the append
+        then lands that denial itself. The home is claimed first, so the head read next is the one
+        the append writes after."""
+        self._checked(event_type, body, actor, book, effective_time)
+        return self._reserved or self._refused(event_type, body, actor, book) is None
 
-        Enforcement activates by declaration for the document verbs; break-glass is gated from
-        event one instead, no declaration granting it and so no declaration's absence opening it. A
-        refusal is itself a fact - `capability_denied` in the writer's own voice, appended before
-        the raise.
+    def _checked(self, event_type, body, actor, book, effective_time):
+        """The writer's claim, then every refusal `append` meets before authorization: the
+        vocabulary, the actor, the book, a portfolio outside it and the effective time."""
+        self._claim()
+        validate(event_type, body)
+        if not isinstance(actor, str) or actor == '':
+            raise MalformedEvent(
+                'actor is {!r}: every event carries the pseudonymous subject reference that '
+                'submitted it - pass the actor rather than letting the record forget who '
+                'spoke'.format(actor))
+        if book is not None and (not isinstance(book, str) or book == ''):
+            raise MalformedEvent(
+                'book is {!r}: a book is a non-empty name or None for the firm-level facts - '
+                'policy, checkpoints, official market declarations'.format(book))
+        named = stray(event_type, body, book)
+        if named is not None:
+            raise MalformedEvent(
+                '{}: the portfolio {!r} is not under the book {!r} the fact is filed in - a '
+                'portfolio is a node of its own book\'s tree, and this would put rows in another '
+                'book\'s; file it under the book the node sits in'.format(event_type, named, book))
+        if effective_time is not None:
+            check_time(effective_time)
 
-        Four checks, in order: the writer's own voice, which no submitter speaks and no seat names
-        whether or not a document exists; then scope, at `scope_of`; then, where a node admin
-        declares the capabilities document, what it moves beyond its nodes; then the document
-        itself, so a malformed policy is met at the moment it is declared.
-        """
-        if self._reserved:
-            return
+    def _refused(self, event_type, body, actor, book):
+        """`(verb, scope, doc, genesis, moved)` where this seat's scope refuses the append, else
+        None - the writer's own voice, which no submitter speaks, refused outright."""
         verb = verb_for(event_type)
         if actor == WRITER or verb == WRITER:
             raise CapabilityDenied(
@@ -576,13 +577,34 @@ class SpineLog:
                 and not evaluate(doc, genesis, actor, verb, scope):
             moved = self._beyond(event_type, body, doc, actor)
             if moved != []:
-                denial = self.refuse(actor, verb, scope, event_type)
-                shown = ANY_BOOK if scope is None else scope
-                raise CapabilityDenied(
-                    'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. '
-                    'The refusal is itself recorded at LSN {5}'.format(
-                        actor, verb, shown, event_type,
-                        self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
+                return verb, scope, doc, genesis, moved
+        return None
+
+    def _authorize(self, event_type, body, actor, book):
+        """The enforcement hook: may this actor say this, and is what they are saying evaluable?
+
+        Enforcement activates by declaration for the document verbs; break-glass is gated from
+        event one instead, no declaration granting it and so no declaration's absence opening it. A
+        refusal is itself a fact - `capability_denied` in the writer's own voice, appended before
+        the raise.
+
+        Four checks, in order: the writer's own voice, which no submitter speaks and no seat names
+        whether or not a document exists; then scope, at `scope_of`; then, where a node admin
+        declares the capabilities document, what it moves beyond its nodes; then the document
+        itself, so a malformed policy is met at the moment it is declared.
+        """
+        if self._reserved:
+            return
+        refused = self._refused(event_type, body, actor, book)
+        if refused is not None:
+            verb, scope, doc, genesis, moved = refused
+            denial = self.refuse(actor, verb, scope, event_type)
+            shown = ANY_BOOK if scope is None else scope
+            raise CapabilityDenied(
+                'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. '
+                'The refusal is itself recorded at LSN {5}'.format(
+                    actor, verb, shown, event_type,
+                    self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
         if event_type == 'policy_declared' and isinstance(body, dict) \
                 and body.get('policy') == CAPABILITIES_POLICY:
             blob = body.get('blob')

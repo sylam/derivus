@@ -31,11 +31,12 @@ every call, and it does not fall back to the CLI's `~/.derivus_spine` default - 
 `DV_Spine init` must not silently start recording. Unset, every call site here is a no-op; set but
 not minted is a named refusal rather than a quiet fall-back.
 
-Every event carries a pseudonymous subject reference and the service has no auth of its own, so the
-actor is what the caller names - never the writer's reserved one - and, on a record declaring no
-capabilities document, `DV_SPINE_ACTOR` where the caller named none; under a document an unnamed
-act is refused, since inventing a seat would put a name in the record nobody chose. `hub()` is the
-deployment's own seat, which the poll paths no request signs run under.
+Every event carries a pseudonymous subject reference, so the actor is the seat a request's bearer
+token proves where the deployment checks tokens, else what the caller names - never the writer's
+reserved one - and, on a record declaring no capabilities document, `DV_SPINE_ACTOR` where the
+caller named none; under a document an unnamed act is refused, since inventing a seat would put a
+name in the record nobody chose. `hub()` is the deployment's own seat, which the poll paths and a
+read's own compile run under: a requester's seat narrows what a read answers and nothing else.
 
 One writer: the spine claims its home exclusively at the first append, so `writing()` holds a
 process-wide lock for the length of one act and closes the handle after it. And every `SpineRefusal`
@@ -43,6 +44,7 @@ is re-raised as `SpineRefused`, a `ValueError` carrying the spine's sentence une
 verbs' `except ValueError -> 422` handlers surface the library's own wording.
 """
 import contextlib
+import contextvars
 import hashlib
 import json
 import numbers
@@ -58,6 +60,13 @@ from .config import Config, CustomJsonEncoder, as_json
 SPINE_HOME = 'DV_SPINE_HOME'
 SPINE_ACTOR = 'DV_SPINE_ACTOR'
 SPINE_SEEDS = 'DV_SPINE_SEEDS'
+#: Where a deployment checks who is asking: a JWKS file, and the issuer and audience its tokens
+#: name. Unset, nothing is checked and a request's seat is what it says.
+SPINE_JWKS, SPINE_ISSUER, SPINE_AUDIENCE = 'DV_SPINE_JWKS', 'DV_SPINE_ISSUER', 'DV_SPINE_AUDIENCE'
+
+#: The subject a request's verified bearer token names, for that request alone: None on a box
+#: checking no token, and on every thread no request started - the metronome, the compute worker.
+REQUESTER = contextvars.ContextVar('requester', default=None)
 
 #: The three attestation lanes, respelled here so a call site can name one without paying for the
 #: spine import. The refusal wording still comes from `derivus_spine.verbs.check_lane`.
@@ -92,10 +101,24 @@ UNNAMED = ('no actor for this act, and a capabilities document is in force here:
 #: What an act naming the writer's reserved actor is told.
 RESERVED = ('{!r} is the record\'s own voice and never a seat: the writer alone files under it - '
             'name the seat that is acting')
+#: What an act naming another seat than its bearer token is told.
+NOT_THE_BEARER = ('this request names the seat {!r} and its bearer token is {!r}\'s: a request '
+                  'acts as the seat its token proves - drop the name, or sign in as that seat')
+#: What a request carrying no bearer token is told where the deployment checks them.
+NO_BEARER = ('this service checks who is asking and the request carries no `Authorization: '
+             'Bearer` token - send the ID token the deployment\'s identity provider issued')
+#: What a deployment naming a key set that does not read is told.
+NO_KEYSET = ('{} names {}, which does not read as a key set ({}): every request\'s token is '
+             'checked against it, so nothing is served without one - point it at the JWKS file '
+             'the identity provider publishes, or unset it to check nothing')
 
 #: One writer, one act at a time. The spine answers `WriterBusy` to a second holder of the home;
 #: this lock keeps a request thread and the compute worker from meeting that over their own book.
 _WRITER = threading.Lock()
+
+#: The key set as last read: `[path, mtime, document]`, so a request stats the file and a rotated
+#: set is read again rather than every request reading it.
+_KEYSET = [None, None, None]
 
 #: The folds a BOOKING advances rather than re-walking, as the `(lsn, state)` pair `projections.fold`
 #: takes: projector name -> that pair, under the one HISTORY they were folded on. A box serves one
@@ -148,10 +171,15 @@ def package():
 
 
 def actor(named=None, log=None):
-    """Who this act is attributed to: the seat the caller named - else, where no capabilities
-    document is in force, `DV_SPINE_ACTOR` - and never the writer's reserved name, whoever says it.
-    `log` is a handle already open on the home, whose state says what is in force."""
+    """Who this act is attributed to: the seat a request's token proves, a different name refused;
+    else the seat the caller named - else, where no capabilities document is in force,
+    `DV_SPINE_ACTOR` - and never the writer's reserved name, whoever says it. `log` is a handle
+    already open on the home, whose state says what is in force."""
     spine = package()
+    signed = REQUESTER.get()
+    if signed is not None and named and named != signed:
+        raise SpineRefused(NOT_THE_BEARER.format(named, signed))
+    named = named or signed
     if not named and (folded(spine.capability.state_at) if log is None
                       else log.capabilities())[0] is not None:
         raise SpineRefused(UNNAMED.format(SPINE_ACTOR))
@@ -167,6 +195,52 @@ def hub():
     """The deployment's own seat, `DV_SPINE_ACTOR`, or None where it names none - what the jobs no
     request signs run under: the diary read, the tick and the securities verification."""
     return os.environ.get(SPINE_ACTOR) or None
+
+
+@contextlib.contextmanager
+def deployed():
+    """The deployment's own work on a request's thread, for the length of the block: the requester
+    set aside, so the seat is `hub()` exactly as on a thread no request started."""
+    held = REQUESTER.set(None)
+    try:
+        yield hub()
+    finally:
+        REQUESTER.reset(held)
+
+
+def keyset():
+    """The key set `DV_SPINE_JWKS` names, read once per version of its file, or None where the
+    deployment checks no token. One that does not read refuses by name, which the service asks
+    before it serves anything."""
+    keys = os.environ.get(SPINE_JWKS)
+    if not keys:
+        return None
+    try:
+        stamp = os.stat(keys).st_mtime_ns
+        if _KEYSET[:2] != [keys, stamp]:
+            with open(keys, encoding='utf-8') as handle:
+                _KEYSET[:] = [keys, stamp, json.load(handle)]
+    except (OSError, ValueError) as unreadable:
+        raise SpineRefused(NO_KEYSET.format(SPINE_JWKS, keys, unreadable))
+    return _KEYSET[2]
+
+
+def bearer(authorization):
+    """The subject the `Authorization: Bearer` header value proves, verified against the key set
+    `DV_SPINE_JWKS` names for `DV_SPINE_ISSUER` and `DV_SPINE_AUDIENCE` - or None where no key set
+    is configured, a box checking no token. A missing token refuses by name and a bad one in the
+    verifier's own words; verifying is local, the key set being data the deployment hands in."""
+    published = keyset()
+    if published is None:
+        return None
+    scheme, _, token = (authorization or '').partition(' ')
+    if scheme.lower() != 'bearer' or not token.strip():
+        raise SpineRefused(NO_BEARER)
+    from derivus_spine.identity import verify_id_token
+
+    with translating():
+        return verify_id_token(token.strip(), published, os.environ.get(SPINE_ISSUER),
+                               os.environ.get(SPINE_AUDIENCE))['subject']
 
 
 def where():
@@ -323,7 +397,7 @@ def advancing(log, projector, lsn=None):
     - keyed on the GENESIS EVENT HASH rather than on the path, the way `read_seed` checks a close's
     own hash, so a home re-minted where the last one stood is a different record and not a fold
     that answers its predecessor's. What comes back is the pair's own state, so a caller READS it
-    and does not edit it.
+    and does not edit it - and a caller at the position the pair stands at pays nothing.
     """
     global _ADVANCED_HOME
     projections = package().projections
@@ -333,6 +407,8 @@ def advancing(log, projector, lsn=None):
         _ADVANCED.clear()
         _ADVANCED_HOME = genesis
     held = _ADVANCED.get(projector.name)
+    if held and held['lsn'] == at:
+        return held['state']
     state = projections.fold(log, projector, lsn=at,
                              seed=held if held and held['lsn'] <= at
                              else projections.latest_seed(log, projector, seeds(), at))
@@ -365,12 +441,12 @@ def cashflow_key(instrument_hash, leg, kind, date):
         {'instrument': instrument_hash, 'leg': leg, 'kind': kind, 'date': date})
 
 
-def ticket(plan_hash, execution_reference):
-    """What an approval of one booking signs: the content hash of the plan the book has once it
-    lands and the reference it is executed under - one booking's alone, where a plan restored by
-    deleting and re-adding a deal would be every such booking's."""
-    return package().content_hash(
-        {'plan_hash': plan_hash, 'execution_reference': execution_reference})
+def ticket(plan_hash, trade):
+    """What an approval of one trade signs: the content hash of the plan the book has once it
+    lands and the trade's own fields as its event files them - so the trade retried is the same
+    ticket, its event coalescing onto the LSN it already has, and one differing in any field is
+    another."""
+    return package().content_hash({'plan_hash': plan_hash, 'trade': trade})
 
 
 def fill_key(instrument, execution_reference):
@@ -383,6 +459,39 @@ def fill_key(instrument, execution_reference):
 def under(path, node):
     """Whether `path` is the node `node` or a path below it - the record's own reading."""
     return package().capability.under(path, node)
+
+
+def sight(named=None):
+    """Where the seat `named` - or the one a request's token names - acts: `{verb: nodes}`, a verb
+    it holds over `*` answering None. None throughout where nothing narrows a read: no home, no
+    capabilities document, or a read no seat signs on a box checking no token, which is the
+    deployment's own view - a filter a self-declared name could lift protects nothing it
+    withholds."""
+    named = named or REQUESTER.get()
+    if not named or not configured():
+        return None
+
+    def read(log):
+        spine = package()
+        document, _ = log.capabilities()
+        subject = actor(named, log)
+        return None if document is None else {verb: spine.capability.nodes(
+            document, subject, verb) for verb in spine.vocabulary.VERBS}
+
+    return folded(read)
+
+
+def visible(rows, sight, key='portfolio', verb=None):
+    """The `rows` a seat whose `sight` this is sees: every one where nothing narrows it, else those
+    whose `key` sits at or under a node it holds `verb` at - any verb where none is named, a seat
+    that may act at a node seeing the rows it acts on. PRESENTATION while classification is
+    dormant: one class key opens every body, so a seat holding a `read` row reads the frames
+    whole."""
+    held = None if sight is None else [sight[verb]] if verb else list(sight.values())
+    if held is None or None in held:
+        return rows
+    return [row for row in rows if row.get(key) is not None and any(
+        under(row[key], node) for nodes in held for node in nodes)]
 
 
 def pin():
@@ -757,19 +866,24 @@ def executor(kind=None):
 
 def book(deal, quantity, counterparty, netting_set, execution_reference,
          actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
-         portfolio=None, currency=None, rate=None, ticket=None):
-    """Book a fill against the canonical instrument `deal`, returning the spine's envelope.
+         portfolio=None, currency=None, rate=None, plan=None, terms=None, quote=None,
+         once=False):
+    """Book a fill against the canonical instrument `deal`, answering what the record now says
+    (`routed`) - or, with `once`, answering the fill already standing under its key (`_booked`):
+    a booking sent again.
 
     `deal` is canonicalised through the engine's encoder and its hash is the instrument id, so
     booking the same strike twice registers one instrument and files two events against it.
     `execution_reference` has no default: it is what makes a retry the same fact. `quantity` is the
-    position change in units of the instrument; `agreement`, `portfolio`, `price` and the `ticket`
-    an approval signs are filed where they are stated, a price in another currency with that
-    `currency` and the `rate` the booking crossed it at. Once any node under the book is declared,
-    a portfolio below the book is one of them - read off the tree ADVANCED on this handle.
+    position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
+    where they are stated, a price in another currency with that `currency` and the `rate` the
+    booking crossed it at. Once any node under the book is declared, a portfolio below the book is
+    one of them - read off the tree ADVANCED on this handle. `quote` is an acceptance's quote,
+    filed before the fill under the fill's own ticket.
     """
     spine = package()
     with writing() as log:
+        subject = actor(actor_name, log)
         if portfolio not in (None, book_name):
             declared = sorted(path for path in advancing(log, spine.projections.PROJECTORS[
                 'portfolios']) if spine.capability.under(path, book_name))
@@ -778,10 +892,79 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
                     'this booking names portfolio {!r}, and book {!r} books into itself or a node '
                     'declared under it - {} - so declare the node first, at its parent'.format(
                         portfolio, book_name, ', '.join(declared)))
-        return spine.verbs.book(log, actor(actor_name, log), canonical(deal), quantity,
-                                counterparty, netting_set, execution_reference, book=book_name,
-                                effective_time=effective_time, price=price, agreement=agreement,
-                                portfolio=portfolio, currency=currency, rate=rate, ticket=ticket)
+        body = spine.verbs.fill(log, canonical(deal), quantity, counterparty, netting_set,
+                                execution_reference, price=price, agreement=agreement,
+                                portfolio=portfolio, currency=currency, rate=rate)
+        return once and _booked(log, body) or routed(
+            log, 'fill', body, subject, book_name, effective_time, plan, terms, quote)
+
+
+def _booked(log, body):
+    """`{booked: {lsn, instrument}}` for the fill standing under `body`'s key - its instrument
+    and execution reference - where it files the fields `body` does, the rate its price was
+    crossed at aside, `instrument` being the terms its position stands in now; None where none
+    stands; and refused by name where one stands with other fields."""
+    key = (body['instrument'], body['execution_reference'])
+    held = next(((instrument, clip['fill']) for instrument, agreements in advancing(
+        log, package().projections.PROJECTORS['positions']).items()
+        for rows in agreements.values() for row in rows.values() for clip in row['tickets']
+        if (clip['instrument'], clip['execution_reference']) == key), None)
+    if held is None:
+        return None
+    filed = log.open_body(log.frame_at(held[1]))
+    moved = sorted(field for field in set(filed) | set(body)
+                   if field not in ('ticket', 'rate') and filed.get(field) != body.get(field))
+    if moved:
+        raise SpineRefused(
+            'execution {!r} is booked at LSN {} with other terms - {} - so this is not that '
+            'booking sent again: a second execution wants its own reference'.format(
+                key[1], held[1], ', '.join('{} {!r} where it filed {!r}'.format(
+                    field, body.get(field), filed.get(field)) for field in moved)))
+    return {'booked': {'lsn': held[1], 'instrument': held[0]}}
+
+
+def routed(log, event_type, body, subject, book_name, effective_time, plan, terms, quote=None):
+    """File `body` - a fill or a restrike - as its ticket routes it, in ONE act of the writer:
+    `{recorded, ticket, accepted?, tier?, waits_on?}`, or `{ticket, accepted?, refused}` with
+    nothing booked.
+
+    THE TICKET IS THE TRADE: where `plan` - the plan the book has once it lands - is handed in, the
+    event carries `ticket` over that plan and its own fields, so a retry of the act lands every
+    event on the LSN it already has. And EVERY REFUSAL IT CAN MEET COMES FIRST: the caller built the
+    body, which asserted its shape, and `SpineLog.admits` asks the vocabulary and the seat's scope
+    with nothing written, so the hub signs nothing a refusal then strands. Then, with a tiers policy
+    in force (`terms`, what it reads of the trade), the FIRST tier covering where it books whose
+    every check passes applies: an automatic one is the hub's own approval, filed before the event;
+    one under four eyes lets it land PENDING, `waits_on` saying on whom; and one no tier admits
+    answers `refused` with every sentence the route collected. A crash between the approval and the
+    event is the one way an approval stands alone, which the oracle names until the act is
+    retried. A seat the scope refuses is answered by the append itself, which lands the denial.
+    """
+    admitted = log.admits(event_type, body, subject, book_name, effective_time)
+    answer = {}
+    if plan is not None:
+        body['ticket'] = answer['ticket'] = ticket(plan, dict(body))
+    if quote is not None:
+        answer['accepted'] = package().verbs.file_quote(
+            log, subject, ticket=body.get('ticket'), book=book_name,
+            portfolio=body.get('portfolio'), **quote)
+    route = None if terms is None or not admitted else _route(
+        log, body.get('ticket'), dict(terms, portfolio=body.get('portfolio') or book_name), subject)
+    if route is not None:
+        if route['tier'] is None:
+            return dict(answer, refused=route['refusals'])
+        answer['tier'] = {'name': route['tier'], 'four_eyes': bool(route['four_eyes']),
+                          'approval_lsn': route['approval_lsn']}
+        if not route['four_eyes']:
+            answer['tier']['approval_lsn'] = log.own(
+                'approval', {'plan_hash': body['ticket']}, book=book_name)['lsn']
+        elif route['approval_lsn'] is None:
+            answer['waits_on'] = route['waits_on']
+    answer['recorded'] = dict(log.append(event_type, body, subject, book=book_name,
+                                         effective_time=effective_time),
+                              **{field: body[field] for field in package().vocabulary.BLOB_FIELDS[
+                                  event_type]})
+    return answer
 
 
 def declare_entity(entity, name, parent=None, actor_name=None, effective_time=None):
@@ -841,20 +1024,37 @@ def agreements(lsn=None):
     return folded(fold)
 
 
-def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None):
+def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None, plan=None,
+          terms=None):
     """Record that these terms became those terms - a new instrument hash linked to the old one -
     judged at the deepest node holding every position in them under the book, read off the
-    positions ADVANCED on this handle and never stated by a caller."""
+    positions ADVANCED on this handle and never stated by a caller. A restrike is a trade of its
+    own, ticketed and routed as `book` routes a fill (`routed`), and one that already landed is
+    answered `{booked: {lsn}}` rather than filed again (`_restruck`)."""
     spine = package()
-    was = hashlib.sha256(canonical(deal)).hexdigest()
+    was, now = (hashlib.sha256(canonical(terms)).hexdigest() for terms in (deal, amended_to))
     with writing() as log:
-        held = advancing(log, spine.projections.PROJECTORS['positions']).get(was, {})
-        return spine.verbs.amend(
-            log, actor(actor_name, log), canonical(deal), canonical(amended_to), book=book_name,
-            effective_time=effective_time, portfolio=spine.capability.deepest([
-                portfolio for rows in held.values() for portfolio, row in rows.items()
-                if row['quantity'] and book_name is not None
-                and spine.capability.under(portfolio, book_name)]))
+        subject = actor(actor_name, log)
+        held = advancing(log, spine.projections.PROJECTORS['positions'])
+        landed = _restruck(held, was, now)
+        if landed is not None:
+            return {'booked': {'lsn': landed}}
+        body = spine.verbs.amendment(
+            log, canonical(deal), canonical(amended_to), portfolio=spine.capability.deepest(
+                spine.capability.holders(held, was, book_name)))
+        return routed(log, 'amendment', body, subject, book_name, effective_time, plan, terms)
+
+
+def _restruck(positions, was, now):
+    """The LSN of the restrike that already moved `was` onto `now`, or None: the terms emptied
+    of every clip and naming `now` as where they went, or - `was` being `now`, the file already
+    carrying the change - clips a restrike moved onto them. `positions` is the fold's state."""
+    rows = [row for held in positions.get(was, {}).values() for row in held.values()]
+    if was != now:
+        landed = [row['last_lsn'] for row in rows if row['amended_to'] == now]
+        return max(landed) if landed and not any(row['clips'] for row in rows) else None
+    return max((clip['lsn'] for row in rows for clip in row['tickets']
+                if clip['instrument'] != now), default=None)
 
 
 def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective_time=None):
@@ -877,6 +1077,12 @@ def transition(subject, status, actor_name=None, book_name=None, effective_time=
         return verbs.transition(log, actor(actor_name, log), subject, status, book=book_name,
                                 effective_time=effective_time, amount=amount, asset=asset,
                                 kind=kind, reference=reference)
+
+
+def lifecycle(lsn=None):
+    """The `lifecycle` fold at `lsn`: every print, election and ruling, and the status standing
+    under each subject a transition names."""
+    return _rows('lifecycle', lsn)
 
 
 def cash(lsn=None):
@@ -927,29 +1133,56 @@ def fills(after=None, until=None):
     return folded(walk)
 
 
-def status_of(fills, decisions, tiers_at):
-    """`{lsn: status}` per fill: `approved`, `rejected` or `pending` by the verdict standing over its
-    ticket, and `unticketed` where it carries none or no tiers policy stood when it landed.
+#: What a position's tickets read together, the first a desk acts on first: one rejected, one
+#: awaiting a second seat, every one signed, none under a workflow.
+STATUSES = ('rejected', 'pending', 'approved', 'unticketed')
 
-    `fills` are `fills()` rows, `decisions` the `decisions` rows and `tiers_at(lsn)` the tiers
-    document in force at a position. A tier is automatic unless it declares `four_eyes`, and an
-    automatic one is the hub's own approval filed before the fill, so a ticket the hub never signed
-    is under four eyes: a seat other than its booker signs it, the booker's own verdicts not read.
+
+def standing(lsn=None):
+    """Every position the record holds at `lsn` with what its tickets read: each ticket its own
+    `status` (`status_of`), the position the first of `STATUSES` among them and `pending` the
+    quantity awaiting a second seat. The positions fold beside the decisions fold, both ADVANCED
+    in one open of the log - no fill is reopened."""
+    def read(log):
+        projections = package().projections
+        decisions = advancing(log, projections.PROJECTORS['decisions'], lsn)
+        rows = projections.PROJECTORS['positions'].rows(
+            advancing(log, projections.PROJECTORS['positions'], lsn))
+        for row in rows:
+            row['tickets'] = [dict(entry, status=status) for entry, status in zip(
+                row['tickets'], status_of(row['tickets'], decisions))]
+            said = {entry['status'] for entry in row['tickets']}
+            row.update(status=next((word for word in STATUSES if word in said), STATUSES[-1]),
+                       pending=sum((entry['quantity'] for entry in row['tickets']
+                                    if entry['status'] == 'pending'), 0.0))
+        return rows
+
+    return folded(read)
+
+
+def status_of(tickets, decisions):
+    """What each of a position's `tickets` reads: `approved`, `rejected` or `pending` by the
+    verdict standing over it, and `unticketed` where it carries none or no tiers policy stood when
+    it landed. `decisions` is the decisions fold's state.
+
+    A tier is automatic unless it declares `four_eyes`, and an automatic one is the hub's own
+    approval filed before the trade, so a ticket the hub never signed is under four eyes: a seat
+    other than its booker signs it, the booker's own verdicts not read.
     """
     spine = package()
-    plans = dict((row['plan_hash'], row['verdicts']) for row in decisions['plans'])
-    status = {}
-    for fill in fills:
-        verdicts = plans.get(fill.get('ticket'), [])
-        if fill.get('ticket') is None or tiers_at(fill['lsn']) is None:
-            status[fill['lsn']] = 'unticketed'
+    since = decisions['policies'].get(spine.policy.TIERS_POLICY, {}).get('since')
+    read = []
+    for entry in tickets:
+        verdicts = decisions['plans'].get(entry['ticket'], [])
+        if entry['ticket'] is None or since is None or since > entry['lsn']:
+            read.append('unticketed')
             continue
         standing = spine.tiers.standing_verdict({'four_eyes': not any(
             verdict['verdict'] == 'approval' and verdict['actor'] == spine.vocabulary.WRITER
-            for verdict in verdicts)}, fill['actor'], verdicts) or {}
-        status[fill['lsn']] = {'approval': 'approved', 'rejection': 'rejected'}.get(
-            standing.get('verdict'), 'pending')
-    return status
+            for verdict in verdicts)}, entry['actor'], verdicts) or {}
+        read.append({'approval': 'approved', 'rejection': 'rejected'}.get(
+            standing.get('verdict'), 'pending'))
+    return read
 
 
 def amendments(after=None, until=None):
@@ -969,28 +1202,23 @@ def stored(digest):
     return folded(lambda log: log.store.get(digest))
 
 
-def approve(plan_hash, actor_name=None, book_name=None, effective_time=None):
-    """Sign a plan hash. One seat approving one plan twice is one fact, coalescing onto the LSN it
-    already has; an amended plan is a different hash and so is a different signature."""
+def approve(plan_hash, actor_name=None, book_name=None, effective_time=None, portfolio=None):
+    """Sign a plan hash, judged at the `portfolio` it books into where one is named. One seat
+    approving one plan twice is one fact, coalescing onto the LSN it already has; an amended plan
+    is a different hash and so is a different signature."""
     verbs = package().verbs
     with writing() as log:
         return verbs.approve(log, actor(actor_name, log), plan_hash, book=book_name,
-                             effective_time=effective_time)
+                             effective_time=effective_time, portfolio=portfolio)
 
 
-def hub_approve(plan_hash, book_name=None):
-    """An automatic tier's approval of `plan_hash`, in the writer's own voice: the workflow an admin
-    declared decides it rather than a seat. Retried, it coalesces onto the LSN it already has."""
-    with writing() as log:
-        return log.own('approval', {'plan_hash': plan_hash}, book=book_name)
-
-
-def reject(plan_hash, reason, actor_name=None, book_name=None, effective_time=None):
-    """Refuse a plan hash with the reason on the row - the check, what it measured and the bound."""
+def reject(plan_hash, reason, actor_name=None, book_name=None, effective_time=None,
+           portfolio=None):
+    """Refuse a plan hash with the reason on the row, judged where `approve` is."""
     verbs = package().verbs
     with writing() as log:
         return verbs.reject(log, actor(actor_name, log), plan_hash, reason, book=book_name,
-                            effective_time=effective_time)
+                            effective_time=effective_time, portfolio=portfolio)
 
 
 def declare_market(name, values, actor_name=None, effective_time=None):
@@ -1103,41 +1331,43 @@ def _verdicts(rows, plan_hash):
 
 def route_ticket(plan_hash, terms, booker, lsn=None):
     """Which tier a ticket falls in here and whether it is already signed, or None where this home
-    declared no tiers - which is the flow that books.
+    declared no tiers - which is the flow that books. `_route` on a handle of its own."""
+    return folded(lambda log: _route(log, plan_hash, terms, booker, lsn))
+
+
+def _route(log, plan_hash, terms, booker, lsn=None):
+    """Which tier a ticket falls in on `log` and whether it is already signed, or None where this
+    home declared no tiers.
 
     `plan_hash` is the ticket ITSELF, the plan a decision is filed over; `terms` is what the checks
     read, `{notional_in, tenor_years, values_hash, portfolio}`, as `tiers.assess` takes it. The
     composition nothing else performs: the `tiers` document in force, the evaluator over it, the
     market names standing, and - for a tier under four eyes - the verdicts standing over that plan.
-    One open of the log for all four, and both folds ADVANCE (`advancing`) rather than re-walk: this
-    runs on every acceptance, inside the write closure, and the rows it opens are the ones this verb
-    mints.
+    Both folds ADVANCE (`advancing`) rather than re-walk, and a home whose decisions name no tiers
+    policy walks nothing more: this runs on every booking, inside the writer's act.
 
     `{tier, four_eyes, refusals, approval_lsn, waits_on}`: a `tier` of None with the route's own
     sentences under `refusals` is a ticket no tier admits; a tier without `four_eyes` is automatic,
     the hub's own approval; `approval_lsn` is the verdict that stands and `waits_on` names what is
     missing where none does.
     """
-    def routed(log):
-        spine = package()
-        document = spine.policy.tiers_in_force(log, lsn)
-        if document is None:
-            return None
-        markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn)['names']
-        verdict = spine.tiers.assess(
-            document, terms, dict((name, row['values_hash']) for name, row in markets.items()))
-        tier = next((row for row in document[spine.policy.TIERS_SECTION]
-                     if row['name'] == verdict['tier']), {})
-        answer = {'tier': verdict['tier'], 'four_eyes': tier.get('four_eyes'),
-                  'refusals': verdict['refusals'], 'approval_lsn': None, 'waits_on': None}
-        if not tier.get('four_eyes'):
-            return answer
-        decisions = spine.projections.PROJECTORS['decisions']
+    spine = package()
+    decisions = advancing(log, spine.projections.PROJECTORS['decisions'], lsn)
+    document = (spine.policy.tiers_in_force(log, lsn)
+                if spine.policy.TIERS_POLICY in decisions['policies'] else None)
+    if document is None:
+        return None
+    markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn)['names']
+    verdict = spine.tiers.assess(
+        document, terms, dict((name, row['values_hash']) for name, row in markets.items()))
+    tier = next((row for row in document[spine.policy.TIERS_SECTION]
+                 if row['name'] == verdict['tier']), {})
+    answer = {'tier': verdict['tier'], 'four_eyes': tier.get('four_eyes'),
+              'refusals': verdict['refusals'], 'approval_lsn': None, 'waits_on': None}
+    if tier.get('four_eyes'):
         answer['approval_lsn'], answer['waits_on'] = spine.tiers.standing_approval(
-            tier, booker, _verdicts(decisions.rows(advancing(log, decisions, lsn)), plan_hash))
-        return answer
-
-    return folded(routed)
+            tier, booker, decisions['plans'].get(plan_hash, []))
+    return answer
 
 
 def resolve_market(name, actor=None, process=None):
@@ -1213,7 +1443,7 @@ def designated_market(process):
     told what to declare; a designated name nothing stands under refuses where the name resolves.
     """
     spine = package()
-    named = (tiers_policy() or {}).get(spine.policy.DESIGNATIONS_SECTION, {}).get(process)
+    named = designation(process)
     if not named:
         raise SpineRefused(
             'this record designates no market for {0!r}, so there is nothing to strike it on: '
@@ -1222,6 +1452,11 @@ def designated_market(process):
             'through `DV_Spine declare {1} <file.json>`'.format(
                 process, spine.policy.TIERS_POLICY, spine.policy.DESIGNATIONS_SECTION))
     return resolve_market(named, process=process)
+
+
+def designation(process):
+    """The market name the `tiers` policy in force designates for `process`, or None."""
+    return (tiers_policy() or {}).get(package().policy.DESIGNATIONS_SECTION, {}).get(process)
 
 
 def admit(lane, actor_name=None, book=None):

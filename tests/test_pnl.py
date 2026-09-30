@@ -11,9 +11,10 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus import service
+from derivus import service, spine
 from derivus.config import as_json
-from derivus_spine import SpineLog, init_home, policy
+from derivus_spine import SpineLog, init_home, policy, verbs
+from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import rates_world
 from test_spine_engine import (
@@ -1069,8 +1070,6 @@ def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded
 
     Killing mutation: the marks job admitted over its own name, which nothing but `*` reaches.
     """
-    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
-
     designated(recorded, fixings=False)
     booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
     closed()
@@ -1099,3 +1098,185 @@ def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded
     finally:
         log.close()
     assert [row['day'] for row in CLIENT.get('/book/marks').json()['days']] == ['2024-06-28']
+
+
+#: The second pair of eyes, a seat reading the FX node of the book alone, and the seats that act on
+#: what waits: one approving at the Rates node, one settling the whole firm.
+SECOND, FX_READER = 'subject-desk-two', 'subject-desk-fx'
+APPROVER, SETTLER = 'subject-rates-approver', 'subject-settlements'
+
+
+def worklist(**params):
+    answer = CLIENT.get('/book/worklist', params=params)
+    assert answer.status_code == 200, answer.text
+    return answer.json()
+
+
+def waiting(answer):
+    """Every list of a worklist as the keys its rows wait on."""
+    return {name: [row['key'] for row in answer[name]]
+            for name in ('pending', 'payments', 'unconfirmed', 'unmarked', 'rejected')}
+
+
+def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(recorded, desk):
+    """FIVE LISTS, READ OFF WHAT STANDS. A fill under four eyes waits on a second seat's approval
+    by its ticket and on its confirmation by its own key; a close on the market designated for P&L
+    waits on its day's marks; a payment due by the book's day waits on its settlement - a FEE filed
+    against it settling nothing; and a rejected trade that still stands waits on somebody closing
+    it. Each row appears once and leaves the moment its fact lands, the close-out's own fill then
+    waiting in its place. And each list is what one verb acts on, where the seat asking holds it:
+    an approver at a node reads the tickets waiting there, a settlements seat the confirmations,
+    and a seat that only reads acts on nothing.
+
+    Killing mutations: a fee's movement filed as the status of what it names, which clears a
+    payment nobody paid; a close matched to the marks by position rather than by its day, which
+    leaves a close declared again over a marked day waiting; and the lists narrowed by `validate`
+    alone, which shows an approver nothing to approve.
+    """
+    designated(recorded, fixings=False)
+    booked(EXPIRING, 1.0, 'EXEC-W', BOOK + '/FX', 1_000.0)
+    fill = fills(recorded)[-1]
+    confirming = spine.fill_key(fill['instrument'], 'EXEC-W')
+    assert waiting(worklist()) == {'pending': [fill['ticket']], 'payments': [],
+                                   'unconfirmed': [confirming], 'unmarked': [], 'rejected': []}
+    closed()
+    assert waiting(worklist())['unmarked'] == ['2024-06-28']
+    marked()
+    assert waiting(worklist())['unmarked'] == [], 'a marked close still waits'
+    rolled(desk, START, 18.37)
+    closed()
+    assert waiting(worklist())['unmarked'] == [], 'a day closed again after its marks waits'
+    approved = CLIENT.post('/book/approve', json={'ticket': fill['ticket'], 'actor': SECOND})
+    assert approved.json()['status'] == 'approved' and waiting(worklist())['pending'] == []
+    assert CLIENT.post('/book/transition', content=dump({
+        'subject': confirming, 'status': 'confirmed', 'actor': ACTOR}),
+        headers=JSON).status_code == 200
+    assert waiting(worklist())['unconfirmed'] == []
+
+    rolled(desk, END, 18.0)
+    paid = due('CF-P', '2024-06-30')
+    assert waiting(worklist())['payments'] == [paid['key']]
+    settle({'subject': paid['key'], 'amount': -5.0, 'asset': 'ZAR', 'kind': 'fee',
+            'reference': 'FEE-W', 'value_date': '2024-06-30'})
+    assert waiting(worklist())['payments'] == [paid['key']], 'a fee settled a payment'
+    settle({'subject': paid['key'], 'amount': 100_000.0, 'asset': 'ZAR', 'kind': 'payment',
+            'reference': 'PAY-W', 'value_date': '2024-06-30'})
+    assert waiting(worklist())['payments'] == []
+
+    booked(LONG, 1.0, 'EXEC-R', BOOK + '/Rates', 17_800_000.0)
+    rejected = fills(recorded)[-1]
+    assert CLIENT.post('/book/reject', json={'ticket': rejected['ticket'], 'actor': SECOND,
+                                             'reason': 'over the limit'}).status_code == 200
+    listed = worklist()
+    assert waiting(listed)['rejected'] == [rejected['ticket']] and listed['rejected'][0][
+        'what'] == 'EXEC-R was rejected and still stands'
+    booked(LONG, -1.0, 'EXEC-R2', BOOK + '/Rates', 17_800_000.0)
+    closing = fills(recorded)[-1]
+    assert waiting(worklist())['rejected'] == [], 'a trade closed out still waits'
+    assert waiting(worklist())['pending'] == [closing['ticket']]
+
+    everything = worklist()
+    assert everything['counts'] == {name: len(rows) for name, rows in everything.items()
+                                    if name not in ('date', 'counts')}
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
+            {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
+            {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'},
+            {'subject': SETTLER, 'verb': 'settle', 'book': '*'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+    finally:
+        log.close()
+    nothing = {'pending': [], 'payments': [], 'unconfirmed': [], 'unmarked': [], 'rejected': []}
+    assert waiting(worklist(actor=FX_READER)) == waiting(worklist(actor=ACTOR)) == nothing
+    assert waiting(worklist(actor=APPROVER)) == dict(nothing, pending=[closing['ticket']])
+    assert waiting(worklist(actor=SETTLER)) == dict(
+        nothing, unconfirmed=waiting(everything)['unconfirmed'])
+
+
+def test_a_seat_reading_a_node_is_answered_that_node_s_p_and_l_summed_over_it(recorded, desk):
+    """THE P&L BY NODE: a seat granted `validate` at a node reads the rows under it, and every
+    total is summed over those rows alone - never the book's total beside a node's rows.
+
+    Killing mutation: the rows narrowed after the totals were taken, which hands a node seat the
+    whole book's P&L under its own rows.
+    """
+    designated(recorded, fixings=False)
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    booked(SPLIT, 1.0, 'EXEC-D', BOOK + '/FX', 2_500.0)
+    closed_and_marked()
+    rolled(desk, END, 18.0)
+    closed_and_marked()
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
+            {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+    finally:
+        log.close()
+    whole = between('2024-06-28', '2024-07-01', actor=ACTOR)
+    node = between('2024-06-28', '2024-07-01', actor=FX_READER)
+    assert {row['portfolio'] for row in node['rows']} == {BOOK + '/FX'}
+    assert len(whole['rows']) == 2 and whole['total']['pnl'] != node['total']['pnl']
+    for figure in ADDITIVE:
+        assert node['total'][figure] == pytest.approx(
+            sum(row[figure] for row in node['rows']), rel=1e-12, abs=1e-9), figure
+
+
+def test_a_node_seat_reads_the_legs_of_a_structure_held_at_its_node(recorded, desk):
+    """A STRUCTURE HELD WHOLE IS READ WHERE IT IS HELD. The diary names its payments leg by leg,
+    and a leg is an instrument the record holds no position in, so a seat acting at the node the
+    structure sits at reads them through the structure they are held in - and a seat acting at
+    another node reads none of them.
+
+    Killing mutation: a leg read apart from the structure it is held in, which hands the node's own
+    seat a diary without its structure's payments.
+    """
+    booked(PAIR, 1.0, 'EXEC-ST', BOOK + '/FX')
+    held = service.booked_instruments(json.loads(desk.read_text()))
+    legs = {held['LEG-A'], held['LEG-B']}
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
+            {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
+            {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+    finally:
+        log.close()
+
+    def read(seat):
+        answer = CLIENT.get('/book/diary', params={'actor': seat})
+        assert answer.status_code == 200, answer.text
+        return {row['instrument'] for row in answer.json()['rows']}
+
+    assert legs <= read(FX_READER), 'the node\'s seat lost its own structure\'s legs'
+    assert not legs & read(APPROVER)
+
+
+def test_the_worklist_counts_everything_and_answers_the_newest(recorded, desk):
+    """A WORKLIST IS BOUNDED. `counts` says how many each list holds and each list answers the
+    newest `WORKLIST_ROWS` of them, so a desk carrying thousands of unconfirmed fills reads a count
+    and a page rather than every fill it ever booked.
+
+    Killing mutation: the lists answered whole, which hands a browser every fill the desk ever
+    booked on every move of the head.
+    """
+    log = SpineLog(recorded)
+    try:
+        for clip in range(service.WORKLIST_ROWS + 1):
+            verbs.book(log, ACTOR, b'{"Reference":"CF-W"}', 1.0, 'CPTY_A', CLIENT_SET,
+                       'EXEC-{}'.format(clip), book=BOOK)
+    finally:
+        log.close()
+    answer = worklist()
+    assert answer['counts']['unconfirmed'] == service.WORKLIST_ROWS + 1
+    page = [row['what'].split()[0] for row in answer['unconfirmed']]
+    assert len(page) == service.WORKLIST_ROWS
+    assert (page[0], page[-1]) == ('EXEC-1', 'EXEC-{}'.format(service.WORKLIST_ROWS)), \
+        'the page is not the newest'

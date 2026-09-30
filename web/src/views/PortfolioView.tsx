@@ -51,7 +51,7 @@ export function PortfolioView() {
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
   const nodes = grouping === 'book' ? toTree(children, schema.Instrument.containers)
-    : grouping === 'portfolio' ? portfolioTree(paper.positions) : clientTree(paper);
+    : grouping === 'portfolio' ? portfolioTree(paper.positions, paper.nodes) : clientTree(paper);
 
   // a picked position stands for the first node the file holds it at; a picked node for itself
   const picked = selection.deal;

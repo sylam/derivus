@@ -22,17 +22,20 @@
     {
       "blob": null,
       "lsn": 2,
-      "policy": "break_glass"
+      "policy": "break_glass",
+      "since": null
     },
     {
       "blob": "minted at genesis",
       "lsn": 3,
-      "policy": "checkpoint_verifying_key"
+      "policy": "checkpoint_verifying_key",
+      "since": 3
     },
     {
       "blob": null,
       "lsn": 1,
-      "policy": "genesis"
+      "policy": "genesis",
+      "since": null
     }
   ]
 }

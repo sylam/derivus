@@ -40,7 +40,7 @@ export function BlotterView() {
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
   const tree = useMemo(() => (grouping === 'book' ? book : groupedRows(
-    grouping === 'portfolio' ? portfolioTree(paper.positions) : clientTree(paper),
+    grouping === 'portfolio' ? portfolioTree(paper.positions, paper.nodes) : clientTree(paper),
     rowsByPath(book), byId(paper.positions), base)), [grouping, book, paper, base]);
   const heldAt = useMemo(() => byPath(paper.positions), [paper]);
 
@@ -116,6 +116,7 @@ export function BlotterView() {
                 {recording && <th className="n">Qty</th>}
                 {recording && <th>Portfolio</th>}
                 {recording && <th>Client</th>}
+                {recording && <th>Status</th>}
                 <th />
               </tr>
             </thead>
@@ -140,7 +141,7 @@ export function BlotterView() {
                 />
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={recording ? 14 : 11} className="hint">
+                <tr><td colSpan={recording ? 15 : 11} className="hint">
                   nothing rolls off in this window.
                 </td></tr>
               )}
@@ -199,7 +200,7 @@ function Row(props: {
       </tr>
       {opened && (
         <tr className="detail">
-          <td colSpan={props.held ? 14 : 11}>
+          <td colSpan={props.held ? 15 : 11}>
             {sections
               ? sections.map((section) => (
                   <DescriptorPanel
@@ -217,11 +218,12 @@ function Row(props: {
   );
 }
 
-/** What the record holds of a row: the net quantity, and the portfolios and clients it sits
- * under - one position where the book is grouped by the record, every one the file's node holds
- * where it is not. */
+/** What the record holds of a row: the net quantity, the portfolios and clients it sits under,
+ * and what its tickets read with the quantity awaiting a second seat - one position where the book
+ * is grouped by the record, every one the file's node holds where it is not. */
 function Held({ held, entities }: { held: Position[]; entities: Paper['entities'] }) {
   const distinct = (values: string[]) => [...new Set(values)].join(', ');
+  const pending = held.reduce((sum, row) => sum + row.pending, 0);
   return (
     <>
       <td className="n">
@@ -229,6 +231,10 @@ function Held({ held, entities }: { held: Position[]; entities: Paper['entities'
       </td>
       <td>{distinct(held.map((row) => row.portfolio))}</td>
       <td>{distinct(held.map((row) => clientName(entities, row.counterparty)))}</td>
+      <td className={held.some((row) => row.status === 'rejected') ? 'rejected' : ''}>
+        {distinct(held.map((row) => row.status))}
+        {pending ? ` · ${formatNumber(pending)} pending` : ''}
+      </td>
     </>
   );
 }
