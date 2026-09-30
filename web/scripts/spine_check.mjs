@@ -49,10 +49,10 @@ const MARKETS = {
             effective_time: '2026-08-26T07:00:00.000000Z', lsn: 12 },
           { name: 'official', values_hash: '7e1686c9e58a2753', actor: ACTOR,
             effective_time: '2026-08-26T08:00:00.000000Z', lsn: 13 }],
-  closes: [{ market: 'eur-close', values_hash: 'b471376808000000', supersedes_lsn: null,
-             effective_time: '2026-08-26T14:00:00.000000Z', lsn: 14 },
-           { market: 'official', values_hash: 'b4713768088f9a06', supersedes_lsn: 15,
-             effective_time: '2026-08-26T16:30:00.000000Z', lsn: 17 }],
+  closes: [{ market: 'eur-close', values_hash: 'b471376808000000', date: '2026-08-26',
+             supersedes_lsn: null, effective_time: '2026-08-26T14:00:00.000000Z', lsn: 14 },
+           { market: 'official', values_hash: 'b4713768088f9a06', date: '2026-08-26',
+             supersedes_lsn: 15, effective_time: '2026-08-26T16:30:00.000000Z', lsn: 17 }],
   snapshots: [{ blob: '70305a91ff4aa328', book: 'FX-VANILLA', lsn: 19 },
               { blob: '70305a91ff000000', book: 'FX-VANILLA', lsn: 20 }],
 };
@@ -322,11 +322,11 @@ check('the closes read newest first',
       'the sort reversed or dropped, which puts the close a desk is looking for under the one it '
       + 'restated - and the service answers them by market, not by when',
       view.closes.map((close) => [close.lsn, close.supersedes]),
-      [[17, 'supersedes LSN 15'], [14, 'the first close on this market']]);
+      [[17, 'supersedes LSN 15'], [14, 'the first close of its day']]);
 check('a close that stands over nothing says so rather than naming nothing',
       'the supersedes line built unconditionally, which prints `supersedes LSN null` on the first '
-      + 'close of every market this desk has ever declared',
-      view.closes[1].supersedes, 'the first close on this market');
+      + 'close of every day this desk has ever declared',
+      view.closes[1].supersedes, 'the first close of its day');
 check('the names and the snapshots are shaped the same way',
       'either list left as the answer gave it (the fold sorts names by NAME and snapshots by when '
       + 'they were filed), which is the one ordering rule this panel has',

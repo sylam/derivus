@@ -120,10 +120,11 @@ THE RECORD, where this desk keeps one: book_diary is everything the book owes or
 the fact each row waits on, close_check says whether a close on a day is legal and names what
 is outstanding, book_reconcile says where the book file and the record disagree, book_activity
 is one line per event with the head to page from, and book_markets the official close standing
-per market with the close each superseded. DECLARING IS THE OTHER HALF: declare_close puts the
-day's close on the record over the values the book is carrying, once close_check says the day is
-legal - declare_market is that same act under any other name - export_settlements strikes the
-settlement file for a day, on the market the desk designated for it and on no other, and
+per market - its latest by day - with the close of its day each superseded. DECLARING IS THE OTHER
+HALF: declare_close puts the day's close on the record over the values the book is carrying, once
+close_check says the day is legal - declare_market is that same act under any other name -
+export_settlements strikes the settlement file for a day, on the market the desk designated for it
+and on no other, and
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
 what close_check then stops waiting on - with the amount, asset, kind and settlement reference where
 money moved, including collateral and margin under an agreement, and book_cash reads the movements
@@ -1538,8 +1539,9 @@ def book_markets() -> dict:
     """The record's markets: the official close standing per market, the names a values vector was
     declared under, and the snapshots registered against a book.
 
-    A close carries the LSN of the close it RESTATED - a close is superseded by a new one rather
-    than corrected in place - so what a market was marked at before is still readable, and the
+    A market stands on its latest close by day, and a close carries its `date` and the LSN of the
+    close of its day it RESTATED - a close is superseded by a new one rather than corrected in
+    place - so what a market was marked at before is still readable, and the
     `values_hash` on a row is the address of the vector itself. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/markets')
@@ -1568,8 +1570,9 @@ def declare_close(market: str | None = None, date: str | None = None,
     `close_check`: a day that check calls illegal is refused here naming what it waits on, and
     nothing is recorded - so call `close_check` first and file the missing fixings, settlements and
     elections. A `private/<subject>/...` board belongs to that subject alone and a close on it is
-    refused for anyone else, exactly as a mark is. A second close on one market SUPERSEDES the first
-    rather than correcting it, and the answer names the position it stands over:
+    refused for anyone else, exactly as a mark is. A second close for one day SUPERSEDES that day's
+    first rather than correcting it - never a later day's - and the answer names the position it
+    stands over:
     `{recorded: {lsn}, market, date, values_hash, supersedes_lsn}`.
     """
     return service().call('POST', '/book/close',

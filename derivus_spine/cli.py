@@ -16,7 +16,7 @@
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
 head), `status` (read it), `follow` (pull a hub's frames into this home, the one verb that
-speaks to a network and the one that only ever reads at the far end), `oracle` (answer the nine
+speaks to a network and the one that only ever reads at the far end), `oracle` (answer the fourteen
 invariants over what this home holds, against what a day's script says was asked) and `seed`
 (mint the folds at an official close into a folder a reader starts from).
 
@@ -138,16 +138,22 @@ def do_follow(args):
 
 
 def do_oracle(args):
-    """Answer the nine invariants over this home and print the report; exit 1 where one did not
-    hold.
+    """Answer the fourteen invariants over this home and print the report; exit 1 where one did
+    not hold.
 
-    `--script` is what was ASKED - the acts a day put to the record - which two of the nine hold the
-    record against; `--against` is a second copy to compare with. The diary one is not assessed
-    here: it is a compile of the book rather than a fold of the record.
+    `--script` is what was ASKED - the acts a day put to the record; `--against` is a second copy
+    to compare with; `--diary` the diary's rows and `--pnl` the P&L answers, the two compiles of
+    the book an engine hands in as data, each invariant needing one not assessed without it.
     """
     from derivus_spine import oracle
+
+    def data(path, what):
+        return None if path is None else read_json(path, what)
+
     answers = oracle.report(spine_home(args.home), against=args.against,
-                            script=read_json(args.script, 'game script') if args.script else None)
+                            script=data(args.script, 'game script'),
+                            diary_keys=data(args.diary, 'diary rows'),
+                            pnl=data(args.pnl, 'P&L answers'))
     report(answers)
     return 1 if oracle.failed(answers) else 0
 
@@ -203,12 +209,12 @@ def read_json(path, what):
             return json.loads(handle.read().decode('utf-8'))
     except (IOError, OSError) as missing:
         raise CapabilityDenied(
-            '{} cannot be read as the {} ({}) - point --file or --jwks at the file the deployment '
-            'is handing in'.format(path, what, missing))
+            '{} cannot be read as the {} ({}) - point the flag that named it at the file the '
+            'deployment is handing in'.format(path, what, missing))
     except (UnicodeDecodeError, ValueError) as broken:
         raise CapabilityDenied(
             '{} is not JSON, so it is not the {} ({}) - fix the file; nothing here guesses at what '
-            'a malformed policy meant'.format(path, what, broken))
+            'a malformed file meant'.format(path, what, broken))
 
 
 def do_enroll(args):
@@ -470,12 +476,20 @@ def build_parser():
     pulled.set_defaults(run=do_follow)
 
     asked = verbs.add_parser('oracle', parents=[common],
-                             help='answer the nine invariants over this home and say which of '
+                             help='answer the fourteen invariants over this home and say which of '
                                   'them a copy standing here could not assess')
     asked.add_argument('--script', type=str, default=None,
-                       help='the JSON record of what a day ASKED, which the refusals and the '
-                            'attestation lanes are held against; without it those two are not '
-                            'assessed')
+                       help='the JSON record of what a day ASKED - the refusals, the attestation '
+                            'lanes, the rows a settlement file instructed and the calls read - '
+                            'which the record is held against; without it those are not assessed')
+    asked.add_argument('--diary', type=str, default=None,
+                       help='the book\'s diary as JSON - its cashflow keys as a list, or key -> '
+                            '{amount, currency} with the amount null where the diary does not '
+                            'determine it - which the settlements and payments filed are held '
+                            'against')
+    asked.add_argument('--pnl', type=str, default=None,
+                       help='the JSON P&L answers {window, days, portfolios} the additive figures '
+                            'are held to')
     asked.add_argument('--against', type=str, default=None,
                        help='a second copy of this record to compare heads and folds with at the '
                             'shallower of the two heads')

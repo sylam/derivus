@@ -11,10 +11,10 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus import service, spine
+from derivus import pnl, service, spine
 from derivus.config import as_json
 from derivus_mcp import server as binding
-from derivus_spine import SpineLog, init_home, policy, verbs
+from derivus_spine import SpineLog, init_home, oracle, policy, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import rates_world
@@ -1061,6 +1061,34 @@ def test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_fo
     closed()
     refused = CLIENT.post('/book/marks', content=dump({'actor': ACTOR}), headers=JSON)
     assert refused.status_code == 422 and 'marks run forward' in refused.text, refused.text
+
+
+def test_a_past_day_restated_after_today_s_close_restates_that_day_alone(recorded, desk):
+    """A MARKET STANDS ON ITS LATEST CLOSE BY DAY, ties by LSN. Yesterday's close restated after
+    today's is declared over yesterday's first close and never over today's: today's board still
+    stands under the name, the day marked again on it, while yesterday reads its restatement - and
+    the record's fifth invariant holds over both.
+
+    Killing mutations: the markets fold standing a market on its latest close by as-of, which puts
+    yesterday's restatement over today's board and refuses today's marks; and a restatement naming
+    the close it displaced rather than its own day's.
+    """
+    designated(recorded, fixings=False)
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    closed_and_marked()
+    rolled(desk, END, 18.0)
+    closed_and_marked()
+    first, today = spine.closes('official')
+    restated = CLIENT.post('/book/close', content=dump({'actor': ACTOR, 'date': '2024-06-28'}),
+                           headers=JSON).json()
+    assert (restated['date'], restated['supersedes_lsn']) == ('2024-06-28', first['lsn']), restated
+    assert [(row['date'], row['lsn'], row['supersedes_lsn']) for row in CLIENT.get(
+        '/book/markets').json()['closes']] == [('2024-07-01', today['lsn'], None)]
+    marked()
+    on = pnl.rates_on(spine.closes('official'), spine.stored, 'USD', 'USD')
+    assert on('2024-06-28', restated['recorded']['lsn']) == pnl.rates(json.loads(spine.stored(
+        restated['values_hash']).decode('utf-8')), 'USD', 'USD') != on('2024-06-28', today['lsn'])
+    assert oracle.report(recorded)['closes_superseded_never_edited']['held'] is True
 
 
 def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded, desk):

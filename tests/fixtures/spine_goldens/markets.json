@@ -1,6 +1,7 @@
 {
   "closes": [
     {
+      "date": "2026-08-26",
       "effective_time": "2026-08-26T16:30:00.000000Z",
       "lsn": 17,
       "market": "official",

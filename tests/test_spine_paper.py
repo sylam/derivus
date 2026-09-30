@@ -35,7 +35,7 @@ from derivus_spine import SpineLog, SpineRefusal, canonical_bytes, verify_home
 from derivus_spine import cli
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, UNSEEDED, close_on, fold, fold_from, latest_seed, read_seed, seed_at)
-from derivus_spine.verbs import book, declare_agreement, declare_entity
+from derivus_spine.verbs import book, declare_agreement, declare_close, declare_entity
 
 from test_spine import (ACTOR, BOOK, INSTRUMENT, MON, OTHER, TERMS, TUE, WED, fill, seeded,
                         synthetic_book)
@@ -191,10 +191,15 @@ def test_a_reader_starts_at_the_newest_seed_a_named_folder_holds(tmp_path):
 
 
 def test_the_seed_verb_files_every_fold_but_the_strip_at_a_named_day(tmp_path, capsys):
-    """`DV_Spine seed --at <day> --out <folder>` stands at the last close true on that day - the
-    restated one, which stands where two share an instant - and files every projector's seed but the
-    strip's, whose state is its history. A day with no close, and an `--at` that is neither a day
-    nor a position, refuse by name and write nothing."""
+    """`DV_Spine seed --at <day> --out <folder>` stands at the close standing for the last day on or
+    before it - the restated one, which stands where two share a day - and files every projector's
+    seed but the strip's, whose state is its history. A day with no close, and an `--at` that is
+    neither a day nor a position, refuse by name and write nothing. A past day closed after a later
+    one stands for its own day and never the later's.
+
+    Killing mutation: the close read by its as-of key, which puts the past day's close over the
+    later day's and finds none for the day it is for.
+    """
     home, log, marks = synthetic_book(tmp_path)
     assert close_on(log, CLOSE_DAY) == RESTATED_CLOSE and close_on(log) == RESTATED_CLOSE
     assert close_on(log, '2026-08-25') is None
@@ -217,3 +222,10 @@ def test_the_seed_verb_files_every_fold_but_the_strip_at_a_named_day(tmp_path, c
     assert cli.main(['seed', '--home', str(home), '--at', 'yesterday']) == 1
     assert 'neither an LSN nor a day' in capsys.readouterr().err
     assert not (tmp_path / 'none').exists()
+
+    log = SpineLog(home)
+    try:
+        past = declare_close(log, ACTOR, 'official', b'{"EURUSD":1.0849}', date='2026-08-25')
+        assert close_on(log) == RESTATED_CLOSE and close_on(log, '2026-08-25') == past['lsn']
+    finally:
+        log.close()

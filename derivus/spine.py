@@ -450,10 +450,8 @@ def ticket(plan_hash, trade):
 
 
 def fill_key(instrument, execution_reference):
-    """The stable id of one fill, which a confirmation is filed against: the content hash of its
-    instrument and the reference it was executed under."""
-    return package().content_hash(
-        {'instrument': instrument, 'execution_reference': execution_reference})
+    """The stable id of one fill, which a confirmation is filed against - `verbs.fill_key`."""
+    return package().verbs.fill_key(instrument, execution_reference)
 
 
 def under(path, node):
@@ -1445,10 +1443,11 @@ def resolve_market(name, actor=None, process=None):
     process to a market by name.
 
     A NAME IS RESOLVED TO ITS LATEST DECLARATION, across the declarations of the name and the
-    official closes of it alike - a close is one way of declaring what a market stands on, and a
-    reader that took the name's own row would answer yesterday's board on a market the desk has
-    since closed. Latest by the fold's own as-of key, `(effective_time, lsn)`, so a close backdated
-    behind the mark in force is on the platter and does not displace it.
+    official close standing on it alike - a close is one way of declaring what a market stands on,
+    and a reader that took the name's own row would answer yesterday's board on a market the desk
+    has since closed. The close standing is the market's latest BY DAY, so a past day restated
+    never unseats a later day's board; the two are merged by the fold's own as-of key,
+    `(effective_time, lsn)`, so a close backdated behind the mark in force does not displace it.
 
     `private/<subject>/<name>` is one seat's own and resolves for that SUBJECT alone - the name
     carries its owner and `verbs.declare_market` refuses a private name whose subject is not the

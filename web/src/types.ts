@@ -238,11 +238,13 @@ export type ActivityPage = { lsn: number; rows: ActivityRow[] };
  * only that there is something to read. Nothing of an event's body is on this wire. */
 export type Doorbell = { lsn: number; head: string };
 
-/** The official close standing on a market. `supersedes_lsn` is the close this one restated, null
- * on the first - a close is superseded by a NEW close rather than corrected in place. */
+/** The official close standing on a market - its latest by `date`. `supersedes_lsn` is the close of
+ * its day this one restated, null on a day's first - a close is superseded by a NEW close rather
+ * than corrected in place. */
 export type MarketClose = {
   market: string;
   values_hash: string;
+  date: string;
   supersedes_lsn: number | null;
   effective_time: string | null;
   lsn: number;

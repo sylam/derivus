@@ -29,6 +29,8 @@ from .verbs import HELD
 
 #: The two sides of a call, from the bank's: it calls collateral in, or posts it out.
 CALL, POST = 'call', 'post'
+#: What `call` answers - the fields a call nobody can work out carries as nulls.
+WORKED = ('required', 'balance', 'call', 'direction', 'minimum_transfer')
 #: The dials a CSA states under `Credit_Support_Amounts`, each a `CreditSupportList`.
 DIALS = ('Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
          'Minimum_Posted')

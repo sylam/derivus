@@ -323,18 +323,21 @@ class Blotter(Projector):
 
 
 class Markets(Projector):
-    """The market names, the official close standing per market with the close it restated, and the
-    snapshots.
+    """The market names, the official close standing per market with the close of its day it
+    restated, and the snapshots.
 
-    A close is superseded by a NEW close rather than corrected in place, so the row names the LSN it
-    stands over.
+    A close is FOR a day - its `date`, else the day it is true on - and a market stands on its
+    LATEST close by day, ties by LSN, so a past day restated after a later day's close supersedes
+    the declaration of its own day and never the later one. A close is superseded by a NEW close
+    rather than corrected in place, so the row names the LSN of its day's close it stands over.
     """
 
     name = 'markets'
+    version = 2
     reads = ('market_declared', 'official_close_declared', 'snapshot_registered')
 
     def initial(self):
-        return {'names': {}, 'closes': {}, 'snapshots': []}
+        return {'names': {}, 'closes': {}, 'days': {}, 'snapshots': []}
 
     def apply(self, state, frame, log):
         body = log.open_body(frame)
@@ -345,10 +348,15 @@ class Markets(Projector):
             _stand(state['names'], body['name'], frame,
                    {'values_hash': body['values_hash'], 'actor': frame['actor']})
         else:
-            standing = state['closes'].get(body['market'])
-            _stand(state['closes'], body['market'], frame,
-                   {'values_hash': body['values_hash'],
-                    'supersedes_lsn': standing['lsn'] if standing else None})
+            day = body.get('date') or as_of_key(frame)[0][:10]
+            days, standing = state['days'].setdefault(body['market'], {}), state['closes'].get(
+                body['market'])
+            filed = {'values_hash': body['values_hash'], 'date': day,
+                     'supersedes_lsn': days.get(day), 'effective_time': frame['effective_time'],
+                     'lsn': frame['lsn'], 'as_of': as_of_key(frame)[0]}
+            days[day] = frame['lsn']
+            if standing is None or (day, frame['lsn']) > (standing['date'], standing['lsn']):
+                state['closes'][body['market']] = filed
 
     def rows(self, state):
         return {'names': [_shown(row, name=name) for name, row in sorted(state['names'].items())],
@@ -721,19 +729,19 @@ def fold_from(log, projector, lsn=None, folder=None):
 
 
 def close_on(log, date=None):
-    """The LSN of the last official close true on or before `date` (`YYYY-MM-DD`) - the last close
-    there is where none is named - or None where there is no such close.
+    """The LSN of the official close standing for the last day on or before `date` (`YYYY-MM-DD`)
+    - the last there is where none is named - or None where there is no such close.
 
-    Read by the as-of key, so a close restated for a day stands for that day whenever it was
-    written, and of two for one day the later in that key wins.
+    A close is FOR its `date`, else the day it is true on, and the later day stands, ties by LSN -
+    the markets fold's order - so a past day restated stands for that day and never for a later one.
     """
     found = None
     for frame in log.frames():
         if frame['event_type'] != SEED_EVENT:
             continue
-        key = as_of_key(frame)
-        if (date is None or key[0][:10] <= date) and (found is None or key > found[0]):
-            found = (key, frame['lsn'])
+        key = (log.open_body(frame).get('date') or as_of_key(frame)[0][:10], frame['lsn'])
+        if (date is None or key[0] <= date) and (found is None or key > found):
+            found = key
     return None if found is None else found[1]
 
 

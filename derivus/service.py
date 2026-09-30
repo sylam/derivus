@@ -2311,16 +2311,16 @@ def book_marks(request: dict):
                                  'declare one (POST /book/close) and mark again'.format(
                                      spine.PNL, market['name']))
     day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
-    if close['date'] != day:
-        raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {} '
-                                 '- a day is marked on its own close, so declare the close for {} '
-                                 '(POST /book/close) and mark again'.format(
-                                     market['name'], close['date'], day, day))
     marks = pnl.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
     if marks and day < max(marks):
         raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
                                  'forward, a day already struck never moves, and a day behind the '
                                  'last one marked is not marked'.format(max(marks), day))
+    if close['date'] != day:
+        raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {} '
+                                 '- a day is marked on its own close, so declare the close for {} '
+                                 '(POST /book/close) and mark again'.format(
+                                     market['name'], close['date'], day, day))
     # the marks close the business day where the book was READ, not where the run is attested:
     # a ticket booked while the run waits on the worker is the next day's
     head, since = spine.pin()['lsn'], max((row['lsn'] for row in marks.values()), default=0)
@@ -2665,8 +2665,9 @@ def clients_under(entity):
 def book_collateral(date: str = None, actor: str = None):
     """`{date, marks, lsn, calls}` - what the CSA of every agreement whose terms collateralise asks
     on the close marked for `date` (`YYYY-MM-DD`, the book's own day where none is named), less
-    what is held under it: per agreement `{agreement, entity, currency, exposure, held, margin,
-    required, balance, call, direction, minimum_transfer, unknown}`, in the agreement's currency.
+    what is held under it: per agreement `{agreement, entity, currency, exposure, fx, held, margin,
+    required, balance, call, direction, minimum_transfer, unknown}`, in the agreement's currency,
+    `fx` the close's spots in it.
 
     THE EXPOSURE IS THE ONE THE NETTING SET'S RECURSION READS: the P&L's value of the positions
     under the agreement at that close - a pending trade among them, since it prices and settles
@@ -3117,9 +3118,10 @@ def book_close(request: dict):
     appended - a close declared over a payment nobody settled or a payoff nobody elected is a clean
     bill nobody earned. ONE READ OF THE BOOK: the verdict is taken over the document this close is
     struck on, since a booking landing between two reads would make it a statement about a book the
-    close was not declared over. A SECOND close on one market supersedes the first rather than
-    correcting it, so a day restated is two facts, both readable, and the answer names the position
-    it stands over. 404 where no home is configured.
+    close was not declared over. A SECOND close for one day supersedes that day's first rather than
+    correcting it, so a day restated is two facts, both readable, and the answer names the close of
+    its day it stands over; the market stands on its latest close by day, so a past day restated
+    never unseats a later day's. 404 where no home is configured.
     """
     document, _ = recording().read()
     # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
@@ -3139,10 +3141,10 @@ def book_close(request: dict):
                                                               row['due_date'] or 'every day')
                                          for row in verdict['outstanding'][:8]), day))
     declared = load(document).declare_close(market, actor=request.get('actor'), date=day)
-    standing = next((row for row in book_markets()['closes'] if row['market'] == market), {})
     return {'recorded': {'lsn': declared['lsn']}, 'market': market, 'date': day,
-            'values_hash': declared['values_hash'],
-            'supersedes_lsn': standing.get('supersedes_lsn')}
+            'values_hash': declared['values_hash'], 'supersedes_lsn': max(
+                (row['lsn'] for row in spine.closes(market)
+                 if row['date'] == day and row['lsn'] < declared['lsn']), default=None)}
 
 
 @app.post('/book/settlements', summary='The settlement file for one day, on the designated market')

@@ -189,8 +189,8 @@ export type CloseRow = MarketClose & { supersedes: string };
 
 const newestFirst = (a: { lsn: number }, b: { lsn: number }) => b.lsn - a.lsn;
 
-/** The markets answer as the panel reads it - each list newest first, every close naming the one
- * it restated. Never mutates the answer it was handed. */
+/** The markets answer as the panel reads it - each list newest first, every close naming the close
+ * of its day it restated. Never mutates the answer it was handed. */
 export function marketsView(markets: BookMarkets): {
   closes: CloseRow[]; names: BookMarkets['names']; snapshots: BookMarkets['snapshots'];
 } {
@@ -198,7 +198,7 @@ export function marketsView(markets: BookMarkets): {
     closes: [...markets.closes].sort(newestFirst).map((close) => ({
       ...close,
       supersedes: close.supersedes_lsn === null
-        ? 'the first close on this market' : `supersedes LSN ${close.supersedes_lsn}`,
+        ? 'the first close of its day' : `supersedes LSN ${close.supersedes_lsn}`,
     })),
     names: [...markets.names].sort(newestFirst),
     snapshots: [...markets.snapshots].sort(newestFirst),

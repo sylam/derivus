@@ -10,15 +10,16 @@ quote lifecycle — a price recorded when the client accepts it, routed through 
 before it books — over the compute itself a queue that asks who is submitting before it runs
 anything, around the whole of it a REPLICA: a read-only copy that pulls the hub's own frames,
 verifies them where it stands and is told when there is something to pull, and over all of that an
-ORACLE and the day it reads — a desk played by seats through the binding, with an adversary and
-scripted faults beside it, held to nine invariants. **8** adds the paper the book trades under -
+ORACLE and the bank it reads — a mock bank founded through the CLI and played by its seats through
+the binding over three closes, with an adversary and scripted faults beside it, held to fourteen
+invariants. **8** adds the paper the book trades under -
 its legal entities and agreements - with every position keyed where it sits, read there and priced
 at its net, and seeds filed where a deployment says; **9** the money the settlements moved, what
 every position cost, and the desk's P&L between the closes it marks; and the seats - seven verbs
 granted at the nodes of a declared tree, the hub's own facts in the writer's voice, and a trade's
 pending read rather than filed; and the collateral each agreement calls on a marked close, its
 balance written into the plan. A library, a CLI, nine delegators on `Context`, eighteen read verbs
-and ten write verbs on the service, and 414 gates.
+and ten write verbs on the service, and 410 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -118,8 +119,8 @@ channel into the record.
 ## The gates
 
 106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 372 of
-the 404 above, and `tests/test_diary.py` carries the rest),
+`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 378 of
+the 410 above, and `tests/test_diary.py` carries the rest),
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
@@ -461,7 +462,8 @@ segments either way. At the design's synthetic home — 21 events — the fold i
 25 ms and 40 KB for the capped strip against 21 ms and 22 bytes for a page that answers nothing
 new, and one beat of the web's poll is 47 ms at 2,005 events. Seeking would be a change inside the
 log's own reader, and is not one this made. `GET /book/markets` is the `markets` fold at the head —
-the official close standing per market with the LSN of the close it restated, the declared names,
+the official close standing per market - its latest by day - with the day it is for and the LSN of
+that day's close it restated, the declared names,
 the snapshots. **Neither asks for a book**: a replica carrying a home and no book file at all is
 exactly the posture a strip that opens no body is for, so the two check the home and never
 `DV_HOME/book.json`, where `/book/reconcile` compares against the file and needs one. A home whose
@@ -577,7 +579,8 @@ loaded, which is the whole point of binding a process to a market by name; with 
 must be the market the tiers policy designates for that process, and a home designating nothing
 refuses too. **A NAME RESOLVES TO ITS LATEST DECLARATION BY LSN, and an official close is one way of
 declaring one**: a close moves what the name answers and a later declaration moves it back, so a
-reader cannot be handed yesterday's board on a market the desk has since closed. A
+reader cannot be handed yesterday's board on a market the desk has since closed. The close a market
+stands on is its latest BY DAY, ties by LSN, so a past day restated never unseats a later day's. A
 `private/<subject>/<name>` market resolves for the subject ITS NAME NAMES, and `declare_market`
 refuses a private name whose subject is not the seat declaring it — self-declared means
 self-declared, so the name and the fold cannot disagree about who owns a board. The ownership rule
@@ -765,9 +768,9 @@ string compare would call the empty one legal. The verdict is `close_verdict`, t
 function over rows, so the read verb and the declaration answer ONE verdict about ONE document: the
 close compiles the book it read and asks, where calling the read verb again would judge a book the
 close is not struck on. That compile is the CALLER's job on the queue, like the export's. A second
-close on one market SUPERSEDES the first, and the answer carries the `supersedes_lsn` the `markets`
-fold names — read off the fold rather than off the close just filed, because what a close stands over
-is a question about the record.
+close for one day SUPERSEDES that day's first, and the answer carries the `supersedes_lsn` of the
+close of its day it stands over — read off the record's closes rather than off the close just filed,
+because what a close stands over is a question about the record.
 
 **THE SETTLEMENT FILE NAMES NO MARKET AND CANNOT.** `POST /book/settlements` takes the day it is
 struck FOR — `due_before`, which has no default — and nothing else: which board it is struck on is the
@@ -930,33 +933,33 @@ No peer blob serving: a second entitlement-evaluating surface on a box that is n
 phase with one deployment. And nothing of transport or authentication is built for it — the doorbell
 is one `GET` on the service that already exists, on whatever port it already runs.
 
-## Increment 7 — the oracle, and the day it reads
+## Increment 7 — the oracle, and the bank it reads
 
 **THE GENERATED BINDING WAS ALREADY THE DESIGN.** `GET /schema` publishes the desk's declarations
 and `describe_structure` serves them, so a structure declared reaches a model with no edit and there
-is nothing to generate; what 7 builds is the ACCEPTANCE TEST — a synthetic day on the desk played by
-SEATS through the binding, an adversary beside them, scripted faults beside that, and an oracle that
-reads the record afterwards as a replica and answers nine invariants. With the adversary off, the
-same day is the demo.
+is nothing to generate; what 7 builds is the ACCEPTANCE TEST — a mock bank founded in a clean folder
+and played through its days by SEATS through the binding, an adversary beside them, scripted faults
+beside that, and an oracle that reads the record afterwards as a replica and answers fourteen
+invariants. With the adversary off, the same days are the demo.
 
-**THE ORACLE IS PURE OVER A HOME AND A SCRIPT.** `derivus_spine/oracle.py` folds the record the way
-every other reader does and re-runs the writer's own decisions through the writer's own functions,
-so what it answers is a property of the bytes rather than of the process that made them. Each
-invariant is one function answering `{held, evidence}`, `held` being null for a question this home
-or this script could not put — a question nobody asked is never a question that held. The nine:
+**THE ORACLE IS PURE OVER A HOME AND WHAT IT IS HANDED.** `derivus_spine/oracle.py` folds the
+record the way every other reader does and re-runs the writer's own decisions through the writer's
+own functions, so what it answers is a property of the bytes rather than of the process that made
+them. What the record cannot hold arrives as DATA: the SCRIPT of what was asked - the refusals, the
+lanes, the rows a settlement file instructed, the collateral calls a seat read - and two compiles
+of the book an engine answered, the diary's rows and the P&L. Each invariant is one function
+answering `{held, evidence}`, `held` being null for a question this home or what it was handed
+could not put — a question nobody asked is never a question that held. The fourteen:
 
 1. **copies agree** — two homes carry one head hash at the SHALLOWER of their two heads and every
    projector folds to byte-equal rows there, since a replica behind its hub has not pulled yet
    rather than disagreed;
-2. **nothing outside its seat** — every frame re-adjudicated, `verb_for` naming what the type
-   demanded and `evaluate` answering it at `scope_of` - the bodies that name a portfolio or a
-   declared node opened for it - against the capability state BEFORE that frame, folded forward by
-   `apply_event` — the writer's own step, so the same answer at the length of the record instead of
-   its square. A node admin's capabilities declaration is re-run through `declarable`, as the writer
-   ran it; the writer's own voice is never gated and a home with no document in force evaluates yes,
-   exactly as the append did. A portfolio outside its own book is named, an amendment is held to the
-   deepest node holding its terms at the frame before it - the `positions` fold advanced beside the
-   capability state - and an approval in the writer's voice to the hub's own act: a tiers policy in
+2. **nothing outside its seat** — every frame judged at its envelope's book or at the firm
+   re-adjudicated: `verb_for` naming what the type demanded and `evaluate` answering it at
+   `scope_of` against the capability state BEFORE that frame, folded forward by `apply_event` — the
+   writer's own step, so the same answer at the length of the record instead of its square; the
+   writer's own voice is never gated and a home with no document in force evaluates yes, exactly as
+   the append did. An approval in the writer's voice is held to the hub's own act: a tiers policy in
    force, and a fill or a restrike carrying its ticket after it - an untampered hub never strands
    one, every refusal its booking can meet coming first, and a crash between the two fsyncs is the
    one way an approval stands alone until the act is retried, which is right to name. The ENVELOPE
@@ -977,21 +980,21 @@ or this script could not put — a question nobody asked is never a question tha
    which is stated rather than failed;
 5. **closes superseded, never edited** — THE SUPERSESSION HALF IS THE FOLD'S OWN and is not
    asserted, because it cannot be broken from a platter: `Markets.apply` COMPUTES `supersedes_lsn`
-   off the row standing before the frame and files it only where the as-of key is later, so a close
-   either does not displace — it is behind the one in force, standing over nothing — or displaces
-   naming exactly the position it stood over, and a reading that re-ran the fold to check the fold
-   would be one spelling checking itself. What a platter CAN carry that the fold cannot is a close
-   body the closed vocabulary would have refused, a copy of a newer hub or a hand on a file, and
-   that is what this reads;
+   off the close of the same day filed before the frame and stands a market on its latest close by
+   day, ties by LSN - so a close restates its own day naming exactly the position it stood over,
+   and a past day restated never unseats a later day's - and a reading that re-ran the fold to
+   check the fold would be one spelling checking itself. What a platter CAN carry that the fold
+   cannot is a close body the closed vocabulary would have refused, a copy of a newer hub or a hand
+   on a file, and that is what this reads;
 6. **every number's replay tuple** — the attestations are exactly the standing runs the script asked
    for, asked as a SET because content addressing dedupes numbers and not standing: an identical
    what-if after a standing run reaches the same four coordinates and must not read as a second
    attestation. A standing ask with no row is a number nothing can replay; a row no standing ask
    names is a lane that mints nothing having minted;
 7. **the diary equals the filings** — every settlement filed against a derived key names a row the
-   diary carries. THE ONE A REPLICA CANNOT PUT: the diary is a COMPILE of the book, not a fold of
-   the record, so `DV_Spine oracle` reports it not assessed by name and a caller holding an engine
-   hands the keys in as data;
+   diary carries, and every confirmation a clip the record holds (`spine.fill_key`, its instrument
+   and execution reference off the `positions` fold). The diary is a COMPILE of the book, not a fold
+   of the record, so its rows are handed in;
 8. **no delete** — the positions dense from genesis, every blob the chain CITES still addressable,
    the store holding no fewer at the end of the walk than at its start, and neither the store nor
    the vocabulary carrying a verb for forgetting. Referential closure is the deletion a record can
@@ -1000,69 +1003,152 @@ or this script could not put — a question nobody asked is never a question tha
    met earlier and harder, when the home is opened. A citation lives in a sealed body, so a keyless
    copy is left with the other three arms;
 9. **duplicates coalesce** — every idempotency tag on one position, read off the envelope, so a copy
-   holding no key answers it.
+   holding no key answers it;
+10. **nothing outside its scope** — the node half of the writer's decision: every frame judged at a
+    node below a book - the portfolio a fill, a restrike, a quote or a verdict names, a node's parent
+    - and every node admin's capabilities declaration, re-run through `declarable` as the writer ran
+    it. A frame judged at a node is held to where the record admits it: its portfolio in its own
+    book's tree; a restrike at the deepest node holding what it moved, off the `positions` fold at
+    the frame before it; a fill, once any node of its book is declared, at the book or a declared
+    node; and a verdict at a node covering every trade carrying its ticket, so an approver naming its
+    own node signs nothing beside it;
+11. **the P&L is additive, and this record's** — handed `{window, days, portfolios}`, each `GET
+    /book/pnl`'s own answer: the days tile the window mark to mark and sum to it, per position and
+    in total, and the portfolios read over the window sum to the book, in every figure but the
+    new-deal split. THE SPINE ADMITS NO TOLERANCE OF ITS OWN: one set of floats summed in two orders
+    agrees only within an epsilon, and the one used is the tolerance policy's for the `pnl` class
+    (`policy.compare`) - none declared, any difference is a departure. It is ABSOLUTE, so a book
+    whose figures reach 1e10 declares one past their rounding, and the one document serves the
+    replay promotion too. Every answer is held to THIS record: each end a marks run it attested -
+    day, cut, values, job and result - and each row's quantities the `costs` fold's at the two ends
+    and its premiums the consideration of the fills between them. WHAT NO RECORD PROVES is a figure
+    only the engine computes - a mark, a payment the diary determines, a spot - so answers whose
+    every such figure was scaled alike still sum: that is the boundary of what data can hold, and
+    the evidence says so;
+12. **cash reconciles** — every movement's subject resolves where its kind says: a fee to an
+    instrument a fill booked by then, collateral and margin to an agreement declared by then - which
+    the verb asks when it files and a copy can carry past it. The diary is handed in as its rows -
+    key -> `{amount, currency}`, the amount null where it is not determined, or the keys alone - and
+    the payment standing against a determined row carries that amount in that currency within the
+    `pnl` epsilon, an undetermined row taking any, while one row paid under two references is named;
+    every row the script says a settlement file instructed stands `settled` - by a payment, or by a
+    bare `settled` that moved no money - exactly as the diary reads it;
+13. **every close marked** — each day closed on the market the workflow designates for P&L is
+    marked wherever a book held anything at its close, the `positions` fold there: a standing run of
+    that book's marks job (`marks:<book>@<cut>`, `verbs.marks_of` reading the cut after its LAST
+    `@`, and a cut past the run that attested it believed of nobody) as of the day, on the values of
+    a close declared for it at or before the run. A day the book held nothing owes none. A close
+    restated after its day's marks is a READING - marks run forward, so the day reads as it was
+    marked - named in the evidence and never failed;
+14. **the call is the formula** — every collateral call the script read is
+    `derivus_spine.collateral.call` over the exposure and the spots (`fx`) the service answered -
+    compiles this TRUSTS, as data - with the `cash` fold at the read's `lsn` held as of its `date`
+    and the terms the `agreements` fold stood on there, both folded ONCE forward through the reads:
+    the service's `held` and every figure `collateral.WORKED` names are compared as the numbers they
+    are. A call nobody could work out carries no numbers and is not worked - one that carries them
+    is named - and a script whose every call was unknown puts no question.
 
 **WHAT A COPY CAN SAY.** A crypto-shredded home answers 1, 8, 9 and the envelope half of 2 — the
-chain, the positions, the tags and the types are the envelope's — and names the other five as NOT
+chain, the positions, the tags and the types are the envelope's — and names the other ten as NOT
 ASSESSED with the reason, never as a pass. A follower that pulled FRAMES AND NO BLOBS is the other
 posture and is answered the same way: the capabilities fold reads a document out of the store and
 fails closed on one that is gone, so re-running the writer against it would call every frame after
-the declaration a forgery — 2 and 4 therefore ask for the blob first and tell that copy to follow
-with `--blobs`. `DV_Spine oracle --home <replica> [--script <json>]
-[--against <other home>]` prints the report and exits 1 on an invariant that did not hold.
+the declaration a forgery - 2, 4 and 10 therefore ask for the blob first and tell that copy to
+follow with `--blobs`, as do 11 to 14, which read the tolerance policy, the workflow, the marks'
+jobs and the agreements' terms. The capability walk is taken once for 2 and 10 alike.
+`DV_Spine oracle --home <replica> [--script <json>] [--against <other home>] [--diary <json>]
+[--pnl <json>]` prints the report and exits 1 on an invariant that did not hold.
 
-**THE GAME IS `gates/spine_game/`, AND IT IS A GATE.** `play.py` mints a home, declares the
-capabilities document and the tiers policy that scope the day, writes the book, serves it on an
-EPHEMERAL PORT, and stands N followers up against it; then the seats work, and the script of what
-was asked is written beside the run for the oracle to hold the record against. Seven seats:
-financial control marks the board and later attests the close's own numbers and declares it,
-settlements strikes the file and files what was paid, sales quotes, the trader accepts, the second
-seat signs, confirmations moves what the book owes, and audit reads and files nothing. A ROLE IS A
-CALLABLE over the table, which is the whole of the interface — the scripted players are functions,
-and a host driving `DV_MCP` against the same hub plays the same day by handing one of its own in;
-the LLM-driven mode is that substitution and nothing else. ONE act has no binding verb and says so:
-a STANDING lane is not something a model may declare at all — `/execute` has no tool, by the
-binding's own shape — so control posts the close's valuation over the transport, and the script
-names it. Everything else a seat does here is a tool a host has, `file_status` included: the back
-office had no verb until this increment, which is what playing the day found.
+**THE GAME IS `gates/spine_game/`, AND IT IS A GATE.** `play.py` founds a bank in a clean folder,
+writes its book, serves it on an EPHEMERAL PORT and stands N followers up against it; then the seats
+work through three closes, and the script of what was asked - with the diary's rows and the P&L the
+engine answered - is written beside the run for the oracle to hold the record against.
 
-**NINE OBJECTIVES, AND THE ANSWERS COME IN THREE SHAPES.** A DENIAL is the writer refusing an append
-and filing the refusal as a fact; a REFUSAL is a tier, a window or a validator turning an act away
-before any append, which mints nothing; and some attempts are answered by the record simply CARRYING
-what happened. Approving your own ticket appends the approval — a seat signing a plan is a fact —
-and the trade still reads pending, because four eyes asks WHO signed. Wearing a second display name
-changes a mutable side table outside the log and the refusal still names the subject. Two
-acceptances raced leave one fill at one LSN and the loser told the book moved. An approval over one
-plan does not reach another, a re-quote being a new ticket by construction. A booked trade restated
-is an amendment at the head with the fold behind it unchanged. Deleting evidence takes a file system
-and the copy refuses by name at the citation it can no longer resolve. A forged checkpoint CHAINS —
-a replica's `accept` asks four things and a signature is not one of them — and the verification
-refuses it, which is the authenticity boundary said out loud. A tampered line parts company with the
-chain at the position it was altered. And a stranger's what-if is refused at the QUEUE with the
-denial landed, before a Monte Carlo is paid for.
+**THE BANK IS FOUNDED WITH THE VERBS A DEPLOYMENT ALREADY HAS** (`roles.found`), nothing loading a
+bank from a file: the founder runs `DV_Spine init`, enrolls every seat, `grant`s the firm - the back
+office over `*`, each desk's head `admin` at its node - `rewrap`s the class key to the two seats
+holding a key to every body, `declare`s the tiers policy (per desk: the hub signs a ticket under
+the desk's size cap, a second seat signs above it; `pnl` and `settlement_export` designated), the
+firmness window, the fixings' sources and the P&L's tolerance, declares the three desks as nodes
+of the one book, and names every seat; each head then `grant`s the document again with its own
+trader, salesperson and approver seated at its node - a scoped declaration the writer admits
+because it moves nothing beyond that node. The seats: product control (`mark`, `validate` over
+`*`) marks the board, prints the fixing, closes, marks and reads the P&L; legal (`document`)
+declares each client and its one agreement, a collateralised netting set stating no collateral
+rows; settlements, confirmations and collateral (`settle`, `validate`) move money and state; audit
+(`validate`) reads and files nothing; a hub seat distinct from all of them is `DV_SPINE_ACTOR`;
+and a stranger holds nothing.
 
-**FIVE FAULTS, AND THE DAY CARRIES ON.** The writer is a REAL PROCESS and is killed with the
-operating system, so the torn-tail rule is observed on a platter rather than asserted about one: the
-chain re-derives whole and the desk writes the next frame onto it. A replica is partitioned by not
-being told and resumes by asking once. A print carrying a truth-time older than the one standing
-does not win by arriving last, and the print it lost to keeps it on the row. A late fixing after the
-close is answered by a SECOND close naming the position the first stood at. And one act said twice
-is one fact at one LSN, because the semantic tuple carries no clock of the writer's own.
+**THREE CLOSES.** Yesterday's book carried in - a legacy trade booked through the hub, there being
+no import verb - closed, marked and called on. The day's trading: sales quotes a collar for one
+client and the FX trader accepts it over the desk's cap, so it books PENDING; a small forward the
+hub signs itself; a booking into a node the desk never declared, refused; a deposit under the rates
+desk's cap, an FRA and a par swap above it; a metal forward restruck while it waits. The approvers
+work their worklists - the rates approver rejecting the swap, which stands - confirmations confirm
+every clip its worklist names, settlements files a fee, product control prints the swap's first
+reset, closes and marks, and collateral settles the calls its worklist names. The settlement day:
+the book rolled and the rand moved, settlements strikes the file its worklist says is due and files
+every row with the money it moved, product control closes and marks, reads each day, the window
+over both with the second day's explain, and each desk, and collateral posts what the marks now
+say. EVERY SEAT THAT HAS A WORKLIST ACTS ON IT; the script still decides what the traders book and
+at what size, which ticket the rates approver rejects, and which P&L windows are read.
+
+A ROLE IS A CALLABLE over the table, which is the whole of the interface — the scripted players are
+functions, and a host driving `DV_MCP` against the same hub plays the same days by handing one of
+its own in; the LLM-driven mode is that substitution and nothing else. TWO ACTS REACH PAST THE
+BINDING and say so: a fixing is printed through the hub's writer, no endpoint filing one, and a
+marks run's replay tuple is read off `/results/{id}` whole, the binding's summary trimming the
+engine version. A gate holds the players to that: every binding call a published tool, every CLI
+verb a shipped subcommand, the transport read only for a result, the writer only for a print.
+
+**SIXTEEN OBJECTIVES, AND THE ANSWERS COME IN THREE SHAPES.** A DENIAL is the writer refusing an
+append and filing the refusal as a fact: settlements booking a trade, a trader settling its own, an
+approver signing a ticket booked at another desk's node - the verdict filed where the ticket books,
+read off the record - the FX trader booking into the rates desk's node, the FX head declaring a
+trader beyond its node and then itself `admin` over `*` - one denial between the two - and a
+stranger's what-if, refused at the QUEUE before a solve is paid for. A REFUSAL turns an act away
+before any append and mints nothing: a deleted trade booked again a hundred times its size under its
+own execution reference - a trade is taken once, and the trade as it was is taken back - and the
+writer's reserved name on a request. And some attempts are answered by the record CARRYING what
+happened: a trader approving its own ticket appends the approval and the trade still reads pending,
+because four eyes asks WHO signed - under any display name, the side table outside the log being
+one the record never reads, so the seat renamed twice signs the same fact again; the approver's
+approval of the day's collar, sent again, lands on the LSN it already has while the adversary's
+fill waits on a ticket of its own; a losing trade restruck with no notional stated lands PENDING on
+a ticket of its own, the fold behind it unchanged; two acceptances raced leave one fill at one LSN.
+A blob taken off a copy's disk is named at the citation nothing answers for, a forged checkpoint
+CHAINS on a copy and the verification refuses it, and a tampered line parts company with the chain
+where it was altered - the hub untouched each time.
+
+**SIX FAULTS, AND THE DAYS CARRY ON.** The HUB is a real process and is killed with the operating
+system: served as `DV_Service` on the day's book while product control's marks stream into it,
+killed between two appends and served again on the tail it left - the half line a kill mid-write
+leaves put on its platter as data where the kill fell between lines - so the torn-tail rule is
+observed on its own open rather than asserted: every acknowledged append stands, the chain
+re-derives whole and the next act lands on it, nothing else writing while its process holds the
+home. A replica is partitioned by not being
+told and resumes by asking once. A print carrying a truth-time older than the one standing does not
+win by arriving last, and the print it lost to keeps it on the row. A late fixing after the close is
+answered by a SECOND close naming the position the first stood at, and the day marked again. And
+one act said twice - a mark, a settlement under its reference - is one fact at one LSN, the money
+moved once, because the semantic tuple carries no clock of the writer's own.
 
 **Nothing is monkeypatched.** Real homes under the caller's own directory, a real service over a
-real socket, real replicas pulling real frames, a real process killed, and every other fault
+real socket, real replicas pulling real frames, the hub's own process killed, and every other fault
 injected as data on a disk. The hub is the single writer and every seat reaches it the way a model
 would — an adversary with a second writer is not an objective, it is a divergence
-`/book/reconcile` names.
+`/book/reconcile` names. A play - the founding and three closes, 87 events - measured 37 to 774
+seconds of wall time across this increment's runs on one box, fsync-bound and sharing the box with
+whatever else runs there; a seat's read stays under 120 ms and the oracle under half a second over
+three copies.
 
 **THE BACK OFFICE HAS A VERB.** `status_transition` is what a settlement and a confirmation say,
 demanding `settle`, and `verbs.transition` files it: `subject` is an ADDRESS — the derived cashflow
-key a diary row carries, or the instrument a trade books under — where the vocabulary takes any
-name, because a
-state filed against something nobody can resolve is a state nobody can read back, and a later
-subject may be keyed another way. WHETHER THE BOOK ANNOUNCES A ROW under that key is a FOLD's
-question: the record holds what it was told, so a settlement against a row since paid away lands
-rather than refusing, and the oracle's seventh invariant is what reads the two against each other.
+key a diary row carries, a clip's own key, or the instrument a trade books under — where the
+vocabulary takes any name, because a state filed against something nobody can resolve is a state
+nobody can read back. WHETHER THE BOOK ANNOUNCES A ROW under that key is a FOLD's question: the
+record holds what it was told, so a settlement against a row since paid away lands rather than
+refusing, and the oracle's seventh invariant is what reads the two against each other.
 `Context.transition`, `POST /book/transition` and the `file_status` tool are the mouths, and
 `close_check` stops waiting on a payment the moment one lands.
 
@@ -1074,6 +1160,12 @@ between a copy of the record and a copy with every position in it and the terms 
 **ONE SCOPE FOR AN APPROVAL.** A ticket is one trade THIS book books, so a seat's verdict is filed
 under the job's own book, or the node the ticket books into where the verdict names one; an
 automatic tier's is the hub's own.
+
+`tests/test_spine_oracle.py` makes each of the fourteen fail on a doctored home and names where;
+`tests/test_spine_game.py` plays the bank twice - the blue days holding every invariant on three
+copies, every red objective answered and readable, every fault converged, the keyless and blobless
+copies naming what they cannot assess, the players held to the binding and the shipped verbs - every
+killing mutation their docstrings name red.
 
 ## Increment 8 — the paper, and where a position sits
 
@@ -1495,8 +1587,10 @@ the call reads the collateral alone.
 **THE EXPOSURE IS THE ONE THE NETTING SET RECURSES ON.** `GET /book/collateral?date=` answers every
 agreement whose terms collateralise on the close marked for the day - the book's own where none is
 named, refused by name where the day has no marks - in the agreement's currency: `{agreement,
-entity, currency, exposure, held, margin, required, balance, call, direction, minimum_transfer,
-unknown}`. The exposure is read off the P&L - `pnl.pnl` over the close alone, sharing
+entity, currency, exposure, fx, held, margin, required, balance, call, direction,
+minimum_transfer, unknown}`, `fx` the close's spots in that currency, so with the exposure a call
+replays off the record, which the oracle's fourteenth does. The exposure is read off the P&L -
+`pnl.pnl` over the close alone, sharing
 `valued_between` with the P&L's own read - as the set's recursion reads it under the marks job's
 `Exclude_Paid_Today`: where the set holds the day's payments, the engine's default, the P&L's value
 of each position with what the unit paid that day added back, its quantity times its unit mark;

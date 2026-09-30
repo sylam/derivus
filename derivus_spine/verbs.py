@@ -29,6 +29,7 @@ file is an interim stand-in.
 """
 import json
 
+from .canon import content_hash
 from .errors import MalformedEvent, ReplayRefused, UnknownEventType
 from .policy import PRIVATE_MARKET, compare, tolerances_in_force
 from .vocabulary import is_hash, is_integer, is_number, is_text
@@ -62,6 +63,31 @@ PAYMENT, FEE, COLLATERAL, MARGIN = 'payment', 'fee', 'collateral', 'margin'
 MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN)
 HELD = (COLLATERAL, MARGIN)
 SETTLED, CONFIRMED = 'settled', 'confirmed'
+
+#: The book a marks job is filed under - `marks:<book>@<lsn>`, a name no book carries so a compile
+#: writes no position into it, the position its cut read the book at following the LAST '@'.
+MARKS = 'marks:'
+
+
+def marks_name(book, cut=None):
+    """The name a marks job of `book` is filed under, cut at the position `cut` where one is
+    named."""
+    return MARKS + book + ('' if cut is None else '@{}'.format(cut))
+
+
+def marks_of(reference):
+    """`(book, cut)` for the name a marks job is filed under - `cut` None where it names no
+    position - or None where `reference` names no marks job."""
+    if not isinstance(reference, str) or not reference.startswith(MARKS):
+        return None
+    book, at, cut = reference[len(MARKS):].rpartition('@')
+    return (book, int(cut)) if at and cut.isdigit() else (reference[len(MARKS):], None)
+
+
+def fill_key(instrument, execution_reference):
+    """The stable id of one fill, which a confirmation is filed against: the content hash of its
+    instrument and the reference it was executed under."""
+    return content_hash({'instrument': instrument, 'execution_reference': execution_reference})
 
 
 def check_lane(lane):

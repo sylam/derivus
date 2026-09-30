@@ -452,6 +452,89 @@ is recorded so a reader knows which readings rest on it.
   node the desk deletes from the file before it settles announces no diary row there, so its
   position stands with no expiry until something books it to nothing. UNMEASURED; closing it is the
   diary compiled off the record's own terms, which the P&L's marks already read.
+- **A fixing has no verb a seat can reach** (2026-09-30). `fixing_observed`, an `election` and a
+  `determination` are filed by `Context.apply_lifecycle` and nothing else: no endpoint takes one
+  and the binding has no tool, so product control prints a swap's reset through the hub's writer
+  and a host driving the desk cannot print one at all - a close waiting on a fixing waits on
+  somebody with the library. Size: one `POST /book/lifecycle` over the verb, one tool, the pages.
+- **The market, the book's date and the file move under no seat** (2026-09-30). The tick and a
+  values patch (`POST /book/market`), `/book/date`, the bootstrapping dials (`/book/configure`),
+  `/book/curve`, `/book/bloomberg`, `/book/securities`, a saved calculation (`/calculations`),
+  `/book/setup` - admitted under `validate`, it installs and re-solves the market - and a delete
+  take no `actor` or file nothing, so under a capabilities document any client of the box moves
+  the board a close is then declared over, rolls the book to another day or drops a deal from the
+  file, which only `/book/reconcile` then names. The tick is the deployment's own poll path and
+  `delete_deal` says it takes no seat, so this is a design call before it is a patch. Size M-L: an
+  `actor` on each and an admission - `mark` for the market and the date, `book` for the file - with
+  the metronome's grants and the web's calls counted.
+- **A payment due on its own trade date is nobody's** (2026-09-30). A deposit placed today pays its
+  principal today, and the P&L places a payment by what each position held the day BEFORE it fell
+  due. Before the principal settles the P&L is SILENT: the live window reads a phantom the size of
+  the principal as trading P&L, `complete: true` and nothing named. Once the export pays it and the
+  day is marked, the same figure stands in the official window, now named `no position held when
+  it fell due` and `complete: false`. Two sites: a determined row read through what was held
+  before the day (`pnl._payments`), and a settled one (`pnl._holdings`). Size S-M: the owner read
+  at the end of the due day for a position opened on it, and the question whether the premium or
+  the payment is the consideration.
+- **A window's diary is compiled off its start's market, trades done in it included** (2026-09-30).
+  `window_payments` compiles every instrument the window reads against the start's marks job, so
+  one traded on a market that arrived during the window - an option on the surface ticked that
+  morning - is skipped (`Cannot find FXVol.USD.ZAR`): no row and no last day of it there. One
+  expiring inside the window is carried at its payoff and never closed, so the window's realised
+  split parts from its days' while the total agrees - which the eleventh names - and its settlement
+  reads as money no diary announces. Every window starting before a market arrived meets it,
+  month- and year-to-date among them. Size S: a traded instrument compiled off the end's job, the
+  one its first marks read.
+- **A portfolio's P&L carries the whole book's unknowns** (2026-09-30). `unknown` and `complete`
+  are the book's whatever `portfolio`, `agreement` or seat narrows the rows, so a desk whose own
+  rows are all known reads incomplete over another desk's gap - and one desk's node seat reading
+  its own P&L sees the other desk's instrument and settlement reference named there, a read the
+  narrowing does not narrow. An unknown naming no instrument cannot be narrowed by the rows at all.
+  Size: the list narrowed by the rows it names and a rule for the unplaced ones, a few lines.
+- **An FRA's reset names no index, so its fixing day cannot close** (2026-09-30). The diary's
+  `TERMS` table declares the index of a swap and a floating cashflow list and of no other floating
+  type: an FRA's reset row reads `index: null`, no print satisfies it, and `close_check` waits on
+  it for ever - so the day it resets gets no close, no marks and no P&L. Size S: one `Terms` row
+  per type - the FRA first, the caps, floors and swaptions beside it - and a gate per row.
+- **One `settle` verb is the whole back office** (2026-09-30). Settlements, confirmations and
+  collateral each hold `settle`, so each worklist lists the others' payments, clips and calls, and
+  confirmations may pay or post collateral: separation of duties inside the back office is not
+  expressible with the verbs the record has. A design decision - a narrower verb or none - not a
+  number.
+- **A restated day is never marked again** (2026-09-30). The worklist lists a close by its DAY
+  after the last one marked, so a close restated on that day - a late print - stands unmarked
+  while the day's P&L reads the board it superseded until somebody marks it by hand; and a past day
+  restated behind a later marked one is never marked again, marks running forward. The oracle's
+  thirteenth reads either as a restatement after the marks and never a failure. Size: the last
+  day's, a few lines - the unmarked list by the close standing on a day; a past day's, M - its
+  marks taken again and every window after it struck again, a design call on whether a day
+  already struck moves.
+- **No verb reads the capabilities document in force** (2026-09-30). A node admin declares the
+  WHOLE document with its own rows changed, and `DV_Spine policy` refuses `capabilities` while no
+  endpoint serves it, so a head re-seating its desk must hold the last file somebody handed it.
+  Size: `DV_Spine policy capabilities` answering the stored document, a few lines.
+- **A new client's credit curve has no verb** (2026-09-30). Legal declares the paper and the first
+  booking brings its netting set, which the book prices only with `SurvivalProb.<counterparty>`;
+  the terminal's set-up installs FX and rates alone and nothing else writes a factor, so the curve
+  reaches the book by hand. Size: a survival curve in the set-up's supply, or a verb of its own.
+- **A refused capabilities declaration leaves its document in the store** (2026-09-30). `grant`
+  puts the document before the writer judges the declaration, so a refused one stays as a blob no
+  frame cites: no replica pulls it and the store has no verb to forget it. Size: the refusal named
+  in the retention the design already owes, or the blob put after the judgement.
+- **The binding's run summary drops the engine version** (2026-09-30). `poll_result` answers the
+  plan, values and seed and not the engine version, so a host cannot state the replay tuple a
+  standing run was attested under; the game reads `/results/{id}` whole. Size: one key.
+- **A bootstrapper waiting for its first quotes refuses the book's roll** (2026-09-30). A book
+  declaring `FXVolSurfaceParameters` before any `FXVolPrices` block has arrived refuses
+  `/book/date` - `wrote no FXVol.* price factor` - because the roll re-bootstraps every declared
+  family, so a desk configured on its first day cannot move to its second until the surface is
+  ticked; and a book declaring no bootstrapper at all refuses the roll outright (`the book declares
+  no Bootstrapper Configuration`), so a book of explicit factors cannot move. Size: the roll's
+  re-bootstrap passing over a declared family with no quote block to fit, and over a book with
+  none, a few lines.
+- **A commodity forward's `Forward_Date` is declared a term** (2026-09-30). The pricer reads a
+  blank one as the spot, and the declaration refuses a booking that leaves it out, so a desk states
+  the maturity to book one. Size: `convention=True` on the field, and the census gate's reading.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the

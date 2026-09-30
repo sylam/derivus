@@ -3197,9 +3197,10 @@ def test_a_page_walks_the_record_forward_one_event_at_a_time(recorded, booking):
 
 
 def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
-    """The markets read is the fold's own answer: the close standing per market carrying
-    the LSN of the close it RESTATED - a close is superseded by a new close rather than corrected
-    in place - beside the names a values vector was declared under and the snapshots registered.
+    """The markets read is the fold's own answer: the close standing per market, the day it is
+    for and the LSN of that day's close it RESTATED - a close is superseded by a new close rather
+    than corrected in place - beside the names a values vector was declared under and the
+    snapshots registered.
 
     Killing mutation: the superseded LSN dropped, after which a restated close is indistinguishable
     from a first one and nothing on the screen says the day was marked twice.
@@ -3208,9 +3209,9 @@ def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
     restated = stored(recorded, b'{"EURUSD":1.0857}')
     filed(recorded, 'market_declared', {'name': 'official', 'values_hash': vector})
     first = filed(recorded, 'official_close_declared',
-                  {'market': 'official', 'values_hash': vector})
+                  {'market': 'official', 'values_hash': vector, 'date': '2026-08-26'})
     second = filed(recorded, 'official_close_declared',
-                   {'market': 'official', 'values_hash': restated})
+                   {'market': 'official', 'values_hash': restated, 'date': '2026-08-26'})
     snapshot = stored(recorded, b'{"surface":"the vol cube"}')
     log = opened(recorded)
     try:
@@ -3220,8 +3221,9 @@ def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
 
     answer = CLIENT.get('/book/markets').json()
     assert answer['lsn'] == head(recorded)
-    assert answer['closes'] == [{'market': 'official', 'values_hash': restated,
-                                 'supersedes_lsn': first, 'effective_time': None, 'lsn': second}]
+    assert answer['closes'] == [{'market': 'official', 'values_hash': restated, 'lsn': second,
+                                 'date': '2026-08-26', 'supersedes_lsn': first,
+                                 'effective_time': None}]
     assert answer['names'] == [{'name': 'official', 'values_hash': vector, 'actor': ACTOR,
                                 'effective_time': None, 'lsn': first - 1}]
     assert answer['snapshots'] == [{'blob': snapshot, 'book': CLIENT_SET, 'lsn': head(recorded)}]

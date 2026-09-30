@@ -28,9 +28,6 @@ Pure over plain data: the P&L over the close alone, the agreements declared, the
 from .pnl import _times
 from .spine import package, visible
 
-#: What a call nobody can work out answers in place of its arithmetic.
-UNWORKED = dict.fromkeys(('required', 'balance', 'call', 'direction', 'minimum_transfer'))
-
 
 def paid_today(document):
     """Whether the netting sets of `document` hold the day's payments in the exposure their
@@ -68,15 +65,16 @@ def seen(agreements, positions, sight, verb=None):
 
 
 def calls(close, valued, agreements, movements, until):
-    """`[{agreement, entity, currency, exposure, held, margin, required, balance, call, direction,
-    minimum_transfer, unknown}]` - the call of each of the `collateralised` agreements on the marks
-    `close` (`{day, rates, document}`), in the agreement's currency: `valued` is the P&L over that
-    close alone, `movements` the `cash` rows and `until` the value date a balance is held as of -
-    every movement filed, whatever its value date, where None.
+    """`[{agreement, entity, currency, exposure, fx, held, margin, required, balance, call,
+    direction, minimum_transfer, unknown}]` - the call of each of the `collateralised` agreements
+    on the marks `close` (`{day, rates, document}`), in the agreement's currency: `valued` is the
+    P&L over that close alone, `movements` the `cash` rows and `until` the value date a balance is
+    held as of - every movement filed, whatever its value date, where None.
 
     `held` and `margin` are the two balances under it per asset, and the call reads the first
-    alone. What nobody can know - a mark, a spot the close carries none of, a dial the terms state
-    none of - is named under `unknown`, and the call is null over it.
+    alone; `fx` is the close's spots in the agreement's currency, so with the exposure a call
+    replays off the record. What nobody can know - a mark, a spot the close carries none of, a dial
+    the terms state none of - is named under `unknown`, and the call is null over it.
     """
     record, rates, answer = package().collateral, close['rates'], []
     balances, today = record.held(movements, until), paid_today(close['document'])
@@ -97,7 +95,8 @@ def calls(close, valued, agreements, movements, until):
             for dial in record.DIALS + ('Agreement_Currency',) if dials[dial] in (None, '')]
         value = exposure(agreement, valued, rates, currency, today)
         answer.append(dict(
-            UNWORKED if unknown else record.call(value, held['collateral'], dials, fx),
+            dict.fromkeys(record.WORKED) if unknown else record.call(
+                value, held['collateral'], dials, fx),
             agreement=agreement, entity=declared['entity'], currency=currency, exposure=value,
-            held=held['collateral'], margin=held['margin'], unknown=unknown))
+            fx=fx, held=held['collateral'], margin=held['margin'], unknown=unknown))
     return answer

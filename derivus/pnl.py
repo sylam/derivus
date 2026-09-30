@@ -39,11 +39,7 @@ from copy import deepcopy
 from . import content_hash
 from .diary import SETTLED
 from .schema import instrument_of, job_children, mapping, tables_of
-from .spine import book_name, under, visible
-
-#: The book a marks job files under - a name no book carries, so the compile writes no position
-#: into it and every instrument prices as the one unit it was written as.
-MARKS = 'marks:{}'
+from .spine import book_name, package, under, visible
 
 #: `{(job address, book): day}` - the day a marks job valued its book as of, or None for a job that
 #: marks no book of that name. A job is immutable, so each is opened once per process.
@@ -141,7 +137,7 @@ def marks_job(document, terms, cut=None):
     calc = dict(document['Calc'])
     calc['Calculation'] = {key: value for key, value in dict(
         calc['Calculation'], Object='BaseValuation').items() if key != 'Greeks'}
-    book = MARKS.format(book_name(document)) + ('' if cut is None else '@{}'.format(cut))
+    book = package().verbs.marks_name(book_name(document), cut)
     calc['Deals'] = dict(calc['Deals'], Reference=book, Deals={
         'Children': [unit_node(address, terms[address]) for address in sorted(terms)]})
     return {'Calc': calc}
@@ -171,13 +167,10 @@ def marked(book, closes, attestations, stored):
             continue
         if (row['job'], book) not in DAYS:
             job = json.loads(stored(row['job']).decode('utf-8'))
-            reference = job['Calc']['Deals'].get('Reference') or ''
-            # the cut follows the LAST '@', which a book's own name may carry too
-            name, _, cut = reference.rpartition('@')
-            cut = int(cut) if name == MARKS.format(book) and cut.isdigit() else None
-            DAYS[(row['job'], book)] = None if cut is None and reference != MARKS.format(
-                book) else (timestamp(job['Calc']['Calculation']['Base_Date']).strftime(
-                    '%Y-%m-%d'), cut)
+            named = package().verbs.marks_of(job['Calc']['Deals'].get('Reference'))
+            DAYS[(row['job'], book)] = None if named is None or named[0] != book else (
+                timestamp(job['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d'),
+                named[1])
         if DAYS[(row['job'], book)] is None:
             continue
         day, cut = DAYS[(row['job'], book)]
