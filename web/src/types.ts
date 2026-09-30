@@ -284,20 +284,23 @@ export type Reconcile = {
 };
 
 /** One row of `GET /book/worklist`: what waits, and `key` the fact that clears it is filed
- * against - a ticket, a diary key, a fill's own key, a day. */
+ * against - a ticket, a diary key, a fill's own key, an agreement, a day; a call nobody can work
+ * out carries what is not known. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
+  unknown?: { instrument: string | null; what: string }[];
 };
 
-/** `GET /book/worklist` - five lists of what waits on the seat asking, read off what stands, so a
+/** `GET /book/worklist` - six lists of what waits on the seat asking, read off what stands, so a
  * row leaves when its fact lands: how many each holds, and the newest of them. */
 export type Worklist = {
   date: string;
-  counts: { pending: number; payments: number; unconfirmed: number; unmarked: number;
-            rejected: number };
+  counts: { pending: number; payments: number; unconfirmed: number; calls: number;
+            unmarked: number; rejected: number };
   pending: WorkRow[];
   payments: WorkRow[];
   unconfirmed: WorkRow[];
+  calls: WorkRow[];
   unmarked: WorkRow[];
   rejected: WorkRow[];
 };

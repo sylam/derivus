@@ -32,7 +32,8 @@ what the book owes, whether a close is legal, where the file and the record disa
 what has been recorded, and the official closes - and the paper the book trades under, declared by
 the seat that keeps the legal documents, with a booking's quantity as the position change in units
 of the deal and its portfolio a path under the book, `book_positions` reading what stands,
-`book_cash` the money the settlements moved, and `mark_book` and `book_pnl` the close's marks and
+`book_cash` the money the settlements moved, `collateral_calls` what each agreement's CSA calls on
+a marked close, and `mark_book` and `book_pnl` the close's marks and
 what the book made between them - and that every booking is a ticket, a trade a second seat must
 sign booking PENDING, with `worklist` saying what waits on whom. The
 module docstring stays the maintainer's.
@@ -57,7 +58,7 @@ module docstring stays the maintainer's.
 | `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the MID, strikes solved with the two-way charged on them, the mid and the edge said, the pending trade filed under its id. Records nothing |
 | `book_quote` | `POST /book/quote` — the ACCEPTANCE: the client took the price, so the quote is recorded and its mirror booked into the `portfolio` the quote stated, refused exactly as a booking is, and PENDING where the desk's tiers want a second seat |
 | `approve_ticket` / `reject_ticket` | `POST /book/approve` \| `/reject` — a seat's verdict over the ticket a booking carries, filed where it books; `approve_quote` / `reject_quote` are the same for an accepted quote named by its id |
-| `worklist` | `GET /book/worklist` — what waits on the seat asking, each list what one verb acts on where it holds it: tickets to sign, payments due, fills to confirm, closes to mark, rejected trades standing, each row keyed where its clearing fact is filed, `counts` beside the newest 200 of each |
+| `worklist` | `GET /book/worklist` — what waits on the seat asking, each list what one verb acts on where it holds it: tickets to sign, payments due, fills to confirm, collateral calls due, closes to mark, rejected trades standing, each row keyed where its clearing fact is filed, `counts` beside the newest 200 of each |
 | `declare_portfolio` / `describe_portfolios` | `/book/portfolios` — a node of the book's tree declared at its parent, and the tree read back |
 | `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
 | `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
@@ -83,6 +84,7 @@ module docstring stays the maintainer's.
 | `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
 | `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on; where money moved, the amount, asset, kind (payment, fee, collateral, margin), the settlement reference and the value date |
 | `book_cash` | `GET /book/cash` — the money the settlements moved, one movement per reference, and the balances they sum to per kind, subject and asset, as of a date where one is named |
+| `collateral_calls` | `GET /book/collateral` — what each agreement's CSA calls on a marked close: the exposure its netting set recurses on, read off the P&L, the support its terms require, the collateral and the margin held apart as of the day, and the call with its direction, `call` or `post`, settled with `file_status` as collateral against the agreement; a call nobody can work out names what is not known |
 | `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at its own day's close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named; `explain` takes what the held positions made apart into carry, the market per risk factor and the residual |
 | `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
 | `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, the `deal_paths` where the book file holds it, and the `status` its tickets read with the `pending` quantity; an expired deal stands until the day it settles and rolls off on it |

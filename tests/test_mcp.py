@@ -87,7 +87,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'export_settlements', 'file_status', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
                 'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
-                'mark_book', 'book_pnl'}
+                'collateral_calls', 'mark_book', 'book_pnl'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'

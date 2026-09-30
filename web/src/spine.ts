@@ -172,12 +172,12 @@ export function wantsWorklist(spine: SpineBlock | null, heldAt: string | null): 
 /** The worklist's lists, as the words the banner counts them in. */
 const WAITING: [keyof Worklist['counts'], string, string][] = [
   ['pending', 'ticket', 'to sign'], ['payments', 'payment', 'due unsettled'],
-  ['unconfirmed', 'fill', 'to confirm'], ['unmarked', 'close', 'to mark'],
-  ['rejected', 'rejected trade', 'standing'],
+  ['unconfirmed', 'fill', 'to confirm'], ['calls', 'collateral call', 'due'],
+  ['unmarked', 'close', 'to mark'], ['rejected', 'rejected trade', 'standing'],
 ];
 
 /** The banner's one line: every list that holds anything, by its count - the rows are the newest
- * of them - and nothing where all five are empty. A row is a thing somebody has to do. */
+ * of them - and nothing where all six are empty. A row is a thing somebody has to do. */
 export function worklistLine(worklist: Worklist | null): string {
   return worklist === null ? '' : WAITING.filter(([list]) => worklist.counts[list])
     .map(([list, noun, rest]) => `${plural(worklist.counts[list], noun)} ${rest}`).join(' · ');

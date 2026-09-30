@@ -13,13 +13,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus import service, spine
 from derivus.config import as_json
+from derivus_mcp import server as binding
 from derivus_spine import SpineLog, init_home, policy, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import rates_world
 from test_spine_engine import (
-    ACTOR, CLIENT, CLIENT_SET, EQUITY, FACTORS, INDEX, JSON, WORKER_SECONDS, drained, dump,
-    holding, job, netting_set, observe)
+    ACTOR, CLIENT, CLIENT_SET, EQUITY, FACTORS, INDEX, JSON, WORKER_SECONDS, agreed, drained, dump,
+    holding, job, netting_set, observe, surviving)
 
 START, END, THIRD, FOURTH, FIFTH, SIXTH = (pd.Timestamp(day) for day in (
     '2024-06-28', '2024-07-01', '2024-07-02', '2024-07-03', '2024-07-04', '2024-07-05'))
@@ -92,9 +93,10 @@ def desk(tmp_path):
     service.BOOK_DIARY_CACHE.clear()
 
 
-def booked(deal, quantity, reference, portfolio, price=None, currency=None, parent=CLIENT_SET):
-    body = {'action': 'add', 'deal': deal, 'parent_reference': parent, 'quantity': quantity,
-            'execution_reference': reference, 'portfolio': portfolio}
+def booked(deal, quantity, reference, portfolio, price=None, currency=None, parent=CLIENT_SET,
+           **stated):
+    body = dict({'action': 'add', 'deal': deal, 'parent_reference': parent, 'quantity': quantity,
+                 'execution_reference': reference, 'portfolio': portfolio}, **stated)
     for field, value in (('price', price), ('price_currency', currency)):
         if value is not None:
             body[field] = value
@@ -1119,8 +1121,9 @@ def waiting(answer):
 
 
 def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(recorded, desk):
-    """FIVE LISTS, READ OFF WHAT STANDS. A fill under four eyes waits on a second seat's approval
-    by its ticket and on its confirmation by its own key; a close on the market designated for P&L
+    """SIX LISTS, READ OFF WHAT STANDS - the sixth, the collateral calls, gated with the calls. A
+    fill under four eyes waits on a second seat's approval by its ticket and on its confirmation
+    by its own key; a close on the market designated for P&L
     waits on its day's marks; a payment due by the book's day waits on its settlement - a FEE filed
     against it settling nothing; and a rejected trade that still stands waits on somebody closing
     it. Each row appears once and leaves the moment its fact lands, the close-out's own fill then
@@ -1280,3 +1283,203 @@ def test_the_worklist_counts_everything_and_answers_the_newest(recorded, desk):
     assert len(page) == service.WORKLIST_ROWS
     assert (page[0], page[-1]) == ('EXEC-1', 'EXEC-{}'.format(service.WORKLIST_ROWS)), \
         'the page is not the newest'
+
+
+#: A seat settling at the Rates node and reading the FX node.
+RATES_SETTLER = 'subject-rates-settlements'
+
+
+def agreed_csa(agreement, counterparty, currency, received, posted, minimum):
+    """An entity and a collateralised agreement with it on the record through the service: the
+    netting set `netting_set` spells for `counterparty`, its CSA in `currency` with no independent
+    amount, thresholds `received` and `posted`, and `minimum` transferred either way."""
+    terms = netting_set(agreement, counterparty)['Instrument']['.Deal']
+    dials = {dial: {'.CreditSupportList': [[1, amount]]} for dial, amount in (
+        ('Received_Threshold', received), ('Posted_Threshold', posted),
+        ('Minimum_Received', minimum), ('Minimum_Posted', minimum))}
+    entity = 'LEI-' + agreement
+    assert CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': entity}),
+                       headers=JSON).status_code == 200
+    answer = CLIENT.post('/book/agreements', content=dump({
+        'agreement': agreement, 'entity': entity, 'kind': 'ISDA 2002 with CSA',
+        'terms': dict(terms, Collateralized='True', Agreement_Currency=currency,
+                      Balance_Currency=currency, Credit_Support_Amounts=dict(
+                          terms['Credit_Support_Amounts'], **dials))}), headers=JSON)
+    assert answer.status_code == 200, answer.text
+
+
+def called(date=None, **params):
+    """The calls `GET /book/collateral` answers on a day - the book's own where none is named -
+    keyed by agreement."""
+    answer = CLIENT.get('/book/collateral', params=dict(
+        {} if date is None else {'date': date}, **params))
+    assert answer.status_code == 200, answer.text
+    return {row['agreement']: row for row in answer.json()['calls']}
+
+
+def moved(agreement, amount, asset, kind, reference, day):
+    """Collateral or margin moved under `agreement`, as the settlement interface files it."""
+    settle({'subject': agreement, 'amount': amount, 'asset': asset, 'kind': kind,
+            'reference': reference, 'value_date': day})
+
+
+def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(recorded, desk):
+    """THE CALL IS A READING ON A MARKED CLOSE. Over three marked closes two clients trade under
+    collateralised agreements - one in dollars holding long rand trades pending under four eyes, one
+    of them paying out on the second close, one in rand the bank is short - beside an agreement
+    collateralising nothing held and one declaring no CSA, which has no call. Every close answers
+    each collateralised agreement's call off the exposure its netting set recurses on: the P&L's
+    value of the positions under it - the unit marks less what a unit paid that day - with the
+    day's payments added back where the set holds them, as the engine does by default, and not
+    where the book's `Exclude_Paid_Today` excludes them, a position paying out on the close held
+    through it; crossed into the agreement's currency at the close's own spots. The dollar client's
+    call is settled through the back office's own verb as collateral and reads nothing due at once,
+    margin beside it moving no call and the consolidated risk's cache left where it was; the rand
+    client's, settled value-dated the next day, reads due on the day it was called and held from
+    the next, while the worklist, counting every movement filed, drops it the moment it lands; and
+    the next closes post what the rand's fall made excess. Gold held under the dollar agreement,
+    which the book carries no spot for, is a market the book lacks: the read names it under
+    `unknown` with no call, the worklist carries that row, and every run that values the book
+    refuses it by name - xVA, a price as a base valuation or a Monte Carlo, the risk and a quote -
+    until it is returned. A day with no marks is refused by name, the book's own day by default; a
+    seat acting at one node reads the agreements whose positions sit there, one acting everywhere
+    every collateralised agreement, one nothing is held under included; a seat's worklist lists the
+    calls of the agreements whose positions sit where it settles, one that may not settle having
+    none; and the binding's `collateral_calls` answers what the verb does.
+
+    Killing mutations: the day's payment never added back, or added back under
+    `Exclude_Paid_Today` too; a position closed on its last day rather than held through it; margin
+    summed into collateral; the balance read by every movement filed rather than as of the day; the
+    worklist's calls read as of the day; the calls read off every agreement, a CSA or none; the
+    balance written into a base valuation; an uncrossable asset let through a run that values the
+    book; a call nobody can work out dropped from the worklist; the narrowing dropped, or a seat
+    acting everywhere narrowed like a node seat; the worklist's calls not narrowed to `settle`; the
+    default day the last one marked; the binding dropping the day it was asked for.
+    """
+    designated(recorded, fixings=False)
+    surviving(desk, 'CPTY_A', 'CPTY_B')
+    agreed_csa('CSA-A', 'CPTY_A', 'USD', 1_000_000.0, -500_000.0, 100_000.0)
+    agreed_csa('CSA-B', 'CPTY_B', 'ZAR', 0.0, -50_000.0, 10_000.0)
+    agreed_csa('CSA-D', 'CPTY_A', 'USD', 0.0, 0.0, 1.0)
+    agreed('ISDA-C', 'CPTY_A', entity='LEI-C')
+    dollar = ((LONG, 'EXEC-A', 17_800_000.0), (STRIP_COUPONS, 'EXEC-L', 5_300_000.0),
+              (PAYING, 'EXEC-G', 1_850_000.0))
+    for deal, reference, price in dollar:
+        booked(deal, 1.0, reference, BOOK + '/FX', price, parent=None, agreement='CSA-A')
+    booked(NEW, -1.0, 'EXEC-B', BOOK + '/Rates', 9_000_000.0, parent=None, agreement='CSA-B')
+    assert {row['reference']: row['status'] for row in held().values()}['CF-A'] == 'pending'
+    closed_and_marked()
+
+    first = called('2024-06-28')
+    assert sorted(first) == ['CSA-A', 'CSA-B', 'CSA-D'], 'an agreement with no CSA has no call'
+    a, b = first['CSA-A'], first['CSA-B']
+    exposure = sum(unit(deal, START, 18.5) for deal, _, _ in dollar)
+    assert (a['currency'], a['entity'], a['unknown']) == ('USD', 'LEI-CSA-A', [])
+    assert a['exposure'] == pytest.approx(exposure, rel=1e-12)
+    assert a['required'] == pytest.approx(exposure - 1_000_000.0, rel=1e-12)
+    assert (a['balance'], a['call'], a['direction'], a['minimum_transfer']) == (
+        0.0, a['required'], 'call', 100_000.0)
+    assert (b['currency'], b['direction'], b['unknown']) == ('ZAR', 'post', [])
+    assert b['exposure'] == pytest.approx(-unit(NEW, START, 18.5) / 18.5, rel=1e-12)
+    assert b['call'] == pytest.approx(b['exposure'] + 50_000.0, rel=1e-12)
+    assert (first['CSA-D']['exposure'], first['CSA-D']['direction']) == (0.0, None)
+    assert [row['key'] for row in worklist()['calls']] == ['CSA-A', 'CSA-B']
+
+    risk = CLIENT.get('/book/risk').json()
+    cached = service.BOOK_RISK_CACHE[risk['etag']]
+    moved('CSA-A', a['call'], 'USD', 'collateral', 'COL-A1', '2024-06-28')
+    moved('CSA-A', 2_000_000.0, 'USD', 'margin', 'MRG-A1', '2024-06-28')
+    moved('CSA-B', b['call'], 'ZAR', 'collateral', 'COL-B1', '2024-07-01')
+    again = CLIENT.get('/book/risk').json()
+    assert again == risk and service.BOOK_RISK_CACHE[again['etag']] is cached, \
+        'a settlement threw the risk away'
+    settled = called('2024-06-28')
+    assert (settled['CSA-A']['call'], settled['CSA-A']['direction']) == (0.0, None), \
+        'a call settled still reads due'
+    assert (settled['CSA-A']['held'], settled['CSA-A']['margin']) == (
+        {'USD': a['call']}, {'USD': 2_000_000.0})
+    assert settled['CSA-B']['held'] == {} and settled['CSA-B']['call'] == b['call'], \
+        'held before its value date'
+    assert worklist()['calls'] == [], 'a call settled for tomorrow still waits on the settle seat'
+
+    rolled(desk, END, 18.0)
+    for paying in ('CFL', 'CF-G'):
+        settle({'subject': due(paying, '2024-07-01')['key']})
+    closed_and_marked()
+    second = called()
+    a2, b2 = second['CSA-A'], second['CSA-B']
+    gross = sum(unit(deal, END, 18.0) for deal, _, _ in dollar)
+    assert a2['exposure'] == pytest.approx(gross, rel=1e-12), \
+        "the day's payments are not the set's exposure"
+    assert (a2['balance'], a2['direction']) == (a['call'], 'post')
+    assert a2['call'] == pytest.approx(a2['required'] - a['call'], rel=1e-12)
+    assert b2['held'] == {'ZAR': b['call']} and b2['direction'] is None, 'held on its value date'
+    # the strip's coupon and the cashflow, both paid on the close, out of the set's exposure
+    for options, paid in (({'NettingCollateralSet': {'Exclude_Paid_Today': True}},
+                           2 * 100_000.0 * 18.0), ({}, 0.0)):
+        body = json.loads(desk.read_text())
+        body['Calc']['MergeMarketData']['ExplicitMarketData']['Valuation Configuration'] = options
+        desk.write_text(json.dumps(body, indent=2), newline='\n')
+        marked()
+        assert called()['CSA-A']['exposure'] == pytest.approx(gross - paid, rel=1e-12)
+
+    moved('CSA-A', 1.0, 'XAU', 'collateral', 'COL-XAU', '2024-07-01')
+    gold = called()['CSA-A']
+    assert (gold['call'], gold['direction'], gold['unknown']) == (None, None, [
+        {'instrument': None, 'what': 'the close carries no spot for XAU'}])
+    assert [(row['key'], row['unknown']) for row in worklist()['calls']] == [
+        ('CSA-A', gold['unknown'])], 'a call nobody can work out left the worklist'
+    quote = CLIENT.post('/book/structure', content=dump({'structure': 'Forward', 'params': {}}),
+                        headers=JSON).json()
+    for answer in (CLIENT.post('/book/xva', content=dump({}), headers=JSON),
+                   CLIENT.post('/book/price', content=dump({}), headers=JSON),
+                   CLIENT.post('/book/price', content=dump({'calculation_overrides': {
+                       'Object': 'CreditMonteCarlo'}}), headers=JSON),
+                   CLIENT.get('/book/risk')):
+        assert answer.status_code == 422 and "holds XAU as collateral under 'CSA-A'" in \
+            answer.json()['detail'] and 'install the spot' in answer.json()['detail'], answer.text
+    assert 'install the spot' in drained(quote)['error'], 'a quote priced over gold'
+    moved('CSA-A', -1.0, 'XAU', 'collateral', 'COL-XAU-BACK', '2024-07-01')
+    assert CLIENT.get('/book/risk').status_code == 200, 'returned in full, gold needs no spot'
+    moved('CSA-A', a2['call'], 'USD', 'collateral', 'COL-A2', '2024-07-01')
+    assert called()['CSA-A']['direction'] is None
+
+    rolled(desk, THIRD, 17.5)
+    closed_and_marked()
+    third = called()
+    assert third['CSA-A']['direction'] == 'post'
+    assert third['CSA-A']['balance'] == pytest.approx(a['call'] + a2['call'], rel=1e-12)
+    refused = CLIENT.get('/book/collateral', params={'date': '2024-06-29'})
+    assert refused.status_code == 422 and 'the days marked are 2024-06-28, 2024-07-01, ' \
+        '2024-07-02' in refused.json()['detail'], refused.text
+
+    log = SpineLog(recorded)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
+            {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
+            {'subject': SETTLER, 'verb': 'settle', 'book': '*'},
+            {'subject': RATES_SETTLER, 'verb': 'settle', 'book': BOOK + '/Rates'},
+            {'subject': RATES_SETTLER, 'verb': 'validate', 'book': BOOK + '/FX'}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+    finally:
+        log.close()
+    for seat in (ACTOR, SETTLER):
+        assert sorted(called(actor=seat)) == ['CSA-A', 'CSA-B', 'CSA-D'], seat
+    assert sorted(called(actor=FX_READER)) == ['CSA-A'], 'a node seat read a client held elsewhere'
+    calling = [name for name, row in sorted(third.items()) if row['direction']]
+    assert [row['key'] for row in worklist(actor=SETTLER)['calls']] == calling
+    assert [row['key'] for row in worklist(actor=RATES_SETTLER)['calls']] == [
+        name for name in calling if name == 'CSA-B'], 'a call listed where the seat only reads'
+    assert worklist(actor=FX_READER)['calls'] == [], 'a seat that may not settle has calls'
+    binding.configure(base_url='http://testserver', session=CLIENT)
+    try:
+        assert binding.collateral_calls(date='2024-07-01', actor=FX_READER) == CLIENT.get(
+            '/book/collateral', params={'date': '2024-07-01', 'actor': FX_READER}).json()
+    finally:
+        binding.SERVICE = None
+    rolled(desk, FOURTH, 17.5)
+    unmarked = CLIENT.get('/book/collateral', params={'actor': ACTOR})
+    assert unmarked.status_code == 422 and 'no marks stand for 2024-07-03' in unmarked.json()[
+        'detail'], 'the default day is not the book\'s own'

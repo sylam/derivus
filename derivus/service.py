@@ -115,7 +115,7 @@ from .schema import (mapping, deal_at, instrument_of, job_children, quote_plan, 
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire
 from .instruments import construct_instrument
-from . import diary, pnl
+from . import collateral, diary, pnl
 from .spine import book_name, replay
 
 LOG = logging.getLogger(__name__)
@@ -894,11 +894,13 @@ def deal_edit(document, deal, parent_reference=None, baseline=None):
 # The book file's writers, under a spine. Every function below answers `{}` where no home is
 # configured, which is what makes the edge bit-identical without one.
 
-def priced(document):
+def priced(document, runs=None):
     """The book as it PRICES: the file with what the record holds written in - every position at
-    its net, every print the declared sources order - and the file as it stands where no home is
-    configured. A read never refuses a print nobody ordered, so the compile is not strict."""
-    return spine.compiled_job(document, strict=False)
+    its net, every print the declared sources order, and the balance of every collateralised set
+    where it `runs` as a calculation that reads one - and the file as it stands where no home is
+    configured. A read never refuses a print nobody ordered, so the compile is not strict; a
+    balance in an asset the book carries no spot for refuses it all the same."""
+    return spine.compiled_job(document, strict=False, runs=runs)
 
 
 def enclosing_set(document, deal_path):
@@ -1314,7 +1316,7 @@ def book_price(request: dict):
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, etag = live_book().read()
     baseline = live_book().baseline(document, etag) if request.get('deal') is not None else None
-    document = priced(document)
+    document = priced(document, (request.get('calculation_overrides') or {}).get('Object'))
     try:
         if request.get('deal') is not None:
             written, outcome = deal_edit(document, request['deal'],
@@ -1403,7 +1405,7 @@ def run_calculation(request: dict):
     if name not in saved:
         raise HTTPException(422, 'no calculation is saved as {!r} - this workstation keeps '
                                  '{}'.format(name, ', '.join(sorted(saved)) or 'none'))
-    document = priced(live_book().read()[0])
+    document = priced(live_book().read()[0], saved[name].get('Object'))
     try:
         with_overrides(document, saved[name])
         if request.get('deal_path') is not None:
@@ -1637,7 +1639,7 @@ def book_risk():
     `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
     quoted, `quoted` the factors those rows stand for and `quote_note` why not where they are not.
     """
-    document = priced(live_book().read()[0])
+    document = priced(live_book().read()[0], 'BaseValuation')
     etag = risk_etag(document)
     if etag not in BOOK_RISK_CACHE:
         try:
@@ -1704,7 +1706,8 @@ class DiaryJob:
         # orders can fill, and an index nobody ordered reads unresolved on its own rows
         return None, {'Results': {}, 'Stats': {'Diary': {
             'as_of': as_of(), 'rows': diary.schedule_of(
-                load(spine.compiled_job(self.document, strict=False)), self.instruments)}}}
+                load(spine.compiled_job(self.document, strict=False, runs=False)),
+                self.instruments)}}}
 
 
 def booked_instruments(document):
@@ -2404,11 +2407,37 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     if last['day'] < first['day'] or (end_day is not None and last['lsn'] <= first['lsn']):
         raise HTTPException(422, 'the P&L runs forward: the marks of {} do not come after those '
                                  'of {}'.format(last['day'], first['day']))
+    scope = {'portfolio': portfolio or book, 'agreement': agreement,
+             'clients': None if client is None else clients_under(client),
+             'sight': spine.sight(actor)}
+    answer, last_days = valued_between(first, last, document, marks, market['name'], scope)
+    terms = pnl.held_terms(document, {row['instrument'] for row in answer['rows']}, spine.stored)
+    for row in answer['rows']:
+        row['reference'] = terms[row['instrument']].get('Reference')
+    if explain:
+        answer['explain'] = pnl.explain(answer['rows'], last_days, first['day'], last['day'],
+                                        explaining(first, last, document))
+    return dict(answer, currency=first['document']['Calc']['Calculation'].get('Currency'),
+                scope=dict(scope, clients=None if client is None else sorted(scope['clients'])),
+                **{side: {field: marks_of[field] for field in (
+                    'day', 'lsn', 'values_hash', 'job', 'result', 'live') if field in marks_of}
+                   for side, marks_of in (('start', first), ('end', last))})
+
+
+def valued_between(first, last, document, marks, market, scope, through=False):
+    """`(answer, last_days)` - `pnl.pnl` over `scope` between the marks `first` and `last` of the
+    book `document` names, `marks` every one it has on `market`: each close's spots, the business
+    days its marks cut, what the record held and moved at each end, and every payment the window's
+    positions meet (`window_payments`), with the last day of each instrument that has one. `through`
+    holds a position whose last day is `last`'s through it rather than closing it there, as a
+    netting set holds a deal until its cash moves."""
+    book = book_name(document)
     calculation = first['document']['Calc']['Calculation']
     reporting, base = calculation.get('Currency'), structures.base_currency(first['document'])
     for marks_of in (first, last):
         marks_of['rates'] = pnl.rates(marks_of.pop('values', None) or json.loads(
             spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
+    days = sorted(marks)
     # a business day ends at its marks - an end-of-day cut, not the clock a fact was recorded by -
     # and the day being lived after the last
     cut = sorted((row['lsn'], day) for day, row in marks.items())
@@ -2416,9 +2445,6 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
         cut.append((last['lsn'], last['day']))
     fills = [fill for fill in spine.fills(after=first['lsn'], until=last['lsn'])
              if fill['book'] == book]
-    scope = {'portfolio': portfolio or book, 'agreement': agreement,
-             'clients': None if client is None else clients_under(client),
-             'sight': spine.sight(actor)}
 
     def between(after, until):
         return [fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]
@@ -2426,7 +2452,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     def amended(after, until):
         return spine.amendments(after=after, until=until)
 
-    closes = pnl.rates_on(spine.closes(market['name']), spine.stored, reporting, base)
+    closes = pnl.rates_on(spine.closes(market), spine.stored, reporting, base)
 
     def rates(day, lsn):
         # the day being lived has no close struck on it: the book as it stands prices it, as it
@@ -2435,31 +2461,22 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
                 and lsn >= last['lsn'])
         return last['rates'] if live else closes(day, lsn)
 
-    costs = {side['lsn']: spine.costs(side['lsn']) for side in (first, last)}
+    ends = {first['lsn'], last['lsn']}
+    costs = {lsn: spine.costs(lsn) for lsn in ends}
     # the money this book's settlements moved - another book's are its own
-    cash = {side['lsn']: [row for row in spine.cash(side['lsn']) if row['book'] in (None, book)]
-            for side in (first, last)}
+    cash = {lsn: [row for row in spine.cash(lsn) if row['book'] in (None, book)] for lsn in ends}
     payments, last_days = window_payments(
         first, last, fills, {row['amended_to'] for row in amended(first['lsn'], last['lsn'])},
         document, marks, pnl.filed(cash[first['lsn']], cash[last['lsn']]))
-    answer = pnl.pnl(first, last, {
+    if through:
+        last_days = {held: day for held, day in last_days.items() if day != last['day']}
+    return pnl.pnl(first, last, {
         'costs_start': costs[first['lsn']], 'costs_end': costs[last['lsn']],
         'cash_start': cash[first['lsn']], 'cash_end': cash[last['lsn']], 'fills': fills,
         'diary': payments, 'last_days': last_days,
         'positions_end': spine.positions(last['lsn']), 'cut': cut, 'fills_between': between,
         'rates': rates, 'days': pnl.recorded(cut, spine.costs, between, amended, known=costs)},
-        scope)
-    terms = pnl.held_terms(document, {row['instrument'] for row in answer['rows']}, spine.stored)
-    for row in answer['rows']:
-        row['reference'] = terms[row['instrument']].get('Reference')
-    if explain:
-        answer['explain'] = pnl.explain(answer['rows'], last_days, first['day'], last['day'],
-                                        explaining(first, last, document))
-    return dict(answer, currency=calculation.get('Currency'), scope=dict(
-        scope, clients=None if client is None else sorted(scope['clients'])),
-        **{side: {field: marks_of[field] for field in ('day', 'lsn', 'values_hash', 'job',
-                                                       'result', 'live') if field in marks_of}
-           for side, marks_of in (('start', first), ('end', last))})
+        scope), last_days
 
 
 def live_marks(document, book, since):
@@ -2642,6 +2659,62 @@ def clients_under(entity):
                 found.add(child)
                 grew = True
     return found
+
+
+@app.get('/book/collateral', summary='The collateral each agreement calls on a marked close')
+def book_collateral(date: str = None, actor: str = None):
+    """`{date, marks, lsn, calls}` - what the CSA of every agreement whose terms collateralise asks
+    on the close marked for `date` (`YYYY-MM-DD`, the book's own day where none is named), less
+    what is held under it: per agreement `{agreement, entity, currency, exposure, held, margin,
+    required, balance, call, direction, minimum_transfer, unknown}`, in the agreement's currency.
+
+    THE EXPOSURE IS THE ONE THE NETTING SET'S RECURSION READS: the P&L's value of the positions
+    under the agreement at that close - a pending trade among them, since it prices and settles
+    like any other, and one whose last day it is held through it - with the day's payments added
+    back where the set holds them (`Exclude_Paid_Today` off, the engine's default). THE CALL IS ONE
+    FORMULA with that recursion at one date: the support required less the collateral held after
+    `Haircut_Posted`, moving only where it clears the minimum transfer on its side strictly. `call`
+    is what the settlement moves, received positive, and `direction` whether the bank calls or
+    posts; it is settled through `POST /book/transition` as `collateral` against the agreement.
+    THE BALANCE IS HELD AS OF THE DAY - the movements the record holds at its head, `lsn`, value
+    dated on or before it - so a read replays; the worklist counts every movement filed. `held` and
+    `margin` are kept apart, the call reading the first. `actor` is the seat reading, which sees
+    the agreements a position it holds any grant at sits under, the agreement's whole exposure.
+    Refused where the day has no marks. 404 where no home is configured.
+    """
+    document, _ = recording().read()
+    market = spine.designated_market(spine.PNL)['name']
+    marks = pnl.marked(book_name(document), spine.closes(market), spine.attestations(),
+                       spine.stored)
+    day = read_day(date) if date is not None else structures.timestamp(
+        document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    if day not in marks:
+        raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; a call '
+                                 'is read on a marked close, so mark the book at it with POST '
+                                 '/book/marks'.format(day, market, ', '.join(sorted(marks))
+                                                      or 'none'))
+    return collateral_calls(document, marks, day, market, spine.sight(actor))
+
+
+def collateral_calls(document, marks, day, market, sight, verb=None, positions=None,
+                     filed=False):
+    """`{date, marks, lsn, calls}` - the calls on the marks of `day`, `marks` every one the book of
+    `document` has on `market`, of the agreements a seat whose `sight` this is reads where it holds
+    `verb` (`collateral.seen` over `positions`, the ones standing where None): the exposure the P&L
+    over that close alone, every position held through it (`valued_between`), the paper and the
+    `cash` fold the record's at its head, a balance held as of the day - or every movement filed,
+    whatever its value date, where `filed`. No P&L is read where the seat sees no call."""
+    head, movements = spine.cash_standing()
+    agreements = collateral.seen(collateral.collateralised(spine.agreements(head)),
+                                 spine.standing() if positions is None else positions, sight, verb)
+    calls = []
+    if agreements:
+        close = pnl.loaded(marks[day], spine.stored)
+        valued, _ = valued_between(close, close, document, marks, market, {
+            'portfolio': book_name(document), 'agreement': None, 'clients': None, 'sight': None},
+            through=True)
+        calls = collateral.calls(close, valued, agreements, movements, None if filed else day)
+    return {'date': day, 'marks': marks[day]['lsn'], 'lsn': head, 'calls': calls}
 
 
 #: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
@@ -2873,8 +2946,8 @@ WORKLIST_ROWS = 200
 @app.get('/book/worklist', summary='What waits on somebody - tickets, payments, confirmations, '
                                     'marks, rejected trades')
 def book_worklist(actor: str = None):
-    """`{date, counts, pending, payments, unconfirmed, unmarked, rejected}` - five lists of what
-    waits on THIS seat, each row `{kind, what, key, lsn, since}` with `key` what the fact that
+    """`{date, counts, pending, payments, unconfirmed, calls, unmarked, rejected}` - six lists of
+    what waits on THIS seat, each row `{kind, what, key, lsn, since}` with `key` what the fact that
     clears it is filed against, `counts` how many each list holds and each list the newest
     `WORKLIST_ROWS` of them. Nothing here is filed: every list is read off what stands, so a row
     leaves the moment its fact lands.
@@ -2882,14 +2955,16 @@ def book_worklist(actor: str = None):
     Each list is what one verb acts on, where the seat holds it: `pending` the tickets awaiting a
     second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - for
     `approve`; `payments` the payments due by the book's own day no settlement was filed against
-    (`close_verdict` - a fee settles nothing) and `unconfirmed` the clips no `confirmed` status
-    filed since their own ticket stands against, keyed as they were filled (`spine.fill_key`) - so a
-    restrike makes a re-confirmation due - for `settle`; `unmarked` the closes on the market
-    designated for `pnl` on a DAY after the last one marked - marks run forward, so no earlier day
-    is owed - for `mark` over the book; and `rejected` the tickets rejected that still stand in a
-    position netting to something, for `book` - the trade happened, and closing it is somebody's
-    act. A read no seat signs on a box checking no token lists them all. 404 where no home is
-    configured.
+    (`close_verdict` - a fee settles nothing), `unconfirmed` the clips no `confirmed` status filed
+    since their own ticket stands against, keyed as they were filled (`spine.fill_key`) - so a
+    restrike makes a re-confirmation due - and `calls` the collateral the marks of the book's day
+    call for or post, keyed by agreement, every movement filed counted whatever its value date, one
+    nobody can work out listed with its `unknown` (`collateral_calls`), for `settle`; `unmarked`
+    the closes on the market designated for `pnl` on a DAY after the last one marked - marks run
+    forward, so no earlier day is owed - for `mark` over the book; and `rejected` the tickets
+    rejected that still stand in a position netting to something, for `book` - the trade
+    happened, and closing it is somebody's act. A read no seat signs on a box checking no token
+    lists them all. 404 where no home is configured.
     """
     document, _ = recording().read()
     book, sight = book_name(document), spine.sight(actor)
@@ -2935,6 +3010,19 @@ def book_worklist(actor: str = None):
                                     entry['lsn'], entry['at'])
         return list(found.values())
 
+    # a seat that settles nowhere pays nothing for calls it cannot see
+    due = [] if day not in marks or sight is not None and sight[vocabulary.SETTLE] == [] else (
+        collateral_calls(document, marks, day, market, sight, vocabulary.SETTLE, rows,
+                         filed=True)['calls'])
+
+    def called(call):
+        # a call nobody can work out is listed with what is not known, never dropped
+        return dict(row('call', '{} {}s {:.2f} {}'.format(
+            call['agreement'], call['direction'], abs(call['call']), call['currency'])
+            if call['direction'] else '{}: the call is not known - {}'.format(
+                call['agreement'], '; '.join(entry['what'] for entry in call['unknown'])),
+            call['agreement'], marks[day]['lsn'], day), unknown=call['unknown'])
+
     lists = {
         'pending': ticketed(vocabulary.APPROVE, 'pending', 'awaits a second seat\'s approval',
                             ticket, lambda position, entry, at: entry['status'] == 'pending'),
@@ -2947,6 +3035,7 @@ def book_worklist(actor: str = None):
             if entry['kind'] == diary.PAYMENT and see(entry['instrument'])],
         'unconfirmed': ticketed(vocabulary.SETTLE, 'unconfirmed', 'is not confirmed', confirming,
                                 unconfirmed, lambda position, entry: entry['execution_reference']),
+        'calls': [called(call) for call in due if call['direction'] or call['unknown']],
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
             close['date'], market), close['date'], close['lsn'], close['date'])
             for close in {close['date']: close for close in closes}.values()
@@ -3343,7 +3432,7 @@ def book_xva(request: dict):
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book is one run, and asking twice hands back the id of the first.
     """
-    document = priced(live_book().read()[0])
+    document = priced(live_book().read()[0], 'CreditMonteCarlo')
     found = {node['Instrument']['.Deal'].get('Reference'): node
              for _, node in netting_sets(document)}
     named = request.get('netting_sets')
@@ -6107,8 +6196,8 @@ class StructureJob:
         spot_source = patch_live_spot(self.document, self.params)
         # the BOOK a risk-impact step reads is the book as it prices; the pins above and the ticket
         # below are the file's, which is what the acceptance re-derives them from
-        outcome = structures.quote(priced(self.document), self.structure, self.params,
-                                   spot_source, self.netting_set, self.margin)
+        outcome = structures.quote(priced(self.document, 'BaseValuation'), self.structure,
+                                   self.params, spot_source, self.netting_set, self.margin)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')

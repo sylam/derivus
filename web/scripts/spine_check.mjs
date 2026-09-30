@@ -277,18 +277,19 @@ check('a file written at the head the record stands at asks nothing',
        spine.worklistAt({ ...PINNED, lsn: null, events_behind: null })],
       [false, '']);
 const ROW = (kind, key) => ({ kind, what: `${key} waits`, key, lsn: 7, since: '2024-06-28' });
-const NOTHING = { date: '2024-06-28', pending: [], payments: [], unconfirmed: [], unmarked: [],
-                  rejected: [], counts: { pending: 0, payments: 0, unconfirmed: 0, unmarked: 0,
-                                          rejected: 0 } };
+const NOTHING = { date: '2024-06-28', pending: [], payments: [], unconfirmed: [], calls: [],
+                  unmarked: [], rejected: [], counts: { pending: 0, payments: 0, unconfirmed: 0,
+                                                        calls: 0, unmarked: 0, rejected: 0 } };
 check('the banner counts what each list holds and says nothing where none waits',
       'the line built from every list whatever it holds, which lights a banner reading `0 tickets '
       + 'to sign` over a desk with nothing to do; the rows counted in place of the counts, which '
-      + 'says 200 where 2,000 wait; or the plural spelled into the words',
+      + 'says 200 where 2,000 wait; the plural spelled into the words; or the collateral calls '
+      + 'left out of the line, which hides a call due from the seat that settles it',
       [spine.worklistLine(NOTHING), spine.worklistLine(null), spine.worklistLine({
         ...NOTHING, pending: [ROW('pending', 't1'), ROW('pending', 't2')],
-        rejected: [ROW('rejected', 't3')],
-        counts: { ...NOTHING.counts, pending: 2037, rejected: 1 } })],
-      ['', '', '2037 tickets to sign · 1 rejected trade standing']);
+        calls: [ROW('call', 'CSA-A')], rejected: [ROW('rejected', 't3')],
+        counts: { ...NOTHING.counts, pending: 2037, calls: 1, rejected: 1 } })],
+      ['', '', '2037 tickets to sign · 1 collateral call due · 1 rejected trade standing']);
 
 // --- the store's two transitions, which are this module's and answer the SAME OBJECT
 const held = { spine: PINNED, rows: HELD, reconcile: AHEAD, reconciledAt: ETAG };

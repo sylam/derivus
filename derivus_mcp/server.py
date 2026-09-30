@@ -86,7 +86,8 @@ seat the trade books all the same and reads PENDING - the answer carries a tier 
 and that seat signs it with approve_quote(quote_id, actor), or approve_ticket(ticket, actor)
 for a direct booking; reject_quote and reject_ticket file the other verdict, the trade standing
 rejected until somebody closes it. Never book it a second time. worklist names what waits on
-somebody: tickets to sign, payments due, fills to confirm, closes to mark, rejected trades.
+somebody: tickets to sign, payments due, fills to confirm, collateral calls, closes to mark,
+rejected trades.
 
 THE WIRE FORMS a deal is written in: dates {".Timestamp": "YYYY-MM-DD"}, periods
 {".DateOffset": "3M"}, percentages {".Percent": 2.5}, numbers as numbers; a curve or a surface
@@ -126,9 +127,11 @@ settlement file for a day, on the market the desk designated for it and on no ot
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
 what close_check then stops waiting on - with the amount, asset, kind and settlement reference where
 money moved, including collateral and margin under an agreement, and book_cash reads the movements
-and their balances back. THE P&L: once the day's close is declared, mark_book values one unit of
-every instrument on it, and book_pnl reads what the book made between two marked days or since the
-last marks. THE PAPER the book trades under is declared too, by the seat
+and their balances back; collateral_calls reads what each agreement's CSA calls on a marked close,
+settled with file_status as collateral against the agreement. THE P&L: once the day's close is
+declared, mark_book values one unit of every instrument on it, and book_pnl reads what the book
+made between two marked days or since the last marks. THE PAPER the book trades under is
+declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
 and never a balance, and describe_agreements to read them - a booking then names its agreement, the
 first one under it bringing its netting set, and its portfolio, a path under the book or a node
@@ -1616,6 +1619,22 @@ def book_cash(date: str | None = None, actor: str | None = None) -> dict:
     return service().call('GET', '/book/cash', params=_stated(date=date, actor=actor))
 
 
+@MCP.tool(annotations=READ_ONLY)
+def collateral_calls(date: str | None = None, actor: str | None = None) -> dict:
+    """What each agreement's CSA calls on a marked close (`date`, `YYYY-MM-DD`, the book's own day
+    where none is named), in the agreement's currency: the exposure - the positions under it at
+    that close as the netting set's own recursion reads them - the support its terms require, the
+    collateral and the margin held per asset as of that day, kept apart, and the `call`, signed
+    from the bank's side (received positive), its `direction` `call` where the bank receives and
+    `post` where it posts, none where the difference clears neither minimum transfer; a call nobody
+    can work out is null with `unknown` naming why. Settle one with `file_status` - kind
+    `collateral`, the agreement as subject, the amount the call names - and `worklist` drops it
+    once filed, whatever its value date. Refused on a day with no marks. `actor` is the seat
+    reading. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/collateral', params=_stated(date=date, actor=actor))
+
+
 @MCP.tool()
 def mark_book(actor: str | None = None) -> dict:
     """Mark the book at the close: one unit of every instrument it holds or traded since its last
@@ -1679,13 +1698,14 @@ def book_positions(actor: str | None = None) -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def worklist(actor: str | None = None) -> dict:
     """What waits on the seat asking, read off what stands - nothing here is filed, so a row leaves
-    the moment its fact lands. Five lists, each what one verb acts on where `actor` holds it, each
+    the moment its fact lands. Six lists, each what one verb acts on where `actor` holds it, each
     row `{kind, what, key, lsn, since}` with `key` what the clearing fact is filed against:
     `pending` tickets to sign (`approve_ticket`, for an approve seat), `payments` due by the book's
-    day nobody settled and `unconfirmed` fills (`file_status` against the key, for a settle seat),
-    `unmarked` closes (`mark_book`, for a mark seat), and `rejected` trades still standing, which
-    a book seat closes out. `counts` says how many each list holds; each list answers the newest
-    200. 404 on a box that records nothing.
+    day nobody settled, `unconfirmed` fills and the collateral `calls` the day's marks make, keyed
+    by agreement (`file_status` against the key, for a settle seat), `unmarked` closes
+    (`mark_book`, for a mark seat), and `rejected` trades still standing, which a book seat closes
+    out. `counts` says how many each list holds; each list answers the newest 200. 404 on a box
+    that records nothing.
     """
     return service().call('GET', '/book/worklist', params=_stated(actor=actor))
 

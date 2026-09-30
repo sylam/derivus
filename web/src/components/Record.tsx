@@ -59,7 +59,7 @@ export function ReconcileBanner() {
   );
 }
 
-/** What waits on this seat, beside the reconcile banner: five lists read off what stands, so a row
+/** What waits on this seat, beside the reconcile banner: six lists read off what stands, so a row
  * leaves the moment its fact lands, and a rejected trade is named for as long as it stands. Asked
  * where the record's head moved (`wantsWorklist`), never on the beat or the file alone - the answer
  * compiles the diary - and nothing at all where nothing waits; a read that failed says so.

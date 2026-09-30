@@ -16,8 +16,9 @@ its legal entities and agreements - with every position keyed where it sits, rea
 at its net, and seeds filed where a deployment says; **9** the money the settlements moved, what
 every position cost, and the desk's P&L between the closes it marks; and the seats - seven verbs
 granted at the nodes of a declared tree, the hub's own facts in the writer's voice, and a trade's
-pending read rather than filed. A library, a CLI, nine delegators on `Context`, seventeen read verbs
-and ten write verbs on the service, and 404 gates.
+pending read rather than filed; and the collateral each agreement calls on a marked close, its
+balance written into the plan. A library, a CLI, nine delegators on `Context`, eighteen read verbs
+and ten write verbs on the service, and 414 gates.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
 
@@ -1181,9 +1182,10 @@ a balance - the collateral under an agreement, what a row settled for, the fees 
 is a sum over its rows and stored nowhere. `POST /book/transition` takes the four fields and a
 `value_date`, `GET /book/cash` answers the movements and their balances per kind, subject and asset
 as of a `date` where one is named, and the binding's `file_status` and `book_cash` are the same
-two. Writing an agreement's balance in force into the netting set a collateralised run compiles
-is not built. `tests/test_spine_verbs.py` holds the record's half and `tests/test_spine_engine.py`
-the service's, six mutations red.
+two. What a balance of collateral is asked for, and how it reaches a run, is
+[collateral's](#collateral-the-call-on-a-close-and-the-balance-in-the-plan).
+`tests/test_spine_verbs.py` holds the record's half and `tests/test_spine_engine.py` the
+service's, six mutations red.
 
 **A POSITION COSTS ITS AVERAGE.** The thirteenth projector, `costs`, keys every position as
 `positions` does and carries its `basis` - the open quantity times its average price, signed with
@@ -1423,15 +1425,17 @@ denial. Risk, XVA, `/book` and `/results` stay hub-wide. THIS IS PRESENTATION wh
 is dormant: one class key opens every body, so a seat holding a `read` row reads every frame whole
 off `/spine/frames`, and the filter stops being presentation the day a second class exists.
 
-**THE WORKLIST.** `GET /book/worklist` is five lists of what waits on the seat asking, read off what
+**THE WORKLIST.** `GET /book/worklist` is six lists of what waits on the seat asking, read off what
 stands, each what one verb acts on where the seat holds it, each row `{kind, what, key, lsn,
 since}` with `key` what the clearing fact is filed against: tickets pending a second seat, one row
 each, for `approve`; payments due by the book's day nobody settled - the close check's own verdict,
-a fee settling nothing - and clips no `confirmed` status filed since their own ticket stands
+a fee settling nothing - clips no `confirmed` status filed since their own ticket stands
 against, at the key they were filled under (`spine.fill_key`) - a restrike making a re-confirmation
-due, one stating the day it was matched - for `settle`; closes on the market designated for P&L on a
-DAY after the last one marked - marks run forward, so no earlier day is owed - for `mark` over the
-book; and rejected trades still standing in a position, for `book`. `counts` says how many each list
+due, one stating the day it was matched - and the collateral calls the marks of the book's day
+make, keyed by agreement, every movement filed counted and one nobody can work out listed with its
+`unknown`, for `settle`; closes on the market designated for P&L on a DAY after the last one
+marked - marks run forward, so no earlier day is owed - for `mark` over the book; and rejected
+trades still standing in a position, for `book`. `counts` says how many each list
 holds and each answers the newest `WORKLIST_ROWS` (the strip's 200). Nothing is filed for it, so a
 row leaves the moment its fact lands; the binding's `worklist` asks it, and the web UI's banner
 beside the reconcile banner asks it where the RECORD's head moved (`wantsWorklist`) - never on the
@@ -1470,6 +1474,88 @@ a node's P&L, `test_spine_oracle.py` a ticket filed twice and a restrike nobody 
 `test_schema_emission.py` the tenor census, `test_mcp.py` the walk through the binding and the
 lookup by plain name, and `web/scripts/spine_check.mjs` and `positions_check.mjs` the banner's ask
 and the seeded tree - every killing mutation their docstrings name red.
+
+## Collateral — the call on a close, and the balance in the plan
+
+**THE CALL IS A READING, AND ONE FORMULA WITH THE ENGINE'S.** `derivus_spine/collateral.py` is a
+CSA's arithmetic at one date, pure and stdlib, so the service runs it and the oracle can. `csa`
+reads an agreement's declared terms as the engine reads them - every `CreditSupportList` at its
+first value, the balance currency the agreement's where unstated, and each cash row of
+`Collateral_Assets` at its `Haircut_Posted`, the one haircut the engine reads, whichever side holds
+the asset; `required` is the engine's `At` term for term - the independent amount, plus the excess
+over the received threshold above it, plus the excess below the posted threshold below it, the
+three crossed from the agreement currency; and `call` is that less the collateral held after
+haircuts, moving only where it clears the minimum transfer on its side STRICTLY, as
+`scan_collateral_balance` transfers. Nothing is rounded, a netting set declaring no rounding, and
+neither side reads `Independent_Amount_Reference`: a positive independent amount is support the
+bank receives. COLLATERAL AND MARGIN ARE TWO BALANCES: `held` groups the `cash` fold's standing
+movements once per read into balances per agreement, each kind per asset, as of a value date, and
+the call reads the collateral alone.
+
+**THE EXPOSURE IS THE ONE THE NETTING SET RECURSES ON.** `GET /book/collateral?date=` answers every
+agreement whose terms collateralise on the close marked for the day - the book's own where none is
+named, refused by name where the day has no marks - in the agreement's currency: `{agreement,
+entity, currency, exposure, held, margin, required, balance, call, direction, minimum_transfer,
+unknown}`. The exposure is read off the P&L - `pnl.pnl` over the close alone, sharing
+`valued_between` with the P&L's own read - as the set's recursion reads it under the marks job's
+`Exclude_Paid_Today`: where the set holds the day's payments, the engine's default, the P&L's value
+of each position with what the unit paid that day added back, its quantity times its unit mark;
+where it excludes them, the P&L's value, the payment being cash. A position whose last day is the
+close is held through it, as the set holds a deal until its cash moves; a pending trade prices and
+settles like any other and counts; and a mark nobody has, or a spot the close lacks for an asset
+held, is named under `unknown` with the call null over it, never a zero. It is crossed into the
+agreement currency at the close's own spots, and so is every asset held. The transfer decision and
+the amount agree with the engine's recursion on every path of the gates, to rounding at the
+minimum-transfer edge.
+
+**TWO READINGS OF THE BALANCE.** The read holds the balance AS OF THE DAY - the movements the record
+holds at its head, `lsn`, value-dated on or before it - so `{date, marks, lsn}` replays it. The
+worklist's `calls`, what the marks of the book's day call for or post, are the `settle` seat's and
+count every movement FILED against the agreement whatever its value date, so a call settled
+value-dated tomorrow leaves the list the moment it lands; a call nobody can work out is listed with
+its `unknown`. `call` is what a settlement moves - received positive - and `direction` `call` where
+the bank receives and `post` where it posts; the back office settles it through `POST
+/book/transition` as `collateral` against the agreement, a movement like any other. A seat reads
+the agreements a position it holds any grant at sits under - the agreement's whole exposure, a call
+being per agreement - and a seat acting everywhere every one, one nothing is held under included.
+The P&L is read only where a seat can see a call, so a seat holding `settle` nowhere pays nothing
+for the worklist's. The binding's `collateral_calls` asks the read, and the banner counts the list.
+
+**THE BALANCE IS PLAN WHERE A RUN READS IT.** `compiled_job` writes every collateralised netting set
+the record holds collateral under its `Opening_Balance` where the job is compiled for a run that
+reads one - `runs`, the calculation it runs as: the collateral held by the job's base date, after
+haircuts, in the set's `Balance_Currency`, every other asset crossed at the job's own spots. The
+engine MULTIPLIES it by that currency's spot, divides by what a unit of the set's collateral is
+worth after haircuts at the base date, and opens its recursion there. A base valuation runs no recursion, so it
+is compiled with no balance and a settlement moves neither its plan nor what it caches -
+`/book/risk`'s etag among them. The margin is never written, nor a movement dated after the base
+date, and a set the record moved nothing under is left as the file states it. A HELD ASSET THE
+BOOK CANNOT CROSS REFUSES THE COMPILE by name in every lane that values the book - "a balance in an
+asset the book carries no spot for is a market the book lacks; install the spot" - a plan,
+`/book/xva`, `/book/price` as either calculation, `/book/risk` and a quote alike, nothing valued on
+a zero, as a booking is refused for market data the book lacks; a diary, which values nothing,
+compiles past it. The `cash` fold is advanced rather than re-walked, and folded only where such a
+set exists. `/book/reconcile` leaves a balance out of the paper, so a written one never reads as
+drift.
+
+**WHAT IS NOT CARRIED.** Interest on a balance; an eligibility schedule beyond the haircuts a set
+declares, `Haircut_Received` being read by neither side; a security held as collateral, which a
+close's spots do not value and which refuses as any asset without a spot does; the holdings of a
+set's `Collateral_Assets` - a declared row states no amount and the engine reads one, skipping the
+set without it, so an agreement declaring eligible rows prices collateralised only where the file
+states them; and the hedge simulation's opening state, which reads the file.
+
+`tests/test_collateral.py` holds the arithmetic - the dials against `utils.CreditSupportList`,
+`At` in its three regimes, the strict minimum on both sides, `Haircut_Posted` on either side, the
+two balances in one pass, nothing rounded, a mark nobody has named - and collateralised credit
+Monte Carlos over jobs the record compiled: the engine opens on the balance written, on 4,096 paths
+spanning both thresholds and both minimums the spine's call moves the balance where the engine's
+scan does, to its required support, and on the day a forward under the set pays it does so under
+either `Exclude_Paid_Today`. `tests/test_pnl.py` reads the call over three marked closes - settled,
+margin beside it, a delivery dated ahead that the worklist drops at once, the day's payments under
+both settings, gold nobody can value refusing every run that values the book, the risk's cache
+kept, a day with no marks, a seat at one node, one acting everywhere and the worklist's `settle`
+seat - every killing mutation their docstrings name red.
 
 ## What is not built yet
 

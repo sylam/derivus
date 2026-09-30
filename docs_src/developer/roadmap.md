@@ -228,18 +228,22 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
-- **Nine declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26).
-  `DealDefaultSwap`'s `Is_Digital` and `Digital_Recovery` select a branch that was never wired; its
-  `Upfront` is a real payment no pricer discounts; `Rate_Currency` on `DepositDeal` and
-  `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path; `Averaging_Method`
-  on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader in the tree is a
-  cashflow LIST's own container key, falling back to `None` on another class; a floating cashflow
-  list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads where the fixed
-  list's does; and `CommodityForwardDeal`'s `Payoff_Type` and `Payoff_Currency`, on a forward
-  declaring no strike, whose mark is the commodity delivered - `Units x F x D` - with nothing paid
-  for it. A desk that states one is silently ignored, which is the opposite failure to the one the
-  convention/placeholder split closes: UNMEASURED, because there is no reading to compare against.
-  Each is either wired to the branch it names or deleted with the branch.
+- **Eleven declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26,
+  2026-09-30). `DealDefaultSwap`'s `Is_Digital` and `Digital_Recovery` select a branch that was
+  never wired; its `Upfront` is a real payment no pricer discounts; `Rate_Currency` on
+  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path;
+  `Averaging_Method` on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader in
+  the tree is a cashflow LIST's own container key, falling back to `None` on another class; a
+  floating cashflow list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads
+  where the fixed list's does; `CommodityForwardDeal`'s `Payoff_Type` and `Payoff_Currency`, on a
+  forward declaring no strike, whose mark is the commodity delivered - `Units x F x D` - with
+  nothing paid for it; and a `NettingCollateralSet`'s `Haircut_Received`, on every collateral row,
+  where the engine and the collateral call take `Haircut_Posted` whichever side holds the asset,
+  and its `Independent_Amount_Reference`, a positive independent amount being support the bank
+  receives whichever party the field names. A desk that states one is silently ignored, which is
+  the opposite failure to the one the convention/placeholder split closes: UNMEASURED, because
+  there is no reading to compare against. Each is either wired to the branch it names or deleted
+  with the branch.
 - **An energy option reads each sample's volatility over about 127 years** (2026-09-26).
   `pv_energy_option` measures a sample's time as its reset day less the valuation time, and
   `TensorCashFlows.energy` stores that day as an Excel serial date, so every sample's variance
@@ -532,10 +536,6 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   interest collateral earns, collateral moving being no P&L, or a future's variation margin, which
   settles daily and which no future declares. The residual is reported with its share of the held
   positions' P&L, and no threshold a desk declares watches it.
-- **An agreement's collateral balance compiled into its netting set.** The `cash` fold holds what
-  the settlement interface moved under each agreement, and nothing writes that balance in force into
-  the netting set a collateralised run compiles, which still reads the book file's own
-  `Opening_Balance`.
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,

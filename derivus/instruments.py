@@ -1008,9 +1008,9 @@ class NettingCollateralSet(Deal):
                       '- $G(t)$ the posted threshold of collateral: if the portfolio value is below this, the agreed '
                       'collateral value must be decreased by the difference.',
                       '- $M_r(t)$ the minimum received transfer amount. The collateral held will not increase unless '
-                      'the increase is at least this amount.',
+                      'the increase is more than this amount.',
                       '- $M_p(t)$ the minimum posted transfer amount. The collateral posted will not increase unless '
-                      'the increase is at least this amount.',
+                      'the increase is more than this amount.',
                       '- $S_h(t)$ is the value in base currency of one unit of the collateral portfolio after haircuts.',
                       '- $t_i, i>0$ are collateral call dates. Note that $t_0=0$ and that in general, $t_0$ need not be'
                       ' a collateral call date.',
@@ -1026,9 +1026,9 @@ class NettingCollateralSet(Deal):
                       'recurrence:',
                       '',
                       '$$B(t_i)=\\begin{cases} \\frac{A(0)}{S_h(0)}, &\\text{if } i=0\\\\',
-                      '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S(t_i)B(t_{i-1})\\ge M_r(t_i)X(t_i)'
+                      '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
                       '\\text{ and } i>0,\\\\',
-                      '&\\text{or if } S(t_i)B(t_{i-1})-A(t_i)\\ge M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
+                      '&\\text{or if } S(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
                       'B(t_{i-1}), &\\text{otherwise}\\end{cases}$$',
                       '',
                       'Since $B(t_i)$ is constant between call dates, $B(t)=B(t_{i^*})$, where $t_{i^*}$ is the closest',

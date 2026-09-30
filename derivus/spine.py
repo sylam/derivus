@@ -162,9 +162,9 @@ def package():
     """
     try:
         import derivus_spine
-        from derivus_spine import (capability, firmness, policy,   # noqa: F401  attribute
-                                   projections, tiers, verbs,      # noqa: F401  access below
-                                   vocabulary)                     # noqa: F401
+        from derivus_spine import (capability, collateral, firmness,  # noqa: F401  attribute
+                                   policy, projections, tiers,        # noqa: F401  access below
+                                   verbs, vocabulary)                 # noqa: F401
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -539,7 +539,7 @@ def observations(lsn=None, indices=None):
     return folded(fold)
 
 
-def compiled_job(document, lsn=None, strict=True):
+def compiled_job(document, lsn=None, strict=True, runs=None):
     """The job the plan hashes, with every position the record holds at `lsn` written at its net
     and every declared observation filled. Unchanged where no home is configured.
 
@@ -563,11 +563,20 @@ def compiled_job(document, lsn=None, strict=True):
     NOTHING AFTER THE BASE DATE is filled. A `fixing_observed` carries its date as text, so a print
     dated forward is a legal fact; writing one onto a monitoring row would price a barrier as
     already observed on a day that has not happened.
+
+    A collateralised netting set the record holds collateral under is written its BALANCE
+    (`_balances`) where the job is compiled for a run that reads one - `runs` the calculation it
+    runs as, the document's own where None. A base valuation runs no collateral recursion, so it is
+    written none and a settlement moves neither its plan nor what it caches; it still refuses a
+    balance its spots cannot cross, as every valuation does. `runs` False is a job that values
+    nothing - a diary's schedules - and reads no balance at all. The margin is never written, nor
+    a movement dated after the base date.
     """
     import copy
 
+    from .calculation import Base_Revaluation
     from .diary import index_named
-    from .schema import job_children
+    from .schema import job_children, walk_job_deals
 
     if not configured():
         return document
@@ -576,10 +585,17 @@ def compiled_job(document, lsn=None, strict=True):
     except ValueError:
         return document
     held = _nets(lsn, book_name(document))
-    if not held and not _observing(document):
+    balances = {} if runs is False else _balances(document, lsn)
+    if (runs or document['Calc']['Calculation'].get('Object')) == Base_Revaluation.calc_type:
+        balances = {}
+    if not held and not balances and not _observing(document):
         return document
     filled = copy.deepcopy(document)
     _hold(filled, held)
+    for _, node in walk_job_deals(filled):
+        deal = node['Instrument']['.Deal']
+        if deal.get('Object') == 'NettingCollateralSet' and deal.get('Reference') in balances:
+            deal['Opening_Balance'] = balances[deal['Reference']]
     observing = [(deal, terms, index_named(deal, terms)) for deal, terms in _observing(filled)]
     named = {index for _, _, index in observing if index}
     observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
@@ -610,6 +626,45 @@ def _nets(lsn=None, book=None):
             key = (row['instrument'], row['agreement'])
             nets[key] = nets.get(key, 0.0) + row['quantity']
     return nets
+
+
+def _balances(document, lsn=None):
+    """`{agreement: balance}` - the `Opening_Balance` of each collateralised netting set of
+    `document` the record holds collateral under at `lsn`: what it holds by the job's base date,
+    after haircuts (`collateral.valued`), in the set's `Balance_Currency`, every other asset
+    crossed at the job's own spots (`pnl.rates`). The `cash` fold is ADVANCED, and folded only
+    where such a set exists. A set holding an asset those spots cannot cross REFUSES by name, a
+    plan and a read alike: the book lacks that market, and nothing is valued on a zero."""
+    from .pnl import rates
+    from .schema import walk_job_deals
+
+    sets = {deal.get('Reference'): deal for deal in (
+        node['Instrument']['.Deal'] for _, node in walk_job_deals(document))
+        if deal.get('Object') == 'NettingCollateralSet' and deal.get('Collateralized') == 'True'}
+    if not sets:
+        return {}
+    spine = package()
+    cash = spine.projections.PROJECTORS['cash']
+    held = spine.collateral.held(folded(lambda log: cash.rows(advancing(log, cash, lsn))),
+                                 _base_day(document))
+    market = document['Calc'].get('MergeMarketData', {}).get('ExplicitMarketData') or {}
+    balances = {}
+    for agreement, terms in sets.items():
+        holding = held.get(agreement, spine.collateral.NOTHING)[spine.verbs.COLLATERAL]
+        dials = spine.collateral.csa(terms)
+        currency = dials['Balance_Currency']
+        fx = dict(rates(market.get('Price Factors') or {}, currency, market.get(
+            'System Parameters', {}).get('Base_Currency')), **{currency: 1.0})
+        uncrossed = sorted(asset for asset, amount in holding.items() if amount and asset not in fx)
+        if uncrossed:
+            raise SpineRefused(
+                'the record holds {} as collateral under {!r} and this book carries no spot for '
+                'it into {}, its Balance_Currency: a balance in an asset the book carries no spot '
+                'for is a market the book lacks; install the spot'.format(
+                    ', '.join(uncrossed), agreement, currency))
+        if holding:
+            balances[agreement] = spine.collateral.valued(holding, dials, fx)
+    return balances
 
 
 def _hold(document, nets):
@@ -1089,6 +1144,17 @@ def cash(lsn=None):
     """Every movement of money the record's settlements filed at `lsn`, under the settlement
     system's own reference - a restated one standing in place of the filing it corrects."""
     return _rows('cash', lsn)
+
+
+def cash_standing():
+    """`(lsn, rows)` - the head, and the `cash` fold's rows there ADVANCED from where this process
+    last folded it: what a collateral call reads on every ask."""
+    def read(log):
+        cash = package().projections.PROJECTORS['cash']
+        head = log.head()[0]
+        return head, cash.rows(advancing(log, cash, head))
+
+    return folded(read)
 
 
 def costs(lsn=None):
