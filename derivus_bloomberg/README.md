@@ -253,9 +253,9 @@ fix. What ships:
   vocabulary** — `overnight` or `fixings/<label>` — because unlike every other convention it is a
   *path*, and a path that names nothing does not fail, it aims somewhere else: `front: "strip/1Y"`
   would author the 1Y par swap as a one-day deposit and call it `overnight` in the Descriptor.
-- **`authoring` is the shape.** `OIS` writes a `StructuredDeal` over an OIS-compounded floating leg
-  and a fixed leg, **one float item per fixing window** — that is what makes the leg compound
-  geometrically rather than average, see the compounding note in `quote_sensitivities.md`. `Swap`
+- **`authoring` is the shape.** `OIS` writes a `StructuredDeal` over a floating leg and a fixed
+  leg, **one float item per fixing window**, the floating leg declaring `Compounding_Method` OIS —
+  the declaration is what compounds its fixings geometrically rather than averaging them. `Swap`
   writes a vanilla `SwapInterestDeal` and the engine generates its legs. Coupons roll **backward**
   from maturity, unadjusted: the deals carry no calendars, so the engine rolls nothing either.
 - **The OIS fixing windows partition the coupon**, which is what puts the two legs on one

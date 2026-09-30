@@ -2259,8 +2259,10 @@ class StructuredDealBreakClause(StructuredDeal):
 
 
 class DepositDeal(Deal):
-    """A money-market deposit. **Amount** is placed at **Effective_Date** and returned at
-    **Maturity_Date**, accruing over **Payment_Frequency** periods on **Accrual_Day_Count**.
+    """A money-market deposit. **Amount** is placed at **Effective_Date** and accrues over
+    **Payment_Frequency** periods on **Accrual_Day_Count**, each on the balance then outstanding:
+    an **Amortisation** step is repaid at the end of the period its date falls in, the day the
+    balance falls, and the balance left is repaid at **Maturity_Date**.
 
     The rate comes from **Interest_Rate_Schedule** (a date->rate `DateList` in percent) when that
     covers every accrual start, and is forecast off the **Interest_Rate** curve otherwise. A
@@ -2269,8 +2271,9 @@ class DepositDeal(Deal):
     Coverage is all-or-nothing rather than per-period, because the float path's known-rate override
     pins only resets BEFORE the reference date - the right reading for a seasoned floating deposit.
 
-    Principal is exchanged at both ends; the leading outflow drops out once the deposit has started.
-    Flows discount on **Discount_Rate**, defaulting to the currency's own curve.
+    The amount lent is an outflow at the start that drops out once the deposit has started, and
+    comes back as the steps and the final balance. Flows discount on **Discount_Rate**, defaulting
+    to the currency's own curve.
     """
     vernacular = 'deposit, money-market deposit, placement'
     observes = Observes('Interest_Rate', 'InterestRate')
@@ -2304,13 +2307,15 @@ class DepositDeal(Deal):
                      'Interest_Rate': ['InterestRate']}
 
     documentation = ('Interest Rates', [
-        'A deposit pays interest on a single notional and redeems it at maturity:',
+        'A deposit pays interest on its balance, repays each **Amortisation** step at the end of',
+        'the period it falls in and the balance left at maturity:',
         '',
-        '$$V(t)=\\sum_i \\delta_i N_i r_i D(t,T_i) + N D(t,T_N)$$',
+        '$$V(t)=\\sum_i \\delta_i N_i r_i D(t,T_i) + \\sum_i (N_i - N_{i+1}) D(t,T_i)$$',
         '',
-        'where $r_i$ is the accrual rate for period $i$ - read from **Interest_Rate_Schedule**',
-        'when that pins the period, otherwise forecast from **Interest_Rate** - and $D(t,T)$ is the',
-        'discount factor from **Discount_Rate**.',
+        'where $N_i$ is the balance accruing over period $i$, $N_{n+1}=0$, $r_i$ is the accrual',
+        'rate for period $i$ - read from **Interest_Rate_Schedule** when that pins the period,',
+        'otherwise forecast from **Interest_Rate** - and $D(t,T)$ is the discount factor from',
+        '**Discount_Rate**.',
     ])
 
     def __init__(self, params, valuation_options):
@@ -2361,8 +2366,12 @@ class DepositDeal(Deal):
                 schedule, self.field['Interest_Frequency'], self.field['Payment_Frequency'], daycount, 0.0)
             field_index['Model'] = pricing.pricer_float_cashflows
 
+        # each period repays the step its successor's balance is smaller by, the last period the
+        # balance then outstanding; `add_fixed_payments` places the amount lent
+        nominal = cashflows.schedule[:, utils.CASHFLOW_INDEX_Nominal]
+        cashflows.schedule[:, utils.CASHFLOW_INDEX_FixedAmt] = nominal - np.append(nominal[1:], 0.0)
         cashflows.add_fixed_payments(
-            base_date, 'Start_Maturity', self.field['Effective_Date'],
+            base_date, 'Start', self.field['Effective_Date'],
             self.field['Accrual_Day_Count'], self.field['Amount'])
 
         field_index['Cashflows'] = cashflows
@@ -2495,6 +2504,9 @@ class SwapInterestDeal(Deal):
                 utils.DayCount.code(self.field['Pay_Day_Count']), self.field['Floating_Margin'] / 10000.0)
 
         field_index['CompoundingMethod'] = self.field.get('Compounding_Method', 'None')
+        # read where a coupon owns several resets, which its Compounding_Method folds: None
+        # averages them at generate_float's 1/n, OIS compounds them, and the others refuse
+        field_index['AveragingMethod'] = 'Average_Rate'
         field_index['InterestYieldVol'] = np.zeros(1, dtype=np.int32)
 
         return field_index
@@ -2750,14 +2762,15 @@ class CFFloatingInterestListDeal(Deal):
             '`Digital_Spread` in rate either side of the strike, each leg reading the cap surface',
             'at its own strike, so the smile is picked up automatically.',
             '',
-            'On an aggregated leg (several resets per cashflow), **Averaging_Method** picks the',
-            'cap convention: `Pre_Aggregation` prices every reset as its own optionlet at its own',
-            'expiry and accrual before summing back to the period (cap-then-compound - the daily',
-            'capped RFR shape, and with a digital payoff a range accrual), while',
-            '`Post_Aggregation` compounds first and prices one option on the period rate, vol',
-            'read at the period end with the averaging-decay Black time (integrated exactly when',
-            'the valuation date sits inside the period). Any other value compounds and prices at',
-            'the reset-start expiry.'])
+            'On an aggregated leg (several resets per cashflow), **Compounding_Method** folds the',
+            'resets to the period rate - `None` averages them, `OIS` compounds them, and the other',
+            'methods refuse by name - and **Averaging_Method** picks the cap convention:',
+            '`Pre_Aggregation` prices every reset as its own optionlet at its own expiry and',
+            'accrual before summing back to the period (the daily capped RFR shape, and with a',
+            'digital payoff a range accrual), while `Post_Aggregation` folds first and prices one',
+            'option on the period rate, vol read at the period end with the averaging-decay Black',
+            'time (integrated exactly when the valuation date sits inside the period). Any other',
+            'value folds and prices at the reset-start expiry.'])
 
     def __init__(self, params, valuation_options):
         super(CFFloatingInterestListDeal, self).__init__(params, valuation_options)
@@ -2948,6 +2961,7 @@ class YieldInflationCashflowListDeal(Deal):
 class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
+    observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, own('CapDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -3001,10 +3015,11 @@ class CapDeal(Deal):
         self.isQuanto = None
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # have to reset the original instrument and let the child node decide
-        super(CapDeal, self).reset()
-        for currency, dates in node_settlements.items():
-            self.add_reval_dates(dates, currency)
+        # a cap on its optionlet list takes the list's dates; stated by its terms it keeps its own
+        if node_children is not None:
+            super(CapDeal, self).reset()
+            for currency, dates in node_settlements.items():
+                self.add_reval_dates(dates, currency)
         return super(CapDeal, self).finalize_dates(
             parser, base_date, grid, node_children, node_resets, node_settlements)
 
@@ -3053,13 +3068,21 @@ class CapDeal(Deal):
                 (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                 Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
                 utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Cap_Rate'] / 100.0)
+            field_index.update(
+                SettleCurrency=self.field['Currency'], CompoundingMethod='None',
+                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_cap,
+                Digital_Spread=self.options.get('Digital_Spread', 0.0))
 
         return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        return pricing.pv_float_leg(shared, time_grid, deal_data)
 
 
 class FloorDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate floor, floor, floorlets'
+    observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -3113,10 +3136,11 @@ class FloorDeal(Deal):
         self.isQuanto = None
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # have to reset the original instrument and let the child node decide
-        super(FloorDeal, self).reset()
-        for currency, dates in node_settlements.items():
-            self.add_reval_dates(dates, currency)
+        # a floor on its optionlet list takes the list's dates; stated by its terms it keeps its own
+        if node_children is not None:
+            super(FloorDeal, self).reset()
+            for currency, dates in node_settlements.items():
+                self.add_reval_dates(dates, currency)
         return super(FloorDeal, self).finalize_dates(
             parser, base_date, grid, node_children, node_resets, node_settlements)
 
@@ -3165,8 +3189,15 @@ class FloorDeal(Deal):
                 (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                 Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
                 utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Floor_Rate'] / 100.0)
+            field_index.update(
+                SettleCurrency=self.field['Currency'], CompoundingMethod='None',
+                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_floor,
+                Digital_Spread=self.options.get('Digital_Spread', 0.0))
 
         return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        return pricing.pv_float_leg(shared, time_grid, deal_data)
 
 
 class SwaptionDeal(Deal):
@@ -6904,9 +6935,13 @@ class DealDefaultSwap(Deal):
                       'Assuming the default payment does not occur prior to the effective date of the swap, the',
                       'value of this deal at $t$ is',
                       '',
-                      '$$\\sum_{i=1}^n P_i(1-R)V_i(t)-\\sum_{i=1}^n P_i c\\alpha_i D(t,T_i)S(t,t_i)$$',
+                      '$$\\sum_{i=1}^n P_i(1-R)V_i(t)-\\sum_{i=1}^n P_i c\\alpha_i D(t,T_i)S(t,t_i)'
+                      '-UPD(t,T_u)$$',
                       '',
-                      'where $c$ is the fixed payment rate, $\\alpha_i$ is the day count accrual applicable and',
+                      'where $c$ is the fixed payment rate, $U$ the **Upfront** as a fraction of $P$, paid by',
+                      'the protection buyer on $T_u$ - **Upfront_Date**, the effective date where none is',
+                      'stated - and counted while $t\\le T_u$ whatever the name does, $\\alpha_i$ is the day',
+                      'count accrual applicable and',
                       '',
                       '$$V_i(t)=\\frac{\\bar h_i}{f_i+\\bar h_i}\\Big((D(t,\\tilde t_{i-1})S(t,\\tilde t_{i-1})-D(t,\\tilde t_i)S(t,\\tilde t_i)\\Big)$$',
                       '',
@@ -6957,6 +6992,16 @@ class DealDefaultSwap(Deal):
                     self.field['Pay_Frequency'], bus_day=bus_day)
 
         self.add_reval_dates(self.resetdates, self.field['Currency'])
+        # the upfront is paid on its own day, the premium leg's effective date where none is stated
+        self.upfront_day = self.field['Upfront_Date'] or self.field['Effective_Date']
+        if self.upfront():
+            self.add_reval_dates({self.upfront_day}, self.field['Currency'])
+
+    def upfront(self):
+        """The stated upfront as a fraction of the notional, a bare number read as a percent as the
+        coupon's is."""
+        stated = self.field['Upfront'] or 0.0
+        return stated / 100.0 if isinstance(stated, (int, float)) else stated.amount
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -6978,13 +7023,21 @@ class DealDefaultSwap(Deal):
 
         pay_rate = self.field['Pay_Rate'] / 100.0 if isinstance(
             self.field['Pay_Rate'], float) else self.field['Pay_Rate'].amount
+        nominal = (1 if self.field['Buy_Sell'] == 'Buy' else -1) * self.field['Principal']
+        daycount = utils.DayCount.code(self.field['Accrual_Day_Count'])
 
         field_index['Cashflows'] = utils.TensorCashFlows.generate_fixed(
-            base_date, self.resetdates, (1 if self.field['Buy_Sell'] == 'Buy' else -1) * self.field['Principal'],
-            self.field['Amortisation'], utils.DayCount.code(self.field['Accrual_Day_Count']), pay_rate)
+            base_date, self.resetdates, nominal, self.field['Amortisation'], daycount, pay_rate)
 
         # include the maturity date in the daycount
-        field_index['Cashflows'].add_maturity_accrual(base_date, utils.DayCount.code(self.field['Accrual_Day_Count']))
+        field_index['Cashflows'].add_maturity_accrual(base_date, daycount)
+
+        # a positive upfront is paid by the protection buyer; one behind the base date is paid
+        upfront = self.upfront()
+        if upfront and self.upfront_day >= base_date:
+            field_index['Upfront'] = utils.TensorCashFlows([utils.TensorCashFlows.make_cashflow(
+                base_date, self.upfront_day, self.upfront_day, self.upfront_day, 0.0, daycount,
+                -upfront * nominal, 0.0)], np.zeros((1, 3)))
 
         return field_index
 

@@ -800,8 +800,7 @@ def _swap(reference, currency, curve, effective, maturity, conventions):
     and for an overnight benchmark it is the compounded rate over the coupon, which at t0 is what
     the daily fixing list prices: the compounded forwards read off a curve telescope to the period
     forward. So `Compounding` OIS is a `Compounding_Method` on this deal and not a cashflow list of
-    one item per business day, which is two orders of magnitude of JSON for the same number and
-    prices NaN when a coupon spans several resets.
+    one item per business day, which is two orders of magnitude of JSON for the same number.
 
     `Swap_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`:
     `QUOTE_WRITERS['SwapInterestDeal']` writes it, so a re-tick moves the value plane alone.

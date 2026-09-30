@@ -124,8 +124,7 @@ def ois_swap(ref, currency, curve, months, quote, day_count='ACT_360'):
     The floating leg is a `CFFloatingInterestListDeal` with `Compounding_Method='OIS'` and ONE
     cashflow item per fixing, all sharing their coupon's payment date:
     `compress_no_compounding(groupsize=-1)` merges a payment date's items into one cashflow carrying
-    all their resets at `Weight` 1, and only then does `pv_float_cashflow_list` compound them
-    geometrically. A leg whose resets arrive weighted `1/n` compounds at `1/n` of the rate.
+    all their resets, which `pv_float_cashflow_list` compounds geometrically.
 
     Fixings are on business days, each accruing to the next so the daily windows tile the coupon
     exactly - the COUPON'S OWN START is a window boundary whatever weekday it falls on, or a coupon

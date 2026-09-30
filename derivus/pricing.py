@@ -5411,15 +5411,17 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
     every cashflow row carries exactly ONE effective reset, so a row is a rate and an accrual.
 
-    Three reductions restore that form, each living somewhere different:
+    Two reductions restore that form:
 
-    - **Averaging** happens at COMPILE. `TensorCashFlows.float` writes `Weight = 1/n` on each of a
-      row's `n` resets and `get_simulated_resets` applies `Weight / Accrual`, so several fixings
-      arrive as one already-averaged rate. The weight is baked in and must never reach a path that
-      compounds - a `1/n` weighted reset compounds at `1/n` of its rate.
-    - **OIS** happens HERE, and the switch is a SHAPE difference:
-      `all_resets.shape[1] != reset_cashflows.np.shape[0]` means a row owns several resets, which
-      `segment_reduce` compounds geometrically back to one rate per row.
+    - **Several resets on one row** fold HERE, by what the leg DECLARES. A row's `n` resets carry
+      `Weight = 1/n` - a generated term leg's and an authored item's alike - and an OIS fixing
+      list, one item per fixing merged by `compress_no_compounding`, carries each at one. A
+      forecast reset arrives multiplied by its weight (`get_simulated_resets` applies
+      `Weight / Accrual`) and a fixed one as its rate, so each forecast one is divided by its
+      weight to read back as its rate. `Compounding_Method: 'OIS'` compounds the rates
+      geometrically and `None` sums them at their weights - the average. `Flat`,
+      `Include_Margin` and `Exclude_Margin` compound across rows in the fold below and have no
+      arithmetic for the fixings inside one, and `Exponential` has none at all: those refuse.
     - **Method compounding** is the ordered ragged fold at the end, on a different axis: several
       cashflow ROWS sharing one payment date, each already canonical, accumulated in order with the
       margin placed by convention.
@@ -5543,21 +5545,44 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
             needs_aggregation = all_resets.shape[1] != reset_cashflows.np.shape[0]
             if needs_aggregation:
-                # OIS: a row owning several resets is the SHAPE the compile side produces on
-                # purpose - see docs_src/developer/quote_sensitivities.md#curve-contracts
+                method = factor_dep['CompoundingMethod']
+                if method not in ('None', 'OIS'):
+                    fields = deal_data.Instrument.field
+                    folds = method != 'Exponential'
+                    raise utils.UnpriceableSchedule(
+                        '{}: Compounding_Method {} on a leg whose cashflows each carry several '
+                        'resets. {} Declare None, which averages the fixings, or OIS, which '
+                        'compounds them{}'.format(
+                            fields.get('Reference'), method,
+                            'It compounds the cashflows sharing a payment date and has no '
+                            'arithmetic for the fixings inside one.' if folds else
+                            'Exponential has no arithmetic in the floating fold.',
+                            ', or author each fixing as its own cashflow on the shared payment date'
+                            if folds and fields.get('Object') == 'CFFloatingInterestListDeal'
+                            else ''))
                 reset_per_cashflows = factor_dep['Cashflows'].offsets[start_index[index]:, 0]
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # aligns with all_resets[1]
+                weight = reset_block.tn[:, utils.RESET_INDEX_Weight]
+                # each reset read back as its rate: a forecast one arrives weighted, a fixed one not
+                known = torch.as_tensor(reset_block.np[:, utils.RESET_INDEX_Reset_Day] < 0,
+                                        device=shared.one.device)
+                all_resets = all_resets / torch.where(known, 1.0, weight).view(1, -1, 1)
                 reset_split = torch.as_tensor(
                     reset_per_cashflows[reset_per_cashflows > 0], device=shared.one.device, dtype=torch.long)
                 lengths = reset_split.unsqueeze(0).expand(all_resets.shape[0], -1)
+                # Pre_Aggregation keeps the resets apart for the daily pricer below, which caps each
+                # BEFORE aggregating
                 if factor_dep['AveragingMethod'] != 'Pre_Aggregation':
-                    # compound the resets into one rate per cashflow; Pre_Aggregation keeps them
-                    # separate for the daily pricer below, which caps each BEFORE aggregating.
-                    # Without log1p/expm1 this is an average rate rather than a compound
-                    log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
-                    sum_log = torch.segment_reduce(log_rt, reduce="sum", lengths=lengths, axis=1)
-                    sum_acc = torch.segment_reduce(accrual, reduce="sum", lengths=reset_split, axis=0)
-                    all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
+                    if method == 'OIS':
+                        log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
+                        sum_log = torch.segment_reduce(
+                            log_rt, reduce="sum", lengths=lengths, axis=1)
+                        sum_acc = torch.segment_reduce(
+                            accrual, reduce="sum", lengths=reset_split, axis=0)
+                        all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
+                    else:
+                        all_resets = torch.segment_reduce(all_resets * weight.view(1, -1, 1),
+                                                          reduce="sum", lengths=lengths, axis=1)
 
             if cashflow_pricer in [pricer_cap, pricer_floor]:
                 # the vol surface's tenor axis: averaged because the cashflows are meant to share
@@ -6149,12 +6174,14 @@ def pv_average_price_swap(shared, time_grid, deal_data):
 def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
     """A single-name CDS: the premium leg survival-weighted (with an accrued-on-default adjustment
     where `Accrue_Fee` is set) against the protection leg on each period's marginal default
-    probability. `return_par_spread` answers the breakeven spread instead of the value."""
+    probability, and an `Upfront` schedule's one payment, discounted while it is due and paid
+    whatever the name does. `return_par_spread` answers the breakeven running spread instead."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
+    upfront = factor_dep.get('Upfront')
 
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     surv = utils.calc_time_grid_curve_rate(factor_dep['Name'], deal_time, shared)
@@ -6201,8 +6228,19 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
             cash_settle(shared, factor_dep['SettleCurrency'],
                         np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), premium[0, 0, 0])
             value = torch.sum(pv_credit + pv_premium, dim=1)
+            if upfront is not None:
+                until = upfront.schedule[0, utils.CASHFLOW_INDEX_Pay_Day] - time_block
+                value = value + upfront.dual().tn[0, utils.CASHFLOW_INDEX_FixedAmt] * torch.squeeze(
+                    utils.calc_discount_rate(
+                        discount_block, until.clip(min=0).reshape(-1, 1), shared),
+                    dim=1) * value.new_tensor(until >= 0).reshape(-1, 1)
 
         mtm_list.append(value)
+
+    if upfront is not None and not return_par_spread:
+        cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
+            time_grid.mtm_time_grid, upfront.schedule[0, utils.CASHFLOW_INDEX_Pay_Day]),
+            upfront.dual().tn[0, utils.CASHFLOW_INDEX_FixedAmt])
 
     return torch.cat(mtm_list, dim=0)
 

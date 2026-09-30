@@ -199,14 +199,20 @@ is recorded so a reader knows which readings rest on it.
   while three older spot models cast theirs to single. Inert while the hedge Monte Carlo runs in
   single precision whatever the job says; a double-precision hedge solve would hand the critic one
   double block among single ones.
-- **A floating leg with several resets per coupon does not price** (2026-09-18). A term swap whose
-  index tenor is shorter than its coupon — a semi-annual leg on a 3M index, a quarterly leg on a
-  1M or 1W index, a daily leg — generates its resets at weight one over n, the shape the list
-  pricer reads as OIS compounding, and the deal marks NaN under a base valuation; a cashflow list
-  hand-authored in that shape, one item per coupon carrying every fixing's reset, pays one over n
-  of the interest, 289.08 against 76,967.94 on a two-year annual leg of 266 fixings. One reset
-  spanning each coupon, the par swap's default, is exact, and [Quote
-  Sensitivities](quote_sensitivities.md#curve-contracts) carries the readings.
+- **Four compounding methods refuse a leg with several resets per coupon** (2026-09-30). `Flat`,
+  `Include_Margin`, `Exclude_Margin` and `Exponential` compile the same schedule the averaging leg
+  does, its resets at one over n, so their arithmetic is not there: where they paid one over n of
+  the interest they refuse by name. `OIS` compounds and `None` averages. Size: the fold of each in
+  `pv_float_cashflow_list`, a branch apiece.
+- **A cap or a floor stated by its terms reads eight of its conventions not at all** (2026-09-30).
+  `Reset_Type` in `Arrears` or `Advance`, `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`,
+  `Index_Offset`, the calendars and `First_Coupon_Date` each leave the mark at 6,016.17 on the
+  trial cap, where its list form reads them. UNMEASURED beyond that they move nothing; the caplet
+  schedule the terms compile is where each is read.
+- **The diary shows a CDS premium with the sign the engine's cash does not** (2026-09-30). The
+  buyer's premium reads +25,205.48 a quarter on the diary row, +500,547.95 over the trial CDS's
+  life, where the credit Monte Carlo books the negative; the upfront row agrees with the engine. A
+  P&L over a premium day counts it the wrong way.
 - **A solved zero-cost strike moved between two landings of 2026-09-06 on documents that carry no
   LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
   Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree
@@ -228,12 +234,10 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
-- **Eleven declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26,
+- **Nine declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26,
   2026-09-30). `DealDefaultSwap`'s `Is_Digital` and `Digital_Recovery` select a branch that was
-  never wired; its `Upfront` is a real payment no pricer discounts; `Rate_Currency` on
-  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path;
-  `Averaging_Method` on `CapDeal`/`FloorDeal` is declared `Average_Rate` while the only reader in
-  the tree is a cashflow LIST's own container key, falling back to `None` on another class; a
+  never wired; `Rate_Currency` on
+  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path; a
   floating cashflow list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads
   where the fixed list's does; `CommodityForwardDeal`'s `Payoff_Type` and `Payoff_Currency`, on a
   forward declaring no strike, whose mark is the commodity delivered - `Units x F x D` - with
@@ -244,9 +248,6 @@ is recorded so a reader knows which readings rest on it.
   the opposite failure to the one the convention/placeholder split closes: UNMEASURED, because
   there is no reading to compare against. Each is either wired to the branch it names or deleted
   with the branch.
-- **A deposit's amortisation comes back at maturity** (2026-09-26). An amortising `DepositDeal`
-  accrues on the reduced balance and repays its full `Amount` at maturity, so no step's principal is
-  paid on its own date. UNMEASURED against an oracle; the mark stays linear in the position.
 - **The nth-to-default basket has no sensitivities** (2026-09-26). `Greeks: First` raises autograd's
   in-place error on the recurrence in `expected_rate_gaussian_copula`. Read from the code alone, a
   simulated row also scales each name's hazard by the index's cumulative hazard at the FIRST row's
@@ -331,12 +332,6 @@ is recorded so a reader knows which readings rest on it.
   `Stationarity_Tol` - returns the whole book's risk in factor space with the refusal named.
   UNMEASURED on a desk book; a two-trade FX book reads in 5.1 s, its three blocks' refit
   included. The remedy for the second is a retry with the refusing block's switch off.
-- **A cap or a floor stated by its terms alone does not price** (2026-09-26). A `CapDeal` or
-  `FloorDeal` carrying its optionlet list prices the list - its `post_process` sums its children,
-  and a position sizes the list - but stated by its terms alone it is skipped, `generate` not
-  implemented, and marks NaN; the schedule its own compile builds is a floating leg carrying the cap
-  rate as its margin rather than as a strike. Closing it is the generator the design names: the
-  optionlet list generated from the terms at compile by the function the authoring step uses.
 - **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
   the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
   where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is
@@ -489,8 +484,8 @@ is recorded so a reader knows which readings rest on it.
 - **Twelve types announce fixings that name no index** (2026-09-30). A fixing row is answered by
   a print filed under the index it names, which a type declares as `observes`; a row naming none
   is answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no
-  close, no marks and no P&L. The swap, the floating list, the FRA and the deposit declare
-  theirs, and read a reset the record has printed off the curve until their known-rate tables are
+  close, no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the
+  deposit declare theirs, and read a reset the record has printed off the curve until their known-rate tables are
   filled from the record at compile as an observation table is - a day's move on one reset. A
   blank index field, which the compile resolves to the currency's curve, still announces its
   fixings under none. Undeclared: the FX accumulator, TARF, extendable forward and both Asians,
@@ -742,9 +737,9 @@ every risk-neutral calibration inherits.
 - Inline comment density: about twelve blocks of 4–11 comment lines from the boundary-correction
   work (the discrete barrier's hit-mask and rebate blocks, the observed-spot walk's terminal
   digital, the net-from-gross helper); house style is 2–3 lines.
-- `pv_float_cashflow_list` selects the compounded-in-arrears path by comparing reset count to
-  cashflow count — a shape encoding of intent that an explicit signal on the compiled cashflow
-  object would replace.
+- `pv_float_cashflow_list` learns that a coupon's resets fold from their count against the
+  cashflows' — a shape — and which fold from the leg's declared compounding; the count is the one
+  signal left that an explicit mark on the compiled cashflows would replace.
 
 ## What this list is for
 

@@ -21,6 +21,7 @@ residual reading another currency's curve and spot as constants, an ordering dep
 """
 import copy
 import logging
+import math
 import os
 import sys
 
@@ -31,6 +32,8 @@ import pandas as pd
 import pytest
 import torch
 
+import test_declared_defaults as book
+import trial_rates
 from derivus import riskfactors, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
@@ -549,10 +552,6 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
     world's own sloped curve the 5Y reads -355.506266991 both ways and the 10Y 2012.027439223. The
     largest disagreement over the eight readings is 6.4e-10, which is the float64 noise of summing
     2612 items rather than a difference.
-
-    The shape that does NOT work is the one in between: a list authored one item per COUPON, each
-    carrying every fixing's reset, which is what the engine's own leg generation produces and which
-    `pv_float_cashflow_list` averages at 1/n.
     """
     _, price_factors, _ = authored_world('usd')
     flat = dict(price_factors)
@@ -970,3 +969,134 @@ def test_a_swap_rolls_the_coupons_it_generates_on_its_payment_calendar():
     moved = utils.adjust_date(business, True, coupon)
     assert moved in rolled.paydates and moved in rolled.recdates
     assert len(rolled.paydates) == len(plain.paydates)
+
+
+def discount(day, rate=0.04):
+    """The declared-defaults world's flat curves by hand: USD 4%, USD-PROJ 4.5%, ACT/365."""
+    return math.exp(-rate * (day - BASE).days / 365.0)
+
+
+def test_an_amortising_deposit_repays_each_step_on_the_day_its_balance_steps_down():
+    """The trial's two amortising deposits: a million lent today for two years in 6M periods, 4.2%
+    ACT/360 pinned or forecast off USD-PROJ, 250,000 amortised on the 18-month date. By hand, with
+    balances N = (1e6, 1e6, 1e6, 750,000) over the period ends T_1..T_4,
+
+        V = -1,000,000 + sum_i N_i I_i D(T_i) + 250,000 D(T_3) + 750,000 D(T_4),
+
+    I_i being 0.042 a_i pinned and P(T_{i-1}) / P(T_i) - 1 forecast. The control beside them is the
+    declared-defaults book's bullet, a million for six months at 4.2%, which repays its whole
+    balance with its one coupon: -1,000,000 + 1,000,000 (1 + 0.042 a) D(T).
+
+    KILLING MUTATION: no step written and `add_fixed_payments` back on `Start_Maturity`, the whole
+    Amount in the last row: the pinned deposit reads -745.76 against 3,902.87.
+    """
+    dates = [BASE + pd.DateOffset(months=6 * k) for k in range(5)]
+    balances = [1e6, 1e6, 1e6, 750_000.0]
+    principal = -1e6 + 250_000.0 * discount(dates[3]) + 750_000.0 * discount(dates[4])
+    pinned = principal + sum(n * 0.042 * (e - s).days / 360.0 * discount(e)
+                             for n, s, e in zip(balances, dates, dates[1:]))
+    forecast = principal + sum(n * (discount(s, 0.045) / discount(e, 0.045) - 1.0) * discount(e)
+                               for n, s, e in zip(balances, dates, dates[1:]))
+    floating = next(deal for deal in trial_rates.DEALS if deal['Reference'] == 'DEPO_AMORT_FLOAT')
+    bullet = next(deal for deal in book.BOOK if deal['Reference'] == 'DEPO')
+    marks, _ = book.marks([trial_rates.DEPOSIT, floating, bullet])
+    assert float.fromhex(marks['DEPO_AMORT']) == pytest.approx(pinned, rel=1e-12)
+    assert float.fromhex(marks['DEPO_AMORT_FLOAT']) == pytest.approx(forecast, rel=1e-12)
+    assert float.fromhex(marks['DEPO']) == pytest.approx(
+        -1e6 + 1e6 * (1.0 + 0.042 * (dates[1] - BASE).days / 360.0) * discount(dates[1]), rel=1e-12)
+
+
+def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them():
+    """A two-year swap receiving 6M coupons on a 3M index, a million a side, paying 4.5% ACT/360
+    annually, and the same floating leg as a list of one item per coupon carrying both resets. By
+    hand, F(s, e) the simple ACT/360 forward off USD-PROJ and a the coupon's ACT/360 accrual:
+
+        averaged:    sum_k 1e6 (F(s_k, m_k) + F(m_k, e_k)) / 2  a_k D(e_k)
+        compounded:  sum_k 1e6 (P(s_k) / P(e_k) - 1) D(e_k)
+
+    the swap adding its fixed leg. `None` averages - 164.33 and the list 86,228.29 - and `OIS`
+    compounds, which telescopes to the one-reset swap's 652.82. Seasoned three months, its first
+    fixing known at 4%, the swap's first coupon averages that fixing with the forecast one. Every
+    other method refuses by name in its own words - Exponential having no fold at all - and only an
+    authored list is told to author each fixing as its own cashflow, a generated leg having no
+    item to author. Under a credit Monte Carlo with no volatility every path is
+    today's curve, so the averaged swap's value on each date of its profile is its flows still to
+    pay, off today's forwards, discounted to that date - a fixing taken since the base date read
+    back at its weight as a forecast one is.
+
+    KILLING MUTATIONS: the fold keyed on the shape again, every such row compounded
+    (`method == 'OIS'` read as `True`): the averaged swap reads 652.82 against 164.33. And a
+    fixing counted `known` by the valuation slice rather than the base date
+    (`Reset_Day < time_slice.max()`): every base valuation holds, and the Monte Carlo misprices
+    every coupon from its first fixing on.
+    """
+    def forward(start, end):
+        return (discount(start, 0.045) / discount(end, 0.045) - 1.0) / ((end - start).days / 360.0)
+
+    def legs(start, known=None):
+        """The averaged and the compounded floating flows and the fixed ones, `(pay day, amount)`."""
+        averaged, compounded = [], []
+        for k in range(4):
+            begin, end = (start + pd.DateOffset(months=6 * k),
+                          start + pd.DateOffset(months=6 * k + 6))
+            mid = begin + pd.DateOffset(months=3)
+            first = known if begin < BASE else forward(begin, mid)
+            averaged.append((end, 1e6 * (first + forward(mid, end)) / 2 * (end - begin).days / 360.0))
+            compounded.append((end, 1e6 * (discount(begin, 0.045) / discount(end, 0.045) - 1.0)))
+        fixed = [(end, -1e6 * 0.045 * (end - begin).days / 360.0) for begin, end in (
+            (start, start + pd.DateOffset(years=1)),
+            (start + pd.DateOffset(years=1), start + pd.DateOffset(years=2)))]
+        return averaged, compounded, fixed
+
+    def value(flows, at=BASE):
+        """The flows still to pay on `at`, discounted to it."""
+        return sum(amount * discount(day) / discount(at) for day, amount in flows if day >= at)
+
+    swap = dict(par_swap('SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.5, fixed_frequency=12,
+                         float_frequency=6), Index_Tenor=pd.DateOffset(months=3))
+    items = []
+    for begin, end in ((BASE + pd.DateOffset(months=6 * k), BASE + pd.DateOffset(months=6 * k + 6))
+                       for k in range(4)):
+        mid = begin + pd.DateOffset(months=3)
+        items.append({
+            'Payment_Date': end, 'Notional': 1e6, 'Accrual_Start_Date': begin,
+            'Accrual_End_Date': end, 'Accrual_Day_Count': 'ACT_360',
+            'Accrual_Year_Fraction': (end - begin).days / 360.0, 'Resets': [
+                [s, s, e, (e - s).days / 360.0, pd.DateOffset(days=1), 'ACT_360', '0D', 0.0, 'No',
+                 utils.Percent(0.0)] for s, e in ((begin, mid), (mid, end))],
+            'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
+            'Known_FX_Rate': 0.0})
+    seasoned = BASE - pd.DateOffset(months=3)
+    marks, _ = book.marks([
+        swap, dict(swap, Reference='OIS', Compounding_Method='OIS'),
+        trial_rates.float_list('LIST', 'Buy', items),
+        dict(swap, Reference='SEASONED', Effective_Date=seasoned,
+             Maturity_Date=seasoned + pd.DateOffset(years=2),
+             Known_Rates=utils.DateList({seasoned: 4.0}))])
+
+    averaged, compounded, fixed = legs(BASE)
+    assert float.fromhex(marks['SWAP']) == pytest.approx(value(averaged + fixed), rel=1e-12)
+    assert float.fromhex(marks['OIS']) == pytest.approx(value(compounded + fixed), rel=1e-12)
+    assert float.fromhex(marks['LIST']) == pytest.approx(value(averaged), rel=1e-12)
+    averaged_seasoned, _, fixed_seasoned = legs(seasoned, known=0.04)
+    assert float.fromhex(marks['SEASONED']) == pytest.approx(
+        value(averaged_seasoned + fixed_seasoned), rel=1e-12)
+    for method in ('Flat', 'Include_Margin', 'Exclude_Margin', 'Exponential'):
+        with pytest.raises(utils.UnpriceableSchedule,
+                           match='Compounding_Method ' + method) as refused:
+            book.marks([dict(swap, Compounding_Method=method)])
+        assert ('Exponential has no arithmetic' in str(refused.value)) == (method == 'Exponential')
+        assert 'own cashflow' not in str(refused.value), 'a generated leg has no item to author'
+    listed = trial_rates.float_list('LISTED', 'Buy', items)
+    listed['Cashflows']['Compounding_Method'] = 'Flat'
+    with pytest.raises(utils.UnpriceableSchedule, match='each fixing as its own cashflow'):
+        book.marks([listed])
+
+    calc, _ = book.simulated([swap], ('USD', 'USD-PROJ'), sigma=0.0, prec=torch.float64,
+                             Generate_Cashflows='No')
+    profile = next(deal.Calc_res['Value'][0] for deal in calc.netting_sets.deals()
+                   if deal.Instrument.field['Reference'] == 'SWAP')
+    read = [BASE + pd.Timedelta(days=int(day)) for day in calc.time_grid.mtm_time_grid[:len(profile)]]
+    assert {BASE + pd.DateOffset(months=3 * k) for k in range(9)} <= set(read)
+    for at, paths in zip(read, profile):
+        assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at

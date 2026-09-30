@@ -76,10 +76,9 @@ EXTRA = [
 ]
 
 #: The declared-defaults book less what holds no position of its own - a netting set, whose CASHFLOW
-#: LIST is held here in its place, and a cap stated by its terms alone, which no pricer values - with
-#: the types above beside it.
+#: LIST is held here in its place - with the types above beside it.
 CORE = SimpleNamespace(
-    DEALS=[deal for deal in book.BOOK if deal['Object'] not in ('NettingCollateralSet', 'CapDeal')] + [
+    DEALS=[deal for deal in book.BOOK if deal['Object'] != 'NettingCollateralSet'] + [
         leg for deal in book.BOOK if deal['Object'] == 'NettingCollateralSet'
         for leg in deal['Children']] + EXTRA,
     FACTORS={}, CONFIGURATION={},

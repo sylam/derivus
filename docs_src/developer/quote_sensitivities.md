@@ -149,13 +149,16 @@ The knot rule complies where the quotes do, and says so where they do not: a ben
 cashflow is on or before the base date refuses by name as its block is seeded, naming the quote, that
 date and the two remedies — hold it out with `Use`, or move the base date.
 
-**The compounding leg is a compile-time SHAPE, not a pricer branch.** `pv_float_cashflow_list` routes
-an accrual period through geometric compounding when the reset count differs from the cashflow count
-(`all_resets.shape[1] != reset_cashflows.np.shape[0]`) — daily resets against quarterly cashflows, the
-reshape set up at `calculate_dependencies` by `compress_no_compounding(groupsize=-1)` under
-`Compounding_Method='OIS'`. The regular route's `Weight = 1/n` resets are the AVERAGING legs'
-arithmetic and must never reach the compounding path. **The shape-difference check is acknowledged
-tech debt** — it works, and it is subtle enough to be written down.
+**A coupon owning several resets is a compile-time SHAPE, and how they fold is the leg's own
+declaration.** `pv_float_cashflow_list` folds a row's resets into one rate when the reset count
+differs from the cashflow count (`all_resets.shape[1] != reset_cashflows.np.shape[0]`) — daily resets
+against quarterly cashflows, the reshape set up at `calculate_dependencies` by
+`compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`, or a term leg whose index
+tenor is shorter than its coupon, which `generate_float` writes at `Weight = 1/n`. Each reset is read
+back at its full rate, so `OIS` compounds its weight-one resets and `None` averages the term leg's;
+`Flat`, `Include_Margin`, `Exclude_Margin` and `Exponential` refuse by name on that shape, their
+arithmetic not being there. **The shape test is the one signal left** an explicit mark on the compiled
+cashflows would replace.
 
 **An OIS benchmark is nevertheless a TERM swap.** At t0 the compounded overnight forwards read off a
 curve telescope to the period forward, so a `SwapInterestDeal` with `Compounding_Method='OIS'` and
@@ -166,9 +169,9 @@ the daily fixing list prices. Measured at a 4% quote on a million of notional: o
 **2012.027439223**. The largest disagreement over those eight readings is 6.4e-10, the float64 noise
 of summing 2612 items. So the list is a **spelling**, two orders of magnitude of JSON for the same
 number, and the benchmark is authored as the term swap. What the list spelling still buys is a leg
-whose fixings are KNOWN rather than forecast; what nothing buys is the shape in between — a list
-authored one item per coupon, each carrying every fixing's reset, which is what the engine's own leg
-generation produces and which the regular route averages at `1/n`.
+whose fixings are KNOWN rather than forecast; the shape in between — a list authored one item per
+coupon carrying every fixing's reset, which is what the engine's own leg generation produces — averages
+them under `None` and compounds them under `OIS`.
 
 ## The IFT contract {#the-ift-contract}
 

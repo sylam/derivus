@@ -612,8 +612,7 @@ def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
     business-day fixing, because `pv_float_cashflow_list` compounds geometrically only where the
     reset count differs from the cashflow count. That spelling is retired: at t0 the compounded
     forwards read off a curve telescope to the period forward, so the term swap prices the same par
-    rate (`test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces` measures it), and a list
-    authored one item per COUPON - the shape a generated leg has - pays one over n of the interest.
+    rate (`test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces` measures it).
 
     THIS CANNED USD BLOCK IS 290,967 BYTES ON MAIN AND 4,470 HERE, the same three benchmarks with
     531 cashflow items gone; the shipped thirty-year strip was some 26,000 items and 14 MB.

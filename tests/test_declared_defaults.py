@@ -33,6 +33,7 @@ rather than against zero.
 import copy
 import glob
 import json
+import math
 import os
 import pickle
 import sys
@@ -645,14 +646,44 @@ def book(deals):
             'Valuation Configuration': {}, 'Price Factors': world()}}}}
 
 
-def marks(deals):
-    """`{reference: mark as hex}` for one document, and the statistics the run reported."""
+def marks(deals, factors=None):
+    """`{reference: mark as hex}` for one document, `factors` beside the world's, and the
+    statistics the run reported."""
+    job = book(deals)
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(factors or {})
     context = derivus.Context()
-    context.load_json((json.dumps(book(deals), cls=CustomJsonEncoder), 'defaults'))
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'defaults'))
     _, answer = context.run_job()
     frame = answer['Results']['mtm']
     return ({str(reference): float(value).hex() for reference, value
              in zip(frame['Reference'], frame['Value'])}, answer['Stats'])
+
+
+def simulated(deals, curves, factors=None, sigma=0.01, prec=None, **calculation):
+    """A credit Monte Carlo over `deals` held under one netting set, a Hull-White of volatility
+    `sigma` on each of `curves`, through the JSON contract and in the torch precision `prec` where
+    one is given: `(calculation, output)`."""
+    job = json.loads(json.dumps(book(deals), cls=CustomJsonEncoder))
+    calc = job['Calc']
+    calc['Calculation'] = dict(
+        Object='CreditMonteCarlo', Base_Date=calc['Calculation']['Base_Date'], Currency='USD',
+        Time_Grid='0d 3m(3m)', Batch_Size=256, Random_Seed=1, Deflation_Interest_Rate='USD',
+        DealLevel=True, **calculation)
+    calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
+    market = calc['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors'].update(json.loads(json.dumps(factors or {}, cls=CustomJsonEncoder)))
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'InterestRate': 'HullWhite1FactorInterestRateModel'}, 'modelfilters': {}}}
+    market['Price Models'] = {'HullWhite1FactorInterestRateModel.' + curve: {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.0]]}},
+        'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, sigma], [10.0, sigma]]}}}
+        for curve in curves}
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'simulated'))
+    return context.run_job() if prec is None else derivus.run_cmc(context.current_cfg, prec=prec)
 
 
 def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
@@ -663,9 +694,9 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
 
     Both documents are checked to have priced: a completion that failed leaves NO row, which is the
     failure this whole seam exists to end, so a missing reference fails before the hexes are read.
-    A cap and the swaption's own legs mark NaN by construction - `CapDeal` implements no `generate`
-    and a swaption's legs are priced by its `post_process` rather than on their own rows - so what
-    those three hold here is the COMPILE, which is where a missing field has always shown up.
+    The swaption's own legs mark NaN by construction - they are priced by its `post_process`
+    rather than on their own rows - so what those two hold here is the COMPILE, which is where a
+    missing field has always shown up.
     """
     def dropped(deal):
         return len(furnished(deal)) - len(stripped(deal)) + sum(
@@ -683,6 +714,52 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
                                       if lean_marks[key] != full_marks[key]]
     assert all(lean_marks[deal['Reference']] != float(0).hex() for deal in BOOK
                if deal['Object'] != 'NettingCollateralSet')
+
+
+def test_a_cap_stated_by_its_terms_prices_its_caplets():
+    """The book's cap - a million capped at 4.5% for two years, quarterly on USD-PROJ - and its
+    floor twin, stated by their terms alone. By hand, each optionlet Black on its simple ACT/365
+    forward off the flat 4.5% curve, 20% lognormal to its reset, paid on the USD discount:
+
+        V = sum_k 1e6 a_k D(e_k) Black(F_k, 4.5%, 0.20 sqrt(s_k))
+
+    6,016.17 capped and 5,528.87 floored. Under a credit Monte Carlo, in a netting set beside a
+    swap that outlives them, each keeps its own dates and opens on that value.
+
+    KILLING MUTATION: `finalize_dates` handing a cap stated by its terms its siblings' dates, as it
+    hands a cap on its optionlet list its children's: the Monte Carlo prices it past its last
+    caplet and skips it.
+    """
+    cap = next(deal for deal in BOOK if deal['Reference'] == 'CAP')
+    floor = dict({key: value for key, value in cap.items() if key != 'Cap_Rate'},
+                 Object='FloorDeal', Reference='FLOOR', Floor_Rate=cap['Cap_Rate'])
+    dates = [WORLD_BASE + pd.DateOffset(months=3 * k) for k in range(9)]
+
+    def black(sign):
+        total = 0.0
+        for start, end in zip(dates, dates[1:]):
+            accrual = (end - start).days / 365.0
+            forward, deviation = math.expm1(0.045 * accrual) / accrual, 0.20 * math.sqrt(
+                (start - WORLD_BASE).days / 365.0)
+            value = max(sign * (forward - 0.045), 0.0)
+            if deviation:
+                d1 = math.log(forward / 0.045) / deviation + deviation / 2
+                value = sign * (
+                    forward * 0.5 * math.erfc(-sign * d1 / math.sqrt(2.0))
+                    - 0.045 * 0.5 * math.erfc(-sign * (d1 - deviation) / math.sqrt(2.0)))
+            total += 1e6 * accrual * math.exp(-0.04 * (end - WORLD_BASE).days / 365.0) * value
+        return total
+
+    valued, _ = marks([cap, floor])
+    assert float.fromhex(valued['CAP']) == pytest.approx(black(1.0), rel=1e-12)
+    assert float.fromhex(valued['FLOOR']) == pytest.approx(black(-1.0), rel=1e-12)
+
+    calc, _ = simulated([BOOK[0], cap, floor], ('USD', 'USD-PROJ'), Generate_Cashflows='No')
+    opened = {deal.Instrument.field['Reference']: float(deal.Calc_res['Value'][0][0].mean())
+              for deal in calc.netting_sets.deals() if (deal.Calc_res or {}).get('Value')}
+    for reference in ('CAP', 'FLOOR'):
+        assert reference in opened, 'the Monte Carlo skipped {}'.format(reference)
+        assert opened[reference] == pytest.approx(float.fromhex(valued[reference]), rel=1e-5)
 
 
 def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_value():
