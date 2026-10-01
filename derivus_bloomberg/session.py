@@ -12,6 +12,8 @@
 ########################################################################
 
 import importlib
+import logging
+import os
 from collections.abc import Mapping, Sequence
 
 from .errors import BloombergRequestError, BloombergUnavailable, raise_response_error
@@ -60,28 +62,65 @@ def _bulk_value(element):
 
 
 class BloombergSession:
-    """Small synchronous wrapper over Bloomberg Desktop API reference data."""
+    """Small synchronous wrapper over Bloomberg reference data - Desktop API by default, or
+    B-PIPE once an application name is given.
 
-    def __init__(self, host: str = 'localhost', port: int = 8194, timeout_ms: int = 10000,
-                 connect_timeout_ms: int = None):
-        self.host = host
-        self.port = port
+    B-PIPE host, port and application name default from `DV_BLOOMBERG_HOST`, `DV_BLOOMBERG_PORT`
+    and `DV_BLOOMBERG_APP_NAME`, so every existing call site (`BloombergSession(timeout_ms=...)`)
+    picks up a B-PIPE deployment from the environment with no code change - a Desktop API
+    workstation exports none of the three and gets exactly today's `localhost:8194`, no auth.
+
+    B-PIPE APP-ONLY AUTH IS SESSION-WIDE, not request-scoped: `AuthOptions.createWithApp` plus
+    `SessionOptions.setSessionIdentityOptions` authorizes the SESSION as part of `Session.start()`,
+    the same one identity then riding every request/subscription sent on it - there is no separate
+    `//blp/apiauth` `AuthorizationRequest` to build by hand, the way a user-scoped identity needs.
+
+    A B-PIPE connection or authorization failure FALLS BACK to that same Desktop API terminal
+    session rather than refusing outright, so a desk with a Terminal open keeps working when
+    B-PIPE itself is unreachable; the fallback is logged, never silent.
+    """
+
+    def __init__(self, host: str = None, port: int = None, timeout_ms: int = 10000,
+                 connect_timeout_ms: int = None, application_name: str = None):
+        self.host = host or os.environ.get('DV_BLOOMBERG_HOST', 'localhost')
+        self.port = port or int(os.environ.get('DV_BLOOMBERG_PORT', 8194))
         self.timeout_ms = timeout_ms
         #: The whole budget for GETTING connected - the socket, the start attempts and the service
         #: handshake, capped together. `timeout_ms` does not reach these; it bounds `nextEvent`.
         #: None leaves the SDK's own defaults (5s x 3 attempts, then a minute of service checks).
         self.connect_timeout_ms = connect_timeout_ms
+        #: `None` for a Desktop API session, which authenticates off the logged-in Terminal
+        #: instead and needs no identity at all.
+        self.application_name = application_name or os.environ.get('DV_BLOOMBERG_APP_NAME')
         self._api = None
         self._session = None
         self._service = None
+        self._identity = None
 
     def start(self):
+        if not self.application_name:
+            return self._connect(self.host, self.port, None)
+        try:
+            return self._connect(self.host, self.port, self.application_name)
+        except BloombergUnavailable as bpipe_error:
+            logging.warning(
+                'B-PIPE connection to %s:%s failed (%s) - falling back to the Desktop API '
+                'terminal session at localhost:8194', self.host, self.port, bpipe_error)
+            try:
+                return self._connect('localhost', 8194, None)
+            except BloombergUnavailable as terminal_error:
+                raise BloombergUnavailable(
+                    'B-PIPE at {}:{} failed ({}), and the Desktop API fallback at localhost:8194 '
+                    'also failed ({})'.format(
+                        self.host, self.port, bpipe_error, terminal_error)) from terminal_error
+
+    def _connect(self, host, port, application_name):
         session = None
         try:
             api = blpapi_module()
             options = api.SessionOptions()
-            options.setServerHost(self.host)
-            options.setServerPort(self.port)
+            options.setServerHost(host)
+            options.setServerPort(port)
             if self.connect_timeout_ms is not None:
                 # one attempt, not the SDK's three - the per-attempt timeout is otherwise
                 # multiplied by the retries and the backoff between them
@@ -89,15 +128,22 @@ class BloombergSession:
                 options.setNumStartAttempts(1)
                 options.setServiceCheckTimeout(self.connect_timeout_ms)
                 options.setServiceDownloadTimeout(self.connect_timeout_ms)
+            correlation_id = None
+            if application_name:
+                correlation_id = api.CorrelationId(application_name)
+                options.setSessionIdentityOptions(
+                    api.AuthOptions.createWithApp(application_name), correlation_id)
             session = api.Session(options)
             if not session.start():
                 raise BloombergUnavailable(
-                    'Bloomberg Desktop API session did not start at {}:{}'.format(self.host, self.port))
+                    'Bloomberg session did not start at {}:{}'.format(host, port))
             if not session.openService('//blp/refdata'):
                 raise BloombergUnavailable('Bloomberg service //blp/refdata could not be opened')
+            identity = self._await_authorization(session, api) if application_name else None
             self._api = api
             self._session = session
             self._service = session.getService('//blp/refdata')
+            self._identity = identity
             return self
         except BloombergUnavailable:
             if session is not None:
@@ -106,12 +152,30 @@ class BloombergSession:
         except Exception as error:
             if session is not None:
                 session.stop()
-            raise BloombergUnavailable('Bloomberg Desktop API session failed: {}'.format(error)) from error
+            raise BloombergUnavailable('Bloomberg session failed: {}'.format(error)) from error
+
+    def _await_authorization(self, session, api):
+        """The session-wide identity `setSessionIdentityOptions` requested at construction,
+        confirmed by its own `AUTHORIZATION_STATUS` event rather than a request built here - the
+        app-only identity authorizes the SESSION, so `session.getAuthorizedIdentity()` is what
+        every later `sendRequest` on it carries."""
+        while True:
+            event = session.nextEvent(self.timeout_ms)
+            if event.eventType() == api.Event.TIMEOUT:
+                raise BloombergUnavailable('Bloomberg authorization request timed out')
+            for message in event:
+                if message.messageType() == api.Name('AuthorizationSuccess'):
+                    return session.getAuthorizedIdentity()
+                if message.messageType() in (
+                        api.Name('AuthorizationFailure'), api.Name('AuthorizationRevoked')):
+                    raise BloombergUnavailable(
+                        'Bloomberg authorization failed: {}'.format(message))
 
     def stop(self) -> None:
         if self._session is not None:
             self._session.stop()
         self._api = self._session = self._service = None
+        self._identity = None
 
     def __enter__(self):
         return self.start()
@@ -216,7 +280,12 @@ class BloombergSession:
                 row = override_element.appendElement()
                 row.setElement('fieldId', str(field))
                 row.setElement('value', str(value))
-        self._session.sendRequest(request)
+        # `identity` rides ONLY under B-PIPE auth, so every canned two-argument `sendRequest` this
+        # package's own gates are built on - never authenticated - keeps working unchanged.
+        if self._identity is not None:
+            self._session.sendRequest(request, identity=self._identity)
+        else:
+            self._session.sendRequest(request)
 
         while True:
             event = self._session.nextEvent(self.timeout_ms)
