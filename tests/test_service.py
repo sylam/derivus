@@ -5551,6 +5551,112 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         service.BOOK = None
 
 
+def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(tmp_path, monkeypatch):
+    """`POST /book/survival` writes `SurvivalProb.<counterparty>` from the spread and the recovery
+    the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.
+    Read back through the engine's own factor, 150bp flat at a 40% recovery survives
+    exp(-0.015 t/0.6) at one year and at five, and 100bp at a year and 200bp at five survive
+    exp(-0.01 T/0.6) and exp(-0.02 T/0.6) at their own tenors. The agreement's set whose CVA failed
+    for want of the curve, a five-year option, prices after it to the CVA of the same hazard
+    written by hand to ten years. A counterparty the record never declared, a spread that is not a
+    positive number, `true` among them, a recovery of one or `false`, and tenors that do not rise
+    refuse by name with the file untouched, and a seat holding no `mark` over the book is refused,
+    the denial landed.
+
+    Killing mutations: the hazard written as the spread itself, without 1 - R, which survives
+    exp(-0.015 t) instead; the curve ending at its last row, which the credit Monte Carlo reads as
+    no default after a year; the tenors unchecked; a boolean read as a number; and the verb asking
+    no `mark`, which writes the curve an unscoped seat asked for.
+    """
+    from derivus import riskfactors
+    from derivus_spine import SpineLog, init_home
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+
+    seat, home = 'subject-desk-one', tmp_path / 'spine'
+    init_home(home, seat)
+    for name, value in (('DV_SPINE_HOME', home), ('DV_SPINE_ACTOR', seat), ('DV_HOME', tmp_path)):
+        monkeypatch.setenv(name, str(value))
+    ghost = netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G',
+                                                   Expiry_Date=BASE + pd.DateOffset(years=5))])
+    book = xva_book(tmp_path, [ghost])
+
+    def survival(**body):
+        return CLIENT.post('/book/survival', content=dump(body), headers=JSON)
+
+    def survives(tenors):
+        params = in_process(json.loads(book.read_text())).current_cfg.params
+        return riskfactors.construct_factor(
+            utils.Factor('SurvivalProb', ('GHOST',)), params['Price Factors'],
+            params['Price Factor Interpolation']).survival(tenors)
+
+    try:
+        for path, body in (('/book/entities', {'entity': 'GHOST', 'name': 'Ghost Ltd'}),
+                           ('/book/agreements', {'agreement': 'NS_GHOST', 'entity': 'GHOST',
+                                                 'kind': 'ISDA 2002',
+                                                 'terms': ghost['Instrument']['.Deal']})):
+            assert CLIENT.post(path, content=dump(body), headers=JSON).status_code == 200
+        recalc(['NS_GHOST'])
+        assert xva_rows()['NS_GHOST']['status'] == 'failed'
+
+        before = book.read_bytes()
+        for body, said in (({'counterparty': 'NOBODY', 'spread': 150.0}, 'declares GHOST'),
+                           ({'counterparty': 'GHOST', 'spread': -5.0}, 'positive spread'),
+                           ({'counterparty': 'GHOST', 'spread': True}, 'positive spread'),
+                           ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': 1.0},
+                            'recovery in'),
+                           ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': False},
+                            'recovery in'),
+                           ({'counterparty': 'GHOST', 'spread': [{'tenor': '5Y', 'spread': 200.0},
+                                                                 {'tenor': '1Y', 'spread': 100.0}]},
+                            'do not rise')):
+            refused = survival(**body)
+            assert refused.status_code == 422 and said in refused.json()['detail'], body
+        assert book.read_bytes() == before, 'a refused curve was written'
+
+        assert survival(counterparty='GHOST', spread=150.0, recovery=0.4).json()['written']
+        assert survives([1.0, 5.0]) == pytest.approx(np.exp(-0.015 * np.array([1.0, 5.0]) / 0.6),
+                                                     rel=1e-12)
+        recalc(['NS_GHOST'])
+        written = xva_rows()['NS_GHOST']
+        body = json.loads(book.read_text())
+        body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+            'SurvivalProb.GHOST'] = json.loads(dump({'Recovery_Rate': 0.4, 'Curve': utils.Curve(
+                [], [[0.0, 0.0], [10.0, 0.25]])}))
+        book.write_text(json.dumps(body, indent=2), newline='\n')
+        recalc(['NS_GHOST'])
+        assert (written['status'], written['cva']) == (
+            'done', pytest.approx(xva_rows()['NS_GHOST']['cva'], rel=1e-6))
+
+        assert survival(counterparty='GHOST', spread=[{'tenor': '1Y', 'spread': 100.0},
+                                                      {'tenor': '5Y', 'spread': 200.0}]).json()[
+            'written']
+        tenors = np.array([365.0, 1826.0]) / 365.0
+        assert survives(tenors) == pytest.approx(
+            np.exp(-np.array([0.01, 0.02]) * tenors / 0.6), rel=1e-12)
+
+        raw = canonical_document({'grants': [{'subject': seat, 'verb': verb, 'book': '*'}
+                                             for verb in ('admin', 'mark')], 'read': []})
+        log = SpineLog(home)
+        try:
+            log.append('policy_declared', {'policy': CAPABILITIES_POLICY,
+                                           'blob': hashlib.sha256(raw).hexdigest()},
+                       actor=seat, pending=(raw,))
+        finally:
+            log.close()
+        denied = survival(counterparty='GHOST', spread=150.0, actor='subject-desk-two')
+        assert denied.status_code == 422 and 'holds no mark scope' in denied.json()['detail']
+        log = SpineLog(home)
+        try:
+            assert [log.open_body(frame) for frame in log.frames()
+                    if frame['event_type'] == 'capability_denied'] == [
+                {'subject': 'subject-desk-two', 'verb': 'mark', 'book': 'service',
+                 'attempted_type': 'survival_curve'}]
+        finally:
+            log.close()
+    finally:
+        service.BOOK = None
+
+
 def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     """CVA and FVA are two columns of ONE row from ONE credit Monte Carlo, sharing the row's
     identity: one `as_of`, one `result_id`, one `plan_hash`. That is what makes them addable - two

@@ -127,14 +127,16 @@ export_settlements strikes the settlement file for a day, on the market the desk
 and on no other, and
 file_status says a payment settled or a confirmation matched, against the row's own key, which is
 what close_check then stops waiting on - with the amount, asset, kind and settlement reference where
-money moved, including collateral and margin under an agreement, and book_cash reads the movements
+money moved, including collateral and margin under an agreement; file_lifecycle prints the fixing,
+or files the election, a close waits on; and book_cash reads the movements
 and their balances back; collateral_calls reads what each agreement's CSA calls on a marked close,
 settled with file_status as collateral against the agreement. THE P&L: once the day's close is
 declared, mark_book values one unit of every instrument on it, and book_pnl reads what the book
 made between two marked days or since the last marks. THE PAPER the book trades under is
 declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
-and never a balance, and describe_agreements to read them - a booking then names its agreement, the
+and never a balance, and describe_agreements to read them, and declare_survival_curve writes a new
+client's credit curve from the spread the CVA desk states - a booking then names its agreement, the
 first one under it bringing its netting set, and its portfolio, a path under the book or a node
 declared on it (declare_portfolio, describe_portfolios), and its quantity is the position change in
 units of the deal, 1 booking it as written; book_positions reads what stands, each where it sits
@@ -990,7 +992,8 @@ def book_dependencies(deal_path: str = None, deal: dict = None,
     `block` and `key` this desk seeds it under, how many `securities` the seed spells for it and
     how many a terminal has `verified`, plus `conventions` for a curve. `supply` null with a `note`
     means this desk's vocabulary spells nothing for that factor - an equity or a commodity - and
-    the market for it is authored by hand.
+    the market for it is authored by hand, or written by the verb the note names
+    (`declare_survival_curve` for a counterparty's `SurvivalProb`).
 
     A `deal` the booking verb would refuse is refused HERE in its words rather than walked, so a
     misspelt type is never answered "nothing is missing". `setup_market` acts on this answer."""
@@ -1611,6 +1614,26 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
                   value_date=value_date)))
 
 
+@MCP.tool()
+def file_lifecycle(event_type: str, body: dict, actor: str | None = None,
+                   effective_time: str | None = None) -> dict:
+    """Print a fixing, or file a holder's choice or an agent's ruling - the fact `close_check`
+    waits on for a fixing row, or for an expiry that leaves a choice.
+
+    `event_type` `fixing_observed` takes `body` `{index, date, source, value}`: the `index` and the
+    `date` (`YYYY-MM-DD`) the `book_diary` fixing row names, a `source` the desk's fixings policy
+    orders for that index, and the printed `value`. `election` takes `{instrument, choice}` and
+    `determination` `{subject, ruling}`. A knock, an expiry or an accrual follows from these and is
+    refused by name. `effective_time` (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) is when the fact is true,
+    which orders a restated print. `actor` is the seat it is filed under - a print is the firm's
+    and wants `mark` over the whole firm. Answers `{recorded: {lsn}, event_type}`, and saying one
+    thing twice is one fact.
+    """
+    return service().call('POST', '/book/lifecycle', json=dict(
+        {'event_type': event_type, 'body': body},
+        **_stated(actor=actor, effective_time=effective_time)))
+
+
 @MCP.tool(annotations=READ_ONLY)
 def book_cash(date: str | None = None, actor: str | None = None) -> dict:
     """The money the record's settlements moved: every movement under the settlement system's
@@ -1663,7 +1686,9 @@ def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | 
     against the end), and the P&L split realised - at average cost, the cash included - and
     unrealised. Narrowed by a `portfolio` path, an `agreement` or a `client` entity with everything
     grouped under it. A figure nobody can know - a fill with no price, a payment nothing determined
-    or settled - is named under `unknown`, a total over it is null and `complete` is false.
+    or settled - is named under `unknown`, a total over it is null and `complete` is false; a
+    settlement that moved another amount than the payment it settles determines is booked at the
+    determined amount and listed under `breaks`.
     `explain` adds why the held positions moved - the carry of the start's book to the end's day,
     the market move per risk factor off the start's sensitivities, and the residual - at the price
     of three more valuations. `actor` is the seat reading, every total summed over what it sees.
@@ -1761,6 +1786,23 @@ def declare_agreement(agreement: str, entity: str, kind: str, terms: dict,
     """
     return service().call('POST', '/book/agreements', json=dict(
         {'agreement': agreement, 'entity': entity, 'kind': kind, 'terms': terms},
+        **_stated(actor=actor)))
+
+
+@MCP.tool()
+def declare_survival_curve(counterparty: str, spread: float | list[dict], recovery: float = 0.4,
+                           actor: str | None = None) -> dict:
+    """Write a counterparty's survival curve - `SurvivalProb.<counterparty>`, what its netting
+    set's CVA discounts by - from the credit spread the CVA desk states: `spread` in basis points,
+    a number for a flat curve or rows `[{tenor, spread}]` (`tenor` like `5Y`) for a term structure,
+    and `recovery` the share recovered on default, 0.4 by convention. Each spread is read as the
+    hazard spread / (1 - recovery), the last one's line run on to fifty years, so a flat spread is a
+    flat hazard to fifty years. Never look a spread up or guess one: it is the desk's number.
+    On a recorded desk the counterparty is a declared legal entity and the seat holds `mark`.
+    Answers `{written, factor, recovery, curve}`; `recalc_xva` then prices the set.
+    """
+    return service().call('POST', '/book/survival', json=dict(
+        {'counterparty': counterparty, 'spread': spread, 'recovery': recovery},
         **_stated(actor=actor)))
 
 

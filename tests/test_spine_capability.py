@@ -1037,6 +1037,50 @@ def test_the_grant_verb_refuses_a_file_it_cannot_read_and_says_which(tmp_path, c
     assert SpineLog(home).head() == head, 'a refused grant moved the head'
 
 
+def test_a_refused_declaration_leaves_the_store_as_it_found_it(tmp_path, capsys):
+    """THE PUT FOLLOWS THE JUDGEMENT. A capabilities document a node admin declares through
+    `grant` moving a row beyond its node, and a tiers policy a stranger declares, are refused, the
+    denials landed, and leave `blobs/` exactly as they found it; the node admin's grant within its
+    node, judged on bytes the store does not hold yet, lands its blob, as the admin's tiers do.
+
+    Killing mutations: the document put before the writer judges it, which leaves each refused one
+    in the store as a blob no frame cites; and the declaration read off the store alone, which
+    refuses the node admin even within its node.
+    """
+    from derivus_spine import policy
+    from derivus_spine.store import BlobStore
+
+    home, log = minted(tmp_path)
+    rows = ((MINT, ADMIN, ANY_BOOK), (GOVERNOR, ADMIN, FX))
+    declare(log, MINT, document(grants=rows))
+    log.close()
+    tiers = {'tiers': [{'name': 'desk', 'four_eyes': True}]}
+    before = sorted(BlobStore(home).walk())
+
+    def granted(moved):
+        path = tmp_path / 'policy.json'
+        path.write_text(json.dumps(document(grants=rows + (moved,))), encoding='utf-8')
+        return cli.main(['grant', '--home', str(home), '--file', str(path), '--actor', GOVERNOR])
+
+    def declared(actor):
+        log = SpineLog(home)
+        try:
+            return policy.declare(log, actor, policy.TIERS_POLICY, tiers)['blob']
+        finally:
+            log.close()
+
+    assert granted((DESK, BOOK, RATES)) == 1
+    assert 'do not reach' in capsys.readouterr().err
+    with pytest.raises(CapabilityDenied):
+        declared(STRANGER)
+    assert sorted(BlobStore(home).walk()) == before, 'a refused document stayed in the store'
+    assert [body['subject'] for _, _, body in denials(SpineLog(home))] == [GOVERNOR, STRANGER]
+
+    assert granted((DESK, BOOK, OPTIONS)) == 0
+    landed = [json.loads(capsys.readouterr().out)['blob'], declared(MINT)]
+    assert sorted(BlobStore(home).walk()) == sorted(before + landed)
+
+
 def test_the_portfolio_verb_declares_a_node_and_init_refuses_the_writers_name(tmp_path, capsys):
     """Two mouths of the tree and the voice. `portfolio` declares a node through the ordinary
     writer, judged at its parent - the admin over `*` declares `BANK/FX`, a stranger is refused

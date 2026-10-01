@@ -941,7 +941,8 @@ def test_the_seam_files_a_decision_a_close_and_reads_them_back_as_folds(recorded
 
     spine.file_quote('Q-1', 'ZeroCostCollar', plan, spine.values_of(context), {'floor': 17.25},
                      4200.0, ticket='c' * 64, actor_name='subject-desk-two', book_name='spine-desk')
-    quoted = spine.quotes()
+    folded = projections.PROJECTORS['quotes']
+    quoted = spine.folded(lambda log: folded.rows(projections.fold(log, folded)))
     assert len(quoted) == 1 and quoted[0]['booker'] == 'subject-desk-two'
     assert quoted[0]['ticket'] == 'c' * 64 and quoted[0]['plan_hash'] == plan
     assert quoted[0]['values_hash'] == context.values_hash()
@@ -1355,13 +1356,17 @@ def test_the_book_prices_every_position_at_its_net(recorded, desk):
 def test_a_structure_is_held_whole(recorded, desk):
     """A STRUCTURE BOOKED WHOLE IS ONE INSTRUMENT, its legs inside its terms. A leg booked into it
     refuses by name, since it would move the instrument the position is in; a leg amended amends
-    the structure, the position carried onto the terms the edit leaves; and a position the record
-    holds in a leg of a structure it also holds refuses the read, where pricing the leg as the
-    structure's would read neither.
+    the structure, the position carried onto the terms the edit leaves - the clip left on the old
+    terms naming nothing, so the restruck leg's payment carries its own key and settling it makes
+    the day's close legal with that clip still in the file; and a position the record holds in a
+    leg of a structure it also holds refuses the read, where pricing the leg as the structure's
+    would read neither.
 
     Killing mutations: the refusal dropped, which books the leg into the held structure; the
     amendment filed against the leg rather than the structure, which prices the edited structure
-    as written beside its old terms at half; and the stranded legs priced as their structure's.
+    as written beside its old terms at half; the diary's references read off the file, which keys
+    the restruck leg nothing a settlement can name; and the stranded legs priced as their
+    structure's.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -1390,6 +1395,24 @@ def test_a_structure_is_held_whole(recorded, desk):
     compiled = service.priced(json.loads(desk.read_text()))
     assert (deal_at(compiled, '1/1/0')['Instrument']['.Deal']['Amount'],
             deal_at(compiled, '1/2').get('Ignore')) == (150_000.0, 'True')
+
+    def settled(key):
+        assert CLIENT.post('/book/transition', content=dump(
+            {'subject': key, 'status': 'settled', 'actor': ACTOR}), headers=JSON).status_code == 200
+
+    day, written = CASHFLOW['Payment_Date'].strftime('%Y-%m-%d'), json.loads(desk.read_text())
+    restruck, *others = (derivus.content_hash(service.instrument_of(deal_at(written, path)))
+                         for path in ('1/1/0', '1/1/1', '0'))
+    for row in CLIENT.get('/book/diary').json()['rows']:
+        if row['kind'] == 'payment' and row['instrument'] in others:
+            settled(row['key'])
+    (waiting,) = CLIENT.get('/book/close/check', params={'date': day}).json()['outstanding']
+    assert (waiting['instrument'], waiting['key']) == (restruck, spine.cashflow_key(
+        restruck, waiting['leg'], 'payment', day)), 'the restruck leg keys nothing'
+    settled(waiting['key'])
+    assert CLIENT.get('/book/close/check', params={'date': day}).json()['legal'] is True
+    assert deal_at(json.loads(desk.read_text()), '1/2/0')['Instrument']['.Deal']['Amount'] == \
+        100_000.0, 'the clip on the old terms is not in the file'
 
     for execution, leg in zip(('EXEC-X', 'EXEC-Y'), legs):
         assert booked(dict(leg, Reference=leg['Reference'].replace('LEG', 'SOLO')), 'SOLO',
@@ -3489,6 +3512,46 @@ def test_a_print_dated_after_the_base_date_is_left_standing(recorded, desk):
     filled = watched_row(spine.compiled_job(both))
     assert filled[0][1] == 108.5, 'the day behind the base date was not filled'
     assert filled[1][1] == '', 'a print dated after the base date was written onto the row'
+
+
+def test_a_print_filed_through_the_service_answers_the_row_a_close_waits_on(recorded, desk):
+    """`POST /book/lifecycle` files a print, an election or a ruling through the writer. The
+    barrier option's expiry fixing keeps its day's close waiting until the print filed through the
+    verb answers it; a consequence is refused by name; and a seat holding `mark` over the book
+    alone - a print being the firm's - is refused in the writer's own words, the denial landed and
+    nothing printed.
+
+    Killing mutation: the verb filing under the deployment's own seat rather than the one named,
+    which prints what a seat the document never scoped for it asked for.
+    """
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    desk.write_text(json.dumps(json.loads(dump(barrier_book(108.5))), indent=2), newline='\n')
+    day = (BASE + pd.DateOffset(days=365)).strftime('%Y-%m-%d')
+
+    def filed(event_type, actor=ACTOR, **body):
+        return CLIENT.post('/book/lifecycle', content=dump(
+            {'event_type': event_type, 'body': body, 'actor': actor}), headers=JSON)
+
+    def waiting():
+        return [(row['index'], row['source']) for row in CLIENT.get(
+            '/book/close/check', params={'date': day}).json()['outstanding']
+            if row['kind'] == 'fixing' and row['due_date'] == day]
+
+    assert waiting() == [(INDEX, None)]
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'mark', 'validate')] + [
+        (DESK_TWO, 'mark', 'spine-desk')])
+    printed = filed('fixing_observed', index=INDEX, date=day, source='EXCHANGE', value=112.0)
+    assert printed.json() == {'recorded': {'lsn': head(recorded)}, 'event_type': 'fixing_observed'}
+    assert waiting() == []
+
+    knocked = filed('knock', instrument='f' * 64)
+    assert knocked.status_code == 422 and 'apply_lifecycle does not file' in knocked.text
+    refused = filed('fixing_observed', DESK_TWO, index=INDEX, date=day, source='EXCHANGE',
+                    value=113.0)
+    assert refused.status_code == 422 and 'holds no mark scope' in refused.json()['detail']
+    assert facts(recorded, 'capability_denied')[-1][2] == {
+        'subject': DESK_TWO, 'verb': 'mark', 'book': '*', 'attempted_type': 'fixing_observed'}
+    assert [body['value'] for _, _, body in facts(recorded, 'fixing_observed')] == [112.0]
 
 
 def test_a_fixing_whose_authority_nobody_declared_refuses_by_name(recorded, desk):

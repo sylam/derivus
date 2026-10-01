@@ -1728,28 +1728,35 @@ class DiaryJob:
     path, a deal setup over the whole market being seconds rather than milliseconds.
     """
 
-    def __init__(self, document, instruments):
-        self.document, self.instruments = document, instruments
+    def __init__(self, document):
+        self.document = document
 
     def run_job(self):
         # a READ never refuses: the book is compiled as written plus whatever the declared source
         # orders can fill, and an index nobody ordered reads unresolved on its own rows
-        return None, {'Results': {}, 'Stats': {'Diary': {
-            'as_of': as_of(), 'rows': diary(
-                load(spine.compiled_job(self.document, strict=False, runs=False)),
-                self.instruments)}}}
+        compiled = spine.compiled_job(self.document, strict=False, runs=False)
+        return None, {'Results': {}, 'Stats': {'Diary': {'as_of': as_of(), 'rows': diary(
+            load(compiled), booked_instruments(self.document, compiled))}}}
 
 
-def booked_instruments(document):
-    """`{Reference: instrument address}` for every deal the file holds - the address a fill names,
-    so a diary row and the record's position are the same instrument. A reference two deals share
-    maps to neither: the address is the identity, and guessing it mis-labels a row."""
+def booked_instruments(document, compiled=None):
+    """`{Reference: instrument address}` for every deal the file holds that `compiled` - the job
+    read off it - does not ignore: the address a fill names, so a diary row and the record's
+    position are the same instrument, and a clip left on terms a restrike moved names nothing. A
+    reference two live deals share maps to neither: guessing the address mis-labels a row."""
     found = {}
-    for _, node in walk_job_deals(document):
-        reference = node['Instrument']['.Deal'].get('Reference')
-        address = content_hash(instrument_of(node))
-        # a partial unwind is a second node of the SAME terms, which names one instrument
-        found[reference] = address if found.get(reference, address) == address else None
+
+    def walk(nodes, written):
+        for node, held in zip(nodes, written):
+            if node.get('Ignore') == 'True':
+                continue
+            reference = held['Instrument']['.Deal'].get('Reference')
+            address = content_hash(instrument_of(held))
+            # a partial unwind is a second node of the SAME terms, which names one instrument
+            found[reference] = address if found.get(reference, address) == address else None
+            walk(node.get('Children', []), held.get('Children', []))
+
+    walk(job_children(compiled or document), job_children(document))
     return found
 
 
@@ -1965,8 +1972,8 @@ def diary_of(document, actor):
     etag = diary_etag(document)
     result_id = content_hash({'diary': etag})
     if etag not in BOOK_DIARY_CACHE:
-        submitted = Job(result_id, DiaryJob(document, booked_instruments(document)), {},
-                        spine.TELEMETRY, actor=actor, book=book_name(document))
+        submitted = Job(result_id, DiaryJob(document), {}, spine.TELEMETRY, actor=actor,
+                        book=book_name(document))
         EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])
         stored = waited(result_id)
         if stored['status'] != 'done':
@@ -2125,7 +2132,8 @@ def book_positions(actor: str = None):
     zero or amended onto other terms stands no more - the record keeps its history - and one the
     file does not hold answers no path, which `/book/reconcile` names. One whose instrument has
     EXPIRED at the book's date stands until the day it settles, `expired` and `settles` saying
-    when, and rolls off on that day.
+    when, and rolls off on that day - read off the record's own terms where the file has lost it,
+    and null on a box whose store lacks those too.
 
     `tickets` are what books it, each with its own status - a restrike's in place of the clips it
     restruck - `status` the first of `spine.STATUSES` among them and `pending` the quantity
@@ -2136,14 +2144,26 @@ def book_positions(actor: str = None):
     document, _ = recording().read()
     standing = spine.visible([row for row in spine.standing() if row['quantity']],
                              spine.sight(actor))
-    ended = expiries(document, PnL.held_legs(job_children(document),
-                                             {row['instrument'] for row in standing}))
+    wanted = {row['instrument'] for row in standing}
+    held, legs = file_positions(document, wanted), PnL.held_legs(job_children(document), wanted)
+    diaried = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
+               for row in hub_diary(document)['rows']]
+    lost = {row['instrument'] for row in standing if row['book'] == book_name(document)} - set(held)
+    # what the file no longer carries announces its days off the record's own terms, where this
+    # box's store holds them - a copy that never pulled them can name neither day
+    lost = lost and spine.folded(lambda log: set(filter(log.store.has, lost)))
+    if lost:
+        found, legs = diary_rows(PnL.marks_job(document, PnL.held_terms(
+            document, lost, spine.stored)), None)
+        diaried += [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
+                    for row in found]
+    ended = expiries(diaried, structures.timestamp(
+        document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d'))
     rows = []
     for row in standing:
         expired, settles = ended.get(row['instrument'], (None, None))
         if expired is None or settles is not None:
             rows.append(dict(row, expired=expired, settles=settles))
-    held = file_positions(document, {row['instrument'] for row in rows})
     answer = []
     for row in rows:
         paths = [node['deal_path'] for node in held.get(row['instrument'], [])
@@ -2155,15 +2175,12 @@ def book_positions(actor: str = None):
     return {'positions': answer}
 
 
-def expiries(document, holders):
-    """`{instrument: (expired, settles)}` for every instrument the book's diary says has EXPIRED -
-    the engine's own answer at the book's date - with the last day a payment of it falls after that
-    date, or None once none does: a trade settling at T+2 is still held at T+1. A structure held
-    whole - `holders` maps each of its legs to it - has expired once every leg has, on the latest
+def expiries(rows, today):
+    """`{instrument: (expired, settles)}` for every instrument the diary `rows` say has EXPIRED at
+    `today` - the engine's own answer - with the last day a payment of it falls after that date,
+    or None once none does: a trade settling at T+2 is still held at T+1. A structure held whole -
+    its legs' rows carrying it as their instrument - has expired once every leg has, on the latest
     of their days."""
-    today = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
-    rows = [dict(row, instrument=holders.get(row['instrument'], row['instrument']))
-            for row in hub_diary(document)['rows']]
     ends = {}
     for row in rows:
         if row['instrument'] and row['kind'] == Diary.EXPIRY:
@@ -2297,6 +2314,25 @@ MOVED = ('amount', 'asset', 'kind', 'reference', 'value_date')
 MIDNIGHT = 'T00:00:00.000000Z'
 
 
+@app.post('/book/lifecycle', summary='File a print, an election or a ruling')
+def book_lifecycle(request: dict):
+    """`{event_type, body, actor, effective_time?}` - file one lifecycle fact: a `fixing_observed`
+    print `{index, date, source, value}`, the `election` a holder made `{instrument, choice}`, or
+    the `determination` an agent ruled `{subject, ruling}`.
+
+    The print is what `GET /book/close/check` waits on for a fixing, and the election what it waits
+    on for an expiry vesting a choice. A knock, an expiry or an accrual follows from these and is
+    refused by name. The writer admits it as it admits every append - a print is the firm's, at
+    `mark` over `*` - and a seat it refuses is answered in its own words with the denial landed.
+    404 where no home is configured.
+    """
+    document, _ = recording().read()
+    filed = spine.apply_lifecycle(request.get('event_type'), request.get('body'),
+                                  actor_name=request.get('actor'), book_name=book_name(document),
+                                  effective_time=request.get('effective_time'))
+    return {'recorded': {'lsn': filed['lsn']}, 'event_type': request.get('event_type')}
+
+
 @app.get('/book/cash', summary='The money the record\'s settlements moved')
 def book_cash(date: str = None, actor: str = None):
     """`{movements, balances, date}` - every movement of money a settlement filed, and what they sum
@@ -2397,15 +2433,17 @@ def marked_instruments(book, since, head=None):
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
 def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreement: str = None,
              client: str = None, explain: bool = False, actor: str = None):
-    """`{currency, start, end, scope, rows, total, complete, unknown}` - what the book made between
-    the marks of two days, or since the last marks where `end` is not named.
+    """`{currency, start, end, scope, rows, total, complete, unknown, breaks}` - what the book made
+    between the marks of two days, or since the last marks where `end` is not named.
 
     Per position, `value_end - value_start + premiums + payments + fees`: the values its quantity
     times the unit mark at each end, less what the unit paid that day (`paid_start`, `paid_end`),
     which the marks still value; the premiums at the fills' own prices, the payments at what the
     diary determines or else what the settlements moved, the fees as settled - a settlement or a
     fee counting in the window it was FILED in, so a late one lands in the day it was filed and a
-    day already struck never moves. `existing` is what the positions held at the start moved and
+    day already struck never moves. A settlement that moved another amount than the payment it
+    settles determines - beyond the `pnl` tolerance - is listed under `breaks`, the payment booked
+    as determined. `existing` is what the positions held at the start moved and
     `trading` what the window's fills earned against the end, which sum with the cash to the P&L
     - a split that is null where a position traded to nothing in the window has no mark at the end,
     the P&L known all the same; `realised` is at average cost, the cash included, and `unrealised`
@@ -2487,9 +2525,6 @@ def valued_between(first, last, document, marks, market, scope, through=False):
     def between(after, until):
         return [fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]
 
-    def amended(after, until):
-        return spine.amendments(after=after, until=until)
-
     closes = PnL.rates_on(spine.closes(market), spine.stored, reporting, base)
 
     def rates(day, lsn):
@@ -2504,8 +2539,8 @@ def valued_between(first, last, document, marks, market, scope, through=False):
     # the money this book's settlements moved - another book's are its own
     cash = {lsn: [row for row in spine.cash(lsn) if row['book'] in (None, book)] for lsn in ends}
     payments, last_days = window_payments(
-        first, last, fills, {row['amended_to'] for row in amended(first['lsn'], last['lsn'])},
-        document, marks, PnL.filed(cash[first['lsn']], cash[last['lsn']]))
+        first, last, fills, spine.amendments(after=first['lsn'], until=last['lsn']), document,
+        marks, PnL.filed(cash[first['lsn']], cash[last['lsn']]))
     if through:
         last_days = {held: day for held, day in last_days.items() if day != last['day']}
     return PnL.pnl(first, last, {
@@ -2513,8 +2548,8 @@ def valued_between(first, last, document, marks, market, scope, through=False):
         'cash_start': cash[first['lsn']], 'cash_end': cash[last['lsn']], 'fills': fills,
         'diary': payments, 'last_days': last_days,
         'positions_end': spine.positions(last['lsn']), 'cut': cut, 'fills_between': between,
-        'rates': rates, 'days': PnL.recorded(cut, spine.costs, between, amended, known=costs)},
-        scope), last_days
+        'rates': rates, 'days': PnL.recorded(cut, spine.costs, between, known=costs),
+        'tolerances': spine.tolerances(last['lsn'])}, scope), last_days
 
 
 def live_marks(document, book, since):
@@ -2621,29 +2656,41 @@ LOOK_BACK = 5
 
 def window_payments(first, last, fills, amended, document, marks, movements):
     """`({address: [payment rows]}, {address: day})` - every payment the diary announces from the
-    start on for the instruments held at the start, traded in the window or `amended` into it, per
-    unit, off the start's own job as the record stood at the end, and the last day of each
-    instrument that has one. A structure held whole is ONE instrument: what its legs pay is its
-    own, keyed as the book's diary keys it, and its last day is the latest of theirs - read in
-    groups that leave each leg to one structure (`PnL.apart`), so restruck terms never share their
-    legs.
+    start on for the instruments held at the start, traded in the window or restruck into it by
+    an `amended` row, per unit, as the record stood at the end, and the last day of each
+    instrument that has one. What the start held is read off the start's own job, and what was
+    traded or restruck off the job of the first marks after it was - the end's where none came
+    after - so a trade on a market that arrived in the window is read on that market. A structure
+    held whole is ONE instrument: what its legs pay is its own, keyed as the book's diary keys it,
+    and its last day is the latest of theirs - read in groups that leave each leg to one structure
+    (`PnL.apart`), so restruck terms never share their legs.
 
     A settlement among `movements` against a payment the start's job no longer announces - one
     that fell due before the start - is looked for in the diaries of the marks on or before its
     value date, `LOOK_BACK` of them, which still did, so a late filing lands in the day it was
     filed; what it finds is its own holder's, whatever the start's legs are held by."""
-    marked = first['document']['Calc']
     own = {node['Instrument']['.Deal']['Reference']: node
-           for node in marked['Deals']['Deals']['Children']}
-    wanted = set(own) | {fill['instrument'] for fill in fills} | set(amended)
-    terms = PnL.held_terms(document, wanted - set(own), spine.stored)
+           for node in job_children(first['document'])}
+    dealt = {}
+    for address, lsn in [(fill['instrument'], fill['lsn']) for fill in fills] + [
+            (row['amended_to'], row['lsn']) for row in amended]:
+        dealt[address] = min(lsn, dealt.get(address, lsn))
+    terms = PnL.held_terms(document, set(dealt) - set(own), spine.stored)
+    jobs = {first['job']: first['document'],
+            last.get('job'): last.get('document') or PnL.marks_job(document, {})}
+    units = {first['job']: [own[address] for address in sorted(own)]}
+    for address in sorted(terms):
+        job = next((marks[day]['job'] for day in sorted(marks)
+                    if marks[day]['lsn'] >= dealt[address]), last.get('job'))
+        units.setdefault(job, []).append(PnL.unit_node(address, terms[address]))
     rows = []
-    for units in PnL.apart([own[address] for address in sorted(own)] + [
-            PnL.unit_node(address, terms[address]) for address in sorted(terms)]):
-        found, holders = diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
-            'Children': units}))}, last['lsn'])
-        rows.extend(dict(row, instrument=holders.get(row['instrument'], row['instrument']))
-                    for row in found)
+    for job, nodes in units.items():
+        marked = (jobs.get(job) or json.loads(spine.stored(job).decode('utf-8')))['Calc']
+        for group in PnL.apart(nodes):
+            found, holders = diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
+                'Children': group}))}, last['lsn'])
+            rows.extend(dict(row, instrument=holders.get(row['instrument'], row['instrument']))
+                        for row in found)
     keys, earlier = {row['key'] for row in rows}, {}
     for movement in movements:
         if movement['kind'] != 'payment' or movement['subject'] in keys:
@@ -3701,6 +3748,71 @@ def book_market(request: dict):
     def edit(document, etag):
         return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
                            request.get('bootstrap'))
+
+    try:
+        return live.mutate(edit)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error))
+
+
+#: Where a survival curve the desk writes ends: fifty years, past any exposure a book carries - the
+#: credit Monte Carlo reads no default past a curve's last knot.
+SURVIVAL_HORIZON = 50.0
+
+
+@app.post('/book/survival', summary="Write a counterparty's survival curve from its credit spread")
+def book_survival(request: dict):
+    """`{counterparty, spread, recovery?, actor}` - write `SurvivalProb.<counterparty>`, the curve a
+    netting set's CVA reads for its counterparty, from what the CVA desk states: `spread` in basis
+    points, flat or as rows `[{tenor, spread}]`, and `recovery`, 0.4 by the factor's convention.
+    Each spread is a hazard s/(1-R), so the curve - minus the log of survival, ACT/365, linear - is
+    [[0, 0], [T, sT/(1-R)]] per row, T its tenor and a year for a flat spread, and runs on the last
+    row's line to `SURVIVAL_HORIZON`: a flat spread is a flat hazard to fifty years. Nothing here
+    looks a spread up.
+
+    Under a home the seat holds `mark` over the book - market data is the marking seat's - its
+    refusal landed, and the counterparty is an entity the record declares. A spread that is not a
+    positive number, a recovery outside [0, 1) and tenors that do not rise refuse by name. One
+    atomic write, as every market verb.
+    """
+    live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
+        'recovery', 0.4)
+    spread = request.get('spread')
+    rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
+    if spine.configured():
+        spine.entitled(spine.package().vocabulary.MARK, request.get('actor'),
+                       book_name(live.read()[0]), 'survival_curve', 'no survival curve is written')
+        declared = sorted(row['entity'] for row in spine.entities())
+        if counterparty not in declared:
+            raise HTTPException(422, 'a survival curve for {!r}: the record declares {} - declare '
+                                     'the entity first'.format(counterparty,
+                                                               ', '.join(declared) or 'none'))
+    # a JSON true is a Python int, so a number is asked of its type
+    if not (isinstance(counterparty, str) and counterparty and type(recovery) in (int, float)
+            and 0.0 <= recovery < 1.0 and rows
+            and all(isinstance(row, dict) and isinstance(row.get('tenor'), str)
+                    and type(row.get('spread')) in (int, float) and row['spread'] > 0.0
+                    for row in rows)):
+        raise HTTPException(422, 'a survival curve is a counterparty, a positive spread in basis '
+                                 'points or rows [{{tenor, spread}}] of them, and a recovery in '
+                                 '[0, 1) - not {!r}, {!r} and {!r}'.format(
+                                     counterparty, spread, recovery))
+
+    def edit(document, etag):
+        base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
+        points = [[0.0, 0.0]]
+        for row in rows:
+            years = (base + utils.parse_period(row['tenor']) - base).days / 365.0
+            points.append([years, row['spread'] / 1e4 * years / (1.0 - recovery)])
+        if any(later[0] <= earlier[0] for earlier, later in zip(points, points[1:])):
+            raise ValueError('the tenors {} do not rise - a term structure is one spread per '
+                             'tenor, shortest first'.format([row['tenor'] for row in rows]))
+        if points[-1][0] < SURVIVAL_HORIZON:
+            points.append([SURVIVAL_HORIZON, points[-1][1] / points[-1][0] * SURVIVAL_HORIZON])
+        factor = 'SurvivalProb.' + counterparty
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][factor] = \
+            as_json({'Recovery_Rate': recovery, 'Curve': utils.Curve([], points)})
+        return True, {'written': True, 'factor': factor, 'recovery': recovery, 'curve': points}
 
     try:
         return live.mutate(edit)
@@ -4895,8 +5007,10 @@ def book_securities_verify(request: dict):
 
 
 #: Which vocabulary block spells the securities a missing price factor is supplied from, by the
-#: factor TYPE that names it. A type absent here is one this desk seeds nothing for.
+#: factor TYPE that names it. A type absent here is one this desk seeds nothing for - written by a
+#: verb of its own where `WRITTEN_BY` names one, and by hand otherwise.
 SUPPLY_BLOCKS = {'InterestRate': 'rates', 'FxRate': 'fx_spot', 'FXVol': 'fx_vol'}
+WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with POST /book/survival'}
 
 
 def supply_of(factor, base_currency, seed, mapped):
@@ -4913,7 +5027,8 @@ def supply_of(factor, base_currency, seed, mapped):
     kind, _, named = factor.partition('.')
     block = SUPPLY_BLOCKS.get(kind)
     if block is None:
-        return None, 'this desk seeds no {} - a market for it is authored by hand'.format(kind)
+        return None, 'this desk seeds no {} - {}'.format(
+            kind, WRITTEN_BY.get(kind, 'a market for it is authored by hand'))
     if block == 'rates':
         missing = 'the seed declares no rates entry for {}'.format(named)
         key = named if named in (seed.get('rates') or {}) else None

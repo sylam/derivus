@@ -33,6 +33,7 @@ about nothing, so every index it is asked for refuses by name. A tiers policy is
 ticket falls through, and it has no default either: a home declaring none has declared no tiers, so
 what an undeclared workflow means is the caller's decision rather than this module's.
 """
+import hashlib
 import json
 
 from .canon import canonical_bytes
@@ -379,15 +380,17 @@ def canonical_policy(policy, document, where=None):
 
 
 def declare(log, actor, policy, document, effective_time=None):
-    """Put a policy document in the store and declare it, returning the envelope plus the blob.
+    """Declare a policy document, returning the envelope plus its blob.
 
-    The blob is fsynced before the `policy_declared` naming its address appends. That event demands
-    the `admin` scope, so only a governing seat can move the standard a claim is held to.
+    The writer judges the declaration before the blob is put, and fsyncs it before the
+    `policy_declared` naming its address lands, so a refused one leaves the store as it found it.
+    That event demands the `admin` scope, so only a governing seat moves the standard a claim is
+    held to.
     """
     raw = canonical_policy(policy, document)
-    blob = log.store.put(raw)
-    envelope = log.append('policy_declared', {'policy': policy, 'blob': blob},
-                          actor=actor, effective_time=effective_time, blob_refs=(blob,))
+    blob = hashlib.sha256(raw).hexdigest()
+    envelope = log.append('policy_declared', {'policy': policy, 'blob': blob}, actor=actor,
+                          effective_time=effective_time, blob_refs=(blob,), pending=(raw,))
     return dict(envelope, policy=policy, blob=blob)
 
 

@@ -568,8 +568,7 @@ other keyed row here stands by, and the rows read in LSN order rather than their
 one projector whose rows grow with the desk's own activity**: it opens a body per quote, about
 0.16 ms each, so the fold is 7.7 ms on a two-thousand-event home holding three quotes and 327 ms on
 one holding 1,978 — the envelope filter keeps it off every other event and nothing keeps it off its
-own. `spine.quotes()` answers every quote the record holds and is a reading; the lookup a desk will
-want is 5b's, when something asks about one ticket.
+own.
 
 **A market is resolved BY NAME for the first time.** `spine.resolve_market(name, actor, process)`
 composes the `markets` fold, the blob store and `read_values` — every piece of which existed, and
@@ -1324,9 +1323,12 @@ payment the diary determines, and every one it does not that a settlement filed 
 per unit held when it fell due; one nothing has settled by then is still the book's and stays in
 its value until a filing moves it, and a window it leaves without the money is named. The premiums
 are the fills' own on their trade date; a payment is the diary's amount where it determines one,
-times what the position held the day before it fell due, else the position's share of what the
-settlements moved under the row's key - one settled with no amount having moved nothing, and one
-over positions netting to nothing NAMED, a settlement naming no agreement to share it by; a payment
+times what the position held at the END of the day it fell due - a trade's price that day carrying
+what it pays, so a seller then is paid nothing and a buyer all of it - a settlement that moved
+another amount being a BREAK listed beside the P&L and never an unknown, else the position's share
+of what the settlements moved under the row's key - one settled with no amount having moved
+nothing, and one over positions netting to nothing NAMED, a settlement naming no agreement to share
+it by; a payment
 and a fee are converted at the official close STANDING ON THEIR OWN DAY, after which the money is a
 cash balance whose currency is its holder's and never the trade's. A SETTLEMENT OR A FEE COUNTS IN
 THE WINDOW IT WAS FILED IN - the change in the `cash` fold between the two marks, a restatement

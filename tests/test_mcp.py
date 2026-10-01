@@ -27,7 +27,8 @@ from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
-from test_service import AMOUNT, BINARY, BOOKED, RATE, SPOT, Held, dump, job
+from test_service import (AMOUNT, BINARY, BOOKED, EQUITY, FACTORS, RATE, SPOT, VANILLA, Held, dump,
+                          job)
 
 SERVER_FILE = mcp_server.__file__
 
@@ -84,10 +85,10 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
-                'export_settlements', 'file_status', 'describe_calculations',
+                'export_settlements', 'file_status', 'file_lifecycle', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
                 'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
-                'collateral_calls', 'mark_book', 'book_pnl'}
+                'collateral_calls', 'mark_book', 'book_pnl', 'declare_survival_curve'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -98,11 +99,12 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'approve_quote', 'reject_quote', 'approve_ticket', 'reject_ticket',
                        'declare_portfolio', 'declare_market', 'declare_close',
-                       'export_settlements', 'file_status',
+                       'export_settlements', 'file_status', 'file_lifecycle',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market', 'configure_calculation', 'run_calculation',
-                       'declare_legal_entity', 'declare_agreement', 'mark_book'}
+                       'declare_legal_entity', 'declare_agreement', 'mark_book',
+                       'declare_survival_curve'}
 
 
 def read_resource(uri):
@@ -376,6 +378,68 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
         {'kind': 'payment', 'subject': exported['rows'][0]['key'], 'asset': 'ZAR',
          'amount': AMOUNT, 'movements': 1}]
     assert mcp_server.book_cash(date='2024-06-27')['movements'] == [], 'settled a day later'
+
+
+def test_a_print_reaches_the_record_through_the_binding(book, tmp_path, monkeypatch):
+    """`file_lifecycle` is one `service().call`: the expiry fixing `close_check` names is printed
+    under the seat the tool names, which answers the row, and a consequence comes back as the
+    record's own refusal.
+
+    Killing mutations: the tool posting the print's fields beside `event_type` rather than under
+    `body`, which the verb reads as no body and refuses; and the tool dropping the seat it names,
+    which files the print under the deployment's own.
+    """
+    from derivus import spine
+    from derivus_spine import SpineLog, init_home, policy
+
+    actor, home = 'subject-desk-one', tmp_path / 'spine'
+    init_home(home, actor)
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    log = SpineLog(home)
+    try:
+        policy.declare(log, actor, policy.FIXINGS_POLICY,
+                       {'sources': {'EquityPrice.EQ': ['EXCHANGE']}})
+    finally:
+        log.close()
+    book.write_text(json.dumps(json.loads(dump(job(deals=(dict(VANILLA, Reference='EQ-OPT'),),
+                                                   factors=dict(FACTORS, **EQUITY)))), indent=2),
+                    newline='\n')
+    day = VANILLA['Expiry_Date'].strftime('%Y-%m-%d')
+
+    def waiting():
+        return [row['index'] for row in mcp_server.close_check(day)['outstanding']
+                if row['kind'] == 'fixing']
+
+    assert waiting() == ['EquityPrice.EQ']
+    printed = mcp_server.file_lifecycle('fixing_observed', {
+        'index': 'EquityPrice.EQ', 'date': day, 'source': 'EXCHANGE', 'value': 104.0},
+        actor='subject-marks')
+    assert printed['event_type'] == 'fixing_observed' and waiting() == []
+    assert spine.folded(lambda log: log.frame_at(printed['recorded']['lsn'])['actor']) == \
+        'subject-marks'
+    with pytest.raises(ToolError) as knocked:
+        mcp_server.file_lifecycle('knock', {'instrument': 'f' * 64}, actor=actor)
+    assert 'apply_lifecycle does not file' in str(knocked.value)
+
+
+def test_a_survival_curve_reaches_the_book_through_the_binding(book):
+    """`declare_survival_curve` is one `service().call`: 150bp flat at a 40% recovery lands as the
+    curve the verb writes, a hazard of 0.015 / 0.6 a year to fifty years, and a spread that is not
+    positive comes back as the service's own refusal with the book untouched.
+
+    Killing mutation: the tool sending the spread under another key, which the verb reads as no
+    spread and refuses.
+    """
+    written = mcp_server.declare_survival_curve('CPTY_Z', 150.0)
+    assert (written['factor'], written['recovery']) == ('SurvivalProb.CPTY_Z', 0.4)
+    assert written['curve'] == [[0.0, 0.0], [1.0, pytest.approx(0.015 / 0.6)],
+                                [50.0, pytest.approx(50 * 0.015 / 0.6)]]
+    before = book.read_bytes()
+    with pytest.raises(ToolError) as refused:
+        mcp_server.declare_survival_curve('CPTY_Z', 0.0)
+    assert 'positive spread' in str(refused.value) and book.read_bytes() == before
 
 
 def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():

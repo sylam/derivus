@@ -369,20 +369,23 @@ class SpineLog:
         gone, which is the crypto-shredded state."""
         return self.open_interior(frame)['payload']
 
-    def append(self, event_type, body, actor, book=None, effective_time=None, blob_refs=()):
+    def append(self, event_type, body, actor, book=None, effective_time=None, blob_refs=(),
+               pending=()):
         """Append one fact and return its envelope.
 
         The order is the design: the writer's claim on the home, validation, authorization, the tag,
         the duplicate check (which decrypts the stored event and byte-compares), referential closure
         over every blob cited, and only then a byte on the platter. Every refusal therefore leaves
-        the head where it found it.
+        the head where it found it - and the store: `pending` are the bytes of blobs the fact cites,
+        judged where they are read and put, fsynced, just before the fact lands.
 
         `effective_time` is the caller's or null, never defaulted to `record_time` - the semantic
         tuple contains it, so a writer-stamped default would make the second submission of one
         booking a second fact. A null reads as of when it was recorded (`as_of_key`).
         """
+        pending = {hashlib.sha256(data).hexdigest(): bytes(data) for data in pending}
         self._checked(event_type, body, actor, book, effective_time)
-        self._authorize(event_type, body, actor, book)
+        self._authorize(event_type, body, actor, book, pending)
         record_time = now_stamp()
 
         canonical = canonical_bytes(semantic_tuple(event_type, body, actor, book, effective_time))
@@ -403,7 +406,7 @@ class SpineLog:
         citations = [('blob_refs', reference) for reference in tuple(blob_refs)]
         citations.extend(cited_blobs(event_type, body))
         for field, reference in citations:
-            if not self.store.has(reference):
+            if reference not in pending and not self.store.has(reference):
                 raise MissingBlobRefusal(
                     'blob {} is not in the store at {}, so the {} citing it as {} does not append: '
                     'durability ordering is law - put and fsync the blob first, then record the '
@@ -422,6 +425,8 @@ class SpineLog:
             hashlib.sha256(sealed).hexdigest(), tag, envelope['prev_hash'], record_time)
         frame['lsn'] = self._head_lsn + 1
 
+        for data in pending.values():
+            self.store.put(data)
         self._land(frame)
         if event_type in CAPABILITY_EVENTS and self._capability is not None:
             # The fold moves with the log rather than being re-read from it. Safe only because this
@@ -557,7 +562,7 @@ class SpineLog:
         if effective_time is not None:
             check_time(effective_time)
 
-    def _refused(self, event_type, body, actor, book):
+    def _refused(self, event_type, body, actor, book, pending={}):
         """`(verb, scope, doc, genesis, moved)` where this seat's scope refuses the append, else
         None - the writer's own voice, which no submitter speaks, refused outright."""
         verb = verb_for(event_type)
@@ -575,12 +580,12 @@ class SpineLog:
         # handle is not in a document, so "no document yet" cannot mean anybody may pull it.
         if (doc is not None or verb == RECOVERY) \
                 and not evaluate(doc, genesis, actor, verb, scope):
-            moved = self._beyond(event_type, body, doc, actor)
+            moved = self._beyond(event_type, body, doc, actor, pending)
             if moved != []:
                 return verb, scope, doc, genesis, moved
         return None
 
-    def _authorize(self, event_type, body, actor, book):
+    def _authorize(self, event_type, body, actor, book, pending):
         """The enforcement hook: may this actor say this, and is what they are saying evaluable?
 
         Enforcement activates by declaration for the document verbs; break-glass is gated from
@@ -595,7 +600,7 @@ class SpineLog:
         """
         if self._reserved:
             return
-        refused = self._refused(event_type, body, actor, book)
+        refused = self._refused(event_type, body, actor, book, pending)
         if refused is not None:
             verb, scope, doc, genesis, moved = refused
             denial = self.refuse(actor, verb, scope, event_type)
@@ -614,18 +619,19 @@ class SpineLog:
                     'the store, so the body carries its 64-hex address and nothing else - put the '
                     'canonical document with `BlobStore.put` and declare the hash it '
                     'answers'.format(CAPABILITIES_POLICY, blob))
-            parse_document(self.store.get(blob),
+            parse_document(pending.get(blob) or self.store.get(blob),
                            'the capabilities document {}'.format(blob))
 
-    def _beyond(self, event_type, body, doc, actor):
+    def _beyond(self, event_type, body, doc, actor, pending):
         """What a capabilities declaration moves beyond its declarer's `admin` nodes, or None where
         this is no such declaration or its declarer administers nothing - `capability.beyond`'s
-        answer, over a document that reads."""
+        answer, over a document that reads, its bytes `pending` or in the store."""
         if event_type != 'policy_declared' or body.get('policy') != CAPABILITIES_POLICY \
                 or not isinstance(doc, dict) or not is_hash(body.get('blob')):
             return None
         try:
-            declared = parse_document(self.store.get(body['blob']), 'the declaration')
+            declared = parse_document(pending.get(body['blob']) or self.store.get(body['blob']),
+                                      'the declaration')
         except (CapabilityDenied, CollisionRefusal, MissingBlobRefusal):
             return None
         return beyond(doc, declared, actor)

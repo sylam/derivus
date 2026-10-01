@@ -43,6 +43,7 @@ Run: `DV_Spine init` (`python -m derivus_spine.cli init` from a source tree).
 """
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -246,18 +247,18 @@ def do_grant(args):
     it owes.
 
     The document is checked and canonicalised before it is stored, so one policy is one blob however
-    the operator spelled their JSON. A grant that adds a read row leaves the subject entitled with no
-    wrap in the store; that drift is computed against the document now in force and named here, and
-    `rewrap` is what clears it.
+    the operator spelled their JSON, and stored only once the writer admits the declaration. A grant
+    that adds a read row leaves the subject entitled with no wrap in the store; that drift is
+    computed against the document now in force and named here, and `rewrap` is what clears it.
     """
     from derivus_spine import custody
     document = read_json(args.file, 'capabilities document')
     raw = canonical_document(document, args.file)
+    blob = hashlib.sha256(raw).hexdigest()
     log = SpineLog(spine_home(args.home))
     try:
-        blob = log.store.put(raw)
         envelope = log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
-                              actor=args.actor, blob_refs=(blob,))
+                              actor=args.actor, blob_refs=(blob,), pending=(raw,))
         drift = custody.wrap_drift(log)
     finally:
         log.close()

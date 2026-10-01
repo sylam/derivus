@@ -252,7 +252,9 @@ would fill it — the vocabulary block and key this desk seeds it under, how man
 spells for it, how many the map has verified, and for a curve whether its entry declares
 conventions. That last read is `scoped_seed` and `scoped_map`, the same narrowing a verification is
 asked in, so the counts cannot drift from what a probe would cover; a factor nothing seeds carries
-`supply` null and a note, an equity as honestly as a currency nobody named. The candidate runs the
+`supply` null and a note, an equity as honestly as a currency nobody named, and a counterparty's
+`SurvivalProb` names `POST /book/survival`, which writes it from the spread and the recovery the CVA
+desk states. The candidate runs the
 BOOKING's own authoring verdict first (`newly_said`, the half of `deal_verdict` that is not about
 market data, which is the question being asked) and refuses in its words, because a deal whose
 `Object` names no type reaches nothing and a walk that answered it would tell a model the market is

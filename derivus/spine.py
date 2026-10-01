@@ -172,6 +172,7 @@ def package():
     try:
         import derivus_spine.capability
         import derivus_spine.firmness
+        import derivus_spine.oracle
         import derivus_spine.policy
         import derivus_spine.projections
         import derivus_spine.tiers
@@ -1337,10 +1338,15 @@ def tiers_policy():
     return folded(package().policy.tiers_in_force)
 
 
-def quotes(lsn=None):
-    """Every quote the record holds at `lsn`, oldest first: who struck it, what it pinned, what it
-    solved, and the ticket plan an approval of it would sign."""
-    return _rows('quotes', lsn)
+def tolerances(lsn=None):
+    """`{result class: epsilon}` the tolerance policy standing at `lsn` declares, or nothing where
+    none stands - every difference then a departure (`policy.compare`)."""
+    def read(log):
+        policy = package().policy
+        return (policy.in_force(log, policy.TOLERANCE_POLICY, lsn)[1] or {}).get(
+            policy.TOLERANCE_SECTION, {})
+
+    return folded(read)
 
 
 def quote_at(lsn, quote_id):
@@ -1533,6 +1539,19 @@ def admit(lane, actor_name=None, book=None):
     - and a refused seat lands its `capability_denied` in the writer's voice before the raise, a
     repeat coalescing onto the LSN it already has.
     """
+    standing = lane == STANDING
+    # the type the lane would have filed, or the lane itself where it files none
+    entitled(package().vocabulary.MARK if standing else package().vocabulary.VALIDATE, actor_name,
+             book, STANDING_TYPE if standing else (lane or CURIOSITY), 'this job is not queued '
+             'and nothing runs: the hub\'s compute is reached through the queue and the queue asks '
+             'first, so work this seat is not scoped for is work this box does not pay for',
+             anywhere=not standing)
+
+
+def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
+    """Let this seat act under `verb` over `book` - over any node under it where `anywhere` - or
+    refuse in the record's own words, saying `refused`, the denial of `attempted` landed first.
+    Every seat where no capabilities document is in force."""
     spine = package()
 
     def asked(log):
@@ -1540,27 +1559,20 @@ def admit(lane, actor_name=None, book=None):
         if document is None:
             return None
         subject = actor(actor_name, log)
-        verb = spine.vocabulary.MARK if lane == STANDING else spine.vocabulary.VALIDATE
-        held = (spine.capability.evaluate(document, genesis, subject, verb, book)
-                if lane == STANDING else spine.capability.holds_any(document, subject, verb, book))
-        return None if held else (subject, verb)
+        held = (spine.capability.holds_any(document, subject, verb, book) if anywhere
+                else spine.capability.evaluate(document, genesis, subject, verb, book))
+        return None if held else subject
 
-    refused = folded(asked)
-    if refused is None:
+    subject = folded(asked)
+    if subject is None:
         return
-    subject, verb = refused
     with writing() as log:
-        # the type the lane would have filed, or the lane itself where it files none
-        denial = log.refuse(subject, verb, book,
-                            STANDING_TYPE if lane == STANDING else (lane or CURIOSITY))
+        denial = log.refuse(subject, verb, book, attempted)
     raise SpineRefused(
-        'actor {0!r} holds no {1} scope over {2!r}, so this job is not queued and nothing runs: '
-        'the hub\'s compute is reached through the queue and the queue asks first, so work this '
-        'seat is not scoped for is work this box does not pay for. Declare a document granting '
-        '({0!r}, {1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself recorded at '
-        'LSN {3}'.format(
-            subject, verb, book if book is not None else spine.capability.ANY_BOOK,
-            denial['lsn']))
+        'actor {0!r} holds no {1} scope over {2!r}, so {3}. Declare a document granting ({0!r}, '
+        '{1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself recorded at LSN '
+        '{4}'.format(subject, verb, book if book is not None else spine.capability.ANY_BOOK,
+                     refused, denial['lsn']))
 
 
 def firmness_policy():
@@ -1913,14 +1925,14 @@ class PnL:
         return moved
 
     @classmethod
-    def recorded(cls, cut, costs, fills, amendments, known=None):
-        """`day -> {held, through, dealt}` - what each position held before a day's trading and
-        through it, and what it traded on it, as the record stood at the marks: `cut` is every
-        marks' `(lsn, day)` and the end's, oldest first, `costs(lsn)` the `costs` rows there -
-        `known` the ones already read - and `fills(after, until)` and `amendments(after, until)`
-        what was filed between two positions. An amendment restrikes the trade rather than trading
-        it, so what it moved is held on its new terms from the START of the business day it was
-        filed in, whatever that day paid on them."""
+    def recorded(cls, cut, costs, fills, known=None):
+        """`day -> {through, dealt}` - what each position held at the END of a day, which is what
+        it is paid what falls due that day on, and what it traded on it, as the record stood at the
+        marks: `cut` is every marks' `(lsn, day)` and the end's, oldest first, `costs(lsn)` the
+        `costs` rows there - `known` the ones already read - and `fills(after, until)` what was
+        filed between two positions. A trade's price carries what its own day pays, so a seller
+        that day is paid nothing and a buyer all of it, and an amendment restrikes the position for
+        the whole of the business day it was filed in."""
         marked, answered = dict(cut), {}
         folded = {lsn: {(row['instrument'], row['agreement'], row['portfolio']): row['quantity']
                         for row in rows} for lsn, rows in (known or {}).items()}
@@ -1936,27 +1948,15 @@ class PnL:
             if day not in answered:
                 before = max((lsn for lsn, at in cut if at < day), default=None)
                 through = max((lsn for lsn, at in cut if at <= day), default=None)
-                dealt, opening = {}, held(before)
+                dealt = {}
                 if marked.get(through) == day:
                     for fill in fills(before or 0, through):
                         dealt[cls._where(fill)] = dealt.get(cls._where(fill), 0.0) + abs(
                             float(fill['quantity']))
-                    opening = cls._restruck(opening, amendments(before or 0, through))
-                answered[day] = {'held': opening, 'through': held(through), 'dealt': dealt}
+                answered[day] = {'through': held(through), 'dealt': dealt}
             return answered[day]
 
         return on
-
-    @staticmethod
-    def _restruck(held, amendments):
-        """`held` with every position of the terms each of `amendments` restruck moved onto the
-        terms they became, in the order they were filed."""
-        held = dict(held)
-        for amendment in amendments:
-            for key in [key for key in held if key[0] == amendment['instrument'] and held[key]]:
-                onto = (amendment['amended_to'],) + key[1:]
-                held[onto] = held.get(onto, 0.0) + held.pop(key)
-        return held
 
     @classmethod
     def pnl(cls, start, end, record, scope):
@@ -1971,9 +1971,14 @@ class PnL:
         `last_days`, the last day of every instrument that has one; `positions_end`, the `positions`
         rows at the end, which carry the counterparty; `cut`, every marks' `(lsn, day)` and the
         end's, oldest first; `days`, the record on a day (`recorded`); `rates(day, lsn)`, the close
-        standing on a day as filed by a position; and `fills_between(after, until)`. `scope` narrows
-        the rows, and below the whole book the unknowns to those naming an instrument of them or
-        none.
+        standing on a day as filed by a position; `fills_between(after, until)`; and `tolerances`,
+        the epsilons the record declares. `scope` narrows the rows, and below the whole book the
+        unknowns to those naming an instrument of them or none, and the breaks to theirs.
+
+        A PAYMENT THE DIARY DETERMINES IS BOOKED AT ITS AMOUNT: a settlement filed against it that
+        moved another, beyond the `pnl` tolerance or in another currency, is a BREAK -
+        `{key, instrument, determined, settled, difference, reference, value_date}` under `breaks` -
+        and never an unknown.
 
         A MOVEMENT COUNTS IN THE WINDOW IT WAS FILED IN, and a payment the diary determines in the
         one it falls due in, each read as the record stood at the end of that business day: its
@@ -2018,7 +2023,7 @@ class PnL:
         flows = dict(record, start=start['day'], end=end['day'], settled=settled, standing=standing,
                      held=held, carried=carried, owners={}, paid={})
 
-        unknown = []
+        unknown, breaks = [], []
         for (kind, subject), moved in sorted(settled.items()):
             for movement in moved:
                 # a settlement no row here announces, one against a payment nobody held, and a fee
@@ -2030,11 +2035,24 @@ class PnL:
                 elif kind == 'payment':
                     instrument, row = carried[subject][0]
                     held_then = cls._holdings(row, movement, flows)
-                    if not any(held_then.get(other)
-                               for other in cls._carrying(subject, movement, flows)):
+                    among = cls._carrying(subject, movement, flows)
+                    if not any(held_then.get(other) for other in among):
                         unknown.append({'instrument': instrument, 'what': 'settlement {} moved a '
                                         'payment no position held when it fell due'.format(
                                             movement['reference'])})
+                    elif row['determined'] and movement in standing['end'].get((kind, subject), ()):
+                        # what the diary determines is booked; a settlement moving else is a break
+                        due = row['amount'] * sum(held_then.get(other, 0.0) for other in among)
+                        same, spine = movement['asset'] == row['currency'], package()
+                        if not same or spine.policy.compare(
+                                {spine.oracle.PNL: due}, {spine.oracle.PNL: movement['amount']},
+                                record['tolerances']):
+                            breaks.append({
+                                'key': subject, 'instrument': instrument, 'determined': due,
+                                'settled': movement['amount'],
+                                'difference': movement['amount'] - due if same else None,
+                                'reference': movement['reference'],
+                                'value_date': movement['effective_time'][:10]})
                 if kind == 'fee' and not cls._owners(movement, flows):
                     unknown.append({'instrument': subject, 'what': 'fee {} falls to no position - '
                                     'none under the book traded or held what it was filed '
@@ -2103,9 +2121,11 @@ class PnL:
                            'agreement': None, 'counterparty': None}, **scope):
             mine = {row['instrument'] for row in rows} | {None}
             unknown = [entry for entry in unknown if entry['instrument'] in mine]
+            breaks = [entry for entry in breaks if entry['instrument'] in mine]
         unknown = [json.loads(named) for named in sorted({json.dumps(row, sort_keys=True)
                                                           for row in unknown})]
-        return {'rows': rows, 'unknown': unknown, 'realised_method': 'average cost',
+        return {'rows': rows, 'unknown': unknown, 'breaks': breaks,
+                'realised_method': 'average cost',
                 'total': {figure: _sum(*(row[figure] for row in rows)) for figure in cls.FIGURES},
                 'complete': not unknown and all(
                     row[figure] is not None for row in rows
@@ -2290,20 +2310,19 @@ class PnL:
 
     @classmethod
     def _holdings(cls, row, movement, flows):
-        """What each position held when the payment `row` fell due - before that day's trading - as
-        the record stood when `movement` settled it: through the day it was filed where it was filed
-        before it fell due."""
+        """What each position held at the end of the day the payment `row` fell due, as the record
+        stood when `movement` settled it: of the day it was filed where it was filed before it fell
+        due."""
         _, day = cls._filed(movement['lsn'], flows)
-        return (flows['days'](row['due_date'])['held'] if row['due_date'] <= day
-                else flows['days'](day)['through'])
+        return flows['days'](min(row['due_date'], day))['through']
 
     @classmethod
     def _payments(cls, key, flows, unknown):
-        """What this position was paid in the window: the diary's amount times what it held before
-        the day it fell due, for every payment the diary determines falling due in the window; and
-        its share - by what each position held when the row fell due - of what every settlement
-        FILED in the window moved against a row the diary leaves undetermined. Each at the close
-        standing on its own day as the record stood at the end of the business day it counts in.
+        """What this position was paid in the window: the diary's amount times what it held at the
+        end of the day it fell due, for every payment the diary determines falling due in the
+        window; and its share - by what each position held then - of what every settlement FILED in
+        the window moved against a row the diary leaves undetermined. Each at the close standing on
+        its own day as the record stood at the end of the business day it counts in.
 
         An undetermined payment is the book's until something settles it: it leaves the book's value
         the day after it falls due, or on the position's last day where it is due then or after, and
@@ -2314,7 +2333,7 @@ class PnL:
             due = row['due_date']
             if row['determined']:
                 if flows['start'] < due <= flows['end']:
-                    mine = flows['days'](due)['held'].get(key, 0.0)
+                    mine = flows['days'](due)['through'].get(key, 0.0)
                     if mine:
                         total = _sum(total, cls._converted(
                             mine * row['amount'], row['currency'], due, cls._falls(due, flows),
@@ -2323,7 +2342,7 @@ class PnL:
             leaves = (flows['start'] <= due < flows['end'] if last is None or due < last
                       else flows['start'] < due <= flows['end'])
             if (leaves and row['state'] != SETTLED
-                    and flows['days'](due)['held'].get(key, 0.0)):
+                    and flows['days'](due)['through'].get(key, 0.0)):
                 unknown.append({'instrument': key[0], 'what': 'the {} payment due {} is not '
                                 'determined and nothing settled it'.format(row['leg'], due)})
                 return None

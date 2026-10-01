@@ -3,6 +3,7 @@ fees and a partial unwind between them, and the P&L read back per position, per 
 live - held to independent valuations and to its own identity, nothing monkeypatched.
 """
 import json
+import math
 import os
 import sys
 
@@ -11,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus import service, spine
+from derivus import service, spine, utils
 from derivus.config import as_json
 from derivus_mcp import server as binding
 from derivus_spine import SpineLog, init_home, oracle, policy, verbs
@@ -496,8 +497,8 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
     """THE CLOSE IS THE END OF THE DAY. The engine values a payment into the marks of the day it
     falls due, so a coupon paid on a marked day would count twice that day - in the mark and as cash
     - and come back out of the next. A strip's coupon, which the diary determines, leaves the day's
-    value as the cash it becomes, and a strip bought that day is bought without it. A swap's
-    floating coupon leaves the value once a settlement filed by the close says what it moved:
+    value as the cash it becomes, and a strip bought that day is paid it, its price carrying it. A
+    swap's floating coupon leaves the value once a settlement filed by the close says what it moved:
     settled on time it is that day's cash; marked settled with nothing moved it stays in the value
     and is gone the next day; settled late it lands in the day it was filed - three windows on and
     dated a day after the payment included, after the book's diary has dropped the row - and is in
@@ -507,7 +508,7 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
     second order in the day's move.
 
     Killing mutations: what a day paid left in its marks; the start's value corrected by what was
-    filed by the END; a position traded on a coupon day paid the coupon; a floating coupon's missing
+    filed by the END; a position opened on its coupon day paid nothing; a floating coupon's missing
     money named in the window it falls due in rather than the one it leaves the value in; a
     settlement filed late looked for only in the latest diary before it; one against a payment of
     days past still taken out of a later mark; the day being lived rated at the last close, or a
@@ -560,7 +561,8 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
         "the marks value the day's own coupon"
     assert strip['paid_end'] == strip['payments'] == pytest.approx(coupon)
     assert strip['value_end'] == pytest.approx(strip['unit_end'] - coupon, rel=1e-12)
-    assert keyed(first)[bought]['payments'] == 0.0, 'bought on its coupon day, without the coupon'
+    assert keyed(first)[bought]['payments'] == pytest.approx(coupon), \
+        'bought on its coupon day, its price carrying the coupon'
     assert keyed(first)[bought]['value_end'] == pytest.approx(strip['value_end'], rel=1e-12)
     on_time = keyed(first)[where['SW-1']]
     assert on_time['unit_end'] == pytest.approx(unit(seasoned('SW-1'), END, 18.0), rel=1e-12)
@@ -607,6 +609,141 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
     rolled(desk, SIXTH, 17.0)
     assert keyed(CLIENT.get('/book/pnl').json())[where['CFL']]['payments'] == pytest.approx(
         100_000.0 * 18.0), 'a day between the last marks and the one being lived: its own close'
+
+
+#: A three-month rand deposit placed on the second marked day at the curve's own rate - 2% over
+#: 92 days ACT/365, simply - so that it is worth nothing as it is placed.
+PLACED = {'Object': 'DepositDeal', 'Reference': 'DEP-T', 'Currency': 'ZAR',
+          'Discount_Rate': 'ZAR', 'Amount': 1_000_000.0, 'Effective_Date': END,
+          'Maturity_Date': pd.Timestamp('2024-10-01'), 'Payment_Frequency': pd.DateOffset(months=3),
+          'Interest_Rate_Schedule': utils.DateList(
+              {END: 100.0 * (math.exp(0.02 * 92 / 365) - 1.0) / (92 / 365)})}
+
+
+#: Three rand cashflows paying on the second marked day, held by /Rates before it: one it sells to
+#: /FX that morning, one it sells away, and one it and /FX each buy again.
+MOVED, SOLD, ADDED = (cashflow(name, 100_000.0, END) for name in ('CF-T', 'CF-S', 'CF-U'))
+
+
+def test_the_holder_at_the_end_of_the_due_day_is_paid(recorded, desk):
+    """THE HOLDER AT THE END OF THE DUE DAY IS PAID, a trade's price that day carrying what the day
+    pays. A rand deposit placed on the second marked day at nothing pays its 1,000,000 out that day:
+    the live window and the official one read that principal, 1,000,000 x 18.0, against the
+    deposit's own value, nothing at the curve's rate. That morning /Rates sells one cashflow paying
+    100,000 to /FX, sells another away and buys a third again as /FX buys one too, each at 100,000
+    x 18.0: the first is /FX's alone, the second nobody's here, the third /Rates' twice and /FX's
+    once - the diary's 300,000, no break - and a seller's P&L is its price less its value at the
+    start. A swap moved from /Rates to /FX that day at its value is /FX's whole floating coupon,
+    5,250 x 18.0, which leaves /FX's value whole. Complete, nothing named.
+
+    Killing mutations: the holding before the day read, which makes the principal a phantom of
+    18,000,000; and that holding kept where there was one, which pays the moved cashflow twice.
+    """
+    designated(recorded, indices=(RAND,))
+    for day in ('2024-04-01', '2024-07-01'):
+        observe(recorded, 0.02, index=RAND, date=pd.Timestamp(day))
+    for deal in (MOVED, SOLD, ADDED, seasoned('SW-T')):
+        booked(deal, 1.0, 'EXEC-' + deal['Reference'], BOOK + '/Rates', 0.0)
+    closed_and_marked()
+
+    rolled(desk, END, 18.0)
+    coupon, principal = 100_000.0 * 18.0, 1_000_000.0 * 18.0
+    swap = unit(seasoned('SW-T'), END, 18.0)
+    booked(PLACED, 1.0, 'EXEC-DEP', BOOK + '/Rates', 0.0)
+    for deal, quantity, part, price in (
+            (MOVED, -1.0, '/Rates', coupon), (MOVED, 1.0, '/FX', coupon),
+            (SOLD, -1.0, '/Rates', coupon), (ADDED, 1.0, '/Rates', coupon),
+            (ADDED, 1.0, '/FX', coupon), (seasoned('SW-T'), -1.0, '/Rates', swap),
+            (seasoned('SW-T'), 1.0, '/FX', swap)):
+        booked(deal, quantity, 'EXEC-' + deal['Reference'] + part[1:], BOOK + part, price)
+    deposit = (instrument_of('DEP-T'), BOOK + '/Rates')
+
+    def placed(answer):
+        assert answer['complete'] is True and answer['unknown'] == [], answer['unknown']
+        row = keyed(answer)[deposit]
+        assert (row['value_end'], row['payments']) == (pytest.approx(principal), -principal)
+        assert row['pnl'] == pytest.approx(0.0, abs=1e-6)
+
+    placed(CLIENT.get('/book/pnl').json())
+    for row, amount in ((due('DEP-T', '2024-07-01'), -1_000_000.0),
+                        (due('SW-T', '2024-07-01', 'FloatCashflows'), 5_250.0),
+                        (due('CF-T', '2024-07-01'), None), (due('CF-U', '2024-07-01'), None)):
+        settle({'subject': row['key'], 'amount': row['amount'] if amount is None else amount,
+                'asset': 'ZAR', 'kind': 'payment', 'reference': 'PAY-' + row['key'][:6],
+                'value_date': '2024-07-01'})
+    closed_and_marked()
+    official = between('2024-06-28', '2024-07-01')
+    placed(official)
+    assert official['breaks'] == []
+    rows = keyed(official)
+    assert {(name, part): rows[(instrument_of(name), BOOK + part)]['payments'] for name, part in (
+        ('CF-T', '/Rates'), ('CF-T', '/FX'), ('CF-S', '/Rates'), ('CF-U', '/Rates'),
+        ('CF-U', '/FX'), ('SW-T', '/Rates'), ('SW-T', '/FX'))} == {
+        ('CF-T', '/Rates'): 0.0, ('CF-T', '/FX'): pytest.approx(coupon), ('CF-S', '/Rates'): 0.0,
+        ('CF-U', '/Rates'): pytest.approx(2 * coupon), ('CF-U', '/FX'): pytest.approx(coupon),
+        ('SW-T', '/Rates'): 0.0, ('SW-T', '/FX'): pytest.approx(5_250.0 * 18.0)}
+    for name in ('CF-T', 'CF-S'):
+        sold = rows[(instrument_of(name), BOOK + '/Rates')]
+        assert sold['pnl'] == pytest.approx(coupon - sold['value_start'], rel=1e-12), name
+    bought = rows[(instrument_of('SW-T'), BOOK + '/FX')]
+    assert bought['value_end'] == pytest.approx(swap - 5_250.0 * 18.0, rel=1e-12)
+    assert bought['trading'] == pytest.approx(-5_250.0 * 18.0, abs=1e-3)
+    assert bought['pnl'] == pytest.approx(0.0, abs=1e-3)
+
+
+#: Three rand cashflows paying on the second marked day, one settled for another amount and one in
+#: dollars.
+OFF, ON, ABROAD = (cashflow(name, amount, END) for name, amount in (
+    ('CF-K', 100_000.0), ('CF-L', 60_000.0), ('CF-M', 40_000.0)))
+
+
+def test_a_settlement_moving_another_amount_is_a_break_and_the_p_l_books_the_diary_s(recorded,
+                                                                                    desk):
+    """A PAYMENT THE DIARY DETERMINES IS BOOKED AT ITS AMOUNT. One cashflow's 100,000 settled at
+    100,250 is one break, `{key, instrument, determined 100,000, settled 100,250, difference 250,
+    reference, value_date}`, the payment booked at 100,000 x 18.0 and the window complete; one
+    settled at its own 60,000 is none, and one whose 40,000 rand moved as 40,000 dollars is a break
+    with no difference. The breaks are their portfolio's and not the other's, and the settlement
+    restated at 100,000 the next day breaks nothing there, the struck day unmoved.
+
+    Killing mutations: the comparison dropped, which lists no break; the currency never compared,
+    which lists none for the dollars; and every filed movement compared, the restatement's
+    taken-back filing included, which breaks the day it was corrected.
+    """
+    designated(recorded, fixings=False)
+    booked(OFF, 1.0, 'EXEC-K', BOOK + '/Rates', 1_800_000.0)
+    booked(ON, 1.0, 'EXEC-L', BOOK + '/FX', 1_080_000.0)
+    booked(ABROAD, 1.0, 'EXEC-M', BOOK + '/Rates', 720_000.0)
+    closed_and_marked()
+
+    rolled(desk, END, 18.0)
+    key, abroad = (due(name, '2024-07-01')['key'] for name in ('CF-K', 'CF-M'))
+    for name, amount, asset in (('CF-K', 100_250.0, 'ZAR'), ('CF-L', 60_000.0, 'ZAR'),
+                                ('CF-M', 40_000.0, 'USD')):
+        row = due(name, '2024-07-01')
+        settle({'subject': row['key'], 'amount': amount, 'asset': asset, 'kind': 'payment',
+                'reference': 'PAY-' + row['key'][:4], 'value_date': '2024-07-01'})
+    closed_and_marked()
+    first = between('2024-06-28', '2024-07-01')
+    assert first['complete'] is True and first['unknown'] == [], first['unknown']
+    assert sorted(first['breaks'], key=lambda entry: entry['determined']) == [
+        {'key': abroad, 'instrument': instrument_of('CF-M'), 'determined': 40_000.0,
+         'settled': 40_000.0, 'difference': None, 'reference': 'PAY-' + abroad[:4],
+         'value_date': '2024-07-01'},
+        {'key': key, 'instrument': instrument_of('CF-K'), 'determined': 100_000.0,
+         'settled': 100_250.0, 'difference': 250.0, 'reference': 'PAY-' + key[:4],
+         'value_date': '2024-07-01'}]
+    assert keyed(first)[(instrument_of('CF-K'), BOOK + '/Rates')]['payments'] == pytest.approx(
+        100_000.0 * 18.0), 'booked at what the diary determines'
+    assert [between('2024-06-28', '2024-07-01', portfolio=BOOK + part)['breaks']
+            for part in ('/Rates', '/FX')] == [first['breaks'], []]
+
+    rolled(desk, THIRD, 17.5)
+    settle({'subject': key, 'amount': 100_000.0, 'asset': 'ZAR', 'kind': 'payment',
+            'reference': 'PAY-' + key[:4], 'value_date': '2024-07-01'})
+    closed_and_marked()
+    assert between('2024-07-01', '2024-07-02')['breaks'] == []
+    assert between('2024-06-28', '2024-07-01') == first, 'a day struck never moves'
 
 
 @pytest.mark.parametrize('switch', [None, 'Yes', 'No'])
@@ -729,8 +866,9 @@ def test_a_leg_settled_late_is_its_structure_s_and_money_nobody_held_is_named(re
     cashflow has its swap's coupon marked settled with nothing moved at its close, and the money
     filed two windows later, after the book's diary has dropped the row: the earlier diary it is
     found in maps the leg to the structure holding it, so the money is the structure's. And a swap
-    bought on the day its coupon falls due, with a settlement saying the book received it, is named
-    as money no position here held when it fell due - not shared as a position netting to nothing.
+    bought and sold again on the day its coupon falls due, with a settlement saying the book
+    received it, is named as money no position here held when it fell due - its holder at the day's
+    end is somebody else - not shared as a position netting to nothing.
 
     Killing mutations: the leg the look-back finds left unmapped; a movement nobody held read as a
     flat net in the day's marks.
@@ -743,7 +881,9 @@ def test_a_leg_settled_late_is_its_structure_s_and_money_nobody_held_is_named(re
 
     rolled(desk, END, 18.0)
     booked(seasoned('SW-CUM'), 1.0, 'EXEC-CUM', BOOK + '/Rates', 0.0)
-    settle({'subject': due('SW-CUM', '2024-07-01', 'FloatCashflows')['key'], 'amount': 5_000.0,
+    coupon = due('SW-CUM', '2024-07-01', 'FloatCashflows')['key']
+    booked(seasoned('SW-CUM'), -1.0, 'EXEC-CUM2', BOOK + '/Rates', 0.0)
+    settle({'subject': coupon, 'amount': 5_000.0,
             'asset': 'ZAR', 'kind': 'payment', 'reference': 'PAY-CUM', 'value_date': '2024-07-01'})
     leg = due('ST2-SW', '2024-07-01', 'FloatCashflows')['key']
     settle({'subject': leg})
@@ -761,6 +901,75 @@ def test_a_leg_settled_late_is_its_structure_s_and_money_nobody_held_is_named(re
     assert late['complete'] is True and late['unknown'] == [], late['unknown']
     assert keyed(late)[(instrument_of('ST-2'), BOOK + '/FX')]['payments'] == pytest.approx(
         10_000.0 * 18.0), "the leg's late money is its structure's"
+
+
+#: The digital again, struck on a surface ticked in on the second marked day and paying on the
+#: third, and once more paying that day; and a strip bought beside it, paying on the third and a
+#: year on.
+TICKED = dict(BINARY, Reference='EQ-NEW', Expiry_Date=THIRD, Settlement_Date=THIRD)
+TODAY = dict(BINARY, Reference='EQ-DAY', Expiry_Date=END, Settlement_Date=END)
+BESIDE = dict(STRIP_COUPONS, Reference='CFL-NEW', Cashflows={'Items': [
+    {'Payment_Date': THIRD, 'Fixed_Amount': 100_000.0},
+    {'Payment_Date': pd.Timestamp('2025-06-30'), 'Fixed_Amount': 100_000.0}]})
+
+
+def test_a_trade_is_read_on_the_market_it_was_done_on(recorded, desk):
+    """A TRADE IS READ ON THE MARKET IT WAS DONE ON. A digital booked on the second marked day, on
+    a surface ticked in that morning, expiring and paying 10,000 on the third, and a strip bought
+    beside it paying 100,000 rand on the third: the window over all three days reads their rows off
+    the marks after they traded, so the digital closes on its last day, its 5,000 premium released,
+    and realises 10,000 - 5,000, the strip is paid 100,000 x 18.0, and each sums to its days. One
+    paying 10,000 that same day, read live before any marks follow, is read on the book as it
+    stands and realises 10,000 - 5,000 too.
+
+    Killing mutations: every unit read off the window's start, whose market has no surface, which
+    leaves the digital no rows - its basis never released and its payoff money no diary announces;
+    a unit traded in the window read off the window's end, past the strip's coupon; and one traded
+    after the last marks read off the start's, which leaves the live digital no rows.
+    """
+    designated(recorded)
+    body = json.loads(desk.read_text())
+    factors = body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    surface = factors.pop('VolatilityGrid.EQ')
+    desk.write_text(json.dumps(body, indent=2), newline='\n')
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    closed_and_marked()
+
+    rolled(desk, END, 18.0)
+    body = json.loads(desk.read_text())
+    body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'VolatilityGrid.EQ'] = surface
+    desk.write_text(json.dumps(body, indent=2), newline='\n')
+    booked(TICKED, 1.0, 'EXEC-T', BOOK + '/FX', 5_000.0)
+    booked(BESIDE, 1.0, 'EXEC-L', BOOK + '/FX', 1_700_000.0)
+    booked(TODAY, 1.0, 'EXEC-D', BOOK + '/FX', 5_000.0)
+    observe(recorded, 104.0, index=INDEX, date=END)
+    settle({'subject': due('EQ-DAY', '2024-07-01')['key'], 'amount': 10_000.0, 'asset': 'USD',
+            'kind': 'payment', 'reference': 'PAY-D', 'value_date': '2024-07-01'})
+    live = keyed(between('2024-06-28'))[(instrument_of('EQ-DAY'), BOOK + '/FX')]
+    assert (live['payments'], live['realised']) == (10_000.0, 10_000.0 - 5_000.0), 'read live'
+    closed_and_marked()
+
+    rolled(desk, THIRD, 18.0)
+    observe(recorded, 104.0, index=INDEX, date=THIRD)
+    settle({'subject': due('EQ-NEW', '2024-07-02')['key'], 'amount': 10_000.0, 'asset': 'USD',
+            'kind': 'payment', 'reference': 'PAY-T', 'value_date': '2024-07-02'})
+    settle({'subject': due('CFL-NEW', '2024-07-02')['key']})
+    closed_and_marked()
+    rolled(desk, FOURTH, 18.0)
+    closed_and_marked()
+
+    days = [between(*window) for window in (('2024-06-28', '2024-07-01'),
+                                            ('2024-07-01', '2024-07-02'),
+                                            ('2024-07-02', '2024-07-03'))]
+    whole = between('2024-06-28', '2024-07-03')
+    assert whole['complete'] is True and whole['unknown'] == [], whole['unknown']
+    digital, strip = ((instrument_of(name), BOOK + '/FX') for name in ('EQ-NEW', 'CFL-NEW'))
+    assert (tuple(keyed(whole)[digital][figure] for figure in ('value_end', 'payments',
+                                                               'realised')),
+            keyed(whole)[strip]['payments']) == ((0.0, 10_000.0, 10_000.0 - 5_000.0),
+                                                 pytest.approx(100_000.0 * 18.0))
+    summed(whole, days, digital, strip)
 
 
 PAYING = cashflow('CF-G', 100_000.0, END)
@@ -842,6 +1051,44 @@ def test_an_amendment_restrikes_the_position_from_the_start_of_its_day(recorded,
     summed(whole, [first, second], *keyed(whole))
 
 
+def test_a_restrike_day_pays_what_each_position_holds_at_its_end(recorded, desk):
+    """A RESTRIKE DAY PAYS WHAT EACH POSITION HOLDS AT ITS END. A cashflow held twice in one
+    portfolio and once in another, on the morning it pays half unwound in the first and bought again
+    in the second, then restruck to half as much again: each is paid on what it holds at the end of
+    the day on the terms it holds then, 1 x 150,000 x 18.0 and 2 x 150,000 x 18.0 - the unit sold
+    that morning nothing, its price carrying the coupon, and the old terms nothing - and the day
+    closes, the clips left on the old terms naming nothing.
+
+    Killing mutations: the holding before the day read, which pays the old terms 2 and 1 x 100,000
+    x 18.0 and the new nothing; and that holding kept where there was one, which pays the old terms
+    it as well.
+    """
+    designated(recorded, fixings=False)
+    booked(PAYING, 2.0, 'EXEC-G', BOOK + '/Rates', 3_700_000.0)
+    booked(PAYING, 1.0, 'EXEC-G3', BOOK + '/FX', 1_850_000.0)
+    closed_and_marked()
+
+    rolled(desk, END, 18.0)
+    old = instrument_of('CF-G')
+    booked(PAYING, -1.0, 'EXEC-G2', BOOK + '/Rates', 1_800_000.0)
+    booked(PAYING, 1.0, 'EXEC-G4', BOOK + '/FX', 1_800_000.0)
+    amended = CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': held()['CF-G']['deal_paths'][0],
+        'fields': {'Amount': 150_000.0}, 'reference': 'CF-G'}), headers=JSON).json()
+    assert amended['written'] is True, amended
+    new = amended['recorded']['amended_to']
+    for row in CLIENT.get('/book/diary').json()['rows']:
+        if row['kind'] == 'payment' and row['due_date'] == '2024-07-01':
+            settle({'subject': row['key']})
+    closed_and_marked()
+
+    window = between('2024-06-28', '2024-07-01')
+    assert window['complete'] is True and window['unknown'] == [], window['unknown']
+    assert [[keyed(window)[(instrument, BOOK + portfolio)]['payments'] for instrument in (
+        old, new)] for portfolio in ('/Rates', '/FX')] == [
+        [0.0, pytest.approx(150_000.0 * 18.0)], [0.0, pytest.approx(2 * 150_000.0 * 18.0)]]
+
+
 DAYTRADE = cashflow('CF-E', 300_000.0, START + pd.DateOffset(years=1))
 CLOSED = cashflow('CF-F', 200_000.0, START + pd.DateOffset(years=1))
 
@@ -903,6 +1150,43 @@ def test_a_fee_falls_to_who_dealt_it_and_a_position_traded_to_nothing_is_worth_n
     assert (out['existing'], out['trading']) == (None, None), 'the split wants a mark at the end'
     assert whole['total']['existing'] is None and whole['total']['pnl'] is not None
     summed(whole, [first, second], *keyed(whole))
+
+
+def test_an_expired_trade_the_file_lost_stands_until_it_settles(recorded, desk):
+    """THE POSITIONS READ AN EXPIRY OFF THE RECORD'S OWN TERMS. The digital rolled past its
+    expiry stands expired on its `Expiry_Date` and settling on its `Settlement_Date`; its node
+    deleted from the file, it reads the same off the terms the record holds, with no path; and on
+    its settlement day it rolls off. Another book's digital is not this book's to compile, and a
+    box whose store lacks the lost terms names neither day of that row and answers the rest.
+
+    Killing mutations: the expiries read off the file's diary alone, which leaves the deleted
+    trade standing with no expiry for good; every book's positions compiled on this book's market;
+    the terms read whether the store holds them or not, which refuses the whole read.
+    """
+    booked(BINARY, 1.0, 'EXEC-Q', BOOK + '/FX', 5_000.0)
+    spine.book(json.loads(dump(dict(BINARY, Reference='EQ-OTHER'))), 1.0, 'CPTY_B', 'CLIENT_B',
+               'EXEC-OTHER', book_name='another-desk')
+    rolled(desk, END, 18.0)
+
+    def standing():
+        return {row['instrument']: row for row in CLIENT.get('/book/positions').json()[
+            'positions']}
+
+    digital = instrument_of('EQ-BIN')
+    intact = standing()[digital]
+    assert (intact['expired'], intact['settles']) == ('2024-06-30', '2024-07-02')
+    assert [(row['expired'], row['settles']) for row in standing().values()
+            if row['book'] == 'another-desk'] == [(None, None)]
+    deleted = CLIENT.post('/book/deals', content=dump({
+        'action': 'delete', 'deal_path': intact['deal_paths'][0], 'reference': 'EQ-BIN'}),
+        headers=JSON).json()
+    assert deleted['written'] is True, deleted
+    assert standing()[digital] == dict(intact, deal_paths=[], reference=None, object=None)
+    rolled(desk, THIRD, 17.5)
+    assert digital not in standing(), 'on the day it settles it rolls off'
+    (recorded / 'blobs' / digital[:2] / digital[2:4] / digital).unlink()
+    assert standing()[digital] == dict(intact, deal_paths=[], reference=None, object=None,
+                                       expired=None, settles=None)
 
 
 #: A cashflow paying inside the first window, bought after it paid.

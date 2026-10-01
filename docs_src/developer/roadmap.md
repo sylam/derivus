@@ -117,7 +117,11 @@ is recorded so a reader knows which readings rest on it.
   factor's own, while the correlation section's rows are the independent normals the Cholesky
   consumes, a different basis related by the two-factor rotation. Copying the writer's second
   number into the section gives a world whose rate covariance disagrees with its declaration,
-  silently.
+  silently - 0.5 copied into the second factor's row realises 0.58. One matrix on the driving
+  innovations is the source: the drift reads the section's rows through the loadings (M) and the
+  writer stops emitting a second basis (L). Found beside it, UNMEASURED: a calibrated market can
+  carry the quanto number on its Hull-White factors with no row in the section at all, so the
+  simulated FX ignores the rates the drift reads.
 
 ### The autocall, TARF and barrier pricers
 
@@ -247,7 +251,10 @@ is recorded so a reader knows which readings rest on it.
   cannot carry a quote derivative - an FX forward outright, a polish stopping above
   `Stationarity_Tol` - returns the whole book's risk in factor space with the refusal named.
   UNMEASURED on a desk book; a two-trade FX book reads in 5.1 s, its three blocks' refit
-  included. The remedy for the second is a retry with the refusing block's switch off.
+  included. A calibration is a function of the market snapshot, not the book, so the remedy for
+  the first is the connected bootstrap cached by the market's hash until a tick; for the second a
+  retry with the refusing block alone off prices - per block, an outright being a row of the curve
+  family rather than a family of its own.
 - **Opening a log scans it, and every read of the record opens one** (2026-09-23). The seek closed
   the READING half of the desk's beat - a page of ten at the head of a 2,005-event log is 0.20 ms
   where it was 7.50, and one two-second beat is 28 ms where it was 44 - and what is left is
@@ -257,8 +264,10 @@ is recorded so a reader knows which readings rest on it.
   no `?since=` folds from genesis by design. Queue admission rides the same open once per submitted
   job (the capability fold, 1.2 ms at 21 events and 20.5 ms at 1,994), which is still under a
   fiftieth of the cheapest job it gates, so nothing caches it. The remedy is a checkpointed index
-  beside `log/` - derivable, disposable and verified the way a seed is - and the question it asks
-  is what invalidates one when a second process appends.
+  beside `log/` - derivable, disposable and verified the way a seed is; an append invalidates
+  nothing, bytes only ever being appended and a new segment only the next number - so an open
+  checks the sizes and the head line and scans the tail alone, and the doctored-middle-line
+  refusal moves to `verify_home`, where the chain is checked on demand. M.
 - **A private market has no surveillance or admin read** (2026-09-23). `spine.resolve_market`
   resolves a `private/<subject>/<name>` market for the subject its name names and refuses everyone
   else at the verb, without minting a fact. The other read the design names — surveillance and
@@ -268,16 +277,6 @@ is recorded so a reader knows which readings rest on it.
   second branch in one function, UNMEASURED because nothing has asked for the read yet. Nothing is
   blocked by it: a designated process resolves the firm's own market, and a private one is its
   declaring seat's.
-- **`spine.quotes()` opens every quote the record holds** (2026-09-23). The `quotes` fold is the one
-  projector whose rows grow with the desk's own activity: the envelope filter keeps it off every
-  other event, and it opens a body per quote at about 0.16 ms, so a two-thousand-event home holding
-  three quotes folds in 7.7 ms and one holding 1,978 in 327 ms. A desk quoting a hundred a day
-  reaches the second reading in about three weeks. It is a READING and nothing on a booking path
-  calls it: a decision seeks to the one frame the acceptance wrote down (`spine.quote_at`), so the
-  cost is one body whatever the desk has quoted. The log's own seek answered the READING half of
-  this - a page of quotes now reaches its first row in 0.20 ms rather than 7.50 - and the 0.16 ms
-  per body stands, so what a paged `quotes` read wants is a `?since=` on the verb and a seed at the
-  close, not a faster walk.
 - **A blob is served by the hub and by nobody else** (2026-09-23). A replica holds `blobs/` and
   every byte in it is self-verifying by hash, so a follower could serve another follower and neither
   would have to trust the other. It does not: a peer server is a second entitlement-evaluating
@@ -324,28 +323,21 @@ is recorded so a reader knows which readings rest on it.
   named. One filed against a payment the book's diary has dropped is looked for in the marks of the
   business week before its value date; beyond it the day it lands in names it while a window
   reaching back over the payment places it, so those days no longer sum to that window.
-  UNMEASURED; closing the first is an optional agreement on the transition, which the settlement
-  interface knows.
-- **A clip left on old terms shares its reference with the terms an amendment restruck**
-  (2026-09-28). The book's diary gives no key to a reference two terms share, so a row falling due
-  under it can be settled by nothing and the close waits on it until the clip is deleted; and a
-  position partly unwound and then restruck on its coupon day is paid that coupon on the new terms
-  for every unit held before the day, the one unwound included. UNMEASURED.
-- **What a settlement moved is not held against what the engine valued** (2026-09-28). A payment
-  the diary determines books the diary's amount whatever a settlement moved against it, naming
-  nothing, and a floating coupon settled on time for another amount than the engine's own books the
-  difference the next day. A floating-coupon swap bought on its coupon day, ex-coupon, carries the
-  engine's coupon in that day's value and gives it back the next. Each month sums right.
-  UNMEASURED.
-- **The positions read takes its expiries off the book file** (2026-09-28). An expired deal whose
-  node the desk deletes from the file before it settles announces no diary row there, so its
-  position stands with no expiry until something books it to nothing. UNMEASURED; closing it is the
-  diary compiled off the record's own terms, which the P&L's marks already read.
-- **A fixing has no verb a seat can reach** (2026-09-30). `fixing_observed`, an `election` and a
-  `determination` are filed by `Context.apply_lifecycle` and nothing else: no endpoint takes one
-  and the binding has no tool, so product control prints a swap's reset through the hub's writer
-  and a host driving the desk cannot print one at all - a close waiting on a fixing waits on
-  somebody with the library. Size: one `POST /book/lifecycle` over the verb, one tool, the pages.
+  UNMEASURED; settlements are per agreement, one agreement's filing never discharging another's,
+  so the transition names its agreement, required where the instrument sits under more than one:
+  about twenty lines over the seven files a movement passes through.
+- **Two live terms under one reference get no diary key** (2026-09-28). `POST /book/deals` books a
+  second deal under a reference the book already carries live, and the diary gives no key to a
+  reference two live terms share, so both rows can be settled by nothing and the close waits on
+  them for good. The row's key wants the deal's own path beside its reference, which the
+  calculation that names rows does not carry: M.
+- **A floating coupon settled for another amount than the engine's books the difference the next
+  day** (2026-09-28). A determined payment settled for another amount is a break the P&L names; a
+  floating coupon is never determined - its known-rate table is not filled from the record at
+  compile - so one settled on time for another amount books the difference the next day, and a
+  floating-coupon swap bought on its coupon day, ex-coupon, carries the engine's coupon in that
+  day's value and gives it back the next. Each month sums right. Closing it is the known-rate
+  tables filled from the record as an observation table is: M.
 - **The market, the book's date and the file move under no seat** (2026-09-30). The tick and a
   values patch (`POST /book/market`), `/book/date`, the bootstrapping dials (`/book/configure`),
   `/book/curve`, `/book/bloomberg`, `/book/securities`, a saved calculation (`/calculations`),
@@ -356,24 +348,6 @@ is recorded so a reader knows which readings rest on it.
   `delete_deal` says it takes no seat, so this is a design call before it is a patch. Size M-L: an
   `actor` on each and an admission - `mark` for the market and the date, `book` for the file - with
   the metronome's grants and the web's calls counted.
-- **A payment due on its own trade date is nobody's** (2026-09-30). A deposit placed today pays its
-  principal today, and the P&L places a payment by what each position held the day BEFORE it fell
-  due. Before the principal settles the P&L is SILENT: the live window reads a phantom the size of
-  the principal as trading P&L, `complete: true` and nothing named. Once the export pays it and the
-  day is marked, the same figure stands in the official window, now named `no position held when
-  it fell due` and `complete: false`. Two sites: a determined row read through what was held
-  before the day (`PnL._payments`), and a settled one (`PnL._holdings`). Size S-M: the owner read
-  at the end of the due day for a position opened on it, and the question whether the premium or
-  the payment is the consideration.
-- **A window's diary is compiled off its start's market, trades done in it included** (2026-09-30).
-  `window_payments` compiles every instrument the window reads against the start's marks job, so
-  one traded on a market that arrived during the window - an option on the surface ticked that
-  morning - is skipped (`Cannot find FXVol.USD.ZAR`): no row and no last day of it there. One
-  expiring inside the window is carried at its payoff and never closed, so the window's realised
-  split parts from its days' while the total agrees - which the eleventh names - and its settlement
-  reads as money no diary announces. Every window starting before a market arrived meets it,
-  month- and year-to-date among them. Size S: a traded instrument compiled off the end's job, the
-  one its first marks read.
 - **Twelve types announce fixings that name no index** (2026-09-30). A fixing row is answered by
   a print filed under the index it names, which a type declares as `observes`; a row naming none
   is answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no
@@ -394,19 +368,6 @@ is recorded so a reader knows which readings rest on it.
   confirmations may pay or post collateral: separation of duties inside the back office is not
   expressible with the verbs the record has. A design decision - a narrower verb or none - not a
   number.
-- **A past day restated behind a later marked one is never marked again** (2026-09-30). Marks run
-  forward, so a close restated for a day behind the last one marked stands unmarked and every
-  window after it reads the board it superseded; the oracle's thirteenth reads it as a restatement
-  after the marks and never a failure. Size M: its marks taken again and every window after it
-  struck again, a design call on whether a day already struck moves.
-- **A new client's credit curve has no verb** (2026-09-30). Legal declares the paper and the first
-  booking brings its netting set, which the book prices only with `SurvivalProb.<counterparty>`;
-  the terminal's set-up installs FX and rates alone and nothing else writes a factor, so the curve
-  reaches the book by hand. Size: a survival curve in the set-up's supply, or a verb of its own.
-- **A refused capabilities declaration leaves its document in the store** (2026-09-30). `grant`
-  puts the document before the writer judges the declaration, so a refused one stays as a blob no
-  frame cites: no replica pulls it and the store has no verb to forget it. Size: the refusal named
-  in the retention the design already owes, or the blob put after the judgement.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
