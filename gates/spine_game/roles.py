@@ -26,8 +26,6 @@ below are functions, and a host driving `DV_MCP` against the same hub plays the 
 one of its own in. Every seat that has a worklist reads it and acts on what it lists; where the
 script still decides - which ticket an approver rejects, what a trader books - the callable says
 so. One act has no binding verb and says so: a fixing is printed through the hub's writer (`file`).
-The raw result of a standing run is read over the transport, the binding trimming its engine
-version.
 
 The table writes the SCRIPT as it goes - who asked what, in which lane, and what came back -
 because the record answers what HAPPENED and the oracle needs what was ASKED. The suite's own
@@ -254,11 +252,6 @@ class Table:
         self.acts.append(dict({'seat': seat, 'act': act}, **marks))
         return self.acts[-1]
 
-    def hub(self, method, path, **kwargs):
-        """One call on the hub over the binding's own transport - the read no tool answers
-        whole."""
-        return binding.service().call(method, path, **kwargs)
-
     def file(self, seat, event_type, body, effective_time=None):
         """Append one fact through the hub's own writer, under `seat` - a PRINT, which no endpoint
         takes. The writer still adjudicates the seat, so it is the hub's append and not a second
@@ -272,10 +265,11 @@ class Table:
         return seam.folded(fold)
 
     def settled(self, result_id):
-        """The run at `result_id` once it stops moving - its whole answer, replay tuple included."""
+        """The run at `result_id` once it stops moving - the binding's summary, replay tuple
+        included."""
         deadline = time.monotonic() + WAIT_SECONDS
         while time.monotonic() < deadline:
-            ran = self.hub('GET', '/results/{}'.format(result_id))
+            ran = binding.poll_result(result_id)
             if ran['status'] not in ('queued', 'running'):
                 return ran
             time.sleep(0.25)
@@ -511,8 +505,7 @@ def mark(table, day):
     of the day reads - and wait for it."""
     marking = binding.mark_book(actor=PRODUCT_CONTROL)
     ran = table.settled(marking['result_id'])
-    table.did(PRODUCT_CONTROL, 'mark_book ' + day, lane=STANDING, replay=ran,
-              recorded=ran.get('attested', {}).get('lsn'), status=ran['status'])
+    table.did(PRODUCT_CONTROL, 'mark_book ' + day, lane=STANDING, replay=ran, status=ran['status'])
 
 
 def post_the_calls(day):

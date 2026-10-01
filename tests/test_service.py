@@ -350,6 +350,110 @@ def test_a_booking_lands_in_the_file_and_every_client_sees_it(book):
     assert in_process(on_disk).validate() == {'deals': {}, 'factors': []}
 
 
+def test_a_book_edited_twice_inside_one_stamp_reads_back_the_second_edit(book):
+    """A hand edit landing inside the modification time's own granularity is still an edit: the
+    book is edited, read, and edited again to the same size under one whole-second stamp - forced,
+    as a filesystem stamping whole seconds leaves both - and the next read answers the second edit.
+    An in-place save caught half written answers a read the text in hand rather than a 500, and
+    refuses a write, which never lands over a file it could not read; left standing past the time
+    a save takes, it is the 500.
+
+    Killing mutations: the cache keyed on the stamp, which answers the first edit again; a whole
+    second stamp read as a fine clock's, which trusts the stamp a tick after it; a read that will
+    not parse raised, which is the 500 mid-save; a write's read served the text in hand, which
+    writes over the save; a text that does not parse served at any age, which hides a broken book.
+    """
+    stamp = time.time_ns() // 1_000_000_000 * 1_000_000_000
+
+    def edited(amount):
+        document = json.loads(book.read_text())
+        document['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['Amount'] = amount
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        os.utime(book, ns=(stamp, stamp))
+
+    edited(2_000_000.0)
+    first = CLIENT.get('/book').json()
+    edited(3_000_000.0)
+    second = CLIENT.get('/book').json()
+
+    assert [answer['document']['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
+        'Amount'] for answer in (first, second)] == [2_000_000.0, 3_000_000.0]
+    assert first['etag'] != second['etag']
+    book.write_text(book.read_text()[:2000], newline='\n')
+    half = book.read_bytes()
+    assert CLIENT.get('/book').json()['etag'] == second['etag']
+    refused = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
+                          headers=JSON)
+    assert refused.status_code == 422 and book.read_bytes() == half, refused.json()
+    with pytest.raises(ValueError):
+        service.BOOK.transact(lambda document, etag: (True, {}))
+    assert book.read_bytes() == half
+    os.utime(book, ns=(stamp - 10_000_000_000, stamp - 10_000_000_000))
+    with pytest.raises(ValueError):
+        CLIENT.get('/book')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason="a share mode is a Windows open's")
+def test_a_program_takes_the_book_to_itself_while_the_book_is_read_in_a_tight_loop(tmp_path):
+    """A program opening a 3 MB book to itself - sharing nothing, as a Windows save in place or a
+    backup does - gets it 2,000 times of 2,000 while the service reads the book in a tight loop,
+    as every GET does, and no read fails - none a GET would answer 500: once a read has begun a
+    clock tick after the book's stamp, the book is stat'ed and never held open. A replace is
+    refused over a stat's own handle too, which no reader that looks at the file avoids.
+
+    Killing mutation: the text read on every call, which holds the book open through the loop -
+    nearly every open refused.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    document = json.loads(dump(job()))
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'InterestRate.PAD'] = {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                               'Curve': {'.Curve': {'meta': [], 'data': [
+                                   [round(0.001 * knot, 6), 0.0123456789]
+                                   for knot in range(33_825)]}}}
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    stamp = os.stat(path).st_mtime_ns
+    settled = stamp + (service.TICK_NS if stamp % 1_000_000_000 else service.COARSE_TICK_NS)
+    stop, begun, failed, refused = [], [0], [], []
+
+    def read():
+        while not stop:
+            started = time.time_ns()
+            try:
+                service.BOOK.read()
+                begun[0] = started
+            except Exception as error:  # what a GET answers 500 over
+                failed.append(error)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    try:
+        deadline = time.monotonic() + 10
+        while begun[0] < settled and not failed:
+            assert time.monotonic() < deadline, 'the reader stopped reading'
+            time.sleep(0.001)
+        for _ in range(2000):
+            # GENERIC_READ, sharing nothing, OPEN_EXISTING
+            handle = kernel.CreateFileW(str(path), 0x80000000, 0, None, 3, 0, None)
+            if handle == wintypes.HANDLE(-1).value:
+                refused.append(ctypes.get_last_error())
+            else:
+                kernel.CloseHandle(handle)
+    finally:
+        stop.append(True)
+        reader.join()
+        service.BOOK = None
+
+    assert (len(refused), len(failed)) == (0, 0), (refused[:1], failed[:1])
+
+
 def test_a_rejected_booking_touches_nothing(book):
     """Validate-before-write, refused on both counts at once: an authoring message and market data
     the book does not carry. File bytes and etag stand still, and the refusal is an ANSWER carrying
@@ -944,22 +1048,29 @@ def test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused(
     assert book.read_bytes() == before
 
 
+#: A Hull-White block over a swaption surface the book does not carry: the family skips it and
+#: writes no factor, which is a configured fit complaining with a block to fit.
+UNFITTABLE = {'HullWhite2FactorModelPrices.ZAR': {'instrument': {'Swaption_Volatility': 'ZAR'}}}
+
+
 def test_a_bootstrap_that_complains_writes_nothing(book):
     """A bootstrap that reports an ERROR refuses the WHOLE write with its own messages - the good
     half of the tick with it, because a book must never carry a market its bootstrap complained
     about. Both refusals, and the file untouched by either.
 
     THE COMPLAINT is a configured family that writes no factor: the USDZAR surface ticks in
-    perfectly well and the Hull-White fit declared beside it has no block, so the run says so and
-    the whole edit is dropped.
+    perfectly well and the Hull-White fit declared beside it has a block it cannot fit, so the run
+    says so and the whole edit is dropped.
 
     THE ORPHAN is a block no configured family READS, which never reaches a bootstrapper at all -
     `Config.bootstrap` refuses it by name, with the families it does read, and the endpoint answers
     422 rather than a refusal outcome.
     """
     doc = json.loads(book.read_text())
-    doc['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
-        'FXVolSurfaceParameters': {}, 'HullWhite2FactorModelParameters': {}}
+    doc['Calc']['MergeMarketData']['ExplicitMarketData'].update({
+        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {},
+                                       'HullWhite2FactorModelParameters': {}},
+        'Market Prices': UNFITTABLE})
     book.write_text(json.dumps(doc, indent=2), newline='\n')
     before = book.read_bytes()
 
@@ -1008,7 +1119,11 @@ def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
     dial whose effect is countable on the file. The book declares the entry by its old class name
     and the request names the factor the family writes: the same family either way, so the dial
     lands in the entry that is there rather than a second one beside it - a desk file is never
-    renamed under a desk.
+    renamed under a desk. A family the book carries no quotes for writes no price factor and
+    refuses in the bootstrap's own words, the file untouched.
+
+    Killing mutation: the verb's own check dropped, which writes an entry nothing fits now that the
+    bootstrap passes over a family with no quote block.
     """
     path = tmp_path / 'book.json'
     configured_book(path, {'FXVolSurfaceParameters': {}})
@@ -1032,6 +1147,15 @@ def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
         assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
             'Bootstrapper Configuration'] == {
                 'FXVolSurfaceParameters': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
+
+        before = path.read_bytes()
+        unquoted = CLIENT.post('/book/configure', json={
+            'section': 'Bootstrapper Configuration', 'entry': 'HullWhite2FactorModelParameters',
+            'fields': {}}).json()
+        assert unquoted['written'] is False and unquoted['refused'] == [
+            'Bootstrapper HullWhite2FactorModelParameters wrote no '
+            'HullWhite2FactorModelParameters.* price factor - check the Market Prices section']
+        assert path.read_bytes() == before
     finally:
         service.BOOK = None
 
@@ -1321,7 +1445,7 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     workstation without one is what `BloombergUnavailable` says. A tenor the emitter's grammar
     cannot read, which is the one thing a desk can spell wrong that no convention would catch. And
     a bootstrap that complains, which refuses the WHOLE write the way a tick's does: the
-    `HullWhite2FactorModelParameters` entry configured beside the curve has no block to fit.
+    `HullWhite2FactorModelParameters` entry configured beside the curve has a block it cannot fit.
     """
     from derivus_bloomberg import session
     from derivus_bloomberg.errors import BloombergUnavailable
@@ -1343,8 +1467,9 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     assert book.read_bytes() == before
 
     document = json.loads(book.read_text())
-    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
-        'HullWhite2FactorModelParameters': {}}
+    document['Calc']['MergeMarketData']['ExplicitMarketData'].update({
+        'Bootstrapper Configuration': {'HullWhite2FactorModelParameters': {}},
+        'Market Prices': UNFITTABLE})
     book.write_text(json.dumps(document, indent=2), newline='\n')
     before = book.read_bytes()
 
@@ -2492,6 +2617,31 @@ def test_the_date_verb_sets_both_dates_and_re_rolls_every_curve_onto_them(curve_
     assert curve_block(curve_desk)['Points'] == points, 'a block with no conventions was re-rolled'
 
 
+@pytest.mark.parametrize('fixture, rewrote', [
+    ('desk', []), ('book', []), ('curve_desk', ['InterestRate.ZAR'])])
+def test_the_date_verb_solves_only_what_the_book_quotes(fixture, rewrote, request):
+    """A family declared before its first quote block has nothing to fit and a book declaring no
+    bootstrapper solves nothing: each moves both dates and keeps every factor it carries, while a
+    book with a curve block re-solves it.
+
+    Killing mutations: the bootstrap's no-factor error unguarded (`wrote no FXVol.* price factor`);
+    the roll asking a book declaring none to bootstrap (`declares no Bootstrapper Configuration`).
+    """
+    path = request.getfixturevalue(fixture)
+    before = json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    answer = CLIENT.post('/book/date', json={'base_date': '2024-07-01'})
+    document = json.loads(path.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+
+    assert answer.status_code == 200, answer.json()
+    assert answer.json()['rewrote'] == rewrote
+    assert document['Calc']['Calculation']['Base_Date'] == market['System Parameters'][
+        'Base_Date'] == {'.Timestamp': '2024-07-01'}
+    assert sorted(market['Price Factors']) == sorted(before['Price Factors']), 'a factor dropped'
+    assert sorted(name for name, factor in market['Price Factors'].items()
+                  if before['Price Factors'][name] != factor) == rewrote
+
+
 def test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_does_not(
         curve_desk, monkeypatch):
     """WHEN WE BOOTSTRAP THE CURVE WE KNOW WHEN IT WAS SNAPPED. The tick authors on the latest
@@ -3090,16 +3240,6 @@ def desk_setup(tmp_path, monkeypatch):
     service.BOOK = None
 
 
-def curve_only(path):
-    """The gate book's bootstrapper section cut to the curve family. A book declaring a surface
-    family it carries no block for is one `Config.bootstrap` complains about - a different gate's
-    subject, and noise in any set-up that installs no surface."""
-    document = json.loads(path.read_text())
-    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
-        'InterestRate': {'Prices': 'InterestRate'}}
-    path.write_text(json.dumps(document, indent=2), newline='\n')
-
-
 def set_up(request):
     """POST the set-up verb, drain the worker, read the outcome off the result the way a poller
     does - the book write rides the run's own Stats, as a tick's does."""
@@ -3299,7 +3439,6 @@ def test_a_want_nothing_seeds_is_named_beside_what_was_installed(desk_setup, tmp
     scopes = (('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('rates', 'GATE'))
     seeded_map(tmp_path / 'home', *scopes)
     setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
-    curve_only(desk_setup)
     euro = dict(json.loads(dump(CASHFLOW)), Reference='CFE', Currency='EUR', Discount_Rate='EUR')
     gated = dict(json.loads(dump(CASHFLOW)), Reference='CFG', Discount_Rate='GATE')
     mixed = {'Object': 'NettingCollateralSet', 'Reference': 'MIX', 'Netted': 'True',
@@ -3369,7 +3508,6 @@ def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
     seeded_map(tmp_path / 'home', *scopes, ('fx_vol', 'USDZAR'))
     terminal = setup_terminal(monkeypatch, *wider, **{'EURUSD BGN Curncy': 1.0855,
                                                       'USDJPY BGN Curncy': 157.25})
-    curve_only(desk_setup)
     assert set_up_curve().status_code == 200, 'a standing curve for the roll to re-author'
     snapped = terminal.stamp
 
@@ -3665,7 +3803,6 @@ def test_what_the_write_can_complete_still_lands(desk_setup, tmp_path, monkeypat
     terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855,
                                                        'USDJPY BGN Curncy': 157.25})
     terminal.dead = {row['security'] for row in seeded_rows_of('EUR')[1:]}
-    curve_only(desk_setup)
     deals = [dict(json.loads(dump(CASHFLOW)), Reference='CF' + currency, Currency=currency,
                   Discount_Rate=currency) for currency in ('EUR', 'JPY')]
 
@@ -3707,7 +3844,6 @@ def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path,
     # the terminal answers for EURUSD under a name no candidate expects, so the probe rejects it
     # and the map verifies no spot for the pair - the shape a desk meets before any verification
     terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
-    curve_only(desk_setup)
     before = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'EURZAR'})
@@ -3788,7 +3924,6 @@ def test_two_wanted_curves_of_one_currency_answer_an_outcome(desk_setup, tmp_pat
     scopes = (('fx_spot', 'USDZAR'), ('rates', 'ZAR'), ('rates', 'ZAR-ZARONIA'))
     seeded_map(tmp_path / 'home', *scopes)
     setup_terminal(monkeypatch, *scopes, **{'USDZAR BGN Curncy': 18.5})
-    curve_only(desk_setup)
     document = json.loads(desk_setup.read_text())
     document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop(
         'InterestRate.ZAR')
@@ -3833,7 +3968,7 @@ def test_a_surface_is_held_with_the_curve_its_leg_actually_discounts_on(desk_set
     """A LEG'S CURVE IS THE ONE ITS OWN `FxRate` BLOCK NAMES, not the one a set-up would have built
     it against. A book whose rand spot discounts on `ZAR-ZARONIA` and whose `ZAR-ZARONIA` entry
     declares no conventions cannot have that curve supplied, so the EURZAR surface is held with it
-    by name and the book stands still.
+    by name, and the set-up lands what it could beside them - the euro's spot and curve.
 
     Killing mutation: the leg's curve read off the currency alone, which asks whether
     `InterestRate.ZAR` is missing while `InterestRate.ZAR-ZARONIA` is the one that is - the surface
@@ -3857,18 +3992,17 @@ def test_a_surface_is_held_with_the_curve_its_leg_actually_discounts_on(desk_set
     seeded_map(tmp_path / 'home', *scopes)
     setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855,
                                             'USDZAR BGN Curncy': 18.5})
-    before = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'EURZAR'})
     market = json.loads(desk_setup.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
     reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
 
     assert result['status'] == 'done' and 'error' not in result, result
-    assert outcome['written'] is False and outcome['installed'] == []
+    assert outcome['written'] is True and outcome['refused'] == []
+    assert outcome['installed'] == ['FxRate.EUR', 'InterestRate.EUR']
     assert reasons['FXVol.EUR.ZAR'] == 'held with InterestRate.ZAR-ZARONIA'
     assert 'ZAR-ZARONIA declares no curve_day_count' in reasons['InterestRate.ZAR-ZARONIA']
     assert 'FXVol.EUR.ZAR' not in market['Price Factors'], 'a surface with no rand curve under it'
-    assert desk_setup.read_bytes() == before
 
 
 def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_path, monkeypatch):
@@ -3885,7 +4019,6 @@ def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_pa
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     seeded_map(tmp_path / 'home', *scopes)
     setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
-    curve_only(desk_setup)
     ahead = (datetime.date.today() + datetime.timedelta(6)).isoformat()
     assert CLIENT.post('/book/date', json={'base_date': ahead}).status_code == 200
 

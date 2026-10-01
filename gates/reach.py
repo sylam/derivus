@@ -74,7 +74,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # artifacts live in the MAIN checkout, whatever worktree the tool runs from
 MAIN = os.path.dirname(subprocess.run(
     ['git', '-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-    capture_output=True, text=True).stdout.strip())
+    capture_output=True, encoding='utf-8').stdout.strip())
 MAP = os.path.join(MAIN, 'artifacts', 'reach', 'document_map.json')
 CAP = 180
 DOC_DIRS = ('tests/fixtures', 'artifacts')             # walked recursively, in the MAIN checkout
@@ -537,8 +537,7 @@ def build_map(repo):
     document and a new representative costs only itself.
     """
     docs = documents(MAIN)
-    head = subprocess.run(['git', '-C', repo, 'rev-parse', 'HEAD'],
-                          capture_output=True, text=True).stdout.strip()
+    head = _sh(repo, 'rev-parse', 'HEAD').strip()
     os.makedirs(os.path.dirname(MAP), exist_ok=True)
     part = os.path.join(os.path.dirname(MAP), 'part.json')
     prior = load_map(repo)
@@ -571,8 +570,7 @@ def load_map(repo):
     if not os.path.exists(MAP):
         return {'engine': None, 'documents': []}
     m = json.load(open(MAP))
-    head, edits = (subprocess.run(['git', '-C', repo] + a, capture_output=True, text=True).stdout
-                   for a in (['rev-parse', 'HEAD'], ['status', '--porcelain', 'derivus']))
+    head, edits = _sh(repo, 'rev-parse', 'HEAD'), _sh(repo, 'status', '--porcelain', 'derivus')
     if m.get('engine') != head.strip():
         print('# STALE: map built at {}, repo at {}'.format(
             (m.get('engine') or '?')[:7], head[:7]), file=sys.stderr)
@@ -651,7 +649,9 @@ def _symbols(src, path):
 
 
 def _sh(repo, *args):
-    return subprocess.run(['git', '-C', repo] + list(args), capture_output=True, text=True).stdout
+    """What git prints, decoded as the UTF-8 the sources are rather than as the box's codepage."""
+    return subprocess.run(['git', '-C', repo] + list(args), capture_output=True,
+                          encoding='utf-8').stdout
 
 
 def changed_symbols(repo, since=None):

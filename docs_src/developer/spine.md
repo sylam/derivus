@@ -647,8 +647,9 @@ every refusal before anything appends: the desk's own `Quote Policy.firm_seconds
 to a client and comes first; the PLAN, an equality, refused where the book moved under the solve; the
 PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says it
 was already too old and refusing nothing where a home declared none; and the PLAN the acceptance
-leaves the book at, refused where it is not the one the quote pinned. Then the
-MARKET, which is REPORTED as `{pinned, current, moved}` and NEVER refused: between a quote and the
+leaves the book at, refused where it is not the one the quote pinned - a deploy that changes how a
+document is read moves that hash too, so the pending quotes are drained before one, or re-quoted.
+Then the MARKET, which is REPORTED as `{pinned, current, moved}` and NEVER refused: between a quote and the
 client's word the board may move materially and we follow the spine as usual, the desk's own window
 being the promise that bounds it. `firmness` is the one module that answers all four, and its
 document is one window and no second — `values_seconds` and `plan_seconds` are refused by name at the
@@ -707,9 +708,11 @@ were taken on (the genesis event hash, so a home re-minted in place drops them),
 changes — makes it **0.026 ms per decision**, 6.3× cheaper and about 57 ms at two thousand. Cheaper
 but not flat, and the residual is not the walk: 0.011 of that is the envelope walk every fold pays
 per EVENT, and the other 0.015 is `_from_seed`'s canonical copy of a state that grows with the
-decisions — the same copy that makes the `activity` strip 219 ms where folding it costs 38. A seed
-at a close is the remedy for both, and is the roadmap's row: a fresh process would start where the
-day started, and the state copied would be the day's rather than the record's.
+decisions — the same copy that makes the `activity` strip 219 ms where folding it costs 38. Holding
+no pair, `advancing` starts from the newest seed at or behind its position
+(`projections.latest_seed`), and `DV_Spine seed` mints the decisions and markets folds with every
+other but the strip's, so a fresh process walks from where the day started; the copy stands, a seed
+holding the record's state rather than the day's.
 
 The ticket states its notional in its OWN currency, which needs no market data, and in every
 other this book can VALUE it in, crossed at the book's own spots; a currency whose cross is not a
@@ -1095,11 +1098,10 @@ at what size, which ticket the rates approver rejects, and which P&L windows are
 
 A ROLE IS A CALLABLE over the table, which is the whole of the interface — the scripted players are
 functions, and a host driving `DV_MCP` against the same hub plays the same days by handing one of
-its own in; the LLM-driven mode is that substitution and nothing else. TWO ACTS REACH PAST THE
-BINDING and say so: a fixing is printed through the hub's writer, no endpoint filing one, and a
-marks run's replay tuple is read off `/results/{id}` whole, the binding's summary trimming the
-engine version. A gate holds the players to that: every binding call a published tool, every CLI
-verb a shipped subcommand, the transport read only for a result, the writer only for a print.
+its own in; the LLM-driven mode is that substitution and nothing else. ONE ACT REACHES PAST THE
+BINDING and says so: a fixing is printed through the hub's writer, no endpoint filing one. A gate
+holds the players to that: every binding call a published tool and the raw transport never, every
+CLI verb a shipped subcommand, the writer only for a print.
 
 **SIXTEEN OBJECTIVES, AND THE ANSWERS COME IN THREE SHAPES.** A DENIAL is the writer refusing an
 append and filing the refusal as a fact: settlements booking a trade, a trader settling its own, an
@@ -1361,10 +1363,11 @@ grouped under it narrows it, and the binding's `mark_book` and `book_pnl` are th
 **THE EXPLAIN SAYS WHY THE HELD POSITIONS MOVED, and never assembles the P&L out of its pieces.**
 `explain` on `GET /book/pnl` takes what the positions a window started with made apart into three:
 the CARRY of the start's book rolled to the end's day at its own quotes - the day moved, every
-curve re-authored on it and the market re-bootstrapped as `POST /book/date` rolls a book, a
-position whose last day fell in the window closing at nothing; the MARKET, every risk factor's move
-between the two closes times the start's own sensitivity to it, per quote where the factors are
-built from quotes and per factor for the rest; and the RESIDUAL left over. It is three valuations -
+curve re-authored on it and, where the book declares a bootstrapper, the market re-bootstrapped as
+`POST /book/date` rolls a book, a position whose last day fell in the window closing at nothing;
+the MARKET, every risk factor's move between the two closes times the start's own sensitivity to
+it, per quote where the factors are built from quotes and per factor for the rest; and the
+RESIDUAL left over. It is three valuations -
 the positions on the start's close with first-order sensitivities, the same positions on the end's
 close for the levels, and the start rolled - run when asked, recorded nowhere and cached on what
 they read, the carry taking out what a day paid as the values do. Reserves are not carried, so none

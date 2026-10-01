@@ -224,10 +224,11 @@ def _raw_result(result_id):
 
 
 def _summary(raw, result_id):
-    """A run trimmed to what the model should hold: identity, stats, and each table's shape as one
-    line. Never a column list and never a cell - those stay behind `fetch_table`."""
+    """A run trimmed to what the model should hold: identity - the replay tuple, the engine version
+    in it - stats, and each table's shape as one line. Never a column list and never a cell - those
+    stay behind `fetch_table`."""
     trimmed = {'result_id': result_id, 'status': raw.get('status')}
-    for key in ('plan_hash', 'values_hash', 'seed', 'stats', 'error'):
+    for key in ('plan_hash', 'values_hash', 'engine_version', 'seed', 'stats', 'error'):
         if key in raw:
             trimmed[key] = raw[key]
     if 'tables' in raw:
@@ -820,11 +821,11 @@ def set_base_date(base_date: str) -> dict:
     `base_date` is an ISO day, `"2026-09-19"`. The book carries the date twice - the day its
     curves' benchmarks roll off and the day the pricers run on - and this moves both together.
     Every interest-rate curve block is re-authored on the new day from its own rows and conventions
-    (the same benchmarks on new dates, the quotes exactly as they stand, no terminal asked) and the
-    whole market is re-bootstrapped in one atomic write, so a bootstrap that complains writes
-    nothing and hands its messages back. The answer names the date, the blocks re-authored and the
-    price factors the re-solve rewrote; a block too old to carry its conventions is named in
-    `held_out` and left standing.
+    (the same benchmarks on new dates, the quotes exactly as they stand, no terminal asked) and,
+    where the book declares a bootstrapper, the whole market is re-bootstrapped in one atomic write,
+    so a bootstrap that complains writes nothing and hands its messages back. The answer names the
+    date, the blocks re-authored and the price factors the re-solve rewrote; a block too old to
+    carry its conventions is named in `held_out` and left standing.
 
     `tick_market_from_bloomberg` and `configure_curve` already roll the date FORWARD onto the day
     their quotes were snapped. This is the verb that puts it anywhere - a back-valuation included -
@@ -1785,9 +1786,9 @@ def export_settlements(due_before: str, actor: str | None = None) -> dict:
 
 @MCP.tool(annotations=READ_ONLY)
 def poll_result(result_id: str) -> dict:
-    """Where a run got to: `queued`/`running`, or `done` with the replay tuple, the run's stats
-    and each table's SHAPE as one line (fetch cells with `fetch_table`), or `error` with the
-    message. Never the cells themselves."""
+    """Where a run got to: `queued`/`running`, or `done` with the replay tuple (`plan_hash`,
+    `values_hash`, `engine_version`, `seed`), the run's stats and each table's SHAPE as one line
+    (fetch cells with `fetch_table`), or `error` with the message. Never the cells themselves."""
     return _summary(_raw_result(result_id), result_id)
 
 

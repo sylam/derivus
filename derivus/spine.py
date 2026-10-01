@@ -166,15 +166,17 @@ def configured():
 def package():
     """`derivus_spine`, imported here and now, or `SpineRefused` naming the install line.
 
-    `firmness`, `policy` and `verbs` are imported by name because a submodule is only an attribute
-    of its package once something has imported it, and the package's own surface stays the truth
-    layer.
+    Each submodule read below is imported by name because a submodule is only an attribute of its
+    package once something has imported it, and the package's own surface stays the truth layer.
     """
     try:
-        import derivus_spine
-        from derivus_spine import (capability, firmness, policy,  # noqa: F401  attribute
-                                   projections, tiers, verbs,     # noqa: F401  access below
-                                   vocabulary)                    # noqa: F401
+        import derivus_spine.capability
+        import derivus_spine.firmness
+        import derivus_spine.policy
+        import derivus_spine.projections
+        import derivus_spine.tiers
+        import derivus_spine.verbs
+        import derivus_spine.vocabulary
     except ImportError as absent:
         raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
     return derivus_spine
@@ -403,7 +405,8 @@ def advancing(log, projector, lsn=None):
 
     Bounded at the position it answers rather than at the end of the platter, so the pair says
     exactly what it covers and a frame appended mid-fold is not applied twice. A position BEHIND the
-    pair refolds from genesis, and a history that is not the one the pairs were taken on drops them
+    pair, or one no pair is held for, folds from the newest seed at or behind it (genesis where
+    there is none), and a history that is not the one the pairs were taken on drops them
     - keyed on the GENESIS EVENT HASH rather than on the path, the way `read_seed` checks a close's
     own hash, so a home re-minted where the last one stood is a different record and not a fold
     that answers its predecessor's. What comes back is the pair's own state, so a caller READS it
@@ -1969,7 +1972,8 @@ class PnL:
         rows at the end, which carry the counterparty; `cut`, every marks' `(lsn, day)` and the
         end's, oldest first; `days`, the record on a day (`recorded`); `rates(day, lsn)`, the close
         standing on a day as filed by a position; and `fills_between(after, until)`. `scope` narrows
-        the rows.
+        the rows, and below the whole book the unknowns to those naming an instrument of them or
+        none.
 
         A MOVEMENT COUNTS IN THE WINDOW IT WAS FILED IN, and a payment the diary determines in the
         one it falls due in, each read as the record stood at the end of that business day: its
@@ -2093,6 +2097,12 @@ class PnL:
                     key, closed, ended and last > start['day'], (before, after),
                     (premiums, payments, fees), unknown)})
             rows[-1]['unrealised'] = _less(total, rows[-1]['realised'])
+        # below the book an unknown of another node's instrument is the book's; one naming none
+        # cannot be placed, so it stays on every read
+        if not cls.within({'portfolio': (scope.get('portfolio') or '').split('/')[0],
+                           'agreement': None, 'counterparty': None}, **scope):
+            mine = {row['instrument'] for row in rows} | {None}
+            unknown = [entry for entry in unknown if entry['instrument'] in mine]
         unknown = [json.loads(named) for named in sorted({json.dumps(row, sort_keys=True)
                                                           for row in unknown})]
         return {'rows': rows, 'unknown': unknown, 'realised_method': 'average cost',

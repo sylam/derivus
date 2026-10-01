@@ -1117,7 +1117,11 @@ def test_the_service_being_down_names_dv_service(book):
 
 def test_execute_hands_back_the_id_when_it_will_not_wait(book):
     """A zero wait is the escape hatch for a long simulation: the id and the way forward travel
-    in `hint`, and `poll_result` finishes the story once the queue drains."""
+    in `hint`, and `poll_result` finishes the story once the queue drains, the whole replay tuple
+    in it.
+
+    Killing mutation: the engine version trimmed from the summary.
+    """
     run = asyncio.run(mcp_server.execute_book(wait_seconds=0.0))
     if run['status'] != 'done':  # the worker may still win the race on a tiny book
         assert 'poll_result' in run['hint']
@@ -1125,6 +1129,7 @@ def test_execute_hands_back_the_id_when_it_will_not_wait(book):
     settled = mcp_server.poll_result(run['result_id'])
     assert settled['status'] == 'done'
     assert 'mtm' in settled['tables']
+    assert settled['engine_version'] == service.results(run['result_id'])['engine_version']
 
 
 def test_deal_values_refuses_a_result_with_no_mtm_frame():
@@ -1160,8 +1165,8 @@ def test_a_run_comes_back_as_shapes_never_cells(book):
     """The minimal-context rule: the model learns the run happened - identity, stats, one line per
     table - and never holds a table's columns or cells unless it asks for a page."""
     run = asyncio.run(mcp_server.execute_book())
-    assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'seed',
-                        'stats', 'tables', 'waited', 'error'}
+    assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'engine_version',
+                        'seed', 'stats', 'tables', 'waited', 'error'}
     for name, shape in run['tables'].items():
         assert isinstance(shape, str) and 'rows x' in shape, (name, shape)
 

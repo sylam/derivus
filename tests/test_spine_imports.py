@@ -273,6 +273,12 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
 
     A document no parser reads NEVER LANDS - the refusal is the library's own sentence with exit 1
     - and what was in force before it stays in force, which is the half a round trip exists for.
+    The capabilities document `grant` declares reads back the same way, and a home that lost it
+    still lists every other policy, naming the one it cannot read.
+
+    Killing mutations: the capabilities name refused by the reading verb, which leaves a head
+    re-seating its desk with no way to read the document in force; one unreadable policy failing
+    the whole listing, which hides every policy that does read.
     """
     home = str(tmp_path / 'spine')
     assert spine('init', '--home', home).returncode == 0
@@ -307,8 +313,9 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
         'the readout borrowed the position of a declaration that carried no blob'
 
     every = json.loads(spine('policy', '--home', home).stdout)
-    assert sorted(every) == ['firmness', 'fixings', 'tiers', 'tolerance']
-    assert every['tolerance'] == {'blob': None, 'document': None, 'lsn': None}
+    assert sorted(every) == ['capabilities', 'firmness', 'fixings', 'tiers', 'tolerance']
+    assert every['tolerance'] == every['capabilities'] == {'blob': None, 'document': None,
+                                                           'lsn': None}
 
     broken = tmp_path / 'broken.json'
     broken.write_text(json.dumps({'tiers': [{'name': 'auto', 'firm': True}]}), encoding='utf-8')
@@ -318,9 +325,24 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
     assert json.loads(spine('policy', 'tiers', '--home', home).stdout)['tiers']['blob'] \
         == answer['blob'], 'a refused declaration moved what is in force'
 
-    # the capabilities document is `grant`'s own file and this verb says so rather than crashing
-    named = spine('policy', 'capabilities', '--home', home)
-    assert named.returncode == 1 and 'grant' in named.stderr
+    # the capabilities document is `grant`'s own file, and this verb reads it back as stored
+    document = {'grants': [{'subject': 'subject-deployment', 'verb': 'admin', 'book': '*'}],
+                'read': []}
+    path.write_text(json.dumps(document), encoding='utf-8')
+    granted = json.loads(spine('grant', '--file', str(path), '--actor', 'subject-deployment',
+                               '--home', home).stdout)
+    assert json.loads(spine('policy', 'capabilities', '--home', home).stdout)['capabilities'] == {
+        'blob': granted['blob'], 'document': document, 'lsn': granted['lsn']}
+
+    # a copy lacking that document lists every other policy and says which one it cannot read
+    os.remove(os.path.join(home, 'blobs', granted['blob'][:2], granted['blob'][2:4],
+                           granted['blob']))
+    listed = spine('policy', '--home', home)
+    assert listed.returncode == 0, listed.stderr
+    every = json.loads(listed.stdout)
+    assert every['tiers']['blob'] == answer['blob'] and every['capabilities']['blob'] is None
+    assert granted['blob'] in every['capabilities']['unreadable']
+    assert spine('policy', 'capabilities', '--home', home).returncode == 1
 
 
 @needs_spine_core

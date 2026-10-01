@@ -407,7 +407,8 @@ def in_force(log, policy, lsn=None):
     A declaration whose blob no longer answers for it raises `MalformedEvent` rather than folding to
     a sentinel: unlike the capabilities fold, this one is called by a verb, so a refusal bricks
     nothing. A document is read in the grammar it was declared under: a tier's retired `seat` is
-    read past, a seated tier having been how an automatic one was spelled.
+    read past, a seated tier having been how an automatic one was spelled, and one no parser here
+    reads - the capabilities document, `grant`'s own - as stored.
     """
     blob, at = None, None
     for frame in log.frames(end_lsn=lsn):
@@ -440,7 +441,7 @@ def in_force(log, policy, lsn=None):
         document = dict(document, tiers=[dict((key, value) for key, value in tier.items()
                                               if key != 'seat') if isinstance(tier, dict) else tier
                                          for tier in document[TIERS_SECTION]])
-    return (blob, PARSERS[policy](document, where), at)
+    return (blob, PARSERS[policy](document, where) if policy in PARSERS else document, at)
 
 
 def compare(claimed, produced, tolerances):

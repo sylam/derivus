@@ -266,10 +266,10 @@ def test_the_writers_own_voice_is_forged_under_a_seat_and_a_seat_is_forged_under
 
 def test_an_approval_in_the_writers_voice_stands_only_where_the_hub_signs(tmp_path):
     """THE HUB'S OWN ACT, held to the record around it. The hub signs a ticket in its own voice
-    only under a tiers policy in force, then books it: under a document granting nobody `approve`,
-    an automatic tier's approval followed by the fill carrying its ticket holds - and the same
-    approval put on a copy after a four-eyes ticket was booked unsigned, or where no tiers policy
-    stands, is that voice forged, and `DV_Spine oracle` exits 1 on it.
+    only under an automatic tier in force, then books it: under a document granting nobody
+    `approve`, an automatic tier's approval followed by the fill carrying its ticket holds - and the
+    same approval put on a copy after a four-eyes ticket was booked unsigned, or where no tiers
+    policy stands, is that voice forged, and `DV_Spine oracle` exits 1 on it.
 
     Killing mutations: the writer's own frames re-adjudicated against the document, which calls
     the hub's approval a seat's; and the writer's approval admitted by its voice alone, which lets
@@ -301,6 +301,82 @@ def test_an_approval_in_the_writers_voice_stands_only_where_the_hub_signs(tmp_pa
         assert oracle.failed(answers) == ['nothing_outside_its_seat'], (name, answers)
         assert 'that voice forged' in answers['nothing_outside_its_seat']['evidence'][0]
         assert spine('oracle', '--home', str(copy)).returncode == 1, name
+
+
+def test_an_approval_in_the_writers_voice_under_four_eyes_tiers_alone_is_forged(tmp_path):
+    """The hub signs only under an automatic tier, so where every tier in force declares
+    `four_eyes` a copy forging the hub's approval and booking the ticket after it is named, and the
+    home it was copied from holds.
+
+    Killing mutation: the tiers document left unread, any tiers declaration counting as one the hub
+    signs under, which lets the forged approval and the fill after it pass.
+    """
+    home = seeded(tmp_path, 'four-eyes', clips=())
+    log = SpineLog(home)
+    try:
+        granted(log, ACTOR)
+        policy.declare(log, ACTOR, policy.TIERS_POLICY, TIERS)
+        file_quote(log, ACTOR, 'Q-1', 'ZeroCostCollar', PLAN, b'{"EURUSD":1.0851}',
+                   {'floor': 1.07}, 4100.0, ticket=TICKET, book=BOOK)
+    finally:
+        log.close()
+    copy = planted(home, tmp_path, 'forged', 'approval', {'plan_hash': TICKET}, actor='writer',
+                   book_name=BOOK)
+    log = SpineLog(copy)
+    try:
+        book(log, ACTOR, b'{"Reference":"CF1"}', -1.0, 'LEI-549300', 'CSA-0007', 'Q-1',
+             book=BOOK, ticket=TICKET)
+    finally:
+        log.close()
+    answers = oracle.report(copy)
+
+    assert oracle.failed(oracle.report(home)) == []
+    assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+    assert 'no automatic tier in force' in answers['nothing_outside_its_seat']['evidence'][0]
+
+
+def test_tiers_nobody_can_read_are_judged_and_tiers_a_copy_lacks_are_not(tmp_path):
+    """A tiers declaration whose document will not parse is one the hub signs under nothing: a copy
+    forging its approval and the fill after it is named, and the home declaring it holds. A copy
+    without the tiers blob cannot judge that approval and says so, while a fill in the writer's
+    voice beside it still reads forged - the envelope half needs no blob.
+
+    Killing mutation: a document that will not parse read as one the copy lacks, which answers not
+    assessed and passes the forgery.
+    """
+    from derivus_spine.canon import canonical_bytes
+
+    home = seeded(tmp_path, 'unread', clips=())
+    log = SpineLog(home)
+    try:
+        granted(log, ACTOR)
+        blob = log.store.put(canonical_bytes({'tiers': 'every ticket'}))
+        log.append('policy_declared', {'policy': policy.TIERS_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+        file_quote(log, ACTOR, 'Q-1', 'ZeroCostCollar', PLAN, b'{"EURUSD":1.0851}',
+                   {'floor': 1.07}, 4100.0, ticket=TICKET, book=BOOK)
+    finally:
+        log.close()
+    copy = planted(home, tmp_path, 'unread-forged', 'approval', {'plan_hash': TICKET},
+                   actor='writer', book_name=BOOK)
+    log = SpineLog(copy)
+    try:
+        book(log, ACTOR, b'{"Reference":"CF1"}', -1.0, 'LEI-549300', 'CSA-0007', 'Q-1',
+             book=BOOK, ticket=TICKET)
+    finally:
+        log.close()
+    forged = oracle.report(copy)['nothing_outside_its_seat']
+    lacking = copied(copy, tmp_path, 'lacking')
+    (lacking / 'blobs' / blob[:2] / blob[2:4] / blob).unlink()
+    blind = oracle.report(lacking)['nothing_outside_its_seat']
+    beside = oracle.report(planted(lacking, tmp_path, 'lacking-voice', 'fill', fill('EXEC-WRITER'),
+                                   actor='writer', book_name=BOOK))['nothing_outside_its_seat']
+
+    assert oracle.failed(oracle.report(home)) == []
+    assert forged['held'] is False and 'nobody can read' in forged['evidence'][0], forged
+    assert blind['held'] is None and 'does not hold' in blind['evidence'][0], blind
+    assert beside['held'] is False and "a fill stands under 'writer'" in beside['evidence'][0]
+    assert 'does not hold' in beside['evidence'][-1], beside
 
 
 def test_a_restrike_judged_narrower_than_what_it_moved_is_named(tmp_path):

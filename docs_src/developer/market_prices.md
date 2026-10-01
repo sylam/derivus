@@ -217,10 +217,11 @@ of them solved for a day nobody asked about. A snap never rolls a book BACKWARDS
 evidence about a quote, not a valuation date, and a row a desk states by hand carries no print at
 all and is authored as of the day the book already stands at. `POST /book/date` (`{base_date}`) is
 the verb that puts the date ANYWHERE, back-valuations included: it stamps both dates, re-authors
-every block on the new day from its own rows and conventions with no terminal asked, and
-re-bootstraps the whole market in one atomic write, naming a block too old to carry its conventions
-and leaving it exactly as it stands. Because the strip is a function of its own tenors, a roll that
-leaves the year fractions alone leaves the solved factor alone with them.
+every block on the new day from its own rows and conventions with no terminal asked, and, where the
+book declares a bootstrapper, re-bootstraps the whole market in one atomic write, naming a block too
+old to carry its conventions and leaving it exactly as it stands. Because the strip is a function
+of its own tenors, a roll that leaves the year fractions alone leaves the solved factor alone with
+them.
 
 **The ticker vocabulary is served the same way, and every knot names its print.** Which securities
 a desk could quote is a SEED file it owns (`$DV_HOME/seed.json`, completed by the packaged

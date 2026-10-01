@@ -1184,7 +1184,7 @@ def waiting(answer):
 def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(recorded, desk):
     """SIX LISTS, READ OFF WHAT STANDS - the sixth, the collateral calls, gated with the calls. A
     fill under four eyes waits on a second seat's approval by its ticket and on its confirmation
-    by its own key; a close on the market designated for P&L
+    by its own key; a close on the market designated for P&L, or restated on the day last marked,
     waits on its day's marks; a payment due by the book's day waits on its settlement - a FEE filed
     against it settling nothing; and a rejected trade that still stands waits on somebody closing
     it. Each row appears once and leaves the moment its fact lands, the close-out's own fill then
@@ -1193,9 +1193,9 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     and a seat that only reads acts on nothing.
 
     Killing mutations: a fee's movement filed as the status of what it names, which clears a
-    payment nobody paid; a close matched to the marks by position rather than by its day, which
-    leaves a close declared again over a marked day waiting; and the lists narrowed by `validate`
-    alone, which shows an approver nothing to approve.
+    payment nobody paid; the last marked day's close left unread against the values its marks
+    were taken on, which leaves its restatement unmarked or its marks waiting; and the lists
+    narrowed by `validate` alone, which shows an approver nothing to approve.
     """
     designated(recorded, fixings=False)
     booked(EXPIRING, 1.0, 'EXEC-W', BOOK + '/FX', 1_000.0)
@@ -1209,7 +1209,9 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     assert waiting(worklist())['unmarked'] == [], 'a marked close still waits'
     rolled(desk, START, 18.37)
     closed()
-    assert waiting(worklist())['unmarked'] == [], 'a day closed again after its marks waits'
+    assert waiting(worklist())['unmarked'] == ['2024-06-28'], 'a restated close stands unmarked'
+    marked()
+    assert waiting(worklist())['unmarked'] == [], 'a restated close marked still waits'
     approved = CLIENT.post('/book/approve', json={'ticket': fill['ticket'], 'actor': SECOND})
     assert approved.json()['status'] == 'approved' and waiting(worklist())['pending'] == []
     assert CLIENT.post('/book/transition', content=dump({
@@ -1262,16 +1264,25 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
 
 def test_a_seat_reading_a_node_is_answered_that_node_s_p_and_l_summed_over_it(recorded, desk):
     """THE P&L BY NODE: a seat granted `validate` at a node reads the rows under it, and every
-    total is summed over those rows alone - never the book's total beside a node's rows.
+    total is summed over those rows alone - never the book's total beside a node's rows. Money
+    another desk's position never held is the book's and not the node's; a settlement naming no
+    instrument could be anybody's, so the node reads it too and is not complete.
 
-    Killing mutation: the rows narrowed after the totals were taken, which hands a node seat the
-    whole book's P&L under its own rows.
+    Killing mutations: the rows narrowed after the totals were taken, which hands a node seat the
+    whole book's P&L under its own rows; the unknowns left un-narrowed, which hands it another
+    desk's instrument; one naming no instrument dropped, which reads the node complete over money
+    nobody can place.
     """
     designated(recorded, fixings=False)
     booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
     booked(SPLIT, 1.0, 'EXEC-D', BOOK + '/FX', 2_500.0)
     closed_and_marked()
     rolled(desk, END, 18.0)
+    booked(LATE, 1.0, 'EXEC-H', BOOK + '/Rates', 0.0)
+    settle({'subject': due('CF-H', '2024-06-30')['key'], 'amount': 50_000.0, 'asset': 'ZAR',
+            'kind': 'payment', 'reference': 'PAY-H', 'value_date': '2024-06-30'})
+    settle({'subject': 'f' * 64, 'amount': 1.0, 'asset': 'ZAR', 'kind': 'payment',
+            'reference': 'PAY-Z', 'value_date': '2024-07-01'})
     closed_and_marked()
     log = SpineLog(recorded)
     try:
@@ -1285,7 +1296,9 @@ def test_a_seat_reading_a_node_is_answered_that_node_s_p_and_l_summed_over_it(re
     whole = between('2024-06-28', '2024-07-01', actor=ACTOR)
     node = between('2024-06-28', '2024-07-01', actor=FX_READER)
     assert {row['portfolio'] for row in node['rows']} == {BOOK + '/FX'}
-    assert len(whole['rows']) == 2 and whole['total']['pnl'] != node['total']['pnl']
+    assert len(whole['rows']) == 3 and whole['total']['pnl'] != node['total']['pnl']
+    assert {row['instrument'] for row in whole['unknown']} == {instrument_of('CF-H'), None}
+    assert node['complete'] is False and [row['instrument'] for row in node['unknown']] == [None]
     for figure in ADDITIVE:
         assert node['total'][figure] == pytest.approx(
             sum(row[figure] for row in node['rows']), rel=1e-12, abs=1e-9), figure

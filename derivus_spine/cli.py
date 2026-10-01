@@ -312,23 +312,30 @@ def do_declare(args):
 
 def do_policy(args):
     """Report the reserved policies in force, each with the blob it is stored under and the LSN of
-    the declaration that put it there.
+    the declaration that put it there - the capabilities document among them, as `grant` stored it.
 
     All three come off ONE fold and so cannot disagree: `policy_declared` is open-bodied, and a
     declaration under a reserved name carrying no blob is a fact this reading steps over rather
-    than a position it borrows. Named, it is one policy; unnamed, every reserved name - one nobody
-    declared standing as nulls, so silence is never mistaken for absence.
+    than a position it borrows. Named, it is one policy, refused where it cannot be read; unnamed,
+    every reserved name - one nobody declared standing as nulls, so silence is never mistaken for
+    absence, and one whose document cannot be read saying so under `unreadable`.
     """
-    if args.name is not None and args.name not in policies.PARSERS:
-        raise MalformedEvent(
-            '{!r} is not a policy this verb reads - it reads {}, and the capabilities document is '
-            '`DV_Spine grant`\'s own file'.format(
-                args.name, ', '.join(sorted(policies.PARSERS))))
+    names = sorted(tuple(policies.PARSERS) + (CAPABILITIES_POLICY,))
+    if args.name is not None and args.name not in names:
+        raise MalformedEvent('{!r} is not a policy this verb reads - it reads {}'.format(
+            args.name, ', '.join(names)))
     log = SpineLog(spine_home(args.home))
+
+    def read(name):
+        try:
+            return dict(zip(('blob', 'document', 'lsn'), policies.in_force(log, name)))
+        except SpineRefusal as unreadable:
+            if args.name:
+                raise
+            return dict(dict.fromkeys(('blob', 'document', 'lsn')), unreadable=str(unreadable))
+
     try:
-        return report(dict(
-            (name, dict(zip(('blob', 'document', 'lsn'), policies.in_force(log, name))))
-            for name in ([args.name] if args.name else sorted(policies.PARSERS))))
+        return report(dict((name, read(name)) for name in ([args.name] if args.name else names)))
     finally:
         log.close()
 

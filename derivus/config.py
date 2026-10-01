@@ -633,9 +633,9 @@ class Config(object):
         whatever order the file gives - and `derivus_bootstrap` takes the same order off the same
         function.
 
-        A bootstrapper that leaves no `<type>.*` price factor behind silently did nothing (misnamed
-        Market Prices block, or a section key naming another family), so every run is checked
-        against the family's own declared `price_factor_type`.
+        A bootstrapper handed blocks that leaves no `<type>.*` price factor behind silently did
+        nothing (misnamed Market Prices block), so every family handed blocks is checked against
+        its own declared `price_factor_type`; one handed none is logged and passed over.
         """
         prices = self.params.get('Market Prices')
         if prices is None:
@@ -711,7 +711,7 @@ class Config(object):
             self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
 
             # empty result = the bootstrapper silently did nothing - see docstring
-            if not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
+            if blocks and not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
                 logging.error('Bootstrapper {0} wrote no {1}.* price factor - check the Market '
                               'Prices section'.format(bootstrapper_name, written))
 

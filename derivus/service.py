@@ -466,38 +466,66 @@ REDOS = 3
 #: written only under a configured home - without one the file is what it always was, to the byte.
 SPINE_PIN = 'Spine'
 
+#: How long after a write a second one may land on the same modification time - a clock tick, 15.6
+#: ms on Windows' default timer - and on a filesystem stamping whole seconds, two of them.
+TICK_NS, COARSE_TICK_NS = 16_000_000, 2_000_000_000
+
+#: How often a read is tried, a tick apart, before the text in hand answers a reader - an outside
+#: save caught in flight.
+READS = 3
+
 
 class Book:
     """One live job document on disk - the FILE is the source of truth.
 
     The state MCP, the SPA and Excel meet in: a booking lands as a file write and every client sees
-    it on its next read. Reads check mtime and re-parse on change, so an external edit is picked up
-    too; the etag is a hash of the text, so a client polls one small GET. Writes are atomic
-    (write-temp-then-replace) in the file's own indent, and `mutate` holds the lock for its read and
-    for its write and NEVER across the edit. Every read parses fresh, so an abandoned edit never
-    reaches the cache.
+    it on its next read. The etag is a hash of the text, so a client polls one small GET; the text
+    is read again where the file's stamp or size moved, and until a read lands a clock tick after
+    the stamp, so an external edit is picked up however soon after a write it lands and a file
+    standing still is not opened at all. Writes are atomic (write-temp-then-replace) in the file's
+    own indent, and `mutate` holds the lock for its read and for its write and NEVER across the
+    edit. Every read parses fresh, so an abandoned edit never reaches the cache.
     """
 
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
-        self._cache = (None, None, None)  # (mtime_ns, etag, text)
+        self._cache = (None, 0, None, None)  # (stamp and size, read at, etag, last parsed text)
         self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
 
-    def _current(self):
-        """The etag of the file as it stands, the cached text re-read where the file moved."""
-        stamp = os.stat(self.path).st_mtime_ns
-        if stamp != self._cache[0]:
-            # utf-8 named on both sides: Windows' locale default is cp1252, which misreads any
-            # non-ascii book; newline translation on read makes the etag convention-independent
-            with open(self.path, encoding='utf-8') as handle:
-                text = handle.read()
-            self._cache = (stamp, content_hash(text), text)
-        return self._cache[1]
+    def _current(self, strict=False):
+        """The etag of the file as it stands. Its text is read where the stamp or the size moved,
+        and again until a read lands a clock tick after the stamp - a second write inside one tick
+        keeps it. A read that fails is tried again a tick later, and then the last text stands for
+        a reader - an outside save caught in flight, which the next read heals - but never for a
+        write (`strict`), nor past the time a save takes where the text will not parse."""
+        now, stat = time.time_ns(), os.stat(self.path)
+        key = (stat.st_mtime_ns, stat.st_size)
+        tick = TICK_NS if stat.st_mtime_ns % 1_000_000_000 else COARSE_TICK_NS
+        if key == self._cache[0] and self._cache[1] >= key[0] + tick:
+            return self._cache[2]
+        for attempt in range(READS):
+            try:
+                # utf-8 named on both sides: Windows' locale default is cp1252, which misreads any
+                # non-ascii book; newline translation on read makes the etag convention-independent
+                with open(self.path, encoding='utf-8') as handle:
+                    text = handle.read()
+                if text != self._cache[3]:
+                    json.loads(text)
+                    self._cache = (None, 0, content_hash(text), text)
+                self._cache = (key, now) + self._cache[2:]
+                break
+            except (OSError, ValueError) as unread:
+                settled = isinstance(unread, ValueError) and now >= key[0] + COARSE_TICK_NS
+                if attempt < READS - 1:
+                    time.sleep(TICK_NS / 1e9)
+                elif strict or settled or self._cache[3] is None:
+                    raise
+        return self._cache[2]
 
     def _read(self):
         etag = self._current()
-        return json.loads(self._cache[2]), etag
+        return json.loads(self._cache[3]), etag
 
     def read(self):
         """`(wire document, etag)` - a fresh parse, safe for the caller to mutate."""
@@ -540,7 +568,7 @@ class Book:
                 document, etag = self._read()
             write, outcome = edit(document, etag)
             with self.lock:
-                if not write or self._current() == etag:
+                if not write or self._current(strict=True) == etag:
                     return self._land(document, etag, write, outcome)
         return self.transact(edit)
 
@@ -559,6 +587,7 @@ class Book:
         nothing to append, which is every edit with no home under it, keeps `mutate`.
         """
         with self.lock:
+            self._current(strict=True)
             document, etag = self._read()
             return self._land(document, etag, *edit(document, etag))
 
@@ -572,14 +601,15 @@ class Book:
             # the pin is a SIBLING of `Calc`: the engine reads `Calc` alone and the plan hash is
             # taken of its params and deals, so nothing written here can move a plan
             document[SPINE_PIN] = spine.pin()
-        text = json.dumps(document, indent=sniff_indent(self._cache[2]))
+        text = json.dumps(document, indent=sniff_indent(self._cache[3]))
         temporary = self.path + '.tmp'
         with open(temporary, 'w', encoding='utf-8', newline='') as handle:
             handle.write(text)
         os.replace(temporary, self.path)
-        self._cache = (os.stat(self.path).st_mtime_ns, content_hash(text), text)
-        self._verdict = (self._cache[1], validated) if validated is not None else (None, None)
-        return dict(outcome, etag=self._cache[1])
+        # no stamp: the next read takes this text's stamp off the file, and a write after it
+        self._cache = (None, 0, content_hash(text), text)
+        self._verdict = (self._cache[2], validated) if validated is not None else (None, None)
+        return dict(outcome, etag=self._cache[2])
 
 
 #: The live book: `DV_HOME/book.json` by default, another file where `DV_Service --book` names one,
@@ -2510,7 +2540,8 @@ def explaining(first, last, document):
     positions valued on the start's close with first-order sensitivities in its quotes, the same
     positions on the end's close for the levels their factors stand at there, and the start's
     close rolled onto the end's day at its own quotes - the day moved, every curve re-authored on it
-    and the market re-bootstrapped, as `POST /book/date` rolls a book."""
+    and, where the book declares a bootstrapper, the market re-bootstrapped, as `POST /book/date`
+    rolls a book."""
     def run(quantities):
         key = content_hash({'start': first['job'], 'end': last.get('job') or risk_etag(document),
                             'quantities': quantities})
@@ -2553,18 +2584,13 @@ def sensed(job):
 
 
 def carried(job, day):
-    """What `job` is worth rolled onto `day` at its own quotes: the day moved, and where it carries
-    curves to re-author and a bootstrap to run, every curve re-authored on it and the market
-    re-solved; refused in the bootstrap's own words where that complains."""
+    """What `job` is worth rolled onto `day` at its own quotes, as `POST /book/date` rolls a book;
+    refused in the bootstrap's own words where that complains."""
     rolled = deepcopy(job)
-    market = rolled['Calc']['MergeMarketData']['ExplicitMarketData']
-    if market.get('Market Prices') and market.get('Bootstrapper Configuration'):
-        write, outcome = date_edit(rolled, read_stamp(day))
-        if not write:
-            raise ValueError('the start would not roll onto {}: {}'.format(
-                day, '; '.join(outcome['refused'])))
-    else:
-        stamp_base_date(rolled, read_stamp(day))
+    write, outcome = date_edit(rolled, read_stamp(day))
+    if not write:
+        raise ValueError('the start would not roll onto {}: {}'.format(
+            day, '; '.join(outcome['refused'])))
     _, out = load(spine.compiled_job(rolled, strict=False)).run_job()
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
@@ -2969,8 +2995,9 @@ def book_worklist(actor: str = None):
     restrike makes a re-confirmation due - and `calls` the collateral the marks of the book's day
     call for or post, keyed by agreement, every movement filed counted whatever its value date, one
     nobody can work out listed with its `unknown` (`collateral_calls`), for `settle`; `unmarked`
-    the closes on the market designated for `pnl` on a DAY after the last one marked - marks run
-    forward, so no earlier day is owed - for `mark` over the book; and `rejected` the tickets
+    the closes on the market designated for `pnl` on a DAY after the last one marked, and that
+    day's standing close where it is not the one its marks were taken on - marks run forward, so no
+    earlier day is owed - for `mark` over the book; and `rejected` the tickets
     rejected that still stand in a position netting to something, for `book` - the trade
     happened, and closing it is somebody's act. A read no seat signs on a box checking no token
     lists them all. 404 where no home is configured.
@@ -3048,7 +3075,8 @@ def book_worklist(actor: str = None):
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
             close['date'], market), close['date'], close['lsn'], close['date'])
             for close in {close['date']: close for close in closes}.values()
-            if close['date'] > max(marks, default='')
+            if close['date'] >= max(marks, default='')
+            and close['values_hash'] != marks.get(close['date'], {}).get('values_hash')
             and spine.visible([{'portfolio': book}], sight, verb=vocabulary.MARK)],
         'rejected': ticketed(vocabulary.BOOK, 'rejected', 'was rejected and still stands', ticket,
                              lambda position, entry, at: entry['status'] == 'rejected'
@@ -3538,9 +3566,9 @@ def book_xva_view():
 
 class CapturedErrors(logging.Handler):
     """What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could
-    not run or wrote nothing at ERROR and carries on, so a market update captures that channel
-    and refuses the write when anything landed on it - a book must never carry a market its own
-    bootstrap complained about.
+    not run or wrote nothing off its blocks at ERROR and carries on, so a market update captures
+    that channel and refuses the write when anything landed on it - a book must never carry a
+    market its own bootstrap complained about.
 
     IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. `Config.bootstrap` publishes on the ROOT logger,
     which is every thread's - a queued `/book/price` logging a CRITICAL inside a tick's window
@@ -3780,7 +3808,9 @@ def rewrote(before, market):
 def configure_edit(document, section, entry, fields):
     """One configuration entry amended as an edit closure for `Book.mutate`, then the whole market
     re-bootstrapped through `market_edit` - so a bootstrap error writes NOTHING and comes back as
-    the refusal, exactly as a tick's does, and the answer names what the run rewrote."""
+    the refusal, exactly as a tick's does, and the answer names what the run rewrote. A family
+    entry that wrote no price factor - one the book carries no quotes for, which a roll passes
+    over - refuses in the bootstrap's own words."""
     amend = CONFIGURED_SECTIONS.get(section)
     if amend is None:
         raise ValueError('{} is no configuration section - this book configures {}'.format(
@@ -3791,6 +3821,11 @@ def configure_edit(document, section, entry, fields):
     write, refusal = market_edit(document, {}, {}, bootstrap='Yes')
     if not write:
         return write, refusal
+    written = amend is bootstrapper_entry and bootstrappers.family_class(key).price_factor_type
+    if written and not any(name.startswith(written + '.') for name in market['Price Factors']):
+        return False, {'written': False, 'refused': [
+            'Bootstrapper {0} wrote no {1}.* price factor - check the Market Prices section'.format(
+                key, written)]}
     return True, {'written': True, 'section': section, 'entry': key, 'dials': dials,
                   'rewrote': rewrote(before, market)}
 
@@ -3973,7 +4008,8 @@ def authored_curve(document, request):
 
 def curve_edit(document, curves, base_date, quotes={}, patch={}):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
-    bootstrapped through `market_edit`.
+    bootstrapped through `market_edit` where the book declares a `Bootstrapper Configuration` - a
+    book declaring none moves its dates and blocks and solves nothing.
 
     A block whose PLAN moved - a rolled date, a row held out - is dropped and re-installed, a
     structural change never being a value tick; one whose plan stands moves its values alone, so
@@ -3994,7 +4030,9 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}):
     for name in reauthored:
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
-    write, outcome = market_edit(document, dict(quotes, **curves), patch, 'Yes')
+    outcome = market_edit(document, dict(quotes, **curves), patch,
+                          'Yes' if market.get('Bootstrapper Configuration') else 'No')[1]
+    write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
                         rewrote=rewrote(before, market)) if write else outcome)
 
@@ -4262,8 +4300,9 @@ def book_status():
 def date_edit(document, base_date):
     """The book's calculation date moved as ONE edit closure for `Book.mutate`: both stamps set,
     every curve block re-authored on the new date from its own rows and conventions with no
-    terminal asked, and the whole market re-bootstrapped through `curve_edit` - so a bootstrap that
-    complains writes NOTHING and the date does not move either."""
+    terminal asked, and the market re-bootstrapped through `curve_edit` where the book declares a
+    bootstrapper - so a bootstrap that complains writes NOTHING and the date does not move
+    either."""
     curves, held, _ = curve_quotes(None, document, base_date)
     write, outcome = curve_edit(document, curves, base_date)
     return write, (dict(outcome, held_out=held) if write else outcome)
@@ -4277,9 +4316,10 @@ def book_date(request: dict):
     curve's benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on. Every
     `InterestRatePrices` block is re-authored on the new day from its own rows and conventions -
     the same benchmarks on new dates, the quotes exactly as they stand - and the whole market is
-    re-bootstrapped in the same atomic write, so a bootstrap that complains writes NOTHING and
-    answers 422 in its own words. A block authored before it carried its conventions has nothing to
-    re-roll under: it is named in `held_out` and left standing, as the tick leaves it.
+    re-bootstrapped in the same atomic write where the book declares a bootstrapper, so a bootstrap
+    that complains writes NOTHING and answers 422 in its own words; a declared family with no quote
+    block yet has nothing to fit and passes. A block authored before it carried its conventions has
+    nothing to re-roll under: it is named in `held_out` and left standing, as the tick leaves it.
 
     THIS IS THE VERB THAT GOES ANYWHERE - back as readily as forward. The curve verb and the tick
     roll the date FORWARD onto the day their quotes were snapped and never off it.

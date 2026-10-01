@@ -158,9 +158,8 @@ def test_the_blue_days_hold_every_invariant_on_three_replicas(blue):
 def test_the_bank_is_founded_and_played_with_the_shipped_verbs_alone(blue):
     """THE BANK IS STOOD UP BY WHAT A DEPLOYMENT ALREADY HAS. Every verb the founding typed is a
     subcommand `DV_Spine` ships, and the heads' declarations stand in the record as scoped ones;
-    every binding call a player makes is a tool the MCP server publishes; the transport is read
-    for a run's raw result and nothing else; and the hub's writer is reached for a print alone,
-    the one fact no verb takes.
+    every binding call a player makes is a tool the MCP server publishes, the raw transport never;
+    and the hub's writer is reached for a print alone, the one fact no verb takes.
 
     Killing mutation: a player posting a booking over the raw transport, which no host can ask.
     """
@@ -179,12 +178,10 @@ def test_the_bank_is_founded_and_played_with_the_shipped_verbs_alone(blue):
             tree = ast.parse(handle.read(), filename=module.__file__)
         called = set(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
                      and isinstance(node.value, ast.Name) and node.value.id == 'binding')
-        assert called - {'configure', 'service'} <= tools, (module.__name__, called - tools)
+        assert called - {'configure'} <= tools, (module.__name__, called - tools)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 shown = [ast.unparse(argument) for argument in node.args[:2]]
-                if node.func.attr == 'hub':
-                    assert shown[0] == "'GET'" and shown[1].startswith("'/results/"), shown
                 if node.func.attr == 'file':
                     assert shown[1] == "'fixing_observed'", shown
 
@@ -316,10 +313,10 @@ def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
 def test_the_game_is_played_through_the_binding_and_nowhere_else():
     """WHAT MAKES THIS AN ACCEPTANCE TEST is that the seats reach the record the way a model does.
 
-    Read off the players' own source: every act is a call on the BINDING, on the hub's own
-    transport, on the CLI an operator types, or - for the one fact no verb files - on the hub's
-    writer through the engine's single seam, which `roles` is the only module here to reach. A
-    player that imported the engine itself would be answering something no desk can ask.
+    Read off the players' own source: every act is a call on the BINDING, on the CLI an operator
+    types, or - for the one fact no verb files - on the hub's writer through the engine's single
+    seam, which `roles` is the only module here to reach. A player that imported the engine itself
+    would be answering something no desk can ask.
 
     Killing mutation: `derivus` reached from `red` or `faults`, which would put an adversary and a
     fault on a path no host has.

@@ -41,8 +41,8 @@ from .capability import (
 from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog, as_of_key
 from .policy import (
-    DESIGNATIONS_SECTION, TIERS_POLICY, TOLERANCE_POLICY, TOLERANCE_SECTION, compare, in_force,
-    tiers_in_force)
+    DESIGNATIONS_SECTION, TIERS_POLICY, TIERS_SECTION, TOLERANCE_POLICY, TOLERANCE_SECTION,
+    compare, in_force, tiers_in_force)
 from .projections import CSA, PROJECTORS, fold
 from .store import BlobStore
 from .vocabulary import (
@@ -137,8 +137,10 @@ def nothing_outside_its_seat(log, entitled, judged=None):
 
     The book half of the writer's decision re-reached (`_judged`); a frame judged at a node below
     a book is `nothing_outside_its_scope`'s. An approval in the writer's own voice is held to the
-    record around it as the hub made it: the hub signs only where a tiers policy is in force and
-    books the ticket after it signs.
+    record around it as the hub made it: the hub signs only where the tiers policy in force has an
+    automatic tier, one declaring no `four_eyes`, and books the ticket after it signs - a tiers
+    document nobody can read is one it signs under nothing, and one this copy does not hold leaves
+    that approval alone not assessed.
 
     The ENVELOPE HALF stands without a key: a type no verb declares is a write nobody could be
     scoped for, a type only the writer files under any other name is that voice forged, and the
@@ -148,7 +150,7 @@ def nothing_outside_its_seat(log, entitled, judged=None):
     judged = _judged(log, entitled) if judged is None else judged
     if isinstance(judged, str):
         return unasked(judged)
-    failures, signed, booked, workflow = [], [], {}, None
+    failures, signed, booked, workflow = [], [], {}, 'no tiers policy in force'
     for row in judged:
         frame, body = row['frame'], row['body']
         event_type, actor = frame['event_type'], frame['actor']
@@ -166,7 +168,7 @@ def nothing_outside_its_seat(log, entitled, judged=None):
             continue
         if event_type == 'policy_declared' and body.get('policy') == TIERS_POLICY \
                 and is_hash(body.get('blob')):
-            workflow = frame['lsn']
+            workflow = _workflow(log, frame['lsn'], body['blob'])
         if own and event_type == 'approval':
             signed.append((frame['lsn'], body.get('plan_hash'), workflow))
         if event_type in TICKETED:
@@ -175,12 +177,19 @@ def nothing_outside_its_seat(log, entitled, judged=None):
             failures.append(_unscoped(frame, row['scope']))
     failures.extend(
         'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
-        'ticket only under a tiers policy in force and books it after, so this is that voice '
-        'forged'.format(lsn, ticket, 'no tiers policy in force' if since is None
+        'ticket only under an automatic tier in force and books it after, so this is that voice '
+        'forged'.format(lsn, ticket, since if isinstance(since, str)
                         else 'no fill or restrike after it carrying that ticket')
-        for lsn, ticket, since in signed if since is None or booked.get(ticket, 0) < lsn)
+        for lsn, ticket, since in signed
+        if isinstance(since, str) or since is not None and booked.get(ticket, 0) < lsn)
+    blind = [str(lsn) for lsn, _, since in signed if since is None]
+    why = ('the approval at LSN {} stands under tiers this copy does not hold - follow with '
+           '`--blobs` and ask again'.format(', '.join(blind))) if blind else None
+    if why and not failures:
+        return unasked(why)
     return answer(failures, ['{} frame(s) re-adjudicated{}'.format(
-        len(judged), '' if entitled else ' by envelope alone')])
+        len(judged), '' if entitled else ' by envelope alone')] + (
+        ['{}: {}'.format(NOT_ASSESSED, why)] if why else []))
 
 
 def nothing_outside_its_scope(log, judged=None):
@@ -272,6 +281,19 @@ def _judged(log, entitled):
                             and declarable(doc, state['doc'], actor))
         judged.append({'frame': frame, 'body': body, 'scope': scope, 'held': held, 'node': node})
     return judged
+
+
+def _workflow(log, lsn, blob):
+    """What the tiers declared at `lsn` let the hub sign under: that LSN where a tier declares no
+    `four_eyes`, else why not - a document nobody can read being one nobody signs under - or None
+    where this copy does not hold the blob, the one case it cannot judge."""
+    if not log.store.has(blob):
+        return None
+    try:
+        tiers = tiers_in_force(log, lsn)[TIERS_SECTION]
+    except SpineRefusal as unreadable:
+        return 'the tiers at LSN {} nobody can read ({})'.format(lsn, unreadable)
+    return lsn if any(not tier['four_eyes'] for tier in tiers) else 'no automatic tier in force'
 
 
 def _unscoped(frame, scope):

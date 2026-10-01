@@ -311,29 +311,12 @@ is recorded so a reader knows which readings rest on it.
   by the oracle while the desk on it runs unchanged. No home outside the gates predates it. The
   remedy is the map in force declared on the record at an LSN, read the way a policy is, so a frame
   is judged by the grammar it was filed under: one reserved policy and one read in `verb_for`.
-- **A copy forging the hub's approval and a fill after it passes the oracle alone** (2026-09-29).
-  The oracle holds a writer-filed approval where a tiers policy stood and a fill carrying its
-  ticket followed; a copy that forges both, under a policy declaring no automatic tier, is caught
-  only by copies agreeing with the hub. Reading the policy at the approval and requiring a tier the
-  hub may sign for closes it: three lines in the oracle's voice rule. Signed history ends at the
-  last checkpoint either way.
-- **A booking's tier step advances a fold this process holds, and it is still linear in the rows it
-  mints** (2026-09-23). A booking's route folds `decisions`, and `markets` under a tiers policy,
-  and both open a body per row: folding from genesis costs 0.164 ms per decision filed, so a desk
-  two thousand decisions in would pay about 330 ms inside the write closure. The pair `fold` already
-  takes is held per projector and advanced instead, which is 0.026 ms per decision — 6.3× cheaper,
-  about 57 ms at two thousand — but NOT flat: 0.011 of it is the envelope walk every fold pays per
-  event, and 0.015 is `projections._from_seed`'s canonical copy of a state that grows with the
-  decisions, the same copy that makes the `activity` strip 219 ms where folding it costs 38. And the
-  pair lives in the PROCESS, so the first acceptance after a restart pays the whole history and a
-  second service on the same home pays it again. One remedy answers all three: a seed minted at the
-  official close (`projections.seed_at`, which `positions` and `blotter` already use), so a fresh
-  process starts where the day started and the state copied is the day's rather than the record's.
-  Size: one `read_seed` in `advancing` and a close that mints for these two projectors. The
-  restrike pays the same copy over `positions` since it reads where the terms are held: about
-  240 ms against 130 on a 2,005-event home holding 2,047 instruments, 72 ms of it the copy.
-  An approval pays it over both folds to answer the status its verdict leaves: about 210 ms
-  on the same home with 30 bookings more, its own fsync among it.
+- **A copy forging the hub's approval under a policy declaring both an automatic and a four-eyes
+  tier passes the oracle alone** (2026-09-29). The oracle holds a writer-filed approval to a tiers
+  policy in force with an automatic tier and a fill carrying its ticket after it; under a policy
+  with both kinds, a forged approval of a ticket only the four-eyes tier would admit is caught only
+  by copies agreeing with the hub. Recording the tier on the approval closes it: M. Signed history
+  ends at the last checkpoint either way.
 - **A settlement names no agreement, so the P&L shares what it moved by holdings** (2026-09-28). A
   payment the diary cannot determine falls to the positions of its instrument by what each held
   when it fell due, which is exact while every position's settlement is filed and spreads one filed
@@ -391,12 +374,6 @@ is recorded so a reader knows which readings rest on it.
   reads as money no diary announces. Every window starting before a market arrived meets it,
   month- and year-to-date among them. Size S: a traded instrument compiled off the end's job, the
   one its first marks read.
-- **A portfolio's P&L carries the whole book's unknowns** (2026-09-30). `unknown` and `complete`
-  are the book's whatever `portfolio`, `agreement` or seat narrows the rows, so a desk whose own
-  rows are all known reads incomplete over another desk's gap - and one desk's node seat reading
-  its own P&L sees the other desk's instrument and settlement reference named there, a read the
-  narrowing does not narrow. An unknown naming no instrument cannot be narrowed by the rows at all.
-  Size: the list narrowed by the rows it names and a rule for the unplaced ones, a few lines.
 - **Twelve types announce fixings that name no index** (2026-09-30). A fixing row is answered by
   a print filed under the index it names, which a type declares as `observes`; a row naming none
   is answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no
@@ -417,18 +394,11 @@ is recorded so a reader knows which readings rest on it.
   confirmations may pay or post collateral: separation of duties inside the back office is not
   expressible with the verbs the record has. A design decision - a narrower verb or none - not a
   number.
-- **A restated day is never marked again** (2026-09-30). The worklist lists a close by its DAY
-  after the last one marked, so a close restated on that day - a late print - stands unmarked
-  while the day's P&L reads the board it superseded until somebody marks it by hand; and a past day
-  restated behind a later marked one is never marked again, marks running forward. The oracle's
-  thirteenth reads either as a restatement after the marks and never a failure. Size: the last
-  day's, a few lines - the unmarked list by the close standing on a day; a past day's, M - its
-  marks taken again and every window after it struck again, a design call on whether a day
-  already struck moves.
-- **No verb reads the capabilities document in force** (2026-09-30). A node admin declares the
-  WHOLE document with its own rows changed, and `DV_Spine policy` refuses `capabilities` while no
-  endpoint serves it, so a head re-seating its desk must hold the last file somebody handed it.
-  Size: `DV_Spine policy capabilities` answering the stored document, a few lines.
+- **A past day restated behind a later marked one is never marked again** (2026-09-30). Marks run
+  forward, so a close restated for a day behind the last one marked stands unmarked and every
+  window after it reads the board it superseded; the oracle's thirteenth reads it as a restatement
+  after the marks and never a failure. Size M: its marks taken again and every window after it
+  struck again, a design call on whether a day already struck moves.
 - **A new client's credit curve has no verb** (2026-09-30). Legal declares the paper and the first
   booking brings its netting set, which the book prices only with `SurvivalProb.<counterparty>`;
   the terminal's set-up installs FX and rates alone and nothing else writes a factor, so the curve
@@ -437,17 +407,6 @@ is recorded so a reader knows which readings rest on it.
   puts the document before the writer judges the declaration, so a refused one stays as a blob no
   frame cites: no replica pulls it and the store has no verb to forget it. Size: the refusal named
   in the retention the design already owes, or the blob put after the judgement.
-- **The binding's run summary drops the engine version** (2026-09-30). `poll_result` answers the
-  plan, values and seed and not the engine version, so a host cannot state the replay tuple a
-  standing run was attested under; the game reads `/results/{id}` whole. Size: one key.
-- **A bootstrapper waiting for its first quotes refuses the book's roll** (2026-09-30). A book
-  declaring `FXVolSurfaceParameters` before any `FXVolPrices` block has arrived refuses
-  `/book/date` - `wrote no FXVol.* price factor` - because the roll re-bootstraps every declared
-  family, so a desk configured on its first day cannot move to its second until the surface is
-  ticked; and a book declaring no bootstrapper at all refuses the roll outright (`the book declares
-  no Bootstrapper Configuration`), so a book of explicit factors cannot move. Size: the roll's
-  re-bootstrap passing over a declared family with no quote block to fit, and over a book with
-  none, a few lines.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
@@ -637,8 +596,6 @@ every risk-neutral calibration inherits.
 
 ## Tidy-ups
 
-- `gates/reach.py --dirty` died on the Windows box decoding `git`'s output as cp1252 (2026-09-08)
-  and ran clean there on 2026-09-10; if it recurs, decode the diff as UTF-8.
 - `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
   on a `.md` at the repo root, so a change that adds a fixture cannot use the selector until the next
   boundary run rebuilds the map.
