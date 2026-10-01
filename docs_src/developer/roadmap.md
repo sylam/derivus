@@ -121,16 +121,6 @@ is recorded so a reader knows which readings rest on it.
 
 ### The autocall, TARF and barrier pricers
 
-- **A structure's TICKET must spell its pair the way the book stores the surface.** A spot model's
-  key and the fit that writes it are spelling-blind - one pair, one law, `FXVol.EUR.ZAR` or
-  `FXVol.ZAR.EUR` - but `structures.materialize` looks the surface up under the ticket's own order
-  and refuses `EURZAR` on a book carrying `ZAREUR`, naming what the book does quote. So a desk
-  quoting a cross states the pair as its own market data spells it.
-- **A parametric FX surface never mints its parameter sub-factors** (2026-09-15). The equity
-  surface lookup has a branch for a surface declared by its skew or by its SVI parameters and the
-  FX surface lookup has none, so an FX surface declared that way fails at the lookup with an
-  attribute error, under either moneyness rule, before any strip is read. Two documents in the
-  artifacts store reproduce it.
 - **A stale-fixing read in the autocall's observation arm.** A second consecutive coupon whose
   observation window is already wholly in the past reads the first coupon's last fixing under spot
   observation, the same staleness the window's prefix already carries; no document here reaches
@@ -183,42 +173,21 @@ is recorded so a reader knows which readings rest on it.
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
   whatever the payoff currency says. The owner's ruling: leave it as it is and replace the
   approximation with a different pricer rather than adjust this one.
-- **Two simulating pricers read a composite's smile at the untranslated strike.** The OSS discrete
-  barrier's expiry read (`pv_discrete_barrier_option`) and the autocall's (`pv_MC_AutoCallSwap`)
-  take the payoff-currency strike against the LOCAL forward, where the declared coordinate is that
-  strike translated by the fx forward. Their per-fixing strips already land on the declared
-  coordinate under a forward moneyness rule and differ only under a spot one.
-- **A deal's fallback to a sibling's factor may name one discovery never fetched.** Safe at the 34
-  sites where a discount rate falls back to a currency, because the interest rate arrives
-  transitively; the one cross-leg instance is fixed.
 
 ### The engine
 
-- **The volatility state a hedge critic reads differs in precision across processes**
-  (2026-09-10). The LogVar2FJ outer publishes its two log-variance factors in the job's precision
-  while three older spot models cast theirs to single. Inert while the hedge Monte Carlo runs in
-  single precision whatever the job says; a double-precision hedge solve would hand the critic one
-  double block among single ones.
 - **Four compounding methods refuse a leg with several resets per coupon** (2026-09-30). `Flat`,
   `Include_Margin`, `Exclude_Margin` and `Exponential` compile the same schedule the averaging leg
   does, its resets at one over n, so their arithmetic is not there: where they paid one over n of
   the interest they refuse by name. `OIS` compounds and `None` averages. Size: the fold of each in
   `pv_float_cashflow_list`, a branch apiece.
-- **A cap or a floor stated by its terms reads eight of its conventions not at all** (2026-09-30).
+- **A rate leg stated by its terms reads eight of its conventions not at all** (2026-09-30).
   `Reset_Type` in `Arrears` or `Advance`, `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`,
-  `Index_Offset`, the calendars and `First_Coupon_Date` each leave the mark at 6,016.17 on the
-  trial cap, where its list form reads them. UNMEASURED beyond that they move nothing; the caplet
-  schedule the terms compile is where each is read.
-- **The diary shows a CDS premium with the sign the engine's cash does not** (2026-09-30). The
-  buyer's premium reads +25,205.48 a quarter on the diary row, +500,547.95 over the trial CDS's
-  life, where the credit Monte Carlo books the negative; the upfront row agrees with the engine. A
-  P&L over a premium day counts it the wrong way.
-- **A solved zero-cost strike moved between two landings of 2026-09-06 on documents that carry no
-  LogVar2FJ factor**: 15.32196559 to 15.31624884, up to 3.7e-4 and fifteen times the solver's
-  Monte Carlo floor, while the same documents at a fixed strike are bit-identical. The earlier tree
-  is in no checkout any more, so the move cannot be pinned to a line.
-- **The notebook write path** raises on three field names its hard-coded allowlist does not carry,
-  and fourteen output-shaped descriptors have no widget. Superseded for viewing by the web UI.
+  `Index_Offset`, the calendars and `First_Coupon_Date` are declared on the swap, the cap, the
+  floor and the swaption and read by none of them - the swap reads its payment calendars alone -
+  so each leaves the mark where it stands, 6,016.17 on the trial cap, where the list form states
+  its dates. UNMEASURED beyond that they move nothing; the schedule generator all four share is
+  where each is read, and the deposit's and the equity swap leg's `First_Coupon_Date` wait on it.
 - **A model-priced leg's two-way charge is read off its LOGNORMAL vega, not the fit's own**
   (2026-09-21). A leg walking a fitted law publishes no FX vol quote sensitivity at all, so the
   charge comes from the same leg at the same terms read as a lognormal — a real vega, and the one a
@@ -234,27 +203,15 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
-- **Nine declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26,
-  2026-09-30). `DealDefaultSwap`'s `Is_Digital` and `Digital_Recovery` select a branch that was
-  never wired; `Rate_Currency` on
-  `DepositDeal` and `CFFixedInterestListDeal` names a reset currency on a leg with no quanto path; a
-  floating cashflow list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads
-  where the fixed list's does; `CommodityForwardDeal`'s `Payoff_Type` and `Payoff_Currency`, on a
-  forward declaring no strike, whose mark is the commodity delivered - `Units x F x D` - with
-  nothing paid for it; and a `NettingCollateralSet`'s `Haircut_Received`, on every collateral row,
-  where the engine and the collateral call take `Haircut_Posted` whichever side holds the asset,
-  and its `Independent_Amount_Reference`, a positive independent amount being support the bank
-  receives whichever party the field names. A desk that states one is silently ignored, which is
-  the opposite failure to the one the convention/placeholder split closes: UNMEASURED, because
-  there is no reading to compare against. Each is either wired to the branch it names or deleted
-  with the branch.
-- **The nth-to-default basket has no sensitivities** (2026-09-26). `Greeks: First` raises autograd's
-  in-place error on the recurrence in `expected_rate_gaussian_copula`. Read from the code alone, a
-  simulated row also scales each name's hazard by the index's cumulative hazard at the FIRST row's
-  horizons, which on a static curve is (s - t)/s of it: UNMEASURED, a credit Monte Carlo of a basket
-  being what would measure it. Under one whose names' hazards are simulated it is skipped on a
-  shape (`size of tensor a (25) must match ... b (3)`, in `expected_rate_gaussian_copula`) and the
-  run reports success; with the curves static it prices, -303,933 either way (2026-09-30).
+- **Four declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26). A floating
+  cashflow list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads where the
+  fixed list's does in four places; and a `NettingCollateralSet`'s `Haircut_Received`, on every
+  collateral row, where the engine and the collateral call take `Haircut_Posted` whichever side
+  holds the asset, and its `Independent_Amount_Reference`, a positive independent amount being
+  support the bank receives whichever party the field names. A desk that states one is silently
+  ignored, which is the opposite failure to the one the convention/placeholder split closes:
+  UNMEASURED, because there is no reading to compare against. Each is either wired to the branch
+  it names or deleted with the branch; the list's pair is M, the set's two move collateral numbers.
 - **A structure or a swaption outside a netting set breaks a credit Monte Carlo's dates**
   (2026-09-30). The root takes its report dates from its sub-structures alone
   (`DealStructure.finalize_struct`), so a `StructuredDeal` or a `SwaptionDeal` at the top of the
@@ -266,18 +223,11 @@ is recorded so a reader knows which readings rest on it.
 - **`index_reference` clamps an unpublished month to the last print** (2026-09-30), which a credit
   Monte Carlo then reads as that month's level, and `calc_index` assumes references arrive in time
   order. Read from the code, not measured.
-- **The single Asian clamps a seasoned deep-in-the-money call's strike** (2026-09-30), valuing it
-  as the forward less 1e-5. Read from the code, not measured.
-- **An autocall V2's floating margin is declared a number and read as a basis** (2026-09-26).
-  `Floating_Margin` is declared a `Float` and `QEDI_CustomAutoCallSwap_V2.calc_dependencies` reads
-  `.amount` off it, so a margin stated as the number the store publishes skips the deal; only the
-  `{".Basis": bp}` wire form prices. One declaration's type.
-- **An equity swap leg skips in three natural spellings and pays no dividend** (2026-09-26). Beside
-  the dividends table the blank-table row names, a blank `Payoff_Currency` is not read as the leg's
-  own currency and a leg started on or before the base date with no known price at its start carries
-  a `None` FX rate - each skips the leg - and compiled, `Known_Dividends` reaches only the reset's
-  `Weight` slot, which `pv_equity_cashflows` never reads. The leg's generator rework is where they
-  close.
+- **An equity swap leg skips in two natural spellings and pays no dividend** (2026-09-26). A blank
+  `Payoff_Currency` is not read as the leg's own currency and a leg started on or before the base
+  date with no known price at its start carries a `None` FX rate - each skips the leg - and
+  compiled, `Known_Dividends` reaches only the reset's `Weight` slot, which `pv_equity_cashflows`
+  never reads. The leg's generator rework is where they close.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
@@ -285,45 +235,11 @@ is recorded so a reader knows which readings rest on it.
   design names, a fill of one under every legacy node, is what makes the close net to nothing -
   and until it runs, a node no fill booked is outside the desk's P&L, which reads its positions
   off the record.
-- **A deal that fails in its pricer is counted nowhere** (2026-09-30). Under
-  `System Parameters.Exclude_Deals_With_Missing_Market_Data: No` a valuation refuses by name a deal
-  it cannot compile or price, and a read that values the book answers that sentence as a 422;
-  under `Yes`, the default, the compile guard skips and counts the deal under `Deals Skipped` while
-  `Deal.calculate` swallows a pricing failure into a zero mark that no count carries, and three
-  guards read the switch not at all - `add_structure_to_structure`, `resolve_structure`'s
-  `post_process` guard and the netting set dropped for holding a NaN. Counting the pricer's skip is
-  a list on the shared state folded into `Stats` by the two closed `execute` methods, about six
-  lines.
-- **A blank table has two wire spellings and they are not one value** (2026-09-22). A widget writes
-  an empty Table as JSON `null`, which the loader reads as `None`; the same table written as its
-  own container (`{".DateList": []}`) reads as an empty `DateList`, and a `utils` container defines
-  no `__bool__`, so an empty one is TRUTHY. Every `if self.field['<table>']:` guard therefore
-  branches differently on two documents that say the same nothing, and a convention completed from
-  its declaration takes the container arm. Live example, pre-existing: `EquitySwapLeg`'s dividend
-  read takes that arm and calls `DateEqualList.sum_range` with two of its three arguments
-  (`instruments.py:5437`), so no equity swap leg whose dividends are a table compiles at all.
-  The fix is one rule for the blank — either the loader's `None` or an empty container that is
-  falsy — and the arity bug goes with it. UNMEASURED in price, and nothing in the tree can measure
-  it: no document carries an `EquitySwapLeg`, and no deal in any fixture or job file states a blank
-  table in either spelling.
-- **A landing that changes how a document is read moves its plan hash once** (2026-09-22,
-  2026-09-25). `NettingCollateralSet.__init__` used to `setdefault` `Settlement_Period`,
-  `Liquidation_Period` and `Opening_Balance` INTO the authored block, and the plan hashes the block;
-  the declaration says all three, so the same set is three keys shorter and the same program hashes
-  differently - every book carrying a netting set moved. Then `Tag_Titles` left the deals' loaded
-  attributes, which the plan also hashes, and every document carrying a deal tree moved. Nothing
-  priced moves either time — `commodity_aps_world.json` is 65,584 reported floats and 0 mismatches
-  across the first, three fixture documents mark bit for bit across the second, and no factor
-  universe changes. What moves is a PIN: under a spine every
-  booked deal sits beneath a netting set, and a pending quote pins `plan_hash` beside
-  `values_hash`, so a quote pinned before the deploy and accepted after is refused on the PLAN —
-  the book moved under the solve, which is what that equality is for. The remedy is
-  the ordinary one: drain the pending quotes before deploying, or re-quote. `/book/status`
-  publishes no plan hash, so nothing else surfaces it.
-- **The deal panel shows every convention beside the terms** (2026-09-22). A web panel renders all
-  48 declared keys of a swap where 7 are the trade, the other 41 being conventions the store now
-  marks as such (`convention` on the descriptor). A fold would hide them by default; it is not
-  built because nothing under `web/scripts` drives `FieldView`, so it would ship ungated.
+- **Three guards read the skip switch not at all** (2026-09-30). Under
+  `System Parameters.Exclude_Deals_With_Missing_Market_Data: No` the compile guard and the pricer's
+  guard refuse by name; `add_structure_to_structure`, `resolve_structure`'s `post_process` guard
+  and the netting set dropped for holding a NaN skip under `No` as under `Yes`. Size: the switch
+  read at each, a line apiece.
 - **A consolidated risk read refits the quote blocks its book prices, and one refusal reads all of
   it on factors** (2026-09-24). `/book/risk` refits, with `Quote_Sensitivity` on, every block
   writing a factor the book reads and every block those stand on, so a spot-model block pays its
@@ -532,9 +448,6 @@ is recorded so a reader knows which readings rest on it.
   no Bootstrapper Configuration`), so a book of explicit factors cannot move. Size: the roll's
   re-bootstrap passing over a declared family with no quote block to fit, and over a book with
   none, a few lines.
-- **A commodity forward's `Forward_Date` is declared a term** (2026-09-30). The pricer reads a
-  blank one as the spot, and the declaration refuses a booking that leaves it out, so a desk states
-  the maturity to book one. Size: `convention=True` on the field, and the census gate's reading.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
@@ -602,13 +515,14 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   decisions-remain arm is folded parameters, not a substituted deal.
 - **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
   `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing
-  and the payoff read together, which is a pricer's answer rather than a schedule's. Two smaller
-  rows beside it: a swap's `Fixed_Compounding` is injected into a copy of `Factor_dep` at pricing
-  time, so the diary reads `False` whatever the deal says — harmless today, both branches
-  coinciding on a one-row-per-pay-day leg, and wrong the day that stops being true; and the diary's
-  cache key covers the deals and the calculation but not the record its compile now reads, so a
-  print filed after a read does not recompile (the rows stay right, `answered` resolving prints per
-  request).
+  and the payoff read together, which is a pricer's answer rather than a schedule's. One smaller
+  row beside it: the diary's cache key covers the deals and the calculation but not the record its
+  compile reads, so a print filed after a read does not recompile (the rows stay right, `answered`
+  resolving prints per request); the key that would is the position of the record's last fill,
+  amendment or fixing, the head itself moving on every append.
+- **A fold of the deal panel's conventions.** A web panel renders all 48 declared keys of a swap
+  where 7 are the trade, the other 41 conventions the store marks as such; a fold would hide them
+  by default, and ships once something under `web/scripts` drives `FieldView`.
 - **The deal tree hydrated from the fold** rather than reconciled against it. Every piece is in the
   record now - positions keyed by agreement and portfolio, each instrument's terms and each
   agreement's netting set by address - but the book file stays the materialisation and
@@ -728,15 +642,11 @@ every risk-neutral calibration inherits.
 - `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
   on a `.md` at the repo root, so a change that adds a fixture cannot use the selector until the next
   boundary run rebuilds the map.
-- One banked reading of a two-name correlation document from 2026-09-08 no longer reproduces at
-  double precision (one term reads 4.163e-17 against 2.776e-17 banked; the single-precision half
-  reproduces exactly). Re-bank it.
-- `derivus_jupyter.set_repr` raises on any multi-column Table outside a four-name allowlist, which
-  now includes `EquityBarrierBinaryOption.Barrier_Dates` and `QEDI_CustomAutoCallSwap.Coupon_Observations`;
-  loading, pricing, the generated docs and the MCP descriptors are unaffected.
-- Inline comment density: about twelve blocks of 4–11 comment lines from the boundary-correction
-  work (the discrete barrier's hit-mask and rebate blocks, the observed-spot walk's terminal
-  digital, the net-from-gross helper); house style is 2–3 lines.
+- `derivus_jupyter.py`, tracked but not in the wheel and superseded for viewing by the web UI,
+  raises on three field names its write allowlist does not carry and on any multi-column Table
+  outside a four-name allowlist, and fourteen output-shaped descriptors have no widget; loading,
+  pricing, the generated docs and the MCP descriptors are unaffected. Retire or repair is a desk
+  call.
 - `pv_float_cashflow_list` learns that a coupon's resets fold from their count against the
   cashflows' — a shape — and which fold from the leg's declared compounding; the count is the one
   signal left that an explicit mark on the compiled cashflows would replace.

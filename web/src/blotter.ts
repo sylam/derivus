@@ -21,7 +21,7 @@ const SIDE_FIELDS = ['Buy_Sell', 'Payer_Receiver', 'Borrower_Lender', 'MtM_Side'
 
 const CURRENCY_FIELDS = [
   'Currency', 'Payoff_Currency', 'Settlement_Currency', 'Underlying_Currency', 'Buy_Currency',
-  'Pay_Currency', 'Agreement_Currency', 'Balance_Currency', 'Equity_Currency', 'Rate_Currency',
+  'Pay_Currency', 'Agreement_Currency', 'Balance_Currency', 'Equity_Currency',
 ];
 
 const AMOUNT_FIELDS = [

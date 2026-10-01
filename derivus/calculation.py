@@ -342,7 +342,8 @@ class Calculation(object):
 
         self.netting_sets = None
 
-        self.calc_stats = {}
+        # what the run reports, and the deals its pricers skipped, counted there once each
+        self.calc_stats, self.unpriced = {}, set()
         self.params = {}
         self.gradient_index = None
         self.output = {}
@@ -1198,6 +1199,7 @@ class Credit_Monte_Carlo(Calculation):
             int(params['Random_Seed']), params['NoModel'],
             params['Currency'], params['MCMC_Simulations'],
             job_id, num_jobs, calc_greeks=sensitivities if greeks else None)
+        shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
@@ -2079,6 +2081,7 @@ class Base_Revaluation(Calculation):
 
         shared_mem = self.__init_shared_mem(
             params['Currency'], params['MCMC_Simulations'], calc_grad, params['Random_Seed'])
+        shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 

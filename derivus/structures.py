@@ -1067,10 +1067,10 @@ def materialize(structure, params, document):
     to `document` to pin the spot model on the deal type, so the caller owns the copy exactly as it
     does for `with_live_spots`.
 
-    THE PAIR IS THE BOOK'S. A surface is quoted one way round, so a pair stated backwards names a
-    block the book does not carry, every leg is dropped at load and the quote comes back priced at
-    nothing; it refuses here naming the pairs the book does quote. A notional is a positive amount
-    - which side of the trade the desk is on is the structure's own statement, not the sign.
+    THE PAIR IS THE BOOK'S. A surface is quoted one way round and the legs name it as the book
+    carries it, the engine reading the axis off that name, so a ticket may state the pair either
+    way; one the book quotes no surface for refuses here, naming the pairs it does. A notional is a
+    positive amount - which side the desk is on is the structure's own statement, not the sign.
     """
     params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
@@ -1083,7 +1083,9 @@ def materialize(structure, params, document):
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
                          "the structure's own".format(notional))
     factors = market_data(document)
-    if FX_VOL_FACTOR.format('{}.{}'.format(base, quote_ccy)) not in factors:
+    spellings = ('{}.{}'.format(base, quote_ccy), '{}.{}'.format(quote_ccy, base))
+    surface = next((pair for pair in spellings if FX_VOL_FACTOR.format(pair) in factors), None)
+    if surface is None:
         raise ValueError('{} is not a pair this book quotes - it carries {}'.format(
             params['pair'], ', '.join(name.split('.', 1)[1].replace('.', '')
                                       for name in sorted(factors)
@@ -1094,8 +1096,7 @@ def materialize(structure, params, document):
     base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
     shared = {'Currency': settlement, 'Discount_Rate': settlement,
               'Underlying_Currency': underlying, 'Underlying_Amount': notional,
-              'FX_Volatility': '{}.{}'.format(base, quote_ccy),
-              'Expiry_Date': expiry_date(base_date, params['expiry'])}
+              'FX_Volatility': surface, 'Expiry_Date': expiry_date(base_date, params['expiry'])}
     seed = engine_spot(document, underlying, settlement)
 
     out = []

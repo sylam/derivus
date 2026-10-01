@@ -1603,6 +1603,13 @@ def compo_strike(factor_dep, deal_time, shared, level):
     return level / calc_compo_geometry(factor_dep, deal_time, shared)['s_adj']
 
 
+def fixing_fx_forwards(adj, fixing_block):
+    """The outright fx forward to each fixing of a strip, the divisor `compo_strike` takes at the
+    expiry: a compo's strip reads the LOCAL smile at its local spot over these strikes."""
+    return adj['spot_scale'].unsqueeze(-2) * torch.exp(
+        adj['fx_carry'] * adj['fx_carry'].new(fixing_block).unsqueeze(-1))
+
+
 def compo_process(adj, spot, forward, b):
     """A compo or quanto payoff on a closed form's own coordinates.
 
@@ -1945,7 +1952,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
     expiry_years = factor_dep[expiry_years_key]
     forward = spot * torch.exp(b * expiry_years)
-    moneyness = calc_moneyness(shared.one * strike, spot, forward, deal_data, use_forwards, invert_moneyness)
+    moneyness = calc_moneyness(compo_strike(factor_dep, deal_time, shared, shared.one * strike),
+                               spot, forward, deal_data, use_forwards, invert_moneyness)
 
     # per-scenario: crossed at a past discrete observation date? Once set, KO scenarios are worth 0
     # and KI scenarios the vanilla European
@@ -1990,9 +1998,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                                 nominal * rebate_per_unit * newly_hit)
                 if boundary_aad:
                     # ONE entry per decision, in reporting currency: what THIS crossing pays if it
-                    # fires while the deal is alive, nothing if it does not, beside the ledger as
-                    # booked. The terminal crossing's rebate is inside the settle after the loop,
-                    # so it declares zero
+                    # fires while alive, nothing if not, beside the ledger as booked; the terminal
+                    # crossing's rebate is inside the settle after the loop, so it declares zero
                     fxr = report_fx(fx_rep, row_ofs - 1) if due else 0.0
                     b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_ofs - 1]),
                                    len(b_gaps) - 1,
@@ -2018,11 +2025,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             factor_dep['Volatility'], moneyness_block, expiry,
             shared) if kit is None else spot_block.new_empty(0)
 
-        adj = None
+        adj = local = None
         if factor_dep.get('Check_Payoff_Type', False):
             # a DEAL-LEVEL adjustment, so its vol input stays the expiry read. Barrier and strike
             # are payoff-currency quantities and compare against the scaled spot as authored
             adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
+            if adj['fx_vol'] is not None:
+                local = (spot_block, drifts, fixing_fx_forwards(adj, fixing_block))
             expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
@@ -2036,9 +2045,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
         # the SIMULATION read: the surface at every fixing's own tenor and the deal's declared
         # moneyness, differenced into forward variance (forward_vol_rate)
+        smile_spot, smile_carry, fx_forward = local or (spot_block, drifts, 1.0)
         interval_vols = forward_vol_rate(forward_vol_strip(
-            deal_data, shared.one * strike, spot_block, drifts, fixing_block, shared,
-            invert_moneyness, use_forwards), cum_t, sample_ts) if kit is None else spot_block.new_empty(0)
+            deal_data, shared.one * strike / fx_forward, smile_spot, smile_carry, fixing_block,
+            shared, invert_moneyness, use_forwards), cum_t, sample_ts
+        ) if kit is None else spot_block.new_empty(0)
         if adj is not None and adj['fx_vol'] is not None:
             # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's - the
             # asset's own interval strip composed with the fx expiry read
@@ -2444,10 +2455,9 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
         rebate=cash_rebate / nominal if cash_rebate else 0.0)
 
     if need_spot_at_expiry:
-        # the SAME running touch probability as pv_barrier_option, accumulated ONLY inside the
-        # barrier window - row 0 is a POINT test and every row after it an interval, each read on
-        # the day its far end sits on, so a window already CLOSED at row 0 tests nothing. The
-        # bridge tests the shifted barrier the closed form prices against
+        # pv_barrier_option's running touch probability on the shifted barrier, ONLY inside the
+        # window: row 0 is a POINT test, every later row an interval read on its far end's day, so
+        # a window already CLOSED at row 0 tests nothing
         interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time)
         interval_days = deal_time[:, utils.TIME_GRID_MTM]
         limit_day = factor_dep['Limit_Date']
@@ -2520,10 +2530,9 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                         buy_or_sell * cash_rebate * ~earlier)
                     own_row.append([(row, fires.detach(),
                                      torch.where(earlier, dead[row], alive[row]).detach())])
-                    # and the ledger that fork books, one entry per decision in reporting currency:
-                    # the rebate settles on the date it is triggered, and nothing settles there if
-                    # it does not. Row 0 pays nothing and the TERMINAL row's rebate is inside the
-                    # expiry settle, so both declare zero
+                    # the fork's ledger, one entry per decision in reporting currency: the rebate
+                    # settles on its trigger date or nothing settles; row 0 pays nothing and the
+                    # TERMINAL row's rebate is inside the expiry settle, so both declare zero
                     unit = (report_fx(fx_rep, row) * buy_or_sell * cash_rebate
                             if 0 < row < last_row else 0.0)
                     b_cash.append((int(deal_data.Time_dep.deal_time_grid[row]), k,
@@ -3171,7 +3180,9 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         log_fwd = carry * full
         s = spot[row_index]
         forward = s.unsqueeze(0) * torch.exp(log_fwd)
-        moneyness = k2 / forward if factor_dep['Invert_Moneyness'] else forward / k2
+        moneyness = torch.as_tensor(
+            calc_moneyness(k2, s, forward, deal_data, True, factor_dep['Invert_Moneyness']),
+            dtype=forward.dtype, device=forward.device).expand_as(forward)
         vols = []
         for mon, tau in zip(moneyness, full_np):
             if float(tau) <= 0.0:
@@ -3752,10 +3763,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                             K, callOrPut < 0, gain_power)
                     Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
-                    # the strip's j-th fixing is the schedule's `settle_offset + j`-th, which is
-                    # where the resolved samples stand too - declared ones first, then simulated.
-                    # Counted from the END it was the same index only where every fixing of the
-                    # schedule is resolved AND `calc_fx_cross` added no broadcast row
+                    # the strip's j-th fixing is the schedule's `settle_offset + j`-th, where the
+                    # resolved samples stand too (declared, then simulated); counted from the END
+                    # it agrees only with every fixing resolved and no `calc_fx_cross` broadcast row
                     Sj = past_fixings[min(settle_offset + j, num_samples - 1)].reshape(-1, 1)
                     p = 1.0
                     # an OBSERVED fixing has no conditioning step to integrate against: its spot is
@@ -3825,10 +3835,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # the remaining target, decremented by this fixing's accrual on survivors
                 accr = cf_itm  # correct for both standard and inverted targets
                 if smooth:
-                    # on a LIVE fixing, neither the mask nor the crisp arm's clamp: both are inert
-                    # at value and first order, and both would SEVER the kink term's curvature from
-                    # the moving trigger. An OBSERVED fixing builds no kink term, so the relu that
-                    # absorbs `cap`'s last bit costs no curvature there
+                    # a LIVE fixing takes neither the mask nor the crisp clamp: inert at value and
+                    # first order, both would SEVER the kink term's curvature from the trigger; an
+                    # OBSERVED one builds no kink term, so its relu taking `cap`'s last bit is free
                     R = F.relu(R - accr) if use_past_fixing else R - accr
                 else:
                     # R clamped at 0, not decoration: the LIVE clamp is the block's, and only the
@@ -3954,10 +3963,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     scalars = oss_model_scalars(factor_dep, shared)
 
-    # the accrual by SCHEDULE POSITION - `accumulation[k]` nets the first k fixings, the declared
-    # ones and then the simulated ones behind them. A block opens on the pot its SETTLED fixings
-    # left, so an observed-but-unsettled fixing enters through the strip's loop and nowhere else.
-    # `opening` is below the target here, so its clamped and unclamped walks start together
+    # `accumulation[k]` nets the first k fixings by SCHEDULE POSITION, declared then simulated; a
+    # block opens on the pot its SETTLED fixings left, so an observed-but-unsettled one enters via
+    # the strip's loop alone, and `opening` sits below the target, so both walks start together
     accumulation, raw = [opening], [opening]
     declared = [x * shared.one for x in fx_samples.declared_values()]
     for sample_val in declared + list(next_samples):
@@ -4022,11 +4030,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             fixed, n_inner = 7, len(knock_rows)
             b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
                             for k, row in enumerate(knock_rows)])
-            # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX. A block opens on one decision,
-            # but its rows walk different lengths of the OBSERVED prefix and each reports the
-            # decision at the last fixing IT has seen - so every index in between needs one too.
-            # `expand` because block 0's accrual is the HISTORIC one, a single number rather than a
-            # per-scenario tensor
+            # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX: a block's rows walk different
+            # lengths of the OBSERVED prefix, each reporting the decision at its own last fixing;
+            # `expand` because block 0's accrual is the HISTORIC one, a number, not a tensor
             if not b_gaps:
                 b_first = settle_index_local
             deepest = min(settle_index_local + max(obs_depth, default=0), len(raw) - 1)
@@ -4041,10 +4047,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())
                               if block_pend.dim() == 3 else None
                               for row in range(theo_price.shape[0])])
-            # the settled fixing as a payment fact, gated by the redemption that would have killed
-            # the deal before it: the strip's own head at weight one (tau == 0, undiscounted). The
-            # CLAMP is the realised R - the scope `untriggered` already carries - and a post-cross
-            # row's nonzero if_not is inert only because the flags are monotone (fired stays fired)
+            # the settled fixing as a payment fact gated by an earlier redemption: the strip's head
+            # at weight one (tau == 0, undiscounted), CLAMPED to the realised R of `untriggered`;
+            # a post-cross row's nonzero if_not is inert only because fired stays fired
             if block_pend.dim() == 3:
                 for row, value in zip(settle_rows, block_settled):
                     fxr = report_fx(fx_rep, row_ofs + row)
@@ -4207,7 +4212,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         sumOfSpots = 0.0
 
         tMax = len(S)
+        # a payment lands on its own date's row, which the caller discounts at that date
         mtm_list = S.new_zeros((len(isFixingDate),) + S.shape[1:])
+        paid = -1
 
         for t in range(tMax):
             inforce = 1.0 * (terminationDate < 0.0)
@@ -4224,8 +4231,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
             if isFloatDate[t] > 0.0:
                 lastKnownFloatingRate = -floating[floatingTime]
-                mtm_list[resetTime] = inforce * fx * lastKnownFloatingRate
-                floatingTime = floatingTime + 1
+                mtm_list[t] = inforce * fx * lastKnownFloatingRate
+                floatingTime, paid = floatingTime + 1, t
 
                 if coupon[t] <= 0.0:
                     resetTime = resetTime + 1
@@ -4236,15 +4243,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 sumOfSpots = 0.0
                 averageCounter = 0.0
                 termination = inforce * smooth_heaviside_up(avg, threshold[t] * strike)
-                mtm_list[resetTime] += termination * fx * (rebate + coupon[t])
+                mtm_list[t] += termination * fx * (rebate + coupon[t])
                 terminationDate = (1 - termination) * terminationDate + termination * resetTime
                 breachEvent = (1 - termination) * breachEvent
 
-                resetTime = resetTime + 1
+                resetTime, paid = resetTime + 1, t
 
         alive = 1.0 * (terminationDate < 0.0)
         breached = 1.0 * (breachEvent > 0.0)
-        mtm_list[resetTime - 1] += alive * fx * (rebate + breached * (rebate - (strike - avg) / strike))
+        mtm_list[paid] += alive * fx * (rebate + breached * (rebate - (strike - avg) / strike))
 
         return mtm_list.mean(axis=2)
 
@@ -4400,10 +4407,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             k_ratio = (K - c) / scale
                             p = utils.norm_cdf(
                                 (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
-                            # THE PUT LEG'S OWN INTERVAL - the same forward on this interval's own
-                            # carry, the variance its own strike reads, and the survival that law
-                            # gives the trigger. A kit hands ONE law and carries the smile inside
-                            # it, so every one of these is the path's own bits
+                            # THE PUT LEG'S OWN INTERVAL - this interval's forward, its own
+                            # strike's variance and the trigger's survival under that law; a kit's
+                            # ONE law carries the smile, so each is then the path's own bits
                             put_m, put_s, put_scale, put_k, put_p = m, s, scale, k_ratio, p
                             if own_put:
                                 put_vol = put_vols[i][coupon_index].reshape(-1, 1)
@@ -4415,10 +4421,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 put_p = utils.norm_cdf(
                                     (torch.log(torch.clamp_min(put_k, eps)) - put_m) / put_s)
                             if barrier > 0 and putBarrier > 0.0:
-                                # held below: the average's lognormal factor before the
-                                # advance, the prefix's own law, the weight from BEFORE `p`
-                                # enters `L`, the breach's half-line INTERSECTED with the
-                                # surviving one - both bound the same return - and the shift
+                                # held below: the average's pre-advance factor, the prefix's law,
+                                # the weight before `p` enters `L`, the breach's half-line
+                                # INTERSECTED with the surviving one (one return), and the shift
                                 b_ratio = observe(putBarrier, putBarrier - c) / (
                                     put_S * observe(win_end, G))
                                 interval = (put_scale, put_m, put_s, put_L, (torch.log(
@@ -4506,10 +4511,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         # itself decided on. The PAYOFF stays the average under both
                         at = observe(Sj, decided)
                         if interval is not None:
-                            # THE PUT LEG, INTEGRATED against `bound`, and `L_prev` - the weight
-                            # from before `p` entered `L` - IS `L / p` without the 0/0 where every
-                            # path fired. The whole leg is its own strike's: the law, the weight
-                            # and both readings
+                            # THE PUT LEG, INTEGRATED against `bound`; `L_prev`, the weight before
+                            # `p` entered `L`, IS `L / p` without the 0/0 where every path fired,
+                            # and the law, weight and both readings are its own strike's
                             scale, put_m, put_s, L_prev, bound, c = interval
                             at, decided = observe(*put_read), put_read[1]
                             analytic = L_prev * D[j] * fx * lognormal_fired_gain(
@@ -4538,10 +4542,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 P_cf = P_cf + L_cf * D[j] * fx * breach * (
                                     rebate - (1.0 - decided / strike))
                             if boundary_aad and putBarrier > 0.0:
-                                # ONE decision per inner path, gap > 0 meaning BREACHED, and the jump
-                                # is what this row's accumulator gains if that path's indicator
-                                # flips. Only here: where `interval` is not None the splice already
-                                # took it. A barrier date with no barrier decides nothing - log(0)
+                                # ONE decision per inner path, gap > 0 BREACHED, the jump what the
+                                # row gains if its indicator flips - here only, the splice taking it
+                                # where `interval` is set; no barrier decides nothing (log(0))
                                 bar_jumps.append(put_leg.detach())
                                 bar_gaps.append(
                                     torch.log(putBarrier / at).expand_as(bar_jumps[-1]))
@@ -4732,12 +4735,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         expiry_vols = utils.VolSurface.rate(
             factor_dep['Volatility'], moneyness_block, expiry, shared)
 
-        adj = None
+        adj = local = None
         if factor_dep.get('Check_Payoff_Type', False):
             # strike and thresholds are payoff-currency quantities, so they compare against the
             # scaled spot as authored
             adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings,
                                       bool(scalars))
+            if adj['fx_vol'] is not None:
+                local = (spot_block, drifts, fixing_fx_forwards(adj, fixing_block))
             expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
@@ -4800,10 +4805,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 last_fixing = None if hi[0] >= eq0 else hi[0]
             else:
                 last_fixing = windows = None
-            # the interval carry and vol strips, which is also what puts the FULL-PATH branch's
-            # `carry * dt` and `vols * vols * dt` on interval integrals. Both take the ZERO carry
-            # `drifts`; the strip reads each TRIGGER's own strike and the put leg gets a second
-            # strip read at its own
+            # the interval carry and vol strips, which put the FULL-PATH branch's `carry * dt` and
+            # `vols * vols * dt` on interval integrals; both take the ZERO carry `drifts`, the strip
+            # each TRIGGER's own strike and the put leg a second strip at its own
             cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
@@ -4811,23 +4815,26 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             if fixing_block.any():
                 levels = (factor_dep['Fixing_Thresholds'][eq_start_index[index]:]
                           if windows is not None else np.ones(fixing_block.shape[-1]))
+                smile_spot, smile_carry, fx_forward = local or (spot_block, drifts, 1.0)
                 interval_vols = trigger_vol_strip(
-                    deal_data, strike, levels, spot_block, drifts, fixing_block, cum_t,
-                    sample_ts, shared)
+                    deal_data, strike / fx_forward, levels, smile_spot, smile_carry, fixing_block,
+                    cum_t, sample_ts, shared)
                 if (windows is not None and not scalars and putBarrier > 0.0
                         and max(BarrierDates) > 0):
                     # THE PUT LEG'S OWN STRIP, its own strike at every fixing's own tenor - the
                     # leg is a deal of its own here, as the six-leg booking books it. Only the OSS
                     # arm (`windows`) reads it; the full-path branch has no leg to hand it to
                     put_vols = forward_vol_rate(forward_vol_strip(
-                        deal_data, put_strike * shared.one, spot_block, drifts, fixing_block,
-                        shared), cum_t, sample_ts)
+                        deal_data, put_strike / fx_forward * shared.one, smile_spot, smile_carry,
+                        fixing_block, shared), cum_t, sample_ts)
             else:
                 interval_vols = expiry_vols.unsqueeze(-2)
             if adj is not None and adj['fx_vol'] is not None and fixing_block.any():
-                # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's; the
-                # expiry-read else-branch above is already compo via adj['vol']
-                interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
+                # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's, the put
+                # leg's too; the expiry-read else-branch above is already compo via adj['vol']
+                fx_vol = adj['fx_vol'].unsqueeze(1)
+                interval_vols = compo_vol(interval_vols, fx_vol, adj['rho'])
+                put_vols = compo_vol(put_vols, fx_vol, adj['rho']) if put_vols.numel() else put_vols
             row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
             quanto = spot_block.new_empty(0)
             if adj is not None and adj['fx_vol'] is None and scalars and fixing_block.any():
@@ -4859,10 +4866,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             if boundary_aad and factor_dep['oss_windows']:
                 b_alive.append(block_alive)
                 settle_map = dict(zip(settle_rows, block_settled))
-                # per STAMPED decision (the row IS the coupon's date): gap, flag (`gap >= 0` IS
-                # the trigger), the rows
-                # it forks - a LAGGED block decides EVERY row off its one observed fixing, so all
-                # fork - and the coupon it gates. A re-observation of an old window is not a new one
+                # per STAMPED decision (the row IS the coupon's date): gap, flag (`gap >= 0` IS the
+                # trigger), the rows it forks - all of a LAGGED block's, decided off one observed
+                # fixing - and the coupon it gates; re-observing an old window is not a new one
                 forks = [(row_ofs + r, outputs[fixed + n_events + m],
                           outputs[fixed + 2 * n_events + m]) for m, r in enumerate(event_rows)]
                 for k, row in enumerate(event_rows):
@@ -5000,13 +5006,12 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
 
         if sample_tau.size:
             geo = calc_compo_geometry(factor_dep, t_block, shared, sample_days)
-            # strike_bar goes negative when the realised average exceeds the strike, which Black
-            # cannot take
-            strike_bar = torch.clamp(
-                factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1), min=1e-5)
+            # the strike net of the realised average, negative once that passes the strike: the
+            # surface and Black read it clamped, and below zero it is exercised for certain
+            strike_bar = factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1)
             sample_fwd = spot_block.unsqueeze(1) * torch.exp(carry_block.unsqueeze(1) * sample_ts.unsqueeze(2))
             moneyness = calc_moneyness(
-                (compo_strike(factor_dep, t_block, shared, strike_bar) /
+                (compo_strike(factor_dep, t_block, shared, strike_bar.clamp(min=1e-5)) /
                  normalize.clamp(min=eps)).unsqueeze(1),
                 spot_block.unsqueeze(1), sample_fwd, deal_data, use_forwards, invert_moneyness)
             # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
@@ -5039,7 +5044,7 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             forward_price = M1 * spot_block
         else:
             # past the averaging period, so the intrinsic is known
-            strike_bar = factor_dep['Strike']
+            strike_bar = average.new_tensor(factor_dep['Strike'])
             # tau cannot be exactly zero without breaking the AAD
             tau = 1e-5
             vol_t = torch.zeros_like(average)
@@ -5051,9 +5056,10 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             factor_dep['Buy_Sell'], factor_dep['Option_Type'], shared, cash_payoff=nominal)
             value = theo_price
         else:
-            theo_price = utils.black_european_option(
-                forward_price, strike_bar, vol_t, tau,
-                factor_dep['Buy_Sell'], factor_dep['Option_Type'], shared)
+            theo_price = torch.where(strike_bar > 0.0, utils.black_european_option(
+                forward_price, strike_bar, vol_t, tau, factor_dep['Buy_Sell'],
+                factor_dep['Option_Type'], shared), factor_dep['Buy_Sell'] * torch.relu(
+                factor_dep['Option_Type'] * (forward_price - strike_bar)))
             value = nominal * theo_price
 
         discount_rates = torch.squeeze(
@@ -5140,9 +5146,9 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
 
         # moment matching only applies before expiry, and to a leg with samples still to fix
         if tenor_block.any() and any(live):
-            # at-the-money vols
-            moneyness_block = (forward_block if use_forwards else spot_block) / spot_block
-            moneyness = 1.0 / moneyness_block if invert_moneyness else moneyness_block
+            # the at-the-money vol: the smile read at the spot, in the surface's own coordinate
+            moneyness = calc_moneyness(spot_block, spot_block, forward_block, deal_data, use_forwards,
+                                       invert_moneyness)
             vols = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, daycount_fn(tenor_block), shared)
 
             mu, sigma, sample_fts, sample_tss = {}, {}, {}, {}
@@ -6215,10 +6221,13 @@ def pv_credit_cashflows(shared, time_grid, deal_data, return_par_spread=False):
         else:
             adjustment = 0.0
 
-        # negative by convention: the protection buyer PAYS the premium
-        premium = -(interest[cash_index] * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal]).reshape(1, -1, 1)
+        # the schedule carries the premium's own sign, the protection buyer paying it, so the
+        # protection leg the buyer receives is the nominal negated
+        premium = (interest[cash_index] * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal]).reshape(1, -1, 1)
         pv_premium = premium * (survival_T + adjustment * marginal_PD) * Dt_T
-        pv_credit = (1.0 - factor_dep['Recovery_Rate'].recovery_rate()) * cashflows.tn[
+        recovery = factor_dep['Digital_Recovery'] if 'Digital_Recovery' in factor_dep else \
+            factor_dep['Recovery_Rate'].recovery_rate()
+        pv_credit = (1.0 - recovery) * -cashflows.tn[
             cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1) * 0.5 * (
                             Dt_T + Dt_Tm1) * marginal_PD
 
@@ -6298,18 +6307,18 @@ def expected_rate_gaussian_copula(
 
     r = q / (1.0 - q)     # (G,T,Pm,S,N)
 
-    # elementary symmetric polynomials e_0..e_Kmax of the odds, by stable recurrence over names
+    # elementary symmetric polynomials e_0..e_Kmax of the odds, by stable recurrence over names,
+    # each step a new tensor so the graph keeps every factor its products saved
     Kmax = max(n - k0 - 1, 0)
-    e = shared.one.new_zeros((q.shape[0], Tsteps, Pm, Sscen, Kmax + 1))
-    e[..., 0] = 1.0
+    e = [torch.ones_like(P0)] + [torch.zeros_like(P0)] * Kmax
     for i in range(Nnames):
         ri = r[..., i]  # (G,T,Pm,S)
         for k in range(min(i + 1, Kmax), 0, -1):
-            e[..., k] = e[..., k] + ri * e[..., k - 1]
+            e[k] = e[k] + ri * e[k - 1]
 
     ks = torch.arange(0, Kmax + 1, device=shared.one.device, dtype=shared.one.dtype)
     rate_k = (c * (1.0 - (k0 + ks) / float(n))).clamp_min(0.0)
-    rate_z = (P0.unsqueeze(-1) * e * rate_k.view(1, 1, 1, 1, -1)).sum(dim=-1)  # (G,T,Pm,S)
+    rate_z = (P0.unsqueeze(-1) * torch.stack(e, dim=-1) * rate_k.view(1, 1, 1, 1, -1)).sum(dim=-1)
 
     # integrate over z with the GH weights
     w_ = w.view(-1, 1, 1, 1)  # (G,1,1,1)
@@ -6354,8 +6363,8 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
     w_t = shared.one.new(ww)
     start_index, counts = np.unique(cash_start_idx, return_counts=True)
 
-    for index, (discount_block, surv_block) in enumerate(
-            utils.split_counts([discounts, surv], counts, shared)):
+    for index, (discount_block, surv_block, *name_blocks) in enumerate(
+            utils.split_counts([discounts, surv] + names, counts, shared)):
         # a dual (numpy and tensor) representation of the same cashflows
         cashflows = factor_dep['Cashflows'].dual(start_index[index])
         cash_pmts, cash_index = np.unique(cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True)
@@ -6373,13 +6382,15 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         Dt_T = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         index_cum_hazard_T = surv_block.gather_weighted_curve(shared, hazard_samples, multiply_by_time=False)
-        base_index = surv_base.gather_weighted_curve(shared, hazard_samples[0].reshape(1,-1),  multiply_by_time=False)
+        # the index today over each row's OWN horizons, flattened through today's one-row curve
+        base_index = surv_base.gather_weighted_curve(
+            shared, hazard_samples.reshape(1, -1), multiply_by_time=False).reshape(*hazard_samples.shape, -1)
         # a zero horizon - the window's opening, once it has started - holds no hazard, the index's
         # or a name's, so its 0/0 scale is one; masked both sides so no NaN reaches a gradient
         empty = base_index == 0.0
         g = torch.where(empty, 1.0, index_cum_hazard_T) / torch.where(empty, 1.0, base_index)
-        fwd_hazard_names = torch.stack(
-            [g * x.gather_weighted_curve(shared, hazard_samples, multiply_by_time=False) for x in names], dim=3)
+        fwd_hazard_names = torch.stack([g * x.gather_weighted_curve(
+            shared, hazard_samples, multiply_by_time=False) for x in name_blocks], dim=3)
 
         S_nodes = torch.exp(-fwd_hazard_names)  # (T, M+1, S, N)
         Cum_PD = (1.0 - S_nodes)
@@ -6403,9 +6414,9 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
             [np.r_[0,hs.searchsorted(x, side='right')-1] for hs,x in zip(hazard_samples, future_pmts)],
             device=shared.one.device)
         expected_coupons = torch.segment_reduce(trapz, reduce="sum", lengths=lengths.diff(), axis=1)
-        # per-period nominal carries Principal, Buy_Sell and any Amortisation; the minus is
-        # pv_credit_cashflows' convention - the protection buyer PAYS the coupon
-        premium = -expected_coupons * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
+        # per-period nominal carries Principal, Amortisation and the coupon's own sign, the
+        # protection buyer paying it
+        premium = expected_coupons * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
 
         cash_settle(shared, factor_dep['SettleCurrency'],
                     np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), premium[-1, 0])

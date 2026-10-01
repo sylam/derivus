@@ -1342,17 +1342,17 @@ def test_a_quote_is_an_act_not_a_lookup(book):
 
 def test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced(book):
     """Four asks nobody can be quoted on, each named against the structure's own declarations: no
-    parameters at all, the pair stated backwards, an expiry on the base date, and a notional the
-    client would be paid to take.
+    parameters at all, a pair the book quotes no surface for, an expiry on the base date, and a
+    notional the client would be paid to take.
 
-    KILLING MUTATION: `KeyError: 'pair'` for the first; for the backwards pair a quote that got as
+    KILLING MUTATION: `KeyError: 'pair'` for the first; for the unquoted pair a quote that got as
     far as `ZeroCostCollar-..._protection priced but reported no mtm row`, every leg having been
     dropped at load for a surface the book does not carry; and two QUOTES for the last two - the
     zero-day collar priced as if live, the negative notional priced with negative premiums.
     """
     refusals = {}
     for label, ask in [('none', {}),
-                       ('backwards', params(pair='ZARUSD', floor=1.0 / (SPOT * 0.95))),
+                       ('unquoted', params(pair='EURZAR', floor=SPOT * 0.95)),
                        ('expired', params(floor=SPOT * 0.95, expiry='0D')),
                        ('negative', params(floor=SPOT * 0.95, notional=-NOTIONAL))]:
         with pytest.raises(ValueError) as refusal:
@@ -1360,8 +1360,8 @@ def test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced(book):
         refusals[label] = str(refusal.value)
 
     assert refusals['none'].startswith('ZeroCostCollar states no pair, expiry, notional')
-    assert refusals['backwards'].startswith('ZARUSD is not a pair this book quotes')
-    assert 'USDZAR' in refusals['backwards']
+    assert refusals['unquoted'].startswith('EURZAR is not a pair this book quotes')
+    assert 'USDZAR' in refusals['unquoted']
     assert 'on or before the base date' in refusals['expired']
     assert refusals['negative'].startswith('a notional is a positive amount, not -1e+06')
 
@@ -1439,6 +1439,42 @@ def test_an_accumulator_crosses_both_axes_and_a_tarf_refuses_the_second(accrual_
     with pytest.raises(ValueError) as refusal:
         structures.quote(accrual_book, 'TargetRedemptionForward', accrual_params(target=TARGET))
     assert 'ZAR' in str(refusal.value) and 'accrual cap' in str(refusal.value)
+
+
+def mirrored(document):
+    """`document` carrying its surface the other way round, as `FXVol.ZAR.USD`, written by hand: the
+    same Malz smile with every log-moneyness node negated, which is how a deal reads the pair from
+    the other side - the engine takes the axis off the surface's own name."""
+    out = copy.deepcopy(document)
+    factors = out['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    surface = factors.pop('FXVol.USD.ZAR')
+    surface['Surface']['.Curve']['data'] = [[-x, t, vol] for x, t, vol in
+                                            surface['Surface']['.Curve']['data']]
+    factors['FXVol.ZAR.USD'] = surface
+    return out
+
+
+def test_a_ticket_quotes_alike_whichever_way_round_the_book_carries_its_surface(accrual_book):
+    """The same USDZAR collar and accumulator on the book as written and on its mirror: every leg
+    names the surface as the book spells it, and the two quotes deal the same legs at the same
+    solved strike and premium at the mid - the strip's furnishing reading the name the legs carry.
+
+    KILLING MUTATION: the surface looked up in the ticket's own order, which refuses the mirror.
+    """
+    for name, ask in (('ZeroCostCollar', params(floor=SPOT * 0.95)),
+                      ('Accumulator', accrual_params(knockout=SPOT * 1.10))):
+        quotes = [structures.quote(document, name, ask)
+                  for document in (accrual_book, mirrored(accrual_book))]
+        legs = [[(node['Instrument']['.Deal']['Object'], node['Instrument']['.Deal']['Buy_Sell'],
+                  node['Instrument']['.Deal'].get('Option_Type'))
+                 for node in quote['deal']['Children']] for quote in quotes]
+        assert legs[0] == legs[1], (name, legs)
+        for quote, spelling in zip(quotes, ('USD.ZAR', 'ZAR.USD')):
+            assert {node['Instrument']['.Deal']['FX_Volatility']
+                    for node in quote['deal']['Children']} == {spelling}
+        for row, mirror in zip(quotes[0]['legs'], quotes[1]['legs']):
+            assert mirror['strike_market'] == pytest.approx(row['strike_market'], rel=1e-9)
+            assert mirror['premium'] == pytest.approx(row['premium'], abs=SOLVE_TOLERANCE)
 
 
 def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accrual_book):

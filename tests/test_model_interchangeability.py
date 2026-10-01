@@ -79,6 +79,35 @@ def test_simulate_only_and_stepper_both_worlds():
     assert layouts['GARCH'] == {'platinum_cme_log_h': 1}, layouts['GARCH']
 
 
+def test_every_spot_model_reveals_its_state_in_the_job_s_dtype(tmp_path):
+    """The HMM's regime one-hot and belief, the GARCH's log-variance and the log-OU's deviation,
+    reversion and vol are the walk's own coordinates, so a float64 job publishes every one of them
+    in float64 rather than rounding them to float32. The log-OU world is the GARCH one with the
+    platinum spot walked by a log-OU, its utility scale stated since a log-OU reports no vol.
+
+    KILLING MUTATION: any of the five casts back to `torch.float32`.
+    """
+    market = json.load(open(GARCH_MKT))
+    models = market['MarketData']['Price Models']
+    models.pop('GARCHSpotModel.PLATINUM_CME')
+    models['LogOUSpotModel.PLATINUM_CME'] = {'Kappa': 2.0, 'Theta': 0.0, 'Sigma': 0.25}
+    market['MarketData']['Model Configuration']['.ModelParams']['modeldefaults'][
+        'CommodityPrice'] = 'LogOUSpotModel'
+    log_ou = tmp_path / 'MarketDataRF_platinum_logou.json'
+    log_ou.write_text(json.dumps(market))
+    revealed = {}
+    for mkt in (HMM_MKT, GARCH_MKT, str(log_ou)):
+        cfg = _cfg(mkt, 'simulate_only')
+        cfg['Calc']['Calculation']['Hedging_Problem']['Objective']['Utility_Scale_Explicit'] = 1e6
+        cx = rf.Context()
+        cx.load_json((json.dumps(cfg, default=str), 'dtype.json'))
+        _, out = rf.run_hedgemontecarlo(cx.current_cfg, prec=torch.float64)
+        revealed.update(out.bundle.privileged_factors)
+    assert {name: str(value.dtype) for name, value in revealed.items()} == dict.fromkeys(
+        ('platinum_cme_regime_onehot', 'platinum_cme_regime_belief', 'platinum_cme_log_h',
+         'platinum_cme_log_deviation', 'platinum_cme_kappa', 'platinum_cme_sigma'), 'torch.float64')
+
+
 def test_solve_reveal_width_resizes_with_model():
     dims = {}
     for name, mkt in (('HMM', HMM_MKT), ('GARCH', GARCH_MKT)):

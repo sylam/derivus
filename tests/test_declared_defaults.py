@@ -7,7 +7,7 @@ nothing. The seam is `schema.DealFields`, which `Deal.__init__` wraps the author
 by name falls through to `schema.deal_defaults`, and nothing else does.
 
 WHICH DEFAULTS COMPLETE IS ON THE DECLARATION. `convention=True` says the declared value IS what
-omission means - `Pay_Timing: End`, a null calendar, a blank `Rate_Currency` - and those complete.
+omission means - `Pay_Timing: End`, a null calendar, a blank `Discount_Rate` - and those complete.
 Every other default is a PLACEHOLDER: what a blank panel shows and nobody means by leaving it out.
 Answering `FXBarrierOption.Strike_Price` 0.0 turns a schema-invalid block into a plausible wrong
 number - 741.53 against the 78.93 the author meant - so a placeholder keeps its `KeyError`, and
@@ -253,10 +253,8 @@ BOOK = [
          Reference='DEPC'),
 ]
 
-#: An equity swap leg accruing on a real calendar, three business days out. It is not in `BOOK`:
-#: `EquitySwapLeg.calc_dependencies` calls `DateEqualList.sum_range` with two of its three
-#: arguments, so no leg whose dividends are a table compiles - on this tree or on main. What it
-#: gates is `reset`, which is where `Payment_Calendars` is read.
+#: An equity swap leg accruing on a real calendar, three business days out - what `reset` reads
+#: `Payment_Calendars` against, and the leg its dividend table is spelled three ways on.
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'EQL', 'Currency': 'USD',
               'Discount_Rate': 'USD', 'Equity': 'EQ', 'Equity_Volatility': 'EQ',
               'Equity_Currency': 'USD', 'Buy_Sell': 'Buy', 'Effective_Date': WORLD_BASE,
@@ -463,8 +461,88 @@ def test_a_table_default_is_the_empty_container_its_tag_names():
             seen += 1
             value = schema.engine_default(field)
             assert isinstance(value, kinds[field.tag]), (cls.__name__, key, field.tag)
-            assert not (value.data if hasattr(value, 'data') else value), (cls.__name__, key)
+            assert not value, (cls.__name__, key)
     assert seen >= 30, 'the Table declarations went somewhere'
+
+
+def test_a_blank_table_reads_the_same_however_it_is_spelled():
+    """A table left out completes to its tag's empty container, which an author also writes as
+    `{".DateEqualList": []}` and a widget as `null`. An empty container is falsy, so a reader's
+    `if self.field[<table>]` takes the blank arm on all three: the equity swap leg's dividend read
+    prices the three spellings to the bit, and a leg stating a dividend compiles beside them.
+
+    KILLING MUTATIONS: `__len__` removed from the containers, so an empty one is truthy; the
+    `sum_range` call back to two of its three arguments, which skips the leg stating a dividend.
+    """
+    for blank in (utils.DateList({}), utils.DateEqualList([]), utils.CreditSupportList([])):
+        assert not blank and len(blank) == 0
+    assert utils.DateList({WORLD_BASE: 1.0}) and utils.CreditSupportList([[0, 1.0]])
+
+    leg = dict(EQUITY_LEG, Reference='OMITTED', Payoff_Currency='USD',
+               Equity_Known_Prices=utils.DateEqualList([[WORLD_BASE, 100.0, 1.0]]))
+    legs = [leg, dict(leg, Reference='NULL', Known_Dividends=None),
+            dict(leg, Reference='EMPTY', Known_Dividends=utils.DateEqualList([])),
+            dict(leg, Reference='STATED', Known_Dividends=utils.DateEqualList(
+                [[WORLD_BASE - pd.DateOffset(days=10), 1.5]]))]
+    valued, stats = marks(legs)
+    assert 'Deals Skipped' not in stats, stats
+    assert valued['OMITTED'] == valued['NULL'] == valued['EMPTY'] == valued['STATED']
+    assert math.isfinite(float.fromhex(valued['NULL'])) and float.fromhex(valued['NULL']) != 0.0
+
+
+def test_an_omitted_floating_margin_completes_to_the_basis_its_reader_takes():
+    """The V2 autocall swap reads `Floating_Margin` as `.amount`, so it is declared a `Basis`: left
+    out it completes to `Basis(0)` and prices to the bit as `{".Basis": 0}`, where a float 0.0
+    skipped the deal, and the store publishes the Basis wire form. A stated 25bp moves the forecast
+    leg by the hand margin `-Units 25e-4 sum_k a_k D(t_k)`, on the trial's terms with every trigger
+    out of reach and the barrier, out of reach too, observed after the last coupon - the arm that
+    pays that leg - and by the same amount with two price fixings a quarter, each payment
+    discounted at its own date.
+
+    KILLING MUTATIONS: the declaration back to a bare Float, which skips the omitted margin's deal;
+    a payment written at its count among the payments, the k-th read at the k-th fixing's date.
+    """
+    import trial_equity_swaps as trial
+    quarters = trial.QUARTERS
+    v2 = {key: value for key, value in trial.DEALS[-1].items() if key != 'Floating_Margin'}
+    v2.update(Reference='OMITTED', Autocall_Thresholds=[[date, 1000.0] for date in quarters],
+              Barrier=1e-6, Barrier_Dates=[quarters[-1] + pd.Timedelta(days=1)])
+    twice = dict(v2, Price_Fixing=[
+        [day, 0.0] for quarter in quarters for day in (quarter - pd.DateOffset(months=1), quarter)])
+    valued, stats = marks([v2] + [
+        dict(deal, Reference=name + suffix, Floating_Margin=utils.Basis(bp))
+        for deal, suffix in ((v2, ''), (twice, '_TWICE'))
+        for name, bp in (('ZERO', 0.0), ('MARGIN', 25.0))])
+    assert 'Deals Skipped' not in stats and valued['OMITTED'] == valued['ZERO'], stats
+
+    starts = [quarters[0] - pd.DateOffset(months=3)] + quarters[:-1]
+    hand = -1e6 * 25e-4 * sum((end - start).days / 365.0 * math.exp(
+        -0.04 * (end - WORLD_BASE).days / 365.0) for start, end in zip(starts, quarters))
+    for suffix in ('', '_TWICE'):
+        moved = float.fromhex(valued['MARGIN' + suffix]) - float.fromhex(valued['ZERO' + suffix])
+        assert moved == pytest.approx(hand, rel=1e-12), (suffix, moved, hand)
+    assert schema.mapping['Instrument']['sections']['QEDI_CustomSwap.Fields'][
+        'Floating_Margin']['obj'] == 'Basis'
+
+
+def test_a_commodity_forward_omitting_its_forward_date_is_read_at_the_spot():
+    """`Forward_Date` is a convention: left out, the forward is read at the spot and carried to its
+    maturity, so on a zero-carry commodity the trial's forward validates and marks `Units S D(T)`,
+    50 x 1,000 x e^-0.04; stated at the maturity it marks `Units F(T) D(T)` off the curve's 1,025.
+
+    KILLING MUTATION: the convention flag dropped, which refuses the omitted date at booking.
+    """
+    import trial_commodity as trial
+    factors = dict(trial.FACTORS, **{
+        'CommodityPrice.METAL': dict(trial.FACTORS['CommodityPrice.METAL'], Interest_Rate='ZERO'),
+        'InterestRate.ZERO': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                              'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])}})
+    spot = dict(trial.DEALS[0], Reference='SPOT')
+    assert schema.validate_instrument(construct_instrument(dict(spot), {})) == []
+    valued, _ = marks([spot, dict(spot, Reference='DATED', Forward_Date=WORLD_EXPIRY)], factors)
+    discount = math.exp(-0.04 * (WORLD_EXPIRY - WORLD_BASE).days / 365.0)
+    assert float.fromhex(valued['SPOT']) == pytest.approx(50.0 * 1000.0 * discount, rel=1e-14)
+    assert float.fromhex(valued['DATED']) == pytest.approx(50.0 * 1025.0 * discount, rel=1e-14)
 
 
 def test_a_rate_default_carries_its_unit():
@@ -659,10 +737,10 @@ def marks(deals, factors=None):
              in zip(frame['Reference'], frame['Value'])}, answer['Stats'])
 
 
-def simulated(deals, curves, factors=None, sigma=0.01, prec=None, **calculation):
+def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, **calculation):
     """A credit Monte Carlo over `deals` held under one netting set, a Hull-White of volatility
-    `sigma` on each of `curves`, through the JSON contract and in the torch precision `prec` where
-    one is given: `(calculation, output)`."""
+    `sigma` on each of `curves`, `system` beside the System Parameters, through the JSON contract
+    and in the torch precision `prec` where one is given: `(calculation, output)`."""
     job = json.loads(json.dumps(book(deals), cls=CustomJsonEncoder))
     calc = job['Calc']
     calc['Calculation'] = dict(
@@ -673,6 +751,7 @@ def simulated(deals, curves, factors=None, sigma=0.01, prec=None, **calculation)
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
         'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
     market = calc['MergeMarketData']['ExplicitMarketData']
+    market['System Parameters'].update(system or {})
     market['Price Factors'].update(json.loads(json.dumps(factors or {}, cls=CustomJsonEncoder)))
     market['Model Configuration'] = {'.ModelParams': {
         'modeldefaults': {'InterestRate': 'HullWhite1FactorInterestRateModel'}, 'modelfilters': {}}}
@@ -703,7 +782,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    assert sum(dropped(deal) for deal in BOOK) == 187
+    assert sum(dropped(deal) for deal in BOOK) == 165
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)
@@ -797,7 +876,7 @@ def wire_default(field):
 
     A Period is `{'.DateOffset': '3M'}`, a rate `{'.Percent': 0}`, a blank Table its own empty
     container; everything else is the literal a panel shows. A widget also writes a blank Table as
-    JSON `null`, which the loader reads as `None` and is NOT this - see the roadmap row.
+    JSON `null`, which the loader reads as `None` - a different value a reader takes alike.
     """
     if field.type == 'Table' and field.default == 'null':
         tag = {'DateList': '.DateList', 'DateEqualList': '.DateEqualList',

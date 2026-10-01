@@ -136,7 +136,7 @@ class F(object):
     container the wire form uses, absent for a plain array of rows.
 
     `convention` says the declared default is what OMISSION MEANS - `Pay_Timing: End`, a null
-    calendar, a blank `Rate_Currency` - so a deal completes it on a read by name. Unflagged, a
+    calendar, a blank `Discount_Rate` - so a deal completes it on a read by name. Unflagged, a
     default is a PLACEHOLDER: a number the panel shows that nobody means by leaving it out, and a
     deal missing one is refused by name rather than priced at it.
 
@@ -896,16 +896,12 @@ def apply_market_values(structural, values):
 # Shared field blocks - the groups a class lists rather than inherits.
 CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
     F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple'),
-    F('Recovery_Rate', 'Text', default='', convention=True, obj='Tuple'),
     F('Description', 'Text', default='', convention=True),
-    F('Survival_Probability', 'Text', default='', convention=True, obj='Tuple'),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
     F('Settlement_Rate', 'Text', default='', convention=True),
     F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-    F('Investment_Horizon', 'Date', default='', convention=True),
-    F('Issuer', 'Text', default='', convention=True, obj='Tuple')
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple')
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
@@ -945,7 +941,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple'),
-    F('Floating_Margin', 'Float', default=0.0, convention=True),
+    F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
     F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
     F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
 ])

@@ -912,60 +912,17 @@ def _committed(path, at='HEAD'):
                           encoding='utf-8').stdout
 
 
-#: `{deal type: {declared JSON key: convention}}`, parsed once.
-_DEAL_FIELDS = {}
-
-
 def declared_deal_fields(deal_type):
-    """`{JSON key: whether its default is a CONVENTION}` for one INSTRUMENT type, read off
-    `instruments.py` and `schema.py` as an AST - never imported, which is the point: the emitter is
-    compared against the DECLARATION rather than against the engine's own reading of it.
-
-    `json_name` IS HONOURED where a field declares one: both cashflow legs declare their container
-    as `Fixed_Cashflows` / `Float_Cashflows` and write it as `Cashflows`, so a comparison on
-    declared names alone would report the emitter's correct key as an undeclared extra. Group
-    references (`ADMIN`, `CASHFLOWLISTDEAL`) are resolved by name out of `schema.py`.
+    """`{JSON key: whether its default is a CONVENTION}` for one INSTRUMENT type, off the store its
+    `fields` declaration emits (`schema.mapping`) rather than the engine's reading of a deal, with
+    `json_name` honoured: both cashflow legs declare their container as `Fixed_Cashflows` /
+    `Float_Cashflows` and write it as `Cashflows`, the key the emitter must match.
     """
-    if not _DEAL_FIELDS:
-        groups = {}
-        for node in ast.parse(_committed('derivus/schema.py', None)).body:
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
-                    and getattr(node.value.func, 'id', None) == 'Group':
-                groups[node.targets[0].id] = _json_names(node.value.args[1])
-        for node in ast.walk(ast.parse(_committed('derivus/instruments.py', None))):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            for statement in node.body:
-                if isinstance(statement, ast.Assign) and any(
-                        getattr(target, 'id', None) == 'fields' for target in statement.targets):
-                    _DEAL_FIELDS[node.name] = _declared_keys(statement.value, groups)
-    assert deal_type in _DEAL_FIELDS, \
-        '{} declares no `fields` in the instruments'.format(deal_type)
-    return _DEAL_FIELDS[deal_type]
-
-
-def _declared_keys(node, groups):
-    """One `fields = [ADMIN, own('X', [...])]` declaration flattened to `{JSON key: convention}`."""
-    names = {}
-    for entry in node.elts:
-        if isinstance(entry, ast.Name):
-            names.update(groups[entry.id])
-        elif getattr(entry.func, 'id', None) == 'own':
-            names.update(_json_names(entry.args[1]))
-        else:
-            names.update(_json_names(ast.List(elts=[entry])))
-    return names
-
-
-def _json_names(node):
-    """`{JSON key: whether the declaration calls its default a convention}` for one field list."""
-    names = {}
-    for entry in node.elts:
-        declared = {keyword.arg: keyword.value for keyword in entry.keywords}
-        json_name = declared.get('json_name')
-        key = json_name.value if json_name is not None else entry.args[0].value
-        names[key] = getattr(declared.get('convention'), 'value', False) is True
-    return names
+    from derivus import schema
+    instrument = schema.mapping['Instrument']
+    return {key: descriptor.get('convention', False) is True
+            for section in instrument['types'][deal_type]
+            for key, descriptor in instrument['sections'][section].items()}
 
 
 def test_every_authored_deal_key_is_one_the_committed_schema_declares():
@@ -1209,7 +1166,7 @@ def test_a_standing_block_stating_every_convention_is_reauthored_once():
         declared = declared_deal_fields(row['DealType'])
         row['Deal'] = dict({key: value for key, value in ir_curve.DECLARED.items()
                             if key in declared}, **row['Deal'])
-    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 133
+    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 132
     assert sum(len(row['Deal']) for row in block['instrument']['Points']) == 45
 
     document = job_document()

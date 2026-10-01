@@ -95,12 +95,12 @@ CONTRACT_FIELDS = ('OPT_STRIKE_PX', 'OPT_EXPIRE_DT', 'OPT_PUT_CALL', 'OPT_EXER_T
 #: outage partial. A full SPX chain is thousands of names.
 BATCH = 50
 
-#: The five reference fields the family declares, and the factor TYPE this emitter names each
-#: with for an equity underlying. Spelled here because the package may not import the engine; held
-#: against `OptionQuoteFamily.factor_types` by a gate.
-REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Volatility': 'EquityPriceVol',
-                   'Discount_Rate': 'InterestRate', 'Yield': 'DividendRate',
-                   'Funding_Rate': 'InterestRate'}
+#: The six reference fields the family declares, and the factor TYPE each is named with - an
+#: equity is priced in its own currency, so a chain leaves `Priced_In` blank. Spelled here because
+#: the package may not import the engine; held against `OptionQuoteFamily.factor_types` by a gate.
+REFERENCE_TYPES = {'Underlying': 'EquityPrice', 'Priced_In': 'FxRate',
+                   'Volatility': 'EquityPriceVol', 'Discount_Rate': 'InterestRate',
+                   'Yield': 'DividendRate', 'Funding_Rate': 'InterestRate'}
 
 #: The one switch the emitter STATES rather than lets fall through, at the family's own declared
 #: default. The STEP CLOCK is what the fitted parameters mean, so a deal's `Steps_Per_Year` has to

@@ -1983,8 +1983,7 @@ class PCAInterestRateCalibration(object):
         self.num_factors = 3
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
-        min_rate = data_frame.min().min()
-        force_positive = 0.0 #if min_rate > 0.0 else -5.0 * min_rate
+        force_positive = 0.0
         tenor = np.array([(x.split(',')[1]) for x in data_frame.columns], dtype=np.float64)
         stats, correlation, delta = calc_statistics(data_frame + force_positive, method='Log',
                                                           num_business_days=num_business_days, max_alpha=4.0)
@@ -2129,11 +2128,10 @@ class LogOUSpotModel(StochasticProcess):
         return {'log_deviation': 1, 'kappa': 1, 'sigma': 1}
 
     def privileged_factors(self, simulated):
-        spot = simulated.to(dtype=torch.float32)
         # use self.theta (post-anchor) so the critic sees the theta used during simulation; it
         # is (1,) calibrated / (B,) per-path and the trailing unsqueeze is the feature dim
-        theta = self.theta.to(dtype=torch.float32).reshape(-1)
-        log_dev = (spot.clamp_min(1.0e-9).log() - theta).unsqueeze(-1)
+        theta = self.theta.to(dtype=simulated.dtype).reshape(-1)
+        log_dev = (simulated.clamp_min(1.0e-9).log() - theta).unsqueeze(-1)
         kappa_t = torch.full_like(log_dev, float(self.param['Kappa']))
         sigma_t = torch.full_like(log_dev, float(self.param['Sigma']))
         return {'log_deviation': log_dev, 'kappa': kappa_t, 'sigma': sigma_t}
@@ -2252,7 +2250,6 @@ class MarkovHMMSpotModel(StochasticProcess):
         dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
         states = self.param['States']
         self.n_states = len(states)
-        T = len(dt_arr)
 
         def _t(arr):
             return shared.one.new_tensor(arr)
@@ -2428,11 +2425,11 @@ class MarkovHMMSpotModel(StochasticProcess):
         belief = getattr(self, 'last_regime_belief', None)
         out = {
             'regime_onehot': torch.nn.functional.one_hot(
-                regimes, num_classes=self.n_states).to(dtype=torch.float32),
+                regimes, num_classes=self.n_states).to(dtype=simulated.dtype),
         }
         if belief is not None:
             # Shape (T, B, n_states); accumulator concatenates along batch dim (last but one).
-            out['regime_belief'] = belief.to(dtype=torch.float32)
+            out['regime_belief'] = belief.to(dtype=simulated.dtype)
         return out
 
     def reveal_state_at(self, t, buffer):
@@ -3090,7 +3087,7 @@ class GARCHSpotModel(StochasticProcess):
 
     def privileged_factors(self, simulated):
         # (T, B, 1) — matches the HMM's (T, B, n) accumulator convention. Called outer-mode only.
-        return {'log_h': self.last_log_h.to(torch.float32).unsqueeze(-1)}
+        return {'log_h': self.last_log_h.to(simulated.dtype).unsqueeze(-1)}
 
     def reveal_state_at(self, t, buffer):
         """GARCH spot: log_h-first / price-last (the calc concatenates the segments in this

@@ -78,13 +78,13 @@ def _surface(atm, slope):
                                         for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])}
 
 
-def _factors(skew=SKEW, q=Q_EQ, eq_vol=VOL_ATM, fx_vol=FX_SIGMA, corr=CORR):
+def _factors(skew=SKEW, q=Q_EQ, eq_vol=VOL_ATM, fx_vol=FX_SIGMA, corr=CORR, fx_skew=0.0):
     return dict(RATES, **{
         'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, q], [5.0, q]])},
         'VolatilityGrid.EQ': _surface(eq_vol, skew),
-        'FXVol.EUR.USD': _surface(fx_vol, 0.0),
+        'FXVol.EUR.USD': _surface(fx_vol, fx_skew),
         'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': corr}})
 
 
@@ -252,6 +252,77 @@ def test_a_composite_knock_in_plus_its_knock_out_is_the_composite_european(
     assert abs(ki + ko - eur) / abs(eur) < 1e-12, (ki, ko, eur)
 
 
+@pytest.mark.parametrize('skew', [SKEW, 0.0], ids=['skew', 'flat'])
+def test_a_knocked_in_discrete_composite_barrier_is_the_composite_european(skew):
+    """A down-and-in monitored quarterly with its barrier far above the composite spot knocks in at
+    its first observation on every path, so the deal IS the vanilla its EXPIRY READ prices - the
+    local smile at the translated strike `K / F_X(T)`, as the composite European reads it. Measured
+    equal to 2.2e-16 on the skewed surface, where the untranslated read missed by 45% on the call
+    and 36% on the put; bit for bit on the flat one. The local carry is flat, as above.
+
+    KILLING MUTATION: the discrete barrier's expiry read back at the untranslated strike.
+    """
+    observed = [[BASE + pd.DateOffset(months=3 * k), ''] for k in range(1, 5)]
+    deals = [dict(_barrier('KI' + kind[0], 'Down_And_In', 1000.0, kind), Barrier_Dates=observed)
+             for kind in ('Call', 'Put')]
+    deals += [_vanilla('V' + kind[0], kind) for kind in ('Call', 'Put')]
+    out = _run(_job(deals, _factors(skew=skew, q=R_USD)))
+    for kind in 'CP':
+        assert _mtm(out, 'KI' + kind) == pytest.approx(_mtm(out, 'V' + kind), rel=1e-12), kind
+
+
+def test_a_composite_barrier_s_strip_reads_the_local_smile_at_the_translated_strike():
+    """A down-and-in and a down-and-out put on S*X observed once, at expiry, read their strip and
+    their expiry vol at the one tenor, both at the local strike `K / F_X(T)`: on the skewed smile
+    each prices as on a flat local surface at `_local_sigma(K)` - to the bit, where the strip read
+    at the composite spot over the payoff strike missed by 0.7% and 2.1%.
+
+    KILLING MUTATION: the strip read at the composite spot over the payoff strike.
+    """
+    deals = [dict(_barrier(kind, kind, DOWN, 'Put'), Barrier_Dates=[[EXPIRY, '']])
+             for kind in ('Down_And_In', 'Down_And_Out')]
+    skewed = _run(_job(deals, _factors(q=R_USD)))
+    flat = _run(_job(deals, _factors(skew=0.0, eq_vol=_local_sigma(STRIKE), q=R_USD)))
+    for kind in ('Down_And_In', 'Down_And_Out'):
+        assert _mtm(skewed, kind) == pytest.approx(_mtm(flat, kind), rel=1e-12), kind
+
+
+@pytest.mark.parametrize('skew', [SKEW, 0.0], ids=['skew', 'flat'])
+def test_a_one_coupon_composite_autocall_is_the_composite_europeans_that_make_it(skew):
+    """A 5% coupon if S*X closes at or above 1.1 K is the composite digital call there; a put
+    barrier at 90% of the strike adds a loss of (K - S*X) / K below it, a composite put at 0.9 K on
+    Units / K and a composite digital put paying 0.1 Units - each Black on S*X's forward at
+    `_compo_sigma`, the local smile read at the level over F_X(T). Both strips read the LOCAL smile
+    at the local spot, each strike over its fixing's fx forward, the put leg's vol the product's
+    as the path's is: equal to 1.1e-15, where the composite read missed by 1.9% and 10% on the skew.
+
+    KILLING MUTATIONS: either strip read at the composite spot over the payoff strike; the put
+    strip's vol left the local asset's, which misses by 3.9% on the flat smile.
+    """
+    autocall = dict({'Object': 'QEDI_CustomAutoCallSwap', 'Currency': 'USD', 'Equity': 'EQ',
+                     'Dividends': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
+                     'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Expiry_Date': EXPIRY,
+                     'Units': UNITS, 'Price_Fixing': [[EXPIRY, 0.0]],
+                     'Autocall_Coupons': [[EXPIRY, 0.05]], 'Autocall_Thresholds': [[EXPIRY, 1.1]]},
+                    **_ccy('EUR'))
+    out = _run(_job([dict(autocall, Reference='COUPON', Barrier=0.0, Barrier_Dates=[]),
+                     dict(autocall, Reference='PUT', Barrier=0.9, Barrier_Dates=[EXPIRY])],
+                    _factors(skew=skew, q=R_USD)))
+    forward, discount = CMP_SPOT * math.exp((R_EUR - R_USD) * T), math.exp(-R_EUR * T)
+
+    def black(level, call):
+        """Black's undiscounted price at `level`, and its exercise probability."""
+        sd = _compo_sigma(level, skew=skew) * math.sqrt(T)
+        z = (math.log(forward / level) / sd - 0.5 * sd) * (1.0 if call else -1.0)
+        return _black(forward, level, sd, call), 0.5 * math.erfc(-z / math.sqrt(2.0))
+
+    coupon = 0.05 * UNITS * discount * black(1.1 * STRIKE, True)[1]
+    put, below = black(0.9 * STRIKE, False)
+    assert _mtm(out, 'COUPON') == pytest.approx(coupon, rel=1e-12)
+    assert _mtm(out, 'PUT') == pytest.approx(
+        coupon - discount * UNITS * (put / STRIKE + 0.1 * below), rel=1e-12)
+
+
 def test_the_whole_conjunction_parities_at_the_vanilla_s_settlement_lag():
     """One run holding every live quantity at once: a non-zero local carry against two non-zero and
     different rates, the skewed surface, a live fx vol and a live correlation, both barrier
@@ -336,17 +407,44 @@ def test_a_composite_on_a_unit_fx_leg_prices_the_standard_deal(name, deal):
 # --------------------------------------------------------------------------------------------
 # 4. the discrete Asian
 # --------------------------------------------------------------------------------------------
+@pytest.mark.parametrize('fx_skew', [0.0, 0.2], ids=['flat-fx', 'smiled-fx'])
 @pytest.mark.parametrize('option_type', ['Call', 'Put'])
-def test_the_composite_asian_moment_matches_on_the_composite(option_type):
+def test_the_composite_asian_moment_matches_on_the_composite(option_type, fx_skew):
     """The future half of the average against the same two-moment match recomputed here, on the
     composite spot, the composite carry per sample and the composite vol - every sample's forward
-    is `S*X`'s. Measured equal to the bit on both option types."""
-    factors = _factors()
+    is `S*X`'s. Measured equal to the bit on both option types, and on an fx surface smiled about
+    its 15% at the money, which the composite vol reads at moneyness one.
+
+    KILLING MUTATION: a ratio surface's at-the-money read at moneyness zero - the 0.8 node's 11%,
+    which misses by 3.2%.
+    """
+    factors = _factors(fx_skew=fx_skew)
     out = _run(_job([_asian('AS', option_type)], factors))
     taus = [(d - BASE).days / 365.0 for d in SAMPLES]
     forward, sd = _moment_matched([0.25] * 4, taus, R_EUR - Q_EQ, _compo_sigma(STRIKE), CMP_SPOT)
     ref = UNITS * _black(forward, STRIKE, sd, option_type == 'Call') * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'AS') - ref) / abs(ref) < 1e-9, (_mtm(out, 'AS'), ref)
+
+
+def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain():
+    """Two of four equal-weight fixings printed at 100 against a strike of 20: the realised half of
+    the average alone passes the strike, so the call is worth its forward average less the strike
+    whatever the vol, `D N (sum_rem w F + sum_fixed w S - K)`, and the put nothing: 78,968.93,
+    where clamping the strike net of the realised average at 1e-5 priced the forward alone and
+    missed by 29,404.36.
+
+    KILLING MUTATION: that strike clamped where the payoff reads it, not only where Black does.
+    """
+    month = lambda m: BASE + pd.DateOffset(months=m)
+    samples = [[month(-6), 100.0, 1.0], [month(-3), 100.0, 1.0], [month(3), 0.0, 1.0],
+               [month(6), 0.0, 1.0]]
+    deals = [dict(_asian(ref, kind, payoff=None, strike=20.0), Sampling_Data=samples,
+                  Expiry_Date=month(6)) for ref, kind in (('CALL', 'Call'), ('PUT', 'Put'))]
+    out = _run(_job(deals, _factors(), currency='USD'))
+    forwards = sum(SPOT * math.exp((R_USD - Q_EQ) * (month(m) - BASE).days / 365.0) for m in (3, 6))
+    ref = UNITS * math.exp(-R_USD * (month(6) - BASE).days / 365.0) * (
+        0.25 * forwards + 0.25 * 200.0 - 20.0)
+    assert _mtm(out, 'CALL') == pytest.approx(ref, rel=1e-12) and _mtm(out, 'PUT') == 0.0
 
 
 # --------------------------------------------------------------------------------------------

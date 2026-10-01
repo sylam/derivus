@@ -146,7 +146,7 @@ Measured on that fixture: NaN at 0.28, and flat at 99,697.57 — the redeemed ta
 
 **A declared default is a CONVENTION or a PLACEHOLDER, and the declaration says which.** `F(...,
 convention=True)` says the default is what omission MEANS — `Pay_Timing: End`, a null calendar, a
-blank `Rate_Currency` — and `schema.DealFields` completes it on a read by name, so the runner writes
+blank `Discount_Rate` — and `schema.DealFields` completes it on a read by name, so the runner writes
 no barrier leg's `Barrier_Monitoring_Frequency` or `Cash_Rebate`: `pv_barrier_option` asks for both
 by name and the declaration answers, continuous monitoring and a zero rebate. Unflagged, a default is
 a placeholder — `Swap_Rate: 0.0`, `Strike_Price: 0.0`, a blank date — what a panel shows and nobody

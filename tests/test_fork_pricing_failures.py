@@ -540,17 +540,28 @@ def test_a_document_saying_no_refuses_every_deal_its_compile_could_not_read():
 
 def test_a_document_saying_no_refuses_a_deal_its_pricer_could_not_value():
     """A swaption stated by its terms alone compiles and refuses in its pricer, its legs being what
-    value it. Beside a priced option it is skipped under `Yes`, its row carrying no value, and under
-    `No` the run refuses naming it in the engine's own sentence.
+    value it. Beside a priced option it is skipped under `Yes`, its row carrying no value, and
+    counted under `Deals Skipped` as the compile guard counts its own - once, though a credit Monte
+    Carlo prices it batch by batch, settled in cash or physically - while the option alone counts
+    nothing; under `No` the run refuses naming it in the engine's own sentence, simulated too.
 
-    Killing mutation: the pricing guard reading no switch, which marks the swaption at nothing on a
-    `No` run that completes.
+    Killing mutations: the pricing guard reading no switch, which marks the swaption at nothing on a
+    `No` run that completes; its skip counted nowhere; counted per batch, twice over two; and the
+    physical one's dates reading legs it has none of, which stops the credit Monte Carlo unnamed.
     """
     terms = {key: value for key, value in next(
         deal for deal in book.BOOK if deal['Reference'] == 'SWPT').items() if key != 'Children'}
     stats, marks = _switched('Yes', [GOOD, terms])
-    assert stats.get('Deals loaded') == 2 and 'Deals Skipped' not in stats, stats
+    assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (2, 1), stats
     assert math.isnan(marks['SWPT']) and marks['FXO'] != 0.0, marks
-    with pytest.raises(utils.UnpriceableSchedule, match=(
-            r"Deal SWPT could not be priced - \('generate in SwaptionDeal - Not implemented yet',\)")):
+    assert 'Deals Skipped' not in _switched('Yes', [GOOD])[0]
+    for style in ('Cash', 'Physical'):
+        _, simulated = book.simulated([GOOD, dict(terms, Settlement_Style=style)], ('USD',),
+                                      Simulation_Batches=2)
+        assert simulated['Stats'].get('Deals Skipped') == 1, (style, simulated['Stats'])
+    refusal = r"Deal SWPT could not be priced - \('generate in SwaptionDeal - Not implemented yet',\)"
+    with pytest.raises(utils.UnpriceableSchedule, match=refusal):
         _switched('No', [GOOD, terms])
+    with pytest.raises(utils.UnpriceableSchedule, match=refusal):
+        book.simulated([GOOD, terms], ('USD',),
+                       system={'Exclude_Deals_With_Missing_Market_Data': 'No'})

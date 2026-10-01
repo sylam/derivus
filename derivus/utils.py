@@ -894,6 +894,9 @@ class DateList:
         self.data = dict(data)
         self.dates = set()
 
+    def __len__(self):
+        return len(self.data)
+
     def __str__(self):
         return '\\'.join(
             ['%s=%.12g' % ('%02d%s%04d' % (x[0].day, calendar.month_abbr[x[0].month], x[0].year), x[1]) for x in
@@ -922,6 +925,9 @@ class CreditSupportList:
     def __init__(self, data):
         self.data = dict(data)
 
+    def __len__(self):
+        return len(self.data)
+
     def value(self):
         return next(iter(self.data.values()))
 
@@ -932,6 +938,9 @@ class CreditSupportList:
 class DateEqualList:
     def __init__(self, data):
         self.data = {x[0]: x[1:] for x in data}
+
+    def __len__(self):
+        return len(self.data)
 
     def value(self):
         return self.data.values()
@@ -4944,7 +4953,9 @@ class VolSurface:
             surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
             max_index = np.prod(surface.shape) - 1
             if moneyness is None:
-                moneyness = shared.one * (0.0 if rate_code[FACTOR_INDEX_SubType][0]=='Malz' else 0.0)
+                # the at-the-money coordinate: zero on a log or relative axis, one on a ratio
+                ratio = rate_code[FACTOR_INDEX_SubType][0] not in ('Malz', 'Relative_Forward')
+                moneyness = shared.one * (1.0 if ratio else 0.0)
             index, _, alpha = moneyness_tenor.get_index(moneyness)
             expiry_indices = np.arange(expiry.size).astype(np.int32)
             expiry_index_key = ('expiry_tenor', tuple(expiry_indices), moneyness_tenor.tenor.size)

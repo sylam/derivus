@@ -144,6 +144,61 @@ def test_without_a_smile_the_rule_cannot_be_read_differently():
     assert flat != mtm(factors('Sticky_Moneyness', curve(SPOT))), 'the smile must be worth something'
 
 
+#: A `Skew` FX surface, `Sticky_Strike` about 1.25 with a 15% ATM and a 0.5 slope, no wings.
+FX_SKEW = {'Surface_Type': 'Skew', 'Moneyness_Rule': 'Sticky_Strike', 'ATM_Ref': curve(1.25),
+           'ATM_Vol': curve(0.15), 's': curve(0.5), 'L': curve(0.0), 'R': curve(0.0),
+           'C': curve(-1.0), 'D': curve(1.0), 'lam': curve(0.0), 'rho': curve(0.0)}
+
+
+def fx_grid(vol):
+    """`FXVol.EUR.USD` as an explicit grid flat at `vol`."""
+    return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
+        [], [[m, t, vol] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])}
+
+
+def test_a_skew_fx_surface_mints_its_parameters_and_prices_at_its_own_read():
+    """FX vol surfaces share the equity ones' getter, so a `Skew` FX surface mints its parameter
+    sub-factors where it named the bare surface and every FX deal on it skipped. An FX option reads
+    it at its strike - `0.15 + 0.5 log(1.30 / 1.25)` under `Sticky_Strike` about an `ATM_Ref` of
+    1.25 - and prices to the bit as on an explicit grid flat at that vol; an accumulator prices.
+
+    KILLING MUTATION: the FX getter answering the bare surface name for a parametric surface.
+    """
+    import test_declared_defaults as book
+    deals = [book.fx_leg('FXOptionDeal', kind, Expiry_Date=book.WORLD_EXPIRY, Strike_Price=1.30,
+                         Option_Type=kind) for kind in ('Call', 'Put')]
+    on_skew, stats = book.marks(deals + [next(d for d in book.BOOK if d['Reference'] == 'ACC')],
+                                {'FXVol.EUR.USD': FX_SKEW})
+    assert 'Deals Skipped' not in stats and np.isfinite(float.fromhex(on_skew['ACC']))
+    on_grid, _ = book.marks(deals, {'FXVol.EUR.USD': fx_grid(0.15 + 0.5 * np.log(1.30 / 1.25))})
+    assert all(on_skew[kind] == on_grid[kind] for kind in ('Call', 'Put')), (on_skew, on_grid)
+
+
+def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_option_does():
+    """The double Asian reads its at-the-money vol at the spot and the extendable forward each
+    transition vol at its extension strike, both through `calc_moneyness`. On the Skew above the
+    double Asian reads 15% at the 1.25 spot and the forward `0.15 + 0.5 log(1.28 / 1.25)` at every
+    fixing; on a Malz smile, 10% at the money and 30% from |x| = 0.5, the double Asian reads
+    `0.1 + 0.4 log(F / S)`, the 2% carry - each within an ulp of the deal on a grid flat there.
+
+    KILLING MUTATION: either read back to its own ratio, which lands on the Malz wing's 30%.
+    """
+    import test_declared_defaults as book
+    import trial_fx
+    deals = [deal for deal in trial_fx.DEALS if deal['Reference'] in ('FXDASN', 'FXEXT')]
+    malz = {'Surface_Type': 'Malz', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
+        [], [[x, t, vol] for x, vol in ((-0.5, 0.3), (0.0, 0.1), (0.5, 0.3)) for t in (0.02, 2.0)])}
+
+    def mark(surface, reference):
+        return float.fromhex(book.marks(deals, {'FXVol.EUR.USD': surface})[0][reference])
+
+    for surface, reference, vol in ((FX_SKEW, 'FXDASN', 0.15),
+                                    (FX_SKEW, 'FXEXT', 0.15 + 0.5 * np.log(1.28 / 1.25)),
+                                    (malz, 'FXDASN', 0.1 + 0.4 * (book.R_USD - book.R_EUR))):
+        assert mark(surface, reference) == pytest.approx(
+            mark(fx_grid(vol), reference), rel=1e-15), (reference, vol)
+
+
 def test_the_strip_is_read_the_same_way_at_every_reporting_row():
     """A profile asks for the strip once per reporting date, where a valuation asks once. The
     second shape is the one that came back with a row per date and was reshaped to one number.

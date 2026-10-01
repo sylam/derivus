@@ -726,7 +726,7 @@ DECLARED = {
     'Pay_Payment_Calendars': None, 'Pay_Payment_Offset': 0, 'Pay_Penultimate_Coupon_Date': None,
     'Pay_Timing': 'End', 'Payment_Calendars': None, 'Payment_Frequency': {'.DateOffset': '3M'},
     'Payment_Offset': 0, 'Payment_Timing': 'End', 'Penultimate_Coupon_Date': None,
-    'Rate_Constant': {'.Percent': 0.0}, 'Rate_Currency': '', 'Rate_Multiplier': 1.0,
+    'Rate_Constant': {'.Percent': 0.0}, 'Rate_Multiplier': 1.0,
     'Receive_Accrual_Calendars': None, 'Receive_Day_Count': 'ACT_365',
     'Receive_First_Coupon_Date': None, 'Receive_Frequency': {'.DateOffset': '3M'},
     'Receive_Interest_Frequency': {'.DateOffset': '3M'}, 'Receive_Payment_Calendars': None,
@@ -766,7 +766,7 @@ def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, 
         'Compounding': 'No', 'Payment_Timing': 'End', 'Payment_Offset': 0,
         'Accrual_Calendars': calendar, 'Payment_Calendars': calendar,
         'First_Coupon_Date': None, 'Penultimate_Coupon_Date': None,
-        'Rate_Currency': '', 'FX_Reset_Offset': 0, 'Known_FX_Rates': None,
+        'FX_Reset_Offset': 0, 'Known_FX_Rates': None,
         'Interest_Rate_Schedule': wire_date_list(())}
 
 

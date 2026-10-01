@@ -407,3 +407,24 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
             np.array([call['required'] for call in said])[moved], rel=1e-12, abs=1e-6)
         assert np.sum(moved != [call['direction'] is not None for call in other]) >= 200, \
             "the day's payment moves no call here"
+
+
+def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
+    """A blank table reads as the key left out: an `Independent_Amount` written as an empty
+    `CreditSupportList` is an independent amount of zero, as the spine's CSA reads it, and the
+    collateralised run marks and holds bit for bit as under one rating at zero - where the empty
+    container, read as a value, raised out of the compile and failed the run on a shape.
+
+    KILLING MUTATION: `__len__` removed from the utils containers, so an empty one is truthy.
+    """
+    runs = []
+    for amount in (listed(), listed((1, 0.0))):
+        terms = dict(TERMS, Credit_Support_Amounts=dict(
+            TERMS['Credit_Support_Amounts'], Independent_Amount=amount))
+        assert CSA.of(terms)['Independent_Amount'] == 0.0
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'independent amount'))
+        _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
+        result = out['Netting'].sub_structures[0].obj.Calc_res
+        runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
+    assert all(np.array_equal(empty, zero) for empty, zero in zip(*runs))

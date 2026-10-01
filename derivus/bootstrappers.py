@@ -1028,10 +1028,11 @@ class OptionQuoteFamily(ImpliedCalibration):
         declared = utils.check_rate_name(priced_in) if priced_in else ()
         tail = utils.check_rate_name(market_price)[2:]
         # an equity or commodity name tail is a basis chain, not a currency the underlying is
-        # priced in, so only an FxRate underlying is held to the cross rule; one the book cannot
-        # resolve is refused by name below, so it is held to it too
+        # priced in, so only an FxRate underlying is held to the cross rule; a blank one, or one
+        # the book cannot resolve, is refused by name below, so it is held to it too
         try:
-            fx = cls.resolve(instrument, 'Underlying', price_factors).type == 'FxRate'
+            underlying = cls.resolve(instrument, 'Underlying', price_factors)
+            fx = getattr(underlying, 'type', 'FxRate') == 'FxRate'
         except StopIteration:
             fx = True
         if fx and (len(declared) > 1 or declared != tail):

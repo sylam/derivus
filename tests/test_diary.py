@@ -178,6 +178,15 @@ FX_SWAP = {'Object': 'FXSwapDeal', 'Reference': 'FXS', 'Near_Settlement_Date': C
            'Near_Sell_Far_Buy_Discount_Rate': 'ZAR', 'Near_Buy_Amount': 50_000.0,
            'Near_Sell_Amount': NOTIONAL, 'Far_Buy_Amount': 1_010_000.0, 'Far_Sell_Amount': 50_000.0}
 
+#: Protection on a name at 2% hazard, its premium quarterly on the 23rd month back from maturity,
+#: the period already running when the book opens.
+CDS = {'Object': 'DealDefaultSwap', 'Reference': 'CDS', 'Currency': 'ZAR', 'Discount_Rate': 'ZAR',
+       'Name': 'ISSUER', 'Buy_Sell': 'Buy', 'Effective_Date': BASE - pd.DateOffset(months=1),
+       'Maturity_Date': BASE + pd.DateOffset(months=23), 'Pay_Frequency': pd.DateOffset(months=3),
+       'Pay_Rate': 1.0, 'Principal': NOTIONAL}
+FACTORS['SurvivalProb.ISSUER'] = {'Recovery_Rate': 0.4,
+                                  'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])}
+
 
 def job(nodes, factors=None, **calculation):
     """A job document as the objects a market data file holds, with a Hull-White model declared so
@@ -299,20 +308,24 @@ def realized(deal, tmp_path):
     ('two sub-periods COMPOUNDED', sub_period_leg('COMP', compounding='Yes')),
     ('sold', fixed_leg('SOLD', buy='Sell')),
     ('a forward', FX_FORWARD),
-    ('an FX swap', FX_SWAP)])
+    ('an FX swap', FX_SWAP),
+    ('protection bought', CDS),
+    ('protection sold', dict(CDS, Reference='CDS_SOLD', Buy_Sell='Sell'))])
 def test_every_payment_the_diary_announces_is_the_run_s_own_cashflow(name, deal, unrecorded,
                                                                      tmp_path):
     """GATE 5. The diary and the pricer spell a payment ONCE - `pricing.fixed_payments` - so the
     assertion is arithmetic on every shape a fixed leg comes in: a coupon carrying a rate AND a
     principal, two accrual sub-periods paying on one day, the same two compounded, and a sold leg;
-    and a forward's and an FX swap's legs, which their settlement dates DECLARE (`schema.Cash`)
-    as their pricers book them through `cash_settle`, each in its own currency. The engine's own
-    realized cashflow and the diary's announced amount agree to float64 rounding.
+    a forward's and an FX swap's legs, which their settlement dates DECLARE (`schema.Cash`) as
+    their pricers book them through `cash_settle`, each in its own currency; and a default swap's
+    premium, paid by the protection buyer and received by the seller. The engine's own realized
+    cashflow and the diary's announced amount agree to float64 rounding.
 
     Killing mutations, the first two of which the plain fixture cannot see: the fixed amount
     REPLACING the rate coupon rather than summing with it (a bond's last payment reads as its
     principal alone), the leg's `Compounding` flag ignored (two sub-periods read as their simple
-    sum), and a paid leg booked received.
+    sum), a paid leg booked received, and the buyer's minus left in the default swap's pricer
+    rather than its schedule, which announces a bought premium as received.
     """
     serving(tmp_path, [node(deal)])
     rows = payments(diary_rows()['rows'])
@@ -346,6 +359,21 @@ def test_the_diary_reads_the_legs_the_binding_binds(unrecorded, tmp_path):
     assert walked == {'FixedCashflows', 'FloatCashflows'}
     assert all(schedule.bound is not None for deal in compiled.netting_sets.deals()
                for _, schedule in utils.walk_schedules(deal.Factor_dep)), 'the walk missed a bind'
+
+
+def test_a_swap_compiles_the_compounding_its_fixed_leg_declares():
+    """`Fixed_Compounding` is the swap's own field, so `calc_dependencies` writes it where every
+    reader of the compiled swap finds it - the fixed pricer and `Diary._payment_rows` alike - rather
+    than into a copy made at pricing time, which left the diary reading `False` whatever it said.
+
+    KILLING MUTATION: the flag written into the pricing-time copy again; the compile carries none.
+    """
+    swaps = [node(dict(swap('SWAP_YES'), Fixed_Compounding='Yes')), node(swap('SWAP_NO'))]
+    context = derivus.Context().load_json((dump(job(swaps)), 'compounding'))
+    compiled = construct_calculation('Diary', context.current_cfg)
+    compiled.execute(dict(context.current_cfg.deals['Calculation'], Run_Date=str(BASE.date())))
+    assert {deal.Instrument.field['Reference']: deal.Factor_dep.get('Compounding')
+            for deal in compiled.netting_sets.deals()} == {'SWAP_YES': True, 'SWAP_NO': False}
 
 
 # --------------------------------------------------------------------------------------------
