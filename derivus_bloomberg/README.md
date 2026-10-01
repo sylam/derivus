@@ -12,8 +12,28 @@ somebody's fit.
 
 ## Requirements
 
-Live requests require a Bloomberg-enabled workstation with Bloomberg's supported Python `blpapi`
-SDK installed and the Desktop API service available. The adapter deliberately has no generic
+There are two ways to run this adapter, and they are not interchangeable.
+
+- **A Bloomberg terminal (Desktop API)** - for a person with a terminal. It is the standalone mode
+  and the only one that can run discovery (`DV_Bloomberg discover` / `verify`), which needs
+  reference data (`NAME`) to check every security against what Bloomberg says it is. It builds the
+  security map.
+- **B-PIPE** - for an institution that already has B-PIPE set up; it is not something a terminal
+  user has access to. Set `DV_BLOOMBERG_HOST`, `DV_BLOOMBERG_PORT` and `DV_BLOOMBERG_APP_NAME`
+  (the application name your data team registered). It is a production price feed: prices
+  (`PX_LAST`, `PX_BID`, `PX_ASK`, `LAST_UPDATE_DT`) are read from `//blp/mktdata`, never
+  `//blp/refdata`, and the securities and fields must be entitled to that application. It
+  cannot discover: build the map on a terminal workstation and deploy `security_map.json` to the
+  B-PIPE host.
+
+Which one a session uses is decided once, at start: if B-PIPE connects, the session is B-PIPE
+for good and never touches a terminal; if it does not, the session is a terminal one.
+
+The switch is the environment: declare the three variables when the service is set up to use
+B-PIPE, leave them undeclared to use the terminal. Nothing else changes.
+
+Live requests require Bloomberg's supported Python `blpapi` SDK installed and, for the terminal
+mode, the Desktop API service available. The adapter deliberately has no generic
 Bloomberg requirements file because workstation installation is platform-specific. Importing
 `derivus` or the adapter's normalization modules does not import `blpapi`.
 

@@ -3576,8 +3576,10 @@ QUOTE_NOT_A_PATCH = ('{} is a Market Prices block - post it under `quotes`, whic
 #: does not provision - that is a person's act, minutes of terminal time - so it says so, names
 #: the home it looked in, and keeps beating.
 UNPROVISIONED = ('no security map in {} - a routine tick never provisions. Run '
-                 'tick_market_from_bloomberg once (or DV_Bloomberg discover) to verify this '
-                 "workstation's securities, and the cadence picks up from the next beat")
+                 'tick_market_from_bloomberg once (or DV_Bloomberg discover) on a Bloomberg terminal '
+                 "to verify this workstation's securities, and the cadence picks up from the next "
+                 'beat. A B-PIPE host cannot discover: copy the security_map.json built on a '
+                 'terminal workstation into that home')
 
 
 def bootstrap_selection(market, outcome, patch):

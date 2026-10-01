@@ -11,12 +11,42 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
+import datetime
 import importlib
 import logging
 import os
+import re
+import time
 from collections.abc import Mapping, Sequence
 
 from .errors import BloombergRequestError, BloombergUnavailable, raise_response_error
+
+#: B-PIPE entitles `//blp/mktdata` and not `//blp/refdata`, so a B-PIPE session answers the price
+#: fields off the first image of a subscription, which names them differently.
+MKTDATA_PRICE_FIELDS = {'PX_LAST': 'LAST_PRICE', 'PX_BID': 'BID', 'PX_ASK': 'ASK'}
+
+#: Names subscribed to at once; a bigger ask is walked in chunks of this many.
+SNAPSHOT_BATCH = 100
+
+
+def _today_utc():
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def _update_date(stamp):
+    """`LAST_UPDATE_DT` from a mktdata `TIME`: a daily fixing carries its date, a live quote only
+    the UTC time of day, which is read as today. A quote last printed on an earlier day therefore
+    reads as fresh - mktdata carries no date to say otherwise."""
+    text = str(stamp).strip()
+    if re.match(r'\d{4}-\d{2}-\d{2}', text):
+        return datetime.date.fromisoformat(text[:10])
+    return _today_utc() if ':' in text else None
+
+
+def _failure_text(message):
+    text = ' '.join(str(message).split())
+    found = re.search(r'category = "([A-Z_]+)".*?description = "([^"]*)"', text)
+    return '{}: {}'.format(*found.groups()) if found else text
 
 
 def blpapi_module():
@@ -65,6 +95,13 @@ class BloombergSession:
     """Small synchronous wrapper over Bloomberg reference data - Desktop API by default, or
     B-PIPE once an application name is given.
 
+    TWO DEPLOYMENTS, NOT TWO FALLBACKS OF ONE. The Desktop API terminal is the standalone one: a
+    person with a Bloomberg terminal, who can discover and verify securities, build the security
+    map and read reference data. B-PIPE is for an institution that ALREADY runs it, its application
+    name and entitlements granted by its own data team - it is not something a terminal user has
+    access to - and it is a production price feed: prices and nothing else. The map it ticks
+    against is built on a terminal workstation (`DV_Bloomberg discover`) and deployed to it.
+
     B-PIPE host, port and application name default from `DV_BLOOMBERG_HOST`, `DV_BLOOMBERG_PORT`
     and `DV_BLOOMBERG_APP_NAME`, so every existing call site (`BloombergSession(timeout_ms=...)`)
     picks up a B-PIPE deployment from the environment with no code change - a Desktop API
@@ -75,9 +112,16 @@ class BloombergSession:
     the same one identity then riding every request/subscription sent on it - there is no separate
     `//blp/apiauth` `AuthorizationRequest` to build by hand, the way a user-scoped identity needs.
 
-    A B-PIPE connection or authorization failure FALLS BACK to that same Desktop API terminal
-    session rather than refusing outright, so a desk with a Terminal open keeps working when
-    B-PIPE itself is unreachable; the fallback is logged, never silent.
+    A B-PIPE connection or authorization failure at START falls back to the Desktop API terminal
+    session for the WHOLE session, so a user on the go with only a terminal keeps working; the
+    fallback is logged, never silent. The choice is made once: a session that connected to B-PIPE
+    never touches a terminal.
+
+    B-PIPE ANSWERS PRICES BY SNAPSHOT. The app is entitled to `//blp/mktdata` and not to
+    `//blp/refdata`, so on a B-PIPE session `PX_LAST`/`PX_BID`/`PX_ASK`/`LAST_UPDATE_DT` are read
+    off the first image of a subscription, then unsubscribed. A security B-PIPE will not or cannot
+    price is reported by name with Bloomberg's own reason; a field outside those four, an override
+    or a bulk field has no mktdata form and refuses by name.
     """
 
     def __init__(self, host: str = None, port: int = None, timeout_ms: int = 10000,
@@ -96,6 +140,7 @@ class BloombergSession:
         self._session = None
         self._service = None
         self._identity = None
+        self._mktdata_open = False
 
     def start(self):
         if not self.application_name:
@@ -176,6 +221,7 @@ class BloombergSession:
             self._session.stop()
         self._api = self._session = self._service = None
         self._identity = None
+        self._mktdata_open = False
 
     def __enter__(self):
         return self.start()
@@ -257,10 +303,95 @@ class BloombergSession:
             raise BloombergRequestError('Bloomberg reference-data request failed: {}'.format(error)) from error
 
     def _walk(self, securities, fields, overrides=None):
-        yield from self._request(securities, fields, _scalar_value, overrides)
+        if self._identity is None:
+            yield from self._request(securities, fields, _scalar_value, overrides)
+            return
+        if overrides or not all(field in MKTDATA_PRICE_FIELDS or field == 'LAST_UPDATE_DT'
+                                for field in fields):
+            raise BloombergRequestError(
+                'B-PIPE is a price feed: it serves {} from //blp/mktdata and nothing else, and {} '
+                'needs a Desktop API terminal. Discovery and the security map are built on a '
+                'terminal workstation (DV_Bloomberg discover) and deployed to this host'.format(
+                    ', '.join(MKTDATA_PRICE_FIELDS) + ', LAST_UPDATE_DT',
+                    'an override' if overrides else ', '.join(
+                        field for field in fields if field not in MKTDATA_PRICE_FIELDS
+                        and field != 'LAST_UPDATE_DT')))
+        yield from self._snapshot(securities, fields)
 
     def _walk_bulk(self, securities, fields, overrides=None):
+        if self._identity is not None:
+            raise BloombergRequestError(
+                'B-PIPE is a price feed: the bulk field {} needs a Desktop API terminal. '
+                'Discovery and the security map are built on a terminal workstation '
+                '(DV_Bloomberg discover) and deployed to this host'.format(', '.join(fields)))
         yield from self._request(securities, fields, _bulk_value, overrides)
+
+    def _snapshot(self, securities, fields):
+        """`(security, error, values)` per name, off one mktdata image each. `error` is Bloomberg's
+        own reason where the subscription failed, and a named one where the image carried no price
+        or never arrived within `timeout_ms`."""
+        if not self._mktdata_open:
+            if not self._session.openService('//blp/mktdata'):
+                raise BloombergUnavailable('Bloomberg service //blp/mktdata could not be opened')
+            self._mktdata_open = True
+        wanted = {MKTDATA_PRICE_FIELDS[field]: field for field in fields
+                  if field in MKTDATA_PRICE_FIELDS}
+        subscribed = list(wanted) + (['TIME'] if 'LAST_UPDATE_DT' in fields else [])
+        names = list(dict.fromkeys(securities))
+        for start in range(0, len(names), SNAPSHOT_BATCH):
+            yield from self._images(names[start:start + SNAPSHOT_BATCH], subscribed, wanted)
+
+    def _images(self, chunk, subscribed, wanted):
+        api, session = self._api, self._session
+        subscriptions = api.SubscriptionList()
+        for security in chunk:
+            subscriptions.add(security, subscribed, [], api.CorrelationId(security))
+        session.subscribe(subscriptions)
+        answers, asked = {}, set(chunk)
+        deadline = time.monotonic() + self.timeout_ms / 1000.0
+        try:
+            while len(answers) < len(chunk) and time.monotonic() < deadline:
+                event = session.nextEvent(max(1, int((deadline - time.monotonic()) * 1000)))
+                kind = event.eventType()
+                if kind == api.Event.TIMEOUT:
+                    break
+                if kind not in (api.Event.SUBSCRIPTION_DATA, api.Event.SUBSCRIPTION_STATUS):
+                    continue
+                for message in event:
+                    security = message.correlationIds()[0].value()
+                    if security not in asked or security in answers:
+                        continue
+                    if kind == api.Event.SUBSCRIPTION_STATUS:
+                        if message.messageType() == api.Name('SubscriptionFailure'):
+                            answers[security] = (_failure_text(message), {})
+                    else:
+                        answers[security] = self._image_values(message, wanted, 'TIME' in subscribed)
+        finally:
+            session.unsubscribe(subscriptions)
+        for security in chunk:
+            yield (security,) + answers.get(
+                security, ('no mktdata image within {} ms'.format(self.timeout_ms), {}))
+
+    @staticmethod
+    def _image_values(message, wanted, dated):
+        """`(error, values)` for one image, the price fields under their `PX_*` names. Only a price
+        missing altogether is an error - a mid-only quote simply has no `PX_BID`."""
+        root = message.asElement()
+
+        def present(name):
+            return root.hasElement(name) and root.getElement(name).numValues() > 0
+
+        values = {field: root.getElement(mktdata).getValue()
+                  for mktdata, field in wanted.items() if present(mktdata)}
+        if wanted and not values:
+            return 'the mktdata image carries no price', {}
+        if dated and present('TIME'):
+            stamp = _update_date(root.getElement('TIME').getValueAsString())
+            if stamp is not None:
+                values['LAST_UPDATE_DT'] = stamp
+        if not values:
+            return 'the mktdata image carries no update time', {}
+        return None, values
 
     def _request(self, securities, fields, value_of, overrides=None):
         """`overrides` is `{fieldId: value}` - the request-level parameters a field reads in place
