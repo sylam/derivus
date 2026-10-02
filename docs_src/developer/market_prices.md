@@ -476,7 +476,8 @@ share `γ²/α² = 1 − (β/α)² ≥ 0.4` — by name at load.
 
 **`Residual_Law: Gaussian` is a limit/test mode.** It drops the mixer, reads the clock as the
 variance and the drift as its own compensator, and leaves `Alpha` and `Beta` unread (they may be
-absent). The factor logs it at INFO by name; the calibrator refuses to warm start an NIG block off a
+absent), reporting them as sensitivities with identically zero rows so the set reported does not
+depend on the mode. The factor logs it at INFO by name; the calibrator refuses to warm start an NIG block off a
 Gaussian factor, or the other way round, because the two are different models and neither seeds the
 other.
 
@@ -1156,6 +1157,50 @@ the digit. **`Δ` is what decides it.** The identical measurement at the declare
 against the 6.17e−05 the vanillas alone give. Over a quarter the residual's increment has already
 aggregated to nearly Gaussian, so what those windows tilt by is the leverage; a block asked to
 identify the residual pair is asked for a SHORT `Δ`.
+
+### What the quotes cannot say {#what-the-quotes-cannot-say}
+
+Properties of the market data available, not of the engine: each is a limit on what a fit of that
+data can be asked to identify, recorded so a reader knows which readings rest on it.
+
+- **A declared standard error tight enough is a pin, and the guard says so.** The Nasdaq at its
+  regression's own 0.015 reads 138 quote rows on the leverage and is flagged; the Nikkei at 0.025
+  reads 38.5 and is not. Whether a 1,149-day regression's sampling error is the right spread for a
+  risk-neutral prior is a modelling question; `Leverage_Prior_SE` is where a desk states its own.
+- **The width of the residual's skew prior is asserted, not measured.** At 0.2 the wings outvote
+  it by about one standard error on every index ladder, −0.29 to −0.49 against a prior of −0.5.
+  The historical estimator's own spread on an uncontaminated history would measure it, and no
+  index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967 against a
+  fitted 0.2671.
+- **A ladder of vanillas alone does not pin the residual's tail parameter.** The fit reports, for
+  each parameter, how hard its prior pushes compared with the quotes; on a Nikkei block the tail
+  parameter `Alpha` reads about ten times one quote row, so its fitted value is the prior's as much
+  as the market's. Under the walk this showed as two fitted values from different seeds; the
+  quadrature pricer writes the same bytes on every run of the same document, so what remains is
+  identification, not the pricer. A block of forward-starting options identifies it at a tenor
+  short enough for the residual to still be non-Gaussian: measured on a world the model owns, nine
+  ONE-MONTH rows take `Alpha` from the prior 44 to 20.27 against the world's 20.92 and the prior
+  row from 6.74 to 2.35 quote rows, where the same rows at the declared default windows move
+  neither. The vendor's chain quotes no forward-start.
+- **The Nikkei's implied-volatility surface answers one maturity**, so its long end comes from the
+  listed chain, pulled in the Tokyo session, or the file's own surface; a Nikkei autocall's mark
+  moves 4.6% between a chain-only fit and one carrying the file's long-dated at-the-money point.
+  The S&P 500, Nasdaq 100 and Euro Stoxx 50 surfaces answer three to twenty-four months at 90 to
+  110 percent moneyness, and the listed chain carries every expiry past that.
+- **A closes-only price archive attenuates the historical estimator's shock rows.** Two names
+  simulated from the four-factor process with every correlation row at 0.60 and re-estimated from
+  daily closes read 0.55 on the return row, 0.32 and 0.53 on the two volatility-shock rows and
+  0.35 on the mixer, each to about ±0.015. A smoothed shock is a linear functional of one name's
+  noisy observations, so its cross-name correlation is the state's share of that functional's
+  variance, driven down by the measurement noise; the mixer column is further compressed by a fit
+  whose tail parameter reads 258 to 380 against a truth of 44. The estimator logs both shock
+  standard deviations by name. A range-bar archive is the measurement that would close it.
+- **A ladder shorter than the slow horizon cannot reach the model's flat limit.** The slow
+  factor's horizon is 1.5 years, and a ladder with no wing that far injects skew and convexity a
+  flat surface does not want, so a flat 20% ladder fitted with priors off lands at 0.21 vol points
+  on one rung and 0.44 on two rather than at zero, with a fitted leverage product of −0.001 beside
+  the pinned −0.400. Every ladder a short-dated FX desk quotes is such a ladder, and a flat-limit
+  gate needs one reaching 1.5 years.
 
 ## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
 

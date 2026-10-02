@@ -15,68 +15,6 @@ Grouped by where a validator meets them. Every row carries its measured size or 
 unmeasured — a limitation without a number is absolution, not documentation
 ([Conventions](conventions.md#unification-siblings)). Dates are when the row was found.
 
-### The LogVar2FJ calibration
-
-These are defects in the engine: each has a change to this library that closes it.
-
-- **A Gaussian residual reports two sensitivities the model never reads.** Under `Residual_Law:
-  Gaussian` the tail parameters `Alpha` and `Beta` are filled with defaults and reported as
-  sensitivities with identically zero rows. Dropping them would make the set of reported
-  sensitivities depend on the mode, which is why they are left.
-- **The recompute segment length was measured for the walk alone.** The walk is checkpointed every
-  21 internal steps to trade memory for a second forward pass; the mixer's per-draw checkpoint
-  beside it took peak memory from 8,392 to 9,990 MiB at 2,048 scenarios by 2,048 paths. The
-  residual's granularity is the dial if that headroom is wanted.
-
-#### What the quotes cannot say
-
-These are properties of the market data available, not of the engine. No change to this
-library closes one; each is a limit on what a fit of that data can be asked to identify, and
-is recorded so a reader knows which readings rest on it.
-
-- **A declared standard error tight enough is a pin, and the guard says so** (2026-09-10). The
-  Nasdaq at its regression's own 0.015 reads 138 quote rows on the leverage and is flagged; the
-  Nikkei at 0.025 reads 38.5 and is not. Whether a 1,149-day regression's sampling error is the
-  right spread for a risk-neutral prior is a modelling question; `Leverage_Prior_SE` is where a
-  desk states its own.
-- **The width of the residual's skew prior is asserted, not measured** (2026-09-10). At 0.2 the
-  wings outvote it by about one standard error on every index ladder, −0.29 to −0.49 against a
-  prior of −0.5. The historical estimator's own spread on an uncontaminated history would measure
-  it, and no index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967
-  against a fitted 0.2671.
-- **A ladder of vanillas alone does not pin the residual's tail parameter** (2026-09-15). The fit
-  reports, for each parameter, how hard its prior pushes compared with the quotes; on a
-  Nikkei block the tail parameter `Alpha` reads about ten times one quote row, so its fitted value
-  is the prior's as much as the market's. Under the walk this showed as two fitted values from
-  different seeds; the quadrature pricer, the default since 2026-09-14, writes the same bytes on
-  every run of the same document, so what remains is identification, not the pricer. A block of
-  forward-starting options identifies it at a tenor short enough for the residual to still be
-  non-Gaussian: measured on a world the model owns, nine ONE-MONTH rows take `Alpha` from the prior
-  44 to 20.27 against the world's 20.92 and the prior row from 6.74 to 2.35 quote rows, where the
-  same rows at the declared default windows move neither. The vendor's chain quotes no
-  forward-start.
-- **The Nikkei's implied-volatility surface answers one maturity** (2026-09-15), so its long end
-  comes from the listed chain, pulled in the Tokyo session, or the file's own surface; a Nikkei
-  autocall's mark moves 4.6% between a chain-only fit and one carrying the file's long-dated
-  at-the-money point. The S&P 500, Nasdaq 100 and Euro Stoxx 50 surfaces answer three to
-  twenty-four months at 90 to 110 percent moneyness, and the listed chain carries every expiry
-  past that.
-- **A closes-only price archive attenuates the historical estimator's shock rows** (2026-09-11).
-  Two names simulated from the four-factor process with every correlation row at 0.60 and
-  re-estimated from daily closes read 0.55 on the return row, 0.32 and 0.53 on the two
-  volatility-shock rows and 0.35 on the mixer, each to about ±0.015. A smoothed shock is a linear
-  functional of one name's noisy observations, so its cross-name correlation is the state's share
-  of that functional's variance, driven down by the measurement noise; the mixer column is further
-  compressed by a fit whose tail parameter reads 258 to 380 against a truth of 44. The estimator
-  logs both shock standard deviations by name. A range-bar archive is the measurement that would
-  close it; the script for it is written and has not been run.
-- **A ladder shorter than the slow horizon cannot reach the model's flat limit** (2026-09-10). The
-  slow factor's horizon is 1.5 years, and a ladder with no wing that far injects skew and convexity
-  a flat surface does not want, so a flat 20% ladder fitted with priors off lands at 0.21 vol
-  points on one rung and 0.44 on two rather than at zero, with a fitted leverage product of −0.001
-  beside the pinned −0.400. Every ladder a short-dated FX desk quotes is such a ladder, and a
-  flat-limit gate needs one reaching 1.5 years.
-
 ### The xVA outer and the correlation
 
 - **A calendar bucket knot inside one scenario interval gives the second piece a private mixer**
@@ -161,13 +99,6 @@ is recorded so a reader knows which readings rest on it.
   `LogVar2FJModelParameters`, which means the calibration live in the same session rather than a
   factor read off the book. Until then the substitution is named on every leg it is made for
   (`spread_source`).
-- **The legs of one package are not netted against each other** (2026-09-21). Each leg pays its own
-  spread, so a collar's bought put and sold call are charged as two tickets rather than as the one
-  position the desk actually has to deal. Measured on the gate's 1m USD collar: netting the legs
-  per pillar before charging takes the edge from 1,985.57 to 297.25, an 85% cut — the ATM row from
-  1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
-  legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
-  dial on this charge.
 - **A haircut is read on one side, and a floating list's settlement is refused rather than read**
   (2026-09-22). The engine and the collateral call take `Haircut_Posted` whichever side holds the
   asset, and the engine's single-asset haircut cancels against its own documented formula, which
@@ -213,42 +144,6 @@ is recorded so a reader knows which readings rest on it.
   nothing, bytes only ever being appended and a new segment only the next number - so an open
   checks the sizes and the head line and scans the tail alone, and the doctored-middle-line
   refusal moves to `verify_home`, where the chain is checked on demand. M.
-- **A private market has no surveillance or admin read** (2026-09-23). `spine.resolve_market`
-  resolves a `private/<subject>/<name>` market for the subject its name names and refuses everyone
-  else at the verb, without minting a fact. The other read the design names — surveillance and
-  admin — is a second entitlement class and a `read` row per subject, which is the reclassification
-  `vocabulary.classify` ships dormant for; a per-market rule instead would be the per-object ACL the
-  design forbids by name. Size: the class and the rows are a desk-two decision and the code is a
-  second branch in one function, UNMEASURED because nothing has asked for the read yet. Nothing is
-  blocked by it: a designated process resolves the firm's own market, and a private one is its
-  declaring seat's.
-- **A blob is served by the hub and by nobody else** (2026-09-23). A replica holds `blobs/` and
-  every byte in it is self-verifying by hash, so a follower could serve another follower and neither
-  would have to trust the other. It does not: a peer server is a second entitlement-evaluating
-  surface on a box that is not the writer, and this phase has one deployment, so the read
-  (`GET /spine/blobs/{hash}`) is the hub's alone and a replica that wants bytes asks it. UNMEASURED,
-  and the number that would decide it is a hub's outbound cost per follower, which at one deployment
-  is a hub answering itself. Closing it means the entitlement evaluation running where the bytes
-  are, which is the same `read` rows over the same fold - and the question it asks is whose document
-  a replica evaluates under when its own chain is behind the hub's.
-- **A material market move is not a refusal, and a desk cannot ask for one** (2026-09-23). Between
-  a quote and the client's word the board moves, and the booking REPORTS it — the values struck on,
-  the ones standing, and that they differ — because the desk's own `Quote Policy.firm_seconds` is
-  the promise that bounds it. A desk that wanted a refusal would declare a tolerance per field:
-  which values-plane fields it cares about and how far each may move before a booking is refused
-  rather than reported. UNMEASURED, and measuring it takes the thing that does not exist yet — a
-  comparison between two values vectors that answers WHICH numbers moved and by how much, where
-  today the record compares two 64-hex addresses. That is a field-level diff over
-  `market_patch`'s own shape, per-field epsilons declared like the tolerance policy's, and a gate
-  on a tick that moves one pillar inside the epsilon and one outside it.
-- **No rejection is filed automatically** (2026-09-23). A ticket that falls in no tier answers
-  `refused` with every sentence of the route it took, and the acceptance stands, but nothing files
-  a `rejection` against it: the hub's own voice signs an automatic tier's approval and says nothing
-  against a ticket. A desk wanting the refusal on the record calls `POST /book/reject` under a seat
-  of its own. Size: UNMEASURED and not measurable — it is a document decision rather than a
-  number. Closing it means the writer's own voice filing a `rejection` where the route admits no
-  tier, one type in that voice and one branch in the tier step, and the question it asks is whether
-  a desk wants the hub's signature on a "no".
 - **The oracle judges history by the verb map deployed now** (2026-09-29). A type moved between
   verbs - a settlement to `settle`, a run's replay tuple to the writer's own voice - reads every
   frame filed under the old verb as outside its seat, so a record written before the move is named
@@ -307,11 +202,6 @@ is recorded so a reader knows which readings rest on it.
   composite equity Asian read fixings off a table the fill cannot write yet (M), the inflation list
   M-L, and a swaption announces no expiry of its own, its legs reading as a live swap's - a design
   call. The census in `tests/test_diary.py` names every type still open.
-- **One `settle` verb is the whole back office** (2026-09-30). Settlements, confirmations and
-  collateral each hold `settle`, so each worklist lists the others' payments, clips and calls, and
-  confirmations may pay or post collateral: separation of duties inside the back office is not
-  expressible with the verbs the record has. A design decision - a narrower verb or none - not a
-  number.
 - **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
@@ -362,6 +252,19 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
     book moves by a small amount. A solver-tuning decision, not a defect, wanting its own reading
     before it is taken: iterations, the stationarity norm at the stopping point, and what the
     marks do, on the four-quote fixture and one desk ladder.
+18. **Netting the legs of one package before the two-way charge** (2026-09-21). Each leg pays its
+    own spread, so a collar's bought put and sold call are charged as two tickets rather than the
+    one position the desk deals; netting per pillar first takes the gate collar's edge from
+    1,985.57 to 297.25, an 85% cut - the ATM row from 1,441.26 to 71.47, the butterfly from 362.87
+    to 44.34, the risk reversal unmoved. The next dial on this charge.
+19. **One `settle` verb for the whole back office** (2026-09-30). Settlements, confirmations and
+    collateral each hold `settle`, so each worklist lists the others' payments, clips and calls,
+    and confirmations may pay or post collateral; separation of duties inside the back office
+    wants a narrower verb or none.
+20. **The recompute segment length**, measured for the walk alone: the walk is checkpointed every
+    21 internal steps to trade memory for a second forward pass, and the mixer's per-draw
+    checkpoint beside it took peak memory from 8,392 to 9,990 MiB at 2,048 scenarios by 2,048
+    paths; the residual's granularity is the dial if that headroom is wanted.
 
 ## Designed, not built
 
