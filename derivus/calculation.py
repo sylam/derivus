@@ -131,24 +131,41 @@ class DealStructure(object):
                 self.skip(deal, e, stats, refused)
 
     @staticmethod
-    def skip(deal, error, stats, refused):
-        """A deal the compile could not read: counted under `Deals Skipped`, or its sentence kept in
+    def skip(deal, error, stats, refused, counted='Deals Skipped'):
+        """A deal the compile could not read: counted under `counted`, or its sentence kept in
         `refused` where the run refuses such a deal."""
         if refused is None:
-            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            stats[counted] = stats.setdefault(counted, 0) + 1
         else:
             refused.append('{0} {1} {2}'.format(deal.field['Object'], deal.field.get('Reference'),
                                                 error.args))
 
+    @staticmethod
+    def unpriced(shared, structure, error):
+        """A structure the run could not value: refused by name where the document says `No`,
+        else counted once under `Structs Skipped` however many batches meet it."""
+        instrument = structure.obj.Instrument
+        if not getattr(instrument, 'exclude_unpriceable', True):
+            raise utils.UnpriceableSchedule(
+                'Structure {} {} could not be priced - {}. The run refuses it rather than mark it at '
+                'what its children sum to: System Parameters.Exclude_Deals_With_Missing_Market_Data '
+                'is No'.format(instrument.field['Object'], instrument.field.get('Reference'), error))
+        unpriced = getattr(shared, 'unpriced', None)
+        if unpriced is not None and instrument not in unpriced:
+            unpriced.add(instrument)
+            shared.calc_stats['Structs Skipped'] = shared.calc_stats.get('Structs Skipped', 0) + 1
+
     def finalize_struct(self, base_date, time_grid):
-        all_report_dates = [set(
-            x.obj.Instrument.get_report_dates(time_grid, base_date)) for x in self.sub_structures]
+        all_report_dates = [set(instrument.get_report_dates(time_grid, base_date)) for instrument in
+                            [x.obj.Instrument for x in self.sub_structures] +
+                            [x.Instrument for x in self.dependencies]]
         self.obj.Instrument.set_report_dates(
             reduce(set.union, all_report_dates) if all_report_dates else time_grid.mtm_dates)
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,
-                                   all_factors, all_tenors, time_grid, calendars, stats, unit):
+                                   all_factors, all_tenors, time_grid, calendars, stats, unit,
+                                   refused=None):
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
@@ -167,7 +184,7 @@ class DealStructure(object):
                 # set's deals out of the report with it
                 if utils.is_fatal_pricing_error(e):
                     raise
-                stats['Structs Skipped'] = stats.setdefault('Structs Skipped', 0) + 1
+                self.skip(struct.obj.Instrument, e, stats, refused, 'Structs Skipped')
 
     def deals(self):
         """Every deal beneath this structure, sub-structures first - the order `report` lists
@@ -194,6 +211,7 @@ class DealStructure(object):
                 struct = structure.resolve_structure(shared, time_grid)
                 if (struct != struct).any():
                     logging.critical('Netting set contains NANS! Please Investigate! - skipping for now')
+                    self.unpriced(shared, structure, 'its value holds NaN')
                     continue
                 if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'save_cashflows'):
                     shared.save_cashflows(structure.obj.Calc_res, time_grid)
@@ -228,6 +246,7 @@ class DealStructure(object):
                 # named refusal, and swallowing one leaves the structure marking at its accumulation
                 if utils.is_fatal_pricing_error(e):
                     raise
+                self.unpriced(shared, self, e.args)
             finally:
                 if mark is not None:
                     utils.BoundarySet.claim(shared, mark)
@@ -494,11 +513,13 @@ class Calculation(object):
             instrument.base_currency = base_currency
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
+                instrument.exclude_unpriceable = refused is None
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
                 self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm, refused)
                 output.add_structure_to_structure(
                     struct, self.base_date, self.static_factors, self.stoch_factors, self.all_factors,
-                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
+                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
+                    refused)
                 continue
 
             output.add_deal_to_structure(
@@ -1378,6 +1399,16 @@ class Credit_Monte_Carlo(Calculation):
         return shared_mem
 
     def report(self, output):
+        def valued(structure):
+            # a structure the run skipped values nothing, nor does one holding only such structures
+            return structure.obj.Instrument not in self.unpriced and (
+                bool(structure.dependencies) or any(valued(x) for x in structure.sub_structures))
+
+        skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(self.calc_stats.items())
+                            if name.endswith('Skipped'))
+        if skipped and not valued(self.netting_sets):
+            raise utils.UnpriceableSchedule(
+                'Nothing in the book was valued ({}), so the run has nothing to report'.format(skipped))
         for result, data in output.items():
             if result == 'scenarios':
                 scen = {}
@@ -2226,7 +2257,9 @@ class Base_Revaluation(Calculation):
 
         data = dict(
             [(field, self.netting_sets.obj.Instrument.field.get(field, 'Root')) for field in ['Reference', 'Object']])
-        data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures])
+        # a structure the run could not value is skipped and counted, never summed
+        data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures
+                             if 'Value' in x.obj.Calc_res and x.obj.Instrument not in self.unpriced])
         # the forward-skew reserve is the PORTFOLIO's, as the gradient it is composed from is, so it
         # sits on the row that carries the portfolio's value
         if 'Skew_Reserve' in self.netting_sets.obj.Calc_res:
@@ -2461,6 +2494,11 @@ class Diary(Base_Revaluation):
         reference = fields.get('Reference')
         index = index_named(fields, terms)
         settlement = deal.get_settlement_currencies()
+        # a type declaring its observation table fixes on that table's days, which a print fills: a
+        # reset schedule it compiles off the table on any other day is a coupon's or a settlement's
+        table = fields.get(terms.table) if terms is not None and terms.table else None
+        days = {pd.Timestamp(row[0] if isinstance(row, (list, tuple)) else row).date().isoformat()
+                for row in table} if table else None
         rows = []
         for leg, schedule in walk_schedules(compiled):
             currency = cls._currency(fields, settlement)
@@ -2471,7 +2509,8 @@ class Diary(Base_Revaluation):
                     rows.extend(cls._fixing_rows(schedule.Resets, leg + '.Resets', base_date,
                                                  index, reference))
             elif isinstance(schedule, TensorResets):
-                rows.extend(cls._fixing_rows(schedule, leg, base_date, index, reference))
+                rows.extend(row for row in cls._fixing_rows(schedule, leg, base_date, index, reference)
+                            if days is None or row['due_date'] in days)
         rows.extend(cls._barrier_rows(fields, terms, index, reference))
         rows.extend(cls._expiry_fixing(fields, terms, index, reference, rows))
         rows.extend(cls._settled_rows(fields, type(deal), reference, since=base_date))
@@ -2524,11 +2563,13 @@ class Diary(Base_Revaluation):
     @classmethod
     def _barrier_rows(cls, fields, terms, index, reference):
         """The deal's own monitoring table: a date and the close it fixed at, through the one
-        reader that already tolerates both shapes of the row."""
-        if terms is None or terms.table is None:
+        reader that already tolerates both shapes of the row, a 0.0 placeholder read unfixed as the
+        fixing rows read it. Only a table its type declares `monitors` has barrier days - one it
+        averages or settles off has none."""
+        if terms is None or not terms.monitors:
             return []
         return [cls._row(cls.BARRIER, reference, terms.table, position, date, index=index,
-                         observed=observed, state=cls.OBSERVED if observed is not None else cls.DUE)
+                         observed=observed or None, state=cls.OBSERVED if observed else cls.DUE)
                 for position, (date, observed)
                 in enumerate(barrier_monitoring_rows(fields.get(terms.table) or []))]
 

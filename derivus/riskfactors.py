@@ -915,26 +915,12 @@ class SurvivalProb(Factor1D):
         return np.exp(-H)
 
     def current_value(self, tenor_index=None, offset=0.0, scale = 1.0):
-        """Returns the value of the rate at each tenor point (if set) else returns what's
-        stored in the Curve parameter"""
-        bumped_val = self.param['Curve'].array[:, 1] + self.delta
-
-        if self.interpolation[0] == 'Linear':
-            tenors = ((np.array(tenor_index) if tenor_index is not None else self.tenors) + offset).clip(
-                self.tenors.min(), self.tenors.max())
-            return scale * np.interp(tenors, self.tenors, bumped_val)
-        else:
-            # get the tenors - make sure we clip the min range (we can extrapolate linearly)
-            tenors = ((np.array(tenor_index) if tenor_index is not None else self.tenors) + offset).clip(
-                min=self.tenors.min())
-            max_tenor = tenors.max(initial=0)
-
-            if max_tenor > self.tenors.max():
-                point_at_inf = max_tenor * bumped_val[-1] / self.tenors[-1]
-                # return a linearly extrapolated surface
-                return scale * np.interp(tenors, np.append(self.tenors, max_tenor), np.append(bumped_val, point_at_inf))
-            else:
-                return scale * np.interp(tenors, self.tenors, bumped_val)
+        """The cumulative hazard at each tenor, the curve's own if none: flat before its first knot
+        and its last hazard going on past its last, as the simulation's curve reads it."""
+        tenors = (np.array(tenor_index) if tenor_index is not None else self.tenors) + offset
+        return scale * Factor1D.interpolate(
+            tenors.clip(min=self.tenors.min()), self.tenors, self.param['Curve'].array[:, 1] + self.delta,
+            ('LinearExtrapolate',))
 
 
 class InterestRate(Factor1D):
@@ -1270,6 +1256,15 @@ class LogVar2FJModelParameters(CurveModelParameters):
         if not self.gaussian:
             self.assert_residual(knots['Alpha'], self.param['Alpha'].array[:, 1],
                                  self.param['Beta'].array[:, 1])
+        # a checkpoint segment walks 21 steps of up to 1.5 days each, exponentiating kappa across it
+        span = max(abs(float(self.param['Kappa_S'])), abs(float(self.param['Kappa_L']))) * 31.5 / float(
+            self.declared['Steps_Per_Year'])
+        if span >= np.log(np.finfo(np.float32).max):
+            raise ValueError(
+                'LogVar2FJModelParameters: Kappa_S %g and Kappa_L %g at Steps_Per_Year %g decay by '
+                'exp(%g) across one walk segment, past single precision - declare a slower '
+                'reversion or a finer clock' % (float(self.param['Kappa_S']), float(
+                    self.param['Kappa_L']), float(self.declared['Steps_Per_Year']), span))
 
     @staticmethod
     def assert_residual(buckets, alpha, beta):

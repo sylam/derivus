@@ -18,9 +18,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
+import pytest
+import torch
 
 import derivus
 import rates_world as rw
+import test_declared_defaults as book
+import trial_fx
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
@@ -90,3 +94,92 @@ def test_the_base_currency_s_fx_rate_stays_static_whatever_model_is_declared(tmp
     logging.debug('stochastic set on the USD-base book: %s', sorted(factors))
     assert ('HullWhite1FactorInterestRateModel', 'InterestRate', ('USD',)) in factors, factors
     assert not any(f.type == 'FxRate' and f.name == ('USD',) for _, f in stochastic.items()), factors
+
+
+def test_a_static_spot_beside_a_simulated_curve_prices_as_a_spot_that_never_moves():
+    """A static `FxRate` is one row where a simulated curve beside it is one per date, so the row
+    loops of the one-touch, the barrier, the partial-time barrier and the extendable forward ran
+    once and gathered past their own end, and the TARF and accumulator read one fixing where the
+    schedule holds several. Each takes its spot on its own grid now. The fx trial family, a TARF and
+    an accumulator on a static EURUSD beside a Hull-White on USD at zero volatility price, row for
+    row and bit for bit, as the same book whose EURUSD is a GBM at zero vol and drift - a simulated
+    spot that never moves - and row 0 of the closed-form six is their base valuation to 1e-13.
+
+    Killing mutations: the spot left one row in any of the six types, or the fixings in either
+    pricer reading them.
+    """
+    deals = trial_fx.DEALS + [deal for deal in book.BOOK if deal['Reference'] in ('TARF', 'ACC')]
+
+    def rows(simulated, **still):
+        calc, _ = book.simulated(deals, ('USD',), sigma=0.0, prec=torch.float64,
+                                 Generate_Cashflows='No', **still)
+        assert (('FxRate', ('EUR',)) in {(key.type, key.name) for key in calc.stoch_factors}) == simulated
+        return {deal.Instrument.field['Reference']: deal.Calc_res['Value'][0]
+                for deal in calc.netting_sets.deals()}
+
+    static = rows(False)
+    still = rows(True, models={'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': 0.0, 'Drift': 0.0})})
+    assert set(static) == set(still) == {deal['Reference'] for deal in deals}
+    for ref, profile in static.items():
+        assert profile.shape == still[ref].shape and np.array_equal(profile, still[ref]), ref
+    marks, _ = book.marks(trial_fx.DEALS)
+    for ref in ('FXASN', 'FXDASN', 'FXOT', 'FXNT', 'FXPKO', 'FXKOR'):
+        assert static[ref][0].mean() == pytest.approx(float.fromhex(marks[ref]), rel=1e-13), ref
+
+
+def rooted(deals, vol, netted=False):
+    """`deals` at the root of a quarterly credit Monte Carlo, or under one uncollateralised netting
+    set, every curve, the EURUSD and the equity simulated at volatility `vol`: its mtm frame."""
+    doc = json.loads(json.dumps(book.book(deals), cls=CustomJsonEncoder))
+    calc = doc['Calc']
+    calc['Calculation'] = dict(Object='CreditMonteCarlo', Base_Date=calc['Calculation']['Base_Date'],
+                               Currency='USD', Time_Grid='0d 3m(3m)', Batch_Size=64, Random_Seed=1,
+                               Deflation_Interest_Rate='USD', Generate_Cashflows='No')
+    if netted:
+        calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+            'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+            'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
+    market = calc['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {
+        'InterestRate': 'HullWhite1FactorInterestRateModel', 'FxRate': 'GBMAssetPriceModel',
+        'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+    sigma = json.loads(json.dumps(utils.Curve([], [[0.0, vol], [10.0, vol]]), cls=CustomJsonEncoder))
+    market['Price Models'] = dict({'HullWhite1FactorInterestRateModel.' + curve: dict(
+        HW1F, Alpha=0.05, Sigma=sigma, Quanto_FX_Volatility=sigma) for curve in ('USD', 'USD-PROJ')},
+        **{'GBMAssetPriceModel.' + name: {'Vol': vol, 'Drift': 0.0} for name in ('EUR', 'EQ')})
+    market['Price Models'] = json.loads(json.dumps(market['Price Models'], cls=CustomJsonEncoder))
+    context = derivus.Context()
+    context.load_json((json.dumps(doc), 'rooted'))
+    return context.run_job()[1]['Results']['mtm']
+
+
+def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
+    """A credit Monte Carlo read its report dates off its netting sets, any other container answering
+    its own sparse revaluation dates, so a structure or a swaption at the root left the frame short
+    of the rows its deals priced and the run died on it. Every deal answers the grid's dates to its
+    last now, as a netting set always did, and the root reads its own deals' beside its structures'.
+    The core trial family at the root prices, every row finite. A three-month collar, a swaption over
+    its legs, an option and a cashflow outliving them read, at zero volatility and on every date the
+    root reports, bit for bit what the same tree reads under one uncollateralised netting set - the
+    set reporting the day after each settlement besides. What the set's day does not allow: under
+    live volatility its added days re-lay the draws and the paths part, and at the root a deal is
+    read across a day after that another deal's legs put on the grid, the set revaluing it there.
+
+    Killing mutations: a deal answering its revaluation dates again; the root's own deals left out.
+    """
+    import test_position_scaling
+    core = rooted(test_position_scaling.CORE.DEALS, 0.01)
+    assert core.shape[0] > 4 and np.isfinite(core.values).all()
+    swaption = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')
+    expiry = book.WORLD_BASE + pd.DateOffset(months=3)
+    collar = {'Object': 'StructuredDeal', 'Reference': 'COLLAR', 'Currency': 'USD', 'Children': [
+        book.fx_leg('FXOptionDeal', 'COLLAR_CALL', Expiry_Date=expiry, Strike_Price=1.30),
+        book.fx_leg('FXOptionDeal', 'COLLAR_PUT', Expiry_Date=expiry, Strike_Price=1.20,
+                    Option_Type='Put', Buy_Sell='Sell')]}
+    deals = [collar, swaption, book.fx_leg('FXOptionDeal', 'FXO', Expiry_Date=expiry),
+             {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
+              'Amount': 250_000.0, 'Payment_Date': book.WORLD_EXPIRY + pd.DateOffset(years=5)}]
+    root, netted = rooted(deals, 0.0), rooted(deals, 0.0, netted=True)
+    assert root.index.isin(netted.index).all() and len(netted) > len(root)
+    assert root.index[-1] == book.WORLD_EXPIRY + pd.DateOffset(years=5)
+    assert np.array_equal(root.values, netted.loc[root.index].values)

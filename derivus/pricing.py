@@ -283,7 +283,7 @@ class LogVar2FJKit(object):
 
     def european(self, S, law, K, is_call, digital):
         """This model's own European, undiscounted - the barrier's KI parity leg and its
-        already-hit leg, where a daily kit reads its closed form. The strip's per-interval laws
+        already-hit leg. The strip's per-interval laws
         sum into the terminal one (variances add), off which each path prices a conditional Black
         (`lognormal_fired_gain`) or, for a digital, the block's own Phi, averaged over the walk -
         that expectation. A TERMINAL row has NO strip left, so Sigma is exactly zero
@@ -502,8 +502,8 @@ def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
     One Sobol/pseudo draw plus its ``1 - u`` mirror, pairing an OSS step's truncated final draws
     with the antithetic halves of the kit's own walk. ``extra`` widens the request AFTER the OSS
     columns - a walking kit's mixer uniform per residual draw - so a GBM deal asks for nothing new
-    and its stream is untouched, and where the stream carries them in DOUBLE the mixers come back
-    that way: the inverse-Gaussian root reads a tail 24 bits cannot express. NOT used by
+    and its stream is untouched, and the mixers come back in DOUBLE, a draw carrying them being
+    taken that way: the inverse-Gaussian root reads a tail 24 bits cannot express. NOT used by
     ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws the same Sobol block but consumes it
     raw - adopting this there would change that estimator.
     """
@@ -515,9 +515,9 @@ def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
         wide = shape(draw[2]) if extra else None
         u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
     else:
-        u = torch.rand([rows, shared.simulation_batch, num_sims],
-                       dtype=shared.one.dtype, device=shared.one.device)
-        wide = u
+        wide = torch.rand([rows, shared.simulation_batch, num_sims],
+                          dtype=torch.float64 if extra else shared.one.dtype, device=shared.one.device)
+        u = wide.to(shared.one.dtype)
     mirror = lambda x: torch.concat([x, 1.0 - x], dim=-1)
     return mirror(u[:n_fix]), mirror(wide[n_fix:]) if extra else None
 
@@ -2892,9 +2892,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     sim_samples = fx_samples.schedule[
         (fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
-    next_samples = utils.calc_fx_cross(
-        factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
-        sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+    next_samples = utils.fx_fixings(factor_dep, sim_samples, shared)
     all_samples = torch.cat(
         [torch.cat(known_resets, dim=0), next_samples], dim=0) if known_resets else next_samples
 
@@ -3121,10 +3119,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
     max_mtm = deal_time[:, utils.TIME_GRID_MTM].max()
     sim_mask = ((fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
                 (fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= max_mtm))
-    sim_schedule = fx_samples.schedule[sim_mask]
-    next_samples = utils.calc_fx_cross(
-        factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
-        sim_schedule[:, :utils.RESET_INDEX_Scenario + 1], shared) if len(sim_schedule) else []
+    next_samples = utils.fx_fixings(factor_dep, fx_samples.schedule[sim_mask], shared)
 
     observed_fixings = []
     sim_ptr = 0
@@ -3764,8 +3759,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
                     # the strip's j-th fixing is the schedule's `settle_offset + j`-th, where the
-                    # resolved samples stand too (declared, then simulated); counted from the END
-                    # it agrees only with every fixing resolved and no `calc_fx_cross` broadcast row
+                    # resolved samples stand too (declared, then simulated)
                     Sj = past_fixings[min(settle_offset + j, num_samples - 1)].reshape(-1, 1)
                     p = 1.0
                     # an OBSERVED fixing has no conditioning step to integrate against: its spot is
@@ -3895,9 +3889,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     sim_samples = fx_samples.schedule[
         (fx_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
-    next_samples = utils.calc_fx_cross(
-        factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
-        sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+    next_samples = utils.fx_fixings(factor_dep, sim_samples, shared)
     all_samples = torch.cat(
         [torch.cat(known_resets, dim=0), next_samples], dim=0) if known_resets else next_samples
     num_samples = len(all_samples)
@@ -3923,9 +3915,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         opening = opening + accrued(value * shared.one, strike, callOrPut, invertedTarget)
     accrued_in = float(opening)
 
-    # `resolved` counts the fixings taken off the realized path and is NOT `num_samples`:
-    # `calc_fx_cross` on an empty schedule returns a broadcast row, so `len(all_samples)` reads 1
-    # where nothing is resolved
     logging.debug('TARF %s fixings=%d resolved=%d target=%.6g accrued=%.6g barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), len(fx_samples.schedule),
                   len(known_resets) + len(sim_samples), targetValue, accrued_in, barrier,
@@ -4147,8 +4136,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     the PREFIX return alone - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
     observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in ``R_pre``
     and every leg on the average is ``lognormal_fired_gain`` at a shifted forward. A fixing AT the
-    row is an observation, not a step. Only a kit whose conditioning step IS the fixing interval is
-    admitted with a window longer than one; GBM and the daily families keep the full-path branch.
+    row is an observation, not a step. The LogVar2FJ kit, whose conditioning step IS the fixing
+    interval, takes a window longer than one; GBM keeps the full-path branch.
 
     THE KNOCK-OUT LATCH IS CARRIED. ``terminationDate`` is stamped inside ``sim_spot`` at each
     observed fixing, returned as a by-product and handed to the next block's theta - an autocalled
@@ -4327,9 +4316,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
                         mix = None if wide is None else wide[reduced_samples:]
                     else:
-                        u = torch.rand([rows, shared.simulation_batch, num_sims],
-                                       dtype=shared.one.dtype, device=shared.one.device)
-                        mix = u[reduced_samples:] if n_mix else None
+                        wide = torch.rand([rows, shared.simulation_batch, num_sims],
+                                          dtype=torch.float64 if n_mix else shared.one.dtype,
+                                          device=shared.one.device)
+                        u, mix = wide.to(shared.one.dtype), wide[reduced_samples:] if n_mix else None
                 Sj = torch.unsqueeze(
                     s if last_fixing is None else past_fixings[last_fixing], 1)
                 if kit is not None and reduced_samples:
@@ -5424,10 +5414,12 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
       list, one item per fixing merged by `compress_no_compounding`, carries each at one. A
       forecast reset arrives multiplied by its weight (`get_simulated_resets` applies
       `Weight / Accrual`) and a fixed one as its rate, so each forecast one is divided by its
-      weight to read back as its rate. `Compounding_Method: 'OIS'` compounds the rates
-      geometrically and `None` sums them at their weights - the average. `Flat`,
-      `Include_Margin` and `Exclude_Margin` compound across rows in the fold below and have no
-      arithmetic for the fixings inside one, and `Exponential` has none at all: those refuse.
+      weight to read back as its rate. `Compounding_Method: 'None'` sums them at their weights -
+      the average - and the others compound them geometrically, placing the margin as the fold
+      below does: `Include_Margin` with each fixing, `Exclude_Margin` simple, and `Flat` growing at
+      the rate alone, which refuses a payment date gathering several cashflows, one of several
+      resets. A `Pre_Aggregation` list caps each fixing and places no margin, refusing the three
+      methods that would.
     - **Method compounding** is the ordered ragged fold at the end, on a different axis: several
       cashflow ROWS sharing one payment date, each already canonical, accumulated in order with the
       margin placed by convention.
@@ -5552,20 +5544,21 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             needs_aggregation = all_resets.shape[1] != reset_cashflows.np.shape[0]
             if needs_aggregation:
                 method = factor_dep['CompoundingMethod']
-                if method not in ('None', 'OIS'):
-                    fields = deal_data.Instrument.field
-                    folds = method != 'Exponential'
+                reference = deal_data.Instrument.field.get('Reference')
+                if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and method not in ('None', 'OIS'):
                     raise utils.UnpriceableSchedule(
-                        '{}: Compounding_Method {} on a leg whose cashflows each carry several '
-                        'resets. {} Declare None, which averages the fixings, or OIS, which '
-                        'compounds them{}'.format(
-                            fields.get('Reference'), method,
-                            'It compounds the cashflows sharing a payment date and has no '
-                            'arithmetic for the fixings inside one.' if folds else
-                            'Exponential has no arithmetic in the floating fold.',
-                            ', or author each fixing as its own cashflow on the shared payment date'
-                            if folds and fields.get('Object') == 'CFFloatingInterestListDeal'
-                            else ''))
+                        '{}: Compounding_Method {} on a Pre_Aggregation list, whose optionlets cap '
+                        'each fixing and sum them, placing no margin. Declare None or OIS'.format(
+                            reference, method))
+                _, shared_day, sharing = np.unique(reset_cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day],
+                                                   return_inverse=True, return_counts=True)
+                if method == 'Flat' and ((sharing[shared_day] > 1) & (
+                        reset_cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] > 1)).any():
+                    raise utils.UnpriceableSchedule(
+                        '{}: Compounding_Method Flat on a payment date gathering several cashflows, '
+                        'one of several resets, whose pot the fold across them would compound at the '
+                        'margin too. Author one cashflow per payment date, or each fixing as its own '
+                        'cashflow'.format(reference))
                 reset_per_cashflows = factor_dep['Cashflows'].offsets[start_index[index]:, 0]
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # aligns with all_resets[1]
                 weight = reset_block.tn[:, utils.RESET_INDEX_Weight]
@@ -5579,16 +5572,30 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 # Pre_Aggregation keeps the resets apart for the daily pricer below, which caps each
                 # BEFORE aggregating
                 if factor_dep['AveragingMethod'] != 'Pre_Aggregation':
-                    if method == 'OIS':
-                        log_rt = torch.log1p(all_resets * accrual.view(1, -1, 1))
+                    if method == 'None':
+                        all_resets = torch.segment_reduce(all_resets * weight.view(1, -1, 1),
+                                                          reduce="sum", lengths=lengths, axis=1)
+                    else:
+                        # the fixings compound, read back as the rate whose (rate + margin) accrual
+                        # the pricer pays: Include_Margin compounds the margin with each fixing
+                        margin = reset_cashflows.tn[:, utils.CASHFLOW_INDEX_FloatMargin].view(1, -1, 1)
+                        a = accrual.view(1, -1, 1)
+                        log_rt = torch.log1p((all_resets + torch.repeat_interleave(
+                            margin, reset_split, dim=1)) * a if method == 'Include_Margin' else all_resets * a)
                         sum_log = torch.segment_reduce(
                             log_rt, reduce="sum", lengths=lengths, axis=1)
                         sum_acc = torch.segment_reduce(
-                            accrual, reduce="sum", lengths=reset_split, axis=0)
-                        all_resets = torch.expm1(sum_log)/sum_acc.view(1, -1, 1)
-                    else:
-                        all_resets = torch.segment_reduce(all_resets * weight.view(1, -1, 1),
-                                                          reduce="sum", lengths=lengths, axis=1)
+                            accrual, reduce="sum", lengths=reset_split, axis=0).view(1, -1, 1)
+                        all_resets = torch.expm1(sum_log)/sum_acc
+                        if method == 'Include_Margin':
+                            all_resets = all_resets - margin
+                        elif method == 'Flat':
+                            # each fixing's margin grows at the rate alone over the fixings after it
+                            cum = torch.cumsum(log_rt, dim=1)
+                            after = torch.exp(torch.repeat_interleave(
+                                cum[:, reset_split.cumsum(0) - 1], reset_split, dim=1) - cum)
+                            all_resets = all_resets + margin * (torch.segment_reduce(
+                                a * after, reduce="sum", lengths=lengths, axis=1) / sum_acc - 1.0)
 
             if cashflow_pricer in [pricer_cap, pricer_floor]:
                 # the vol surface's tenor axis: averaged because the cashflows are meant to share
@@ -6445,6 +6452,10 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     cash_pay_idx = cash.get_cashflow_start_index(deal_time)
 
     all_samples = []
+    # the dividends paid between a period's start and the base date, where the model's own begin:
+    # each period's start reset carries their sum, and they join the realised dividends below
+    known_dividends = shared.one.new_tensor(
+        cash.Resets.split_groups(2)[0].schedule[:, utils.RESET_INDEX_Weight]).reshape(1, -1, 1)
 
     for samples in cash.Resets.split_groups(2):
         known_sample = samples.known_resets(shared.simulation_batch, include_today=True)
@@ -6494,7 +6505,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
                 St0, factor_dep['Equity_Zero'], factor_dep['Dividend_Yield'],
                 utils.calc_dividend_samples(
                     cashflows.np[pay_idx:end_idx, utils.CASHFLOW_INDEX_Start_Day],
-                    cashflows.np[end_idx - 1:end_idx, utils.CASHFLOW_INDEX_End_Day], time_grid), shared)
+                    cashflows.np[end_idx - 1:end_idx, utils.CASHFLOW_INDEX_End_Day], time_grid),
+                shared) + known_dividends[:, pay_idx:end_idx]
 
             units = cashflows.tn[pay_idx:end_idx, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1)
             end_mult = cashflows.tn[pay_idx:end_idx, utils.CASHFLOW_INDEX_End_Mult].reshape(1, -1, 1)
@@ -6525,7 +6537,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
             Ht0_t = utils.calc_realized_dividends(
                 St0, factor_dep['Equity_Zero'], factor_dep['Dividend_Yield'],
                 utils.calc_dividend_samples(
-                    cashflows.np[end_idx:start_idx, utils.CASHFLOW_INDEX_Start_Day], time_block, time_grid), shared)
+                    cashflows.np[end_idx:start_idx, utils.CASHFLOW_INDEX_Start_Day], time_block, time_grid),
+                shared) + known_dividends[:, end_idx:start_idx]
 
             units = cashflows.tn[end_idx:start_idx, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1)
             end_mult = cashflows.tn[end_idx:start_idx, utils.CASHFLOW_INDEX_End_Mult].reshape(1, -1, 1)

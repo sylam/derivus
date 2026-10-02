@@ -490,6 +490,55 @@ def test_a_blank_table_reads_the_same_however_it_is_spelled():
     assert math.isfinite(float.fromhex(valued['NULL'])) and float.fromhex(valued['NULL']) != 0.0
 
 
+def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_dividends():
+    """The trial's seasoned leg, ten thousand shares struck at 97, USD at 4% for discount and repo:
+
+    - a blank or omitted `Payoff_Currency` is the leg's own currency, to the bit of the stated one;
+    - started on the base date with no `Equity_Known_Prices` it fixes at the spot and is worth
+      Units S0 (1 - e^{-rT}), 39,210.56; started a month back with none, it refuses by name;
+    - a dividend of 1.5 between its start and the base date, which the model's own dividends do not
+      reach, joins the realised dividends and is carried at the repo rate to the end: on a repo of
+      4.5% against the 4% it discounts at it adds Units x 1.5 e^{0.005 T}, 15,075.19; and an ended
+      leg awaiting payment adds it at the payment's discount factor;
+    - an ended leg awaiting payment is its realised move Units (S1 - S0) D(pay), 19,991.23: the
+      model's dividends reach no interval already ended.
+
+    Killing mutations: the payoff currency read raw; the FX slot left None; the refusal dropped;
+    either dividend site dropped; the dividend carried at the discount rate, 75.19 short; the ended
+    interval read reversed, 53.12 short.
+    """
+    import trial_equity_swaps
+    leg = trial_equity_swaps.equity_leg('EQL', 'Variable')
+    end = WORLD_BASE - pd.DateOffset(days=2)
+    ended = dict(leg, Reference='ENDED', Maturity_Date=end, Payment_Offset=5,
+                 Equity_Known_Prices=utils.DateEqualList([[trial_equity_swaps.SEASONED, 97.0, 1.0],
+                                                          [end, 99.0, 1.0]]))
+    dividend = utils.DateEqualList([[trial_equity_swaps.SEASONED + pd.DateOffset(days=10), 1.5]])
+    unpriced = dict(leg, Reference='UNPRICED', Equity_Known_Prices=None)
+    legs = [leg, dict(leg, Reference='BLANK', Payoff_Currency=''),
+            {k: v for k, v in dict(leg, Reference='OMITTED').items() if k != 'Payoff_Currency'},
+            dict(leg, Reference='AT_BASE', Effective_Date=WORLD_BASE, Equity_Known_Prices=None), ended,
+            dict(ended, Reference='ENDED_DIVIDEND', Known_Dividends=dividend)]
+    valued, stats = marks(legs)
+    value = {reference: float.fromhex(mark) for reference, mark in valued.items()}
+    assert 'Deals Skipped' not in stats and valued['EQL'] == valued['BLANK'] == valued['OMITTED']
+    assert value['AT_BASE'] == pytest.approx(1e4 * 100.0 * -math.expm1(-0.04), rel=1e-14)
+    repo, _ = marks([leg, dict(leg, Reference='DIVIDEND', Known_Dividends=dividend)], {
+        'EquityPrice.EQ': dict(world()['EquityPrice.EQ'], Interest_Rate='USD-PROJ')})
+    carried = (leg['Maturity_Date'] - WORLD_BASE).days / 365.0
+    assert float.fromhex(repo['DIVIDEND']) - float.fromhex(repo['EQL']) == pytest.approx(
+        1e4 * 1.5 * math.exp(0.005 * carried), rel=1e-12)
+    paid = (end + pd.offsets.BDay(5) - WORLD_BASE).days / 365.0
+    assert value['ENDED_DIVIDEND'] - value['ENDED'] == pytest.approx(1e4 * 1.5 * math.exp(-0.04 * paid),
+                                                                    rel=1e-12)
+    assert value['ENDED'] == pytest.approx(1e4 * (99.0 - 97.0) * math.exp(-0.04 * paid), rel=1e-12)
+    assert marks([leg, unpriced])[1].get('Deals Skipped') == 1
+    with pytest.raises(utils.UnpriceableSchedule, match=(
+            r"EquitySwapLeg UNPRICED \('Equity_Known_Prices states no price on or before the "
+            r"Effective_Date \d{4}-\d\d-\d\d, before the base date',\)")):
+        marks([leg, unpriced], system={'Exclude_Deals_With_Missing_Market_Data': 'No'})
+
+
 def test_an_omitted_floating_margin_completes_to_the_basis_its_reader_takes():
     """The V2 autocall swap reads `Floating_Margin` as `.amount`, so it is declared a `Basis`: left
     out it completes to `Basis(0)` and prices to the bit as `{".Basis": 0}`, where a float 0.0
@@ -543,6 +592,27 @@ def test_a_commodity_forward_omitting_its_forward_date_is_read_at_the_spot():
     discount = math.exp(-0.04 * (WORLD_EXPIRY - WORLD_BASE).days / 365.0)
     assert float.fromhex(valued['SPOT']) == pytest.approx(50.0 * 1000.0 * discount, rel=1e-14)
     assert float.fromhex(valued['DATED']) == pytest.approx(50.0 * 1025.0 * discount, rel=1e-14)
+
+
+def test_an_equity_binary_settles_at_its_expiry_where_it_states_no_settlement_date():
+    """`Settlement_Date` on an equity binary is a convention, the expiry its declared settlement
+    falls back to: omitted, blank and stated at the expiry, the trial binary validates and marks
+    one number, bit for bit.
+
+    KILLING MUTATIONS: the convention flag dropped, which names the omitted date at booking; the
+    date read as `get('Settlement_Date', expiry)`, under which a blank one meets `'' - Timestamp`
+    and the deal is skipped.
+    """
+    import trial_equity as trial
+    binary = next(deal for deal in trial.DEALS if deal['Reference'] == 'EQBIN')
+    assert 'Settlement_Date' not in binary
+    assert schema.validate_instrument(construct_instrument(dict(binary), {})) == []
+    valued, stats = marks([dict(binary, Reference='OMITTED'),
+                           dict(binary, Reference='BLANK', Settlement_Date=''),
+                           dict(binary, Reference='AT_EXPIRY', Settlement_Date=binary['Expiry_Date'])])
+    assert 'Deals Skipped' not in stats, stats
+    assert valued['OMITTED'] == valued['BLANK'] == valued['AT_EXPIRY'], valued
+    assert math.isfinite(float.fromhex(valued['OMITTED'])) and float.fromhex(valued['OMITTED']) != 0.0
 
 
 def test_a_rate_default_carries_its_unit():
@@ -724,11 +794,12 @@ def book(deals):
             'Valuation Configuration': {}, 'Price Factors': world()}}}}
 
 
-def marks(deals, factors=None):
-    """`{reference: mark as hex}` for one document, `factors` beside the world's, and the
-    statistics the run reported."""
+def marks(deals, factors=None, system=None):
+    """`{reference: mark as hex}` for one document, `factors` beside the world's and `system`
+    beside its System Parameters, and the statistics the run reported."""
     job = book(deals)
     job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(factors or {})
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'].update(system or {})
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'defaults'))
     _, answer = context.run_job()
@@ -737,10 +808,12 @@ def marks(deals, factors=None):
              in zip(frame['Reference'], frame['Value'])}, answer['Stats'])
 
 
-def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, **calculation):
+def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, models=None,
+              **calculation):
     """A credit Monte Carlo over `deals` held under one netting set, a Hull-White of volatility
-    `sigma` on each of `curves`, `system` beside the System Parameters, through the JSON contract
-    and in the torch precision `prec` where one is given: `(calculation, output)`."""
+    `sigma` on each of `curves` and `models` `{factor: (model, block)}` beside them, `system` beside
+    the System Parameters, through the JSON contract and in the torch precision `prec` where one is
+    given: `(calculation, output)`."""
     job = json.loads(json.dumps(book(deals), cls=CustomJsonEncoder))
     calc = job['Calc']
     calc['Calculation'] = dict(
@@ -760,6 +833,11 @@ def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, *
         'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.0]]}},
         'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, sigma], [10.0, sigma]]}}}
         for curve in curves}
+    for factor, (model, block) in (models or {}).items():
+        kind, name = factor.split('.', 1)
+        market['Model Configuration']['.ModelParams']['modelfilters'].setdefault(kind, []).append(
+            [['ID', name], model])
+        market['Price Models'][model + '.' + name] = json.loads(json.dumps(block, cls=CustomJsonEncoder))
     context = derivus.Context()
     context.load_json((json.dumps(job), 'simulated'))
     return context.run_job() if prec is None else derivus.run_cmc(context.current_cfg, prec=prec)

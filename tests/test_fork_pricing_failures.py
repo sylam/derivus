@@ -565,3 +565,68 @@ def test_a_document_saying_no_refuses_a_deal_its_pricer_could_not_value():
     with pytest.raises(utils.UnpriceableSchedule, match=refusal):
         book.simulated([GOOD, terms], ('USD',),
                        system={'Exclude_Deals_With_Missing_Market_Data': 'No'})
+
+
+def _structure_guards(container):
+    """`container` beside the option, valued and simulated under `Yes`: the option's mark, both
+    runs' `Structs Skipped`, and the refusal each run meets under `No`."""
+    stats, marks = _switched('Yes', [GOOD, container])
+    _, simulated = book.simulated([GOOD, container], ('USD',), Simulation_Batches=2)
+    refusals = []
+    for run in (lambda: _switched('No', [GOOD, container]), lambda: book.simulated(
+            [GOOD, container], ('USD',), system={'Exclude_Deals_With_Missing_Market_Data': 'No'})):
+        with pytest.raises(utils.UnpriceableSchedule) as refused:
+            run()
+        refusals.append(str(refused.value))
+    return marks['FXO'], (stats.get('Structs Skipped'), simulated['Stats'].get('Structs Skipped')), refusals
+
+
+#: a netting set whose one deal states a NaN amount, so its value holds NaN
+NAN_SET = {'Object': 'NettingCollateralSet', 'Reference': 'NAN_SET', 'Netted': 'True',
+           'Collateralized': 'False', 'Children': [dict(GOOD, Reference='FXO_NAN', Underlying_Amount=math.nan)]}
+
+
+@pytest.mark.parametrize('container,refusal', [
+    ({'Object': 'StructuredDeal', 'Reference': 'HELD_JPY', 'Currency': 'JPY',
+      'Children': [dict(GOOD, Reference='FXO_HELD')]},
+     "StructuredDeal HELD_JPY ('Cannot find FxRate.JPY',)"),
+    (dict(next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT'), Children=[
+        leg for leg in next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')['Children']
+        if leg['Object'] == 'CFFixedInterestListDeal']),
+     "Structure SwaptionDeal SWPT could not be priced - ('CFFloatingInterestListDeal',)"),
+    (NAN_SET, 'Structure NettingCollateralSet NAN_SET could not be priced - its value holds NaN'),
+], ids=['compile', 'post_process', 'nan'])
+def test_a_document_saying_no_refuses_a_structure_it_could_not_value(container, refusal):
+    """The three structure guards read the switch as the deal guards do: a structure on a currency
+    the market lacks fails its compile, a swaption holding its fixed leg alone fails the
+    `post_process` pricing it, and a netting set whose value holds NaN is dropped. Under `Yes` each
+    is counted once under `Structs Skipped`, valued and over two simulated batches, the option
+    marking as it marks alone; under `No` both runs refuse naming the structure.
+
+    Killing mutations: the compile guard handed no `refused`, the `post_process` guard or the NaN
+    drop reading no switch, so a `No` run completes; structures left unstamped; the count per batch.
+    """
+    alone = _switched(None, [GOOD])[1]['FXO']
+    mark, skipped, refusals = _structure_guards(container)
+    assert mark == alone != 0.0
+    assert skipped == (1, 1), skipped
+    assert all(refusal in message for message in refusals), refusals
+
+
+def test_a_set_skipped_under_yes_is_left_out_of_what_the_run_reports():
+    """A netting set dropped for NaN under `Yes` is skipped and counted, never summed: a base
+    valuation's root, which sums its sets, is the priced set's mark beside it, bit for bit, where it
+    read NaN; and a credit Monte Carlo in which nothing at all was valued refuses by name, where it
+    died framing a profile of nothing.
+
+    Killing mutations: the root summing a skipped set's value; the report framing an empty book.
+    """
+    held = {'Object': 'NettingCollateralSet', 'Reference': 'HELD', 'Netted': 'True',
+            'Collateralized': 'False', 'Children': [GOOD]}
+    stats, marks = _switched('Yes', [held, NAN_SET])
+    assert stats.get('Structs Skipped') == 1, stats
+    assert marks['root'] == _switched('Yes', [held])[1]['root'] == marks['HELD'], marks
+    assert math.isfinite(marks['root']) and marks['root'] != 0.0
+    with pytest.raises(utils.UnpriceableSchedule, match=r'Nothing in the book was valued \(1 Structs '
+                                                        r'Skipped\), so the run has nothing to report'):
+        book.simulated([NAN_SET], ('USD',))

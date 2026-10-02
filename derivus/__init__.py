@@ -277,6 +277,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     :return: a tuple containing the calculation object, output dictionary and exposure profile
     """
     from .calculation import construct_calculation, Credit_Monte_Carlo
+    from .riskfactors import SurvivalProb
     from .schema import declared_defaults
     calc_params = context.deals.get(
         'Calculation',
@@ -299,7 +300,8 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     if params_mc.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
         cva_sect = params_mc['Credit_Valuation_Adjustment']
         if cva_sect.get('CDS_Tenors'):
-            # add extra tenors to the survival probability curve and interpolate it to calculate CDS rates
+            # add the CDS dates to the survival probability curve as the factor reads it, its last
+            # hazard going on past its last knot, to calculate CDS rates
             survivalprob = context.params['Price Factors']['SurvivalProb.{}'.format(cva_sect['Counterparty'])]
             daycount = lambda time_in_days: utils.DayCount.accrual(
                 params_mc['Base_Date'], time_in_days, utils.DayCount.ACT365)
@@ -307,7 +309,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
                       utils.cds_dates(params_mc['Base_Date'], max(cva_sect.get('CDS_Tenors')) * 12)]
             new_terms = np.union1d(to_add, survivalprob['Curve'].array[:, 0])
             survivalprob['Curve'].array = np.array(
-                list(zip(new_terms, np.interp(new_terms, *survivalprob['Curve'].array.T))))
+                list(zip(new_terms, SurvivalProb(survivalprob).current_value(new_terms))))
 
     if params_mc.get('Collateral_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
         ns = context.deals['Deals']['Children'][0]['Instrument'].field

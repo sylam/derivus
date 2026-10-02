@@ -114,20 +114,6 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
                 num_batches, numfactors, -1, self.simulation_batch).to(self.one.device)
 
 
-#: The HW2F reversion-speed seed, deliberately asymmetric. Equal alphas beside equal sigma curves
-#: make the objective exactly exchange-symmetric in `(alpha_i, sigma_i)`, so the first local
-#: minimisation is confined to the symmetric hyperplane: on the identified 25-quote block basin
-#: hopping's iteration-0 L-BFGS-B reaches 8.95e-6 from `0.1, 0.1` and 5.33e-6 from this seed.
-#:
-#: The ratio is 10x - a fast factor and a slow one, half-lives `ln2/alpha` of 1.39y and 13.9y,
-#: bracketing the expiry ladders this family is quoted on. Both sit above every small-alpha series
-#: threshold (`hw_alpha_series_B` 1e-3, `_H` 1e-2, `_IJK` 3e-2), strictly inside `alpha_bounds`,
-#: and positive; their sum 0.55 is far from the singular `alpha_1 + alpha_2 -> 0` hyperplane.
-#:
-#: The sigma seeds stay identical: separating the reversion speeds already breaks the exchange.
-ALPHA_SEED = (0.5, 0.05)
-
-
 class Family:
     """What every price family is built from: the block it was configured with, completed by
     its own declared defaults (a quote's own instrument is unioned onto it and wins on conflict),
@@ -1160,8 +1146,8 @@ class LVFit(utils.Residual):
     SHARE = 'Beta/Alpha'
 
     #: The prior rows that are a bucket VECTOR - one row per fitted bucket - rather than one number:
-    #: the two DERIVED levers, neither of which is a state key.
-    BUCKET_ROWS = (LEVERAGE, SHARE)
+    #: the two bucket levers a prior sits on and the two DERIVED ones.
+    BUCKET_ROWS = ('Rho_S', 'Alpha', LEVERAGE, SHARE)
 
     #: What a prior row's column norm may read in ONE quote row's before the coordinate it sits on is
     #: not identified by the quotes at all and the row is a pin under another name.
@@ -1286,6 +1272,7 @@ class LVFit(utils.Residual):
         self.c_min, self.rcond = float(read['C_Min']), float(read['Jacobian_Rcond'])
         self.stationarity = float(read['Stationarity_Tol'])
         self.tolerance, self.max_iter = float(read['Tolerance']), int(read['Max_Iterations'])
+        self.step_tolerance = float(read['Step_Tolerance'])
         self.pillar_tol, self.smoothness = float(read['Pillar_Tolerance']), float(
             read['Bucket_Smoothness'])
         self.is_vol = read['Quote_Type'] == 'Implied_Volatility'
@@ -1864,7 +1851,7 @@ class LVFit(utils.Residual):
         for name, target, scale, logs in (self.prior_rows if self.priors else ()):
             value = (levers['Rho_S'] * levers['Sigma_S'] if name == self.LEVERAGE else
                      levers['Beta'] / levers['Alpha'] if name == self.SHARE else
-                     levers[name][0] if name in utils.LogVar2FJ.BUCKET_NAMES else scalars[name])
+                     levers[name] if name in utils.LogVar2FJ.BUCKET_NAMES else scalars[name])
             terms.append(scale * ((torch.log(value) - np.log(target)) if logs
                                   else (value - target)).reshape(-1))
         if self.priors and self.shape_floor > 0.0:
@@ -1942,7 +1929,7 @@ class LVFit(utils.Residual):
         result = scipy.optimize.least_squares(
             residual, x0, bounds=tuple(zip(*edges)), method='trf', x_scale='jac',
             jac=lambda x, *rest: self.jacobian(x, coords, judged, forwards, **kw),
-            ftol=self.tolerance, xtol=1e-12, max_nfev=self.max_iter)
+            ftol=self.tolerance, xtol=self.step_tolerance, max_nfev=self.max_iter)
         # written back through `build`, so the residual pair leaves its own coordinates and the
         # ties of `Bootstrap` mode land in the state the report prints
         scalars, levers = self.build(self.vector(result.x), coords)
@@ -3521,6 +3508,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         F('Tolerance', 'Float', default=1e-8,
           description='Convergence tolerance (scipy\'s ftol) on each stage\'s weighted vol-space '
                       'residual'),
+        F('Step_Tolerance', 'Float', default=1e-12,
+          description='Convergence tolerance (scipy\'s xtol) on each stage\'s step in the fitted '
+                      'coordinates, relative to their size'),
         F('Pillar_Tolerance', 'Float', default=1e-10,
           description='The relative ATM miss each L segment\'s own Newton solve stops at, at EVERY '
                       'outer iterate. It is what makes the objective a function of x alone rather '
@@ -5093,6 +5083,13 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         F('Alpha_Bounds', 'Text', default='-0.5,2.4',
           description='The box on both reversion speeds, lower,upper. Both seeds sit strictly '
                       'inside it and above every small-alpha series threshold'),
+        F('Alpha_Seed', 'Text', default='0.5,0.05',
+          description='Where the two reversion speeds start on a COLD block, alpha_1,alpha_2 - a '
+                      'block whose parameter factor exists starts off that. Unequal by design: '
+                      'equal speeds beside the equal sigma seeds make the objective symmetric in '
+                      'the two factors, and basin hopping\'s first descent stays on that ridge, '
+                      'reaching 8.95e-6 from 0.1,0.1 against 5.33e-6 from these, half-lives of '
+                      '1.39y and 13.9y'),
         F('Correlation_Bounds', 'Text', default='-0.95,0.95',
           description='The box on the correlation between the two factors, lower,upper - inside '
                       '+-1, where the two-factor covariance stays positive definite'),
@@ -5185,6 +5182,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         #: KKT active set off it
         self.sigma_bounds = utils.LogVar2FJ.parse_bounds(self.param['Sigma_Bounds'], 'Sigma_Bounds')
         self.alpha_bounds = utils.LogVar2FJ.parse_bounds(self.param['Alpha_Bounds'], 'Alpha_Bounds')
+        self.alpha_seed = utils.LogVar2FJ.parse_floats(self.param['Alpha_Seed'], 'Alpha_Seed', 2)
         self.corr_bounds = utils.LogVar2FJ.parse_bounds(self.param['Correlation_Bounds'], 'Correlation_Bounds')
 
     def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor,
@@ -5359,7 +5357,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         objective go through this one process. The simulator is untouched - `precalculate` still
         installs $K$ in a scenario run, being handed the emitted factor rather than this twin.
 
-        The seed is asymmetric by ruling; `ALPHA_SEED` says why. A block whose parameter factor
+        The seed is asymmetric by ruling; `Alpha_Seed` says why. A block whose parameter factor
         already exists warm-starts off it instead, clipped to the declared bounds, and `calc_loss`
         then runs the least squares alone from that seed.
         """
@@ -5405,7 +5403,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
             implied_obj = riskfactors.HullWhite2FactorModelParameters(
                 {'Quanto_FX_Volatility': quanto_fx,
                  'short_rate_fx_correlation': C,
-                 'Alpha_1': ALPHA_SEED[0], 'Alpha_2': ALPHA_SEED[1], 'Correlation': 0.01,
+                 'Alpha_1': self.alpha_seed[0], 'Alpha_2': self.alpha_seed[1], 'Correlation': 0.01,
                  'Sigma_1': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size))),
                  'Sigma_2': utils.Curve([], list(zip(vol_tenors, [0.01] * vol_tenors.size)))})
 

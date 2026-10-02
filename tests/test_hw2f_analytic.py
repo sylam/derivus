@@ -79,7 +79,9 @@ import scipy.stats
 import torch
 
 import derivus
-from derivus import bootstrappers, riskfactors, utils
+import test_declared_defaults as book
+import trial_fx
+from derivus import riskfactors, utils
 from derivus.bootstrappers import (HullWhite2FactorModelParameters,
                                    RiskNeutralInterestRate_State, SwaptionCalibration)
 from derivus.utils import LeastSquaresSolve
@@ -94,6 +96,8 @@ BASE = pd.Timestamp('2026-08-03')
 CCY, CURVE = 'ZAR', 'ZAR-SWAP'
 DEVICE = torch.device('cpu')
 DTYPE = torch.float64
+#: the cold seed the family declares for its two reversion speeds
+ALPHA_SEED = HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_seed
 
 #: the vol knots `HullWhite2FactorModelParameters.implied_process` builds, in years
 VOL_TENOR = np.array([0, 1, 3, 6, 12, 24, 48, 72, 96, 120]) / 12.0
@@ -409,7 +413,7 @@ def test_bit_identity_at_the_reversion_speeds_this_repository_carries():
     loop is a statement about where the identity is closed rather than about a branch never taken.
     """
     a1, a2 = ID_THETA['Alpha_1'][0], ID_THETA['Alpha_2'][0]
-    authored = tuple(bootstrappers.ALPHA_SEED) + tuple(
+    authored = tuple(ALPHA_SEED) + tuple(
         SP_THETA['Alpha_1'] + SP_THETA['Alpha_2']) + (2.4, -0.5, -0.1)
     solved = (a1, a2, 2.0 * a1, 2.0 * a2, a1 + a2)
     tenor = torch.tensor(FACTOR_TENOR)
@@ -436,16 +440,20 @@ def test_bit_identity_at_the_reversion_speeds_this_repository_carries():
 
 
 def test_the_branch_never_engages_on_an_authored_reversion_speed():
-    """`ALPHA_SEED` is the only HW2F alpha this repository authors, and neither coordinate nor
-    their sum engages a series branch. The slow half, 0.05, clears `HW_ALPHA_SERIES_IJK` by 1.7x."""
+    """`Alpha_Seed`'s default is the only HW2F alpha this repository authors, and neither coordinate
+    nor their sum engages a series branch. The slow half, 0.05, clears `HW_ALPHA_SERIES_IJK` by
+    1.7x. A family declaring another seed starts a cold block there.
+
+    Killing mutation: the seed read off a constant, so a declared 0.3,0.03 starts at 0.5,0.05.
+    """
     price_factors = authored_world()
     rate = utils.check_rate_name('InterestRate.' + CURVE)
     ir_curve = riskfactors.construct_factor(
         utils.Factor('InterestRate', rate[1:]), price_factors, ModelParams())
-    implied_obj, _, _ = HullWhite2FactorModelParameters(
-        {}, DEVICE, DTYPE).implied_process(CCY, price_factors, {}, ir_curve, rate)
-
-    seeded = implied_obj.current_value()
+    seeded, declared = (HullWhite2FactorModelParameters(block, DEVICE, DTYPE).implied_process(
+        CCY, price_factors, {}, ir_curve, rate)[0].current_value()
+        for block in ({}, {'Alpha_Seed': '0.3,0.03'}))
+    assert (float(declared['Alpha_1'][0]), float(declared['Alpha_2'][0])) == (0.3, 0.03), declared
     for name in ('Alpha_1', 'Alpha_2'):
         alpha = float(seeded[name][0])
         assert abs(alpha) > HW_ALPHA_SERIES_IJK, '{} = {} engages the series branch'.format(
@@ -540,6 +548,81 @@ def test_the_numpy_assembly_is_finite_at_the_fields_own_default():
         'zero the floor has stopped being signed, and if it is large it has moved'.format(straddle))
 
 
+#: The two other models dividing a simulated curve by its tenor, on EUR at 1% and 5% reversion.
+ZERO_KNOT_MODELS = {
+    'HullWhite2FactorImpliedInterestRateModel': ({'Lambda_1': 0.0, 'Lambda_2': 0.0}, {
+        'HullWhite2FactorModelParameters.EUR': {
+            'Alpha_1': 0.05, 'Alpha_2': 0.5, 'Correlation': -0.5,
+            'Sigma_1': utils.Curve([], [[0.0, 0.01], [10.0, 0.01]]),
+            'Sigma_2': utils.Curve([], [[0.0, 0.005], [10.0, 0.005]]),
+            'Quanto_FX_Correlation_1': 0.0, 'Quanto_FX_Correlation_2': 0.0,
+            'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])}}),
+    'PCAInterestRateModel': ({
+        'Reversion_Speed': 0.05, 'Historical_Yield': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]]),
+        'Yield_Volatility': utils.Curve([], [[0.0, 0.2], [10.0, 0.2]]),
+        'Eigenvectors': [{'Eigenvalue': 1.0, 'Eigenvector': utils.Curve([], [[0.0, 1.0], [10.0, 1.0]])}],
+        'Rate_Drift_Model': 'Drift_To_Forward', 'Princ_Comp_Source': 'Correlation',
+        'Distribution_Type': 'Lognormal'}, {})}
+
+
+#: A sloped EUR curve stating a 0 knot and one under a day on its line, linear in the zero rate as
+#: the factor reads it by default.
+SLOPED = [[0.0, 0.01], [0.001, 0.01004], [0.25, 0.02], [1.0, 0.025], [5.0, 0.03]]
+
+
+@pytest.mark.parametrize('model', ['HullWhite1FactorInterestRateModel'] + list(ZERO_KNOT_MODELS))
+def test_a_tenor_0_knot_reads_the_stated_curve_and_every_deal_on_it_prices(model):
+    """`InterestRate.EUR` states a 0 knot on a sloped curve, and both Hull-Whites and the PCA model
+    divide the simulated curve by its tenor - 0/0 there, NaN on every row of every deal reading
+    EUR. The knot's forward is read at its limit, and its model terms across a day. The fx trial
+    family and a EUR cashflow 30 days out, on a static EURUSD under each model on EUR, antithetic,
+    in float64:
+
+    - row 0 of the simulated curve is the stated curve at every knot on every path, the 0 knot to
+      its ulp and the rest bit for bit - the 0.001y knot spanning its own tenor; the cashflow's
+      row 0 is its base valuation bit for bit, and the six closed-form deals' to 1e-13;
+    - under the Hull-White at 1% and 5% reversion each row's tenor-0 mean is the short rate's,
+      f(0, t) + s^2/(2a^2)(1 - e^{-at})^2 with f(0, t) = r(t) + t r'(t) off the stated knots, to
+      3e-7 - the model terms read across their day, 2.4e-7 at two years.
+
+    Killing mutations: the floor 0, every row NaN; the forward read across the floor alone, the
+    0 knot a day's slope off the stated 1% at 1.0110%; the floor a year; the floor and the limit
+    on every knot under a day, the 0.001y knot at the 0 knot's 1% against its stated 1.004%.
+    """
+    block, factors = ZERO_KNOT_MODELS.get(model, (None, {}))
+    factors = dict(factors, **{'InterestRate.EUR': dict(book.FACTORS['InterestRate.EUR'],
+                                                       Curve=utils.Curve([], SLOPED))})
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF30D', 'Currency': 'EUR',
+                'Discount_Rate': 'EUR', 'Amount': 1e6,
+                'Payment_Date': book.WORLD_BASE + pd.DateOffset(days=30)}
+    deals = trial_fx.DEALS + [cashflow]
+    calc, out = book.simulated(
+        deals, () if block else ('EUR',), factors=factors, prec=torch.float64,
+        models={'InterestRate.EUR': (model, block)} if block else None, Antithetic='Yes',
+        Calc_Scenarios='All', Generate_Cashflows='No')
+    curve = out['Results']['scenarios']['InterestRate.EUR']
+    assert np.isfinite(curve.values).all()
+    for tenor, rate in SLOPED:
+        row0 = curve.xs(tenor, level=0).iloc[:, 0]
+        assert (row0 == rate).all() if tenor else (abs(row0 - rate) <= np.spacing(rate)).all(), tenor
+    rows = {deal.Instrument.field['Reference']: deal.Calc_res['Value'][0]
+            for deal in calc.netting_sets.deals()}
+    assert len(rows) == len(deals) and all(np.isfinite(v).all() for v in rows.values())
+    marks, _ = book.marks(deals, factors)
+    assert rows['CF30D'][0].mean() == float.fromhex(marks['CF30D'])
+    for ref in ('FXASN', 'FXDASN', 'FXOT', 'FXNT', 'FXPKO', 'FXKOR'):
+        assert rows[ref][0].mean() == pytest.approx(float.fromhex(marks[ref]), rel=1e-13), ref
+    if block:
+        return
+    a, s, knots = 0.05, 0.01, np.array(SLOPED)
+    for date, mean in curve.xs(0.0, level=0).mean(axis=0).items():
+        t = (date - book.WORLD_BASE).days / 365.0
+        segment = min(np.searchsorted(knots[:, 0], t, side='right') - 1, len(knots) - 2)
+        slope = np.diff(knots[segment:segment + 2, 1])[0] / np.diff(knots[segment:segment + 2, 0])[0]
+        short = np.interp(t, knots[:, 0], knots[:, 1]) + t * slope
+        assert abs(mean - short - s * s / (2 * a * a) * np.expm1(-a * t) ** 2) <= 3e-7, date
+
+
 def test_the_atT_cross_term_carries_its_number():
     """The division `hw_alpha_floor` guards rather than repairs, against a cancellation-free
     reference. One order of error per order of alpha_j: under 1e-8 at 1e-2, under 1e-2 at the 1e-8
@@ -598,7 +681,7 @@ def test_the_basin_step_can_decay_but_never_cross():
     so the retired symmetric seed cost basin hopping's iteration-0 descent and not the search
     (`test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_ridge`).
     """
-    live, live_ratios = basin_walks(bootstrappers.ALPHA_SEED)
+    live, live_ratios = basin_walks(ALPHA_SEED)
     old, ratios = basin_walks((0.1, 0.1))
 
     for tag, floors in (('ALPHA_SEED', live), ('(0.1, 0.1)', old)):
@@ -635,7 +718,7 @@ def test_the_basin_step_can_decay_but_never_cross():
     one = np.array([0.1, 0.1]) * np.exp(np.random.RandomState(5120).uniform(-0.125, 0.125, 2))
     assert abs(one[0] / one[1] - 1.0064054) < 1e-6, one
     # the bound if every draw went the same way, off the seed's own SLOW coordinate
-    assert min(bootstrappers.ALPHA_SEED) * np.exp(-0.125 * 50) < HW_ALPHA_SERIES_B
+    assert min(ALPHA_SEED) * np.exp(-0.125 * 50) < HW_ALPHA_SERIES_B
 
 
 def test_least_squares_can_cross_zero_outright():
@@ -662,15 +745,15 @@ def test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_
     because an L-BFGS-B stopping point can move an ulp under a scipy upgrade.
     """
     lo, hi = HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_bounds
-    a1, a2 = bootstrappers.ALPHA_SEED
+    a1, a2 = ALPHA_SEED
     assert a1 != a2, 'the declared seed is symmetric again - that is the defect itself'
     # all four box inequalities: `bounds_check` tests them strictly
     assert lo < a1 < hi and lo < a2 < hi, (
         'the seed {} is outside the box ({}, {}) that `bounds_check` tests strictly'.format(
-            bootstrappers.ALPHA_SEED, lo, hi))
+            ALPHA_SEED, lo, hi))
     assert min(abs(a1), abs(a2)) > HW_ALPHA_SERIES_IJK, (
         'the seed opens a small-alpha series branch at evaluation zero: {}'.format(
-            bootstrappers.ALPHA_SEED))
+            ALPHA_SEED))
     assert abs(a1 + a2) > HW_ALPHA_SERIES_IJK, 'the seed sits on the alpha-sum singular locus'
     assert a1 > 0.0 and a2 > 0.0, (
         'the basin step is multiplicative and preserves sign, so a seed that is to carry its '
@@ -679,7 +762,7 @@ def test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_
     calibration, _ = identified_calibration(benchmarks=ID_GRID, Objective='Analytic')
     basin = calibration.optimizers[0]
     x0, fn_grad, bounds = basin[1], basin[2], basin[5]
-    assert [float(v) for v in x0[:2]] == list(bootstrappers.ALPHA_SEED), (
+    assert [float(v) for v in x0[:2]] == list(ALPHA_SEED), (
         'the chain did not start where the seam says it does: {}'.format(x0[:2]))
 
     declared = scipy.optimize.minimize(fn_grad, x0, method='L-BFGS-B', jac=True, bounds=bounds)

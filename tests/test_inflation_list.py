@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
+import torch
 
 import derivus
 import test_declared_defaults as book
@@ -123,3 +125,61 @@ def test_an_inflation_list_on_a_static_index_prices_under_a_credit_monte_carlo()
         profile = context.run_job()[1]['Results']['mtm']
         assert np.isfinite(profile.values).all(), profile.mean(axis=1)
         assert abs(profile.iloc[0].mean() - base) <= 1e-6 * base, (profile.iloc[0].mean(), base)
+
+
+def test_a_month_not_yet_printed_reads_the_forward_the_base_valuation_projects():
+    """The linker's first coupon, its final reference on 2026-09-15 - read off June's print and
+    July's, which is printed twelve days after the base date - under a credit Monte Carlo whose index
+    is a GBM at zero vol drifting at the curve's 2.5% on its own 365.25-day clock and whose USD
+    curve is a Hull-White at zero vol: every row is the base valuation rolled to it by hand, July
+    100 x 1.002^29 x exp(0.025 x 30/365) = 106.1833 where it read June's 106.0151 from the row
+    printing August on. A level stated with no date reads the base date's references, which after a
+    cashflow still forecast the pricer cannot split at a print: it refuses by name. The order is a
+    cashflow's, and only among months not yet printed: a principal paid beside the last coupon on its
+    final reference, coupons sharing a base reference whose second month is not printed, and printed
+    base references running backwards mark by hand.
+
+    Killing mutations: an unprinted month read off the index's last print; the order guard dropped,
+    which prices that linker at NaN; the guard reading the printed references too, which refuses
+    the backwards ones; the guard reading every month a cashflow interpolates, which refuses the
+    redeeming and the forward-based linkers.
+    """
+    item = dict(LINKER['Cashflows']['Items'][0], Final_Reference_Date=pd.Timestamp('2026-09-15'))
+    job, value = linker([item])
+    assert float.fromhex(marks(job)['LINKER']) == pytest.approx(value, rel=1e-12)
+    deals = job['Calc']['Deals']['Deals']
+    deals['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False'}}, 'Children': deals['Children']}]
+    job['Calc']['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': 'USD', 'Time_Grid': '0d 1m(1m)',
+        'Batch_Size': 16, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD'}
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {
+        'InterestRate': 'HullWhite1FactorInterestRateModel', 'PriceIndex': 'GBMPriceIndexModel'},
+        'modelfilters': {}}}
+    market['Price Models'] = {'HullWhite1FactorInterestRateModel.USD': {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]]),
+        'Sigma': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])},
+        'GBMPriceIndexModel.INFL': {'Vol': 0.0, 'Drift': 0.025 * 365.25 / 365.0}}
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'linker_still_index'))
+    profile = derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]['Results']['mtm']
+    paid = item['Payment_Date']
+    assert profile.index[-1] > paid and (profile.index > pd.Timestamp('2026-09-15')).sum() > 3
+    for at, row in profile.iterrows():
+        rolled = value * math.exp(0.04 * (at - B).days / 365.0) if at <= paid else 0.0
+        assert row.mean() == pytest.approx(rolled, rel=1e-12, abs=1e-9), at
+    blank = copy.deepcopy(LINKER['Cashflows']['Items'])
+    blank[2].update(Final_Reference_Value=106.0, Final_Reference_Date=None)
+    with pytest.raises(utils.UnpriceableSchedule, match="Index references fall before an earlier"):
+        marks(linker(blank)[0])
+    redeeming = copy.deepcopy(LINKER['Cashflows']['Items'])
+    redeeming.append(dict(redeeming[-1], Yield=utils.Percent(100.0), Accrual_Year_Fraction=1.0,
+                          Is_Coupon='No'))
+    for items in (redeeming, dated(LINKER['Cashflows']['Items'], lambda _: pd.Timestamp('2026-09-10')),
+                  dated(LINKER['Cashflows']['Items'],
+                        lambda item: B - pd.DateOffset(months=3) - (item['Payment_Date'] - B) / 4)):
+        job, value = linker(items)
+        assert float.fromhex(marks(job)['LINKER']) == pytest.approx(value, rel=1e-12)

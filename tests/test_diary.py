@@ -37,6 +37,7 @@ import builtins
 import dis
 import inspect
 import json
+import math
 import os
 import sys
 
@@ -601,23 +602,27 @@ def test_a_monitoring_date_is_never_a_payment_and_a_declared_one_always_is(unrec
 
 
 #: The types announcing a fixing or a monitoring day under no index: each reads its fixings off its
-#: own schedule, and a close passing on a print its mark ignores is a silent wrong number.
-UNOBSERVED = {'FXAccumulatorOptionDeal', 'FXTARFOptionDeal', 'FXExtendableForwardDeal',
-              'FXDiscreteExplicitAsianOption', 'FXDiscreteExplicitDoubleAsianOption',
-              'EquityDiscreteExplicitAsianOption', 'EquitySwapLeg', 'EquitySwapletListDeal',
+#: own schedule, and a close passing on a print its mark ignores is a silent wrong number. An FX
+#: table fixes its own pair, which a print of the base's rate is not for a cross.
+UNOBSERVED = {'FXDiscreteExplicitDoubleAsianOption', 'EquitySwapLeg', 'EquitySwapletListDeal',
               'YieldInflationCashflowListDeal', 'FloatingEnergyDeal', 'EnergySingleOption',
-              'CommodityAveragePriceSwapDeal'}
+              'FXDiscreteExplicitAsianOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
+              'FXExtendableForwardDeal'}
 
 
 def test_every_fixing_names_the_index_its_type_declares():
     """THE CENSUS. Every type's own `observes` is sound - the type declares the field naming the
-    index, whose factors include the family, a Table wide enough for the column a print fills, and
-    the fields electing at expiry and expiring - and over one deal of every type, the trial books,
-    the types announcing a fixing or a monitoring day under no index are EXACTLY `UNOBSERVED`: a
-    type gaining a declaration leaves it, and a new floating type cannot join it silently.
+    index, whose factors include the family, a Table wide enough for the column a print fills, the
+    fields electing at expiry, expiring and naming no index, and a table where it monitors - and
+    over one deal of every type, the trial books, the types announcing a fixing or a monitoring day
+    under no index are EXACTLY `UNOBSERVED`: a type gaining a declaration leaves it, and a new
+    floating type cannot join it silently. Only a monitoring table announces barrier days, a 0.0 in
+    it no close, and a Compo equity Asian, averaging S*X, names no index.
 
     Killing mutations: `FRADeal.observes` deleted, which puts the FRA back among the types naming
-    no index; a declaration naming a field its type does not declare.
+    no index; a declaration naming a field its type does not declare; every declared table read as
+    a monitoring one; `unless` unread; a barrier row reading the autocall's 0.0 placeholder
+    observed.
     """
     for name, observes in schema.OBSERVES.items():
         fields = schema.declared_fields(getattr(instruments, name))
@@ -625,18 +630,128 @@ def test_every_fixing_names_the_index_its_type_declares():
         assert observes.index in fields and observes.family in factors.get(observes.index, ()), name
         assert observes.table is None or table is not None and table.type == 'Table' and len(
             table.row.fields) > observes.column, name
-        assert {observes.elects, observes.expires} - {None} <= set(fields), name
-    unnamed = set()
+        assert {observes.elects, observes.expires, (observes.unless or [None])[0]} - {None} <= set(
+            fields) and (observes.table or not observes.monitors), name
+    asian = schema.OBSERVES['EquityDiscreteExplicitAsianOption']
+    assert schema.index_named({'Equity': 'EQ'}, asian) == 'EquityPrice.EQ'
+    assert schema.index_named({'Equity': 'EQ', 'Payoff_Type': 'Compo'}, asian) is None
+    unnamed, barriers = set(), set()
     for family in trials.FAMILIES.values():
         document = trials.document(family)
-        kinds = {node['Instrument']['.Deal']['Reference']: node['Instrument']['.Deal']['Object']
+        deals = {node['Instrument']['.Deal']['Reference']: node['Instrument']['.Deal']
                  for node in trials.nodes(document['Calc']['Deals']['Deals']['Children'])}
         context = derivus.Context()
         context.load_json((json.dumps(document), 'census'))
-        unnamed.update(kinds.get(row['instrument']) for row in spine.diary(
-            context, {reference: reference for reference in kinds})
-            if row['kind'] in (Diary.FIXING, Diary.BARRIER) and row['index'] is None)
+        for row in spine.diary(context, {reference: reference for reference in deals}):
+            deal = deals.get(row['instrument'], {})
+            if row['kind'] in (Diary.FIXING, Diary.BARRIER) and row['index'] is None:
+                unnamed.add(deal.get('Object'))
+            if row['kind'] == Diary.BARRIER:
+                barriers.add(deal.get('Object'))
+                assert row['observed'] != 0.0 and (row['state'] == Diary.OBSERVED) == bool(
+                    row['observed']), row
     assert unnamed == UNOBSERVED, sorted(unnamed ^ UNOBSERVED, key=str)
+    assert barriers <= {name for name, observes in schema.OBSERVES.items() if observes.monitors}
+
+
+def test_an_autocall_asks_for_prints_on_its_fixings_alone():
+    """An autocall whose coupons pay three days after their fixings reads a print on each fixing
+    day and none on a coupon day, so its diary asks for the equity's prints on the two fixing days
+    alone, where its coupon and window schedules once asked on the coupon days too - prints no row
+    of its table could take.
+
+    Killing mutation: the compiled schedules announced on every day they carry.
+    """
+    import test_autocall_json as autocall
+    coupons, fixings = ['2024-12-27', '2025-06-27'], ['2024-12-24', '2025-06-24']
+    job = autocall._job(Expiry_Date={'.Timestamp': coupons[-1]},
+                        Price_Fixing=[[{'.Timestamp': day}, 0.0] for day in fixings],
+                        Autocall_Coupons=[[{'.Timestamp': day}, 0.04] for day in coupons],
+                        Autocall_Thresholds=[[{'.Timestamp': day}, 1.0] for day in coupons])
+    deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'autocall'))
+    asked = [row for row in spine.diary(context, {deal['Reference']: deal['Reference']})
+             if row['kind'] == Diary.FIXING]
+    assert {row['due_date'] for row in asked} == set(fixings), asked
+    assert {row['index'] for row in asked} == {'EquityPrice.EQ'}
+
+
+def wire(day):
+    return {'.Timestamp': str(pd.Timestamp(day).date())}
+
+
+def discounted(days):
+    """The world's dollar discount factor `days` out: 4% flat, ACT/365."""
+    return math.exp(-0.04 * days / 365.0)
+
+
+#: A row of each type's own table fixed a month before the base date with the close the desk typed
+#: on it, the print the record holds for that day, the terms it is traded on, and the mark's move
+#: per unit of the print by hand: an Asian struck below its average pays a sample's share, discounted.
+PAST = trials.B - pd.DateOffset(months=1)
+FILLS = {
+    'EQASN': ('equity', 'Sampling_Data', [wire(PAST), 98.0, 1.0], 101.5, {'Strike_Price': 0.01},
+              100.0 / 5 * discounted(365)),
+    'METAL_APS': ('commodity', 'Sampling_Data', [wire(PAST), 1005.0, 1.0], 1012.5, {},
+                  250.0 / 7 * discounted(189))}
+
+
+@pytest.mark.parametrize('reference', sorted(FILLS))
+def test_a_print_fills_the_cell_its_type_declares_and_moves_the_mark_by_hand(reference, recorded):
+    """A FIXING THE RECORD HOLDS IS THE ONE THE MARK READS. A print filed under the index a type
+    declares lands in the column it declares, over the close the desk typed there, and the mark
+    moves by the hand amount: an Asian struck below its average, with samples to come, a sample's
+    share of the move discounted to its payment.
+
+    Killing mutation: each type's `observes` deleted, which leaves the typed close standing.
+    """
+    family, table, row, printed, traded, per_unit = FILLS[reference]
+    job = trials.document(trials.FAMILIES[family])
+    children = job['Calc']['Deals']['Deals']['Children']
+    children[:] = [node for node in children if node['Instrument']['.Deal']['Reference'] == reference]
+    deal = children[0]['Instrument']['.Deal']
+    deal.update(traded, **{table: [row] + [other for other in deal[table] if other[0] != row[0]]})
+    terms = schema.OBSERVES[deal['Object']]
+    log = SpineLog(recorded)
+    try:
+        index = schema.index_named(deal, terms)
+        policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {index: ['EXCHANGE']}})
+        log.append('fixing_observed', {'index': index, 'date': str(PAST.date()),
+                                       'source': 'EXCHANGE', 'value': printed}, actor=ACTOR)
+    finally:
+        log.close()
+    filled = spine.compiled_job(job)
+    cell = filled['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][table][0]
+    assert cell[terms.column] == printed, cell
+    typed, read = (float.fromhex(trials.marks(document)[reference]) for document in (job, filled))
+    assert read - typed == pytest.approx(per_unit * (printed - row[terms.column]), rel=1e-12)
+
+
+def test_a_print_of_the_base_s_rate_is_never_written_into_a_cross(recorded):
+    """AN FX TABLE NAMES NO INDEX. A EUR-settled accumulator on GBP fixes GBP in EUR, and a print of
+    `FxRate.GBP` is GBP in the book's dollars: compiled against a record holding 1.40 there, the
+    cell keeps the 1.15 the desk typed, where a base-relative declaration wrote the 1.40 over it.
+
+    Killing mutation: the accumulator declaring `FxRate.<Underlying_Currency>`.
+    """
+    job = trials.document(trials.FAMILIES['core'])
+    children = job['Calc']['Deals']['Deals']['Children']
+    children[:] = [node for node in children if node['Instrument']['.Deal']['Reference'] == 'ACC']
+    deal = children[0]['Instrument']['.Deal']
+    row = [wire(PAST), wire(trials.B + pd.DateOffset(days=2)), 1.15]
+    deal.update(Currency='EUR', Underlying_Currency='GBP', Discount_Rate='EUR',
+                Accumulator_ExpiryDates=[row] + [r for r in deal['Accumulator_ExpiryDates']
+                                                 if r[0] != row[0]])
+    log = SpineLog(recorded)
+    try:
+        policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {'FxRate.GBP': ['EXCHANGE']}})
+        log.append('fixing_observed', {'index': 'FxRate.GBP', 'date': str(PAST.date()),
+                                       'source': 'EXCHANGE', 'value': 1.40}, actor=ACTOR)
+    finally:
+        log.close()
+    filled = spine.compiled_job(job)['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
+    assert filled['Accumulator_ExpiryDates'][0][2] == 1.15, filled['Accumulator_ExpiryDates'][0]
 
 
 def declared(fixture, paid=None, base=None):
@@ -828,20 +943,30 @@ def test_a_diary_that_refused_runs_again_when_the_record_is_fixed(recorded, tmp_
         del service.EXECUTOR.results[name]
 
 
-def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
-    """A CLOSE DOES NOT PASS OVER AN UNSETTLED PAYOFF. A cash-settled option alone in a book is due
-    two things after its expiry - the underlying's print on the expiry day, and the settlement of
-    the payoff that print decides - and the close check names both until each has its fact.
+@pytest.mark.parametrize('option', [
+    dict(OPTION, Settlement_Style='Cash'),
+    dict({key: OPTION[key] for key in ('Currency', 'Equity', 'Dividends', 'Discount_Rate',
+                                       'Equity_Volatility', 'Buy_Sell', 'Option_Type',
+                                       'Strike_Price', 'Payoff_Currency', 'Expiry_Date')},
+         Object='EquityBinaryOption', Reference='EQB', Payoff=10_000.0,
+         Settlement_Date=OPTION['Expiry_Date'])],
+    ids=['vanilla', 'binary'])
+def test_an_option_waits_for_its_fixing_and_its_settlement(option, recorded, tmp_path):
+    """A CLOSE DOES NOT PASS OVER AN UNSETTLED PAYOFF. A cash-settled option alone in a book - a
+    vanilla, or a binary paying cash - is due two things after its expiry - the underlying's print
+    on the expiry day, and the settlement of the payoff that print decides - and the close check
+    names both until each has its fact.
 
     Killing mutations: the option announcing its expiry alone, under which the catch-up rule passes
-    over a payoff nobody paid and nobody observed; the settlement day read off the expiry before
-    the type's own field, under which an FX option's `Delivery_Date` is ignored entirely; and no
-    expiry to fall back to, under which one stating none settles nothing.
+    over a payoff nobody paid and nobody observed - for the binary, its own `observes` deleted; the
+    settlement day read off the expiry before the type's own field, under which an FX option's
+    `Delivery_Date` is ignored entirely; and no expiry to fall back to, under which one stating none
+    settles nothing.
     """
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')], factors=dict(FACTORS, **EQUITY))
     expiry = str((BASE + pd.DateOffset(days=60)).date())
     booked = CLIENT.post('/book/deals', content=dump(
-        {'action': 'add', 'deal': dict(OPTION, Settlement_Style='Cash'),
+        {'action': 'add', 'deal': option,
          'parent_reference': CLIENT_SET, 'quantity': 1.0,
          'execution_reference': 'EXEC-CASH'}), headers=JSON).json()
     assert booked['written'] is True, booked
@@ -864,8 +989,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(recorded, tmp_path):
     assert [row['due_date'] for row in paid] == [delivery], 'the payment stood on the expiry'
     assert [row['due_date'] for row in diary_rows()['rows']
             if row['kind'] == Diary.FIXING] == [expiry], 'the fixing is the expiry day'
-    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [dict(OPTION,
-                                                               Settlement_Style='Cash')])],
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [option])],
             factors=dict(FACTORS, **EQUITY))
 
     after = str((BASE + pd.DateOffset(days=61)).date())

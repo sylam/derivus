@@ -34,7 +34,7 @@ import torch
 
 import test_declared_defaults as book
 import trial_rates
-from derivus import riskfactors, utils
+from derivus import riskfactors, schema, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
                                    author_quote,
@@ -44,6 +44,7 @@ from derivus.bootstrappers import (BenchmarkInstruments,
                                    quote_nodes)
 from derivus.utils import damped_newton
 from derivus.config import Config, ModelParams
+from derivus.instruments import construct_instrument
 
 from rates_world import BASE, deposit, fra, par_swap, ois_swap
 
@@ -1016,19 +1017,29 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
 
     the swap adding its fixed leg. `None` averages - 164.33 and the list 86,228.29 - and `OIS`
     compounds, which telescopes to the one-reset swap's 652.82. Seasoned three months, its first
-    fixing known at 4%, the swap's first coupon averages that fixing with the forecast one. Every
-    other method refuses by name in its own words - Exponential having no fold at all - and only an
-    authored list is told to author each fixing as its own cashflow, a generated leg having no
-    item to author. Under a credit Monte Carlo with no volatility every path is
-    today's curve, so the averaged swap's value on each date of its profile is its flows still to
-    pay, off today's forwards, discounted to that date - a fixing taken since the base date read
-    back at its weight as a forecast one is.
+    fixing known at 4%, the swap's first coupon averages that fixing with the forecast one. At a
+    margin m - 50bp on the swap, 50, -25, 100 and 10bp on the list's coupons - g_j = 1 + F_j a_j,
+    the three margin methods compound per coupon as the ISDA meanings place the margin:
+
+        Exclude_Margin:  1e6 (g_1 g_2 - 1 + m (a_1 + a_2))
+        Include_Margin:  1e6 ((g_1 + m a_1)(g_2 + m a_2) - 1)
+        Flat:            1e6 (g_1 g_2 - 1 + m (a_1 g_2 + a_2))
+
+    and across two coupons the list pays on one date the first two compose exactly, Flat there
+    refusing by name; a two-reset coupon paid alone beside two one-reset rows sharing a date is
+    nothing Flat refuses, and marks the hand. A `Pre_Aggregation` cap list caps each fixing and
+    places no margin, so it reads None and OIS alike and refuses the three. Under a credit Monte
+    Carlo with no volatility every path is today's curve, so the averaged swap's value on each date
+    of its profile is its flows still to pay, off today's forwards, discounted to that date - a
+    fixing taken since the base date read back at its weight as a forecast one is.
 
     KILLING MUTATIONS: the fold keyed on the shape again, every such row compounded
-    (`method == 'OIS'` read as `True`): the averaged swap reads 652.82 against 164.33. And a
-    fixing counted `known` by the valuation slice rather than the base date
-    (`Reset_Day < time_slice.max()`): every base valuation holds, and the Monte Carlo misprices
-    every coupon from its first fixing on.
+    (`method == 'None'` read as `False`): the averaged swap reads 652.82 against 164.33; the margin
+    left out of Include_Margin's fixings, or read off the first coupon's; Flat's margin compounded
+    with them, or left simple; the mixed Flat shape folded, or refused leg-wide; a pre-aggregated
+    list's margin method priced. And a fixing counted `known` by the valuation slice rather than
+    the base date (`Reset_Day < time_slice.max()`): every base valuation holds, and the Monte Carlo
+    misprices every coupon from its first fixing on.
     """
     def forward(start, end):
         return (discount(start, 0.045) / discount(end, 0.045) - 1.0) / ((end - start).days / 360.0)
@@ -1081,16 +1092,64 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
     averaged_seasoned, _, fixed_seasoned = legs(seasoned, known=0.04)
     assert float.fromhex(marks['SEASONED']) == pytest.approx(
         value(averaged_seasoned + fixed_seasoned), rel=1e-12)
-    for method in ('Flat', 'Include_Margin', 'Exclude_Margin', 'Exponential'):
-        with pytest.raises(utils.UnpriceableSchedule,
-                           match='Compounding_Method ' + method) as refused:
-            book.marks([dict(swap, Compounding_Method=method)])
-        assert ('Exponential has no arithmetic' in str(refused.value)) == (method == 'Exponential')
-        assert 'own cashflow' not in str(refused.value), 'a generated leg has no item to author'
-    listed = trial_rates.float_list('LISTED', 'Buy', items)
-    listed['Cashflows']['Compounding_Method'] = 'Flat'
-    with pytest.raises(utils.UnpriceableSchedule, match='each fixing as its own cashflow'):
-        book.marks([listed])
+    def margined(method, coupons, bp):
+        """`(pay day, amount)` per coupon, `bp[k]` its margin, `coupons` the lists paid together."""
+        flows = []
+        for paid in coupons:
+            pot, simple = 1.0, 0.0
+            for k in paid:
+                begin, end = BASE + pd.DateOffset(months=6 * k), BASE + pd.DateOffset(months=6 * k + 6)
+                mid, m = begin + pd.DateOffset(months=3), bp[k] / 1e4
+                a1, a2 = (mid - begin).days / 360.0, (end - mid).days / 360.0
+                g1, g2 = 1.0 + forward(begin, mid) * a1, 1.0 + forward(mid, end) * a2
+                pot *= {'Exclude_Margin': g1 * g2, 'Include_Margin': (g1 + m * a1) * (g2 + m * a2),
+                        'Flat': g1 * g2 + m * (a1 * g2 + a2)}[method]
+                simple += m * (a1 + a2) if method == 'Exclude_Margin' else 0.0
+            flows.append((end, 1e6 * (pot - 1.0 + simple)))
+        return flows
+
+    # a margin of its own on each listed coupon; coupon 1 again as two one-reset rows on its date
+    each, bp = [[k] for k in range(4)], (50.0, -25.0, 100.0, 10.0)
+    margin_items = [dict(item, Margin=utils.Basis(margin)) for item, margin in zip(items, bp)]
+    (begin, mid), (_, end) = [(reset[1], reset[2]) for reset in items[1]['Resets']]
+    lone = margin_items[:1] + [
+        dict(margin_items[1], Accrual_End_Date=mid, Accrual_Year_Fraction=(mid - begin).days / 360.0,
+             Resets=items[1]['Resets'][:1]),
+        dict(margin_items[1], Accrual_Start_Date=mid, Accrual_Year_Fraction=(end - mid).days / 360.0,
+             Resets=items[1]['Resets'][1:])]
+    cap = {'Digital_Payoff_Rate': None, 'Cap_Multiplier': 1.0, 'Cap_Strike': utils.Percent(4.4),
+           'Floor_Multiplier': 0.0, 'Floor_Strike': utils.Percent(4.4)}
+    for method in ('Exclude_Margin', 'Include_Margin', 'Flat'):
+        listed, alone, mixed = (trial_rates.float_list(reference, 'Buy', rows) for reference, rows in (
+            ('LISTED', margin_items), ('LONE', lone), ('MIXED', [dict(
+                margin_items[0], Payment_Date=items[1]['Payment_Date'])] + margin_items[1:])))
+        listed['Cashflows']['Compounding_Method'] = mixed['Cashflows']['Compounding_Method'] = method
+        alone['Cashflows']['Compounding_Method'] = method
+        marks, _ = book.marks([dict(swap, Compounding_Method=method, Floating_Margin=50.0), listed,
+                               alone])
+        assert float.fromhex(marks['SWAP']) == pytest.approx(
+            value(margined(method, each, (50.0,) * 4) + fixed), rel=1e-12)
+        assert float.fromhex(marks['LISTED']) == pytest.approx(value(margined(method, each, bp)),
+                                                               rel=1e-12)
+        assert float.fromhex(marks['LONE']) == pytest.approx(
+            value(margined(method, [[0], [1]], bp)), rel=1e-12)
+        if method == 'Flat':
+            with pytest.raises(utils.UnpriceableSchedule, match='Compounding_Method Flat on a payment '
+                                                                'date gathering several cashflows'):
+                book.marks([mixed])
+        else:
+            assert float.fromhex(book.marks([mixed])[0]['MIXED']) == pytest.approx(
+                value(margined(method, [[0, 1], [2], [3]], bp)), rel=1e-12)
+    pre = {method: trial_rates.float_list('PRE_' + method, 'Buy', margin_items, optionlet=cap)
+           for method in ('None', 'OIS', 'Exclude_Margin', 'Include_Margin', 'Flat')}
+    for method, deal in pre.items():
+        deal['Cashflows'].update(Compounding_Method=method, Averaging_Method='Pre_Aggregation')
+    capped = book.marks([pre['None'], pre['OIS']])[0]
+    assert capped['PRE_None'] == capped['PRE_OIS'] and math.isfinite(float.fromhex(capped['PRE_None']))
+    for method in ('Exclude_Margin', 'Include_Margin', 'Flat'):
+        with pytest.raises(utils.UnpriceableSchedule, match='Compounding_Method {} on a '
+                                                            'Pre_Aggregation list'.format(method)):
+            book.marks([pre[method]])
 
     calc, _ = book.simulated([swap], ('USD', 'USD-PROJ'), sigma=0.0, prec=torch.float64,
                              Generate_Cashflows='No')
@@ -1100,3 +1159,22 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
     assert {BASE + pd.DateOffset(months=3 * k) for k in range(9)} <= set(read)
     for at, paths in zip(read, profile):
         assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at
+
+
+def test_a_floating_list_stating_a_settlement_is_refused_by_name():
+    """A floating cashflow list settles no forward - its pricer reads neither `Settlement_Date` nor
+    `Settlement_Amount` - so a stated date or a non-zero amount is an authoring message naming the
+    field, and the blank pair every leg carries says nothing.
+
+    KILLING MUTATION: the list's `validate` saying nothing - both stated fields pass in silence.
+    """
+    leg = next(deal for deal in trial_rates.DEALS if deal['Reference'] == 'FLOAT_REDEEMING')
+
+    def said(**stated):
+        return schema.validate_instrument(construct_instrument(copy.deepcopy(dict(leg, **stated)), {}))
+
+    assert said() == [] and said(Settlement_Date=None, Settlement_Amount=0.0) == []
+    assert said(Settlement_Date=BASE + pd.DateOffset(months=3)) == [
+        'Settlement_Date is stated, and a floating cashflow list settles no forward']
+    assert said(Settlement_Amount=950_000.0) == [
+        'Settlement_Amount is stated, and a floating cashflow list settles no forward']

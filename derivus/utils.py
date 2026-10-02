@@ -1375,6 +1375,13 @@ class CurveTenor(object):
             delta = self.delta
             index = tenor.searchsorted(clipped_points, side='right') - 1
 
+        if self.type == 'Hazard':
+            # a cumulative hazard: flat before its first knot, its last hazard going on past its last
+            index = index.clip(0, max(self.max_index - 1, 0))
+            above = tenor_points_in_years.clamp(min=self.min) if isinstance(
+                tenor_points_in_years, torch.Tensor) else np.maximum(tenor_points_in_years, self.min)
+            return index, (index + 1).clip(0, self.max_index), (above - tenor[index]) / delta[index]
+
         if 'Extrapolate' in self.type:
             # extend the end segments: clamp the index to a real segment and leave alpha
             # unclipped - a linear blend with alpha outside [0, 1] IS linear extrapolation
@@ -2134,7 +2141,7 @@ class TensorCashFlows(TensorSchedule):
                     reset_price = 0.0
 
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, Start_Day, Weight, reset_price,
-                           cashflow.get('Known_' + reset + '_FX_Rate', 0.0) if Start_Day <= 0 else 0.0],
+                           (cashflow.get('Known_' + reset + '_FX_Rate') or 0.0) if Start_Day <= 0 else 0.0],
                           Scenario))
             return r
 
@@ -2165,13 +2172,22 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def index(cls, base_date, time_grid, position, cashflows, price_index, index_rate,
-              settlement_date, months_lag, interpolated, isBond=True):
-        """Index-linked cashflows from a data source, against the price_index and index_rate factors."""
+              settlement_date, months_lag, interpolated):
+        """Index-linked cashflows from a data source, against the price_index (the inflation curve)
+        and index_rate (the printed index) factors."""
+        last_print = index_rate.param['Last_Period_Start']
 
-        def index_reference(pricing_date, lagged_date, resets, offsets):
+        def index_reference(pricing_date, resets, offsets):
             for Day, Weight in cls.index_reference_samples(pricing_date, months_lag, interpolated):
-                Rel_Day = (Day - lagged_date).days
-                Value = index_rate.get_reference_value(Day) if Day <= lagged_date else 0.0
+                Rel_Day = (Day - base_date).days
+                if Day > base_date:
+                    Value = 0.0
+                elif Day > last_print:
+                    # a month not yet printed reads the t0 forward the base valuation projects
+                    tau = price_index.get_day_count_accrual(last_print, (Day - last_print).days)
+                    Value = index_rate.current_value()[0] * np.exp(price_index.current_value([tau])[0] * tau)
+                else:
+                    Value = index_rate.get_reference_value(Day)
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
                 resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
                 offsets.append(Scenario)
@@ -2212,11 +2228,17 @@ class TensorCashFlows(TensorSchedule):
                      Pay_Date if settlement_date is None else -(settlement_date - base_date).days,
                      float(bool(base_value)), float(bool(final_value))])
 
-                if isBond:
-                    index_reference(
-                        base_reference_date, base_date, base_resets, base_scenario_offsets)
-                    index_reference(
-                        final_reference_date, base_date, final_resets, final_scenario_offsets)
+                index_reference(base_reference_date, base_resets, base_scenario_offsets)
+                index_reference(final_reference_date, final_resets, final_scenario_offsets)
+
+        # the pricer splits each row's references at its last print, so those not printed by the base
+        # date come in date order, cashflow by cashflow - a level stated with no date reads the base
+        # date's
+        printed = (last_print - base_date).days
+        if any(np.diff(np.maximum([reset[1] for reset in references[::2 if interpolated else 1]],
+                                  printed)).min(initial=0) < 0 for references in (base_resets, final_resets)):
+            raise UnpriceableSchedule('Index references fall before an earlier cashflow\'s: state each '
+                                      'Base_ and Final_Reference_Date, the level beside it')
 
         # set the cashflows
         indexed = cls(sorted(cash), cashflow_reset_offsets)
@@ -2224,33 +2246,19 @@ class TensorCashFlows(TensorSchedule):
         if (indexed.schedule[:, CASHFLOW_INDEX_Pay_Day] != sorted(indexed.schedule[:, CASHFLOW_INDEX_Pay_Day])).any():
             logging.error("Cashflow Pay Day not in sorted order - check accrual dates")
 
-        if isBond:
-            mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
+        mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
+        for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
+            # calc the number of days since last published date to the base date
+            Rel_Day = (last_published_date - base_date).days
+            Value = index_rate.get_reference_value(last_published_date) if last_published_date <= last_print else 0.0
 
-            for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
-                # calc the number of days since last published date to the base date
-                Rel_Day = (last_published_date - base_date).days
-                Value = index_rate.get_reference_value(last_published_date) if last_published_date <= index_rate.param[
-                    'Last_Period_Start'] else 0.0
+            time_resets.append([0.0, Rel_Day, Rel_Day, Rel_Day, -1, 1.0, Value, 0.0])
+            time_scenario_offsets.append(0)
 
-                time_resets.append([0.0, Rel_Day, Rel_Day, Rel_Day, -1, 1.0, Value, 0.0])
-                time_scenario_offsets.append(0)
+        indexed.set_resets(time_resets, time_scenario_offsets)
 
-            indexed.set_resets(time_resets, time_scenario_offsets)
-
-            return indexed, TensorResets(base_resets, base_scenario_offsets), TensorResets(
-                final_resets, final_scenario_offsets)
-
-        else:
-            for eval_time in time_grid.time_grid[:, TIME_GRID_MTM]:
-                actual_time = base_date + pd.DateOffset(days=eval_time)
-
-                index_reference(
-                    actual_time, index_rate.param['Last_Period_Start'], time_resets, time_scenario_offsets)
-
-            indexed.set_resets(time_resets, time_scenario_offsets)
-
-            return indexed
+        return indexed, TensorResets(base_resets, base_scenario_offsets), TensorResets(
+            final_resets, final_scenario_offsets)
 
     @classmethod
     def float(cls, reference_date, time_grid, position, cashflows, reference=None):
@@ -4314,6 +4322,8 @@ def update_tenors(base_date, all_factors):
                 else:
                     interpolation_type = risk_factor.interpolation[0][0]
                 tenor_data = CurveTenor(tenor_points, interpolation_type)
+            elif factor.type == 'SurvivalProb':
+                tenor_data = CurveTenor(tenor_points, 'Hazard')
             else:
                 tenor_data = CurveTenor(tenor_points)
 
@@ -4401,6 +4411,14 @@ def calc_fx_cross(rate1, rate2, time_grid, shared):
     return shared.t_Buffer[key_code]
 
 
+def fx_fixings(factor_dep, schedule, shared):
+    """The deal's FX cross at each row of a fixing `schedule` - one row per fixing, a static spot's
+    single row broadcast to them all."""
+    samples = calc_fx_cross(factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
+                            schedule[:, :RESET_INDEX_Scenario + 1], shared)
+    return samples.expand(len(schedule), *samples.shape[1:])
+
+
 def calc_discount_rate(block, tenors_in_days, shared, multiply_by_time=True):
     key_code = ('discount', tuple([x[:2] for x in block.code]),
                 tuple(block.time_grid[:, TIME_GRID_MTM]),
@@ -4426,12 +4444,14 @@ def calc_spot_forward(curve, T, time_grid, shared, only_diag):
 
 
 def calc_dividend_samples(start_day, samples, time_grid):
+    """The model's dividend intervals from each start to each sample, both read from the base date
+    on: a period already ended carries no model dividend, its known ones being stated."""
     reset_start_day = start_day.clip(min=0)
     time_grid_scenario = [time_grid.get_scenario_offset(x) for x in reset_start_day]
     scenario = [x[1] for x in time_grid_scenario]
     time_interp = [x[0] for x in time_grid_scenario]
-    resets = [TensorResets([[Time_Grid, reset_start, -1, reset_start, reset_end, 0.0, 0.0, 0.0]
-                            for reset_end in samples], [scenario_offset] * len(samples))
+    resets = [TensorResets([[Time_Grid, reset_start, -1, reset_start, max(reset_end, reset_start),
+                             0.0, 0.0, 0.0] for reset_end in samples], [scenario_offset] * len(samples))
               for Time_Grid, reset_start, scenario_offset in zip(time_interp, reset_start_day, scenario)]
     return resets
 
@@ -4605,13 +4625,14 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
     return shared.t_Buffer[key_code]
 
 
-def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
+def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, floor=0.0):
     """Forward rates off a curve, for one calibrated curve or a batch of per-path curves.
 
     `tensor` is the curve: (n_tenors,) calibrated, or (n_tenors, B) for a BATCH. Every op below is
     elementwise or a tenor-axis gather, so the batch axis rides along as a trailing broadcast dim -
     no reduction reassociates, and the batched result is bitwise equal to looping the columns.
-    `nb == 0` makes every `_bcast` a no-op reshape.
+    `nb == 0` makes every `_bcast` a no-op reshape. A 0 knot's forward spans `floor` and reads the
+    limit as its span vanishes - the stated rate at t = 0; every other knot spans its own tenor.
     """
     nb = tensor.dim() - 1
 
@@ -4640,12 +4661,12 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
             return tensor * _bcast(tnr)
         return tensor
 
-    def calculate_interp_params(tnr, tnr_d, time_grid):
+    def calculate_interp_params(tnr, tnr_d, time_grid, span):
         """Vectorized calculation of interpolation indices and weights."""
         #get the max index
         max_tnr_index = tnr.size()[0] - 1
         # Batch calculate all time + tenor combinations
-        time_tenor = time_grid.view(-1, 1) + tnr.view(1, -1)
+        time_tenor = time_grid.view(-1, 1) + span.view(1, -1)
 
         # Find interpolation indices
         left_idx = (torch.searchsorted(tnr, time_tenor, right=True) - 1).clamp(min=0)
@@ -4730,42 +4751,53 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True):
     factor_tenor = factor.get_tenor()
     time_grid = tensor.new(time_grid_years)
     tnr, tnr_d, tensor = prepare_tenors(factor_tenor, time_grid_years, extrapolate)
-    # Calculate interpolation indices and weights
-    indices_t, indices_time = calculate_interp_params(tnr, tnr_d, time_grid)
 
-    """Compute interpolated forward curves with support for multiple interpolation methods."""
-    # see if we have more than 1 interpolation object defined
-    M = time_grid.view(-1, 1) + tnr.view(1, -1)
-    if len(factor.interpolation)==1:
-        f = calc_fwd_interpolated_new(interp_method, tnr, tensor)
-        # insert the tenor axis: (T,) -> (T, 1) calibrated, (T, B) -> (T, 1, B) batched
-        t_leg = f(time_grid, indices_time)
-        return f(M, indices_t) - t_leg.reshape(t_leg.shape[0], 1, *t_leg.shape[1:])
-    elif len(factor.interpolation)==2:
-        cuttoff_index = factor.interpolation[0][1]
-        cuttoff_tenor = tnr[cuttoff_index]
-        # near leg
-        n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cuttoff_index+1], tensor[:cuttoff_index+1])
-        near_tT = n(
-            M,
-            (indices_t[0],indices_t[1].clamp(max=cuttoff_index), indices_t[2].clamp(max=cuttoff_index)))
-        near_t = n(
-            time_grid,
-            (indices_time[0], indices_time[1].clamp(max=cuttoff_index), indices_time[2].clamp(max=cuttoff_index)))
-        # far leg
-        f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cuttoff_index:], tensor[cuttoff_index:])
-        far_tT = f(
-            M,
-            (indices_t[0],(indices_t[1]-cuttoff_index).clamp(min=0), (indices_t[2]-cuttoff_index).clamp(min=0)))
-        far_t = f(
-            time_grid,
-            (indices_time[0], (indices_time[1]-cuttoff_index).clamp(min=0), (indices_time[2]-cuttoff_index).clamp(min=0)))
-        mask_near = _bcast(M <= cuttoff_tenor)
-        time_t = torch.where(_bcast(time_grid <= cuttoff_tenor), near_t, far_t)
-        return (torch.where(mask_near, near_tT, far_tT)
-                - time_t.reshape(time_t.shape[0], 1, *time_t.shape[1:]))
-    else:
-        raise ValueError("More than 2 Interpolation Segments not supported")
+    def across(span):
+        """The curve's rate x tenor at t + span less at t, every row and knot."""
+        # Calculate interpolation indices and weights
+        indices_t, indices_time = calculate_interp_params(tnr, tnr_d, time_grid, span)
+        M = time_grid.view(-1, 1) + span.view(1, -1)
+        if len(factor.interpolation)==1:
+            f = calc_fwd_interpolated_new(interp_method, tnr, tensor)
+            # insert the tenor axis: (T,) -> (T, 1) calibrated, (T, B) -> (T, 1, B) batched
+            t_leg = f(time_grid, indices_time)
+            return f(M, indices_t) - t_leg.reshape(t_leg.shape[0], 1, *t_leg.shape[1:])
+        elif len(factor.interpolation)==2:
+            cuttoff_index = factor.interpolation[0][1]
+            cuttoff_tenor = tnr[cuttoff_index]
+            # near leg
+            n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cuttoff_index+1], tensor[:cuttoff_index+1])
+            near_tT = n(
+                M,
+                (indices_t[0],indices_t[1].clamp(max=cuttoff_index), indices_t[2].clamp(max=cuttoff_index)))
+            near_t = n(
+                time_grid,
+                (indices_time[0], indices_time[1].clamp(max=cuttoff_index), indices_time[2].clamp(max=cuttoff_index)))
+            # far leg
+            f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cuttoff_index:], tensor[cuttoff_index:])
+            far_tT = f(
+                M,
+                (indices_t[0],(indices_t[1]-cuttoff_index).clamp(min=0), (indices_t[2]-cuttoff_index).clamp(min=0)))
+            far_t = f(
+                time_grid,
+                (indices_time[0], (indices_time[1]-cuttoff_index).clamp(min=0), (indices_time[2]-cuttoff_index).clamp(min=0)))
+            mask_near = _bcast(M <= cuttoff_tenor)
+            time_t = torch.where(_bcast(time_grid <= cuttoff_tenor), near_t, far_t)
+            return (torch.where(mask_near, near_tT, far_tT)
+                    - time_t.reshape(time_t.shape[0], 1, *time_t.shape[1:]))
+        else:
+            raise ValueError("More than 2 Interpolation Segments not supported")
+
+    if not floor:
+        return across(tnr)
+    span = tnr.masked_fill(tnr == 0, floor)
+    forwards = across(span)
+    if (factor_tenor == 0).any():
+        # the 0 knot reads the limit as its span vanishes, extrapolated off spans of the floor and
+        # twice it: exact where the rate is linear across both, as within a linear segment
+        zero = _bcast(torch.as_tensor(factor_tenor == 0, device=forwards.device)).unsqueeze(0)
+        forwards = torch.where(zero, 2.0 * forwards - 0.5 * across(2.0 * span), forwards)
+    return forwards
 
 
 class VolSurface:

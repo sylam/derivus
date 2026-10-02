@@ -428,3 +428,43 @@ def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
         result = out['Netting'].sub_structures[0].obj.Calc_res
         runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
     assert all(np.array_equal(empty, zero) for empty, zero in zip(*runs))
+
+
+def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it():
+    """`Amount` weighs an asset in the collateral the balance is counted in, and with one asset the
+    weight cancels - the balance is held in units of it - so a sole cash row stating none, as the
+    paper of an agreement states none, is one unit: the collateralised run marks and holds bit for
+    bit as at 1 and at 4 (a power of two, so the cancellation is exact in floating point too), where
+    the row stating none was skipped and the set's frame failed. Beside a second asset - cash, a
+    bond or an equity - the weights are the agreement's to state, and a row stating none is refused
+    by name.
+
+    KILLING MUTATIONS: the amount read as stated, a row without one failing the set's compile; a
+    row among several read as a unit; a row beside a bond or an equity read as a unit.
+    """
+    def run(assets, switch='Yes'):
+        job = engine_job(dict(TERMS, Collateral_Assets=assets))
+        job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+            'Exclude_Deals_With_Missing_Market_Data'] = switch
+        context = derivus.Context()
+        context.load_json((json.dumps(job), 'cash amount'))
+        return derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]
+
+    cash = {'Currency': 'USD', 'Haircut_Posted': {'.Percent': 50.0}}
+    runs = []
+    for amount in (None, 1.0, 4.0):
+        out = run({'Cash_Collateral': [dict(cash, **({} if amount is None else {'Amount': amount}))]})
+        assert 'Structs Skipped' not in out['Stats'], out['Stats']
+        result = out['Netting'].sub_structures[0].obj.Calc_res
+        runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
+    assert all(np.array_equal(a, b) for run_ in runs[1:] for a, b in zip(runs[0], run_))
+    bond = {'Currency': 'USD', 'Haircut_Posted': {'.Percent': 10.0}, 'Principal': 1.0,
+            'Coupon_Rate': {'.Percent': 4.0}, 'Discount_Rate': 'USD',
+            'Maturity': {'.DateOffset': '2Y'}, 'Coupon_Interval': {'.DateOffset': '6M'}}
+    equity = {'Equity': 'EQ', 'Units': 1.0, 'Haircut_Posted': {'.Percent': 20.0}}
+    for assets in ({'Cash_Collateral': [dict(cash, Amount=1.0), dict(cash, Currency='EUR')]},
+                   {'Cash_Collateral': [cash], 'Bond_Collateral': [bond]},
+                   {'Cash_Collateral': [cash], 'Equity_Collateral': [equity]}):
+        with pytest.raises(utils.UnpriceableSchedule, match='CSA-1: a Cash_Collateral row states '
+                                                            'no Amount, its weight among several'):
+            run(assets, 'No')

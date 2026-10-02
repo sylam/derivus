@@ -1584,8 +1584,7 @@ over the received threshold above it, plus the excess below the posted threshold
 three crossed from the agreement currency; and `call` is that less the collateral held after
 haircuts, moving only where it clears the minimum transfer on its side STRICTLY, as
 `scan_collateral_balance` transfers. Nothing is rounded, a netting set declaring no rounding, and
-neither side reads `Independent_Amount_Reference`: a positive independent amount is support the
-bank receives. COLLATERAL AND MARGIN ARE TWO BALANCES: `held` groups the `cash` fold's standing
+a positive independent amount is support the bank receives. COLLATERAL AND MARGIN ARE TWO BALANCES: `held` groups the `cash` fold's standing
 movements once per read into balances per agreement, each kind per asset, as of a value date, and
 the call reads the collateral alone.
 
@@ -1640,9 +1639,10 @@ drift.
 **WHAT IS NOT CARRIED.** Interest on a balance; an eligibility schedule beyond the haircuts a set
 declares, `Haircut_Received` being read by neither side; a security held as collateral, which a
 close's spots do not value and which refuses as any asset without a spot does; the holdings of a
-set's `Collateral_Assets` - a declared row states no amount and the engine reads one, skipping the
-set without it, so an agreement declaring eligible rows prices collateralised only where the file
-states them; and the hedge simulation's opening state, which reads the file.
+set's `Collateral_Assets` - a declared row states no amount, and a sole cash row stating none is
+one unit of it, the balance being held in units of its asset, so an agreement declaring one
+eligible cash row prices collateralised, while a row among several states its weight or is refused
+by name; and the hedge simulation's opening state, which reads the file.
 
 `tests/test_collateral.py` holds the arithmetic - the dials against `utils.CreditSupportList`,
 `At` in its three regimes, the strict minimum on both sides, `Haircut_Posted` on either side, the

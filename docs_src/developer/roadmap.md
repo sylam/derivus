@@ -19,16 +19,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 These are defects in the engine: each has a change to this library that closes it.
 
-- **One prior is applied to the first bucket only** (2026-09-10). A ladder may fit its residual
-  tail per calendar bucket, and the priors on the skew share and the leverage follow the buckets,
-  but the prior on the tail parameter `Alpha` sits on the first bucket alone. Nothing moves today,
-  because every book ladder fits one bucket, and a multi-bucket fit with priors on has never been
-  run.
-- **A fitted block cannot be read back to see what it was struck at** (2026-09-11). A quote row may
-  leave its strike at zero to mean the forward. The quote preparation resolves that to the forward
-  for the fit but no longer writes it back onto the row, so the block reads zero after the fit. One
-  line writes it back; because that mutates every block that round-trips through a file, the
-  blast radius comes before the line.
 - **A Gaussian residual reports two sensitivities the model never reads.** Under `Residual_Law:
   Gaussian` the tail parameters `Alpha` and `Beta` are filled with defaults and reported as
   sensitivities with identically zero rows. Dropping them would make the set of reported
@@ -37,21 +27,6 @@ These are defects in the engine: each has a change to this library that closes i
   21 internal steps to trade memory for a second forward pass; the mixer's per-draw checkpoint
   beside it took peak memory from 8,392 to 9,990 MiB at 2,048 scenarios by 2,048 paths. The
   residual's granularity is the dial if that headroom is wanted.
-- **Three calibration dials are module constants rather than declared fields**: the tail
-  parameter's seed pair (0.5, 0.05), the solver's step tolerance of 1e-12, and the ten-knot default
-  grid of the Hull-White sigma term structure. A desk cannot change them from a document.
-- **Under pseudo-random sampling the mixer's uniform has 24 bits** (2026-09-10). The uniform behind
-  the inverse-Gaussian mixer is drawn in single precision under `Sampling: Pseudo`, and one minus
-  it at the clamp's margin carries 3% error; widening the draw changes how much of the stream each
-  step consumes, and so what a double-precision document reproduces. Production takes the
-  low-discrepancy sequence above 16 scenarios, where the uniform is drawn in double.
-- **One primitive of the walk overflows single precision past κT = 88** (2026-09-10). The
-  Ornstein-Uhlenbeck path is spelled with an integrating factor that grows as the exponential of
-  the reversion speed times elapsed time. Every caller keeps it in range, the walk through its
-  21-step segments and the state variance in double, but the primitive would overflow a
-  single-precision caller. The fix is a chunked rescale rather than a cast. Beside it, the clock
-  is still summed across blocks in the job's precision, and widening it cascades into the mixer
-  and every pricer that reads the law.
 
 #### What the quotes cannot say
 
@@ -125,14 +100,13 @@ is recorded so a reader knows which readings rest on it.
 
 ### The autocall, TARF and barrier pricers
 
-- **A stale-fixing read in the autocall's observation arm.** A second consecutive coupon whose
-  observation window is already wholly in the past reads the first coupon's last fixing under spot
-  observation, the same staleness the window's prefix already carries; no document here reaches
-  it. A block whose fixings lag its coupon dates is a booking error, not the engine's: the
-  fixing schedule is the deal's to author.
-- **The European leg of the observed-spot pricers still branches on the model family** in two
-  places, a step count and a scalar carry against the walked block, where one spelling should
-  serve both families.
+- **The autocall's observation arm starts a lagged block's walk at the last fixing.** A declared
+  table pairing a coupon with a fixing on or before the previous coupon is refused by name; what
+  remains is the prefix, where a block whose fixings lag its coupon dates walks the next coupon
+  from the fixing's print rather than the row's own spot, and its twin in the target redemption
+  forward, which walks the rest of its strip from a past fixing's print - a row fixed before the
+  base date and settling after it moves the trial TARF 76.73 where its cash moves 19.996. M each,
+  the fixing schedule being the deal's to author.
 - **The collateralised autocall's CVA delta is the boundary estimator's own variance.** Under a
   zero-threshold credit-support annex the boundary correction supplies two and a half times the
   pathwise term and scatters with the path count: 51% short at 256 outer paths, 18% over at 1,024,
@@ -147,12 +121,9 @@ is recorded so a reader knows which readings rest on it.
   constant both estimators differentiate through the same analytic probability. What stays open is
   the exposure grid, which a credit valuation always prices crisp, declaring no such field: under
   a base valuation there is no boundary correction to be uncorrected, one row resolving no fixing.
-- **The extendable forward under a credit-support annex does not register its settled cash**: a
-  quarter of a percent across four amplifying documents, against ladders that resolve no finer.
-  Its rolling backward pass also carries a one-signed smoothing bias over the payoff's kink from
-  the Gauss-Hermite rule it uses.
-- **The partial-time barrier's rebate settlement is audited but ungated**, for want of a
-  collateralised partial-barrier document.
+- **The extendable forward's rolling backward pass carries a one-signed smoothing bias over the
+  payoff's kink** from its 32-node Gauss-Hermite rule: UNMEASURED, and the four amplifying
+  documents at 128 nodes against 32 would measure it with no code written.
 - **The window-touch registration's ladder is not flat, and it is the default on its sign**: on a
   grid carrying a row a month — seven inside the window, six of them live — five seeds read a
   registered −2.136 at 8,192 paths and −1.915 at 32,768 against an unregistered +1.318, every one
@@ -167,11 +138,6 @@ is recorded so a reader knows which readings rest on it.
   paths the correction falls monotonically by 24%. The declared default now sits at 16,384, the
   bottom of that plateau, and the acceptance re-read at 32,768 is pending. The correction's scoping
   has no public seam a mutation gate could reach.
-- **The accumulator's latch is measured OUTSIDE the recompute node, and no gate holds it there.**
-  Dropping every node cotangent but the marks' reproduces the corrected CVA gradient bit for bit
-  while suppressing the correction moves it 2.52% — the barrier's side, not the autocall's, the
-  gaps being the outer scenario's own observed fixings. The injection mutant cannot fail on this
-  pricer: of the node's five outputs only the marks' ever arrives with a cotangent.
 - **The American option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
@@ -180,11 +146,6 @@ is recorded so a reader knows which readings rest on it.
 
 ### The engine
 
-- **Four compounding methods refuse a leg with several resets per coupon** (2026-09-30). `Flat`,
-  `Include_Margin`, `Exclude_Margin` and `Exponential` compile the same schedule the averaging leg
-  does, its resets at one over n, so their arithmetic is not there: where they paid one over n of
-  the interest they refuse by name. `OIS` compounds and `None` averages. Size: the fold of each in
-  `pv_float_cashflow_list`, a branch apiece.
 - **A rate leg stated by its terms reads eight of its conventions not at all** (2026-09-30).
   `Reset_Type` in `Arrears` or `Advance`, `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`,
   `Index_Offset`, the calendars and `First_Coupon_Date` are declared on the swap, the cap, the
@@ -207,31 +168,20 @@ is recorded so a reader knows which readings rest on it.
   1,441.26 to 71.47 and the butterfly from 362.87 to 44.34, while the risk reversal, which both
   legs read the same way, does not move at all. A desk ruling rather than a defect, and the next
   dial on this charge.
-- **Four declared fields carry stated values nothing reads** (2026-09-22, 2026-09-26). A floating
-  cashflow list's `Settlement_Date` and `Settlement_Amount`, which its pricer never reads where the
-  fixed list's does in four places; and a `NettingCollateralSet`'s `Haircut_Received`, on every
-  collateral row, where the engine and the collateral call take `Haircut_Posted` whichever side
-  holds the asset, and its `Independent_Amount_Reference`, a positive independent amount being
-  support the bank receives whichever party the field names. A desk that states one is silently
-  ignored, which is the opposite failure to the one the convention/placeholder split closes:
-  UNMEASURED, because there is no reading to compare against. Each is either wired to the branch
-  it names or deleted with the branch; the list's pair is M, the set's two move collateral numbers.
-- **A structure or a swaption outside a netting set breaks a credit Monte Carlo's dates**
-  (2026-09-30). The root takes its report dates from its sub-structures alone
-  (`DealStructure.finalize_struct`), so a `StructuredDeal` or a `SwaptionDeal` at the top of the
-  tree raises `Shape of passed values is (20, 256), indices imply (15, 256)`; the same deals under a
-  netting set price.
-- **A Hull-White on the EUR curve beside a lognormal EURUSD reads NaN on every EURUSD deal**
-  (2026-09-30); with EURUSD static instead, `FXOneTouchOption` trips a CUDA device-side gather
-  assert that poisons the process. Both measured on the fx trial family; the cause is not.
-- **`index_reference` clamps an unpublished month to the last print** (2026-09-30), which a credit
-  Monte Carlo then reads as that month's level, and `calc_index` assumes references arrive in time
-  order. Read from the code, not measured.
-- **An equity swap leg skips in two natural spellings and pays no dividend** (2026-09-26). A blank
-  `Payoff_Currency` is not read as the leg's own currency and a leg started on or before the base
-  date with no known price at its start carries a `None` FX rate - each skips the leg - and
-  compiled, `Known_Dividends` reaches only the reset's `Weight` slot, which `pv_equity_cashflows`
-  never reads. The leg's generator rework is where they close.
+- **A haircut is read on one side, and a floating list's settlement is refused rather than read**
+  (2026-09-22). The engine and the collateral call take `Haircut_Posted` whichever side holds the
+  asset, and the engine's single-asset haircut cancels against its own documented formula, which
+  credits the unhaircut value: collateral HELD is credited to exposure at one less
+  `Haircut_Received` and collateral POSTED delivered at face over one less `Haircut_Posted`,
+  standing at full value as the bank's asset - the model change M, the spine's kit with it, and a
+  cash row stating no `Haircut_Posted`, which fails the set's compile on a `KeyError` today, read
+  under the same ruling. A floating cashflow list's `Settlement_Date` and `Settlement_Amount` are
+  refused by name where stated until the list reads them as the fixed list does in four places: M.
+- **A static price index never rolls under a credit Monte Carlo** (2026-09-30). Every row reads
+  the base date's print as the newest, so the trial linker's zero-vol profile sits 4.69e-2 below
+  the rolled base valuation two years on, and a reference dated after the base date reads the
+  index at its reference day under a simulated index too, 4.3e-3 on a multi-coupon linker. M: the
+  static half is every row projecting off the base date's print, the simulated half its own read.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
@@ -239,11 +189,6 @@ is recorded so a reader knows which readings rest on it.
   design names, a fill of one under every legacy node, is what makes the close net to nothing -
   and until it runs, a node no fill booked is outside the desk's P&L, which reads its positions
   off the record.
-- **Three guards read the skip switch not at all** (2026-09-30). Under
-  `System Parameters.Exclude_Deals_With_Missing_Market_Data: No` the compile guard and the pricer's
-  guard refuse by name; `add_structure_to_structure`, `resolve_structure`'s `post_process` guard
-  and the netting set dropped for holding a NaN skip under `No` as under `Yes`. Size: the switch
-  read at each, a line apiece.
 - **A consolidated risk read refits the quote blocks its book prices, and one refusal reads all of
   it on factors** (2026-09-24). `/book/risk` refits, with `Quote_Sensitivity` on, every block
   writing a factor the book reads and every block those stand on, so a spot-model block pays its
@@ -348,21 +293,20 @@ is recorded so a reader knows which readings rest on it.
   `delete_deal` says it takes no seat, so this is a design call before it is a patch. Size M-L: an
   `actor` on each and an admission - `mark` for the market and the date, `book` for the file - with
   the metronome's grants and the web's calls counted.
-- **Twelve types announce fixings that name no index** (2026-09-30). A fixing row is answered by
-  a print filed under the index it names, which a type declares as `observes`; a row naming none
-  is answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no
-  close, no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the
-  deposit declare theirs, and read a reset the record has printed off the curve until their known-rate tables are
-  filled from the record at compile as an observation table is - a day's move on one reset. A
-  blank index field, which the compile resolves to the currency's curve, still announces its
-  fixings under none. Undeclared: the FX accumulator, TARF, extendable forward and both Asians,
-  the equity Asian, the equity swap leg and swaplet list, the inflation list, and the floating
-  energy deal, energy option and commodity average-price swap - each reads its fixings off a table
-  of its own that decides its payoff, so a close passing on a print its mark ignores would be the
-  worse failure. Beside them a swaption announces no expiry of its own, its legs reading as a live
-  swap's, and an equity binary no expiry fixing where the FX one does. Size: a declaration per
-  type once its table is filled from the record, the barrier-state row under Designed, not built;
-  the census in `tests/test_diary.py` names every type still open.
+- **Ten types announce fixings that name no index** (2026-09-30). A fixing row is answered by a
+  print filed under the index it names, which a type declares as `observes`; a row naming none is
+  answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no close,
+  no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the deposit
+  declare theirs, and read a reset the record has printed off the curve until their known-rate
+  tables are filled from the record at compile as an observation table is - a day's move on one
+  reset; a blank index field, which the compile resolves to the currency's curve, still announces
+  its fixings under none. The four FX table types - accumulator, TARF, extendable forward and the
+  FX Asian - wait on the book's base currency reaching the fill, their print being base-relative
+  (`FxRate.<other>`) only where one leg is the base, and on how a cross's print is named, the
+  desk's call. The double Asian, the equity swap leg and swaplet list, the two energy deals and the
+  composite equity Asian read fixings off a table the fill cannot write yet (M), the inflation list
+  M-L, and a swaption announces no expiry of its own, its legs reading as a live swap's - a design
+  call. The census in `tests/test_diary.py` names every type still open.
 - **One `settle` verb is the whole back office** (2026-09-30). Settlements, confirmations and
   collateral each hold `settle`, so each worklist lists the others' payments, clips and calls, and
   confirmations may pay or post collateral: separation of duties inside the back office is not

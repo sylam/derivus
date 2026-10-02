@@ -219,8 +219,7 @@ UNREACHED = {
     ('pv_MC_AutoCallSwap.sim_spot', 'if reduced_samples:', 'else'):
         "an autocall MTM row with no remaining coupon observations.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if kit is not None and reduced_samples:', 'body'):
-        "a document declaring SpotModel LogVar2FJ - the non-daily kit's block law; no fixture "
-        "declares one.",
+        "a document declaring SpotModel LogVar2FJ - the kit's block law; no fixture declares one.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if kit is None:', 'else'):
         "the same document, where the coupon interval reads its law off that block.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):

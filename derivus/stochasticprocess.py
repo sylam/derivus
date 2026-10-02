@@ -181,6 +181,10 @@ HW_SERIES_TERMS = 16
 #: The AtT cross term divides by the OTHER reversion speed a difference that vanishes with it, so
 #: that quotient carries no removable power of alpha - see `hw_alpha_floor`.
 HW_ALPHA_FLOOR = 1e-8
+#: The span a curve model dividing by its tenor reads a 0 knot across, the division 0/0 there: its
+#: forward is the limit off spans of one day and two, its model terms read across one. A day keeps
+#: a single-precision forward's difference significant.
+TENOR_FLOOR = 1.0 / 365.0
 
 
 def hw_alpha_floor(a):
@@ -629,14 +633,14 @@ class StochasticProcess(object):
         columns without knowing any model concept. Default: none (price-only / masked state)."""
         return ()
 
-    def forward_curve(self, tensor, time_grid_years, shared, mul_time=True):
+    def forward_curve(self, tensor, time_grid_years, shared, mul_time=True, floor=0.0):
         """`utils.calc_curve_forwards` lifted to a per-path BATCH of curves. `tensor` is the
         t=0 curve: `(n_tenors,)` calibrated, or `(n_tenors, B)` per-path (inner-MC fork or
         diff-ML t=0 burn-in). Calibrated gives one call returning `(T, n_tenors)`; per-path
         returns `(T, n_tenors, B)`. `utils.calc_curve_forwards` is shape-dispatched, so both
         cases are one call."""
         return utils.calc_curve_forwards(
-            self.factor, tensor, time_grid_years, shared, mul_time=mul_time)
+            self.factor, tensor, time_grid_years, shared, mul_time=mul_time, floor=floor)
 
     @staticmethod
     def align_rank(x, ndim):
@@ -1052,8 +1056,10 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             self.scenario_horizon = time_grid.scen_time_grid.size
             time_grid_years = np.array([self.factor.get_day_count_accrual(
                 ref_date, t) for t in time_grid.scen_time_grid])
-            self.factor_tenor = tensor.new(self.factor.get_tenor().reshape(-1, 1))
-            self.factor_tenor_full = tensor.new_tensor(self.factor.get_tenor(), dtype=torch.float64)
+            tenor = self.factor.get_tenor()
+            tenor = np.where(tenor == 0, TENOR_FLOOR, tenor)
+            self.factor_tenor = tensor.new(tenor.reshape(-1, 1))
+            self.factor_tenor_full = tensor.new_tensor(tenor, dtype=torch.float64)
             self.quantofx = tensor.new_tensor(
                 self.implied.param['Quanto_FX_Volatility'].array[:, 1], dtype=torch.float64)
 
@@ -1063,7 +1069,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         # `fwd_curve` depends on `tensor` (the t=0 curve) — recompute every call (not
         # cached) so a per-path re-precalc (inner-MC fork / diff-ML t=0 burn-in) isn't
         # shadowed by the first call's calibrated curve. Batch-aware via the base seam.
-        fwd_curve = self.forward_curve(tensor, self.cache['time_grid_years'], shared)
+        fwd_curve = self.forward_curve(tensor, self.cache['time_grid_years'], shared, floor=TENOR_FLOOR)
         return self.cache['time_grid_years'], fwd_curve, self.cache['t']
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
@@ -1380,8 +1386,9 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
         return 1
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
-        # ensures that tenors used are the same as the price factor
+        # the price factor's own tenors, a 0 knot read across `TENOR_FLOOR`
         factor_tenor = self.factor.get_tenor()
+        factor_tenor = np.where(factor_tenor == 0, TENOR_FLOOR, factor_tenor)
         # the AtT assembly below divides by this and its bracket vanishes with it - the same
         # removable singularity `hw_alpha_floor` holds off zero, and `Alpha` declares
         # default=0, so a price factor that omits it reaches that division at exactly zero
@@ -1392,7 +1399,7 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
 
         time_grid_years = np.array([self.factor.get_day_count_accrual(
             ref_date, t) for t in time_grid.scen_time_grid])
-        self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared)
+        self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared, floor=TENOR_FLOOR)
 
         # (N,2) knot pairs, the same layout Sigma is read in below and the zeros fallback carries
         quantofx = self.param['Quanto_FX_Volatility'].array if self.param['Quanto_FX_Volatility'] else np.zeros(
@@ -1913,8 +1920,9 @@ class PCAInterestRateModel(StochasticProcess):
         else:
             # batch-aware forward curve via the base-class seam, then divide by the tenor with
             # the divisor rank-aligned to the curve
-            fwd = self.forward_curve(tensor, elapsed, shared)
-            factor_tenor_t = shared.one.new_tensor(factor_tenor.reshape(1, -1))                 # [1, n_tenors]
+            fwd = self.forward_curve(tensor, elapsed, shared, floor=TENOR_FLOOR)
+            factor_tenor_t = shared.one.new_tensor(
+                np.where(factor_tenor == 0, TENOR_FLOOR, factor_tenor).reshape(1, -1))         # [1, n_tenors]
             fwd_curve = fwd / self.align_rank(factor_tenor_t, fwd.ndim)
 
         self.fwd_component = fwd_curve

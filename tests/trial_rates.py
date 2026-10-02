@@ -122,8 +122,6 @@ DEALS = [
              float_list('SWPT_AMORT_FLOAT', 'Buy', stepped(book.float_items()))]),
     fixed_list('FIXED_FWD', 'Buy', redeeming(book.fixed_items(4.5)),
                Settlement_Date=B + months(3), Settlement_Amount=950_000.0),
-    # a floating list's pricer reads no settlement, so this amount is stated and moves nothing
-    float_list('FLOAT_FWD', 'Buy', redeeming(book.float_items()),
-               Settlement_Date=B + months(3), Settlement_Amount=950_000.0),
+    float_list('FLOAT_REDEEMING', 'Buy', redeeming(book.float_items())),
 ]
 UNMARKED = {'SWPT_AMORT_FIXED', 'SWPT_AMORT_FLOAT', 'XCCY_MTM_EUR', 'XCCY_MTM_USD'}

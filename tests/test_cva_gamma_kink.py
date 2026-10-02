@@ -323,6 +323,32 @@ def test_a_book_that_never_crosses_zero_has_no_kink_to_correct(tmp_path):
         'there is one'.format(gamma, live))
 
 
+def test_a_counterparty_curve_ending_at_a_year_hazards_on_past_it(tmp_path):
+    """A survival curve is a cumulative hazard, so past its last knot its last hazard goes on: a
+    counterparty written at a 1% hazard to six months and 4% to a year is the same counterparty
+    written on at 4% to fifty years, and a five-year forward's CVA reads one number off both - as
+    declared, under a 91-day `Tenor_Offset`, which reads the factor past its last knot, and with
+    `CDS_Tenors` adding knots to five years - where the one-year curve froze survival after it.
+
+    Killing mutations: the curve read flat past its last knot; the factor carried on at its average
+    hazard H_N t / T_N, under the offset; the CDS knots added flat.
+    """
+    def cva(curve, offset=0, cds_tenors=None):
+        forward = dict(_forward('FWD5', FORWARD_PRICE), Maturity_Date={'.Timestamp': _stamp(5 * 365)})
+        job = _job(children=[forward], gradient='No', paths=1 << 12)
+        job['Calc']['Calculation'].update(Time_grid='1d 3m(3m)', Tenor_Offset=offset)
+        if cds_tenors:
+            job['Calc']['Calculation']['Credit_Valuation_Adjustment']['CDS_Tenors'] = cds_tenors
+        job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['SurvivalProb.CPTY'][
+            'Curve'] = {'.Curve': {'meta': [], 'data': curve}}
+        return float(_run(job, tmp_path, 'hazard')['cva'])
+
+    for case in ({}, {'offset': 91}, {'cds_tenors': [1, 3, 5]}):
+        year = cva([[0.0, 0.0], [0.5, 0.005], [1.0, 0.025]], **case)
+        fifty = cva([[0.0, 0.0], [0.5, 0.005], [50.0, 1.985]], **case)
+        assert year == pytest.approx(fifty, rel=1e-12) and fifty > 0.0, (case, year, fifty)
+
+
 # ---------------------------------------------------------------- the two-sided atom logic
 
 def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
@@ -509,7 +535,7 @@ def test_a_collateralised_set_is_refused_one_step_before_the_kink_term_sees_it(t
         'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
         'Liquidation_Period': 0, 'Settlement_Period': 0, 'Opening_Balance': 0.0,
         'Credit_Support_Amounts': {
-            'Bank': 'CPTY', 'Counterparty': 'CPTY', 'Independent_Amount_Reference': 'None',
+            'Bank': 'CPTY', 'Counterparty': 'CPTY',
             'Independent_Amount': {'.CreditSupportList': [[1, 0.0]]},
             'Received_Threshold': {'.CreditSupportList': [[1, 0.0]]},
             'Posted_Threshold': {'.CreditSupportList': [[1, 0.0]]},

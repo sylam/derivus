@@ -84,7 +84,7 @@ def option_date_info(field, base_date, calendars, business_days=2):
     adjusted_forward_settlement_date = forward_settlement_date(
         expiry_date, calendar_names, calendars, business_days=business_days)
 
-    settlement_date = field.get('Settlement_Date', expiry_date)
+    settlement_date = field.get('Settlement_Date') or expiry_date
     expiry = (expiry_date - base_date).days
     settlement = (settlement_date - base_date).days
     forward_settlement = (adjusted_forward_settlement_date - base_date).days
@@ -724,7 +724,9 @@ class Deal(object):
             return self.reval_dates
 
     def get_report_dates(self, time_grid, base_date):
-        return self.get_reval_dates()
+        """Every MTM date of the grid up to the last this deal revalues on, the base date at least."""
+        last = max(set(self.get_reval_dates()).union({base_date}))
+        return sorted([x for x in time_grid.mtm_dates if x <= last])
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
         if self.path_dependent:
@@ -866,7 +868,7 @@ class NettingCollateralSet(Deal):
         F('Collateral_Call_Frequency', 'Text', default='1D', convention=True, obj='Period'),
         F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
-        F('Credit_Support_Amounts', 'Container', default={'Bank': '', 'Counterparty': '', 'Independent_Amount_Reference': 'None', 'Independent_Amount': [], 'Received_Threshold': [], 'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True, sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''), F('Independent_Amount_Reference', 'Text', default='None', values=['None', 'Bank', 'Counterparty']), F('Independent_Amount', 'Table', default='[[0,1]]', row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Posted_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Posted', 'Table', default='[[0,1]]', row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList')]),
+        F('Credit_Support_Amounts', 'Container', default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [], 'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True, sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''), F('Independent_Amount', 'Table', default='[[0,1]]', row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Posted_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Posted', 'Table', default='[[0,1]]', row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList')]),
         F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
         F('Settlement_Period', 'Integer', default=0, convention=True)
@@ -1098,15 +1100,11 @@ class NettingCollateralSet(Deal):
         return ts, tl
 
     def get_report_dates(self, time_grid, base_date):
-        mtm_dates = set(self.get_reval_dates()).union({base_date})
+        reval_dates = super(NettingCollateralSet, self).get_report_dates(time_grid, base_date)
         if self.field.get('Collateralized', 'False') == 'True':
-            reval_dates = []
-            for date in sorted([x for x in time_grid.mtm_dates if x <= max(mtm_dates)]):
-                ts, tl = self.calc_liquidation_settlement_dates(date, base_date)
-                if ts in time_grid.mtm_dates and tl in time_grid.mtm_dates:
-                    reval_dates.append(date)
-        else:
-            reval_dates = sorted([x for x in time_grid.mtm_dates if x <= max(mtm_dates)])
+            # a collateralised date reports where its settlement and liquidation dates are on the grid
+            reval_dates = [date for date in reval_dates if all(
+                x in time_grid.mtm_dates for x in self.calc_liquidation_settlement_dates(date, base_date))]
         return reval_dates
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
@@ -1280,10 +1278,18 @@ class NettingCollateralSet(Deal):
 
                 if collateral_assets.get('Cash_Collateral'):
                     collateral_cash = self.field['Collateral_Assets']['Cash_Collateral']
+                    # `Amount` weighs an asset in the collateral the balance counts: a sole asset's
+                    # balance cancels it, so a sole row stating none is a unit; among several it is not
+                    sole = len(collateral_cash) == 1 and not collateral_defined
                     for col_cash in collateral_cash:
+                        if col_cash.get('Amount') is None and not sole:
+                            raise ValueError('{}: a Cash_Collateral row states no Amount, its weight '
+                                             'among several collateral assets'.format(
+                                                 self.field.get('Reference')))
                         field_index['Cash_Collateral'].append(
                             utils.Collateral(Haircut=float(col_cash['Haircut_Posted']),
-                                             Amount=col_cash['Amount'],
+                                             Amount=1.0 if col_cash.get('Amount') is None
+                                             else col_cash['Amount'],
                                              Currency=get_fxrate_factor(
                                                  utils.check_rate_name(col_cash['Currency']),
                                                  static_offsets, stochastic_offsets),
@@ -2397,7 +2403,7 @@ class SwapInterestDeal(Deal):
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Fixed_Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Rate_Constant', 'Float', default=0.0, convention=True, obj='Percent'),
-        F('Compounding_Method', 'Text', default='None', convention=True, values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']),
+        F('Compounding_Method', 'Text', default='None', convention=True, values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
@@ -2497,7 +2503,7 @@ class SwapInterestDeal(Deal):
         field_index['Compounding'] = self.field['Fixed_Compounding'] == 'Yes'
         field_index['CompoundingMethod'] = self.field.get('Compounding_Method', 'None')
         # read where a coupon owns several resets, which its Compounding_Method folds: None
-        # averages them at generate_float's 1/n, OIS compounds them, and the others refuse
+        # averages them at generate_float's 1/n and the others compound them
         field_index['AveragingMethod'] = 'Average_Rate'
         field_index['InterestYieldVol'] = np.zeros(1, dtype=np.int32)
 
@@ -2716,8 +2722,8 @@ class CFFloatingInterestListDeal(Deal):
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Rate_Adjustment_Method', 'Text', default='None', convention=True, values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
         F('Forecast_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Settlement_Amount', 'Float', default=0.0, sized=True),
-        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin', 'Exponential']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Settlement_Amount', 'Float', default=0.0),
+        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Rate_Calendars', 'Text', default='', convention=True),
@@ -2747,11 +2753,13 @@ class CFFloatingInterestListDeal(Deal):
             'at its own strike, so the smile is picked up automatically.',
             '',
             'On an aggregated leg (several resets per cashflow), **Compounding_Method** folds the',
-            'resets to the period rate - `None` averages them, `OIS` compounds them, and the other',
-            'methods refuse by name - and **Averaging_Method** picks the cap convention:',
-            '`Pre_Aggregation` prices every reset as its own optionlet at its own expiry and',
-            'accrual before summing back to the period (the daily capped RFR shape, and with a',
-            'digital payoff a range accrual), while `Post_Aggregation` folds first and prices one',
+            'resets to the period rate - `None` averages them and the others compound them, the',
+            'margin placed as each places it across cashflows, `Flat` refusing a payment date that',
+            'gathers several cashflows, one of several resets - and **Averaging_Method** picks the',
+            'cap convention: `Pre_Aggregation` prices every reset as its own optionlet at its own',
+            'expiry and accrual before summing back to the period (the daily capped RFR shape, and',
+            'with a digital payoff a range accrual), placing no margin and so reading `None` or',
+            '`OIS` alone, while `Post_Aggregation` folds first and prices one',
             'option on the period rate, vol read at the period end with the averaging-decay Black',
             'time (integrated exactly when the valuation date sits inside the period). Any other',
             'value folds and prices at the reset-start expiry.'])
@@ -2765,6 +2773,12 @@ class CFFloatingInterestListDeal(Deal):
         super(CFFloatingInterestListDeal, self).reset()
         reset_dates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
         self.add_reval_dates(reset_dates, self.field['Currency'])
+
+    def validate(self):
+        """A floating list settles no forward: its pricer reads neither settlement field."""
+        for key in ('Settlement_Date', 'Settlement_Amount'):
+            if self.field.get(key):
+                yield '{} is stated, and a floating cashflow list settles no forward'.format(key)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -3687,6 +3701,9 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
 
 class EquityDiscreteExplicitAsianOption(Deal):
     vernacular = 'equity Asian option, average-rate option'
+    # a Compo's samples are S*X, which no print of the equity is
+    observes = Observes('Equity', 'EquityPrice', 'Sampling_Data', 1,
+                        unless=('Payoff_Type', 'Compo'))
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Units', 'Float', default=0.0, sized=True),
@@ -3779,7 +3796,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
 
 class EquityBarrierBinaryOption(Deal):
     vernacular = 'barrier digital, knock-in digital, knock-out binary'
-    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date')
+    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
+                        monitors=True)
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
@@ -4020,10 +4038,11 @@ class EquityOptionDeal(Deal):
 class EquityBinaryOption(EquityOptionDeal):
 
     vernacular = 'equity digital, binary option, cash-or-nothing, asset-or-nothing'
+    observes = Observes('Equity', 'EquityPrice', expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
-        F('Settlement_Date', 'Date', default='',
+        F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
 ])]
 
@@ -4085,7 +4104,7 @@ class EquityBinaryOption(EquityOptionDeal):
 
 class QEDI_CustomAutoCallSwap(Deal):
     vernacular = 'autocall, autocallable, phoenix, snowball'
-    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1)
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -4218,6 +4237,13 @@ class QEDI_CustomAutoCallSwap(Deal):
                     'crosses. Each coupon observes a fixing of its own, later than the one before '
                     'it'.format(ref, [x.strftime('%Y-%m-%d') for x in coupons],
                                 [x.strftime('%Y-%m-%d') for x in named]))
+            for previous, coupon, observed in zip(coupons, coupons[1:], named[1:]):
+                if observed <= previous:
+                    raise utils.UnpriceableSchedule(
+                        '{}: Coupon_Observations dates the coupon of {:%Y-%m-%d} on a fixing of '
+                        '{:%Y-%m-%d}, on or before the coupon of {:%Y-%m-%d} - a level the coupon '
+                        'before it has already decided on. Name a fixing after that coupon'
+                        .format(ref, coupon, observed, previous))
             return named, np.arange(len(coupons))
 
         ends = pricing.oss_window_ends(fixings, coupons)
@@ -4403,10 +4429,9 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'SpotModel=%s requires the one-step-survival autocall: every barrier date ON a '
                 'coupon date, and every coupon owning a window of fixings that its predecessor '
                 'does not. A window of MORE than one fixing is the arithmetic average, which the '
-                'OSS arm prices by truncating the prefix of the window and so needs '
-                'a kit whose conditioning step IS the fixing interval - LogVar2FJ; a DAILY kit '
-                'has only its last daily sub-step and takes one fixing per coupon. The '
-                'averaging (full-path) sim has no non-GBM path at all.' % spot_model)
+                'OSS arm prices by truncating the prefix of the window, the LogVar2FJ kit\'s '
+                'conditioning step being the fixing interval. The averaging (full-path) sim '
+                'has no non-GBM path at all.' % spot_model)
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
             pair = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])[1]
             if self.field['Payoff_Type'] != 'Quanto':
@@ -4446,19 +4471,16 @@ class QEDI_CustomAutoCallSwap(Deal):
             deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared)
         moneyness = pricing.calc_moneyness(strike * shared.one, spot, forward, deal_data)
 
-        if spot.shape[0] == deal_time.shape[0]:
-            mtm = pricing.pv_MC_AutoCallSwap(
-                shared, time_grid, deal_data, spot, moneyness, fx_rep) * fx_rep
-        else:
-            logging.error('AutoCall not priced due to missing equity model for {}'.format(self.field['Equity']))
-            mtm = spot.new_zeros(deal_time.shape[0], shared.simulation_batch)
-
-        return mtm
+        if spot.shape[0] != deal_time.shape[0]:
+            # skipped and counted, or refused, as any deal its pricer cannot value
+            raise ValueError('the equity {} is static and the autocall walks a simulated one - '
+                             'give it a model'.format(self.field['Equity']))
+        return pricing.pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep) * fx_rep
 
 
 class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
     vernacular = 'autocall swap, autocallable swap, phoenix swap'
-    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1)
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -4698,7 +4720,8 @@ class EquityNoTouchOption(EquityOneTouchOption):
 
 class EquityBarrierOption(Deal):
     vernacular = 'equity barrier option, knock-in, knock-out'
-    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date')
+    observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
+                        monitors=True)
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True),
         F('Units', 'Float', default=0.0, sized=True),
@@ -5125,6 +5148,7 @@ class CommodityFutureDeal(Deal):
 
 class CommodityAveragePriceSwapDeal(Deal):
     vernacular = 'average price swap, commodity swap, Asian swap'
+    observes = Observes('Commodity', 'CommodityPrice', 'Sampling_Data', 1)
     fields = [ADMIN, own('CommodityAveragePriceSwapDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Commodity', 'Text', default=REQUIRED, obj='Tuple'),
@@ -5545,7 +5569,7 @@ class EquitySwapLeg(Deal):
                           calendars):
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
-            'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
+            'Payoff_Currency': utils.check_rate_name(utils.payoff_currency(self.field)),
             'Equity': utils.check_rate_name(self.field['Equity'])
         }
 
@@ -5576,6 +5600,9 @@ class EquitySwapLeg(Deal):
                     field['Payoff_Currency'], static_offsets, stochastic_offsets, all_factors)
 
                 end_prices = [current_price, fx_reset]
+        if start_prices[0] is None and self.field['Effective_Date'] < base_date:
+            raise ValueError('Equity_Known_Prices states no price on or before the Effective_Date '
+                             '{:%Y-%m-%d}, before the base date'.format(self.field['Effective_Date']))
 
         field['cashflow'] = {'Items':
             [{
@@ -5748,8 +5775,9 @@ class FXOneTouchOption(Deal):
         und_curr_curve = utils.calc_time_grid_curve_rate(
             deal_data.Factor_dep['Underlying_Currency'][1], deal_time, shared)
 
-        spot = utils.calc_fx_cross(deal_data.Factor_dep['Underlying_Currency'][0],
-                                   deal_data.Factor_dep['Currency'][0], deal_time, shared)
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
+            deal_time, shared), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
 
@@ -5881,8 +5909,9 @@ class FXBarrierOption(Deal):
         und_curr_curve = utils.calc_time_grid_curve_rate(
             deal_data.Factor_dep['Underlying_Currency'][1], deal_time, shared)
 
-        spot = utils.calc_fx_cross(
-            deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0], deal_time, shared)
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
+            deal_time, shared), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
         b = torch.squeeze(
@@ -5999,8 +6028,9 @@ class FXPartialTimeBarrierOption(Deal):
         und_curr_curve = utils.calc_time_grid_curve_rate(
             deal_data.Factor_dep['Underlying_Currency'][1], deal_time[:-1], shared)
 
-        spot = utils.calc_fx_cross(deal_data.Factor_dep['Underlying_Currency'][0],
-                                   deal_data.Factor_dep['Currency'][0], deal_time, shared)
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
+            deal_time, shared), deal_time, shared)
 
         # need to adjust if there's just 1 timepoint - i.e. base reval
         if time_grid.mtm_time_grid.size > 1:
@@ -6196,9 +6226,9 @@ class FXTARFOptionDeal(Deal):
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
-        spot = utils.calc_fx_cross(
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
 
         mtm = pricing.pv_MC_Tarf(
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
@@ -6382,9 +6412,9 @@ class FXAccumulatorOptionDeal(Deal):
         FX_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
 
-        spot = utils.calc_fx_cross(
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
 
         return pricing.pv_MC_Accumulator(
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
@@ -6596,9 +6626,9 @@ class FXExtendableForwardDeal(Deal):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-        spot = utils.calc_fx_cross(
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
         return pricing.pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep) * fx_rep
 
 

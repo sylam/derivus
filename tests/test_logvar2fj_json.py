@@ -212,6 +212,56 @@ def test_the_quanto_gbm_limit_reproduces_the_gbm_quanto_deal():
     assert abs(lv - gbm) <= 1e-12 * abs(gbm), (lv, gbm)
 
 
+def test_a_reversion_past_single_precision_at_its_clock_refuses_at_load():
+    """The walk exponentiates its reversion speeds across a checkpoint segment of 21 steps, each up
+    to 1.5 trading days, cast to the job's dtype: `Kappa_S` 6 at `Steps_Per_Year` 1 decays by
+    exp(189) across one, past float32's exp(88.72), and the factor refuses at load naming both
+    speeds and the clock. At the default 252 it is exp(0.75) and the factor loads.
+
+    Killing mutation: the guard dropped, the document priced.
+    """
+    sections = _priced(factor=dict(LIVE_NIG, Steps_Per_Year=1.0))
+    sections['Valuation Configuration']['QEDI_CustomAutoCallSwap']['Steps_Per_Year'] = 1.0
+    with pytest.raises(ValueError, match=r'Kappa_S 6 and Kappa_L 0.5 at Steps_Per_Year 1 decay by '
+                                         r'exp\(189\) across one walk segment'):
+        _run(_job(_base(paths=512), [{'Instrument': {'.Deal': _autocall()}}], **sections))
+    assert np.isfinite(_mtm(_run(_job(_base(paths=512), [{'Instrument': {'.Deal': _autocall()}}],
+                                      **_priced(factor=LIVE_NIG)))))
+
+
+def test_the_mixer_uniform_is_drawn_in_double_under_pseudo_random_sampling():
+    """A batch of 16 paths or fewer draws its one-step-survival uniforms pseudo-randomly, and the
+    mixer's inverse-Gaussian root reads a tail 24 bits cannot express. A row carrying mixers draws
+    in double and casts its OSS columns to the job's dtype: in a float32 job the mixers come back
+    double, carrying bits below 2^-24, and each is `invgauss.ppf` at its own double uniform to
+    1e-12. The live NIG autocall's float32 base valuation - one path a batch, the pseudo branch -
+    then draws what the float64 one draws and reads it to float32's rounding, 3.4e-7, where its
+    single-precision stream read another sample 3.0e-2 away; the float64 mark is unmoved.
+
+    Killing mutations: either site drawing in the job's dtype again.
+    """
+    from types import SimpleNamespace
+
+    import scipy.stats
+    import torch
+    from derivus import pricing, utils
+    torch.manual_seed(1)
+    shared = SimpleNamespace(one=torch.ones(1, 1, dtype=torch.float32), simulation_batch=8)
+    oss, mix = pricing.oss_uniforms(shared, 3, 4, False, 2)
+    assert oss.dtype == torch.float32 and mix.dtype == torch.float64
+    assert (mix != mix.float().double()).any(), 'the mixer uniforms carry 24 bits'
+    m, lam = torch.tensor(0.004, dtype=torch.float64), torch.tensor(0.0144, dtype=torch.float64)
+    np.testing.assert_allclose(utils.LogVar2FJ.ig_quantile(mix, m, lam).numpy(), scipy.stats.invgauss.ppf(
+        mix.numpy(), float(m / lam), scale=float(lam)), rtol=1e-12, atol=0)
+    marks = []
+    for prec in (torch.float32, torch.float64):
+        cx = rf.Context()
+        cx.load_json((_dumps(_job(_base(paths=4096), [{'Instrument': {'.Deal': _autocall()}}],
+                                  **_priced(factor=LIVE_NIG))), 'mixers.json'))
+        marks.append(_mtm(rf.run_baseval(cx.current_cfg, prec=prec)[1]))
+    assert abs(marks[0] / marks[1] - 1.0) < 1e-5, marks
+
+
 # ------------------------------------------------------------------------------------------
 # 8  THE RESERVE IS COMPOSED AS DOCUMENTED
 # ------------------------------------------------------------------------------------------
@@ -439,6 +489,68 @@ def test_a_ladder_with_no_wings_reads_its_skew_as_silent(silent_fit):
     assert guard.count('quotes silent') == len(rows), guard
     printed = [float(x) for x in re.findall(r'([\d.]+(?:e[-+]\d+)?)x\b', report)]
     assert not [x for x in printed if x > bootstrappers.LVFit.PRIOR_RATIO], printed
+
+
+def test_a_prior_on_a_bucket_lever_holds_every_bucket():
+    """The world's ladder on the Walk with two `Param_Buckets`, 0 and 1y: the `Rho_S` and `Alpha`
+    priors carry one soft row per bucket, as the product and the share beside them do, where the
+    fit read bucket 0 alone and left the joint polish moving bucket 1 unpriored. The residual's prior
+    block, the state set off each prior - `rho_s` -0.5 and -0.3, `alpha` 1.25 and 0.8 of its
+    target - holds w (rho_k - rho) and q (log alpha_k - log alpha) for k = 0, 1 by hand, at the
+    target and scale each prior row declares; and a stage's identification table, one iterate,
+    counts the same eight prior rows.
+
+    Killing mutations: the prior read at bucket 0 again, one row each; the two levers left out of
+    `BUCKET_ROWS`, the table's prior block two rows short.
+    """
+    from derivus import config
+    cx = rf.Context()
+    cx.load_json((_dumps(_job(_base(), (), **_ladder())), 'buckets.json'))
+    params = cx.current_cfg.params
+    name = next(n for n in params['Bootstrapper Configuration'] if 'LogVar2FJ' in n)
+    fit = config.construct_bootstrapper(name, params['Bootstrapper Configuration'][name]).fit_for(
+        BLOCK, params['Market Prices'][BLOCK], params['System Parameters'], params['Price Models'],
+        params['Price Factors'], params['Price Factor Interpolation'],
+        {'Vanilla_Pricer': 'Walk', 'Paths': 512, 'Max_Iterations': 1,
+         'Param_Buckets': [{'Tenor': 0.0}, {'Tenor': 1.0}]})
+    fit.soft_priors()
+    priors = {row[0]: row[1:] for row in fit.prior_rows}
+    assert list(priors) == ['Rho_S', fit.LEVERAGE, 'Alpha', fit.SHARE], list(priors)
+    fit.state['Rho_S'] = [-0.5, -0.3]
+    fit.state['Alpha'] = [priors['Alpha'][0] * 1.25, priors['Alpha'][0] * 0.8]
+    coords = [(lever, k) for lever in ('Rho_S', 'Sigma_S', 'Beta', 'Alpha') for k in (0, 1)]
+    rows = fit.residual(fit.vector([fit.value_of(c) for c in coords]), coords, fit.quotes,
+                        fit.targets).detach().cpu().numpy()[len(fit.quotes) + len(fit.targets):]
+    (rho, w, _), (_, q, _) = priors['Rho_S'], priors['Alpha']
+    np.testing.assert_allclose(rows[:2], [w * (-0.5 - rho), w * (-0.3 - rho)], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(rows[4:6], [q * np.log(1.25), q * np.log(0.8)], rtol=1e-12, atol=0)
+    fit.stage('buckets', coords, fit.quotes, fit.targets)
+    assert fit.tables[-1][3].shape[0] == 8, fit.tables[-1][3].shape
+
+
+def test_a_declared_step_tolerance_stops_a_stage_on_its_step():
+    """`Step_Tolerance` is least_squares' `xtol`, declared at the 1e-12 it was fixed at. The residual
+    pair's stage on the two-rung ladder runs to its 12-evaluation cap at the default and stops on
+    its first step, two evaluations, at a declared 0.5.
+
+    Killing mutation: `xtol` fixed at 1e-12 again, the declaration read by nothing.
+    """
+    from derivus import config
+    evaluations = []
+    for declared in ({}, {'Step_Tolerance': 0.5}):
+        cx = rf.Context()
+        cx.load_json((_dumps(_job(_base(), (), **_ladder(rungs=2))), 'step_tolerance.json'))
+        params = cx.current_cfg.params
+        name = next(n for n in params['Bootstrapper Configuration'] if 'LogVar2FJ' in n)
+        fit = config.construct_bootstrapper(name, params['Bootstrapper Configuration'][name]).fit_for(
+            BLOCK, params['Market Prices'][BLOCK], params['System Parameters'], params['Price Models'],
+            params['Price Factors'], params['Price Factor Interpolation'],
+            dict({'Paths': 512, 'Max_Iterations': 12}, **declared))
+        fit.soft_priors()
+        fit.settle()
+        fit.stage('2 (alpha, beta)', [('Alpha', 0), ('Beta', 0)], fit.quotes)
+        evaluations.append(fit.calls['n'])
+    assert evaluations == [12, 2], evaluations
 
 
 # ------------------------------------------------------------------------------------------

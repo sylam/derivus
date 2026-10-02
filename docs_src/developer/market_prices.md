@@ -653,7 +653,7 @@ determinism rather than agreement.
 a fixed-draw sample mean to converge to 1e-8 looks like asking it to converge to its own rounding
 — but measured on the NKY chain block at `Pseudo` 8192, two orders of magnitude of `ftol` (1e-8
 against 1e-6) buy **one evaluation out of forty-four** and move θ\* by **4e-5 relative**. The
-stage is stopping on `xtol` (1e-12, hard-coded beside it), on `gtol`, or on the step. **The
+stage is stopping on `xtol` (`Step_Tolerance`, 1e-12 by default), on `gtol`, or on the step. **The
 default stays 1e-8** because loosening it is free of cost and free of benefit; a stage that runs
 long is a stage with a column the data does not move (see the identification table), not a stage
 converging to rounding.

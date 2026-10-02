@@ -46,6 +46,7 @@ WHAT THE NODE CANNOT DO is gated too. Detaching the saved inputs is what stops t
 back into the outer graph, and also why a SECOND derivative through it is severed and comes back
 partly zero - so `backward` refuses `create_graph` naming the switch.
 """
+import json
 import os
 import sys
 
@@ -57,7 +58,8 @@ import pytest
 import torch
 
 import derivus
-from derivus import pricing, run_baseval, utils
+from derivus import calculation, pricing, run_baseval, utils
+from derivus.schema import declared_defaults
 import test_boundary_tarf_events as tarf
 
 DTYPE = torch.float64
@@ -387,6 +389,63 @@ def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch
     assert not np.array_equal(grad_off, grad_on), (
         '{} on the {} stream reproduced the taped gradient exactly, so the gate it is meant to '
         'fail measures nothing:\n{}'.format(mutant.__name__, stream, grad_off))
+
+
+class Unlatched(calculation.Credit_Monte_Carlo):
+    """A credit Monte Carlo whose pricers register no boundary decision, so no correction is
+    assembled at its objective."""
+
+    def _init_shared_mem(self, *args, **kwargs):
+        shared = super()._init_shared_mem(*args, **kwargs)
+        shared.boundary_aad = False
+        return shared
+
+
+def test_the_accumulator_latch_is_live_and_rides_no_cotangent(monkeypatch, tmp_path):
+    """The accumulator decides its knock-out on the OUTER fixings, so its gaps keep their own graph
+    and the node carries none of them. Two readings that must disagree, as the barrier's: dropping
+    every cotangent but the marks' reproduces the corrected CVA gradient BIT for BIT, and the run
+    registering no decision at all MOVES it - 7.09 on a largest entry of 7.57, on the long-lag
+    document's one batch. Uncollateralised, because under a CSA a settled fixing reaches
+    `cash_settle` undetached and the node's settled output carries a cotangent of its own. The
+    node is substituted through the pricer's global, which every adopter calls by name - the seam
+    the equity pricers' twin gates take too - and the unregistered run is `Unlatched`.
+
+    Killing mutations: a gap reading the node's alive branch, so dropping its cotangent moves the
+    gradient; the latch registering nothing, so the unregistered run moves nothing.
+    """
+    import test_fx_accumulator_json as fa
+    job = fa._cva_long_lag(gradient='Yes')
+    job['Calc']['Calculation'].update(Recompute_Inner_MC='Yes', Simulation_Batches=1)
+
+    def gradient(calc=None):
+        if calc is None:
+            out = fa._run(job, tmp_path, 'latch')
+        else:
+            # `run_cmc`'s own preparation, the calculation a subclass of the one it constructs
+            context = derivus.Context()
+            context.load_json((json.dumps(job, default=str), 'unlatched'))
+            stated = context.current_cfg.deals['Calculation']
+            params = {'Time_grid': str(declared_defaults(calc, stated)['Time_Grid']),
+                      'Run_Date': stated['Base_Date'].strftime('%Y-%m-%d')}
+            params.update(stated)
+            out = calc(context.current_cfg, device=utils.calculation_device(None, 0),
+                       prec=torch.float32).execute(params)
+        return out['Results']['grad_cva']['Gradient'].values.astype(np.float64)
+
+    corrected = gradient()
+    with monkeypatch.context() as patch:
+        patch.setattr(pricing, 'InnerMCRecompute', NoBoundaryInjection)
+        dropped = gradient()
+    suppressed = gradient(Unlatched)
+    assert np.array_equal(corrected, dropped), (
+        'a cotangent of the accumulator node carries part of the boundary correction; max |d| '
+        '{:.6g}'.format(float(np.abs(corrected - dropped).max())))
+    moved = np.abs(corrected - suppressed)
+    assert moved.max() > 0.0, (
+        'the accumulator latch contributes nothing to this gradient, so the no-op above is vacuous')
+    print('\naccumulator correction beside the node: max |delta| = {:.6g} on a gradient of '
+          '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
 
 
 @pytest.mark.parametrize('run,stream,kills,spectates', [

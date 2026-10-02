@@ -155,10 +155,11 @@ differs from the cashflow count (`all_resets.shape[1] != reset_cashflows.np.shap
 against quarterly cashflows, the reshape set up at `calculate_dependencies` by
 `compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`, or a term leg whose index
 tenor is shorter than its coupon, which `generate_float` writes at `Weight = 1/n`. Each reset is read
-back at its full rate, so `OIS` compounds its weight-one resets and `None` averages the term leg's;
-`Flat`, `Include_Margin`, `Exclude_Margin` and `Exponential` refuse by name on that shape, their
-arithmetic not being there. **The shape test is the one signal left** an explicit mark on the compiled
-cashflows would replace.
+back at its full rate, so `None` averages the term leg's and the other methods compound them,
+`Include_Margin` with the margin, `Exclude_Margin` adding it simply and `Flat` growing it at the rate
+alone - `Flat` refusing a payment date that gathers several cashflows, one of several resets, and a
+`Pre_Aggregation` list, which caps each fixing and places no margin, refusing all three. **The shape
+test is the one signal left** an explicit mark on the compiled cashflows would replace.
 
 **An OIS benchmark is nevertheless a TERM swap.** At t0 the compounded overnight forwards read off a
 curve telescope to the period forward, so a `SwapInterestDeal` with `Compounding_Method='OIS'` and

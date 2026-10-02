@@ -29,7 +29,7 @@ def discount(day, rate=0.04):
     return math.exp(-rate * (day - B).days / 365.0)
 
 
-def by_hand(recovery=0.4, nominal=lambda end: 1e7):
+def by_hand(recovery=0.4, nominal=lambda end: 1e7, survival=lambda day: discount(day, 0.02)):
     """The trial swap bought, over each quarter (s, e] at a 100bp running coupon, quarterly ACT/365
     with the maturity day counted, hazard 2% on the flat 4% USD curve:
 
@@ -37,8 +37,8 @@ def by_hand(recovery=0.4, nominal=lambda end: 1e7):
     """
     dates = [B + pd.DateOffset(months=3 * k) for k in range(21)]
     return sum(nominal(e) * (
-        (1.0 - recovery) * (discount(s) + discount(e)) / 2 * (discount(s, 0.02) - discount(e, 0.02))
-        - 0.01 * ((e - s).days + (e == dates[-1])) / 365.0 * discount(e, 0.02) * discount(e))
+        (1.0 - recovery) * (discount(s) + discount(e)) / 2 * (survival(s) - survival(e))
+        - 0.01 * ((e - s).days + (e == dates[-1])) / 365.0 * survival(e) * discount(e))
         for s, e in zip(dates, dates[1:]))
 
 
@@ -73,6 +73,22 @@ def test_an_upfront_is_paid_by_the_protection_buyer_on_its_day():
     _, out = book.simulated([upfront], ('USD',), trial_credit.FACTORS, Generate_Cashflows='Yes')
     assert float(out['Results']['cashflows']['USD'].loc[day].iloc[0]) == pytest.approx(
         -2e5, rel=1e-6)
+
+
+def test_a_survival_curve_ending_before_the_maturity_hazards_on_at_its_last_rate():
+    """ISSUER_A written at a 1% hazard to one year and 4% to two: past its last knot a cumulative
+    hazard goes on at its last rate, H = max(1% t, 4% t - 3%), and the five-year swap marks
+    `by_hand()` off it, 420,785.05, where it read no default after its second year.
+
+    KILLING MUTATIONS: the curve read flat past its last knot, -156,936.29; carried on at its
+    average hazard H_N t / T_N, 212,000.51.
+    """
+    two = dict(trial_credit.FACTORS, **{'SurvivalProb.ISSUER_A': dict(
+        trial_credit.FACTORS['SurvivalProb.ISSUER_A'],
+        Curve=utils.Curve([], [[0.0, 0.0], [1.0, 0.01], [2.0, 0.05]]))})
+    hexes, _ = book.marks([CDS], two)
+    assert float.fromhex(hexes['CDS']) == pytest.approx(by_hand(
+        survival=lambda day: min(discount(day, 0.01), discount(day) * math.exp(0.03))), rel=1e-12)
 
 
 def test_a_premium_is_announced_with_the_sign_its_cash_moves():

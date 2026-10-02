@@ -6,8 +6,8 @@ analytically with weight `1 - Phi(zB)` and payoff `E[J(S_k) | fired]`, the CONTI
 smoothing.
 
 Pinned here: the fired branch is a conditional expectation, never `p x realised payoff`; the switch
-is declared on `Base_Revaluation` alone and off is the crisp path bit for bit; GBM and any kit
-whose conditioning step IS the fixing interval; a DAILY non-GBM kit refuses by name.
+is declared on `Base_Revaluation` alone and off is the crisp path bit for bit; GBM and the
+LogVar2FJ kit, whose conditioning step IS the fixing interval, are admitted on the same terms.
 
 Products: TARF, accumulator, discrete barrier, autocall - each against a differentiable trapezoid
 reference written in this file out of `math`/`torch` alone, so an error in the closed form cannot
@@ -1500,11 +1500,6 @@ def test_the_recompute_node_replays_the_barriers_smooth_callable(over):
                           replay['Results']['Greeks_First'].values), (
         'the recompute node did not replay the same smooth callable: {!r} taped, {!r} '
         'replayed'.format(_eq_first(taped), _eq_first(replay)))
-
-
-# THE SWITCH IS NO LONGER FAMILY-CONDITIONAL: the one surviving spot model hands each fixing
-# interval its own Gaussian block law, so `p` is that block's Phi and the estimator is admitted on
-# the same terms as GBM. The refusal this stood for died with the daily families.
 
 
 # ======================================================================================

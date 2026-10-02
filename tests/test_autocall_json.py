@@ -193,6 +193,38 @@ def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_pa
     assert _mtm(none) != _mtm(on_coupons)
 
 
+def test_a_coupon_observed_on_or_before_the_coupon_before_it_refuses_by_name(tmp_path):
+    """`Coupon_Observations` pairing the second coupon with a fixing on or before the first coupon
+    would read, on the wholly observed arm, the level the first coupon already decided on - the
+    pricer carries one observed fixing forward per coupon. Such a table refuses by name beside the
+    crossing check - a fixing on the first coupon's own day as one before it - and the same table
+    naming a fixing after the first coupon prices.
+
+    Killing mutations: the check dropped, the stale table priced; the check strict, the fixing on
+    the coupon's day priced.
+    """
+    import pytest
+
+    from derivus import utils
+    coupons = ['2024-12-27', '2025-06-27']
+    fixings = ['2024-12-20', '2024-12-24', '2024-12-27', '2025-06-24']
+
+    def doc(observed):
+        return _job(Expiry_Date={'.Timestamp': coupons[-1]},
+                    Price_Fixing=[[{'.Timestamp': x}, 0.0] for x in fixings],
+                    Autocall_Coupons=[[{'.Timestamp': x}, 0.04] for x in coupons],
+                    Autocall_Thresholds=[[{'.Timestamp': x}, 1.0] for x in coupons],
+                    Coupon_Observations=[[{'.Timestamp': c}, {'.Timestamp': f}]
+                                         for c, f in zip(coupons, observed)])
+
+    for stale in ('2024-12-24', '2024-12-27'):
+        with pytest.raises(utils.UnpriceableSchedule, match=(
+                r'Coupon_Observations dates the coupon of 2025-06-27 on a fixing of {}, on or '
+                r'before the coupon of 2024-12-27'.format(stale))):
+            _run(doc(['2024-12-20', stale]), tmp_path, 'stale')
+    assert math.isfinite(_mtm(_run(doc(['2024-12-24', '2025-06-24']), tmp_path, 'fresh')[0]))
+
+
 # --------------------------------------------------------------------------------------------
 # compo: the same digital on the CONVERTED spot
 # --------------------------------------------------------------------------------------------
@@ -355,6 +387,42 @@ def test_an_autocalled_path_pays_once_and_is_worth_nothing_after(tmp_path):
         cash, 'the deal autocalled at its first coupon, so nothing pays after it')
     assert np.all(np.abs(profile[2:]) < 1e-9), (
         profile, 'a path that has autocalled is worth nothing from then on')
+
+
+def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_carlo(tmp_path):
+    """The autocall walks a simulated equity, so a credit Monte Carlo holding its equity static
+    cannot value it: beside a cash flow the run values, it is counted under `Deals Skipped`, and
+    under `No` the run refuses naming it - where it was marked at nothing and counted nowhere.
+
+    Killing mutation: the static equity marked at zero again.
+    """
+    import pytest
+    from derivus import utils
+    job = _cmc_job(threshold=0.01)
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'HullWhite1FactorInterestRateModel.USD': {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0]]}},
+        'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, 0.01]]}}}}
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {
+        'InterestRate': 'HullWhite1FactorInterestRateModel'}, 'modelfilters': {}}}
+    job['Calc']['Deals']['Deals']['Children'].append({'Instrument': {'.Deal': {
+        'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+        'Discount_Rate': 'USD', 'Amount': 100.0, 'Payment_Date': {'.Timestamp': _stamp(180)}}}})
+
+    def run(name):
+        path = os.path.join(str(tmp_path), f'{name}.json')
+        with open(path, 'w') as f:
+            json.dump(job, f, default=str)
+        cx = rf.Context()
+        cx.load_json(path)
+        return cx.run_job()[1]
+
+    assert run('static')['Stats'].get('Deals Skipped') == 1
+    market['System Parameters']['Exclude_Deals_With_Missing_Market_Data'] = 'No'
+    with pytest.raises(utils.UnpriceableSchedule, match=r"Deal AC1 could not be priced - \('the "
+                                                        r"equity EQ is static"):
+        run('static_refused')
 
 
 def _cva_job(threshold=1.02, spot=None, gradient='No', report='USD'):

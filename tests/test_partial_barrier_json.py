@@ -603,9 +603,8 @@ def test_a_rebated_knock_out_registers_the_rebate_it_books_row_by_row():
     The declared amount is non-zero on exactly the paths the ledger paid one on, all 1024, at the
     row's own cross (60.2586 against a ledger 50.0, the USD/GBP rate there).
 
-    WHAT SHIPS HERE IS THE SAFETY HALF. This registration is built on a path no other fixture
-    takes, and building it must not move a reported number - bit-identical, not approximately. The
-    COMPLETENESS half needs a collateralised partial-barrier document, which this file has not got.
+    THIS IS THE SAFETY HALF. This registration is built on a path no other fixture takes, and
+    building it must not move a reported number - bit-identical, not approximately.
     """
     off, _ = _cva(deal=REBATED_LATCH_DEAL, bridge=False, batch=1024, batches=1)
     on, grad = _cva(deal=REBATED_LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)

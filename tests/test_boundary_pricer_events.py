@@ -787,6 +787,7 @@ def _latched_documents(tmp_path):
     import test_boundary_tarf_events as bt
     import test_extendable_forward_json as ef
     import test_fx_accumulator_json as fa
+    import test_partial_barrier_json as pb
     return {
         'barrier': lambda: _run(REBATED_BARRIER, gradient=True, collateralised=True,
                                 batch=256, mcmc=64),
@@ -795,10 +796,13 @@ def _latched_documents(tmp_path):
         'accumulator': lambda: fa._run(fa._cva_long_lag(gradient='Yes'), tmp_path, 'reach'),
         'tarf': lambda: bt._cmc(bt.PIN_CMC, gradient=True),
         'extendable': lambda: ef._run(ef._collateralised(ef._cva_job(gradient='Yes'))),
+        'partial': lambda: ef._run(ef._collateralised(pb._cva_job(
+            pb.REBATED_LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1))),
     }
 
 
-@pytest.mark.parametrize('pricer', ['barrier', 'autocall', 'accumulator', 'tarf', 'extendable'])
+@pytest.mark.parametrize('pricer', ['barrier', 'autocall', 'accumulator', 'tarf', 'extendable',
+                                    'partial'])
 def test_a_latched_registration_declares_every_settlement_in_its_reach(pricer, tmp_path):
     """A registration that does not name its deal's settlements is scored against the REALISED
     ledger: `net_from_gross` folds the cash that was actually paid into both branches while the
@@ -810,12 +814,14 @@ def test_a_latched_registration_declares_every_settlement_in_its_reach(pricer, t
     paying on their own date plus an expiry that is the twelfth crossing's date as well - and the
     registration that shipped declared NONE of them, first decision reaching row 7.
 
-    ALL FIVE LATCHED PRICERS, each on the document its own module owns. `settles` states an identity
+    ALL SIX LATCHED PRICERS, each on the document its own module owns. `settles` states an identity
     - the row pays out everything the deal is still worth - which only the barrier family satisfies;
     the three STREAMED pricers declare the same per-event facts through `cash_events` instead, each
-    fixing's settled amount at its own row beside the decision that gates it. This gate's reading on
-    the engine before they declared: accumulator rows 4 6 8 10 11 12 from a first reach of row 1,
-    TARF rows 1 3 5 7 9 11 from row 0, extendable rows 15 24 33 from row 11 - none declared.
+    fixing's settled amount at its own row beside the decision that gates it, and the partial-time
+    barrier both - its expiry settled, each knock-out rebate on the row its hit pays. This gate's
+    reading on the engine before they declared: accumulator rows 4 6 8 10 11 12 from a first reach
+    of row 1, TARF rows 1 3 5 7 9 11 from row 0, extendable rows 15 24 33 from row 11 - none
+    declared; the partial barrier's rebates at rows 2 to 6 with only its expiry, row 12.
 
     One deal per netting set, so `shared.t_Cashflows` at this point is that deal's own ledger.
     """
