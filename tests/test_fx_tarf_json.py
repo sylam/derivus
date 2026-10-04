@@ -274,8 +274,7 @@ def _black(fwd, k, sd, call=True):
 
 
 def _live_leg(row, level, remaining):
-    """The one SIMULATED fixing, walking on from the last observed level under a remaining target
-    of `remaining`.
+    """The one SIMULATED fixing, walked from `level` under a remaining target of `remaining`.
 
     However the one-step survival splits it, that fixing pays `min(relu(S - K), remaining)` on
     `N1` - the knocked weight banks the remainder, the surviving one its own intrinsic - so the ITM
@@ -299,25 +298,61 @@ def test_two_observed_fixings_in_one_settlement_lag_bank_their_own_accruals(tmp_
     behind them is capped by the 0.1 they left.
 
     THE ORACLE is those two banked legs plus a closed form for the live one - a call spread against
-    a leveraged put, no target arithmetic left in it. It agrees at 3.9e-6, which is the inner Sobol
-    draw and not a model difference; the gate is set 25x wider.
+    a leveraged put, no target arithmetic left in it - walked from TODAY'S SPOT, 1.1: an observed
+    fixing pays its own print and the strip goes on from the row's spot.
 
-    MEASURED: 497.1924 against an oracle of 497.1905. With every declared reset in the pot, settled
-    or not, the same document read 99.98989 - the first fixing banking 0.1, the remainder that
-    netting had already left, rather than the 0.2 it is worth.
+    MEASURED: 399.9131 against an oracle of 399.7397, 4.3e-4. The live leg sits at the money, so
+    the inner draw's standard deviation is 2.7e-4 of the mark at these paths (21 seeds, at most
+    5.8e-4), and the gate is 1e-3.
 
     BOTH ESTIMATORS, because both reach it: an OBSERVED fixing builds no kink term, so the smooth
     arm's decrement is the crisp one's and the two agree to the bit.
+
+    Killing mutations: the walk going on from the last print, 1.3, which reads 497.19; every
+    declared reset in the pot, settled or not, which reads 99.99 - the first fixing banking 0.1,
+    the remainder netting had already left, rather than the 0.2 it is worth.
     """
     accrual = LAGGED_SCHEDULE[0][2] - STRIKE
     oracle = (_leg(LAGGED_SCHEDULE[0], accrual) + _leg(LAGGED_SCHEDULE[1], accrual) +
-              _live_leg(LAGGED_SCHEDULE[2], LAGGED_SCHEDULE[1][2],
-                        LAGGED_TARGET - 2.0 * accrual))
+              _live_leg(LAGGED_SCHEDULE[2], SPOT, LAGGED_TARGET - 2.0 * accrual))
     value = _mtm(_run(_lagged_job(), tmp_path, 'lagged')[0])
-    assert abs(value - oracle) < 1e-4 * oracle, (value, oracle)
+    assert abs(value - oracle) < 1e-3 * oracle, (value, oracle)
 
     smooth = _mtm(_run(_lagged_job(smooth=True), tmp_path, 'lagged_smooth')[0])
     assert smooth == value, ('the smooth arm decremented differently', smooth, value)
+
+
+#: One-sided TARFs behind the two prints of 1.3 above, the target never reached: `(terms, each
+#: print's accrual on N1, the live fixing's payoff by Black)` - a call struck at 1.0, and a put at
+#: 1.2 whose leveraged leg knocks in at 1.25.
+ONE_SIDED = {
+    'call': ({'Strike_Price': 1.0}, 0.3,
+             lambda f, sd: N1 * _black(f, 1.0, sd) - N2 * _black(f, 1.0, sd, call=False)),
+    'knock-in': ({'Option_Type': 'Put', 'Strike_Price': 1.2, 'Barrier': 1.25}, -0.1 * N2 / N1,
+                 lambda f, sd: N1 * _black(f, 1.2, sd, call=False) - N2 * (
+                     _black(f, 1.25, sd) + 0.05 * _ndtr(math.log(f / 1.25) / sd - 0.5 * sd)))}
+
+
+@pytest.mark.parametrize('case', sorted(ONE_SIDED))
+def test_an_observed_fixing_pays_its_print_and_the_strip_walks_on_from_the_spot(case, tmp_path):
+    """AN OBSERVED FIXING IS ITS PRINT AND THE WALK IS THE ROW'S. Behind two fixings observed at 1.3
+    and not yet settled, a TARF whose target is never reached is those prints' payments at their
+    settlements plus a European on the live fixing walked from TODAY'S spot, 1.1: the call at 1.0
+    banks 0.3 a print, the put at 1.2 pays its leveraged 0.1 a print, 1.3 knocking it in at 1.25.
+
+    MEASURED: 713.7591 against 713.7690 and -317.8139 against -317.8374. Over 21 seeds at these
+    paths the inner draw's standard deviation is 1.4e-5 of the call and 1.4e-4 of the put (at most
+    2.5e-4), and the gate is 1e-3.
+
+    Killing mutations: the walk going on from the print, which reads 912.84 for the call; the
+    knock-in decided on the row's spot, 1.1 below the barrier, which reads 82.11 for the put.
+    """
+    terms, accrual, live = ONE_SIDED[case]
+    t, ts = (_offset(day['.Timestamp']) / DAYS for day in LAGGED_SCHEDULE[2][:2])
+    oracle = sum(_leg(row, accrual) for row in LAGGED_SCHEDULE[:2]) + math.exp(
+        -_r_usd(ts) * ts) * live(SPOT * math.exp((_r_usd(t) - Q_EUR) * t), SIGMA * math.sqrt(t))
+    value = _mtm(_run(_lagged_job(TargetLevel=UNREACHABLE, **terms), tmp_path, case)[0])
+    assert abs(value - oracle) < 1e-3 * abs(oracle), (value, oracle)
 
 
 def test_a_redeemed_deal_pays_nothing_after_the_crossing_fixing(tmp_path):
@@ -356,9 +391,6 @@ def test_the_second_observed_fixing_in_a_block_reads_its_own_level(tmp_path):
     never binds, and nothing live behind them. The mark is then both intrinsics at their own
     settlements and no model at all - an equality. Reading the first level twice reads 0.2 where
     0.15 is due on the second leg.
-
-    The live fixing is dropped on purpose: it walks on from the last OBSERVED level, so it moves
-    with the very thing this gate varies and would have to be subtracted rather than gated.
     """
     schedule = [LAGGED_SCHEDULE[0],
                 [LAGGED_SCHEDULE[1][0], LAGGED_SCHEDULE[1][1], LAGGED_SCHEDULE[1][2] - 0.05]]
@@ -380,8 +412,8 @@ def test_the_second_observed_fixing_in_a_block_reads_its_own_level(tmp_path):
 # deleted and `TargetLevel` reduced by its accrual - which walks the same fixings and draws the
 # same numbers, so the equality is to the BIT once the reduced target is the same double.
 #
-# The surface is SKEWED and the spot is the level the last observed fixing printed at: the strip
-# walks on from an observed level, so an oracle written at another spot reads the smile elsewhere.
+# The surface is SKEWED and the spot sits on the last observed print, where a walk from the row's
+# spot and one from the print agree - the lagged gate above is the one that tells them apart.
 # --------------------------------------------------------------------------------------------
 #: (Option_Type, spot, the settled fixing, the observed-but-unsettled one), each accruing on its
 #: own side of the strike - 0.05 settled and 0.04 observed, either way round.

@@ -602,39 +602,48 @@ def test_a_monitoring_date_is_never_a_payment_and_a_declared_one_always_is(unrec
 
 
 #: The types announcing a fixing or a monitoring day under no index: each reads its fixings off its
-#: own schedule, and a close passing on a print its mark ignores is a silent wrong number. An FX
-#: table fixes its own pair, which a print of the base's rate is not for a cross.
+#: own schedule, and a close passing on a print its mark ignores is a silent wrong number.
 UNOBSERVED = {'FXDiscreteExplicitDoubleAsianOption', 'EquitySwapLeg', 'EquitySwapletListDeal',
-              'YieldInflationCashflowListDeal', 'FloatingEnergyDeal', 'EnergySingleOption',
-              'FXDiscreteExplicitAsianOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
-              'FXExtendableForwardDeal'}
+              'YieldInflationCashflowListDeal', 'FloatingEnergyDeal', 'EnergySingleOption'}
 
 
 def test_every_fixing_names_the_index_its_type_declares():
-    """THE CENSUS. Every type's own `observes` is sound - the type declares the field naming the
+    """THE CENSUS. Every type's own `observes` is sound - the type declares the fields naming the
     index, whose factors include the family, a Table wide enough for the column a print fills, the
     fields electing at expiry, expiring and naming no index, and a table where it monitors - and
     over one deal of every type, the trial books, the types announcing a fixing or a monitoring day
     under no index are EXACTLY `UNOBSERVED`: a type gaining a declaration leaves it, and a new
     floating type cannot join it silently. Only a monitoring table announces barrier days, a 0.0 in
-    it no close, and a Compo equity Asian, averaging S*X, names no index.
+    it no close, and a Compo equity Asian, averaging S*X, names no index. An FX table names its
+    pair's legs against the book's base, whose own rate is one: the other leg for a base-relative
+    pair, at the power it enters the level at, and both for a cross - the base spelt as the fill
+    hands it and as the diary does.
 
     Killing mutations: `FRADeal.observes` deleted, which puts the FRA back among the types naming
     no index; a declaration naming a field its type does not declare; every declared table read as
     a monitoring one; `unless` unread; a barrier row reading the autocall's 0.0 placeholder
-    observed.
+    observed; the base's own leg named; a leg compared to the base as spelt.
     """
     for name, observes in schema.OBSERVES.items():
         fields = schema.declared_fields(getattr(instruments, name))
         factors, table = getattr(instruments, name).factor_fields, fields.get(observes.table)
-        assert observes.index in fields and observes.family in factors.get(observes.index, ()), name
+        keys = observes.index if isinstance(observes.index, tuple) else (observes.index,)
+        assert all(key in fields and observes.family in factors.get(key, ()) for key in keys), name
         assert observes.table is None or table is not None and table.type == 'Table' and len(
             table.row.fields) > observes.column, name
         assert {observes.elects, observes.expires, (observes.unless or [None])[0]} - {None} <= set(
             fields) and (observes.table or not observes.monitors), name
     asian = schema.OBSERVES['EquityDiscreteExplicitAsianOption']
-    assert schema.index_named({'Equity': 'EQ'}, asian) == 'EquityPrice.EQ'
-    assert schema.index_named({'Equity': 'EQ', 'Payoff_Type': 'Compo'}, asian) is None
+    assert schema.index_named({'Equity': 'EQ'}, asian) == {'EquityPrice.EQ': 1}
+    assert schema.index_named({'Equity': 'EQ', 'Payoff_Type': 'Compo'}, asian) == {}
+    pair = schema.OBSERVES['FXAccumulatorOptionDeal']
+    for underlying, currency, named in (('EUR', 'USD', {'FxRate.EUR': 1}),
+                                        ('USD', 'EUR', {'FxRate.EUR': -1}),
+                                        ('GBP', 'EUR', {'FxRate.GBP': 1, 'FxRate.EUR': -1})):
+        fields = {'Underlying_Currency': underlying, 'Currency': currency}
+        assert all(schema.index_named(fields, pair, base) == named
+                   for base in ('USD', utils.check_rate_name('USD'))), fields
+        assert schema.index_named(fields, pair) == {}, 'a pair read with no base'
     unnamed, barriers = set(), set()
     for family in trials.FAMILIES.values():
         document = trials.document(family)
@@ -687,71 +696,179 @@ def discounted(days):
 
 
 #: A row of each type's own table fixed a month before the base date with the close the desk typed
-#: on it, the print the record holds for that day, the terms it is traded on, and the mark's move
-#: per unit of the print by hand: an Asian struck below its average pays a sample's share, discounted.
-PAST = trials.B - pd.DateOffset(months=1)
+#: on it, the print the record holds for that day, the terms it is traded on, and the mark's move per
+#: unit of the level fixed by hand, discounted: an Asian's sample share, an FX fixing's whole move.
+PAST, SETTLES = trials.B - pd.DateOffset(months=1), trials.B + pd.DateOffset(days=2)
 FILLS = {
+    'FXASN': ('fx', 'Sampling_Data', [wire(PAST), 1.20, 1.0], 1.23, {'Strike_Price': 0.01},
+              1000.0 / 5 * discounted(365)),
     'EQASN': ('equity', 'Sampling_Data', [wire(PAST), 98.0, 1.0], 101.5, {'Strike_Price': 0.01},
               100.0 / 5 * discounted(365)),
     'METAL_APS': ('commodity', 'Sampling_Data', [wire(PAST), 1005.0, 1.0], 1012.5, {},
-                  250.0 / 7 * discounted(189))}
+                  250.0 / 7 * discounted(189)),
+    'FXEXT': ('fx', 'Extendable_ExpiryDates', [wire(PAST), wire(SETTLES), 1.27, None], 1.30, {},
+              1000.0 * discounted(2)),
+    'ACC': ('core', 'Accumulator_ExpiryDates', [wire(PAST), wire(SETTLES), 1.27], 1.30, {},
+            1000.0 * discounted(2)),
+    'ACC USD/EUR': ('core', 'Accumulator_ExpiryDates', [wire(PAST), wire(SETTLES), 0.79], 1.25,
+                    {'Underlying_Currency': 'USD', 'Currency': 'EUR', 'Discount_Rate': 'EUR'},
+                    2000.0 * 1.25 * math.exp(-0.02 * 2 / 365.0)),
+    'TARF': ('core', 'TARF_ExpiryDates', [wire(PAST), wire(SETTLES), 1.27], 1.30, {},
+             1000.0 * discounted(2))}
 
 
-@pytest.mark.parametrize('reference', sorted(FILLS))
-def test_a_print_fills_the_cell_its_type_declares_and_moves_the_mark_by_hand(reference, recorded):
-    """A FIXING THE RECORD HOLDS IS THE ONE THE MARK READS. A print filed under the index a type
-    declares lands in the column it declares, over the close the desk typed there, and the mark
-    moves by the hand amount: an Asian struck below its average, with samples to come, a sample's
-    share of the move discounted to its payment.
-
-    Killing mutation: each type's `observes` deleted, which leaves the typed close standing.
-    """
-    family, table, row, printed, traded, per_unit = FILLS[reference]
+def fill(key, printed, recorded):
+    """`FILLS[key]`'s one-deal job, that job compiled with `printed` filed on the row's day under the
+    index its type names against the book's dollars, the type's `observes` and `{index: power}`."""
+    family, table, row, _, traded, _ = FILLS[key]
     job = trials.document(trials.FAMILIES[family])
     children = job['Calc']['Deals']['Deals']['Children']
-    children[:] = [node for node in children if node['Instrument']['.Deal']['Reference'] == reference]
+    children[:] = [node for node in children
+                   if node['Instrument']['.Deal']['Reference'] == key.split()[0]]
     deal = children[0]['Instrument']['.Deal']
     deal.update(traded, **{table: [row] + [other for other in deal[table] if other[0] != row[0]]})
     terms = schema.OBSERVES[deal['Object']]
+    named = schema.index_named(deal, terms, 'USD')
     log = SpineLog(recorded)
     try:
-        index = schema.index_named(deal, terms)
+        (index,) = named
         policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {index: ['EXCHANGE']}})
         log.append('fixing_observed', {'index': index, 'date': str(PAST.date()),
                                        'source': 'EXCHANGE', 'value': printed}, actor=ACTOR)
     finally:
         log.close()
-    filled = spine.compiled_job(job)
+    return job, spine.compiled_job(job), terms, named
+
+
+@pytest.mark.parametrize('key', sorted(FILLS))
+def test_a_print_fills_the_cell_its_type_declares_and_moves_the_mark_by_hand(key, recorded):
+    """A FIXING THE RECORD HOLDS IS THE ONE THE MARK READS. A print filed under the index a type
+    declares lands in the column it declares, over the close the desk typed there, and the mark
+    moves by the hand amount: an Asian struck below its average, with samples to come, a sample's
+    share of the move discounted to its payment; an accumulator's, an extendable's and a TARF's
+    fixing - each a pair against the book's dollars, so one print - its whole move at its
+    settlement, the TARF's strip walking on from the row's spot; and an accumulator on dollars
+    settled in euros fixes one over the euro's print, 0.8 for 1.25, its leveraged leg's move
+    crossed into dollars.
+
+    Killing mutations: each type's `observes` deleted, which the gate's own lookup of the
+    declaration refuses; the TARF's strip walking on from the print, which moves it 115.10 where
+    the cash moves 29.99; a pair's one print written as it stands, which fills 1.25.
+    """
+    _, table, row, printed, _, per_unit = FILLS[key]
+    job, filled, terms, named = fill(key, printed, recorded)
+    level = printed if min(named.values()) > 0 else 1.0 / printed
     cell = filled['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][table][0]
-    assert cell[terms.column] == printed, cell
-    typed, read = (float.fromhex(trials.marks(document)[reference]) for document in (job, filled))
-    assert read - typed == pytest.approx(per_unit * (printed - row[terms.column]), rel=1e-12)
+    assert cell[terms.column] == level, cell
+    typed, read = (float.fromhex(trials.marks(document)[key.split()[0]])
+                   for document in (job, filled))
+    assert read - typed == pytest.approx(per_unit * (level - row[terms.column]), rel=1e-12)
 
 
-def test_a_print_of_the_base_s_rate_is_never_written_into_a_cross(recorded):
-    """AN FX TABLE NAMES NO INDEX. A EUR-settled accumulator on GBP fixes GBP in EUR, and a print of
-    `FxRate.GBP` is GBP in the book's dollars: compiled against a record holding 1.40 there, the
-    cell keeps the 1.15 the desk typed, where a base-relative declaration wrote the 1.40 over it.
+#: The cross the desk closed at 1.15, GBP in EUR, as the two legs' prints in the book's dollars.
+CROSS = {'FxRate.GBP': 1.40, 'FxRate.EUR': 1.40 / 1.15}
 
-    Killing mutation: the accumulator declaring `FxRate.<Underlying_Currency>`.
+#: The pound and the rand beside the core book's euro, each a rate in its dollars.
+LEGS = json.loads(dump({
+    'FxRate.GBP': {'Domestic_Currency': None, 'Interest_Rate': 'GBP', 'Spot': 1.40},
+    'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR', 'Spot': 1.0 / 18.0},
+    'InterestRate.GBP': {'Currency': 'GBP', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                         'Curve': utils.Curve([], [[0.0, 0.05], [5.0, 0.05]])},
+    'InterestRate.ZAR': {'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                         'Curve': utils.Curve([], [[0.0, 0.07], [5.0, 0.07]])}}))
+
+
+def test_a_cross_is_the_ratio_of_its_legs_prints_and_waits_for_both(recorded):
+    """A CROSS IS THE RATIO OF THE TWO BASE-RELATIVE RATES THE ENGINE VALUES IT WITH. A EUR-settled
+    accumulator on GBP in a dollar book fixes GBP in EUR, so on its table's days its diary asks for
+    both legs, `FxRate.GBP` and `FxRate.EUR`, each row a key of its own, and the cell left empty a
+    month back is GBP's print over EUR's, 1.40 / (1.40 / 1.15) = 1.15 - never the GBP/USD print.
+    With that print filed and the euro's not, the cell stays empty and the euro's rows stay open;
+    with both, each leg's row reads its own print and none the cross the cell holds.
+
+    Killing mutations: the base dropped from the fill, which leaves the cell empty with both prints
+    filed; a pair read as its first leg alone, which writes the GBP/USD 1.40 into the cell; the
+    cross's legs filed under one leg each, which gives two rows one key; a leg's row reading the
+    cell, which reads 1.15 as the pound's print.
     """
     job = trials.document(trials.FAMILIES['core'])
     children = job['Calc']['Deals']['Deals']['Children']
     children[:] = [node for node in children if node['Instrument']['.Deal']['Reference'] == 'ACC']
     deal = children[0]['Instrument']['.Deal']
-    row = [wire(PAST), wire(trials.B + pd.DateOffset(days=2)), 1.15]
     deal.update(Currency='EUR', Underlying_Currency='GBP', Discount_Rate='EUR',
-                Accumulator_ExpiryDates=[row] + [r for r in deal['Accumulator_ExpiryDates']
-                                                 if r[0] != row[0]])
+                Accumulator_ExpiryDates=[[wire(PAST), wire(SETTLES), None]] +
+                deal['Accumulator_ExpiryDates'])
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(LEGS)
+
+    def asked(document):
+        context = derivus.Context()
+        context.load_json((json.dumps(document), 'cross'))
+        return service.answered([row for row in spine.diary(context, {'ACC': 'ACC'}) if row[
+            'kind'] == Diary.FIXING and row['due_date'] == str(PAST.date())])
+
+    def filed(index):
+        log = SpineLog(recorded)
+        try:
+            log.append('fixing_observed', {'index': index, 'date': str(PAST.date()),
+                                           'source': 'EXCHANGE', 'value': CROSS[index]}, actor=ACTOR)
+        finally:
+            log.close()
+        filled = spine.compiled_job(job)
+        return filled, filled['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
+            'Accumulator_ExpiryDates'][0][2]
+
     log = SpineLog(recorded)
     try:
-        policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {'FxRate.GBP': ['EXCHANGE']}})
-        log.append('fixing_observed', {'index': 'FxRate.GBP', 'date': str(PAST.date()),
-                                       'source': 'EXCHANGE', 'value': 1.40}, actor=ACTOR)
+        policy.declare(log, ACTOR, policy.FIXINGS_POLICY,
+                       {'sources': {index: ['EXCHANGE'] for index in CROSS}})
     finally:
         log.close()
-    filled = spine.compiled_job(job)['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
-    assert filled['Accumulator_ExpiryDates'][0][2] == 1.15, filled['Accumulator_ExpiryDates'][0]
+    rows = asked(job)
+    assert {row['index'] for row in rows} == set(CROSS) and len(
+        {row['key'] for row in rows}) == len(rows) == 4, rows
+    assert filed('FxRate.GBP')[1] is None
+    assert {row['index'] for row in asked(job) if row['source'] is None} == {'FxRate.EUR'}
+    filled, cell = filed('FxRate.EUR')
+    assert cell == 1.40 / CROSS['FxRate.EUR'] == 1.15
+    assert all(row['observed'] == CROSS[row['index']] for row in asked(filled)), asked(filled)
+
+
+def test_a_divisor_printing_zero_fixes_no_level(recorded):
+    """A PRINT OF 0.0 UNDER A LEVEL'S DIVISOR FIXES NOTHING. The accumulator on dollars settled in
+    euros fixes one over `FxRate.EUR`: with 0.0 filed there, the plan's compile and the read's both
+    answer, the cell holding the 0.79 the desk typed.
+
+    Killing mutation: the guard removed, which divides by the print.
+    """
+    job, filled, _, _ = fill('ACC USD/EUR', 0.0, recorded)
+    for compiled in (filled, spine.compiled_job(job, strict=False)):
+        assert compiled['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'][
+            'Accumulator_ExpiryDates'][0][2] == 0.79
+
+
+def test_an_fx_option_fixes_its_pair_at_expiry():
+    """AN FX OPTION'S EXPIRY IS ITS PAIR'S LEVEL. The core book's FX option and binary reseated on
+    USD/ZAR in the dollar book ask `FxRate.ZAR` alone at expiry, never the base's own rate, and on
+    GBP/EUR both legs, each row under a key of its own.
+
+    Killing mutation: either type's single field restored, which asks the rand pair `FxRate.USD`.
+    """
+    job = trials.document(trials.FAMILIES['core'])
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(LEGS)
+    children = job['Calc']['Deals']['Deals']['Children']
+    children[:] = [node(dict(deal, Reference=deal['Reference'] + pair, Underlying_Currency=pair[:3],
+                             Currency=pair[3:], Discount_Rate=pair[3:]))
+                   for deal in (each['Instrument']['.Deal'] for each in trials.nodes(children))
+                   if deal['Reference'] in ('BIN', 'COLLAR_CALL') for pair in ('USDZAR', 'GBPEUR')]
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'pairs'))
+    references = [each['Instrument']['.Deal']['Reference'] for each in children]
+    rows = [row for row in spine.diary(context, dict(zip(references, references)))
+            if row['kind'] == Diary.FIXING]
+    for reference in references:
+        asked = [row for row in rows if row['instrument'] == reference]
+        assert {row['index'] for row in asked} == ({'FxRate.ZAR'} if 'ZAR' in reference else {
+            'FxRate.GBP', 'FxRate.EUR'}) and len({row['key'] for row in asked}) == len(asked), asked
 
 
 def declared(fixture, paid=None, base=None):

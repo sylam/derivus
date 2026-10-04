@@ -46,17 +46,49 @@ def reference_level(date):
                for lag, share in ((3, 1.0 - weight), (2, weight)))
 
 
+def rolled(items, at):
+    """`items` valued by hand at `at`: `Notional Rate_Multiplier final / base Yield accrual DF(pay)`
+    summed over the cashflows paying on or after it, USD at 4%."""
+    return sum(item['Notional'] * item['Rate_Multiplier'] * item['Yield'].amount *
+               item['Accrual_Year_Fraction'] * math.exp(-book.DISCOUNT[0] * (
+                   item['Payment_Date'] - at).days / 365.0) *
+               (item['Final_Reference_Value'] or reference_level(item['Final_Reference_Date'])) /
+               (item['Base_Reference_Value'] or reference_level(item['Base_Reference_Date']))
+               for item in items if item['Payment_Date'] >= at)
+
+
 def linker(items):
-    """`trial_rates`' LINKER paying `items`, its one-deal wire document and its value by hand:
-    `Notional Rate_Multiplier final / base Yield accrual DF(pay)` summed, USD at 4%."""
+    """`trial_rates`' LINKER paying `items`, its one-deal wire document and its value by hand."""
     deal = dict(LINKER, Cashflows={'Items': items})
-    value = sum(item['Notional'] * item['Rate_Multiplier'] * item['Yield'].amount *
-                item['Accrual_Year_Fraction'] * math.exp(-book.DISCOUNT[0] * (
-                    item['Payment_Date'] - B).days / 365.0) *
-                (item['Final_Reference_Value'] or reference_level(item['Final_Reference_Date'])) /
-                (item['Base_Reference_Value'] or reference_level(item['Base_Reference_Date']))
-                for item in items)
-    return document(SimpleNamespace(DEALS=[deal], FACTORS=trial_rates.FACTORS, CONFIGURATION={})), value
+    return document(SimpleNamespace(DEALS=[deal], FACTORS=trial_rates.FACTORS, CONFIGURATION={})), \
+        rolled(items, B)
+
+
+def still(job, simulated, grid='0d 1m(1m)'):
+    """`job`'s profile on `grid` under a credit Monte Carlo in float64 whose USD curve is a
+    Hull-White at zero vol and whose index is static or, `simulated`, a GBM at zero vol drifting at
+    the curve's 2.5% on its own 365.25-day clock."""
+    deals = job['Calc']['Deals']['Deals']
+    deals['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False'}}, 'Children': deals['Children']}]
+    job['Calc']['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': 'USD', 'Time_Grid': grid,
+        'Batch_Size': 16, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD'}
+    defaults = {'InterestRate': 'HullWhite1FactorInterestRateModel'}
+    models = {'HullWhite1FactorInterestRateModel.USD': {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]]),
+        'Sigma': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])}}
+    if simulated:
+        defaults['PriceIndex'] = 'GBMPriceIndexModel'
+        models['GBMPriceIndexModel.INFL'] = {'Vol': 0.0, 'Drift': 0.025 * 365.25 / 365.0}
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': defaults, 'modelfilters': {}}}
+    market['Price Models'] = models
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'linker_still'))
+    return derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]['Results']['mtm']
 
 
 def dated(items, when, rows=slice(None)):
@@ -147,30 +179,11 @@ def test_a_month_not_yet_printed_reads_the_forward_the_base_valuation_projects()
     item = dict(LINKER['Cashflows']['Items'][0], Final_Reference_Date=pd.Timestamp('2026-09-15'))
     job, value = linker([item])
     assert float.fromhex(marks(job)['LINKER']) == pytest.approx(value, rel=1e-12)
-    deals = job['Calc']['Deals']['Deals']
-    deals['Children'] = [{'Instrument': {'.Deal': {
-        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
-        'Collateralized': 'False'}}, 'Children': deals['Children']}]
-    job['Calc']['Calculation'] = {
-        'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': 'USD', 'Time_Grid': '0d 1m(1m)',
-        'Batch_Size': 16, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD'}
-    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {
-        'InterestRate': 'HullWhite1FactorInterestRateModel', 'PriceIndex': 'GBMPriceIndexModel'},
-        'modelfilters': {}}}
-    market['Price Models'] = {'HullWhite1FactorInterestRateModel.USD': {
-        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
-        'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]]),
-        'Sigma': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])},
-        'GBMPriceIndexModel.INFL': {'Vol': 0.0, 'Drift': 0.025 * 365.25 / 365.0}}
-    context = derivus.Context()
-    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'linker_still_index'))
-    profile = derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]['Results']['mtm']
-    paid = item['Payment_Date']
-    assert profile.index[-1] > paid and (profile.index > pd.Timestamp('2026-09-15')).sum() > 3
+    profile = still(job, simulated=True)
+    assert profile.index[-1] > item['Payment_Date'] and (
+        profile.index > pd.Timestamp('2026-09-15')).sum() > 3
     for at, row in profile.iterrows():
-        rolled = value * math.exp(0.04 * (at - B).days / 365.0) if at <= paid else 0.0
-        assert row.mean() == pytest.approx(rolled, rel=1e-12, abs=1e-9), at
+        assert row.mean() == pytest.approx(rolled([item], at), rel=1e-12, abs=1e-9), at
     blank = copy.deepcopy(LINKER['Cashflows']['Items'])
     blank[2].update(Final_Reference_Value=106.0, Final_Reference_Date=None)
     with pytest.raises(utils.UnpriceableSchedule, match="Index references fall before an earlier"):
@@ -183,3 +196,20 @@ def test_a_month_not_yet_printed_reads_the_forward_the_base_valuation_projects()
                         lambda item: B - pd.DateOffset(months=3) - (item['Payment_Date'] - B) / 4)):
         job, value = linker(items)
         assert float.fromhex(marks(job)['LINKER']) == pytest.approx(value, rel=1e-12)
+
+
+def test_a_static_index_rolls_as_the_base_valuation_does():
+    """The trialled linker, its four final references forecast, under a credit Monte Carlo whose USD
+    curve is a Hull-White at zero vol and whose index is STATIC: a static index prints nothing after
+    the base date, so every row projects off the publication in force on the base date at the curve,
+    on a grid opening there or a month later, and every row is the base valuation rolled to it by
+    hand - 40110.7281684577 at 2026-09-03.
+
+    Killing mutations: a static index's rows reading each row's own last publication, which projects
+    the base date's print off a later month - 0.2% under a month on, 4.69e-2 under two years on;
+    every row reading the grid's first, which is a month late on the later grid - 2.05e-3.
+    """
+    items = LINKER['Cashflows']['Items']
+    for grid in ('0d 1m(1m)', '1m 1m(1m)'):
+        for at, row in still(linker(items)[0], False, grid).iterrows():
+            assert row.mean() == pytest.approx(rolled(items, at), rel=1e-12, abs=1e-9), (grid, at)

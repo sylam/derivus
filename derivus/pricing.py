@@ -3648,7 +3648,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
           INSIDE ITS OWN STRIP where an observed fixing crosses, and is then worth the fixings it
           reached rather than zero, so each observed fixing's payment on a weight of ONE is
           returned beside the depth the row observed - what the latch's ``pending`` counts.
-        - KNOCK-IN: decided on ``Sj``, one decision per inner path, jump
+        - KNOCK-IN: decided on ``S_fix``, one decision per inner path, jump
           ``-Dj * L * p * relu(-intr) * N_otm``, gap in log space so a bandwidth means what it means
           at a barrier. At an already-observed fixing the decision is per SCENARIO and the gap is
           expanded along the inner axis - exact, the pooled kernel's ``1/n`` weights cancelling the
@@ -3756,11 +3756,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                             Sj_prev, fwd_drift, vol_step,
                             (torch.log(otm_bound / Sj_prev) - fwd_drift) / vol_step,
                             K, callOrPut < 0, gain_power)
-                    Sj = Sj * torch.exp(fwd_drift + vol_step * Z)
+                    Sj = S_fix = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
                     # the strip's j-th fixing is the schedule's `settle_offset + j`-th, where the
-                    # resolved samples stand too (declared, then simulated)
-                    Sj = past_fixings[min(settle_offset + j, num_samples - 1)].reshape(-1, 1)
+                    # resolved samples stand too (declared, then simulated): it pays its own print,
+                    # and the walk goes on from the row's spot
+                    S_fix = past_fixings[min(settle_offset + j, num_samples - 1)].reshape(-1, 1)
                     p = 1.0
                     # an OBSERVED fixing has no conditioning step to integrate against: its spot is
                     # data, so the knock-in is an exact indicator and the accrual carries no density
@@ -3769,9 +3770,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # target: the BLOCK's, which the survival truncation makes the PATH's own, except on
                 # an OBSERVED fixing, which has no truncation and so clamps at `R` itself
                 if not invertedTarget:
-                    eff_intr = (Sj - K) * callOrPut
+                    eff_intr = (S_fix - K) * callOrPut
                 else:
-                    eff_intr = (1.0 / Sj - 1.0 / K) * (-callOrPut)
+                    eff_intr = (1.0 / S_fix - 1.0 / K) * (-callOrPut)
                 if use_past_fixing:
                     # the crossing fixing pays exactly the remainder and the deal REDEEMS: an exact
                     # 0/1 survival, which is what the ledger's identity wants at an observed fixing
@@ -3788,12 +3789,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 integrated = smooth and otm_analytic is not None
                 if integrated:
                     # integrated above; nothing of this leg is sampled, so no indicator is formed
-                    barrier_hit = torch.zeros_like(Sj)
+                    barrier_hit = torch.zeros_like(S_fix)
                 elif barrier > 0.0:
-                    barrier_intr = (barrier - Sj) * callOrPut
-                    barrier_hit = (barrier_intr >= 0.0).to(Sj.dtype)
+                    barrier_intr = (barrier - S_fix) * callOrPut
+                    barrier_hit = (barrier_intr >= 0.0).to(S_fix.dtype)
                 else:
-                    barrier_hit = torch.ones_like(Sj)
+                    barrier_hit = torch.ones_like(S_fix)
                 # the signed per-fixing cashflow
                 cf_itm = F.relu(intr) * N_itm
                 cf_otm = F.relu(-intr) * N_otm * barrier_hit
@@ -3823,7 +3824,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                         # `expand_as` covers the already-observed fixing too. Skipped wherever the
                         # conditional-p mixture took this decision - ONE estimator per decision
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
-                        gaps.append((callOrPut * torch.log(barrier / Sj)).expand_as(jump))
+                        gaps.append((callOrPut * torch.log(barrier / S_fix)).expand_as(jump))
                         jumps.append(jump)
                         knock_rows.append(i)
                 # the remaining target, decremented by this fixing's accrual on survivors

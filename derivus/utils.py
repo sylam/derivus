@@ -2172,9 +2172,9 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def index(cls, base_date, time_grid, position, cashflows, price_index, index_rate,
-              settlement_date, months_lag, interpolated):
+              settlement_date, months_lag, interpolated, simulated):
         """Index-linked cashflows from a data source, against the price_index (the inflation curve)
-        and index_rate (the printed index) factors."""
+        and index_rate (the printed index, `simulated` or static) factors."""
         last_print = index_rate.param['Last_Period_Start']
 
         def index_reference(pricing_date, resets, offsets):
@@ -2246,8 +2246,11 @@ class TensorCashFlows(TensorSchedule):
         if (indexed.schedule[:, CASHFLOW_INDEX_Pay_Day] != sorted(indexed.schedule[:, CASHFLOW_INDEX_Pay_Day])).any():
             logging.error("Cashflow Pay Day not in sorted order - check accrual dates")
 
+        # a static index prints nothing after the base date, so its every row reads the publication
+        # in force on the base date; a simulated one each row's own
         mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
-        for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
+        for last_published_date in index_rate.get_last_publication_dates(
+                base_date, mtm_grid if simulated else 0.0 * mtm_grid):
             # calc the number of days since last published date to the base date
             Rel_Day = (last_published_date - base_date).days
             Value = index_rate.get_reference_value(last_published_date) if last_published_date <= last_print else 0.0

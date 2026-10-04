@@ -272,6 +272,8 @@ def test_the_book_makes_its_marks_move_plus_its_cash_and_a_month_is_its_days(rec
         reference: (None, None) for reference in ('CF-A', 'CF-P', 'EQ-BIN', 'EQ-OTM', 'CF-D')}
     assert CLIENT.post('/book/close', content=dump({'actor': ACTOR}),
                        headers=JSON).status_code == 200
+    unmarked = CLIENT.get('/book/pnl')
+    assert unmarked.status_code == 422 and 'no marks stand for any day' in unmarked.text
     first = marked()
     assert first['instruments'] == 5 and first['market'] == 'official'
 

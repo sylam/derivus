@@ -408,7 +408,12 @@ walks the job's deals, and for each one whose type declares an observation table
 `observes` (`schema.OBSERVES`), read by the compiler and the diary alike and never spelled twice —
 writes the fixing in force at `lsn` into the cell that type declares it in, for a day ON OR BEFORE
 the job's own base date: a print carries its date as text, so a forward-dated one is a legal fact
-and writing it would price a barrier as observed on a day that has not happened. `/execute` and
+and writing it would price a barrier as observed on a day that has not happened. An FX table
+observes a pair, and every `FxRate` is a rate against the book's base, so it names its non-base
+legs - one for a base-relative pair, two for a cross - and its cell is the ratio of their prints,
+the base's own rate being one, written once every leg is printed and no divisor prints zero. A
+book holding an FX table therefore needs `FxRate.<ccy>` ordered in the fixings policy for each
+non-base leg, as every observed index does. `/execute` and
 `/prepare` both compile before they hash, so a plan named once and ticked as a delta is the plan
 that runs; without a home, and where the record holds no position and no deal declares an
 observation table, `compiled_job` returns its argument and the edge is what it always was. Which source is authoritative is POLICY:

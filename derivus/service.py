@@ -2469,13 +2469,14 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     marks = PnL.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
     days = sorted(marks)
     end_day = None if end is None else read_day(end)
-    start_day = read_day(start) if start is not None else (days[-1] if end_day is None else max(
-        (day for day in days if day < end_day), default=None))
+    start_day = read_day(start) if start is not None else max(
+        (day for day in days if end_day is None or day < end_day), default=None)
     for day in [start_day] + ([] if end_day is None else [end_day]):
         if day not in marks:
             raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; mark '
                                      'the book at a close with POST /book/marks'.format(
-                                         day or 'a day before {}'.format(end_day), market['name'],
+                                         day or end_day and 'a day before {}'.format(end_day)
+                                         or 'any day', market['name'],
                                          ', '.join(days) or 'none'))
     first = PnL.loaded(marks[start_day], spine.stored)
     last = (PnL.loaded(marks[end_day], spine.stored) if end_day is not None

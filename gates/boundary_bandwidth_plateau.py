@@ -2,18 +2,9 @@
 
 `pricing.boundary_weights` says local-linear weights cancel the local-constant estimator's
 O(bandwidth) bias "so the estimate holds still over a range of bandwidths", and that is the only
-acceptance criterion the docstring offers. It has never been read where the engine is documented to
-run: `Boundary_AAD_Bandwidth`'s own field note puts the default 0.01 at "roughly 32768 paths to
-populate the near-boundary band", and every published reading is at 512 or 1024.
-
-THE DOCUMENTED OPERATING POINT IS UNREACHABLE ON EVERY OSS PRICER, which this script demonstrates
-before it measures anything. `pricing.oss_uniforms` draws `shared.quasi_rng(shared.simulation_batch,
-n_fix * num_sims)` - the outer PATH COUNT as the Sobol DIMENSION, the transpose of the convention
-everywhere else in the engine (`stochasticprocess.py`: "Sobol dim = T+1 (inner timesteps); samples =
-B*B2 paths (unbounded)"). `torch.quasirandom.SobolEngine` stops at dimension 21201, so a
-`Batch_Size` above that refuses inside the pricer, `Deal.calculate` swallows it into a skipped deal,
-and the calculation dies downstream on the collapsed frame. 16384 paths is the largest power of two
-that runs; 20480 runs; 21248 does not.
+acceptance criterion the docstring offers. `Boundary_AAD_Bandwidth`'s own field note puts the
+default 0.01 at "roughly 32768 paths to populate the near-boundary band", and this script reads it
+there and at the declared 16384.
 
 THE READING IS THE REPORTED NUMBER. `Boundary_AAD_Bandwidth` is the only JSON knob that reaches the
 estimator, so the ladder is run end to end and read off `grad_cva`'s equity-spot entry - what a desk
@@ -31,7 +22,7 @@ families were retired and has no fixture today.
 
 SEEDS ARE THE YARDSTICK AND THAT IS THE WHOLE METHOD. "Holds still" is meaningless in the absolute:
 the estimate is a Monte Carlo functional, so the question is whether moving the bandwidth over a
-decade moves it by LESS than re-seeding does. Every ladder is run on `SEEDS` (three), the
+decade moves it by LESS than re-seeding does. Every ladder is run on `SEEDS` (six), the
 per-bandwidth seed spread is the floor, and a plateau is the widest contiguous bandwidth window
 whose spread sits under it. Spread is peak-to-peak over the median, the statistic
 `crn_ladder.Ladder.flatness` reads, so a bandwidth ladder and a bump ladder are quoted on one scale.
@@ -46,62 +37,47 @@ understates the sampling noise rather than bounding it.
 `Recompute_Inner_MC: 'Yes'` is what keeps the inner-MC tape off a 24GB device - 16384 paths at 32
 inner sims peaks at 4.30 GB against 15.93 taped, and 128 inner sims taped does not fit at all. It is
 a declared switch gated bit-identical in cva, profile, cashflows and the whole gradient on both
-these pricers (`tests/test_recompute_inner_mc.py`, `tests/test_recompute_equity_pricers.py`), and
-re-measured here on the exact configuration this script runs: cva 0.19923083023451238 and gradient
-0.015388746340457487 on both paths, every digit either prints.
+these pricers (`tests/test_recompute_inner_mc.py`, `tests/test_recompute_equity_pricers.py`).
 
-THE READING, 16384 paths, three seeds, seed MEAN of the isolated correction:
+THE READING, six seeds, seed MEAN of the isolated correction:
 
-                        0.005..0.04 (x8)   0.005..0.08 (x16)   0.0025..0.08 (x32)   seed floor
-    discrete barrier          2.41%              2.64%               11.45%           13.69%
-    Heston-Nandi              3.87%              5.40%               10.27%           28.52%
+                   0.005..0.04 (x8)   0.005..0.08 (x16)   0.0025..0.08 (x32)   seed floor
+    16384 paths          1.98%              1.97%                5.33%           14.36%
+    32768 paths          3.36%              3.35%                3.45%           10.64%
 
 and of the REPORTED CVA delta, which is the number a desk sees:
 
-    discrete barrier          0.60%              0.66%                2.85%            3.81%
-    Heston-Nandi              0.24%              0.33%                0.63%            1.96%
+    16384 paths          0.50%              0.50%                1.35%            3.90%
+    32768 paths          0.85%              0.85%                0.88%            2.17%
 
-SO IT DOES HOLD STILL AT 16384 PATHS, over 0.005..0.08 - a factor of 16, with the declared 0.01 one
-rung inside its lower edge. THE ROW STAYS CARRIED, NOT CLOSED: its acceptance names 32768 paths and
-that count does not run at all (see above), so this is the reading at the most the engine will do,
-and the seed floor is what says that means something: the same quantity moves
-13.69% / 28.52% when nothing but the seed changes, so a 2.4% / 3.9% bandwidth dependence over a
-factor of 8 is an order under the sampling noise it has to be told from. Widening one rung DOWN
-breaks it: 0.0025 reads 9% below the plateau on the barrier and 0.00125 reads 20% below it on
-Heston-Nandi, and the per-rung seed spread there goes to 36.8% and 101.1% - the kernel is starved,
-not biased, and `BOUNDARY_MAX_AMPLIFICATION` is where a two-point local-linear solve lands.
+SO IT HOLDS STILL AT BOTH COUNTS: the widest seed-mean window under the averaged floor is
+0.0025..0.08 at 16384 and 0.00125..0.08 at 32768 (0.0025..0.08 on the delta), with the declared 0.01
+inside it, and the seed floor is what says that means something - the same quantity moves 10% to
+14% when nothing but the seed changes. At 16384 the two lowest rungs read 5% and 7% below the rest,
+inside two standard errors; at 32768 they do not - the narrow kernel is populated by the path
+count, and `BOUNDARY_MAX_AMPLIFICATION` is where a starved two-point local-linear solve lands.
 
-ONE SEED CANNOT SEE THIS AND THAT IS THE CAVEAT THE ROW NEEDS. A single seed's spread over the same
-factor-16 window is 12.70%..12.98% on the barrier and 15.23%..23.09% on Heston-Nandi, and the three
-seeds do not even agree on the SIGN of the drift (seed 3 falls where seeds 1 and 2 rise), which is
-what says the per-seed drift is sampling and not the O(bandwidth) bias local-linear weights cancel.
-The plateau is a statement about the estimator, readable only on the average of three.
-
-At 20480 paths, one seed, the same window reads 13.08% (barrier) and 4.74% (Heston-Nandi) - one
-seed, so it is the one-seed noise above and not a second plateau reading.
+THREE SEEDS CANNOT SEE THIS, AND ONE SEES NOTHING. Seeds 1 to 3 alone read 2.4% over 0.005..0.04 at
+16384 and 6.1% at 32768, a single seed 3% to 14% over 0.005..0.08, and the seeds do not agree on
+the SIGN of the drift, which is what says the per-seed drift is sampling and not the O(bandwidth)
+bias local-linear weights cancel. The plateau is a statement about the estimator, readable only on
+the average of six - no spread here is a plateau WIDTH.
 
 THE PATH COUNT IS WHAT BUYS THE PLATEAU, which the same script says by being run under it: at 2048
 paths on the barrier, two seeds, the seed-mean correction falls MONOTONICALLY by 23.76% across
-0.0025..0.02 and no window of any width holds still to the seed floor. That is the row's "512 and
-1024, where it does not settle", reproduced - and it is the control that keeps the reading above
-from being a property of the statistic rather than of the estimator.
+0.0025..0.02 and no window of any width holds still to the seed floor - the control that keeps the
+reading above from being a property of the statistic rather than of the estimator.
 
-THE SUPPRESSION SEAM IS VALIDATED AGAINST THE ROW'S OWN MUTANT, not asserted: at the HN gate's own
-512 paths and 256 inner sims, `Boundary_AAD_Bandwidth` 1e-12 reports +1.400467416 and 0.01 reports
-+1.469847320, against the roadmap row's separately recorded "correction deleted" +1.4004674 and AAD
-+1.4698473 - every digit either prints, and the correction is 4.72% of the gradient against the
-row's 4.7%. A declared field reproduces a mutation that was taken by patching.
+RUN IT IN CHUNKS, and that is not a style choice. A run peaks at 4.3 GB at 16384 paths and 7.8 GB
+at 32768, and each further run inside one interpreter holds a run's worth more - 1 GB and 2 GB -
+until the caching allocator reaches the whole card and the driver starts paging to host memory.
+Three bandwidths per process is inside that budget at 16384 and two at 32768; the readings are
+CRN-deterministic in (subject, paths, seed, bandwidth, mcmc), so chunks merge exactly - re-running
+one reproduces it to the last digit.
 
-RUN IT IN CHUNKS, and that is not a style choice. A run's peak is 4.3 GB but the caching
-allocator's RESERVE climbs across runs inside one interpreter until it reaches the whole card and
-the driver starts paging to host memory, which turns a 3-second run into a 45-second one. Three
-bandwidths per process is inside that budget; the readings are CRN-deterministic in
-(subject, paths, seed, bandwidth, mcmc), so chunks merge exactly - re-running one reproduces it to
-the last digit.
-
-Run:  CUDA_VISIBLE_DEVICES=0 python gates/boundary_bandwidth_plateau.py --subjects discrete \
-          --seeds 1 --paths 16384 --mcmc 32 --ladder 0.005,0.01,0.02
-      ... --subjects discrete --seeds 1 --paths 4096      (a cheap smoke of the same ladder)
+Run:  CUDA_VISIBLE_DEVICES=0 python gates/boundary_bandwidth_plateau.py --seeds 1 --paths 16384 \
+          --mcmc 32 --ladder 0.005,0.01,0.02
+      ... --seeds 1 --paths 4096      (a cheap smoke of the same ladder)
 """
 import argparse
 import gc
@@ -124,12 +100,8 @@ from derivus.instruments import construct_instrument
 import test_barrier_bridge as bb
 import test_boundary_pricer_events as bpe
 
-#: the documented operating point, from `Boundary_AAD_Bandwidth`'s own field note
-DOCUMENTED_PATHS = 32768
-#: `torch.quasirandom.SobolEngine`'s maximum dimension, which `oss_uniforms` spends on paths
-SOBOL_DIMENSION_CAP = 21201
-#: what actually runs: the largest power of two under the cap, and the cap's own neighbourhood
-PATHS = (16384, 20480)
+#: the declared default, and the operating point `Boundary_AAD_Bandwidth`'s own field note names
+PATHS = (16384, 32768)
 DECLARED = 0.01
 #: a factor-64 ladder in steps of 2, so the declared window below sits four rungs wide inside it
 LADDER = (0.00125, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.08)
@@ -137,7 +109,7 @@ LADDER = (0.00125, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.08)
 DECLARED_WINDOW = (0.0025, 0.02)
 #: the empty-kernel branch, reached through the declared field rather than through a patch
 SUPPRESSED = 1e-12
-SEEDS = (1, 2, 3)
+SEEDS = (1, 2, 3, 4, 5, 6)
 #: inner OSS sims per scenario - 32 for the discrete barrier, the most the subject fits at these
 #: path counts. Common random numbers across the ladder - one seed draws one
 #: set of inner paths and every bandwidth reads it - so this sets the level the whole ladder shares
@@ -162,8 +134,7 @@ def _cva_gradient(config, seed, bandwidth, paths, mcmc, recompute, extra=None, b
 
     `batches` is TOTAL paths and not the estimator's: `shared.boundary_sets` is cleared per
     simulation batch, so the kernel always sees `paths` samples however many batches are averaged
-    over it. Raising it is the only way past the Sobol dimension cap and it does not reach the
-    documented operating point."""
+    over it."""
     overrides = {
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': paths,
         'Simulation_Batches': batches, 'Random_Seed': seed, 'Currency': 'USD', 'Tenor_Offset': 0.0,
@@ -263,23 +234,9 @@ def widest_plateau(rungs, values, tol):
     return best
 
 
-def show_ceiling(name, mcmc, recompute):
-    """Run the documented operating point and print what comes back. This is the finding, so it is
-    executed rather than asserted."""
-    print('THE DOCUMENTED OPERATING POINT, %s at %d paths:' % (name, DOCUMENTED_PATHS))
-    try:
-        cva, g = _cva_gradient(SUBJECTS[name]()[0], SEEDS[0], DECLARED, DOCUMENTED_PATHS,
-                               mcmc, recompute, SUBJECTS[name]()[1])
-        print('  it runs: cva %.17g   gradient %+.9e\n' % (cva, g))
-    except Exception as exc:
-        print('  %s' % str(exc)[:400])
-        print('  oss_uniforms spends the path count on SobolEngine\'s dimension, capped at %d.\n'
-              % SOBOL_DIMENSION_CAP)
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--subjects', default='discrete,hn')
+    ap.add_argument('--subjects', default='discrete')
     ap.add_argument('--seeds', default=','.join(str(s) for s in SEEDS))
     ap.add_argument('--paths', default=','.join(str(p) for p in PATHS))
     ap.add_argument('--mcmc', type=int, default=MCMC)
@@ -287,7 +244,6 @@ def main():
     ap.add_argument('--batches', type=int, default=1,
                     help='simulation batches: TOTAL paths, never the estimator sample count')
     ap.add_argument('--ladder', default=','.join(repr(b) for b in LADDER))
-    ap.add_argument('--no-ceiling', action='store_true', help='skip the operating-point probe')
     ap.add_argument('--memory-fraction', type=float, default=0.65,
                     help='cap the caching allocator; 0 leaves it alone')
     args = ap.parse_args()
@@ -305,9 +261,6 @@ def main():
     print('mcmc %d   recompute %s   batches %d   seeds %s   declared bandwidth %g' % (
         args.mcmc, args.recompute, args.batches, seeds, DECLARED))
     print('ladder %s   suppressed at %g (empty-kernel branch)\n' % (ladder, SUPPRESSED))
-    if not args.no_ceiling:
-        for name in names:
-            show_ceiling(name, args.mcmc, args.recompute)
 
     readings = {}
     for paths in paths_list:

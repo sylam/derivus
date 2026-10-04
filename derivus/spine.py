@@ -60,7 +60,7 @@ from .calculation import Base_Revaluation, Diary, construct_calculation
 from .schema import (OBSERVES, declared_fields, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
 from .config import Config, CustomJsonEncoder, as_json
-from .structures import timestamp
+from .structures import base_currency, timestamp
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
 #: call, like `DV_HOME` one module over.
@@ -571,6 +571,8 @@ def compiled_job(document, lsn=None, strict=True, runs=None):
     was printed rather than from what somebody typed. A deal type's own table is where its
     observations live and its own `observes` declares which - a fixing the record holds
     for a date the deal names overwrites the cell, and a date it holds nothing for is left standing.
+    A pair's cell is the ratio of its legs' prints against the book's base, whose own rate is one,
+    written once every leg is printed.
 
     NOTHING AFTER THE BASE DATE is filled. A `fixing_observed` carries its date as text, so a print
     dated forward is a legal fact; writing one onto a monitoring row would price a barrier as
@@ -602,12 +604,14 @@ def compiled_job(document, lsn=None, strict=True, runs=None):
         deal = node['Instrument']['.Deal']
         if deal.get('Object') == 'NettingCollateralSet' and deal.get('Reference') in balances:
             deal['Opening_Balance'] = balances[deal['Reference']]
-    observing = [(deal, terms, index_named(deal, terms)) for deal, terms in _observing(filled)]
-    named = {index for _, _, index in observing if index}
+    currency = base_currency(filled)
+    observing = [(deal, terms, index_named(deal, terms, currency))
+                 for deal, terms in _observing(filled)]
+    named = {index for _, _, indices in observing for index in indices}
     observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
     base = _base_day(filled)
-    for deal, terms, index in observing:
-        deal[terms.table] = [_observed(row, terms, observed.get((index, _day(row)))
+    for deal, terms, indices in observing:
+        deal[terms.table] = [_observed(row, terms, _level(indices, observed, _day(row))
                                        if _day(row) <= base else None)
                              for row in deal[terms.table]]
     return filled
@@ -825,14 +829,29 @@ def _day(row):
     return (date if isinstance(date, str) else date.strftime('%Y-%m-%d'))[:10]
 
 
-def _observed(row, terms, fixing):
-    """One table row with the record's print written into the column that deal type declares it in.
-    A row the record holds no print for is left exactly as the desk wrote it."""
-    if fixing is None:
+def _level(indices, observed, day):
+    """The level `day`'s prints fix for a deal observing `indices`, `{index: power}`: a print as it
+    stands, a pair's legs as their ratio, the numerator first as the engine crosses them - or None
+    while any is missing or a divisor prints zero."""
+    prints = [observed.get((index, day)) for index in indices]
+    if not prints or None in prints:
+        return None
+    level = 1.0
+    for printed, power in zip(prints, indices.values()):
+        if power < 0 and not printed['value']:
+            return None
+        level = level * printed['value'] if power > 0 else level / printed['value']
+    return level
+
+
+def _observed(row, terms, level):
+    """One table row with the level the record's prints fix written into the column that deal type
+    declares it in. A row the record fixes no level for is left exactly as the desk wrote it."""
+    if level is None:
         return row
     cells = list(row) if isinstance(row, (list, tuple)) else [row]
     cells.extend([None] * (terms.column + 1 - len(cells)))
-    cells[terms.column] = fixing['value']
+    cells[terms.column] = level
     return cells
 
 

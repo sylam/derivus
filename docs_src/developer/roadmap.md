@@ -41,10 +41,8 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **The autocall's observation arm starts a lagged block's walk at the last fixing.** A declared
   table pairing a coupon with a fixing on or before the previous coupon is refused by name; what
   remains is the prefix, where a block whose fixings lag its coupon dates walks the next coupon
-  from the fixing's print rather than the row's own spot, and its twin in the target redemption
-  forward, which walks the rest of its strip from a past fixing's print - a row fixed before the
-  base date and settling after it moves the trial TARF 76.73 where its cash moves 19.996. M each,
-  the fixing schedule being the deal's to author.
+  from the fixing's print rather than the row's own spot. M, the fixing schedule being the deal's
+  to author.
 - **The collateralised autocall's CVA delta is the boundary estimator's own variance.** Under a
   zero-threshold credit-support annex the boundary correction supplies two and a half times the
   pathwise term and scatters with the path count: 51% short at 256 outer paths, 18% over at 1,024,
@@ -59,9 +57,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   constant both estimators differentiate through the same analytic probability. What stays open is
   the exposure grid, which a credit valuation always prices crisp, declaring no such field: under
   a base valuation there is no boundary correction to be uncorrected, one row resolving no fixing.
-- **The extendable forward's rolling backward pass carries a one-signed smoothing bias over the
-  payoff's kink** from its 32-node Gauss-Hermite rule: UNMEASURED, and the four amplifying
-  documents at 128 nodes against 32 would measure it with no code written.
+- **The extendable forward's rolling backward pass carries a smoothing bias over the payoff's
+  kink** from its 32-node Gauss-Hermite rule, second order: at 128 nodes on the same seed the mark
+  rises 2e-7 to 7e-6 of its value on three documents with two rolling decisions, one-signed as a
+  mislocated exercise boundary is, the CVA by up to 0.02% and the CVA delta by -0.02% to +0.09%;
+  64 nodes sits with 256, and a single rolling decision has no kink to cross. `Boundary_Quadrature`
+  is the dial.
 - **The window-touch registration's ladder is not flat, and it is the default on its sign**: on a
   grid carrying a row a month — seven inside the window, six of them live — five seeds read a
   registered −2.136 at 8,192 paths and −1.915 at 32,768 against an unregistered +1.318, every one
@@ -71,11 +72,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   be wrong; `Boundary_AAD_Window_Touch: No` is the unregistered estimator, one value away. The
   switch is the credit Monte Carlo's alone: a base valuation's single date never reaches the
   observed-spot branch the latch lives in, so it declares no such field.
-- **The boundary correction's bandwidth plateau holds at 16,384 to 20,480 paths** over bandwidths
-  of 0.005 to 0.08, the correction spreading 2.4% to 3.9% and the CVA delta 0.6% to 0.2%; at 2,048
-  paths the correction falls monotonically by 24%. The declared default now sits at 16,384, the
-  bottom of that plateau, and the acceptance re-read at 32,768 is pending. The correction's scoping
-  has no public seam a mutation gate could reach.
+- **The boundary correction holds still over its bandwidth only at the declared path count.** At
+  16,384 and at 32,768 paths six seeds paired against the declared 0.01 resolve no dependence from
+  0.00125 to 0.08 - no rung past 1.7 standard errors, ±2% of the correction and ±0.5% of the CVA
+  delta over 0.005 to 0.08 - where three seeds' spread is noise at either count; at 2,048 paths
+  the correction falls monotonically by 24%. The correction's scoping has no public seam a
+  mutation gate could reach.
 - **The American option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
@@ -108,11 +110,13 @@ unmeasured — a limitation without a number is absolution, not documentation
   cash row stating no `Haircut_Posted`, which fails the set's compile on a `KeyError` today, read
   under the same ruling. A floating cashflow list's `Settlement_Date` and `Settlement_Amount` are
   refused by name where stated until the list reads them as the fixed list does in four places: M.
-- **A static price index never rolls under a credit Monte Carlo** (2026-09-30). Every row reads
-  the base date's print as the newest, so the trial linker's zero-vol profile sits 4.69e-2 below
-  the rolled base valuation two years on, and a reference dated after the base date reads the
-  index at its reference day under a simulated index too, 4.3e-3 on a multi-coupon linker. M: the
-  static half is every row projecting off the base date's print, the simulated half its own read.
+- **A price index under a credit Monte Carlo rolls only where it and its curve are both static**
+  (2026-09-30). A simulated index reads a reference month published after the base date at its
+  reference day, two months short of that month's own print - the coupon payment rows of a
+  multi-coupon linker 1.1e-3 to 4.3e-3 low - and a static index beside a simulated inflation
+  curve projects the base date's print along the row's curve from the base date, 2.76e-2 over the
+  rolled valuation two years on a curve sloped 1% to 5%. M each: what a published month is at a
+  row, its publication date on the scenario grid or a projection from the row's last print.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
@@ -188,21 +192,28 @@ unmeasured — a limitation without a number is absolution, not documentation
   `delete_deal` says it takes no seat, so this is a design call before it is a patch. Size M-L: an
   `actor` on each and an admission - `mark` for the market and the date, `book` for the file - with
   the metronome's grants and the web's calls counted.
-- **Ten types announce fixings that name no index** (2026-09-30). A fixing row is answered by a
+- **Six types announce fixings that name no index** (2026-09-30). A fixing row is answered by a
   print filed under the index it names, which a type declares as `observes`; a row naming none is
   answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no close,
   no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the deposit
   declare theirs, and read a reset the record has printed off the curve until their known-rate
   tables are filled from the record at compile as an observation table is - a day's move on one
   reset; a blank index field, which the compile resolves to the currency's curve, still announces
-  its fixings under none. The four FX table types - accumulator, TARF, extendable forward and the
-  FX Asian - wait on the book's base currency reaching the fill, their print being base-relative
-  (`FxRate.<other>`) only where one leg is the base, and on how a cross's print is named, the
-  desk's call. The double Asian, the equity swap leg and swaplet list, the two energy deals and the
-  composite equity Asian read fixings off a table the fill cannot write yet (M), the inflation list
-  M-L, and a swaption announces no expiry of its own, its legs reading as a live swap's - a design
-  call. The census in `tests/test_diary.py` names every type still open.
-- **The pricer branch census read 59 unexecuted arcs on 2026-09-02** and has not been re-taken.
+  its fixings under none. The double Asian, the equity swap leg and swaplet list, the two energy
+  deals and the composite equity Asian read fixings off a table the fill cannot write yet (M), the
+  inflation list M-L, and a swaption announces no expiry of its own, its legs reading as a live
+  swap's - a design call. The census in `tests/test_diary.py` names every type still open.
+- **A print of zero answers its fixing rows and fixes nothing** (2026-10-04). The record admits
+  any finite number as a print: a zero under an FX pair's divisor leaves the cell as the desk
+  typed it, under any other index it writes the engine's own mark of an unfixed cell, and either
+  way the row reads answered and the close legal. S: the fixing verb refusing a price that is not
+  positive.
+- **The pricer branch census reads 50 unexecuted arcs and its gate fails** (2026-10-04; 59 on
+  2026-09-02). `if all_hit:` in the discrete barrier, the must-cover row shape of the already-hit
+  defect, has had no test since the Heston-Nandi gates left; 16 arcs are code added since and
+  never run, 7 are LogVar2FJ arcs on the discrete barrier and the TARF no fixture reaches, and the
+  ledger no longer matches the code. S: a knocked-in barrier on a credit Monte Carlo grid, then
+  the ledger re-emitted.
 - **Ungated since the 2026-08-21 purge**: five modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
   already-hit barrier leg's value the expensive one.

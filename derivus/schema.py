@@ -112,9 +112,9 @@ AUTHORED = {'Date': ((pd.Timestamp,), '{".Timestamp": "2027-01-15"}'),
 #: `otherwise` is the date field it settles on where this one is blank.
 Cash = namedtuple('Cash', 'currency amount sign otherwise', defaults=(None, 1.0, None))
 
-#: What a deal type OBSERVES: `index` the field naming the factor a fixing is OF, `family` its type,
-#: `table` and `column` the cell a print fills, `elects` the field vesting a choice at expiry,
-#: `expires` its day, `monitors` a table of barrier days, `unless` the (field, value) naming none.
+#: What a deal type OBSERVES: `index` the field naming a fixing's factor, or a pair, first over
+#: second, `family` its type, `table` and `column` the cell a print fills, `elects`/`expires` the
+#: choice and day an expiry vests, `monitors` barrier days, `unless` the (field, value) naming none.
 Observes = namedtuple('Observes', 'index family table column elects expires monitors unless',
                       defaults=(None,) * 6)
 
@@ -312,13 +312,20 @@ def stated(day):
     return day is not None and not (isinstance(day, str) and not day)
 
 
-def index_named(fields, terms):
-    """The price factor an observation of this deal is OF, spelled as the engine spells a factor
-    name - `EquityPrice.SPX`, `InterestRate.ZAR` - or None where the type names no index."""
-    named = fields.get(terms.index) if terms is not None and terms.index else None
-    if named and terms.unless and fields.get(terms.unless[0]) == terms.unless[1]:
-        return None
-    return '{}.{}'.format(terms.family, '.'.join(utils.check_rate_name(named))) if named else None
+def index_named(fields, terms, base=None):
+    """`{index: power}` - the price factors an observation of this deal is OF, spelled as the engine
+    spells a factor name, `EquityPrice.SPX` or `InterestRate.ZAR`, at the power each enters the
+    level it observes; empty where the type names none. A pair's legs are rates against `base`,
+    the book's base currency, whose own rate is one: `FxRate.<other>` for a base-relative pair,
+    both legs for a cross, and none where the base is not known."""
+    keys = () if terms is None else terms.index if isinstance(terms.index, tuple) else (terms.index,)
+    named = [fields.get(key) for key in keys]
+    if not keys or not all(named) or terms.unless and fields.get(terms.unless[0]) == terms.unless[1] \
+            or len(keys) > 1 and not base:
+        return {}
+    return {'{}.{}'.format(terms.family, '.'.join(utils.check_rate_name(name))): power
+            for name, power in zip(named, (1, -1)) if len(keys) == 1 or
+            utils.check_rate_name(name) != utils.check_rate_name(base)}
 
 
 def instrument_fields(deal_type):

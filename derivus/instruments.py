@@ -2944,7 +2944,8 @@ class YieldInflationCashflowListDeal(Deal):
 
         field_index['Cashflows'], field_index['Base_Resets'], field_index['Final_Resets'] = utils.TensorCashFlows.index(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'],
-            inflation_factor, index_factor, self.field.get('Settlement_Date'), months_lag, interpolated)
+            inflation_factor, index_factor, self.field.get('Settlement_Date'), months_lag, interpolated,
+            field_index['PriceIndex'][0][0])
 
         field_index['SettleCurrency'] = self.field['Currency']
         field_index['Settlement_Date'] = (self.field.get('Settlement_Date') -
@@ -3527,6 +3528,7 @@ class SwaptionDeal(Deal):
 
 class FXDiscreteExplicitAsianOption(Deal):
     vernacular = 'FX Asian option, average-rate option'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Sampling_Data', 1)
     fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitAsianOption', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -6058,6 +6060,7 @@ class FXPartialTimeBarrierOption(Deal):
 
 class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXTARFOptionDeal', [
         F('Currency', 'Text', default=''),
         F('Underlying_Currency', 'Text', default=''),
@@ -6112,8 +6115,9 @@ class FXTARFOptionDeal(Deal):
             'behind the base date has paid, so its `Value` accrues into $A_0$ and its dates leave',
             'the grid - the strip prices against $T^* - A_0$ and never pays that row again, and a',
             'deal whose settled rows reach $T^*$ between them is redeemed and worth zero. A row',
-            'FIXED but not yet settled is still the strip\'s: it walks in-loop on its `Value` at',
-            'survival 1 and banks its payment at its own settlement date.',
+            'FIXED but not yet settled is still the strip\'s: it pays in-loop on its `Value` at',
+            'survival 1, banking its payment at its own settlement date, and the strip walks on',
+            'from the row\'s spot.',
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
@@ -6238,6 +6242,7 @@ class FXTARFOptionDeal(Deal):
 
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXAccumulatorOptionDeal', [
         F('Currency', 'Text', default=''),
         F('Underlying_Currency', 'Text', default=''),
@@ -6422,6 +6427,7 @@ class FXAccumulatorOptionDeal(Deal):
 
 class FXExtendableForwardDeal(Deal):
     vernacular = 'extendable forward, extendible forward'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Extendable_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXExtendableForwardDeal', [
         F('Currency', 'Text', default=''),
         F('Underlying_Currency', 'Text', default=''),
@@ -6634,7 +6640,7 @@ class FXExtendableForwardDeal(Deal):
 
 class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
-    observes = Observes('Underlying_Currency', 'FxRate', elects='Settlement_Style',
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', elects='Settlement_Style',
                         expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6730,7 +6736,7 @@ class FXEuropeanOption(FXOptionDeal):
 
 class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
-    observes = Observes('Underlying_Currency', 'FxRate', expires='Expiry_Date')
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),

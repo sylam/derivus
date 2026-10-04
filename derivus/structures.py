@@ -893,8 +893,8 @@ def base_currency(document):
 
     Read off the EXPLICIT block alone, the half `market_data` reads and the only half a quote can
     write, so a `MarketDataFile` not repeated here answers `None` rather than the engine's number.
-    None never resolves into a token (`utils.spot_model_currency` refuses it), so the two reads can
-    differ only into a refusal.
+    A quote never resolves None into a token (`utils.spot_model_currency` refuses it); the fill reads
+    it as no base, so an FX table names no index and its cell stands as the desk wrote it.
     """
     return document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('System Parameters', {}).get('Base_Currency')

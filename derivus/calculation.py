@@ -2458,7 +2458,8 @@ class Diary(Base_Revaluation):
         terms = OBSERVES.get(fields.get('Object'))
         reference = fields.get('Reference')
         rows = [cls._expiry_row(deal, cls.EXPIRED)]
-        rows.extend(cls._expiry_fixing(fields, terms, index_named(fields, terms), reference, rows))
+        rows.extend(cls._expiry_fixing(fields, terms, index_named(fields, terms, deal.base_currency),
+                                       reference, rows))
         settled = cls._settled_rows(fields, type(deal), reference)
         last = max((row['due_date'] for row in settled), default=None)
         rows.extend(row for row in settled if row['due_date'] == last)
@@ -2492,7 +2493,7 @@ class Diary(Base_Revaluation):
         fields = deal.field
         terms = OBSERVES.get(fields.get('Object'))
         reference = fields.get('Reference')
-        index = index_named(fields, terms)
+        indices = index_named(fields, terms, deal.base_currency)
         settlement = deal.get_settlement_currencies()
         # a type declaring its observation table fixes on that table's days, which a print fills: a
         # reset schedule it compiles off the table on any other day is a coupon's or a settlement's
@@ -2507,12 +2508,13 @@ class Diary(Base_Revaluation):
                                               base_date, currency, reference))
                 if schedule.Resets is not None:
                     rows.extend(cls._fixing_rows(schedule.Resets, leg + '.Resets', base_date,
-                                                 index, reference))
+                                                 indices, reference))
             elif isinstance(schedule, TensorResets):
-                rows.extend(row for row in cls._fixing_rows(schedule, leg, base_date, index, reference)
+                rows.extend(row for row in cls._fixing_rows(schedule, leg, base_date, indices,
+                                                            reference)
                             if days is None or row['due_date'] in days)
-        rows.extend(cls._barrier_rows(fields, terms, index, reference))
-        rows.extend(cls._expiry_fixing(fields, terms, index, reference, rows))
+        rows.extend(cls._barrier_rows(fields, terms, indices, reference))
+        rows.extend(cls._expiry_fixing(fields, terms, indices, reference, rows))
         rows.extend(cls._settled_rows(fields, type(deal), reference, since=base_date))
         rows.append(cls._expiry_row(deal, cls.DUE))
         return rows
@@ -2549,29 +2551,41 @@ class Diary(Base_Revaluation):
         return compiled if isinstance(compiled, dict) else {}
 
     @classmethod
-    def _fixing_rows(cls, resets, leg, base_date, index, reference):
+    def _asked(cls, row, indices):
+        """`row` once per index the deal names, `{index: power}`: under its own leg where it names
+        one, under the leg spelt with each where a cross names two, so every row keeps a key of its
+        own. The level a row carries is its index's only where that index is the level itself."""
+        if len(indices) < 2 and all(power > 0 for power in indices.values()):
+            return [dict(row, index=next(iter(indices), None))]
+        return [dict(row, index=index, observed=None, state=cls.DUE,
+                     leg=row['leg'] if len(indices) == 1 else '{}.{}'.format(row['leg'], index))
+                for index in indices]
+
+    @classmethod
+    def _fixing_rows(cls, resets, leg, base_date, indices, reference):
         """A reset schedule's observations, each one already fixed where its value is on the row."""
         rows = []
         for position, row in enumerate(resets.schedule):
             observed = float(row[RESET_INDEX_Value])
             due = base_date + pd.Timedelta(days=int(row[RESET_INDEX_Reset_Day]))
-            rows.append(cls._row(cls.FIXING, reference, leg, position, due, index=index,
-                                 observed=observed or None,
-                                 state=cls.OBSERVED if observed else cls.DUE))
+            rows.extend(cls._asked(cls._row(cls.FIXING, reference, leg, position, due,
+                                            observed=observed or None,
+                                            state=cls.OBSERVED if observed else cls.DUE), indices))
         return rows
 
     @classmethod
-    def _barrier_rows(cls, fields, terms, index, reference):
+    def _barrier_rows(cls, fields, terms, indices, reference):
         """The deal's own monitoring table: a date and the close it fixed at, through the one
         reader that already tolerates both shapes of the row, a 0.0 placeholder read unfixed as the
         fixing rows read it. Only a table its type declares `monitors` has barrier days - one it
         averages or settles off has none."""
         if terms is None or not terms.monitors:
             return []
-        return [cls._row(cls.BARRIER, reference, terms.table, position, date, index=index,
-                         observed=observed or None, state=cls.OBSERVED if observed else cls.DUE)
-                for position, (date, observed)
-                in enumerate(barrier_monitoring_rows(fields.get(terms.table) or []))]
+        return [asked for position, (date, observed)
+                in enumerate(barrier_monitoring_rows(fields.get(terms.table) or []))
+                for asked in cls._asked(cls._row(
+                    cls.BARRIER, reference, terms.table, position, date, observed=observed or None,
+                    state=cls.OBSERVED if observed else cls.DUE), indices)]
 
     @classmethod
     def _settled_rows(cls, fields, deal_type, reference, since=None):
@@ -2601,7 +2615,7 @@ class Diary(Base_Revaluation):
         return rows
 
     @classmethod
-    def _expiry_fixing(cls, fields, terms, index, reference, rows):
+    def _expiry_fixing(cls, fields, terms, indices, reference, rows):
         """The observation a deal's EXPIRY needs, where the compile builds no reset schedule for it.
 
         A European option's payoff is its underlying's print on the expiry day, and nothing in the
@@ -2609,12 +2623,12 @@ class Diary(Base_Revaluation):
         whose own schedules already announce a fixing on that day announces it once.
         """
         day = fields.get(terms.expires) if terms is not None and terms.expires else None
-        if day is None or index is None:
+        if day is None or not indices:
             return []
         date = pd.Timestamp(day).date().isoformat()
         if any(row['kind'] == cls.FIXING and row['due_date'] == date for row in rows):
             return []
-        return [cls._row(cls.FIXING, reference, cls.EXPIRY_LEG, 0, day, index=index)]
+        return cls._asked(cls._row(cls.FIXING, reference, cls.EXPIRY_LEG, 0, day), indices)
 
     @classmethod
     def _expiry_row(cls, deal, state):
