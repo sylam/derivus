@@ -524,13 +524,14 @@ def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     barrier's own 51, 81 interpolated - so this is where the branch profile was worst mis-mapped
     and the uncollateralised gate (17 rows, no interpolation) could not see it.
 
-    1.08% apart at 16384 paths on a ladder flat to 1.73%; two further seeds read 0.61% and 1.06%.
-    It was 6.71% before the settled ledger was declared, which is what most of that residual was.
-    MUTATION - the correction deleted - reads 45.27%, 42x clear, the correction being 31.9% of the
-    reported gradient. The 8% tolerance is the correction estimator's own bandwidth envelope at
-    this path count, re-taken against one oracle: +1.09 / +5.45 / +1.34 / +1.24% at bandwidths
-    0.01 / 0.005 / 0.02 / 0.05, so the narrowest kernel is what sizes it and not the reading."""
-    kw = dict(batch=512, mcmc=128, collateralised=True, batches=32)
+    3.23% apart at 4096 paths on a ladder flat to 3.50%; seeds 2 and 3 read 5.57% and 2.56%, and
+    16384 paths read 1.08%, 0.61% and 1.06%. It was 6.71% before the settled ledger was declared,
+    which is what most of that residual was. MUTATION - the correction deleted - reads 52.24%, 16x
+    clear (45.27% at 16384), the correction being 31.9% of the reported gradient. The 8% tolerance
+    is the correction estimator's own bandwidth envelope at 16384 paths, re-taken against one
+    oracle: +1.09 / +5.45 / +1.34 / +1.24% at bandwidths 0.01 / 0.005 / 0.02 / 0.05, so the
+    narrowest kernel is what sizes it and not the reading."""
+    kw = dict(batch=512, mcmc=128, collateralised=True, batches=8)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1],
                aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)

@@ -27,13 +27,17 @@ coverage throughout the years the barrier leg was 1432% wrong; what was missing 
 the output is the list of arcs, each carrying the fixture property that would reach it, so it reads
 as a work-list rather than as a number.
 
-WHY THE WHOLE SUITE. Any test may be the one that takes an arc, so a subset can only OVER-report,
-and an over-reported census is a work-list with invented work in it. The run is therefore long
-(~50 minutes on this repo), the fact it produces changes only when a pricer or a fixture changes,
-and re-analysis of an existing data directory is free - which is why this is a gate and not a test.
-It traces one test FILE at a time and resumes from what is already on disk, so an interrupted run is
-not a lost one and adding one test file costs one file's trace; the data lands in a fixed directory
-under the system temp, never in the repo.
+WHY THE WHOLE SUITE, AND WHICH PART OF IT. Any test may be the one that takes an arc, so a subset
+can only OVER-report, and an over-reported census is a work-list with invented work in it. But a
+test that never executes a line of the family takes none of its arcs, and the impact map
+(`gates/impacted.py`) says which lines each test executed: `cover` traces the cheapest of them that
+execute every family line between them and, for each branch read off an arc, one that went the other
+way - each file with only its own tests, plus what a test file changed since the map's commit
+selects. 26 minutes where the suite took 80 to 120, the ledger the same. Without a map the whole
+suite is traced. Re-analysis of an existing data directory is free - which
+is why this is a gate and not a test. It traces one test FILE at a time and resumes from what is
+already on disk, so an interrupted run is not a lost one; the data lands in a fixed directory under
+the system temp, never in the repo.
 
     CUDA_VISIBLE_DEVICES=0 python gates/pricer_branch_census.py            # measure, then assert
     CUDA_VISIBLE_DEVICES=0 python gates/pricer_branch_census.py --data D   # re-analyse D, no run
@@ -59,6 +63,9 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, 'gates'))
+
+import impacted  # noqa: E402
 
 PRICING = os.path.join(ROOT, 'derivus', 'pricing.py')
 
@@ -269,7 +276,7 @@ def pricing_hash():
     return hashlib.md5(open(PRICING, 'rb').read().replace(b'\r\n', b'\n')).hexdigest()
 
 
-def family_scopes():
+def family_scopes(text=None):
     """`[(start, end, qualname)]` for every def inside a `FAMILY` pricer, the pricer itself
     included.
 
@@ -289,7 +296,7 @@ def family_scopes():
                     walk(child, '')
             else:
                 walk(child, prefix)
-    walk(ast.parse(open(PRICING).read()), '')
+    walk(ast.parse(text or open(PRICING).read()), '')
     return out
 
 
@@ -310,7 +317,7 @@ def escapable(loop):
     return False
 
 
-def branch_sites():
+def branch_sites(text=None):
     """`{line: [qualname, source text, body lines, alternative name, tag, header lines, kind,
     else-block lines, the test contains a BoolOp]}` for every branch site in the family.
 
@@ -330,8 +337,8 @@ def branch_sites():
     jump that actually leaves the branch: an arc whose destination is still in the header decided
     nothing. `kind` and the BoolOp flag carry the other two exclusions `measure` needs - a loop's
     back edge and an operand's fall-through both land on the header line too."""
-    lines = open(PRICING).read().splitlines()
-    scopes = family_scopes()
+    lines = (text or open(PRICING).read()).splitlines()
+    scopes = family_scopes(text)
     sites = {}
 
     def owner(line):
@@ -499,8 +506,10 @@ def measure(data_dir):
         both |= set(part.get('both', ()))
     # a test file with no part is a test file that was never run, and its arcs would be reported as
     # unreached - the over-report that makes a census a work-list with invented work in it
-    missing = sorted({os.path.basename(p)[:-3] for p in
-                      glob.glob(os.path.join(ROOT, 'tests', 'test_*.py'))} - traced)
+    asked = os.path.join(data_dir, 'selection.list')
+    wanted = [p[:-3] for p in (json.load(open(asked)) if os.path.exists(asked) else
+                               glob.glob(os.path.join(ROOT, 'tests', 'test_*.py')))]
+    missing = sorted({os.path.basename(p) for p in wanted} - traced)
     assert not missing, f'no trace for {len(missing)} test files: {missing}'
     assert len(hashes) == 1, f'the parts in {data_dir} traced {len(hashes)} different pricing.py'
     assert hashes == {pricing_hash()}, \
@@ -533,8 +542,82 @@ def measure(data_dir):
     return found
 
 
+def cover(imap, sel, nodes):
+    """The cheapest of `nodes` that still EXECUTE every family line they execute between them, and
+    for each branch the census can only read off an arc - an `if` with no `else`, a loop that can be
+    left early - a test the map shows taking its test and not its body, or every test that executed
+    its test where the map shows none.
+
+    That is the whole of what `measure` reads: bodies and `else` blocks off the lines, the rest off
+    the arcs of a test that went the other way. The ledger it emits over the cover is the suite's."""
+    text = sel.mapped('derivus/pricing.py')[0]
+    scopes = family_scopes(text)
+    sets, table = sel.sets, imap['files'].get('derivus/pricing.py', {})
+    seconds = dict(enumerate(imap['seconds']))
+    index = {n: k for k, n in enumerate(imap['nodes'])}
+    whole = {k: sum(v for n, v in zip(imap['nodes'], imap['seconds']) if n.startswith(f + '::'))
+             for f, k in index.items() if '::' not in f}
+    cost = {k: whole.get(k, seconds[k]) + 0.1 for k in index.values()}
+    want = {index[n] for n in nodes if n in index}
+    executed = {int(ln): sets[s] & want for ln, s in table.items()
+                if any(a <= int(ln) <= b for a, b, _ in scopes)}
+    runs = {}
+    for ln, tests in executed.items():
+        for k in tests:
+            runs.setdefault(k, set()).add(ln)
+    chosen, covered = set(), set()
+    universe = set().union(*runs.values()) if runs else set()
+    while covered != universe:
+        best = max(runs, key=lambda k: len(runs[k] - covered) / cost[k])
+        chosen.add(best)
+        covered |= runs[best]
+    for line, site in branch_sites(text).items():
+        _, _, body, _, _, header, kind, alt, _, escapes, _ = site
+        if kind == 'ternary' or alt or (kind == 'loop' and not escapes):
+            continue
+        heads = set().union(*(executed.get(h, set()) for h in header))
+        other = heads - executed.get(min(body), set())
+        if other and not other & chosen:
+            chosen.add(min(other, key=cost.get))
+        elif not other:
+            chosen |= heads
+    return {imap['nodes'][k] for k in chosen}
+
+
+def selection():
+    """`{test file: [node ids], or [] for the whole file}` - the tests the impact map says entered a
+    `FAMILY` pricer, and in a test file changed since the map's commit what `impacted` selects for
+    that change - or None without a map.
+
+    A test that never executed a line of the family takes no arc of it, so tracing only these is
+    the whole suite's census; the map is keyed by function, so an edit inside a pricer since the
+    map's commit still finds every test that entered it."""
+    if not os.path.exists(impacted.MAP_PATH):
+        return None
+    imap = json.load(open(impacted.MAP_PATH))
+    sel = impacted.Selector(imap, None)
+    nodes = set()
+    for name in FAMILY:
+        nodes |= {imap['nodes'][k] for k in sel.entered('derivus/pricing.py', name) or ()}
+    changed = impacted.git('diff', '--name-only', imap['commit']).split('\n') + \
+        impacted.git('ls-files', '--others', '--exclude-standard', 'tests').split('\n')
+    changed_tests = set()
+    for path in changed:
+        if path.startswith('tests/') and path.endswith('.py'):
+            changed_tests |= sel.test_lines(path, impacted.show(None, path) or '',
+                                    impacted.changed_lines(impacted.show(imap['commit'], path),
+                                                           impacted.show(None, path))[1])
+    nodes = cover(imap, sel, nodes) | changed_tests
+    picked = {}
+    for n in sorted(sel.alive(nodes)):
+        picked.setdefault(n.split('::')[0], []).append(n)
+    return {path: ([] if path in nodes else [n for n in ids if '::' in n])
+            for path, ids in picked.items() if os.path.exists(os.path.join(ROOT, path))}
+
+
 def run_suite(data_dir):
-    """Trace the suite ONE TEST FILE AT A TIME into `data_dir`, one JSON part each.
+    """Trace the tests `selection` names, else the whole suite, ONE TEST FILE AT A TIME into
+    `data_dir`, one JSON part each, and record what was asked for beside them.
 
     One traced `pytest tests/` would be simpler - but a run killed at 96% would produce nothing at
     all. Per file, an interruption costs one file, a re-run resumes from what is already on disk,
@@ -544,14 +627,27 @@ def run_suite(data_dir):
     run, so an edit landing mid-run reattributes every arc below it to the wrong branch, and
     `measure` refuses a directory whose parts disagree."""
     os.makedirs(data_dir, exist_ok=True)
-    for path in sorted(glob.glob(os.path.join(ROOT, 'tests', 'test_*.py'))):
+    picked = selection()
+    if picked is None:
+        print('  no impact map - tracing the whole suite', flush=True)
+        picked = {f'tests/{os.path.basename(p)}': [] for p in
+                  glob.glob(os.path.join(ROOT, 'tests', 'test_*.py'))}
+    json.dump(sorted(picked), open(os.path.join(data_dir, 'selection.list'), 'w'))
+    for path, ids in sorted(picked.items()):
         name = os.path.basename(path)[:-3]
         part = os.path.join(data_dir, f'{name}.json')
         if os.path.exists(part):
             continue
-        print(f'  tracing {name}', flush=True)
-        subprocess.run([sys.executable, os.path.abspath(__file__), '--trace', part,
-                        f'tests/{name}.py'], cwd=ROOT, check=False)
+        print(f'  tracing {name}: {len(ids) or "every"} test(s)', flush=True)
+        target = path
+        if ids:
+            target = os.path.join(data_dir, f'{name}.args')
+            with open(target, 'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(ids) + '\n')
+            target = '@' + target
+        subprocess.run([sys.executable, os.path.abspath(__file__), '--trace', part, target],
+                       cwd=ROOT, check=False, env=impacted.test_env(
+                           os.path.basename(path), tempfile.mkdtemp(prefix='dvcensus_')))
 
 
 def main():

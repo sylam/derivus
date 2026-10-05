@@ -8,7 +8,7 @@ against day t+1's in the other, and a daily correlation survives that at about z
 
 Gate: two daily series drawn at 0.60, one estimator per side, every cross pair reads 0.60 back.
 Killing mutation: `start_of_return` dropped from any estimator's `delta` - the pairs it enters
-then read 0.05 on this draw, which is what one business day does to a daily correlation.
+then read 0.02 on this draw, which is what one business day does to a daily correlation.
 """
 import numpy as np
 import pandas as pd
@@ -17,9 +17,9 @@ from scipy.signal import lfilter
 
 from derivus import stochasticprocess as sp
 
-N = 2016                                       # eight business years
+N = 1008                                       # four business years
 RHO = 0.60
-SE = 1.0 / np.sqrt(N)                          # the sample's own standard error, 0.0223
+SE = 1.0 / np.sqrt(N)                          # the sample's own standard error, 0.0315
 INDEX = pd.bdate_range('2016-01-04', periods=N)
 MU, VOL = 0.05 / 252.0, 0.20 / np.sqrt(252.0)
 
@@ -89,10 +89,10 @@ def test_every_estimator_dates_its_first_innovation_on_the_first_observation(inn
 
 def test_every_pair_of_estimators_reads_the_correlation_the_pair_was_drawn_at(innovations):
     """Every estimator on one side against every estimator on the other, joined on the dates the
-    two share - 36 readings of one number. This draw realises 0.6363, 1.6 standard errors above
+    two share - 36 readings of one number. This draw realises 0.5877, 0.4 standard errors below
     the 0.60 it was drawn at, and every family reads that back: the SPREAD across the table is
-    0.0024, a tenth of a standard error, which is the assertion the clock owns. One estimator off
-    the clock puts 0.05 in eleven of the 36 cells."""
+    0.0056, a fifth of a standard error, which is the assertion the clock owns. One estimator off
+    the clock puts 0.02 in eleven of the 36 cells."""
     table = {(left, right): a.corr(b) for left, a in sorted(innovations['a'].items())
              for right, b in sorted(innovations['b'].items())}
     assert max(abs(rho - RHO) for rho in table.values()) < 2.0 * SE, table

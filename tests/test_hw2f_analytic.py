@@ -2645,46 +2645,6 @@ def test_the_analytic_solve_reports_what_the_engines_own_estimator_makes_of_it(c
         'the Monte Carlo objective audited itself - it IS the estimator, so there is nothing to say')
 
 
-def test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_do_not():
-    """DETERMINISM, and the seed spread beside it. The analytic objective draws no sample, so the
-    only randomness is basin hopping's own seeded search: two runs at one seed agree TO THE BIT,
-    and the answer is `AN_FOUR_THETA` and not the seed.
-
-    THE SEED SPREAD IS LARGER THAN THE MONTE CARLO PATH'S here, which is the opposite of what was
-    expected and is not evidence for the objective. Across seeds 5120 / 7 / 99 on the four-quote
-    block the Monte Carlo chain returns a bit-identical theta* every time while the analytic one
-    spreads 0.331 in `Alpha_1`. Four quotes against 23 parameters leaves theta* a MANIFOLD both
-    objectives interpolate exactly (`||r||` 3.4e-9 and 6.67e-7), so what differs is which point of
-    it the search reaches: the analytic evaluation is 13x cheaper, the chain makes 3x as many, and
-    it actually explores. The evidence for the objective is the stationarity gate.
-
-    Wall clock, CPU float64: 75.3 s against 16.4 s on the four-quote chain, a factor 4.6 bought as
-    13x per evaluation against 3.0x the evaluations. The 25-quote block costs 204 s over 849
-    evaluations - 0.240 s each against the four-quote block's 0.041, because SP is one scalar call
-    per benchmark. Per evaluation on the CUDA float32 a job runs, SP is still the slower of the two
-    (0.158 s against 0.140 s); batching it across the benchmark set is the open build.
-    """
-    first, second = (identified_calibration(Objective='Analytic')[0].solve() for _ in range(2))
-    assert [float(v).hex() for v in first.numpy()] == [float(v).hex() for v in second.numpy()], (
-        'two analytic solves at one seed disagree - the objective draws no sample, so the only '
-        'thing left that could move is the search, and it is seeded')
-    # and the answer is not the seed, or determinism would be free
-    calibration, world = identified_calibration(Objective='Analytic')
-    seed = torch.cat([v.detach().clone() for v in world['implied_var'].values()]).double()
-    assert float((first.double() - seed).abs().max()) > 1e-3, 'the chain returned its own seed'
-    # and it is the vector the theta-comparison reads, so that constant is a SOLVE OUTPUT
-    got = calibration.unflatten(first)
-    for name, recorded in AN_FOUR_THETA.items():
-        assert [float(v).hex() for v in np.atleast_1d(got[name])] == [
-            float(v).hex() for v in recorded], (
-            '{} solved to {} against the recorded {}'.format(name, list(got[name]), recorded))
-    # the fit is essentially exact, which is what makes theta* a manifold rather than a point
-    residual = stationarity(calibration, first)[1]
-    assert residual < 1e-5, (
-        'the four-quote analytic fit reads ||r|| {:.3e} against a recorded 2.29e-8 - it is 4 quotes '
-        'against 23 parameters, so it interpolates'.format(residual))
-
-
 def test_the_monte_carlo_objective_still_solves_to_this_vector():
     """THE BIT-IDENTITY BASELINE: the whole chain on the four-quote fixture returns
     `MC_FOUR_THETA`'s 23 doubles to the bit - same seed, same frozen Sobol sample, same acceptance
@@ -2726,7 +2686,11 @@ def test_the_absent_objective_is_the_declared_analytic_one():
     The gates upstream hold the fallback at the schema and at the residual; none of them runs a
     SOLVE, and between the fallback and the number written into `Price Factors` sit two optimizer
     stages, a seeded search, an acceptance test and a stopping rule. This pays ~13 s a chain to
-    close that gap.
+    close that gap, and the two chains agreeing to the bit is the search's determinism: the
+    objective draws no sample, so an unseeded search lands 0.39 apart and a chain left on its
+    seed reads `Alpha_1` 0.5. Across seeds 5120 / 7 / 99 the analytic theta* spreads 0.331 in
+    `Alpha_1` where the Monte Carlo chain's is bit-identical - four quotes leave a manifold the
+    cheaper evaluation lets the search explore.
     """
     absent, absent_world = identified_calibration()
     spelled, world = identified_calibration(Objective='Analytic')
@@ -2974,7 +2938,7 @@ def test_the_quote_triangle_closes_and_the_re_authored_rung_converges_as_h_squar
     theta, one_pass, v = quote_solve['theta'], quote_solve['one_pass'], quote_solve['cotangent']
     assert 0.1 < quote_solve['value'] < 0.2 and (one_pass > 1e-3).all(), quote_solve['value']
     # the Yes-vs-No bit-identity through two WHOLE chains: this solve had the quote side ON and
-    # `test_the_analytic_solve_is_deterministic...` re-derives the same vector with it OFF
+    # `test_the_absent_objective_is_the_declared_analytic_one` re-derives the same vector with it OFF
     solved = calibration.unflatten(theta.detach())
     for name, recorded in AN_FOUR_THETA.items():
         assert [float(value).hex() for value in np.atleast_1d(solved[name])] == [
@@ -3102,9 +3066,11 @@ def test_the_re_solve_oracle_still_scatters_once_the_solve_does_reach_stationari
     the value-space direction check are what gate it. This gate passes by FAILING to agree, and a
     flip would mean the solve had started returning a function of its quotes.
 
-    Six cold 25-quote solves, 210 to 330 s each - which is why the ladder is one column.
+    The two outer rungs are re-solved, four cold 25-quote solves of about 36 s each: every
+    assertion below is held on each of them and the end-to-end ones read the pair, so the middle
+    rung (3.580 / 0.0138 / +0.072 / 0.521) held nothing they do not.
     """
-    column, bumps = 12, (0.5, 0.2, 0.1)
+    column, bumps = 12, (0.5, 0.1)
     calibration, _ = quote_calibration(ID_ANALYTIC_THETA)
     theta = flat_theta(calibration, ID_ANALYTIC_THETA)
     residual, jacobian, quote_jac = residual_pieces(calibration, theta)

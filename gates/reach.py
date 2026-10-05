@@ -5,7 +5,7 @@
     python gates/reach.py --dirty [--since REV] [--repo DIR]  # changed SYMBOLS + a minimal doc set
     python gates/reach.py --build-map [--repo DIR]  # rebuild the document map (engine runs)
 
-Symbol-and-document-granular sibling of `gates/impacted.py`, which is file-and-test-granular.
+Symbol-and-document-granular sibling of `gates/impacted.py`, which is line-and-test-granular.
 They are NOT composed: that one answers "which test files", this one "which consumer classes and
 which JSON documents", and neither reduces to the other. Run both.
 
@@ -716,7 +716,7 @@ def show_dirty(d):
     if d['unreached']:
         print('\nNO DOCUMENT REACHES ({}): {}'.format(
             len(d['unreached']), ', '.join(d['unreached'][:20])))
-    print('\n# file-granular test selection is its sibling: gates/impacted.py --dirty')
+    print('\n# line-granular test selection is its sibling: gates/impacted.py --dirty')
 
 
 def main():

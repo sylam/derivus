@@ -42,8 +42,8 @@ class directly, with none of the `cls.apply` indirection the recompute node offe
 needs a module rebind, which this lane does not do. The fixture is BUILT so such a mutant would move
 a dominant term, but that claim is asserted nowhere and that half of the row stays open.
 
-THE 10% TOLERANCE IS NOT AN ACCURACY CLAIM: the live AAD sits 2.74% from its own CRN ladder (0.48%
-at seed 2), which is the estimator's residual at this path count. What does the work is the 366.61%
+THE 10% TOLERANCE IS NOT AN ACCURACY CLAIM: the live AAD sits 1.47% from its own CRN ladder (1.14%
+at seed 2), which is the estimator's residual at this path count. What does the work is the 363.78%
 kill, thirty-six times clear of it.
 """
 import os
@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
+import pytest
 
 from crn_ladder import Ladder, ladder
 import test_barrier_bridge as bb
@@ -63,17 +64,18 @@ from test_boundary_pricer_events import LIVE_RUNGS, NETTING, _run
 #: suppression mutant, taken through the declared field rather than through a patched engine.
 SUPPRESSED_BANDWIDTH = 1e-12
 
-#: The measured residual across two seeds - 2.74% and 0.48% - with room for the ladder's own 2.8%
+#: The measured residual across two seeds - 1.47% and 1.14% - with room for the ladder's own 3.5%
 #: flatness, not a widening. The second gate's docstring quotes the five rungs it is taken from.
 TOLERANCE = 0.10
-#: The suppression mutant reads 3.67x / 3.65x its own gradient off the same oracle; this is the
+#: The suppression mutant reads 3.64x / 3.61x its own gradient off the same oracle; this is the
 #: floor, and it is 20x the tolerance above.
 KILL_MARGIN = 2.0
 
-#: 16384 paths. The batch is a MEMORY constraint as much as a statistical one: two collateralised
-#: sets each put a whole margin schedule on the mtm grid, and 512 paths against 128 inner sims OOMs
-#: a 24GB device on this fixture.
-PATHS = dict(batch=512, mcmc=64, batches=32)
+#: 8192 paths: every reading and kill below holds at both seeds here as at 16384, and half the
+#: paths would leave the lifted lane's ladder unconverging at seed 2 (flatness 14.5%). The batch is
+#: a MEMORY constraint as much as a statistical one: two collateralised sets each put a whole margin
+#: schedule on the mtm grid, and 512 paths against 128 inner sims OOMs a 24GB device on this fixture.
+PATHS = dict(batch=512, mcmc=64, batches=16)
 
 MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 
@@ -108,33 +110,34 @@ def _two_collateralised_sets(c):
     return [_collateralised('NS_A', DIGITAL_A), _collateralised('NS_B', DIGITAL_B)]
 
 
-def _gradient(bandwidth=None):
-    """The reported equity-spot CVA delta, live or with the correction suppressed."""
-    return _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets,
-                bandwidth=bandwidth, **PATHS)[2]
+@pytest.fixture(scope='module')
+def priced():
+    """The two collateralised digitals run once with the correction live and once suppressed -
+    `(mtm, cva, live delta, suppressed delta)`, which both gates below read."""
+    mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets, **PATHS)
+    return mtm, cva, live, _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets,
+                                bandwidth=SUPPRESSED_BANDWIDTH, **PATHS)[2]
 
 
-def test_the_correction_dominates_the_smooth_cva_delta():
-    """The reading this file exists to make: the boundary term is 3.80x the smooth sensitivity.
+def test_the_correction_dominates_the_smooth_cva_delta(priced):
+    """The reading this file exists to make: the boundary term is 3.71x the smooth sensitivity.
 
-    MEASURED at 16384 paths: reported delta +0.00096053299, suppressed +0.00020020475, so the term
-    is +0.00076033 - nearly four times the whole pathwise sensitivity and 79% of what gets reported
-    (3.63x at seed 2). On the neighbouring file's fixtures it is 2.4%, which is why the mutant
-    survives there. The suppressed half is BIT-IDENTICAL to c938d6e, so all of the move the settled
-    ledger bought - reported +0.00078302273 there - is in the correction.
+    MEASURED at 8192 paths: reported delta +0.00095242356, suppressed +0.00020234998, so the term
+    is +0.00075007 - nearly four times the whole pathwise sensitivity and 79% of what gets reported
+    (3.67x at seed 2; 3.80x at 16384). On the neighbouring file's fixtures it is 2.4%, which is why
+    the mutant survives there.
 
     Two guards. THE PORTFOLIO MUST STRADDLE ZERO: lifting it clear of the relu also makes the
     correction dominate, and used to make the reported delta wrong by 84-96%, so the relu binding is
-    asserted rather than assumed (the portfolio spans -18.0 to +14.4). THE DOMINANCE ITSELF, floored
-    at 1.5 against a measured 3.80 - under 1.0 the gate below measures the smooth part."""
-    mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets, **PATHS)
+    asserted rather than assumed (the portfolio spans -16.6 to +14.4). THE DOMINANCE ITSELF, floored
+    at 1.5 against a measured 3.71 - under 1.0 the gate below measures the smooth part."""
+    mtm, cva, live, smooth = priced
     assert mtm.min() < 0.0 < mtm.max(), (
         f'the portfolio no longer straddles zero (it spans {mtm.min():+.6g} to {mtm.max():+.6g}) - '
         f'the CVA relu has stopped binding, and the reported delta on such a portfolio is measured '
         f'to be 84-96% from bump-and-reprice')
     assert cva > 0.0, f'the portfolio has no exposure to be sensitive to; cva {cva!r}'
 
-    smooth = _gradient(bandwidth=SUPPRESSED_BANDWIDTH)
     dominance = abs(live - smooth) / abs(smooth)
     assert dominance >= 1.5, (
         f'the boundary correction is {dominance:.2f}x the smooth sensitivity (reported '
@@ -142,24 +145,23 @@ def test_the_correction_dominates_the_smooth_cva_delta():
         f'correction-dominated and the gate below is measuring the wrong thing')
 
 
-def test_the_suppressed_correction_dies_against_bump_and_reprice():
+def test_the_suppressed_correction_dies_against_bump_and_reprice(priced):
     """AAD against a CRN bump ladder, with the suppression mutant read off the SAME oracle.
 
-    MEASURED, 16384 paths, seed 1: AAD +0.00096053299 against a CRN best of +0.00093416981, 2.74%
-    apart on a ladder flat to 2.83% (rungs 3.61 / 2.74 / 2.37 / 4.76 / 5.09% - a residual, not
-    scatter). Seed 2 reads 0.48% at 2.71% flatness. It was 21.54% before the settled ledger was
-    declared, which is what most of that residual was.
+    MEASURED, 8192 paths, seed 1: AAD +0.00095242356 against a CRN best of +0.00093844994, 1.47%
+    apart on a ladder flat to 3.45% (rungs 1.06 / 1.47 / 2.29 / 4.35 / 4.43% - a residual, not
+    scatter). Seed 2 reads 1.14% at 3.19% flatness; 16384 paths read 2.74% and 0.48%. It was 21.54%
+    before the settled ledger was declared, which is what most of that residual was.
 
     THE 10% TOLERANCE IS THAT RESIDUAL PLUS THE SEED SPREAD PLUS THE LADDER'S OWN FLATNESS, not a
     widening to fit: it is the estimator's accuracy at the declared bandwidth and this path count.
     The estimator has no measured bandwidth plateau and its documented operating point is 32768
     paths, which no gate here runs.
 
-    MUTATION - `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH: the same oracle reads 366.61%
-    (365.07% at seed 2). KILLED, 36x clear. On the neighbouring file's two-set fixture the identical
+    MUTATION - `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH: the same oracle reads 363.78%
+    (361.46% at seed 2). KILLED, 36x clear. On the neighbouring file's two-set fixture the identical
     mutant moves the CRN disagreement from 2.20% to 0.23% and SURVIVES."""
-    live = _gradient()
-    smooth = _gradient(bandwidth=SUPPRESSED_BANDWIDTH)
+    live, smooth = priced[2:]
     r = ladder(price=lambda s: _run(DIGITAL_A, spot=s, children=_two_collateralised_sets,
                                     **PATHS)[1],
                aad=live, base=bb.SPOT, rungs=LIVE_RUNGS)
@@ -181,9 +183,9 @@ def test_the_suppressed_correction_dies_against_bump_and_reprice():
 #: its own uncollateralised set. Worth CUSHION*DF every scenario with zero equity delta.
 CUSHION = 300.0
 
-#: The lifted lane's own residual: 10.79% at 16384 paths on a ladder flat to 6.34%, and it FALLS
-#: with paths (12.03% at 4096, 9.28% at 8192). Not the un-lifted lane's 30% - the relu is not
-#: binding here, so the objective is locally linear and the estimator has an easier job.
+#: The lifted lane's own residual: 9.28% at 8192 paths on a ladder flat to 3.59%, 14.80% at seed 2
+#: (12.03% at 4096, 10.79% at 16384). Not the un-lifted lane's 30% - the relu is not binding here,
+#: so the objective is locally linear and the estimator has an easier job.
 LIFTED_TOLERANCE = 0.20
 
 
@@ -214,22 +216,23 @@ def test_the_lifted_portfolio_reports_a_delta_its_own_oracle_agrees_with():
     cash it has already paid - so a counterfactual whose SETTLEMENT does not follow its branch
     prices the wrong exposure and the error is unbounded rather than small.
 
-    MEASURED at 16384 paths, cushion 300: AAD +0.00031376127 against a CRN best of +0.00034761669,
-    10.79% on a ladder flat to 6.34%, and falling with paths (12.03% at 4096, 9.28% at 8192).
+    MEASURED at 8192 paths, cushion 300: AAD +0.00032924550 against a CRN best of +0.00035978764,
+    9.28% on a ladder flat to 3.59%; 14.80% flat to 7.50% at seed 2, 10.79% at 16384 paths.
 
     TWO MUTANTS, DYING ON DIFFERENT ASSERTIONS, which is worth stating because only one of them
     reaches the ladder. The SETTLEMENT undeclared - the state this file shipped in, reproduced
     OFF-GATE by dropping `settles` at the registration, there being no document switch for it -
-    collapses the correction to the size of the smooth term and dies on the DOMINANCE GUARD, 1.0380x
-    against a floor of 3.0; off the same oracle it reads -0.00010726372, sign-flipped and 424.08%
-    out where this lane reads 10.79%, but the gate never gets there. `Boundary_AAD_Bandwidth` at
-    SUPPRESSED_BANDWIDTH is the one taken through the declared field: it reads 760.48% and dies on
-    the ladder. The un-lifted lane above cannot see the settlement mutant at all - with the relu
-    binding, the exposure is crushed to near zero exactly where the ledger error lives.
+    collapses the correction to the size of the smooth term and dies on the DOMINANCE GUARD, 1.0439x
+    against a floor of 3.0 (1.0380x at 16384 paths); off the same oracle it reads -0.00010552901,
+    sign-flipped and 440.9% out where this lane reads 9.28%, but the gate never gets there.
+    `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH is the one taken through the declared field: it
+    reads 796.85% (745.43% at seed 2) and dies on the ladder. The un-lifted lane above cannot see the
+    settlement mutant at all - with the relu binding, the exposure is crushed to near zero exactly
+    where the ledger error lives.
 
     Two guards, and the first of them is the discriminator above. THE CUSHION MUST LIFT - if the
     portfolio still straddles zero this is the gate above with extra deals. THE CORRECTION MUST
-    DOMINATE, floored at 3.0 against a measured 6.96x.
+    DOMINATE, floored at 3.0 against a measured 7.38x (6.62x at seed 2).
     """
     mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_lifted, **PATHS)
     assert mtm.min() >= 0.0, (
@@ -241,8 +244,8 @@ def test_the_lifted_portfolio_reports_a_delta_its_own_oracle_agrees_with():
     dominance = abs(live - smooth) / abs(smooth)
     assert dominance >= 3.0, (
         f'the boundary correction is {dominance:.4f}x the smooth sensitivity (reported '
-        f'{live:+.8g}, suppressed {smooth:+.8g}) - lifted, it is measured at 6.96x, and a '
-        f'registration that does not declare its settlement reads 1.0380x here')
+        f'{live:+.8g}, suppressed {smooth:+.8g}) - lifted, it is measured at 7.38x, and a '
+        f'registration that does not declare its settlement reads 1.0439x here')
 
     r = ladder(price=lambda s: _run(DIGITAL_A, spot=s, children=_lifted, **PATHS)[1],
                aad=live, base=bb.SPOT, rungs=LIVE_RUNGS)

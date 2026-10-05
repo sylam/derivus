@@ -134,6 +134,16 @@ What **enforces** is the short `JOINT` list, not the table, and the reason is me
 
 Neither half can tell you a gate's *assertion* is weak — only that its fixture had nothing to assert on.
 
+## What a landing runs {#what-a-landing-runs}
+
+**A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them and `--run` runs them (`--since BASE`, `--commit SHA` for a range or one commit). The selection is line-granular off an execution map: a changed statement selects the tests that executed it, a new one those that reach its place, a changed `def` header the tests that entered it, a module- or class-level binding every test reaching a line that names it; a docstring or comment selects nothing. It fails open on `tests/conftest.py`, `derivus/__init__.py` and any path the map has never seen, and says which. `--files` rounds up to whole test files, for a test that reads a value another test of its file left in a cache. Beside it run the standing identity readings, and on a numeric change every test that banks a simulated number bit for bit or tighter than 1e-6 the change reaches — the selection holds those, a last-bit respelling reaching every test that runs the line.
+
+**A campaign boundary runs the suite** with the tree held still, then `python gates/impacted.py --measure DIR`, the one instrumented pass that rebuilds the map (every test file in its own process under coverage, homes on temp folders, GPU 0), then `gates/pricer_branch_census.py`, which traces only the tests the map says enter a census pricer.
+
+**Every test names its killing mutation**, and a slow one is made as cheap as that mutation allows: a world priced once per module where several tests read it, fewer paths, rungs or rows only where the mutation still dies with margin, the readings before and after restated in the docstring beside it. A test goes only where every mutation it names is shown red under the tests that remain - never on coverage alone.
+
+Measured on the Windows box at ae21a42: the suite 75 minutes instrumented, about 62 after the cuts that wrote this section; `tests/test_hw2f_analytic.py` 5.4 minutes; the record set (`test_spine_*`, P&L, collateral, position scaling, schema emission) 11.9 minutes and the service set (service, binding, diary, declared defaults) 3.5, both bound by `fsync` - 52 ms a sync, 36 ms an append, up to a second a minted home; the census 26 minutes where it traced the suite in 80 to 120, emitting the same 48 arcs.
+
 ## No overengineering
 
 One-line fixes — a default, a JSON field, a file move — before a helper module. Do not introduce abstraction ahead of a second caller.

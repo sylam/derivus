@@ -390,10 +390,13 @@ every risk-neutral calibration inherits.
   families and 9 of 17 processes. The store was swept the same day of every document that
   named a retired model or declaration or a market file no longer on disk, so the 61 documents
   the map names are the ones that load, 53 pricing and 8 refusing by name on purpose.
-- **Which tests a change reaches**: `gates/impacted.py --dirty --run` joins an execution-coverage
-  map (built at a campaign boundary) with a static fixture map; file-granular, fails open loudly;
-  `derivus/__init__`, `utils`, `calculation` and `conftest` are whole-suite modules by construction.
-  The full suite runs at campaign boundaries with the tree held still.
+- **Which tests a change reaches**: `gates/impacted.py --dirty --run` reads an execution map built
+  at a campaign boundary, line by line - a changed statement selects the tests that executed it -
+  and fails open loudly on `derivus/__init__`, `conftest` and a path the map has not seen. A
+  respelling of a line most tests run still selects most of the suite: the curve read's blend
+  reaches 83% of it. The full suite runs at campaign boundaries with the tree held still, 75
+  minutes instrumented; the record and service sets are bound by `fsync`, 15 minutes between
+  them, a home minted per test where one per module would do.
 - **The standing readings every landing runs**: sixteen banked documents of the autocall
   validation campaign under the lognormal and Hull-White laws, 5,471 floats compared bit for bit
   against their bank, and one lognormal target redemption forward compared to the bit
@@ -422,9 +425,8 @@ every risk-neutral calibration inherits.
 
 ## Tidy-ups
 
-- `gates/impacted.py --dirty` fails open to the whole suite on a fixture the map has not seen and
-  on a `.md` at the repo root, so a change that adds a fixture cannot use the selector until the next
-  boundary run rebuilds the map.
+- `gates/impacted.py` fails open to the whole suite on any change to `derivus/__init__.py`, which
+  carries the context's verbs: read line by line it would still select nine tests in ten.
 - `derivus_jupyter.py`, tracked but not in the wheel and superseded for viewing by the web UI,
   raises on three field names its write allowlist does not carry and on any multi-column Table
   outside a four-name allowlist, and fourteen output-shaped descriptors have no widget; loading,
