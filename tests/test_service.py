@@ -5396,14 +5396,16 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     declarations, and run over the live book - whole, or one subtree.
 
     IDENTITY, NOT A SECOND PATH: a named credit Monte Carlo stating what the XVA recalc states for
-    `NS_A`, pointed at `NS_A`, is the recalc's own run - one result id - and a named base valuation
-    with Greeks is the what-if verb's run with the same overrides. A judged block is a normal answer
-    naming what to fix, one level into a container included, with the file untouched; a name
-    nobody saved refuses naming the ones there are; and the book never moves.
+    `NS_A`, pointed at `NS_A`, prices the recalc's own numbers - both columns to the bit, the
+    recalc's id being stamped off the set's document and files where this one is the replay tuple -
+    and a named base valuation with Greeks is the what-if verb's run with the same overrides. A
+    judged block is a normal answer naming what to fix, one level into a container included, with
+    the file untouched; a name nobody saved refuses naming the ones there are; and the book never
+    moves.
 
     KILLING MUTATIONS: the saved block merged anywhere but over the book's own calculation, or the
-    subtree left whole, which moves the run id off the recalc's; a container's keys unjudged, which
-    saves `Calculate: 'Maybe'` and dies inside the Monte Carlo instead.
+    subtree left whole, which moves the numbers off the recalc's; a container's keys unjudged,
+    which saves `Calculate: 'Maybe'` and dies inside the Monte Carlo instead.
     """
     book = desk_xva.read_bytes()
     cva_a = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
@@ -5430,10 +5432,13 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     assert CLIENT.get('/calculations').json() == {
         'calculations': {'CVA on A': cva_a, 'Greeks': greeks}}
 
-    recalced = recalc(['NS_A'])['queued'][0]
-    assert xva_rows()['NS_A']['cva'] > 0.0, 'a CVA of nothing makes the identity vacuous'
+    recalc(['NS_A'])
+    row = xva_rows()['NS_A']
+    assert row['cva'] > 0.0, 'a CVA of nothing makes the identity vacuous'
     named = run_named('CVA on A', deal_path='0').json()
-    assert named == {'result_id': recalced['result_id'], 'status': 'done'}
+    service.EXECUTOR.queue.join()
+    assert service.XvaJob.adjustments(service.EXECUTOR.result(named['result_id'])['tables']) == {
+        'cva': row['cva'], 'fva': row['fva']}
 
     priced = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': greeks}), headers=JSON).json()
@@ -5713,9 +5718,16 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
 
     `fva` is the other half and is NOT compared, because there is nothing to compare it against: a
     CVA-only run reports no `fva` key at all. It keeps the scaled cube it is defined on.
+
+    And a book naming no market data file prices its sets on the executor's long-lived context
+    exactly as a fresh context over the same document does: both columns of every row to the bit.
+    Killing mutation: a set run on the context's last load rather than its own, which files NS_A's
+    numbers under NS_B.
     """
     with open(service.BOOK.path) as handle:
         document = json.load(handle)
+    recalc()
+    rows = xva_rows()
     for node in document['Calc']['Deals']['Deals']['Children']:
         deal = node['Instrument']['.Deal']
         both = service.xva_document(document, node, deal['Credit_Support_Amounts']['Counterparty'])
@@ -5731,6 +5743,8 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
             'the set priced no credit exposure at all', deal['Reference'])
         assert 'fva' in on_results and 'fva' not in off_results, (
             'the FVA-off run reports an `fva` the gate would have to hold', deal['Reference'])
+        assert {'cva': rows[deal['Reference']]['cva'], 'fva': rows[deal['Reference']]['fva']} == \
+            service.XvaJob.adjustments(on_results), deal['Reference']
 
 
 def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_path):
@@ -5791,6 +5805,365 @@ def test_a_missing_funding_table_is_age_on_a_stored_row_and_a_defect_on_a_live_r
                            {'plan_hash': 'p', 'values_hash': 'v', 'seed': 1}).landed(
         {'status': 'done', 'tables': aged})
     assert filed['status'] == 'done' and filed['cva'] == 119.68 and filed['fva'] is None
+
+
+# --------------------------------------------------------------------------------------------
+# the XVA tab over a market data file and a calendar the book names
+# --------------------------------------------------------------------------------------------
+#: The equities the named market data FILE carries. EQ_1 has no surface there, so the book's own
+#: `VolatilityGrid.EQ_1` is its only one, and EQ_2 runs an implied model whose parameters the book
+#: states over the file's.
+NAMED = ['EQ_{}'.format(k) for k in range(6)]
+
+
+def surface(vol):
+    return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': utils.Curve([], [[m, t, vol] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])}
+
+
+def hazard(rate):
+    return {'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 10.0 * rate]])}
+
+
+def implied(vol):
+    return {'Quanto_FX_Volatility': None, 'Quanto_FX_Correlation': 0.0,
+            'Vol': utils.Curve([], [[0.5, vol], [2.0, vol]])}
+
+
+def wire(block):
+    return json.loads(dump(block))
+
+
+def named_calendar(path, holidays=('2030-01-01',)):
+    path.write_text('<Calendars>\n  <Calendar Location="Synth" Weekends="Saturday and Sunday" '
+                    'Holidays="{}" />\n</Calendars>'.format(', '.join(d + '|H' for d in holidays)))
+    return path
+
+
+def named_book(tmp_path):
+    """`(book, market, calendar)`: a market data FILE holding every equity, curve, model and
+    correlation, survival curves for CPTY_0 to CPTY_4 and a factor no set reads; a calendar; and a
+    book of ten netting sets naming both - NS_k against CPTY_k on two of the six equities, the even
+    sets funding at FUND - whose explicit block states CPTY_3's curve over the file's and CPTY_5 to
+    CPTY_9's outright, EQ_0's spot, EQ_1's only surface, EQ_2's implied parameters and EQ_4's model.
+    """
+    factors = dict(FACTORS, **{
+        'InterestRate.FUND': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                              'Curve': utils.Curve([], [[0.0, FUNDING_RATE], [5.0, FUNDING_RATE]])},
+        'EquityPrice.UNREAD': dict(EQUITY['EquityPrice.EQ'], Spot=1.0),
+        'GBMAssetPriceTSModelParameters.EQ_2': implied(0.3)})
+    for k, name in enumerate(NAMED):
+        factors['EquityPrice.' + name] = dict(EQUITY['EquityPrice.EQ'], Spot=EQ_SPOT + 5.0 * k)
+        factors['DividendRate.' + name] = EQUITY['DividendRate.EQ']
+        if name != 'EQ_1':
+            factors['EquityPriceVol.' + name] = surface(VOL + 0.01 * k)
+    factors.update({'SurvivalProb.CPTY_{}'.format(k): hazard(0.02 + 0.01 * k) for k in range(5)})
+    process = ['LognormalDiffusionProcess.' + name for name in NAMED]
+    market, calendar = tmp_path / 'market.json', named_calendar(tmp_path / 'calendar.cal')
+    market.write_text(dump({'MarketData': {
+        'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
+        'Price Factors': factors,
+        'Price Models': {'GBMAssetPriceModel.' + n: {'Vol': VOL, 'Drift': 0.0} for n in NAMED},
+        'Model Configuration': {'.ModelParams': {
+            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'},
+            'modelfilters': {'EquityPrice': [[['ID', 'EQ_2'], 'GBMAssetPriceTSModelImplied']]}}},
+        'Correlations': {a: {b: 0.3 for b in process[k + 1:]} for k, a in enumerate(process)}}}))
+
+    stated = {'SurvivalProb.CPTY_{}'.format(k): hazard(0.04 + 0.005 * k)
+              for k in (3, 5, 6, 7, 8, 9)}
+    stated.update({'EquityPrice.EQ_0': dict(EQUITY['EquityPrice.EQ'], Spot=110.0),
+                   'VolatilityGrid.EQ_1': surface(0.3), 'GBMAssetPriceTSModelParameters.EQ_2':
+                   implied(0.35)})
+    sets = [netting_set('NS_{}'.format(k), 'CPTY_{}'.format(k), [
+        dict(VANILLA, Reference='OPT_{}_{}'.format(k, name), Equity=name, Dividends=name,
+             Equity_Volatility=name, Calendars='Synth')
+        for name in (NAMED[k % 6], NAMED[(k + 1) % 6])], funding_rate='USD' if k % 2 else 'FUND')
+        for k in range(10)]
+    document = job(deals=(), factors=stated, sections={
+        'Price Models': {'GBMAssetPriceModel.EQ_4': {'Vol': 0.4, 'Drift': 0.0}}})
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']
+    document['Calc']['MergeMarketData']['MarketDataFile'] = str(market)
+    document['Calc']['CalendDataFile'] = str(calendar)
+    document['Calc']['Deals']['Deals']['Children'] = sets
+    book = tmp_path / 'book.json'
+    book.write_text(json.dumps(wire(document), indent=2), newline='\n')
+    service.BOOK = service.Book(str(book))
+    return book, market, calendar
+
+
+def fresh_xva(book, only=None):
+    """Every set's `{cva, fva}`, or those `only` names, as the recalc priced it before it kept a
+    context: the set's document loaded on a context of its own."""
+    document, fresh = json.loads(book.read_text()), {}
+    for _, node in service.netting_sets(document):
+        deal = node['Instrument']['.Deal']
+        if only is not None and deal['Reference'] not in only:
+            continue
+        run = service.xva_document(document, node, deal['Credit_Support_Amounts']['Counterparty'])
+        out = in_process(run).run_job()[1]
+        fresh[deal['Reference']] = service.XvaJob.adjustments(out['Results'])
+    return fresh
+
+
+def adjustments():
+    return {reference: {'cva': row['cva'], 'fva': row['fva']}
+            for reference, row in xva_rows().items()}
+
+
+def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_names(
+        tmp_path, monkeypatch):
+    """THE XVA TAB OVER A NAMED MARKET DATA FILE AND CALENDAR, ten netting sets.
+
+    Each set's document names the book's file and calendar and restates the book's whole explicit
+    block - a surface under its pre-tag name, an implied model's parameters and a model among
+    what it overrides - and loads onto the executor's one long-lived context, which parses the
+    file once and serves every set. Every CVA and FVA is the number a fresh context over the same
+    document reads, to the bit, and so is every one after the book restates the values it
+    overrides, and after it withdraws one. Nothing at module level holds a context or a digest.
+
+    KILLING MUTATIONS: the context built anew per set; the names the book states left out of the
+    context's key, which goes on reading the withdrawn spot; a module-level cache of the digests.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book, market, calendar = named_book(tmp_path)
+    try:
+        recalc(['NS_0'])
+        session = service.EXECUTOR.session
+        parsed = session.config_cache[str(market)]
+        recalc()
+        before = adjustments()
+        assert before == fresh_xva(book)
+        assert all(row['cva'] > 0.0 for row in before.values()), 'a CVA of nothing is vacuous'
+        assert service.EXECUTOR.session is session and session.config_cache[str(market)] is parsed
+        assert str(calendar) in session.holiday_cfg_cache
+
+        document = json.loads(book.read_text())
+        stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+        stated['EquityPrice.EQ_0']['Spot'] = 120.0
+        stated.update({'VolatilityGrid.EQ_1': wire(surface(0.35)), 'SurvivalProb.CPTY_7': wire(
+            hazard(0.06)), 'GBMAssetPriceTSModelParameters.EQ_2': wire(implied(0.45))})
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        recalc()
+        after = adjustments()
+        assert after == fresh_xva(book)
+        assert {reference for reference in after if after[reference] != before[reference]} == {
+            'NS_0', 'NS_1', 'NS_2', 'NS_5', 'NS_6', 'NS_7', 'NS_8'}
+        assert service.EXECUTOR.session is session and session.config_cache[str(market)] is parsed
+
+        held = [name for name, value in vars(service).items()
+                if isinstance(value, derivus.Context) or isinstance(value, dict) and (
+                    str(market) in value or any(isinstance(v, derivus.Context)
+                                                for v in value.values()))]
+        assert held == [] and str(market) in service.EXECUTOR.digests
+
+        del stated['EquityPrice.EQ_0']
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        recalc()
+        assert adjustments() == fresh_xva(book), 'a spot the book withdrew was still read'
+    finally:
+        service.BOOK = None
+
+
+def test_what_a_run_writes_into_the_kept_context_moves_no_later_run(tmp_path, monkeypatch):
+    """A run writes into the context it runs on: `CDS_Tenors` re-knots the counterparty's survival
+    curve in place, and a collateral valuation adjustment writes its funding and collateral curves
+    into `Price Factors` - over the file's own `USD.FUNDING` here. On the kept context a block held
+    only by the FILE is never restated, so a write stays for the next run. The same set priced
+    again under a new result id - a value it does not read moved between - is the number a fresh
+    context over the same document reads, to the bit: on CPTY_0, whose curve only the file holds,
+    with the tenors on, again, and off; on CPTY_3, whose curve the book states. The re-knot stays
+    (2 knots to 23) and moves nothing: the new knots lie on the curve's own line. The adjustment's
+    write would move the next set, so a run with it on drops the kept context: NS_2, funding at
+    the file's `USD.FUNDING` after NS_1 wrote over it, and NS_4 after the adjustment goes off, read
+    the file's curve.
+
+    KILLING MUTATIONS: a re-knot that is not idempotent - its values scaled by 1.001 - which
+    compounds on the kept curve and moves CPTY_0's second run and the run after the tenors go off;
+    the drop after an adjustment removed, which prices NS_2's and NS_4's FVA off the written 20bp.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book, market, _ = named_book(tmp_path)
+    data = json.loads(market.read_text())
+    data['MarketData']['Price Factors']['InterestRate.USD.FUNDING'] = wire(dict(
+        FACTORS['InterestRate.USD'], Curve=utils.Curve([], [[0.0, 0.01], [5.0, 0.01]])))
+    market.write_text(json.dumps(data))
+    document = json.loads(book.read_text())
+    calculation = document['Calc']['Calculation']
+    stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    nodes = [deal_at(document, path)['Instrument']['.Deal']
+             for path, _ in service.netting_sets(document)]
+    nodes[1]['Collateralized'] = 'True'
+    nodes[2].update(Funding_Rate='USD.FUNDING', Collateral_Assets={'Cash_Collateral': [{
+        'Currency': 'USD', 'Collateral_Rate': 'USD', 'Funding_Rate': 'USD', 'Haircut_Posted': 0.0,
+        'Amount': 1.0}]})
+    nodes[4]['Funding_Rate'] = 'USD.FUNDING'
+    readings, writes = [], []
+
+    def priced(step, *references):
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        recalc(list(references))
+        rows, fresh = xva_rows(), fresh_xva(book, references)
+        for reference in references:
+            readings.append((step, reference, rows[reference]['status'], {
+                'cva': rows[reference]['cva'], 'fva': rows[reference]['fva']}, fresh[reference]))
+        kept = service.EXECUTOR.session.config_cache[str(market)].params['Price Factors']
+        writes.append((len(kept['SurvivalProb.CPTY_0']['Curve'].array),
+                       kept['InterestRate.USD.FUNDING']['Curve'].array[0, 1] == 0.01))
+
+    try:
+        priced('file-held survival', 'NS_0')
+        calculation['Credit_Valuation_Adjustment'] = {'CDS_Tenors': [1, 2, 3, 5]}
+        priced('CDS tenors on', 'NS_0', 'NS_3')
+        stated['SurvivalProb.CPTY_9'] = wire(hazard(0.09))
+        priced('CDS tenors, again', 'NS_0', 'NS_3')
+        del calculation['Credit_Valuation_Adjustment']
+        priced('CDS tenors off', 'NS_0')
+        calculation['Collateral_Valuation_Adjustment'] = {
+            'Calculate': 'Yes', 'Collateral_Curve': 'USD', 'Funding_Curve': 'USD',
+            'Collateral_Spread': 10, 'Funding_Spread': 20, 'Gradient': 'No'}
+        priced('collateral adjustment on', 'NS_1', 'NS_2', 'NS_4')
+        stated['SurvivalProb.CPTY_9'] = wire(hazard(0.1))
+        priced('collateral adjustment, again', 'NS_1', 'NS_2', 'NS_4')
+        del calculation['Collateral_Valuation_Adjustment']
+        priced('collateral adjustment off', 'NS_4', 'NS_1')
+    finally:
+        service.BOOK = None
+    assert [reading for reading in readings if reading[2] != 'done' or reading[3] != reading[4]] \
+        == []
+    assert writes == [(2, True)] + [(23, True)] * 3 + [(2, False)] * 2 + [(2, True)]
+
+
+def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neither(
+        tmp_path, monkeypatch):
+    """A set's result id is its document, the sha256 of the market data file and of the calendar
+    it names, the engine version and the seed. An unmoved book over unmoved files is one run; the
+    file edited on disk, then the calendar, each gives every set a new id and the number a fresh
+    context reads off the edited files. A file edited while the set waits in the queue - the job
+    that builds the context, its stamp naming bytes the context never parsed - fails it rather than
+    pricing the new file under the old id, and its parse is not kept: with the file put back and
+    the book moved, every set reads the fresh context's number over the restored file. The request
+    parses neither: a market data file that is not JSON still queues every set, and each row lands
+    failed in the parser's words. A deal on an equity nothing carries is skipped by the engine, and
+    its set lands failed naming it, never done at a smaller CVA.
+
+    KILLING MUTATIONS: either digest dropped from the stamp, which serves the first run's numbers
+    under the first id; the worker's check of the stamped digests removed; the context kept on that
+    refusal, whose parse of the edited file then prices the restored one; a load on the request
+    thread, which raises on the broken file; the `Stats` check removed, which lands the set done
+    without its deal.
+    """
+    def ids(queued):
+        return {entry['result_id'] for entry in queued}
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book, market, calendar = named_book(tmp_path)
+    try:
+        first, rows, before = recalc()['queued'], xva_rows(), adjustments()
+        assert recalc()['queued'] == first and xva_rows() == rows, 'an unmoved book ran again'
+
+        data = json.loads(market.read_text())
+        data['MarketData']['Price Factors']['EquityPrice.EQ_3']['Spot'] = 125.0
+        market.write_text(json.dumps(data))
+        moved = recalc()['queued']
+        assert not ids(moved) & ids(first)
+        edited = adjustments()
+        assert edited == fresh_xva(book)
+        assert {reference for reference in edited if edited[reference] != before[reference]} == {
+            'NS_2', 'NS_3', 'NS_8', 'NS_9'}
+
+        named_calendar(calendar, ('2030-01-01', '2025-06-30', '2025-07-01', '2025-07-02'))
+        rolled = recalc()['queued']
+        assert not ids(rolled) & ids(moved)
+        assert adjustments() == fresh_xva(book) != edited
+
+        data['MarketData']['Price Factors']['EquityPrice.EQ_3']['Spot'] = 130.0
+        market.write_text(json.dumps(data))
+        stamped = market.read_bytes()
+        hold = threading.Event()
+        held = Held('held', [], hold)
+        service.EXECUTOR.submit(service.Job('held-{}'.format(id(held)), held, {}), service.HEAVY)
+        held.started.wait(timeout=30)
+        CLIENT.post('/book/xva', content=json.dumps({'netting_sets': ['NS_3']}), headers=JSON)
+        data['MarketData']['Price Factors']['EquityPrice.EQ_3']['Spot'] = 140.25
+        market.write_text(json.dumps(data))
+        hold.set()
+        service.EXECUTOR.queue.join()
+        assert 'changed after its recalc was asked' in xva_rows()['NS_3']['error']
+        market.write_bytes(stamped)
+        document = json.loads(book.read_text())
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+            'SurvivalProb.CPTY_9'] = wire(hazard(0.08))
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        recalc()
+        assert adjustments() == fresh_xva(book), 'a refused parse was kept'
+
+        node = deal_at(document, service.netting_sets(document)[9][0])
+        node['Children'].append({'Instrument': {'.Deal': wire(dict(
+            VANILLA, Reference='OPT_GONE', Equity='GONE', Dividends='EQ_3',
+            Equity_Volatility='EQ_3'))}})
+        book.write_text(json.dumps(document, indent=2), newline='\n')
+        recalc(['NS_9'])
+        failed = xva_rows()['NS_9']
+        assert (failed['status'], failed['cva']) == ('failed', None)
+        assert 'Deals Skipped' in failed['error'] and 'OPT_GONE' in failed['error'], failed['error']
+
+        market.write_text('not a market')
+        answer = CLIENT.post('/book/xva', content=json.dumps({}), headers=JSON)
+        assert answer.status_code == 200 and len(answer.json()['queued']) == 10
+        service.EXECUTOR.queue.join()
+        assert {row['status'] for row in xva_rows().values()} == {'failed'}
+        assert all('Expecting value' in row['error'] for row in xva_rows().values())
+    finally:
+        service.BOOK = None
+
+
+def test_the_context_keeps_the_file_and_what_a_bootstrap_wrote_across_loads(tmp_path):
+    """A `Context` is a SESSION over the market data file its jobs name: the file is parsed once
+    and kept, each job's explicit sections merge onto it, and nothing empties its price factors.
+    So a factor the file holds and no job states is the file's on every load, and a curve a
+    bootstrap wrote into the context is the curve the next job reads.
+
+    The file holds the multi-curve world's quotes and a FLAT seed for `USD-3M`. Job one prices a
+    four-year swap and bootstraps; job two, stating nothing, prices a three-year swap on the solved
+    curve - the number a fresh context reads after a bootstrap of its own, to the bit.
+
+    KILLING MUTATION: `load_json` emptying the kept file's `Price Factors`, which drops the file's
+    `FxRate.USD` and the solved curve alike.
+    """
+    from rates_world import par_swap
+
+    document = curve_book(tmp_path / 'book.json')
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['InterestRate.USD-3M']['Curve'] = wire(
+        utils.Curve([], [[0.0, 0.01], [5.0, 0.01]]))
+    path = tmp_path / 'market.json'
+    path.write_text(json.dumps({'MarketData': market}))
+    document['Calc']['MergeMarketData'] = {'MarketDataFile': str(path), 'ExplicitMarketData': {}}
+
+    def swap_job(years):
+        job = json.loads(json.dumps(document))
+        job['Calc']['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': wire(par_swap(
+            'SWP', 'USD', 'USD-3M', 'USD-3M', years, 3.9))}}]
+        return json.dumps(job), 'posted'
+
+    def value(context):
+        frame = context.run_job()[1]['Results']['mtm']
+        return float(frame.loc[frame['Reference'] == 'SWP', 'Value'].iloc[0])
+
+    session = derivus.Context().load_json(swap_job(4))
+    factors = session.current_cfg.params['Price Factors']
+    assert factors['FxRate.USD'] == market['Price Factors']['FxRate.USD']
+    session.bootstrap()
+    solved = factors['InterestRate.USD-3M']['Curve'].array.copy()
+    assert not np.array_equal(solved[:, 1], np.full(len(solved), 0.01)), 'nothing was solved'
+
+    session.load_json(swap_job(3))
+    factors = session.current_cfg.params['Price Factors']
+    assert np.array_equal(factors['InterestRate.USD-3M']['Curve'].array, solved)
+    assert factors['FxRate.USD'] == market['Price Factors']['FxRate.USD']
+    fresh = derivus.Context().load_json(swap_job(3))
+    fresh.bootstrap()
+    assert value(session) == value(fresh)
 
 
 # --------------------------------------------------------------------------------------------

@@ -89,6 +89,7 @@ doorbell carry an ID token that set verifies, whose subject IS the seat; narrow 
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -336,6 +337,9 @@ class ComputeExecutor:
 
     A stored result holds the run's tables under `tables`, keyed by path - what the two result
     endpoints project, one serving their shapes and the other one table a page at a time.
+
+    It also keeps the xVA tab's long-lived context (`session_for`), which its worker alone
+    touches, and the digests of the files a book names (`files`).
     """
 
     def __init__(self):
@@ -347,7 +351,34 @@ class ComputeExecutor:
         self.queue = queue.PriorityQueue()
         # arrival order breaks ties within a cost class, so the queue never compares two Jobs
         self.arrival = count()
+        self.session, self.keyed, self.digests = Context(), None, {}
         threading.Thread(target=self.work, daemon=True).start()
+
+    def files(self, document):
+        """`{market, calendar}`: the sha256 of each file `document` names, None where it names
+        none - a file read again only where its size or modified time moved."""
+        named = {'market': document['Calc']['MergeMarketData'].get('MarketDataFile'),
+                 'calendar': document['Calc'].get('CalendDataFile')}
+        for path in filter(None, named.values()):
+            stat = os.stat(path)
+            if self.digests.get(path, (None,))[0] != (stat.st_size, stat.st_mtime_ns):
+                with open(path, 'rb') as handle:
+                    self.digests[path] = ((stat.st_size, stat.st_mtime_ns),
+                                          hashlib.sha256(handle.read()).hexdigest())
+        return {kind: self.digests[path][1] if path else None for kind, path in named.items()}
+
+    def session_for(self, document, files):
+        """The xVA tab's long-lived context, worker thread only: it keeps the files a set's
+        document names parsed, and each document's explicit block merges over them. Built anew
+        where `files`, the digests the job was stamped with, or the explicit market less the
+        factors' contents moved - a value restated merges over the last, a block withdrawn must
+        not stay behind - and where a job dropped it (`keyed = None`)."""
+        explicit = dict(document['Calc']['MergeMarketData'].get('ExplicitMarketData') or {})
+        explicit['Price Factors'] = sorted(explicit.get('Price Factors') or {})
+        key = (files, content_hash(explicit))
+        if key != self.keyed:
+            self.session, self.keyed = Context(), key
+        return self.session
 
     def submit(self, job, cost):
         """File and enqueue the job unless its `result_id` is already known, and return the status
@@ -3443,17 +3474,23 @@ class XvaJob:
     The row is written on completion EITHER WAY. A failed run - commonly a counterparty the market
     data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
     wording, because a desk reads why a number is missing off the same file the numbers are in. The
-    error still travels to the result store, so `/results/{result_id}` is never told otherwise.
+    error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
+    run that skipped a deal is a failed run: a dropped deal must never read as a smaller CVA.
+
+    It holds the set's DOCUMENT, and the worker loads it onto the executor's long-lived context
+    (`ComputeExecutor.session_for`), so nothing parses on the request thread.
     """
 
-    def __init__(self, context, reference, terms, result_id, stamp):
-        self.context, self.reference = context, reference
+    def __init__(self, document, reference, terms, result_id, stamp):
+        self.document, self.reference = document, reference
         self.counterparty, self.collateralized = terms
         self.result_id, self.stamp = result_id, stamp
 
     def row(self, **fields):
         """The set's row: who it is against, what was run, and what came back - the replay tuple
-        included, so a number on the blotter can be reproduced from the row alone.
+        included, so a number on the blotter can be reproduced from the row alone: `plan_hash` the
+        content hash of the set's document, `values_hash` that of the digests of the market data
+        and calendar files it names.
 
         Both adjustment columns are in the BASE dict as nulls, so a row is never filed missing one:
         a failure path states its error and nothing else, and every row the file carries has the
@@ -3491,12 +3528,34 @@ class XvaJob:
         return self.row(status='done', **self.adjustments(result['tables'], stored=True))
 
     def run_job(self):
+        captured = CapturedErrors()
+        logging.getLogger().addHandler(captured)
         try:
-            _, out = self.context.run_job()
+            session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
+            session.load_json((json.dumps(self.document), 'posted'))
+            # checked once the files are parsed, so a parse of other bytes is refused, not kept
+            if content_hash(EXECUTOR.files(self.document)) != self.stamp['values_hash']:
+                EXECUTOR.keyed = None
+                raise ValueError('a file this netting set names changed after its recalc was '
+                                 'asked for - ask again')
+            _, out = session.run_job()
+            skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
+                out['Stats'].items()) if name.endswith('Skipped'))
+            if skipped:
+                raise utils.UnpriceableSchedule('the run skipped what it could not price ({}): {}'
+                                                .format(skipped, '; '.join(dict.fromkeys(
+                                                    captured.messages))))
             landed = self.adjustments(out['Results'])
         except Exception as error:
             write_row(self.reference, self.row(status='failed', error=str(error)))
             raise
+        finally:
+            logging.getLogger().removeHandler(captured)
+            # a collateral valuation adjustment writes its curves into the parse it runs on before
+            # the calculation is built (`run_cmc`), so the next set builds a context of its own
+            if (self.document['Calc']['Calculation'].get('Collateral_Valuation_Adjustment')
+                    or {}).get('Calculate') == 'Yes':
+                EXECUTOR.keyed = None
         write_row(self.reference, self.row(status='done', **landed))
         return None, out
 
@@ -3515,8 +3574,11 @@ def book_xva(request: dict):
     `cva` and `fva` share an `as_of` and a replay tuple. A reference that names no netting set
     refuses BY NAME and queues nothing at all.
 
+    NOTHING IS PARSED HERE. A set's stamp is the content hash of its document, the sha256 of the
+    market data and calendar files it names, the engine version and the seed; the worker loads it.
+
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
-    unmoved book is one run, and asking twice hands back the id of the first.
+    unmoved book and unmoved files is one run, and asking twice hands back the id of the first.
     """
     document = priced(live_book().read()[0], 'CreditMonteCarlo')
     found = {node['Instrument']['.Deal'].get('Reference'): node
@@ -3529,14 +3591,15 @@ def book_xva(request: dict):
                                  'are {}'.format(', '.join(map(repr, sorted(set(unknown)))),
                                                  ', '.join(sorted(found)) or 'none'))
 
-    queued = []
+    queued, files = [], content_hash(EXECUTOR.files(document))
     for reference in references:
         node = found[reference]
         terms = set_terms(node['Instrument']['.Deal'])
-        context = load(xva_document(document, node, terms[0]))
-        stamp = replay(context)
+        job = xva_document(document, node, terms[0])
+        stamp = dict(plan_hash=content_hash(job), values_hash=files, engine_version=__version__,
+                     seed=job['Calc']['Calculation'].get('Random_Seed'))
         result_id = content_hash(stamp)
-        run = XvaJob(context, reference, terms, result_id, stamp)
+        run = XvaJob(job, reference, terms, result_id, stamp)
         status = EXECUTOR.submit(
             Job(result_id, run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                 book=book_name(document)), HEAVY)

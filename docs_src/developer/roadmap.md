@@ -125,24 +125,36 @@ unmeasured — a limitation without a number is absolution, not documentation
   end-to-end result, a batched curve within 4 ulps of its looped columns, and to the bit on the
   card. A replay pinned from another box is compared for equality unless a tolerance policy
   stands, so a home replaying host-priced results across boxes wants one declared.
-- **The market data file and the calendar are not yet declared in the record** (2026-10-05). A
-  job names each by its path, the evidence the record stores does too, so a replay reads whatever
-  the file holds then; and the calendar is in no hash at all - two jobs
-  differing only in a calendar's content priced 1.1e-3 apart under one result id.
-  [The design](architecture.md#market-data-context-job): the hub declares each file as a fact, its
-  bytes a blob in the clear, the latest of each name standing; a job composed at a point in the
-  record is handed the files standing there and a context loads them by content. Nothing cites a
-  version. S-M.
+- **Nothing declares the market data file or the calendar in the record yet** (2026-10-05). A job
+  names each by its path, the evidence the record stores does too, so a replay reads whatever the
+  file holds then; and outside the XVA tab the calendar is in no hash at all - two jobs differing
+  only in a calendar's content priced 1.1e-3 apart under one result id. Nothing is missing to do it
+  ([the design](architecture.md#market-data-context-job)): a market declaration files any bytes
+  under a name, the store keeps them as a plain file at their address, and the `markets` fold
+  resolves the latest of a name - so the hub declares each file and a job composed at a point in
+  the record names the standing blob's path. Nothing cites a version. Until then the XVA tab reads
+  a path's digest by its size and modified time, so a rewrite inside one timer tick is missed, and
+  a set refused for a file that moved in the queue keeps that refusal under its id if the file is
+  put back byte for byte. S.
 - **The service reads and writes the market on the book's own page** (2026-10-05). It was built on
   a book carrying its whole market inline, against
   [the design](architecture.md#market-data-context-job): 43 readers take the base currency, the
   base date, price factors, market prices and bootstrapper configuration straight off the book's
   explicit block, so a book that names a market data file answers 500 on its status and curves
   with nothing explicit, refuses a survival curve and a date roll on a bare key, and writes the
-  whole file's factors into the book when one spot is patched; and every request loads into a
-  context of its own, so a named file is parsed per load where a context kept by the worker would
-  parse it once. M: the readers through a loaded context, the worker keeping its contexts - the
-  XVA tab first.
+  whole file's factors into the book when one spot is patched; and every request but the XVA
+  tab's loads into a context of its own. The XVA tab is moved - its worker keeps one context, a
+  named file parsed once, a ten-set recalc 12.2 s to 2.0 s - and its rows' `plan_hash` and
+  `values_hash` hold the set document's hash and the two files', where every other run's hold the
+  engine's; a market edit writes `Market Prices` into the book, so the first recalc after a tick
+  parses the file again. M: the readers through a loaded context.
+- **A credit Monte Carlo writes into the config it runs on** (2026-10-06). `Context.run_cmc`
+  re-knots the counterparty's survival curve where `CDS_Tenors` is set - idempotent, to the bit
+  across a moved base date and changed tenors - and writes a collateral valuation adjustment's flat
+  `.FUNDING` and `.COLLATERAL` curves into the price factors, over a curve of that name a market
+  data file carries: on a kept context a later set funding off the file's curve read a fifth of
+  what a fresh context does. The XVA tab drops its context after such a run, a parse per set; the
+  write belongs on the run's own copy. S.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
