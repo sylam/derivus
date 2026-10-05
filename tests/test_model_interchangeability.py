@@ -19,10 +19,13 @@ Covers:
 """
 import json
 import os
+from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 import derivus as rf
+from derivus.stochasticprocess import LogOUSpotModel
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIPPING = os.path.join(REPO, 'tests', 'fixtures', 'platinum_hedge_shipping.json')
@@ -106,6 +109,23 @@ def test_every_spot_model_reveals_its_state_in_the_job_s_dtype(tmp_path):
     assert {name: str(value.dtype) for name, value in revealed.items()} == dict.fromkeys(
         ('platinum_cme_regime_onehot', 'platinum_cme_regime_belief', 'platinum_cme_log_h',
          'platinum_cme_log_deviation', 'platinum_cme_kappa', 'platinum_cme_sigma'), 'torch.float64')
+
+
+def test_an_anchored_log_ou_holds_its_level_to_an_ulp_in_float32():
+    """A float32 log-OU anchored at its spot with no noise, stepped daily - S0 60 at Kappa 2 for five
+    years, S0 100 at Kappa 0.5 for ten: every row reads its level within one float32 ulp (measured
+    6.4e-8 and 7.6e-8), the walk being centred on Theta.
+
+    Killed by: the pull `-expm1(-Kappa dt)` beside the rounded decay, 2.05e-5 and 4.95e-5 off; the
+    pull `1 - e^{-Kappa dt}`, 5.1e-7 and 5.3e-7 off."""
+    for kappa, spot, rows in ((2.0, 60.0, 1826), (0.5, 100.0, 3653)):
+        process = LogOUSpotModel(None, {'Kappa': kappa, 'Theta': 0.0, 'Sigma': 0.0})
+        years = np.arange(rows) / 365.0
+        process.precalculate(None, SimpleNamespace(scen_time_grid=years, time_grid_years=years),
+                             torch.tensor([spot]), None, 0)
+        path = process.generate(SimpleNamespace(t_random_numbers=torch.zeros(1, rows, 4)))
+        assert path.dtype == torch.float32 and float(
+            (path.double() / spot - 1.0).abs().max()) <= 2.0 ** -23, (kappa, spot)
 
 
 def test_solve_reveal_width_resizes_with_model():

@@ -42,7 +42,6 @@ sys.path.insert(0, os.path.join(
 import numpy as np
 import pandas as pd
 import pytest
-import torch
 
 import hw2f_composition as H
 from derivus import utils
@@ -94,6 +93,27 @@ CELLS = (('6M', '1Y'), ('1Y', '1Y'))
 #: identity 1 can be missing by.
 LADDER = ((('6M',), ('1Y',), 1.10), (('1Y',), ('1Y',), 1.15),
           (('1Y',), ('2Y',), 1.18), (('2Y',), ('2Y',), 1.20))
+#: theta* as the fit lands on LADDER: Half B composes at THESE parameters, the landing spot of an
+#: under-determined fit moving with the last bit of its residual.
+PINNED_THETA = {
+    'Property_Aliases': None,
+    'Quanto_FX_Volatility': utils.Curve([], [[0.25, 0.547], [0.5, 0.547], [1.0, 0.547], [2.0, 0.547],
+                                             [5.0, 0.557]]),
+    'Alpha_1': 0.49655011749623934,
+    'Sigma_1': utils.Curve([], [
+        [0.0, 0.005565468319076265], [0.08333333333333333, 0.0030262963964697237],
+        [0.25, 0.005241697898007574], [0.5, 0.004323782409145998], [1.0, 0.005211823903164431],
+        [2.0, 0.008838973141828552], [4.0, 0.0072974894112622715], [6.0, 0.08999999938184211],
+        [8.0, 0.023272419634184322], [10.0, 0.003440254784947953]]),
+    'Alpha_2': -0.03630625808156095,
+    'Sigma_2': utils.Curve([], [
+        [0.0, 0.011939372421782547], [0.08333333333333333, 0.006492674540138705],
+        [0.25, 0.01350269050498887], [0.5, 0.011372611797018622], [1.0, 0.01252152856275499],
+        [2.0, 0.010256498081541486], [4.0, 0.015146585547718947], [6.0, 0.008931161767926216],
+        [8.0, 0.008038429994051043], [10.0, 0.009107356412070909]]),
+    'Correlation': -0.36839611285104396,
+    'Quanto_FX_Correlation_1': -0.7326768933539615,
+    'Quanto_FX_Correlation_2': -0.02871623313617731}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -221,11 +241,9 @@ def authored_blocks():
 # THE FIXTURES - one fit and one pair of runs for the whole file
 # ---------------------------------------------------------------------------------------------
 
-@pytest.fixture(scope='module')
-def world():
-    """Half A on the authored world: both curves solved, the FX surface built, the ladder fitted.
-    Module-scoped because the fit is the expensive half and every gate reads the same theta*.
-    """
+def build(theta=None):
+    """Half A on the authored world: both curves solved, the FX surface built, the ladder fitted -
+    or `theta` installed in place of the fit."""
     built = H.build_and_fit(
         BASE, authored_blocks(),
         ir_market_prices=['InterestRatePrices.USD', 'InterestRatePrices.ZAR'],
@@ -233,7 +251,7 @@ def world():
         vol_surface_name='ZAR-SWAPTION', swaption_currency='ZAR',
         fx_currency=CURRENCIES['rate'], ir_curve='ZAR', fx_spot_base_per_unit=FX_SPOT,
         base_currency=CURRENCIES['base'], base_curve='USD', rho_quote=RHO,
-        fxvol_market_price='FXVolPrices.USD.ZAR')
+        fxvol_market_price='FXVolPrices.USD.ZAR', theta=theta)
     built['meta'] = {'base_currency': CURRENCIES['base'], 'fx_currency': CURRENCIES['rate'],
                      'ir_curve': 'ZAR',
                      'swaption_market_price': 'HullWhite2FactorModelPrices.ZAR'}
@@ -241,10 +259,22 @@ def world():
 
 
 @pytest.fixture(scope='module')
-def legs(world):
+def world():
+    """Half A, fitted - module-scoped because the fit is the expensive half."""
+    return build()
+
+
+@pytest.fixture(scope='module')
+def pinned():
+    """Half A at `PINNED_THETA`: the world Half B composes."""
+    return build(PINNED_THETA)
+
+
+@pytest.fixture(scope='module')
+def legs(pinned):
     """The composition's par forward swaps, off the solved curve and checked against the coupon
     `create_market_swaps` wrote into the benchmark's leg."""
-    return H.benchmark_legs(world['closure'], CELLS, pd.DateOffset(months=3), 'ACT_365')
+    return H.benchmark_legs(pinned['closure'], CELLS, pd.DateOffset(months=3), 'ACT_365')
 
 
 def _reading(world, legs, rho, **mutation):
@@ -253,13 +283,13 @@ def _reading(world, legs, rho, **mutation):
 
 
 @pytest.fixture(scope='module')
-def composed(world, legs):
+def composed(pinned, legs):
     """`{label: reading}` - the correlated world, its rho = 0 twin under the SAME seed, and the two
     mutants. One set of runs for every gate below."""
-    return {'rho': _reading(world, legs, RHO),
-            'zero': _reading(world, legs, 0.0),
-            'no_K': _reading(world, legs, RHO, suppress_quanto_drift=True),
-            'flipped': _reading(world, legs, RHO, fx_axis_sign=-1.0)}
+    return {'rho': _reading(pinned, legs, RHO),
+            'zero': _reading(pinned, legs, 0.0),
+            'no_K': _reading(pinned, legs, RHO, suppress_quanto_drift=True),
+            'flipped': _reading(pinned, legs, RHO, fx_axis_sign=-1.0)}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -399,7 +429,8 @@ def test_suppressing_the_quanto_drift_breaks_the_identity(composed):
     on the emitted block while the `Correlations` section keeps the correlated Brownians - a world
     where FX and rates move together and the measure change is missing, which is what a wrong `K`
     is and what a desk could author by hand. The kill must exceed the band the clean gate passes
-    inside.
+    inside: at `PINNED_THETA` it moves identity 1 by 11.27% (14.2 sigma) and 13.68% (16.3 sigma),
+    where a refit landing elsewhere on the ladder's manifold read 0.25% (0.3 sigma) at 1Yx1Y.
     """
     clean, dirty = composed['rho']['rows'], composed['no_K']['rows']
     for name in clean:

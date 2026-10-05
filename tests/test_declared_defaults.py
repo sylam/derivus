@@ -43,8 +43,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 import derivus
 import rates_world
@@ -488,6 +490,24 @@ def test_a_blank_table_reads_the_same_however_it_is_spelled():
     assert 'Deals Skipped' not in stats, stats
     assert valued['OMITTED'] == valued['NULL'] == valued['EMPTY'] == valued['STATED']
     assert math.isfinite(float.fromhex(valued['NULL'])) and float.fromhex(valued['NULL']) != 0.0
+
+
+def test_a_one_day_realised_dividend_holds_its_digits_in_float32():
+    """`utils.calc_realized_dividends` over one day in float32 on flat 4% repo and 3% dividend
+    curves, S0 e^{r/365} (1 - e^{-q/365}), against `math.expm1` in float64: under 1e-6.
+
+    Killed by: the old spelling `1 - exp(-q t)`, 7.8e-5 off."""
+    class Static:
+        riskneutral, t_Buffer = True, {}
+        t_Static_Buffer = [torch.tensor([r, r], dtype=torch.float32) for r in (0.04, 0.03)]
+
+    flat = utils.CurveTenor(np.array([0.0, 10.0]))
+    repo, dividend = ([(False, i, None, flat, lambda days: days / 365.0)] for i in (0, 1))
+    reset = np.array([[0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+    got = utils.calc_realized_dividends(
+        torch.tensor(100.0, dtype=torch.float32), repo, dividend, [reset], Static())
+    assert float(got) == pytest.approx(
+        100.0 * math.exp(0.04 / 365.0) * -math.expm1(-0.03 / 365.0), rel=1e-6)
 
 
 def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_dividends():

@@ -1095,7 +1095,7 @@ class UnroutedInterpolation(object):
         """Whole rows at `index` — the 0D spot path."""
         if alpha is None:
             return self.tensor[index]
-        return self.tensor[index] * (1 - alpha) + self.tensor[index_next] * alpha
+        return torch.lerp(self.tensor[index], self.tensor[index_next], alpha)
 
 
 class Interpolation(UnroutedInterpolation):
@@ -1133,8 +1133,8 @@ class Interpolation(UnroutedInterpolation):
 
     @staticmethod
     def calc_hermite_curve(t_a, g, c, curve_t0, curve_t1):
-        one_minus_ta = (1.0 - t_a)
-        return curve_t0 * one_minus_ta + t_a * (curve_t1 + one_minus_ta * (g + t_a * c))
+        """`(1-t) y0 + t (y1 + (1-t)(g + t c))`, exact at both knots."""
+        return torch.lerp(curve_t0, torch.addcmul(curve_t1, 1.0 - t_a, torch.addcmul(g, t_a, c)), t_a)
 
     def read_at(self, tenor_data, rows, i1, i2, w2):
         """The RAW value at one time point — before the rate*time scaling, which `combine` applies
@@ -1151,11 +1151,11 @@ class Interpolation(UnroutedInterpolation):
             return self.calc_hermite_curve(
                 w2, g[i0,], c[i0,], self.indexed_tensor[i0,], self.indexed_tensor[i1x,])
         # default to linear
-        return self.indexed_tensor[i0,] * (1.0 - w2) + self.indexed_tensor[i1x,] * w2
+        return torch.lerp(self.indexed_tensor[i0,], self.indexed_tensor[i1x,], w2)
 
     def blend(self, raw, nxt, alpha):
         """Linear time interpolation between two raw reads."""
-        return (1 - alpha) * raw + alpha * nxt
+        return torch.lerp(raw, nxt, alpha)
 
     def project(self, block, raw):
         """A raw read taken up to the logical batch width by the block that produced it."""
@@ -1311,12 +1311,10 @@ class RoutedInterpolation(object):
             if alpha is None:
                 return b0.project(
                     self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)])
-            a = self.select_rows(alpha, pos)
-            return b0.project(
-                self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)]) * (1 - a) + \
-                b1.project(
-                    self.strategies[at_t1].tensor[
-                        self.local(self.select_rows(index_next, pos), b1)]) * a
+            return torch.lerp(
+                b0.project(self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)]),
+                b1.project(self.strategies[at_t1].tensor[
+                    self.local(self.select_rows(index_next, pos), b1)]), self.select_rows(alpha, pos))
 
         return self.routed(route, index.shape[0], group)
 
@@ -1399,6 +1397,15 @@ class CurveTenor(object):
             alpha = (clipped_points - tenor[index]) / delta[index]
 
         return index, index_next, alpha
+
+    def read_index(self, daycount, points, like):
+        """`points` in years under `daycount` and their `get_index`, in `like`'s dtype and device:
+        static across batches, so built once per key, and carrying no graph."""
+        key = (daycount, points.dtype, points.shape, points.tobytes(), like.dtype, like.device)
+        if key not in self.tensor_cache:
+            years = like.new(daycount(points))
+            self.tensor_cache[key] = (years,) + tuple(self.get_index(years))
+        return self.tensor_cache[key]
 
 
 @torch.jit.script
@@ -2397,7 +2404,7 @@ class TensorCashFlows(TensorSchedule):
             T = ir_curve.get_day_count_accrual(base_date, self.Resets.schedule[:, RESET_INDEX_End_Day])
             t = ir_curve.get_day_count_accrual(base_date, self.Resets.schedule[:, RESET_INDEX_Start_Day])
             a = self.Resets.schedule[:, RESET_INDEX_Accrual]
-            r = (np.exp(ir_curve.current_value(T) * T - ir_curve.current_value(t) * t) - 1.0) / a
+            r = np.expm1(ir_curve.current_value(T) * T - ir_curve.current_value(t) * t) / a
             return (D * r).sum() / D.sum(), D.sum()
         else:
             return D.sum()
@@ -2614,10 +2621,9 @@ class CurveTensor(object):
         time_size, point_size = points.shape
 
         if point_size > 0:
-            # get the points in years
-            tenor_points_in_years = tensor.new(curve_component[FACTOR_INDEX_Daycount](points))
             curve_tenor = curve_component[FACTOR_INDEX_Tenor_Index]
-            i1, i2, a = curve_tenor.get_index(tenor_points_in_years)
+            tenor_points_in_years, i1, i2, a = curve_tenor.read_index(
+                curve_component[FACTOR_INDEX_Daycount], points, tensor)
 
             if isinstance(curve_tenor.type, str):
                 tenor_data = (curve_tenor.type, curve_tenor.min, curve_tenor.max)
@@ -4469,10 +4475,9 @@ def calc_realized_dividends(s_t0, repo, div_yield, div_reset_stack, shared):
     sr_minus_sq = torch.stack([
         torch.exp(torch.squeeze(calc_spot_forward(
             repo, div_resets[:, RESET_INDEX_End_Day], div_resets, shared, True), dim=1)
-        ) * (1.0 - torch.exp(
+        ) * -torch.expm1(
             -torch.squeeze(calc_spot_forward(
                 div_yield, div_resets[:, RESET_INDEX_End_Day], div_resets, shared, True), dim=1))
-             )
         for div_resets in div_reset_stack], dim=1)
 
     return s_t0 * sr_minus_sq
@@ -4635,20 +4640,29 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
     return shared.t_Buffer[key_code]
 
 
-def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, floor=0.0):
+def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, floor=0.0, grids=None):
     """Forward rates off a curve, for one calibrated curve or a batch of per-path curves.
 
     `tensor` is the curve: (n_tenors,) calibrated, or (n_tenors, B) for a BATCH. Every op below is
     elementwise or a tenor-axis gather, so the batch axis rides along as a trailing broadcast dim -
-    no reduction reassociates, and the batched result is bitwise equal to looping the columns.
-    `nb == 0` makes every `_bcast` a no-op reshape. A 0 knot's forward spans `floor` and reads the
+    no reduction reassociates, and the batched result equals looping the columns to the bit on the
+    card and within 4 ulps of a column's largest forward on the host, whose vector lanes fuse the
+    blends where its scalar tails do not.
+    `nb == 0` makes every `_bcast` the identity. A 0 knot's forward spans `floor` and reads the
     limit as its span vanishes - the stated rate at t = 0; every other knot spans its own tenor.
+    `grids` keeps, per grid, what reads the time grid and the tenors and not the curve.
     """
     nb = tensor.dim() - 1
 
     def _bcast(x):
         """Right-pad tenor/time-shaped `x` with the curve's trailing batch axes."""
-        return x.reshape(*x.shape, *([1] * nb))
+        return x.reshape(*x.shape, *([1] * nb)) if nb else x
+
+    def once(key, build):
+        """A quantity of the time grid and the tenors alone, built on the grid's first call."""
+        if key not in grid:
+            grid[key] = build()
+        return grid[key]
 
     def prepare_tenors(factor_tenor, time_grid, extrapolate):
         """Prepare tenor grid with optional extrapolation."""
@@ -4663,7 +4677,8 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
             amended_tensor = torch.cat([tensor, point_at_inf])
 
         tnr_d = np.diff(tnr, append=tnr.max() + 1)
-        return tensor.new(tnr), tensor.new(tnr_d), amended_tensor
+        return (once('tnr', lambda: tensor.new(tnr)), once('tnr_d', lambda: tensor.new(tnr_d)),
+                amended_tensor)
 
     def scale_for_rt(tnr, tensor, is_rt):
         """Scale tensor for rate*time interpolation."""
@@ -4720,7 +4735,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
             if is_rt:
                 norm = norm / _bcast(values.clamp(full_tnr.min(), full_tnr.max()))
             alpha = _bcast(alpha)
-            val = alpha * tensor[ten_t_next] + (1 - alpha) * tensor[ten_t]
+            val = torch.lerp(tensor[ten_t], tensor[ten_t_next], alpha)
 
             # `> 1 + nb` is the tenor axis test: it selects the (time x tenor) call and skips the
             # time-only one
@@ -4759,54 +4774,52 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
         extrapolate = 'Extrapolate' in interp_method
 
     factor_tenor = factor.get_tenor()
-    time_grid = tensor.new(time_grid_years)
+    cut = factor.interpolation[0][1] if len(factor.interpolation) == 2 else None
+    grid = {} if grids is None else grids.setdefault((
+        factor_tenor.tobytes(), np.asarray(time_grid_years, dtype=np.float64).tobytes(), extrapolate,
+        cut, floor, tensor.dtype, tensor.device, nb), {})
+    time_grid = once('time_grid', lambda: tensor.new(time_grid_years))
     tnr, tnr_d, tensor = prepare_tenors(factor_tenor, time_grid_years, extrapolate)
 
-    def across(span):
-        """The curve's rate x tenor at t + span less at t, every row and knot."""
-        # Calculate interpolation indices and weights
-        indices_t, indices_time = calculate_interp_params(tnr, tnr_d, time_grid, span)
+    def plan(span):
+        """t + span and the indices and weights there and at t; on a split curve, per leg, with the
+        masks choosing between the legs."""
+        indices = calculate_interp_params(tnr, tnr_d, time_grid, span)
         M = time_grid.view(-1, 1) + span.view(1, -1)
+        if cut is None:
+            return M, indices
+        near = [(a, i.clamp(max=cut), j.clamp(max=cut)) for a, i, j in indices]
+        far = [(a, (i - cut).clamp(min=0), (j - cut).clamp(min=0)) for a, i, j in indices]
+        return M, (near, far, _bcast(M <= tnr[cut]), _bcast(time_grid <= tnr[cut]))
+
+    def across(span, key):
+        """The curve's rate x tenor at t + span less at t, every row and knot."""
+        M, indices = once(('plan', key), lambda: plan(span))
         if len(factor.interpolation)==1:
             f = calc_fwd_interpolated_new(interp_method, tnr, tensor)
             # insert the tenor axis: (T,) -> (T, 1) calibrated, (T, B) -> (T, 1, B) batched
-            t_leg = f(time_grid, indices_time)
-            return f(M, indices_t) - t_leg.reshape(t_leg.shape[0], 1, *t_leg.shape[1:])
+            t_leg = f(time_grid, indices[1])
+            return f(M, indices[0]) - t_leg.reshape(t_leg.shape[0], 1, *t_leg.shape[1:])
         elif len(factor.interpolation)==2:
-            cuttoff_index = factor.interpolation[0][1]
-            cuttoff_tenor = tnr[cuttoff_index]
-            # near leg
-            n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cuttoff_index+1], tensor[:cuttoff_index+1])
-            near_tT = n(
-                M,
-                (indices_t[0],indices_t[1].clamp(max=cuttoff_index), indices_t[2].clamp(max=cuttoff_index)))
-            near_t = n(
-                time_grid,
-                (indices_time[0], indices_time[1].clamp(max=cuttoff_index), indices_time[2].clamp(max=cuttoff_index)))
-            # far leg
-            f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cuttoff_index:], tensor[cuttoff_index:])
-            far_tT = f(
-                M,
-                (indices_t[0],(indices_t[1]-cuttoff_index).clamp(min=0), (indices_t[2]-cuttoff_index).clamp(min=0)))
-            far_t = f(
-                time_grid,
-                (indices_time[0], (indices_time[1]-cuttoff_index).clamp(min=0), (indices_time[2]-cuttoff_index).clamp(min=0)))
-            mask_near = _bcast(M <= cuttoff_tenor)
-            time_t = torch.where(_bcast(time_grid <= cuttoff_tenor), near_t, far_t)
-            return (torch.where(mask_near, near_tT, far_tT)
+            near, far, mask_near, mask_t = indices
+            n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cut + 1], tensor[:cut + 1])
+            f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cut:], tensor[cut:])
+            time_t = torch.where(mask_t, n(time_grid, near[1]), f(time_grid, far[1]))
+            return (torch.where(mask_near, n(M, near[0]), f(M, far[0]))
                     - time_t.reshape(time_t.shape[0], 1, *time_t.shape[1:]))
         else:
             raise ValueError("More than 2 Interpolation Segments not supported")
 
     if not floor:
-        return across(tnr)
-    span = tnr.masked_fill(tnr == 0, floor)
-    forwards = across(span)
+        return across(tnr, 'tnr')
+    span = once('span', lambda: tnr.masked_fill(tnr == 0, floor))
+    forwards = across(span, 'span')
     if (factor_tenor == 0).any():
         # the 0 knot reads the limit as its span vanishes, extrapolated off spans of the floor and
         # twice it: exact where the rate is linear across both, as within a linear segment
-        zero = _bcast(torch.as_tensor(factor_tenor == 0, device=forwards.device)).unsqueeze(0)
-        forwards = torch.where(zero, 2.0 * forwards - 0.5 * across(2.0 * span), forwards)
+        zero, span2 = once('zero', lambda: (
+            _bcast(torch.as_tensor(factor_tenor == 0, device=span.device)).unsqueeze(0), 2.0 * span))
+        forwards = torch.where(zero, 2.0 * forwards - 0.5 * across(span2, 'span2'), forwards)
     return forwards
 
 

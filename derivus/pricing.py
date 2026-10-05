@@ -2610,7 +2610,7 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
 
     if (K > 0.0).all():
         h_tau = -(b * tau + 2 * vol) * (B_0 / (B_inf - B_0))
-        I = B_0 + (B_inf - B_0) * (1 - torch.exp(h_tau))
+        I = B_0 - (B_inf - B_0) * torch.expm1(h_tau)
         safe_S = torch.min(S - 1e-6, I)
         C_BS = (I - K) * torch.exp(torch.log(safe_S / I) * beta) * (1.0 - phi(beta, I, I))
         x = phi(1.0, I, I)

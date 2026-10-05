@@ -69,16 +69,16 @@ def calc_statistics(data_frame, method='Log', num_business_days=252.0, frequency
     """Currently only frequency==1 is supported"""
 
     def calc_alpha(x, y):
-        return (-num_business_days * np.log(
-            1.0 + ((x - x.mean(axis=0)) * (y - y.mean(axis=0))).mean(axis=0) / ((y - y.mean(axis=0)) ** 2.0).mean(
+        return (-num_business_days * np.log1p(
+            ((x - x.mean(axis=0)) * (y - y.mean(axis=0))).mean(axis=0) / ((y - y.mean(axis=0)) ** 2.0).mean(
                 axis=0))).clip(0.001, max_alpha)
 
     def calc_sigma2(x, y, alpha):
-        return (x.var(axis=0) - ((1 - np.exp(-alpha / num_business_days)) ** 2) * y.var(axis=0)) * (
-                (2.0 * alpha) / (1 - np.exp(-2.0 * alpha / num_business_days)))
+        return (x.var(axis=0) - (np.expm1(-alpha / num_business_days) ** 2) * y.var(axis=0)) * (
+                (2.0 * alpha) / -np.expm1(-2.0 * alpha / num_business_days))
 
     def calc_theta(x, y, alpha):
-        return y.mean(axis=0) + x.mean(axis=0) / (1.0 - np.exp(-alpha / num_business_days))
+        return y.mean(axis=0) + x.mean(axis=0) / -np.expm1(-alpha / num_business_days)
 
     def calc_log_theta(theta, sigma2, alpha):
         return np.exp(theta + sigma2 / (4.0 * alpha))
@@ -281,14 +281,14 @@ def hw_calc_B(a, tenor):
     """
     small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
     # keyed off `a` and not `tenor`, so this and the branch above cannot land in two libraries
-    exp = torch.exp if isinstance(a, torch.Tensor) else np.exp
+    expm1 = torch.expm1 if isinstance(a, torch.Tensor) else np.expm1
     safe = where(small, 1.0 + 0.0 * a, a)
     # sum_k (-a)^k T^{k+1}/(k+1)!
     acc, term = 0.0 * tenor, tenor
     for k in range(HW_SERIES_TERMS):
         acc = acc + term
         term = term * (-a) * tenor / (k + 2)
-    return where(small, acc, (1.0 - exp(-safe * tenor)) / safe)
+    return where(small, acc, -expm1(-safe * tenor) / safe)
 
 
 def hmm_forward_backward(log_pi, log_P, log_emit):
@@ -500,6 +500,8 @@ class StochasticProcess(object):
         self.factor = factor
         self.param = param
         self.params_ok = True
+        #: `utils.calc_curve_forwards`' per-grid quantities, kept across calls and forks
+        self.forward_grids = {}
 
     def copy(self):
         """Shallow copy, for forking a process for nested simulation (inner MC): the fork can
@@ -640,7 +642,8 @@ class StochasticProcess(object):
         returns `(T, n_tenors, B)`. `utils.calc_curve_forwards` is shape-dispatched, so both
         cases are one call."""
         return utils.calc_curve_forwards(
-            self.factor, tensor, time_grid_years, shared, mul_time=mul_time, floor=floor)
+            self.factor, tensor, time_grid_years, shared, mul_time=mul_time, floor=floor,
+            grids=self.forward_grids)
 
     @staticmethod
     def align_rank(x, ndim):
@@ -1066,11 +1069,13 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             self.cache['time_grid_years'] = time_grid_years
             self.cache['t'] = tensor.new(time_grid_years.reshape(-1, 1))
 
-        # `fwd_curve` depends on `tensor` (the t=0 curve) — recompute every call (not
-        # cached) so a per-path re-precalc (inner-MC fork / diff-ML t=0 burn-in) isn't
-        # shadowed by the first call's calibrated curve. Batch-aware via the base seam.
-        fwd_curve = self.forward_curve(tensor, self.cache['time_grid_years'], shared, floor=TENOR_FLOOR)
-        return self.cache['time_grid_years'], fwd_curve, self.cache['t']
+        # `fwd_curve` reads `tensor` (the t=0 curve) alone: kept while the same curve, unmodified
+        # and carrying no graph, comes back (a calibration's residuals), rebuilt for any other
+        if tensor.requires_grad or self.cache.get('curve') is not tensor or (
+                self.cache['version'] != tensor._version):
+            self.cache.update(curve=tensor, version=tensor._version, fwd_curve=self.forward_curve(
+                tensor, self.cache['time_grid_years'], shared, floor=TENOR_FLOOR))
+        return self.cache['time_grid_years'], self.cache['fwd_curve'], self.cache['t']
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         if self.param is None:
@@ -1540,10 +1545,10 @@ class HWHazardRateModel(StochasticProcess):
             ref_date, t) for t in time_grid.scen_time_grid])
 
         self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared, mul_time=False)
-        Bt = ((1.0 - np.exp(-alpha * time_grid_years)) / alpha).reshape(-1, 1)
-        B2t = ((1.0 - np.exp(-2.0 * alpha * time_grid_years)) / alpha).reshape(-1, 1)
+        Bt = (-np.expm1(-alpha * time_grid_years) / alpha).reshape(-1, 1)
+        B2t = (-np.expm1(-2.0 * alpha * time_grid_years) / alpha).reshape(-1, 1)
         sigma2 = self.param['Sigma'] ** 2
-        BtT = ((1.0 - np.exp(-alpha * factor_tenor)) / alpha).reshape(1, -1)
+        BtT = (-np.expm1(-alpha * factor_tenor) / alpha).reshape(1, -1)
         AtT = sigma2 * BtT * (0.5 * BtT * B2t + Bt ** 2)
 
         # OU variance: (1 - exp(-2αt)) / (2α) == 0.5 · B2t (reuse, don't recompute the exp)
@@ -1674,14 +1679,14 @@ class CSForwardPriceModel(StochasticProcess):
 
         if implied_tensor is None:
             # need to scale the vol (as the variance is modelled using an OU Process)
-            var_adj = (1.0 - np.exp(-2.0 * self.param['Alpha'] * dt.cumsum(axis=0))) / (2.0 * self.param['Alpha'])
+            var_adj = -np.expm1(-2.0 * self.param['Alpha'] * dt.cumsum(axis=0)) / (2.0 * self.param['Alpha'])
             var = np.square(self.param['Sigma']) * np.exp(-2.0 * self.param['Alpha'] * tenors) * var_adj
             vol = np.sqrt(np.diff(np.insert(var, 0, 0, axis=0), axis=0))
             self.vol = tensor.new(np.expand_dims(vol, axis=2))
             self.drift = tensor.new(np.expand_dims(self.param['Drift'] * dt.cumsum(axis=0) - 0.5 * var, axis=2))
         else:
             # need to scale the vol (as the variance is modelled using an OU Process)
-            var_adj = (1.0 - torch.exp(-2.0 * implied_tensor['Alpha'] * tensor.new(dt.cumsum(axis=0)))) / (
+            var_adj = -torch.expm1(-2.0 * implied_tensor['Alpha'] * tensor.new(dt.cumsum(axis=0))) / (
                     2.0 * implied_tensor['Alpha'])
             var = torch.square(implied_tensor['Sigma']) * torch.exp(
                 -2.0 * implied_tensor['Alpha'] * tensor.new(tenors)) * var_adj
@@ -1887,13 +1892,13 @@ class PCAInterestRateModel(StochasticProcess):
         dt_steps   = np.diff(np.append([time_grid_years[0]], time_grid_years))  # [T]
         elapsed    = dt_steps.cumsum()                                        # [T] — time since sim start
         ou_decay   = np.exp(-alpha * dt_steps)                               # [T]
-        ou_std     = np.sqrt((1.0 - np.exp(-2.0 * alpha * dt_steps)) / (2.0 * alpha))  # [T]
+        ou_std     = np.sqrt(-np.expm1(-2.0 * alpha * dt_steps) / (2.0 * alpha))  # [T]
         self.ou_decay    = shared.one.new_tensor(ou_decay.reshape(-1, 1))    # [T, 1]
         self.ou_noise    = shared.one.new_tensor(ou_std.reshape(-1, 1))      # [T, 1]
         self.vols_tensor = shared.one.new_tensor(self.vols.reshape(-1, 1))   # [n_tenors, 1]
 
         # Ito drift: -½ σ_τ² Var(Y(t_k)) = -½ σ_τ² (1-exp(-2α t_k))/(2α)  (full value at each t_k)
-        ou_var_cumul = (1.0 - np.exp(-2.0 * alpha * elapsed)) / (2.0 * alpha)  # [T]
+        ou_var_cumul = -np.expm1(-2.0 * alpha * elapsed) / (2.0 * alpha)  # [T]
         self.drift = shared.one.new_tensor(np.expand_dims(
             -0.5 * (self.vols * self.vols).reshape(1, -1) * ou_var_cumul.reshape(-1, 1), axis=2))
 
@@ -1908,15 +1913,15 @@ class PCAInterestRateModel(StochasticProcess):
                     fill_value=self.param['Historical_Yield'].array.T[-1][-1])
             omega = shared.one.new_tensor(hist_mean(self.factor.tenors).reshape(1, -1))        # [1, n_tenors]
             decay = shared.one.new_tensor(np.exp(-alpha * elapsed).reshape(-1, 1))             # [T, 1]
+            growth = shared.one.new_tensor(-np.expm1(-alpha * elapsed).reshape(-1, 1))         # [T, 1]
             # R_τ(t) = exp(-α t) r_τ(0) + (1 - exp(-α t)) Θ_τ  (t is time since sim start)
             if tensor.ndim == 1:
                 curve_t0 = tensor.reshape(1, -1)                                                # [1, n_tenors]
-                fwd_curve = decay * curve_t0 + (1.0 - decay) * omega                            # [T, n_tenors]
+                fwd_curve = decay * curve_t0 + growth * omega                                   # [T, n_tenors]
             else:
                 curve_t0 = tensor.unsqueeze(0)                                                  # [1, n_tenors, B]
-                decay_b = decay.unsqueeze(-1)                                                   # [T, 1, 1]
                 omega_b = omega.unsqueeze(-1)                                                   # [1, n_tenors, 1]
-                fwd_curve = decay_b * curve_t0 + (1.0 - decay_b) * omega_b                      # [T, n_tenors, B]
+                fwd_curve = decay.unsqueeze(-1) * curve_t0 + growth.unsqueeze(-1) * omega_b     # [T, n_tenors, B]
         else:
             # batch-aware forward curve via the base-class seam, then divide by the tenor with
             # the divisor rank-aligned to the curve
@@ -2097,7 +2102,7 @@ class LogOUSpotModel(StochasticProcess):
 
         # exact OU step: mean-reversion factor and conditional std-dev
         e_kdt   = np.exp(-kappa * dt)
-        var_step = sigma * sigma * (1.0 - np.exp(-2.0 * kappa * dt)) / (2.0 * kappa)
+        var_step = sigma * sigma * -np.expm1(-2.0 * kappa * dt) / (2.0 * kappa)
 
         self.e_kdt   = tensor.new(e_kdt.reshape(-1, 1))
         self.ou_vol  = tensor.new(np.sqrt(var_step).reshape(-1, 1))
@@ -2118,18 +2123,16 @@ class LogOUSpotModel(StochasticProcess):
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]  # [T, batch]
         if Z.ndim == 2:
             A = torch.cumprod(self.e_kdt, dim=0)                           # [T, 1]
-            b = self.theta * (1.0 - self.e_kdt) + self.ou_vol * Z         # [T, batch]
-            log_spot = A * (self.log_spot0 + torch.cumsum(b / A, dim=0))  # [T, batch]
-            return torch.exp(log_spot)
+            # theta is constant along a path, so its pull telescopes: the walk is centred on it
+            return torch.exp(self.theta + A * (
+                self.log_spot0 - self.theta + torch.cumsum(self.ou_vol * Z / A, dim=0)))
         # Inner MC (T, B, B2): per-step arrays (T,1) -> (T,1,1); per-outer-path theta /
         # log_spot0 (B,)/(1,) -> (1,B,1)/(1,1,1) so each outer path broadcasts across B2.
-        e_kdt = self.e_kdt.unsqueeze(-1)
-        A = torch.cumprod(e_kdt, dim=0)
+        A = torch.cumprod(self.e_kdt.unsqueeze(-1), dim=0)
         theta = self.align_rank(self.theta.unsqueeze(0), Z.ndim)
-        b = theta * (1.0 - e_kdt) + self.ou_vol.unsqueeze(-1) * Z
         log_spot0 = self.align_rank(self.log_spot0.unsqueeze(0), Z.ndim)
-        log_spot = A * (log_spot0 + torch.cumsum(b / A, dim=0))
-        return torch.exp(log_spot)
+        return torch.exp(theta + A * (
+            log_spot0 - theta + torch.cumsum(self.ou_vol.unsqueeze(-1) * Z / A, dim=0)))
 
     @classmethod
     def privileged_layout(cls, param):

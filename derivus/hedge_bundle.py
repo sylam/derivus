@@ -154,7 +154,7 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
                 - torch.where(gain <= k, quad_up, lin_up))
     # asymmetricutility_cara
     g = float(obj.get("cara_gamma", 1.0))
-    return (1.0 - torch.exp(-g * x)) / g
+    return -torch.expm1(-g * x) / g
 
 
 def _utility_local_curvature(W, runtime, t=None):

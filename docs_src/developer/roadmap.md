@@ -119,6 +119,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   in force on no scenario date reads on the index's clock between the prints either side, a
   linker's payment row 1e-6 to 6e-6 high on a quarterly grid. Exactness wants the day on the
   scenario grid.
+- **A curve read on the host depends on its place in the batch at the last bit** (2026-10-05).
+  The fused blends round differently in a vector lane and a scalar tail, so a host read moves by
+  an ulp with the batch width and, at some thread counts, the thread count - seen in no
+  end-to-end result, a batched curve within 4 ulps of its looped columns, and to the bit on the
+  card. A replay pinned from another box is compared for equality unless a tolerance policy
+  stands, so a home replaying host-priced results across boxes wants one declared.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should

@@ -16,14 +16,15 @@ shallow sweep so the gates run fast. JSON-is-the-contract for the run itself; th
 round-trip reaches into `DiffSolverV2` directly (it exercises framework internals a JSON
 end-user never touches).
 """
-import copy
 import json as jsonlib
+import math
 import os
 
 import pytest
 import torch
 
 import derivus as rf
+from derivus.hedge_bundle import _utility_wrap_signed
 from derivus.hedge_runtime import per_contract_kappa
 from derivus.hedge_solver import DiffSolverV2
 
@@ -270,3 +271,15 @@ if __name__ == '__main__':
                 return os.path.join(d, n)
         test_policy_artifact_contract_and_eval_from_memory(_P())
     print('all action-space + artifact gates passed')
+
+
+def test_the_cara_utility_holds_its_digits_at_a_small_wealth_in_float32():
+    """u(x) = (1 - e^{-g x}) / g at g x from 2e-6 to 2e-2 in float32, against `math.expm1` in
+    float64: under 1e-6 relative.
+
+    Killed by: the old spelling `1 - exp(-g x)`, 1.3e-2 off at g x = 2e-6."""
+    runtime = {'objective': {'object': 'asymmetricutility_cara', 'cara_gamma': 2.0,
+                             'utility_scale': 1.0}}
+    x = torch.tensor([1e-6, 1e-4, -1e-3, 1e-2], dtype=torch.float32)
+    assert _utility_wrap_signed(x, runtime).tolist() == pytest.approx(
+        [-math.expm1(-2.0 * v) / 2.0 for v in x.tolist()], rel=1e-6)

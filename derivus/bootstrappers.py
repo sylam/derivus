@@ -228,7 +228,7 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
         '''
 
         def B(a, t):
-            return (1.0 - np.exp(-a * t)) / a if a != 0 else t
+            return -np.expm1(-a * t) / a if a != 0 else t
 
         def V(sigma, alpha, T, S):
             return sigma * sigma * np.exp(-2.0 * alpha * S) * B(-2.0 * alpha, T)
@@ -4740,6 +4740,9 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
                 "'Analytic' (the default: the Schrager-Pelsser normal vols) or 'Monte_Carlo' "
                 "(every benchmark through the engine's own Monte Carlo). Correct the block's "
                 "Objective to one of those two".format(objective))
+        # the analytic residual is small tensors and a backward per evaluation, so it solves on
+        # the host; the Monte Carlo one keeps the job's device, the faster at its declared sample
+        device = torch.device('cpu') if objective == 'Analytic' else self.device
         # the closures below capture THESE locals, not the attributes they are mirrored onto
         batch_size = int(block['Simulations'])
         num_batches = int(block['Batches'])
@@ -4819,7 +4822,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         curve_index = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['full']) + c_index[2:]]
         curve_index_reduced = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['reduced']) + c_index[2:]]
         # set up a common context - we leave out the random numbers and pass it in explicitly below
-        shared_mem = RiskNeutralInterestRate_State(index_keys, batch_size, self.device, self.prec)
+        shared_mem = RiskNeutralInterestRate_State(index_keys, batch_size, device, self.prec)
         # the unit tensor switches the quote side on and puts its leaves on the right device
         market_swaps = utils.create_market_swaps(
             base_date, time_grid, curve_index, vol_surface, process.factor,
@@ -4834,11 +4837,11 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         # set up the variables
         implied_var = {}
         stoch_var = torch.tensor(
-            process.factor.current_value(), device=self.device, dtype=self.prec, requires_grad=jac)
+            process.factor.current_value(), device=device, dtype=self.prec, requires_grad=jac)
 
         for param_name, param_value in implied_obj.current_value(include_quanto=jac).items():
             implied_var[param_name] = torch.tensor(
-                param_value, dtype=self.prec, device=self.device, requires_grad=True)
+                param_value, dtype=self.prec, device=device, requires_grad=True)
 
         # `reduce` squares on the analytic path because the residual does not; `reprice` is the
         # Monte Carlo standing by as auditor. The switch is read once, here.
@@ -5303,9 +5306,10 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
             rng)
 
         # both adapters are the objective's, whichever the block declared - one `.data` boundary
-        basin_hopper_fn_grad = make_basin_hopping_loss(objective, implied_var_dict, self.device, True)
+        device = next(iter(implied_var_dict.values())).device
+        basin_hopper_fn_grad = make_basin_hopping_loss(objective, implied_var_dict, device, True)
         x0 = torch.cat(list(implied_var_dict.values())).cpu().detach().numpy()
-        lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, self.device)
+        lsq_fn, jacobian = make_least_squares_loss(objective.loss, implied_var_dict, device)
 
         lower, upper = var_to_bounds.T
         if not np.isfinite(x0).all():

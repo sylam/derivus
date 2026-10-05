@@ -204,3 +204,149 @@ def test_the_interpolation_menu_offers_the_carry_curve_both_methods():
     assert tuple(schema.mapping['Interpolation_factor_map']['ForwardRate']) == (
         'Linear', 'LinearExtrapolate')
     assert schema.mapping['Interpolation_factor_map'] == schema.emit_interpolation(riskfactors)
+
+
+# ---------------------------------------------------------------------------
+# 5. the pricers' read
+# ---------------------------------------------------------------------------
+
+READ_KNOTS = np.array([0.25, 1.0, 2.0, 5.0])
+READ_RATES = np.array([0.02, 0.025, 0.03, 0.028])
+#: two deals' days to their cashflows, one shape
+READ_DAYS = (np.array([[30.0, 200.0, 400.0, 1500.0]]), np.array([[45.0, 300.0, 700.0, 1200.0]]))
+
+
+def _daycount(name):
+    code = utils.DayCount.code(name)
+    return lambda days: utils.DayCount.accrual(BASE, days, code)
+
+
+def _read(tenor, daycount, days, rates):
+    """`CurveTensor.interpolate_curve` on a static Linear curve: rate x tenor at `days`."""
+    values = torch.as_tensor(rates, dtype=torch.float64).reshape(1, -1, 1)
+    curve = utils.CurveTensor(utils.Interpolation.build(values, 'Linear', READ_KNOTS),
+                              np.zeros(1, dtype=np.int64), None)
+    return curve.interpolate_curve((False, 'curve', None, tenor, daycount), days, 1).reshape(-1)
+
+
+def test_a_static_read_is_indexed_once_and_reads_its_own_day_count_and_points():
+    """`CurveTenor.read_index` keeps a read's year fractions and index across batches, keyed on the
+    points, the day count, the dtype and the device; the curve's values are read on every batch.
+    Two curves on one tenor axis under ACT_365 and ACT_360, two deals of one shape, by hand.
+
+    Killed by: the key dropped to the points' shape (the second deal reads the first's tenors, 20%
+    to 50% off), the day count dropped from it (ACT_360 reads ACT_365's, 1.4%), or the dtype."""
+    tenor = utils.CurveTenor(READ_KNOTS)
+    for name, per_year in (('ACT_365', 365.0), ('ACT_360', 360.0)):
+        daycount = _daycount(name)
+        for days in READ_DAYS:
+            t = days.reshape(-1) / per_year
+            for rates in (READ_RATES, 2.0 * READ_RATES):
+                assert _read(tenor, daycount, days, rates).numpy() == pytest.approx(
+                    np.interp(t, READ_KNOTS, rates) * t, rel=1e-14), (name, days, rates)
+    # a later batch reads the same index, which carries no graph, in its own dtype
+    like, act365 = torch.zeros(1, dtype=torch.float64), _daycount('ACT_365')
+    first = tenor.read_index(act365, READ_DAYS[0], like)
+    assert tenor.read_index(act365, READ_DAYS[0].copy(), like) is first
+    assert not any(x.requires_grad for x in first)
+    assert tenor.read_index(act365, READ_DAYS[0], like.float())[0].dtype == torch.float32
+
+
+def test_every_blend_is_exact_at_both_ends():
+    """The tenor read at its two knots (weight 0, and 1 off the extrapolating last segment), the
+    time blend and the whole-row gather at weight 0 and 1, and the Hermite blend at 0 and 1 give
+    their ends bit for bit - in both precisions, on values spanning six decades and both signs,
+    where `y0 + w (y1 - y0)` is not exact at w = 1.
+
+    Killed by: the tenor read, the time blend or the Hermite blend as `y0 + w (y1 - y0)`."""
+    gen = torch.Generator().manual_seed(11)
+
+    def spread():
+        return torch.randn(4096, generator=gen, dtype=torch.float64) * 10.0 ** (
+            6.0 * torch.rand(4096, generator=gen, dtype=torch.float64) - 3.0)
+
+    for dtype in (torch.float64, torch.float32):
+        y0, y1, g, c = (spread().to(dtype) for _ in range(4))
+        hermite = utils.Interpolation.calc_hermite_curve
+        assert torch.equal(hermite(torch.zeros_like(y0), g, c, y0, y1), y0)
+        assert torch.equal(hermite(torch.ones_like(y0), g, c, y0, y1), y1)
+        # two scenario rows of a two-knot curve: [[y0, y1], [y1, y0]]
+        values = torch.stack([torch.stack([y0, y1]), torch.stack([y1, y0])])
+        interp = utils.Interpolation.build(values, 'LinearExtrapolate', np.array([0.0, 1.0]))
+        component = (False, 'curve', None, utils.CurveTenor(np.array([0.0, 1.0]), 'LinearExtrapolate'),
+                     _daycount('ACT_365'))
+        curve = utils.CurveTensor(interp, np.zeros(2, dtype=np.int64), np.array([0.0, 1.0]).reshape(-1, 1, 1))
+        assert torch.equal(curve.interpolate_curve(component, np.array([[0.0, 365.0]] * 2), 0), values)
+        assert torch.equal(curve.interp_value(), values)
+        # and a Hermite curve read at its three knots
+        knots = np.array([0.0, 0.5, 1.0])
+        values = torch.stack([y0, y1, g]).unsqueeze(0)
+        curve = utils.CurveTensor(utils.Interpolation.build(values, 'Hermite', knots),
+                                  np.zeros(1, dtype=np.int64), None)
+        assert torch.equal(curve.interpolate_curve(
+            (False, 'curve', None, utils.CurveTenor(knots, 'Hermite'), _daycount('ACT_365')),
+            knots.reshape(1, -1) * 365.0, 0), values)
+
+
+HERMITE_KNOTS = np.array([0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0])
+HERMITE_RATES = np.array([0.031, 0.034, 0.036, 0.033, 0.035, 0.038, 0.037, 0.039])
+#: cashflow days between the knots, none on one
+HERMITE_DAYS = (100, 140, 290, 555, 900, 1500, 2300, 3100)
+
+
+def _hermite_by_hand(kind, t):
+    """Rate x tenor off the cubic Hermite through the knots - on the rate, or on rate x tenor for
+    HermiteRT - each knot's slope that of the parabola through it and its neighbours (an end knot:
+    the first or last three), in the standard basis."""
+    y = HERMITE_RATES * HERMITE_KNOTS if kind == 'HermiteRT' else HERMITE_RATES
+    first = np.clip(np.arange(y.size) - 1, 0, y.size - 3)
+    slope = np.array([np.polyval(np.polyder(np.polyfit(HERMITE_KNOTS[j:j + 3], y[j:j + 3], 2)), x)
+                      for j, x in zip(first, HERMITE_KNOTS)])
+    i = np.searchsorted(HERMITE_KNOTS, t, side='right') - 1
+    h = HERMITE_KNOTS[i + 1] - HERMITE_KNOTS[i]
+    m = (t - HERMITE_KNOTS[i]) / h
+    cubic = ((2 * m ** 3 - 3 * m ** 2 + 1) * y[i] + (m ** 3 - 2 * m ** 2 + m) * h * slope[i]
+             + (3 * m ** 2 - 2 * m ** 3) * y[i + 1] + (m ** 3 - m ** 2) * h * slope[i + 1])
+    return cubic if kind == 'HermiteRT' else cubic * t
+
+
+def _hermite_job(kind):
+    """Fixed cashflows of a million on a USD curve read under `kind`, one per `HERMITE_DAYS`."""
+    deals = [{'Instrument': {'.Deal': {
+        'Object': 'FixedCashflowDeal', 'Reference': 'CF%d' % days, 'Currency': 'USD',
+        'Discount_Rate': 'USD-H', 'Amount': 1e6,
+        'Payment_Date': {'.Timestamp': (BASE + pd.Timedelta(days=days)).strftime('%Y-%m-%d')}}}}
+        for days in HERMITE_DAYS]
+    market = {
+        'System Parameters': {'Base_Currency': 'USD',
+                              'Base_Date': {'.Timestamp': BASE.strftime('%Y-%m-%d')}},
+        'Price Factors': {
+            'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD-H', 'Spot': 1.0},
+            'InterestRate.USD-H': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                                   'Curve': _curve(np.stack([HERMITE_KNOTS, HERMITE_RATES], 1).tolist())}},
+        'Price Factor Interpolation': {'.ModelParams': {
+            'modeldefaults': {'InterestRate': kind}, 'modelfilters': {}}}}
+    return {'Calc': {
+        'Calculation': {'Object': 'BaseValuation', 'Currency': 'USD', 'Greeks': 'No',
+                        'Base_Date': {'.Timestamp': BASE.strftime('%Y-%m-%d')}},
+        'Deals': {'Reference': 'hermite', 'Deals': {'Children': [{
+            'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
+                                     'Netted': 'True', 'Collateralized': 'False'}},
+            'Children': deals}]}},
+        'MergeMarketData': {'ExplicitMarketData': market}}}
+
+
+@pytest.mark.parametrize('kind', ['Hermite', 'HermiteRT'])
+def test_a_hermite_curve_document_prices_the_cubic_by_hand(tmp_path, kind):
+    """A base valuation of cashflows between the knots of a Hermite curve against the cubic through
+    them written out by hand: every mark to 1e-13.
+
+    Killed by: the blend's middle term with `t` for `1 - t`, 1.4e-5 of a mark off."""
+    path = str(tmp_path / 'hermite.json')
+    open(path, 'w').write(json.dumps(_hermite_job(kind)))
+    cx = rf.Context(path_transform={}, file_transform={})
+    cx.load_json(path)
+    marks = cx.run_job()[1]['Results']['mtm'].set_index('Reference')['Value']
+    for days in HERMITE_DAYS:
+        assert marks['CF%d' % days] == pytest.approx(
+            1e6 * math.exp(-_hermite_by_hand(kind, days / 365.0)), rel=1e-13), days
