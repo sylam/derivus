@@ -125,6 +125,22 @@ unmeasured — a limitation without a number is absolution, not documentation
   end-to-end result, a batched curve within 4 ulps of its looped columns, and to the bit on the
   card. A replay pinned from another box is compared for equality unless a tolerance policy
   stands, so a home replaying host-priced results across boxes wants one declared.
+- **A run on a named market data file is not yet a run on its bytes** (2026-10-05). A job's
+  identity hashes the parsed, merged market, which covers a named file's content, but the evidence
+  the record stores names the file by its path, so a replay reads whatever the file holds then;
+  and the calendar is in no hash at all - two jobs differing only in a calendar's content priced
+  1.1e-3 apart under one result id. The files are blobs: their content hashes in the identity and
+  the evidence, their bytes in the store. S-M.
+- **The service reads and writes the market on the book's own page** (2026-10-05). It was built on
+  a book carrying its whole market inline, against
+  [the design](architecture.md#market-data-context-job): 43 readers take the base currency, the
+  base date, price factors, market prices and bootstrapper configuration straight off the book's
+  explicit block, so a book that names a market data file answers 500 on its status and curves
+  with nothing explicit, refuses a survival curve and a date roll on a bare key, and writes the
+  whole file's factors into the book when one spot is patched; and every request loads into a
+  context of its own, so a named file is parsed per load where a context kept by the worker would
+  parse it once. M: the readers through a loaded context, the worker keeping its contexts - the
+  XVA tab first.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should

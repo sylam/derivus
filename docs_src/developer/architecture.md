@@ -4,8 +4,8 @@ derivus is a **financial virtual machine**. A job is a program; the engine compi
 
 | VM concept | derivus |
 | --- | --- |
-| program | the job JSON — `Calculation`, `Deals`, market data (`Price Factors`, `Price Models`, `Correlations`) |
-| loader | `Context.load_json` |
+| program | the job JSON — `Calculation`, `Deals`, and the market data it states or names (`Price Factors`, `Price Models`, `Correlations`) |
+| loader | `Context.load_json`, onto the config the context keeps for the market data file the job names |
 | compile | `Config.calculate_dependencies` (discover + order factors) + each process's `precalculate` |
 | instructions | `StochasticProcess.generate` (per factor) and `Deal.calculate` / `pricing.*` (per deal) |
 | execute | the per-batch generate loop in `Calculation.execute` |
@@ -13,6 +13,18 @@ derivus is a **financial virtual machine**. A job is a program; the engine compi
 | memoized eval cache | `shared_mem.t_Buffer` |
 
 The public surface is documented in [API Overview](../api_overview.md); this section is the internal view. Reading order: Architecture → [Calc Lifecycle](calc_lifecycle.md) → [Dependency System](dependency_system.md) → [Resolver Layer](resolver_layer.md) → [Conventions](conventions.md). (mkdocs sorts the nav alphabetically; follow the prose order.)
+
+## Market data files, the context and the job {#market-data-context-job}
+
+**The market data file is the book of record for configuration.** It carries what a bank calibrates and governs — `Market Prices` with their benchmarks and tolerances, `Bootstrapper Configuration`, `Correlations`, `Price Models`, `Model Configuration`, `System Parameters` — beside the `Price Factors` themselves. A job NAMES it (`MergeMarketData.MarketDataFile`) and its calendar (`CalendDataFile`) rather than carrying them. How many files there are, what each holds and how often each is recalibrated is the implementation's to decide and never the engine's: a real-world file for exposure profiles, a risk-neutral one for the valuation adjustments and a common one for the correlations and system parameters is one layout, and `Config.parse_json` merges a file onto the declared sections, so several can be loaded onto one config, each carrying the sections it has.
+
+**A `Context` is a session.** It parses each market data file a job names once (`config_cache`) and each calendar file once (`holiday_cfg_cache`), and every later `load_json` on that context naming them reuses the parsed objects — thousands of correlations are read once, not once a job. A bootstrap run on the context writes its calibrated parameters into the config's `Price Factors`, where the jobs loaded after it read them.
+
+**The job JSON is a light overlay, and whoever generates it answers for it.** `load_json` merges the job's `ExplicitMarketData` onto the cached config a section at a time (`Config.merge_section`, the last statement of a key winning), sets the job's deals and calculation on it, and that config is what `run_job` prices. So a job states the price factors and the deals it needs and nothing else, and what an earlier job stated STAYS on the context: a later job that restates a factor reads its own, one whose deals never read it is unaffected, and one that reads it without restating it reads the earlier job's. The process that generates a job therefore states every price factor that job depends on — and need not guess them, the engine works them out (`Config.factor_universe`, `calculate_dependencies`; see [Dependency System](dependency_system.md)). This is [JSON is the contract](conventions.md#json-is-the-contract) at the scale of a bank's market data: nothing in the engine empties or guards a context between loads, because what a bootstrap calibrated lives there too.
+
+**One context, one job at a time.** `load_json` sets the config the next `run_job` prices, so loads and runs on a context are sequential, and whoever runs long — a batch, a service's worker — KEEPS the context and loads through it. A data cache is an attribute of the object that owns the data, here the context; it is never a dictionary at the top of a module.
+
+**The files are part of the record.** A valuation adjustment, or an exposure profile as it stood on a past date, is reproducible only against the files it was priced on, so a market data file is a blob addressed by its content like any other the [spine](spine.md) holds, and a run names its files by what they contain. What the record and the service do not yet do with a named file is on the [Roadmap](roadmap.md).
 
 ## One `Factor` keys everything
 
