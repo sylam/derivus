@@ -54,7 +54,7 @@ import os
 import threading
 from copy import deepcopy
 
-from . import Context, content_hash, instruments
+from . import Context, content_hash, instruments, riskfactors
 from ._version import __version__
 from .calculation import Base_Revaluation, Diary, construct_calculation
 from .schema import (OBSERVES, declared_fields, index_named, instrument_of, job_children, mapping,
@@ -94,6 +94,10 @@ PNL = 'pnl'
 
 #: Where a diary row stands once the record answers it, stamped by whoever holds the log.
 SETTLED = 'settled'
+
+#: The factor families whose level is positive, read off the engine's own declarations.
+POSITIVE = tuple(name for name, declared in vars(riskfactors).items()
+                 if isinstance(declared, type) and getattr(declared, 'positive', False))
 
 #: What a tree without the extra is told, with the line that fixes it.
 NO_PACKAGE = ('the book of record is not installed on this box ({}) - {} names a spine home, so '
@@ -1125,7 +1129,13 @@ def _restruck(positions, was, now):
 
 def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective_time=None):
     """File an election, a fixing observation or a determination. Anything consequence-shaped is
-    refused - see `derivus_spine.verbs.apply_lifecycle`."""
+    refused - see `derivus_spine.verbs.apply_lifecycle` - and so is a price printed at zero or below,
+    the families that are prices declaring it on their factor class."""
+    if event_type == 'fixing_observed' and isinstance(body, dict) and isinstance(
+            body.get('value'), numbers.Real) and body['value'] <= 0 and str(
+            body.get('index')).split('.')[0] in POSITIVE:
+        raise SpineRefused('{} is a price, and {!r} is no print of one: nothing is filed'.format(
+            body['index'], body['value']))
     verbs = package().verbs
     with writing() as log:
         return verbs.apply_lifecycle(log, actor(actor_name, log), event_type, body,

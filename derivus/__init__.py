@@ -711,7 +711,8 @@ class Context:
         """File an election, a fixing observation or a determination - and nothing else.
 
         A knock, an expiry or an accrual is a CONSEQUENCE of terms plus one of those three, so it is
-        a projection and this verb refuses it rather than storing a second source of truth.
+        a projection and this verb refuses it rather than storing a second source of truth. A price
+        printed at zero or below is no print and is refused by name.
         """
         from .spine import apply_lifecycle as record
 

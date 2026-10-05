@@ -153,6 +153,7 @@ class DealStructure(object):
         unpriced = getattr(shared, 'unpriced', None)
         if unpriced is not None and instrument not in unpriced:
             unpriced.add(instrument)
+            instrument.unpriced_because = error
             shared.calc_stats['Structs Skipped'] = shared.calc_stats.get('Structs Skipped', 0) + 1
 
     def finalize_struct(self, base_date, time_grid):
@@ -1005,7 +1006,9 @@ class Credit_Monte_Carlo(Calculation):
         F('Keep_Tensor', 'Text', default='No', values=['Yes', 'No'],
           description='Keep the simulated mtm tensor on the device after the run'),
         F('NoModel', 'Text', default='Constant', values=['Constant', 'RiskNeutral'],
-          description='How a factor with no stochastic process evolves'),
+          description='How a factor with no model is read: Constant holds it at its value today, '
+                      'RiskNeutral reads a static curve at each row as its forward from that row; '
+                      'a spot or a price index with no model is constant under either'),
         F('Gradient_Variables', 'Text', default='All', values=['All', 'Factors', 'Implied'],
           description='Which leaves the sensitivity engine differentiates'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
@@ -1400,15 +1403,18 @@ class Credit_Monte_Carlo(Calculation):
 
     def report(self, output):
         def valued(structure):
-            # a structure the run skipped values nothing, nor does one holding only such structures
+            # a structure the run skipped values nothing, nor does one whose deals and structures were
             return structure.obj.Instrument not in self.unpriced and (
-                bool(structure.dependencies) or any(valued(x) for x in structure.sub_structures))
+                any(deal.Instrument not in self.unpriced for deal in structure.dependencies) or
+                any(valued(x) for x in structure.sub_structures))
 
         skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(self.calc_stats.items())
                             if name.endswith('Skipped'))
         if skipped and not valued(self.netting_sets):
             raise utils.UnpriceableSchedule(
-                'Nothing in the book was valued ({}), so the run has nothing to report'.format(skipped))
+                'Nothing in the book was valued ({}), so the run has nothing to report: {}'.format(
+                    skipped, '; '.join(sorted('{} - {}'.format(x.field.get('Reference'), x.unpriced_because)
+                                              for x in self.unpriced))))
         for result, data in output.items():
             if result == 'scenarios':
                 scen = {}
@@ -2795,7 +2801,9 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
           description='Years to shift every factor tenor by before the run'),
         F('MCMC_Simulations', 'Integer', default=2048),
         F('NoModel', 'Text', default='Constant', values=['Constant', 'RiskNeutral'],
-          description='How a factor with no stochastic process evolves'),
+          description='How a factor with no model is read: Constant holds it at its value today, '
+                      'RiskNeutral reads a static curve at each row as its forward from that row; '
+                      'a spot or a price index with no model is constant under either'),
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
         F('Execution_Mode', 'Text', default='simulate_only',
           values=['simulate_only', 'solve_hedge']),

@@ -40,6 +40,7 @@ where the bars come from - hydrating `(index, date, source)` facts from the log 
 is spine increment 4's.
 """
 import json
+import math
 import os
 import sys
 
@@ -49,6 +50,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import pytest
+import torch
+from scipy import stats
 
 import derivus
 from derivus import utils
@@ -382,6 +385,43 @@ def test_a_knocked_out_barrier_walks_its_rebate_s_own_exposure_profile(barrier_t
     plain = cmc_profile([rebate_cashflow(REBATE, BASE), vanilla('V')])
     assert same_profile(folded, plain), (folded.shape, plain.shape)
     assert not same_profile(folded, cmc_profile(vanilla('V'))), 'the rebate must be in the profile'
+
+
+def call(at, strike):
+    """Black's call at `strike` on SPOT, the 2% carry, discounted at 4% from `at` to expiry."""
+    tau = (day(EXPIRY_D) - at).days / 365.0
+    forward, sd = SPOT * math.exp((R_USD - Q_EQ) * tau), SIGMA * math.sqrt(tau)
+    if not tau:
+        return max(forward - strike, 0.0)
+    d1 = math.log(forward / strike) / sd + 0.5 * sd
+    return math.exp(-R_USD * tau) * (forward * stats.norm.cdf(d1) - strike * stats.norm.cdf(d1 - sd))
+
+
+def test_a_row_every_scenario_has_crossed_is_what_the_barrier_became():
+    """An up barrier at 95 under a spot of 100 a GBM at zero vol holds there, on a monthly grid:
+    every scenario crosses at the first monitoring date, so on every later row the barrier has
+    resolved on every path - the pricer's already-hit rows, which skip the one-step-survival
+    estimate. The knock-in struck at 90 is then the call it became, by hand on every path of every
+    row from that date to expiry; the knock-out is its rebate on the crossing row and nothing after.
+
+    Killing mutations: the already-hit leg scaled; those rows reading the one-step-survival estimate,
+    which still carries the knock-out leg on a row between monitoring dates.
+    """
+    for barrier_type in ('Up_And_In', 'Up_And_Out'):
+        doc = job(dict(barrier(barrier_type, [[day(d), ''] for d in FUTURE_DAYS]),
+                       Barrier_Price=95.0, Strike_Price=90.0), dict(CMC_CALC, Time_grid='0d 1m(1m)'))
+        market = doc['Calc']['MergeMarketData']['ExplicitMarketData']
+        market['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': 0.0, 'Drift': 0.0}}
+        market['Model Configuration'] = {'.ModelParams': {
+            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+        cx = derivus.Context()
+        cx.load_json((json.dumps(doc, cls=CustomJsonEncoder), 'already_hit'))
+        profile = derivus.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
+        resolved = profile[profile.index >= day(FUTURE_DAYS[0])]
+        assert len(resolved) > len(FUTURE_DAYS) + 1, 'rows between the monitoring dates are the point'
+        for at, row in resolved.iterrows():
+            hand = call(at, 90.0) if 'In' in barrier_type else REBATE * (at == day(FUTURE_DAYS[0]))
+            assert np.abs(row.values - hand).max() <= 1e-12 * max(hand, 1.0), (barrier_type, at, hand)
 
 
 @pytest.mark.parametrize('barrier_type', ['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out'])

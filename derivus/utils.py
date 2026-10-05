@@ -2172,10 +2172,17 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def index(cls, base_date, time_grid, position, cashflows, price_index, index_rate,
-              settlement_date, months_lag, interpolated, simulated):
+              settlement_date, months_lag, interpolated):
         """Index-linked cashflows from a data source, against the price_index (the inflation curve)
-        and index_rate (the printed index, `simulated` or static) factors."""
+        and index_rate (the printed index) factors."""
         last_print = index_rate.param['Last_Period_Start']
+        # a simulated index holds at each scenario date the print in force there, on its own clock of
+        # days since the last print: a month not printed is read where that clock reads it, on the
+        # scenario dates this list's payments reach
+        reach = time_grid.scen_time_grid[:time_grid.scen_time_grid.searchsorted(max(
+            [(x['Payment_Date'] - base_date).days for x in cashflows['Items']], default=0)) + 1]
+        clock = np.array((index_rate.get_last_publication_dates(base_date, reach.tolist()) -
+                          last_print).days, dtype=np.float64)
 
         def index_reference(pricing_date, resets, offsets):
             for Day, Weight in cls.index_reference_samples(pricing_date, months_lag, interpolated):
@@ -2183,12 +2190,13 @@ class TensorCashFlows(TensorSchedule):
                 if Day > base_date:
                     Value = 0.0
                 elif Day > last_print:
-                    # a month not yet printed reads the t0 forward the base valuation projects
+                    # the diary's level for a month the base date has not printed: the t0 forward
                     tau = price_index.get_day_count_accrual(last_print, (Day - last_print).days)
                     Value = index_rate.current_value()[0] * np.exp(price_index.current_value([tau])[0] * tau)
                 else:
                     Value = index_rate.get_reference_value(Day)
-                Time_Grid, Scenario = time_grid.get_scenario_offset(Rel_Day) if Rel_Day >= 0.0 else (0, -1)
+                Scenario, _, Time_Grid = TimeGrid._index_alpha(clock, (Day - last_print).days) \
+                    if Day > last_print else (-1, None, 0)
                 resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
                 offsets.append(Scenario)
 
@@ -2246,11 +2254,8 @@ class TensorCashFlows(TensorSchedule):
         if (indexed.schedule[:, CASHFLOW_INDEX_Pay_Day] != sorted(indexed.schedule[:, CASHFLOW_INDEX_Pay_Day])).any():
             logging.error("Cashflow Pay Day not in sorted order - check accrual dates")
 
-        # a static index prints nothing after the base date, so its every row reads the publication
-        # in force on the base date; a simulated one each row's own
         mtm_grid = time_grid.time_grid[:, TIME_GRID_MTM]
-        for last_published_date in index_rate.get_last_publication_dates(
-                base_date, mtm_grid if simulated else 0.0 * mtm_grid):
+        for last_published_date in index_rate.get_last_publication_dates(base_date, mtm_grid):
             # calc the number of days since last published date to the base date
             Rel_Day = (last_published_date - base_date).days
             Value = index_rate.get_reference_value(last_published_date) if last_published_date <= last_print else 0.0
@@ -4608,7 +4613,9 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
     the SUM of the gathered components. A single-element code is the plain spot - the same ops in
     the same order, hence bit-identical.
     """
-    key_code = ('spot', tuple(tuple(r[:2]) for r in rate), time_grid[:, TIME_GRID_MTM].tobytes())
+    # keyed on the whole read: two reads of one day may sit at different places on the path
+    key_code = ('spot', tuple(tuple(r[:2]) for r in rate),
+                time_grid[:, :TIME_GRID_ScenarioPriorIndex + 1].tobytes())
 
     if key_code not in shared.t_Buffer:
         value = None

@@ -597,6 +597,8 @@ class FxRate(Factor0D):
     """
     Represents the price of a currency relative to the base currency (snapped at end of day).
     """
+    #: a price: its level is positive, so a print of it that is not is no print
+    positive = True
     fields = [
         F('Domestic_Currency', 'Text', default=''),
         F('Interest_Rate', 'Text', default='', obj='Tuple',
@@ -635,6 +637,7 @@ class PriceIndex(Factor0D):
     """
     Used to represent things like CPI/Stock Indices etc.
     """
+    positive = True
     fields = [
         F('Index', 'Curve', description='Series of (date, value) pairs, the date an excel integer'),
         F('Next_Publication_Date', 'Date', default=''),
@@ -673,6 +676,7 @@ class EquityPrice(Factor0D):
     """
     This is just the equity price on a particular end of day
     """
+    positive = True
     fields = [
         F('Issuer', 'Text', default=''),
         F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
@@ -700,6 +704,8 @@ class CommodityPrice(EquityPrice):
     we instead use the forwardPrice linked to the reference price. We just need this object
     to read the carry curve and the currency
     """
+    #: power and crude have printed below zero
+    positive = False
     fields = [
         F('Spot', 'Float', default=0, bind='value',
           description='Spot price in the specified Currency'),

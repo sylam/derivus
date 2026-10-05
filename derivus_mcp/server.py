@@ -1624,10 +1624,10 @@ def file_lifecycle(event_type: str, body: dict, actor: str | None = None,
     `date` (`YYYY-MM-DD`) the `book_diary` fixing row names, a `source` the desk's fixings policy
     orders for that index, and the printed `value`. `election` takes `{instrument, choice}` and
     `determination` `{subject, ruling}`. A knock, an expiry or an accrual follows from these and is
-    refused by name. `effective_time` (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) is when the fact is true,
-    which orders a restated print. `actor` is the seat it is filed under - a print is the firm's
-    and wants `mark` over the whole firm. Answers `{recorded: {lsn}, event_type}`, and saying one
-    thing twice is one fact.
+    refused by name, as is a price printed at zero or below. `effective_time`
+    (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) is when the fact is true, which orders a restated print. `actor`
+    is the seat it is filed under - a print is the firm's and wants `mark` over the whole firm.
+    Answers `{recorded: {lsn}, event_type}`, and saying one thing twice is one fact.
     """
     return service().call('POST', '/book/lifecycle', json=dict(
         {'event_type': event_type, 'body': body},

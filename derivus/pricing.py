@@ -5857,16 +5857,19 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
         return torch.where(stated.tn.reshape(1, -1, 1) > 0, levels, projected)
 
     def filter_resets(resets, index):
-        """Every reset the outer grid has reached: the declared prints, then the simulated ones -
-        a static index answering one row and one column however many resets ask."""
-        known_resets = resets.known_resets(shared.simulation_batch)
-        sim_resets = resets.schedule[(resets.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
-                                     (resets.schedule[:, utils.RESET_INDEX_Reset_Day] <=
-                                      deal_time[:, utils.TIME_GRID_MTM].max())]
+        """Every reset the outer grid has reached, in schedule order: a printed month its print, any
+        other the index's path - a static index answering one row and one column however many ask."""
+        known_resets = resets.known_resets(shared.simulation_batch, filter_index=utils.RESET_INDEX_Scenario)
+        reached = resets.schedule[resets.schedule[:, utils.RESET_INDEX_Reset_Day] <=
+                                  deal_time[:, utils.TIME_GRID_MTM].max()]
+        simulated = reached[:, utils.RESET_INDEX_Scenario] > -1
+        sim_resets = reached[simulated]
         old_resets = utils.calc_time_grid_spot_rate(
             index, sim_resets[:, :utils.RESET_INDEX_Scenario + 1], shared).expand(sim_resets.shape[0], -1)
-        return utils.concat_resets(
+        joined = utils.concat_resets(
             [torch.cat(known_resets, dim=0), old_resets], 0) if known_resets else old_resets
+        # cashflows sharing a reference that straddles the last print interleave the two
+        return joined[np.argsort(np.argsort(simulated, kind='stable'))]
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep

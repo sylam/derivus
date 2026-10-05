@@ -771,6 +771,7 @@ class Deal(object):
             unpriced = getattr(shared, 'unpriced', None)
             if unpriced is not None and self not in unpriced:
                 unpriced.add(self)
+                self.unpriced_because = e
                 shared.calc_stats['Deals Skipped'] = shared.calc_stats.get('Deals Skipped', 0) + 1
             return 0.0 * shared.one
 
@@ -2876,6 +2877,11 @@ class YieldInflationCashflowListDeal(Deal):
                                    '',
                                    '$$P\\Big(A\\frac{I_R(t,T_f)}{I_R(t,T_b)}\\Big)r\\alpha$$',
                                    '',
+                                   'Under a simulation a price index with no model is constant: the deal is priced',
+                                   'only where the calculation\'s `NoModel` is `RiskNeutral` - the print in force',
+                                   'on every row that one constant, the inflation curve read forward from the row, or',
+                                   'off its own model where it has one - and is skipped by name otherwise, as any',
+                                   'deal its pricer cannot value.',
                                    ])
 
     def __init__(self, params, valuation_options):
@@ -2944,8 +2950,7 @@ class YieldInflationCashflowListDeal(Deal):
 
         field_index['Cashflows'], field_index['Base_Resets'], field_index['Final_Resets'] = utils.TensorCashFlows.index(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, self.field['Cashflows'],
-            inflation_factor, index_factor, self.field.get('Settlement_Date'), months_lag, interpolated,
-            field_index['PriceIndex'][0][0])
+            inflation_factor, index_factor, self.field.get('Settlement_Date'), months_lag, interpolated)
 
         field_index['SettleCurrency'] = self.field['Currency']
         field_index['Settlement_Date'] = (self.field.get('Settlement_Date') -
@@ -2954,6 +2959,13 @@ class YieldInflationCashflowListDeal(Deal):
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
+        if not deal_data.Factor_dep['PriceIndex'][0][utils.FACTOR_INDEX_Stoch] and len(
+                deal_data.Time_dep.deal_time_grid) > 1 and not shared.riskneutral:
+            # skipped and counted, or refused, as any deal its pricer cannot value
+            raise ValueError('the price index of {} has no model and NoModel is Constant: give the '
+                             'index a model, or set NoModel to RiskNeutral, which reads the inflation '
+                             'curve forward from each row, or off its own model where it has '
+                             'one'.format(self.field['Index']))
         return pricing.pv_index_leg(shared, time_grid, deal_data)
 
 

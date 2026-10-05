@@ -3554,6 +3554,30 @@ def test_a_print_filed_through_the_service_answers_the_row_a_close_waits_on(reco
     assert [body['value'] for _, _, body in facts(recorded, 'fixing_observed')] == [112.0]
 
 
+def test_a_price_that_is_not_positive_is_no_print(recorded, desk):
+    """`POST /book/lifecycle` refuses by name a print of zero or below of an index whose factor
+    family declares its level positive - `FxRate.EUR`, `EquityPrice.EQ`, `PriceIndex.CPI` - with
+    nothing landed on the log, and files the same of an `InterestRate`, whose level may be either,
+    and a zero `CommodityPrice`, which declares itself not positive.
+
+    Killing mutations: the check removed, which lands a zero the fill reads as no level under an FX
+    divisor and as an unfixed cell under any other index; any of the four declarations deleted.
+    """
+    def filed(index, value):
+        return CLIENT.post('/book/lifecycle', content=dump({'event_type': 'fixing_observed', 'body': {
+            'index': index, 'date': '2024-06-28', 'source': 'EXCHANGE', 'value': value},
+            'actor': ACTOR}), headers=JSON)
+
+    before = head(recorded)
+    for index, value in itertools.product(('FxRate.EUR', INDEX, 'PriceIndex.CPI'), (0.0, -1.0)):
+        refused = filed(index, value)
+        assert refused.status_code == 422 and index in refused.json()['detail'], refused.text
+    assert head(recorded) == before
+    landed = [('InterestRate.USD', 0.0), ('InterestRate.USD', -0.5), ('CommodityPrice.GOLD', 0.0)]
+    assert [filed(*print_).status_code for print_ in landed] == [200, 200, 200]
+    assert [(body['index'], body['value']) for _, _, body in facts(recorded, 'fixing_observed')] == landed
+
+
 def test_a_fixing_whose_authority_nobody_declared_refuses_by_name(recorded, desk):
     """GATE 12. A plan may not read a fixing nobody vouched for: an index THIS PLAN COMPILES
     AGAINST that the `fixings` policy does not name refuses BY NAME, and the refusal reaches a desk

@@ -78,6 +78,9 @@ unmeasured — a limitation without a number is absolution, not documentation
   delta over 0.005 to 0.08 - where three seeds' spread is noise at either count; at 2,048 paths
   the correction falls monotonically by 24%. The correction's scoping has no public seam a
   mutation gate could reach.
+- **An already-hit knock-in struck at the money reads a day's time value on its expiry row**
+  (2026-10-04): 0.0997 on a spot of 100 where the payoff is 0, the remaining expiry being clamped
+  off zero. S.
 - **The American option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
@@ -110,13 +113,12 @@ unmeasured — a limitation without a number is absolution, not documentation
   cash row stating no `Haircut_Posted`, which fails the set's compile on a `KeyError` today, read
   under the same ruling. A floating cashflow list's `Settlement_Date` and `Settlement_Amount` are
   refused by name where stated until the list reads them as the fixed list does in four places: M.
-- **A price index under a credit Monte Carlo rolls only where it and its curve are both static**
-  (2026-09-30). A simulated index reads a reference month published after the base date at its
-  reference day, two months short of that month's own print - the coupon payment rows of a
-  multi-coupon linker 1.1e-3 to 4.3e-3 low - and a static index beside a simulated inflation
-  curve projects the base date's print along the row's curve from the base date, 2.76e-2 over the
-  rolled valuation two years on a curve sloped 1% to 5%. M each: what a published month is at a
-  row, its publication date on the scenario grid or a projection from the row's last print.
+- **A factor read on a day the scenario grid does not hold is interpolated between its
+  neighbours** (2026-10-04). A fixing between two scenario dates reads the factor linearly across
+  them, 5e-7 of an FX level on a monthly grid, and a simulated price index's month whose print is
+  in force on no scenario date reads on the index's clock between the prints either side, a
+  linker's payment row 1e-6 to 6e-6 high on a quarterly grid. Exactness wants the day on the
+  scenario grid.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
@@ -201,22 +203,16 @@ unmeasured — a limitation without a number is absolution, not documentation
   reset; a blank index field, which the compile resolves to the currency's curve, still announces
   its fixings under none. The double Asian, the equity swap leg and swaplet list, the two energy
   deals and the composite equity Asian read fixings off a table the fill cannot write yet (M), the
-  inflation list M-L, and a swaption announces no expiry of its own, its legs reading as a live
-  swap's - a design call. The census in `tests/test_diary.py` names every type still open.
-- **A print of zero answers its fixing rows and fixes nothing** (2026-10-04). The record admits
-  any finite number as a print: a zero under an FX pair's divisor leaves the cell as the desk
-  typed it, under any other index it writes the engine's own mark of an unfixed cell, and either
-  way the row reads answered and the close legal. S: the fixing verb refusing a price that is not
-  positive.
-- **The pricer branch census reads 50 unexecuted arcs and its gate fails** (2026-10-04; 59 on
-  2026-09-02). `if all_hit:` in the discrete barrier, the must-cover row shape of the already-hit
-  defect, has had no test since the Heston-Nandi gates left; 16 arcs are code added since and
-  never run, 7 are LogVar2FJ arcs on the discrete barrier and the TARF no fixture reaches, and the
-  ledger no longer matches the code. S: a knocked-in barrier on a credit Monte Carlo grid, then
-  the ledger re-emitted.
-- **Ungated since the 2026-08-21 purge**: five modules named on
-  [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open), the
-  already-hit barrier leg's value the expensive one.
+  inflation list M-L - a month its base date has not printed reading observed at its forward
+  meanwhile - and a swaption announces no expiry of its own, its legs reading as a live swap's - a
+  design call. The census in `tests/test_diary.py` names every type still open.
+- **The pricer branch census names 48 arcs no test executes** (2026-10-04; 59 on 2026-09-02),
+  the LogVar2FJ arcs on the discrete barrier and the TARF's pathwise arm the ones a fixture would
+  reach; the rest are diagnostics, completeness elses and code added since.
+- **Ungated since the 2026-08-21 purge**: three modules named on
+  [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open) - the vol term
+  structure reaching the monitoring, the payoff's forward against the vol surface's, and the
+  rate-units pass.
 
 ## Decisions waiting on the desk
 

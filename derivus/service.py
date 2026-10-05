@@ -2322,9 +2322,9 @@ def book_lifecycle(request: dict):
 
     The print is what `GET /book/close/check` waits on for a fixing, and the election what it waits
     on for an expiry vesting a choice. A knock, an expiry or an accrual follows from these and is
-    refused by name. The writer admits it as it admits every append - a print is the firm's, at
-    `mark` over `*` - and a seat it refuses is answered in its own words with the denial landed.
-    404 where no home is configured.
+    refused by name, as is a price printed at zero or below. The writer admits it as it admits every
+    append - a print is the firm's, at `mark` over `*` - and a seat it refuses is answered in its own
+    words with the denial landed. 404 where no home is configured.
     """
     document, _ = recording().read()
     filed = spine.apply_lifecycle(request.get('event_type'), request.get('body'),
