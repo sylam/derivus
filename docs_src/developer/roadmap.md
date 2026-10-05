@@ -125,12 +125,14 @@ unmeasured — a limitation without a number is absolution, not documentation
   end-to-end result, a batched curve within 4 ulps of its looped columns, and to the bit on the
   card. A replay pinned from another box is compared for equality unless a tolerance policy
   stands, so a home replaying host-priced results across boxes wants one declared.
-- **A run on a named market data file is not yet a run on its bytes** (2026-10-05). A job's
-  identity hashes the parsed, merged market, which covers a named file's content, but the evidence
-  the record stores names the file by its path, so a replay reads whatever the file holds then;
-  and the calendar is in no hash at all - two jobs differing only in a calendar's content priced
-  1.1e-3 apart under one result id. The files are blobs: their content hashes in the identity and
-  the evidence, their bytes in the store. S-M.
+- **The market data file and the calendar are not yet declared in the record** (2026-10-05). A
+  job names each by its path, the evidence the record stores does too, so a replay reads whatever
+  the file holds then; and the calendar is in no hash at all - two jobs
+  differing only in a calendar's content priced 1.1e-3 apart under one result id.
+  [The design](architecture.md#market-data-context-job): the hub declares each file as a fact, its
+  bytes a blob in the clear, the latest of each name standing; a job composed at a point in the
+  record is handed the files standing there and a context loads them by content. Nothing cites a
+  version. S-M.
 - **The service reads and writes the market on the book's own page** (2026-10-05). It was built on
   a book carrying its whole market inline, against
   [the design](architecture.md#market-data-context-job): 43 readers take the base currency, the
@@ -322,7 +324,10 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
 - **The deal tree hydrated from the fold** rather than reconciled against it. Every piece is in the
   record now - positions keyed by agreement and portfolio, each instrument's terms and each
   agreement's netting set by address - but the book file stays the materialisation and
-  `/book/reconcile` is how it is checked.
+  `/book/reconcile` is how it is checked. One composer closes it: a view - a portfolio node, the
+  book, or an agreement, the credit view netted across portfolios - and a point in the record give
+  the light job, its deals the instruments under the agreement's own terms. The XVA tab lists its
+  netting sets off the file until then.
 - **What a product controller's P&L carries beside the marks.** `GET /book/pnl` says what the book
   made and its explain why the held positions moved - carry, market per risk factor, residual - but
   not the reserves beside the mid, a new deal's sales margin transferred to sales on day one, the

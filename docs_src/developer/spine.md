@@ -1,7 +1,57 @@
 # The Spine
 
 `derivus_spine/` is the append-only book of record around the engine — the center a desk
-box is the edge of. **1 through 7 — the design is built**: the log, the blob store
+box is the edge of.
+
+## How it fits {#how-it-fits}
+
+Four mechanisms carry all of it. Whatever a desk, a controller or a credit officer asks of the
+system is one of them or a composition of them, so say a need in these four before adding a fifth.
+
+- **Facts.** An event a seat files through a verb and the hub - the single writer - appends: a
+  booking, an amendment, a fixing, a declaration, an approval, a close. Each names who filed it, is
+  chained to the one before it and is never edited; a correction is another fact.
+- **Blobs.** Whatever has content is stored once under its hash and cited by it: an instrument's
+  terms as written, an agreement's terms, a market's values, a result. A fact is small because it
+  names blobs rather than carrying them.
+- **Folds.** Every view is derived by folding the facts up to a point in the record: a position,
+  a cost, a P&L, what is pending, and WHAT STANDS - the latest declaration of a name at that point,
+  be it a market, an agreement or a policy. Nothing derived is stored as truth, and nothing cites a
+  version of what a fold resolves: the point in the record is the citation, so nothing can be
+  priced against an older declaration by choice.
+- **The engine.** A function of a job document and the market it names. The record compiles the
+  document, the engine prices it, and the result is filed by its address. `derivus/spine.py` is
+  the one place the two meet.
+
+**A booking says who booked what, against whom, and where.** A `fill` is filed by a seat and
+carries the instrument's address, the signed change in units of it, the counterparty and the
+agreement it is dealt under, and the portfolio it sits in. That is everything a job's deals need.
+
+**Two views of one fold.** A position is keyed instrument by agreement by portfolio. Read by
+portfolio it is THE BOOK - where risk is owned, what a desk's P&L and risk are taken over. Read by
+agreement it is THE CREDIT VIEW - the netting set a valuation adjustment or an exposure profile
+prices and a collateral call is made on, netted across every portfolio. Neither is stored: both
+are the same rows, narrowed.
+
+**The market a run reads is what stands.** Three things, each moving at its own pace: the market
+data file - the configuration a bank calibrates and governs, its models, correlations and
+benchmarks, usually one for the risk-neutral measure and one for the real-world - every few weeks;
+the calendar; and the day's values, declared under a market's name and made official at a close.
+The engine keeps the files parsed in a session and loads each job as a light document over them
+([Architecture](architecture.md#market-data-context-job)), so what the hub runs at a close - a
+bootstrap, the valuation adjustments, the day's official numbers - is the same job on a desk's own
+box.
+
+**What a bank decides is data.** Who the seats are and what each may do, the tree of portfolios,
+the tiers a ticket is routed through and who approves, when a close is struck and what runs at it,
+how many market data files there are, who declares them and how often they are recalibrated: all
+declared, read by the mechanisms above, and nowhere in the code.
+
+Two parts of this picture are not built, and are on the [Roadmap](roadmap.md): the two files are
+named by a job's path rather than declared in the record, and a job's deal tree is read off the
+book file with the record's positions written onto it, rather than composed from the fold.
+
+The rest of the page follows the order it was built in. **1 through 7 — the design is built**: the log, the blob store
 and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
 booking verbs, the attestation lanes and the firmness check, over all of it the
 projections, the diary, the book file's pin and the desk's own readers of them, beside those the
