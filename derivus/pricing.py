@@ -3210,8 +3210,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         x1 = torch.gather(x_grid, 1, idx)
         y0 = torch.gather(y_grid, 1, idx - 1)
         y1 = torch.gather(y_grid, 1, idx)
-        w = (x_flat - x0) / (x1 - x0).clamp(min=eps)
-        return (y0 + w * (y1 - y0)).reshape_as(x)
+        return torch.lerp(y0, y1, (x_flat - x0) / (x1 - x0).clamp(min=eps)).reshape_as(x)
 
     def root_from_continuation(x_grid, continuation):
         """The spot at which the continuation value crosses zero, per batch row."""

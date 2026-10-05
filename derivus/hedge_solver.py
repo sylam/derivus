@@ -2939,7 +2939,8 @@ class DiffSolverV2(DiffSolver):
         idx = torch.searchsorted(bx.contiguous(), x.contiguous()).clamp(1, bx.shape[0] - 1)
         x0, x1 = bx[idx - 1], bx[idx]
         w = ((x - x0) / (x1 - x0).clamp_min(1e-12)).clamp(0.0, 1.0)
-        return bp[idx - 1] + w * (bp[idx] - bp[idx - 1])
+        # the curve is float32 by construction, read in the books' own precision
+        return torch.lerp(bp[idx - 1].to(w.dtype), bp[idx].to(w.dtype), w)
 
     def _constructed_policy(self, floored=True):
         """ONE deterministic pass — measure, then construct. The moving-strike delta

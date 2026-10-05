@@ -465,7 +465,7 @@ def fit_closure(config, market_price, device=torch.device('cpu'), dtype=DTYPE):
     implied_var, objective, swaps = boot.calc_loss_on_ir_curve(
         {'instrument': block}, base_date, time_grid, process, implied_obj, ir_factor, surface)
     # THE CLOSURE IS RETURNED READY, and that is not a convenience. `schrager_pelsser_swaption`
-    # reads J, the reversion speeds and the correlation off `precalculate` and REFUSES BY NAME
+    # reads J, the reversion speeds and the correlation off `covariance` and REFUSES BY NAME
     # when none has run; `calc_loss_on_ir_curve` builds the closure without running one. Every
     # consumer here goes on to price the analytic swaption, so the one evaluation happens once,
     # at theta*, rather than being a precondition each caller has to remember.

@@ -468,3 +468,26 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it():
         with pytest.raises(utils.UnpriceableSchedule, match='CSA-1: a Cash_Collateral row states '
                                                             'no Amount, its weight among several'):
             run(assets, 'No')
+
+
+def test_a_batch_s_cashflows_are_saved_as_one_frame_of_its_rows():
+    """A batch's cashflow ledger is saved as one frame - a row a payment date, a column a path,
+    stacked once - and is the frame built a row at a time, cell, dtype, index and columns, in both
+    precisions, off a ledger carrying a graph, and a currency with no payment date an empty frame.
+
+    Killing mutation: the empty ledger stacked - a currency with no payment date fails the batch."""
+    from types import SimpleNamespace
+    from derivus.calculation import CMC_State
+    grid = SimpleNamespace(mtm_dates=set(pd.date_range('2026-10-05', periods=6, freq='MS')))
+    for dtype in (torch.float32, torch.float64):
+        paths = torch.linspace(-1.0, 1.0, 7, dtype=dtype, requires_grad=True)
+        ledger = {'USD': {4: paths * 3.0, 1: paths ** 2, 2: paths.exp()}, 'EUR': {}}
+        output = {}
+        CMC_State.save_cashflows(SimpleNamespace(t_Cashflows=ledger), output, grid)
+        dates = np.array(sorted(grid.mtm_dates))
+        for currency, rows in ledger.items():
+            by_row = pd.DataFrame([v.detach().numpy() for _, v in sorted(rows.items())],
+                                  index=dates[sorted(rows)])
+            saved, = output['cashflows'][currency]
+            assert saved.equals(by_row) and list(saved.dtypes) == list(by_row.dtypes), currency
+            assert saved.index.equals(by_row.index) and saved.columns.equals(by_row.columns)

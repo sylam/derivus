@@ -44,7 +44,6 @@ FACTOR_INDEX_Moneyness_Index = 3
 FACTOR_INDEX_Expiry_Index = 4
 FACTOR_INDEX_VolTenor_Index = 5
 FACTOR_INDEX_Flat_Index = 5
-FACTOR_INDEX_Surface_Flat_Index = 6
 
 # cashflow codes 
 CASHFLOW_INDEX_Start_Day = 0
@@ -1136,6 +1135,15 @@ class Interpolation(UnroutedInterpolation):
         """`(1-t) y0 + t (y1 + (1-t)(g + t c))`, exact at both knots."""
         return torch.lerp(curve_t0, torch.addcmul(curve_t1, 1.0 - t_a, torch.addcmul(g, t_a, c)), t_a)
 
+    @staticmethod
+    def take(tensor, index):
+        """`tensor[index,]`, the rows a read gathers: `index_select` on the host, where it copies
+        rows the advanced index walks element by element - 2.3x at a production batch - and the
+        advanced index on the card, which runs it faster."""
+        if tensor.device.type != 'cpu':
+            return tensor[index, ]
+        return tensor.index_select(0, index.reshape(-1)).reshape(index.shape + tensor.shape[1:])
+
     def read_at(self, tenor_data, rows, i1, i2, w2):
         """The RAW value at one time point — before the rate*time scaling, which `combine` applies
         after any time blend.
@@ -1149,13 +1157,14 @@ class Interpolation(UnroutedInterpolation):
         if tenor_data[0].startswith('Hermite'):
             g, c = self.interp_params
             return self.calc_hermite_curve(
-                w2, g[i0,], c[i0,], self.indexed_tensor[i0,], self.indexed_tensor[i1x,])
-        # default to linear
-        return torch.lerp(self.indexed_tensor[i0,], self.indexed_tensor[i1x,], w2)
+                w2, self.take(g, i0), self.take(c, i0), self.take(self.indexed_tensor, i0),
+                self.take(self.indexed_tensor, i1x))
+        # default to linear, blended into the first gather - a fresh tensor, the weight graphless
+        return self.take(self.indexed_tensor, i0).lerp_(self.take(self.indexed_tensor, i1x), w2)
 
     def blend(self, raw, nxt, alpha):
-        """Linear time interpolation between two raw reads."""
-        return torch.lerp(raw, nxt, alpha)
+        """Linear time interpolation between two raw reads, into the first."""
+        return raw.lerp_(nxt, alpha)
 
     def project(self, block, raw):
         """A raw read taken up to the logical batch width by the block that produced it."""
@@ -1164,13 +1173,15 @@ class Interpolation(UnroutedInterpolation):
     def combine(self, raw, tenor_data, i2, tnr, time_factor):
         """Raw read -> curve value: the rate*time scaling this kind asks for. Elementwise in `raw`,
         so it commutes with the time blend and with a block projection — which is why it runs ONCE,
-        after both, rather than inside either."""
+        after both, rather than inside either. A read nothing scales comes back as it was read."""
         kind, tnr_min, tnr_max = tenor_data
+        if not (time_factor or kind.endswith('RT')):
+            return raw
         tenors = tnr.unsqueeze(-1)
         mult = tenors if time_factor else 1.0
         if kind.endswith('RT'):
             mult = mult / tenors.clamp(tnr_min, tnr_max)
-        return raw * mult
+        return raw.mul_(mult)
 
 
 class SegmentedInterpolation(UnroutedInterpolation):
@@ -4378,17 +4389,14 @@ def update_tenors(base_date, all_factors):
 # indexing ops manipulating large tensors
 def interpolate_tensor(t, tenor, rate_tensor):
     index, index_next, alpha = TimeGrid._index_alpha(tenor, t)
-    alpha = rate_tensor.new(alpha)
-    return rate_tensor[index] * (1 - alpha) + rate_tensor[index_next] * alpha
-
+    return torch.lerp(rate_tensor[index], rate_tensor[index_next], rate_tensor.new(alpha))
 
 
 def gather_interp_matrix(mtm, deal_time_dep):
     if deal_time_dep.alpha.any():
         if deal_time_dep.t_alpha is None:
             deal_time_dep.t_alpha = mtm.new(deal_time_dep.alpha)
-        return mtm[deal_time_dep.index] * (1 - deal_time_dep.t_alpha) + \
-            mtm[deal_time_dep.index_next] * deal_time_dep.t_alpha
+        return torch.lerp(mtm[deal_time_dep.index], mtm[deal_time_dep.index_next], deal_time_dep.t_alpha)
     else:
         return mtm[deal_time_dep.index]
 
@@ -4848,7 +4856,7 @@ class VolSurface:
         space = vol_spread.reshape(tenor_index.tenor.size, -1)
         index, index_next, alpha = tenor_index.get_index(tenor)
 
-        return space[index] * (1.0 - alpha) + space[index_next] * alpha
+        return torch.lerp(space[index], space[index_next], alpha)
 
     @staticmethod
     def _flat(flat_surface, code, expiry, shared, calc_std):
@@ -4896,15 +4904,14 @@ class VolSurface:
                 t_expiry = flat_surface.new(expiry.clip(min=expiry_tenor.min).reshape(-1, 1))
                 var_prior = term_prior * read(tenor_money_indices)**2
                 var_post = term_post * read(tenor_money_indices_next)**2
-                var_surface = time_modifier * torch.sum(
-                    var_prior * tenor_money_alpha * (1.0 - alpha) +
-                    var_post * tenor_money_alpha_next * alpha, dim=1)
+                var_surface = time_modifier * torch.sum(torch.lerp(
+                    var_prior * tenor_money_alpha, var_post * tenor_money_alpha_next, alpha), dim=1)
                 surface = torch.sqrt(var_surface/t_expiry)
             else:
                 # interpolate along volatility
-                surface = time_modifier * torch.sum(
-                    read(tenor_money_indices) * tenor_money_alpha * (1.0 - alpha) +
-                    read(tenor_money_indices_next) * tenor_money_alpha_next * alpha, dim=1)
+                surface = time_modifier * torch.sum(torch.lerp(
+                    read(tenor_money_indices) * tenor_money_alpha,
+                    read(tenor_money_indices_next) * tenor_money_alpha_next, alpha), dim=1)
 
             shared.t_Buffer[time_code] = (surface.reshape(-1), code, CurveTenor(new_moneyness_tenor))
 
@@ -4921,7 +4928,7 @@ class VolSurface:
             time_modifier = np.sqrt(expiry) if calc_std else 1.0
             alpha = surface.new(alpha).reshape(-1, 1)
 
-            shared.t_Buffer[time_code] = (surface[index] * (1 - alpha) + surface[index_next] * alpha) * time_modifier
+            shared.t_Buffer[time_code] = torch.lerp(surface[index], surface[index_next], alpha) * time_modifier
 
         return shared.t_Buffer[time_code]
 
@@ -4981,7 +4988,7 @@ class VolSurface:
                 moneyness = 0.0 * shared.one
             else:
                 if rate_code[FACTOR_INDEX_SubType][1] == 'Sticky_Strike':
-                    atm_ref = surface['ATM_Ref'][index] * (1 - alpha) + surface['ATM_Ref'][index_next] * alpha
+                    atm_ref = torch.lerp(surface['ATM_Ref'][index], surface['ATM_Ref'][index_next], alpha)
                     moneyness = torch.log(moneyness / atm_ref)
 
             if rate_code[FACTOR_INDEX_SubType][0] == 'Skew':
@@ -4991,8 +4998,7 @@ class VolSurface:
                 vol_post = calc_skew(moneyness, tuple(index_next), surface['ATM_Vol'][index_next], surface['s'][index_next],
                                       surface['L'][index_next], surface['R'][index_next], surface['C'][index_next],
                                       surface['D'][index_next], surface['lam'][index_next], surface['rho'][index_next])
-                vol = vol_prior * (1 - alpha) + vol_post * alpha
-                return vol * time_modifier
+                return torch.lerp(vol_prior, vol_post, alpha) * time_modifier
 
             elif rate_code[FACTOR_INDEX_SubType][0] == 'SVI':
                 k_m_prior = moneyness - surface['m'][index]
@@ -5002,8 +5008,7 @@ class VolSurface:
                 var_post = surface['a'][index_next] + surface['b'][index_next] * (
                         surface['rho'][index_next] * k_m_post + torch.sqrt(
                     k_m_post ** 2 + surface['sigma'][index_next] ** 2))
-                variance = var_prior * (1 - alpha) + var_post * alpha
-                return torch.sqrt(variance) * time_modifier
+                return torch.sqrt(torch.lerp(var_prior, var_post, alpha)) * time_modifier
         else:
             surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
             max_index = np.prod(surface.shape) - 1
@@ -5024,8 +5029,7 @@ class VolSurface:
             vol_index = index + expiry_offsets
 
             vol_index_next = torch.clamp(vol_index + 1, 0, max_index)
-            vols = surface[vol_index] * (1.0 - alpha) + surface[vol_index_next] * alpha
-            return vols
+            return torch.lerp(surface[vol_index], surface[vol_index_next], alpha)
 
     @staticmethod
     def rate(code, moneyness, expiry, shared, calc_std=False):
@@ -5095,72 +5099,6 @@ class VolSurface:
             result.append(VolSurface._moneyness(mon, exp, time_exp, shared))
 
         return torch.stack(result)
-
-    @staticmethod
-    def delivery_rate(code, moneyness, expiry, delivery, time_grid, shared):
-        """A 3-D delivery/expiry/moneyness read: no reader today, kept for a delivery-axis
-        forward-price surface and marked for removal."""
-        # can't cache this function as moneyness is generally stochastic
-        vol_spread = None
-
-        for rate in code:
-            # Only static moneyness/expiry vol surfaces are supported for now
-            if rate[FACTOR_INDEX_Stoch]:
-                raise Exception("Stochastic vol surfaces not yet implemented")
-            else:
-                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                break
-
-        index_map = code[0][FACTOR_INDEX_Surface_Flat_Index]
-        tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
-        expiry_index = code[0][FACTOR_INDEX_Expiry_Index]
-        money_index = code[0][FACTOR_INDEX_Moneyness_Index]
-
-        # need to know the moneyness offset for a particular expiry offset
-        expiry_offset = np.cumsum([0] + [x.tenor.size for x in expiry_index])
-        t_index, t_index_next, alpha = tenor_index.get_index(delivery)
-        alpha_tensor = vol_spread.new(alpha).unsqueeze(2)
-
-        space = []
-        tenor_cache = {}
-        for current_tenor_index in [t_index, t_index_next]:
-            result = []
-            for tenor_sub_index, exp, mon in zip(current_tenor_index, expiry, moneyness):
-                expiry_tenor_map = [expiry_index[to].get_index(e) for to, e in zip(tenor_sub_index, exp)]
-                time_slice = []
-                for tenor_offset, (e_index, e_index_next, e_alpha) in zip(tenor_sub_index, expiry_tenor_map):
-                    tenor_exp_key = (tenor_offset, e_index, e_index_next)
-                    if tenor_exp_key not in tenor_cache:
-                        if expiry_index[tenor_offset].tenor.size > 1:
-                            # need to interpolate the expiry
-                            moneyness_00 = expiry_offset[tenor_offset] + e_index
-                            moneyness_01 = expiry_offset[tenor_offset] + e_index_next
-
-                            m_prior = vol_spread[slice(*index_map[2][moneyness_00][1:])]
-                            m_next = vol_spread[slice(*index_map[2][moneyness_01][1:])]
-
-                            # grab 2 moneyness layers
-                            m_index_1, m_index_next_1, m_alpha_1 = money_index[moneyness_00].get_index(mon)
-                            m_index_2, m_index_next_2, m_alpha_2 = money_index[moneyness_01].get_index(mon)
-
-                            exp_prior = m_prior[m_index_1] * (1 - m_alpha_1) + m_prior[m_index_next_1] * m_alpha_1
-                            exp_next = m_next[m_index_2] * (1 - m_alpha_2) + m_next[m_index_next_2] * m_alpha_2
-                            tenor_cache[tenor_exp_key] = exp_prior * (1 - e_alpha) + exp_next * e_alpha
-
-                        else:
-                            # go straight to moneyness
-                            moneyness_0 = expiry_offset[tenor_offset]
-                            m_slice = vol_spread[slice(*index_map[2][moneyness_0][1:])]
-                            m_index, m_index_next, m_alpha = money_index[moneyness_0].get_index(mon)
-                            tenor_cache[tenor_exp_key] = m_slice[m_index] * (1 - m_alpha) + m_slice[m_index_next] * m_alpha
-
-                    time_slice.append(tenor_cache[tenor_exp_key])
-                result.append(torch.stack(time_slice))
-            space.append(result)
-
-        interpolated_vols = [prior * (1 - a) + next * a for prior, next, a in zip(space[0], space[1], alpha_tensor)]
-
-        return torch.stack(interpolated_vols)
 
 
 def hermite_interpolation_tensor(t, rate_tensor):
@@ -5491,9 +5429,10 @@ def calibration_jacobian(benchmarks, theta):
 
 def vmapped_jacobian(terms, x, retain_graph=False):
     """dr/dx from an evaluated residual: one batched backward over the rows, which is the per-row
-    loop's answer at a fifth of its cost on this graph."""
-    return torch.autograd.grad(terms, x, torch.eye(terms.numel(), dtype=x.dtype, device=x.device),
-                               is_grads_batched=True, retain_graph=retain_graph)[0]
+    loop's answer at a fifth of its cost on this graph. `x` a tensor, or a list laid side by side."""
+    eye = torch.eye(terms.numel(), dtype=terms.dtype, device=terms.device)
+    grads = torch.autograd.grad(terms, x, eye, is_grads_batched=True, retain_graph=retain_graph)
+    return torch.cat(grads, 1) if isinstance(x, list) else grads[0]
 
 
 class CalibrationSolve(torch.autograd.Function):

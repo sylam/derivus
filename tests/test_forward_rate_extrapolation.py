@@ -252,6 +252,128 @@ def test_a_static_read_is_indexed_once_and_reads_its_own_day_count_and_points():
     assert tenor.read_index(act365, READ_DAYS[0], like.float())[0].dtype == torch.float32
 
 
+def _nodes(out):
+    seen, stack = set(), [out.grad_fn]
+    while stack:
+        node = stack.pop()
+        if node is not None and node not in seen:
+            seen.add(node)
+            stack.extend(f for f, _ in node.next_functions)
+    return {type(node).__name__ for node in seen}
+
+
+@pytest.mark.parametrize('kind', ('Linear', 'LinearRT', 'Hermite'))
+def test_a_time_blended_read_is_the_out_of_place_read_to_the_bit(kind):
+    """A read blended across scenario rows gathers its rows with `index_select` on the host and the
+    advanced index on the card, blends into the first fresh gather and hands back a read nothing
+    scales as read: the out-of-place read written out here, its value and its first and second
+    derivatives, to the bit, scaled by the tenor and not, on both devices.
+
+    Killed by: the host gathering with the advanced index; an unscaled read multiplied by one."""
+    days = np.array([[30.0, 200.0, 400.0, 1500.0, 2200.0]] * 4)
+    daycount = _daycount('ACT_365')
+    index, alpha = np.array([0, 1, 2, 3]), np.array([0.0, 0.3, 0.7, 1.0]).reshape(-1, 1, 1)
+    gen = torch.Generator().manual_seed(5)
+    for device in ['cpu'] + ['cuda'] * bool(torch.cuda.device_count()):
+        tenor = utils.CurveTenor(READ_KNOTS, kind)
+        rates = (0.02 + 0.01 * torch.rand(5, READ_KNOTS.size, 6, generator=gen, dtype=torch.float64)).to(device)
+
+        def engine(leaf, scaled):
+            curve = utils.CurveTensor(utils.Interpolation.build(leaf, kind, READ_KNOTS), index, alpha)
+            return curve.interpolate_curve((True, 'curve', None, tenor, daycount), days, scaled)
+
+        def written_out(leaf, scaled):
+            interp = utils.Interpolation.build(leaf, kind, READ_KNOTS)
+            flat, stride = interp.indexed_tensor, interp.shape[1]
+            years, i1, i2, w = tenor.read_index(daycount, days, flat)
+            rows = torch.as_tensor(index, device=device)
+
+            def at(row):
+                i0, i1x = row.reshape(-1, 1) * stride + i1, row.reshape(-1, 1) * stride + i2
+                if kind == 'Hermite':
+                    g, c = interp.interp_params
+                    return utils.Interpolation.calc_hermite_curve(
+                        w.unsqueeze(-1), g[i0, ], c[i0, ], flat[i0, ], flat[i1x, ])
+                return torch.lerp(flat[i0, ], flat[i1x, ], w.unsqueeze(-1))
+            raw = torch.lerp(at(rows), at((rows + 1).clamp(max=4)), flat.new(alpha))
+            mult = years.unsqueeze(-1) if scaled else 1.0
+            if kind.endswith('RT'):
+                mult = mult / years.unsqueeze(-1).clamp(tenor.min, tenor.max)
+            return raw * mult
+
+        for scaled in (0, 1):
+            leaf = rates.clone().requires_grad_()
+            got, want = engine(leaf, scaled), written_out(leaf, scaled)
+            assert torch.equal(got, want), (device, scaled)
+            nodes = _nodes(got)
+            assert ('IndexSelectBackward0' if device == 'cpu' else 'IndexBackward0') in nodes, nodes
+            assert scaled or kind != 'Linear' or 'MulBackward0' not in nodes, nodes
+            v = torch.linspace(-1.0, 1.0, got.numel(), dtype=torch.float64, device=device).reshape(got.shape)
+            firsts = [torch.autograd.grad((x * x * v).sum(), leaf, create_graph=True)[0] for x in (got, want)]
+            assert torch.equal(*firsts), (device, scaled)
+            seconds = [torch.autograd.grad((g * g).sum(), leaf)[0] for g in firsts]
+            assert torch.equal(*seconds), (device, scaled)
+
+
+def test_a_flat_surface_reads_flat_at_every_weight():
+    """Every torch two-point blend is `torch.lerp`, which reads two equal ends as that value at any
+    weight: a flat grid read by `interpolate_tensor`, a deal's MtM gathered between scenario dates,
+    a vol surface blended in expiry, in vol tenor and in moneyness - 4,096 weights each, in both
+    precisions - where `(1 - w) a + w b` is off its value at up to 37% of them. Each read's first
+    and second derivatives pass `gradcheck` on a surface that is not flat.
+
+    Killed by: any of these blends spelled `a * (1 - w) + b * w`."""
+    from types import SimpleNamespace
+    gen = torch.Generator().manual_seed(7)
+    grid = np.array([0.0, 30.0, 400.0, 1500.0])
+    queries = np.sort(np.concatenate([grid, 1500.0 * torch.rand(4096, generator=gen, dtype=torch.float64).numpy()]))
+    segment = grid.searchsorted(queries, side='right').clip(1, 3) - 1
+    reads = {
+        'interpolate_tensor': lambda s, q: utils.interpolate_tensor(queries[q], grid, s),
+        'gather_interp_matrix': lambda s, q: utils.gather_interp_matrix(s, SimpleNamespace(
+            index=segment[q], index_next=segment[q] + 1, t_alpha=None, alpha=(
+                (queries[q] - grid[segment[q]]) / np.diff(grid)[segment[q]]).reshape(-1, 1))),
+        'expiry': lambda s, q: utils.VolSurface._interp(
+            s, (None, 'flat', None, None, utils.CurveTenor(grid)), queries[q],
+            SimpleNamespace(t_Buffer={}), False),
+        'tenor': lambda s, q: torch.stack([utils.VolSurface._tenor_blend(
+            [(False, 'vol', None, None, None, utils.CurveTenor(grid))], tenor,
+            SimpleNamespace(t_Static_Buffer={'vol': s})) for tenor in queries[q][:256]]),
+        'moneyness': lambda s, q: utils.VolSurface._moneyness(
+            s.new(queries[q] / 1500.0).reshape(1, -1), np.zeros(1), 'flat',
+            SimpleNamespace(t_Buffer={'flat': (s.reshape(-1), None, utils.CurveTenor(grid / 1500.0))},
+                            one=s.new_ones(1)))}
+    shapes = {'interpolate_tensor': grid.shape, 'moneyness': grid.shape}
+    every, few = slice(None), slice(0, None, 512)
+
+    def svi(strike, q, dtype):
+        """One SVI smile at every expiry, read under a sticky strike: its ATM reference and its
+        variance blended between expiries."""
+        smile = {k: torch.full((grid.size, 1), v, dtype=dtype) for k, v in (
+            ('a', 0.01), ('b', 0.1), ('rho', -0.3), ('m', 0.02), ('sigma', 0.2), ('ATM_Ref', 1.25))}
+        key = ('vol_time_grid', (('SVI', 'smile'),))
+        return utils.VolSurface._moneyness(strike, queries[q], key, SimpleNamespace(
+            t_Buffer={key: (smile, (None, None, ('SVI', 'Sticky_Strike'), utils.CurveTenor(grid)), False)},
+            one=torch.ones(1, dtype=dtype)))
+
+    for dtype in (torch.float64, torch.float32):
+        for flat in (1.0 / 3.0, 0.0123, 0.2345):
+            level = torch.tensor(flat, dtype=dtype)
+            for name, read in reads.items():
+                got = read(level.expand(shapes.get(name, (grid.size, 3))).contiguous(), every)
+                assert got.dtype == dtype and (got == level).all(), (name, dtype, flat, int((got != level).sum()))
+        smiles = svi(torch.linspace(0.8, 1.6, 9, dtype=dtype).reshape(1, -1), every, dtype)
+        assert (smiles == smiles[0]).all(), ('svi', dtype, int((smiles != smiles[0]).sum()))
+    for name, read in reads.items():
+        surface = torch.rand(shapes.get(name, (grid.size, 3)), generator=gen, dtype=torch.float64,
+                             requires_grad=True)
+        assert torch.autograd.gradcheck(lambda s: read(s, few), surface), name
+        assert torch.autograd.gradgradcheck(lambda s: read(s, few), surface), name
+    strike = torch.linspace(0.8, 1.6, 9, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(lambda k: svi(k.reshape(1, -1), few, torch.float64), strike)
+    assert torch.autograd.gradgradcheck(lambda k: svi(k.reshape(1, -1), few, torch.float64), strike)
+
+
 def test_every_blend_is_exact_at_both_ends():
     """The tenor read at its two knots (weight 0, and 1 off the extrapolating last segment), the
     time blend and the whole-row gather at weight 0 and 1, and the Hermite blend at 0 and 1 give

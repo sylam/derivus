@@ -4792,15 +4792,15 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         def analytic_loss(implied_var):
             """The same benchmarks, priced by Schrager-Pelsser, differenced as normal vols.
 
-            `precalculate` builds H, I and J and is the only thing this runs - no sample, no
-            simulated curve - so the two objectives share their whole front half: the same
-            reversion-speed floors, series branches, `params_ok` and `Correlation` leaves.
+            `covariance` builds J and is the only thing this runs - no sample, no simulated curve,
+            none of the simulation `precalculate` builds on it - so the two objectives share their
+            front half: the same reversion-speed floors, series branches, `params_ok` and
+            `Correlation` leaves.
 
             `clear` and not `reset`: the memo tables go per evaluation, the Sobol draw is not paid.
             """
             shared_mem.clear()
-            process.precalculate(
-                base_date, time_grid, stoch_var, shared_mem, 0, implied_tensor=implied_var)
+            process.covariance(base_date, time_grid, stoch_var, shared_mem, 0, implied_var)
             swaptions = {name: process.schrager_pelsser_swaption(
                 market_data.schedule.expiry, market_data.schedule.pay_times,
                 market_data.schedule.accruals)
@@ -5261,20 +5261,21 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
 
         def make_least_squares_loss(loss_fn, implied_vars, device):
             # makes it possible to call the scipy least squares algo
+            last = {}
+
             def calc_loss(x):
                 for tn_var, np_var in zip(implied_vars.values(), np.split(x, split_param)):
                     tn_var.grad = None
                     tn_var.data = torch.from_numpy(np_var).to(device)
                 _, error = loss_fn(implied_vars)
-                return torch.stack(list(error.values()))
+                last.update(x=x.copy(), residual=torch.stack(list(error.values())))
+                return last['residual']
 
             def jacobian(x):
-                loss = calc_loss(x)
-                # full jacobian - takes a second or so
-                jac = torch.stack([torch.cat(torch.autograd.grad(
-                    loss, list(implied_vars.values()), x, retain_graph=True))
-                    for x in torch.eye(len(loss), device=device)])
-                return jac.cpu().numpy()
+                # scipy asks for J where it last evaluated the residual, whose graph is kept for it
+                loss = last['residual'] if np.array_equal(last.get('x'), x) else calc_loss(x)
+                last.clear()
+                return utils.vmapped_jacobian(loss, list(implied_vars.values())).cpu().numpy()
 
             def least_squares(x):
                 return calc_loss(x).cpu().detach().numpy()

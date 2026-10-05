@@ -214,58 +214,71 @@ def hw_alpha_floor(a):
 
 
 def hw_alpha_branch(a, threshold):
-    """`(is_small, where)` for a reversion speed that may be at, or through, zero.
+    """`(pick, select)` for a reversion speed that may be at, or through, zero, the series taken
+    below `threshold`: `pick` runs legs handed as functions of nothing, `select` chooses between
+    two values already built - a scalar's, as cheap to build as to skip.
 
-    `where` is the caller's own array library. It selects rather than short-circuits: a python
-    `if` on a tensor is a host sync and takes the whole batch down one leg, and the reversion
-    speed is a calibrated variable with a gradient on it.
+    The speed is a calibrated variable with a gradient on it. On a device a python `if` is a host
+    sync and takes the whole batch down one leg, so `pick` runs both legs and selects; on the
+    host, and for a python or numpy speed, the test is free and only the leg taken runs.
     """
-    if isinstance(a, torch.Tensor):
-        return a.abs() < threshold, torch.where
-    return abs(a) < threshold, np.where
+    small, where = (a.abs() < threshold, torch.where) if isinstance(a, torch.Tensor) else (
+        abs(a) < threshold, np.where)
+
+    def select(series, closed):
+        return where(small, series, closed)
+
+    if isinstance(a, torch.Tensor) and a.device.type != 'cpu':
+        return lambda series, closed: select(series(), closed()), select
+    taken = bool(small)
+    return lambda series, closed: series() if taken else closed(), select
 
 
 def hw_calc_H(a, exp):
     # sympy.simplify(sympy.integrate(sympy.exp(a * s) * (v + m * (s - t)), (s, t, t + dt)))
     # leave the division till later and simplify
-    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_H)
+    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_H)
 
     def H(t, v, dt, m):
-        closed = (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))
-        # the same integral as its power series in `a`, which is entire and so converges for every
-        # one of them - int_0^dt e^{au}(v+mu)du = dt sum_k (a dt)^k/k! (v/(k+1) + m dt/(k+2))
-        x, acc, term = a * dt, 0.0 * v, 1.0 + 0.0 * (a * dt)
-        for k in range(HW_SERIES_TERMS):
-            acc = acc + term * (v / (k + 1) + m * dt / (k + 2))
-            term = term * x / (k + 1)
-        return where(small, acc * dt * exp(a * t), closed)
+        def series():
+            # the same integral as its power series in `a`, which is entire and so converges for
+            # every one of them - int_0^dt e^{au}(v+mu)du = dt sum_k (a dt)^k/k! (v/(k+1) + m dt/(k+2))
+            x, acc, term = a * dt, 0.0 * v, 1.0 + 0.0 * (a * dt)
+            for k in range(HW_SERIES_TERMS):
+                acc = acc + term * (v / (k + 1) + m * dt / (k + 2))
+                term = term * x / (k + 1)
+            return acc * dt * exp(a * t)
+
+        return pick(series, lambda: (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t)))
 
     # the divisor goes to ONE under the series branch rather than to something small: the series is
     # the integral itself and not its numerator, so nothing divides by a near-zero number at all
-    return H, where(small, 1.0 + 0.0 * a, a * a)
+    return H, select(1.0 + 0.0 * a, a * a)
 
 
 def hw_calc_IJK(a, exp):
     # sympy.simplify(sympy.integrate(sympy.exp(a*s)*(vi+mi*(s-t))*(vj+mj*(s-t)), (s,t,t+dt)))
     # leave the division till later and simplify
-    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_IJK)
+    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_IJK)
 
     def IJK(t, vi, vj, dt, mi, mj):
         a2, dt2, mi_mj, mj_vi_p_mi_vj, vi_vj = a * a, dt * dt, mi * mj, mj * vi + mi * vj, vi * vj
 
-        closed = ((a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
-                   - a * mj_vi_p_mi_vj) * exp(a * dt)
-                  - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t)
-        # this numerator is O(a^3) built from O(1) terms, so the closed form's relative error
-        # runs like eps/a^3 - 1e9 out at a=1e-8, measured. The series carries the a^3 instead
-        S, Q = mj_vi_p_mi_vj * dt, mi_mj * dt2
-        x, acc, term = a * dt, 0.0 * vi, 1.0 + 0.0 * (a * dt)
-        for k in range(HW_SERIES_TERMS):
-            acc = acc + term * (vi_vj / (k + 1) + S / (k + 2) + Q / (k + 3))
-            term = term * x / (k + 1)
-        return where(small, acc * dt * exp(a * t), closed)
+        def series():
+            # the closed form's numerator is O(a^3) built from O(1) terms, so its relative error
+            # runs like eps/a^3 - 1e9 out at a=1e-8, measured. The series carries the a^3 instead
+            S, Q = mj_vi_p_mi_vj * dt, mi_mj * dt2
+            x, acc, term = a * dt, 0.0 * vi, 1.0 + 0.0 * (a * dt)
+            for k in range(HW_SERIES_TERMS):
+                acc = acc + term * (vi_vj / (k + 1) + S / (k + 2) + Q / (k + 3))
+                term = term * x / (k + 1)
+            return acc * dt * exp(a * t)
 
-    return IJK, where(small, 1.0 + 0.0 * a, a ** 3)
+        return pick(series, lambda: (
+            (a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
+             - a * mj_vi_p_mi_vj) * exp(a * dt) - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t))
+
+    return IJK, select(1.0 + 0.0 * a, a ** 3)
 
 
 def hw_calc_B(a, tenor):
@@ -273,22 +286,26 @@ def hw_calc_B(a, tenor):
 
     Divides by the reversion speed, so it carries the same removable singularity as `hw_calc_H`
     and `hw_calc_IJK` - more forgiving, the numerator being only O(a), but 1.7e-6 relative at
-    a=1e-8 on a one-day tenor and NaN at a=0. `torch.where` evaluates BOTH branches, so the
-    divisor is clamped inside the dividing branch and selected after.
+    a=1e-8 on a one-day tenor and NaN at a=0. On a device both legs run, so the divisor is
+    clamped inside the dividing leg and selected after.
 
     A finite $B$ is not a finite $A$: both models divide this by the reversion speed again when
     they assemble `AtT`, which is `hw_alpha_floor`'s business rather than this series'.
     """
-    small, where = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
+    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
     # keyed off `a` and not `tenor`, so this and the branch above cannot land in two libraries
     expm1 = torch.expm1 if isinstance(a, torch.Tensor) else np.expm1
-    safe = where(small, 1.0 + 0.0 * a, a)
-    # sum_k (-a)^k T^{k+1}/(k+1)!
-    acc, term = 0.0 * tenor, tenor
-    for k in range(HW_SERIES_TERMS):
-        acc = acc + term
-        term = term * (-a) * tenor / (k + 2)
-    return where(small, acc, -expm1(-safe * tenor) / safe)
+    safe = select(1.0 + 0.0 * a, a)
+
+    def series():
+        # sum_k (-a)^k T^{k+1}/(k+1)!
+        acc, term = 0.0 * tenor, tenor
+        for k in range(HW_SERIES_TERMS):
+            acc = acc + term
+            term = term * (-a) * tenor / (k + 2)
+        return acc
+
+    return pick(series, lambda: -expm1(-safe * tenor) / safe)
 
 
 def hmm_forward_backward(log_pi, log_P, log_emit):
@@ -1032,7 +1049,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         self.factor_tenor = None
         self.grid_index = None
         self.BtT = None
-        # what `schrager_pelsser_swaption` reads, and None until a precalculate has run
+        # what `schrager_pelsser_swaption` reads, and None until `covariance` has run
         self.J = self.alpha = self.rho = None
 
     @staticmethod
@@ -1053,7 +1070,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             if quantofx is not None:
                 implied_tensor['Quanto_FX_Volatility'] = implied_tensor['Sigma_1'].new_tensor(quantofx)
 
-    def read_cache(self, ref_date, time_grid, tensor, shared, process_ofs):
+    def read_cache(self, ref_date, time_grid, tensor, process_ofs):
         if not self.cache:
             self.z_offset = process_ofs
             self.scenario_horizon = time_grid.scen_time_grid.size
@@ -1068,14 +1085,52 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
 
             self.cache['time_grid_years'] = time_grid_years
             self.cache['t'] = tensor.new(time_grid_years.reshape(-1, 1))
+        return self.cache['time_grid_years'], self.cache['t']
 
-        # `fwd_curve` reads `tensor` (the t=0 curve) alone: kept while the same curve, unmodified
-        # and carrying no graph, comes back (a calibration's residuals), rebuilt for any other
+    def forward_cache(self, tensor, shared):
+        """The forward curve, which reads `tensor` (the t=0 curve) alone: kept while the same curve,
+        unmodified and carrying no graph, comes back, rebuilt for any other."""
         if tensor.requires_grad or self.cache.get('curve') is not tensor or (
                 self.cache['version'] != tensor._version):
             self.cache.update(curve=tensor, version=tensor._version, fwd_curve=self.forward_curve(
                 tensor, self.cache['time_grid_years'], shared, floor=TENOR_FLOOR))
-        return self.cache['time_grid_years'], self.cache['fwd_curve'], self.cache['t']
+        return self.cache['fwd_curve']
+
+    def covariance(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor,
+                   simulate=False):
+        """What the analytic swaption reads - `J`, the reversion speeds FLOORED and the correlation
+        ASSEMBLED - and `params_ok`: the whole of what an analytic residual integrates. `simulate`
+        integrates H and I as well, ahead of J, and leaves `rho J` to `precalculate`, which builds
+        it beside A(t,T): the order the simulation's gradient sums in."""
+        time_grid_years, _ = self.read_cache(ref_date, time_grid, tensor, process_ofs)
+        alpha = [hw_alpha_floor(implied_tensor['Alpha_1'][0].type(torch.float64)),
+                 hw_alpha_floor(implied_tensor['Alpha_2'][0].type(torch.float64))]
+        corr = implied_tensor['Correlation'].type(torch.float64)
+        vols = [implied_tensor['Sigma_1'].type(torch.float64),
+                implied_tensor['Sigma_2'].type(torch.float64)]
+        vols_tenor = [self.implied.param['Sigma_1'].array[:, 0],
+                      self.implied.param['Sigma_2'].array[:, 0]]
+        H = [integrate_piecewise_linear(
+            hw_calc_H(alpha[i], torch.exp), shared, time_grid_years, vols_tenor[i], vols[i])
+            for i in range(2)] if simulate else None
+        I = [[integrate_piecewise_linear(
+            hw_calc_IJK(alpha[i], torch.exp), shared, time_grid_years, vols_tenor[i], vols[i], vols_tenor[j], vols[j])
+            for j in range(2)] for i in range(2)] if simulate else None
+        J = [[integrate_piecewise_linear(
+            hw_calc_IJK(alpha[i] + alpha[j], torch.exp), shared,
+            time_grid_years, vols_tenor[i], vols[i], vols_tenor[j], vols[j]) for j in range(2)] for i in range(2)]
+        self.J, self.alpha, self.rho = J, alpha, [[1.0, corr], [corr, 1.0]]
+        if not simulate:
+            self.increments([self.rho[i][j] * J[i][j] for i, j in itertools.product(range(2), range(2))])
+        return alpha, corr, vols, vols_tenor, H, I
+
+    def increments(self, CtT):
+        """The covariance's increments, the four `rho J` in `CtT` differenced along the grid, and
+        `params_ok`: every one of them positive definite."""
+        t_CtT = torch.stack(CtT).T
+        delta_CtT = t_CtT[1:] - t_CtT[:-1]
+        self.params_ok = bool((delta_CtT[:, 0] * delta_CtT[:, 3] > delta_CtT[:, 1] * delta_CtT[:, 2]).all())
+        return delta_CtT
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         if self.param is None:
@@ -1086,25 +1141,12 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 'at 0.0 to simulate {1} without one'.format(
                     utils.check_tuple_name(utils.Factor(type(self).__name__, self.factor_key.name)),
                     utils.check_tuple_name(self.factor_key)))
-        time_grid_years, fwd_curve, t = self.read_cache(ref_date, time_grid, tensor, shared, process_ofs)
-
-        alpha = [hw_alpha_floor(implied_tensor['Alpha_1'][0].type(torch.float64)),
-                 hw_alpha_floor(implied_tensor['Alpha_2'][0].type(torch.float64))]
+        time_grid_years, t = self.read_cache(ref_date, time_grid, tensor, process_ofs)
+        fwd_curve = self.forward_cache(tensor, shared)
+        alpha, corr, vols, vols_tenor, H, I = self.covariance(
+            ref_date, time_grid, tensor, shared, process_ofs, implied_tensor, simulate=True)
+        J, rho = self.J, self.rho
         lam = [self.param['Lambda_1'], self.param['Lambda_2']]
-        corr = implied_tensor['Correlation'].type(torch.float64)
-        vols = [implied_tensor['Sigma_1'].type(torch.float64),
-                implied_tensor['Sigma_2'].type(torch.float64)]
-        vols_tenor = [self.implied.param['Sigma_1'].array[:, 0],
-                      self.implied.param['Sigma_2'].array[:, 0]]
-
-        H = [integrate_piecewise_linear(
-            hw_calc_H(alpha[i], torch.exp), shared, time_grid_years, vols_tenor[i], vols[i]) for i in range(2)]
-        I = [[integrate_piecewise_linear(
-            hw_calc_IJK(alpha[i], torch.exp), shared, time_grid_years, vols_tenor[i], vols[i], vols_tenor[j], vols[j])
-            for j in range(2)] for i in range(2)]
-        J = [[integrate_piecewise_linear(
-            hw_calc_IJK(alpha[i] + alpha[j], torch.exp), shared,
-            time_grid_years, vols_tenor[i], vols[i], vols_tenor[j], vols[j]) for j in range(2)] for i in range(2)]
 
         # Check if the curve is not the same as the base currency
         if self.implied.param['Quanto_FX_Volatility'] and self.implied.param['Quanto_FX_Volatility'].array.any():
@@ -1127,7 +1169,6 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         AtT = 0.0
         BtT = [hw_calc_B(alpha[i], self.factor_tenor_full) for i in range(2)]
         CtT = []
-        rho = [[1.0, corr], [corr, 1.0]]
 
         for i, j in itertools.product(range(2), range(2)):
             first_part = torch.exp(-(alpha[i] + alpha[j]) * t) * J[i][j].reshape(-1, 1)
@@ -1143,12 +1184,9 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 torch.cat([first_part, second_part, third_part], dim=1),
                 torch.stack([BtT[j] * BtT[i], BtT[i] / alpha[j], BtT[j] / alpha[i]]))
 
-        t_CtT = torch.stack(CtT).T
-        delta_CtT = t_CtT[1:] - t_CtT[:-1]
-        # check if the entire cholesky is +ve definite
-        if (delta_CtT[:, 0] * delta_CtT[:, 3] > delta_CtT[:, 1] * delta_CtT[:, 2]).all():
+        delta_CtT = self.increments(CtT)
+        if self.params_ok:
             C = nnf.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
-            self.params_ok = True
         else:
             # need to fix the cholesky
             cholesky = [tensor.new_zeros((2, 2), dtype=torch.float64)]
@@ -1157,14 +1195,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                     cholesky.append(torch.linalg.cholesky(C.reshape(2, 2)))
                 else:
                     cholesky.append(cholesky[-1])
-
-            self.params_ok = False
             C = torch.stack(cholesky)
-
-        # WHAT THE ANALYTIC SWAPTION READS. `J` is built above and consumed only through
-        # `CtT`, so a reference here keeps one spelling of the integral. The reversion speeds
-        # ride along FLOORED and the correlation ASSEMBLED - what this covariance was built of.
-        self.J, self.alpha, self.rho = J, alpha, rho
 
         self.BtT = [Bi.type(shared.one.dtype).reshape(-1, 1) for Bi in BtT]
         self.YtT = [torch.exp(-alpha[i] * t).type(shared.one.dtype) for i in range(2)]
@@ -1183,7 +1214,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         self.drift = fwd_curve + 0.5 * self.align_rank(AtT, fwd_curve.ndim)
 
     def schrager_pelsser_swaption(self, expiry, pay_times, accruals):
-        """The Schrager-Pelsser ATM payer swaption, analytic, off the arrays `precalculate` built.
+        """The Schrager-Pelsser ATM payer swaption, analytic, off the arrays `covariance` built.
 
         THE APPROXIMATION. The forward swap rate is an exact function of the two state variables
         $x_k(t)=e^{-\\alpha_k t}Y_k(t)$ and a driftless martingale under the annuity measure; what
@@ -1225,8 +1256,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         if self.J is None:
             raise Exception(
                 'HullWhite2FactorImpliedInterestRateModel: schrager_pelsser_swaption reads J, the '
-                'reversion speeds and the correlation off precalculate, and none has run - call '
-                'precalculate against this swaption\'s TimeGrid first')
+                'reversion speeds and the correlation off covariance, and none has run - call '
+                'covariance against this swaption\'s TimeGrid first')
         grid = self.cache['time_grid_years']
         if not 0.0 < expiry <= grid[-1]:
             raise Exception(
@@ -1257,14 +1288,13 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         q = [swap_rate * (weight * Bk[1:]).sum() - (P[0] * Bk[0] - P[-1] * Bk[-1]) / annuity
              for Bk in B]
 
-        # the one read of J, at the expiry - see the docstring for the interpolation and its cost
-        at_expiry = np.array([expiry])
-        J_T0 = [[utils.interpolate_tensor(at_expiry, grid, self.J[k][l])[0] for l in range(2)]
-                for k in range(2)]
+        # the one read of J, all four at the expiry - see the docstring for the interpolation and
+        # its cost
+        J_T0 = utils.interpolate_tensor(np.array([expiry]), grid, torch.stack(sum(self.J, []), 1))[0]
         # no e^{-(alpha_k+alpha_l)T_0} in front of J - `q` loads the SCALED martingale Y
         variance = 0.0
-        for k, l in itertools.product(range(2), range(2)):
-            variance = variance + self.rho[k][l] * q[k] * q[l] * J_T0[k][l]
+        for kl, (k, l) in enumerate(itertools.product(range(2), range(2))):
+            variance = variance + self.rho[k][l] * q[k] * q[l] * J_T0[kl]
 
         # `Correlation` is a one-element parameter VECTOR, so the off-diagonal terms come out
         # rank 1 and carry the sum with them - flattened once here rather than in four places

@@ -728,10 +728,11 @@ class CMC_State(utils.Calculation_State):
     def save_cashflows(self, output, time_grid):
         dates = np.array(sorted(time_grid.mtm_dates))
         for currency, values in self.t_Cashflows.items():
-            cash_index = dates[sorted(values.keys())]
-            output.setdefault('cashflows', {}).setdefault(currency, []).append(
-                pd.DataFrame(
-                    [v.cpu().detach().numpy() for _, v in sorted(values.items())], index=cash_index))
+            rows = [v for _, v in sorted(values.items())]
+            # one stacked copy off the device and one block for pandas, not a column at a time
+            output.setdefault('cashflows', {}).setdefault(currency, []).append(pd.DataFrame(
+                torch.stack(rows).detach().cpu().numpy() if rows else None,
+                index=dates[sorted(values.keys())]))
 
     @staticmethod
     def save_results(output, tensors):

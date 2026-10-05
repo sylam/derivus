@@ -7,7 +7,7 @@ the energy family. A document carrying no such factor is the cold path, untouche
 
 WHAT IT BUYS, MEASURED HERE. The Hull-White chain is basin hopping (50 hops, each one L-BFGS-B) then
 least squares; warm it is the least squares alone from the written factor. On the four-quote fixture
-that is **421 objective evaluations cold against 6 warm**, landing 9.4e-9 apart in the sup norm over
+that is **419 objective evaluations cold against 5 warm**, landing 9.4e-9 apart in the sup norm over
 all 23 coordinates. The energy fit is one bounded `minimize` from the declared `Seed`; warm it starts
 at the written (Sigma, Alpha) clipped to the two boxes, and that is **69 evaluations against 15**,
 9.3e-11 and 4.6e-10 apart.
@@ -18,7 +18,7 @@ cold chain lands 0.0012 from the unmoved theta* and the warm fit 0.0432, almost 
 [the re-solve reference is refuted](../docs_src/developer/quote_sensitivities.md#the-manifold-finding)
 - and the residual says which fit is better: the warm one reaches loss 1.31e-14 where the cold chain
 stops at 2.83e-13, both stationary (||J'r|| 6.4e-8 and 1.2e-7 against `Stationarity_Tol` 1e-3), in
-**49 evaluations against 429**. The cold chain does not visibly wander because `Random_Seed` pins its
+**31 evaluations against 427**. The cold chain does not visibly wander because `Random_Seed` pins its
 search and a 2% move barely reshapes the objective, so it retraces its own walk; what the warm fit
 does that no chain can is reach a stationary point that reprices the moved ladder without paying for
 the search. That is the intraday property.
@@ -33,7 +33,7 @@ THE KILLING MUTATIONS, each measured by making the change and reading the number
 | read the energy factor transposed (`Alpha` as the sigma seed) | the warm count goes 15 -> 60 - a seed off the manifold costs what the box is wide |
 
 EVALUATIONS, NOT SECONDS. Both counts come from a `sys.setprofile` hook counting calls to one named
-engine function - `precalculate` runs once per swaption objective evaluation, `black_european_option_price`
+engine function - `covariance` runs once per swaption objective evaluation, `black_european_option_price`
 once per quote per energy objective evaluation - so the reading is the same on a loaded box as on an
 idle one. Nothing is patched: the hook observes.
 """
@@ -125,8 +125,8 @@ def fit(text, factor_name, *targets):
 def hw_fit(factor=None, move=1.0):
     written, tally = fit(
         document(HW_JOB, HW_BLOCK, HW_FACTOR, factor, move), HW_FACTOR,
-        HullWhite2FactorImpliedInterestRateModel.precalculate)
-    return written, tally[HullWhite2FactorImpliedInterestRateModel.precalculate.__qualname__]
+        HullWhite2FactorImpliedInterestRateModel.covariance)
+    return written, tally[HullWhite2FactorImpliedInterestRateModel.covariance.__qualname__]
 
 
 def cs_fit(factor=None, move=1.0):

@@ -87,7 +87,7 @@ from derivus.bootstrappers import (HullWhite2FactorModelParameters,
 from derivus.utils import LeastSquaresSolve
 from derivus.config import ModelParams
 from derivus.stochasticprocess import (HW_ALPHA_FLOOR, HW_ALPHA_SERIES_B, HW_ALPHA_SERIES_H,
-                                       HW_ALPHA_SERIES_IJK, TENOR_FLOOR,
+                                       HW_ALPHA_SERIES_IJK, HW_SERIES_TERMS, TENOR_FLOOR,
                                        HullWhite1FactorInterestRateModel,
                                        HullWhite2FactorImpliedInterestRateModel,
                                        PCAInterestRateModel, hw_alpha_floor,
@@ -480,6 +480,50 @@ def test_the_gradient_survives_the_branch(a):
     assert torch.isfinite(out) and torch.isfinite(d_alpha) and torch.isfinite(d_sigma).all(), a
 
 
+def graph_size(out):
+    """The autograd nodes behind `out` - the work its backward does."""
+    seen, stack = set(), [out.grad_fn]
+    while stack:
+        node = stack.pop()
+        if node is not None and node not in seen:
+            seen.add(node)
+            stack.extend(f for f, _ in node.next_functions)
+    return len(seen)
+
+
+@pytest.mark.parametrize('a', [0.0, 1e-4, 0.02, 0.06, 0.35, -0.5])
+def test_the_host_runs_the_leg_it_takes(a):
+    """On the host a speed's branch is decided by its value and only that leg runs. Above each
+    threshold the closed form's value, gradient and second derivative are the prefix spelling's to
+    the bit, off the prefix's own graph but for the scalar divisor's select - a series leg would add
+    `HW_SERIES_TERMS` steps; below it the series' first and second derivatives pass `gradcheck`.
+
+    Killed by: the host picking with `torch.where` - both legs run, the series' steps in the graph."""
+    sigma = torch.tensor(SIGMA['humped'], dtype=DTYPE, requires_grad=True)
+    tenor = torch.tensor(FACTOR_TENOR)
+    readings = (
+        (hw_calc_H, prefix_H, HW_ALPHA_SERIES_H, lambda f, ta, s: integrate_piecewise_linear(
+            f(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s)),
+        (hw_calc_IJK, prefix_IJK, HW_ALPHA_SERIES_IJK, lambda f, ta, s: integrate_piecewise_linear(
+            f(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s, VOL_TENOR, s)),
+        (hw_calc_B, prefix_B, HW_ALPHA_SERIES_B, lambda f, ta, s: f(ta, tenor) * s.sum()))
+    for fn, prefix, threshold, reading in readings:
+        ta = torch.tensor(a, dtype=DTYPE, requires_grad=True)
+        if abs(a) < threshold:
+            assert torch.autograd.gradcheck(lambda x, s: reading(fn, x, s), (ta, sigma))
+            assert torch.autograd.gradgradcheck(lambda x, s: reading(fn, x, s), (ta, sigma))
+            continue
+        got, want = (reading(f, ta, sigma) for f in (fn, prefix))
+        assert torch.equal(got, want) and graph_size(got) < graph_size(want) + HW_SERIES_TERMS, (
+            fn.__name__, a, graph_size(got), graph_size(want))
+        direction = torch.linspace(-1.0, 1.0, got.numel(), dtype=DTYPE)
+        firsts = [torch.autograd.grad((x * direction).sum(), (ta, sigma), create_graph=True)
+                  for x in (got, want)]
+        assert all(torch.equal(g, w) for g, w in zip(*firsts)), (fn.__name__, a)
+        seconds = [torch.autograd.grad(d_a + d_s.sum(), (ta, sigma)) for d_a, d_s in firsts]
+        assert all(torch.equal(g, w) for g, w in zip(*seconds)), (fn.__name__, a)
+
+
 def test_the_numpy_leg_takes_the_same_branch():
     """`HullWhite1FactorInterestRateModel` hands these the same integrands with `np.exp` and a
     python float, so the branch is spelled once for both or it is not spelled at all."""
@@ -688,12 +732,12 @@ def test_the_forwards_grid_half_is_built_once_per_grid_and_moves_no_bit(kind):
 
 
 def test_the_hull_white_keeps_its_forward_curve_while_its_curve_comes_back_unedited():
-    """`read_cache` keeps the forward curve while the same curve comes back unedited and carrying no
-    graph - a calibration's residuals - and rebuilds it for another curve, one edited in place and
-    one carrying a graph.
+    """`forward_cache` keeps the forward curve while the same curve comes back unedited and
+    carrying no graph - a Monte Carlo calibration's residuals - and rebuilds it for another curve,
+    one edited in place and one carrying a graph.
 
     Killed by: the version check dropped - the edited curve reads the forward of the one before."""
-    world = identified_closure(Objective='Analytic')
+    world = identified_closure(Objective='Monte_Carlo', batch_size=64)
     process = world['process']
     world['loss'](world['implied_var'])
     kept = process.cache['fwd_curve']
@@ -702,7 +746,7 @@ def test_the_hull_white_keeps_its_forward_curve_while_its_curve_comes_back_unedi
     years = process.cache['time_grid_years']
 
     def read(x):
-        return process.read_cache(None, None, x, None, 0)[1]
+        return process.forward_cache(x, None)
 
     curve = process.cache['curve'].detach().clone()
     first = read(curve)
@@ -714,6 +758,65 @@ def test_the_hull_white_keeps_its_forward_curve_while_its_curve_comes_back_unedi
     leaf = curve.clone().requires_grad_()
     graphed = read(leaf)
     assert read(leaf) is not graphed and graphed.requires_grad
+
+
+def test_the_analytic_residual_integrates_what_it_reads_and_nothing_else():
+    """The analytic residual runs `covariance` alone and none of the simulation `precalculate`
+    builds on it, and its residual, Jacobian and Hessian-vector product are those of the residual
+    priced after a full `precalculate` to the bit - the oracle the objective was before.
+
+    Killed by: the analytic residual running `precalculate` - the simulation's loadings are built."""
+    world = identified_closure(Objective='Analytic')
+    process, implied_var, swaps, ir_factor = (world[k] for k in ('process', 'implied_var', 'swaps', 'ir_factor'))
+    shared = RiskNeutralInterestRate_State({key: utils.Factor(ir_factor.type, ir_factor.name + (key,))
+                                            for key in ('full', 'reduced')}, 8, DEVICE, DTYPE)
+    curve = torch.tensor(process.factor.current_value(), device=DEVICE, dtype=DTYPE)
+
+    def oracle():
+        shared.clear()
+        process.precalculate(BASE, world['time_grid'], curve, shared, 0, implied_tensor=implied_var)
+        return [swap.normal_vol_error(process.schrager_pelsser_swaption(
+            swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals))
+            for swap in swaps.values()]
+
+    leaves, direction, readings = list(implied_var.values()), None, []
+    for residual in (lambda: list(world['loss'](implied_var)[1].values()), oracle):
+        r = torch.stack(residual())
+        if not readings:
+            assert process.BtT is None and 'fwd_curve' not in process.cache, 'the simulation was built'
+        jacobian = torch.stack([torch.cat(torch.autograd.grad(row, leaves, retain_graph=True)) for row in r])
+        g = torch.cat(torch.autograd.grad(0.5 * (r * r).sum(), leaves, create_graph=True))
+        direction = torch.linspace(-1.0, 1.0, g.numel(), dtype=DTYPE) if direction is None else direction
+        readings.append((r, jacobian, torch.cat(torch.autograd.grad((g * direction).sum(), leaves)),
+                         process.params_ok))
+    assert process.BtT is not None
+    for analytic, full in zip(*readings):
+        assert analytic == full if isinstance(full, bool) else torch.equal(analytic.detach(), full.detach())
+
+
+def test_the_least_squares_jacobian_is_one_backward_off_the_residual_last_evaluated():
+    """The least-squares stage's Jacobian is ONE batched backward through the residual scipy just
+    evaluated at that point - no second evaluation - and is the per-row loop's to the bit, at that
+    point, at another one and asked twice.
+
+    Killed by: the residual re-evaluated for the Jacobian - the process integrates `J` again."""
+    world = identified_closure(Objective='Analytic', chain=True)
+    _, x0, residual, jacobian, box = next(o for o in world['optimizers'] if o[0] == 'leastsq')
+    leaves, process = list(world['implied_var'].values()), world['process']
+
+    def looped():
+        r = torch.stack(list(world['loss'](world['implied_var'])[1].values()))
+        return torch.stack([torch.cat(torch.autograd.grad(row, leaves, retain_graph=True)) for row in r]).numpy()
+
+    lower, upper = np.array(box)
+    moved = np.clip(x0 * np.linspace(0.9, 1.1, x0.size), lower + 1e-9, upper - 1e-9)
+    for x, evaluated in ((x0, True), (moved, False), (moved, False)):
+        if evaluated:
+            residual(x)
+        integrated = process.J
+        got = jacobian(x)
+        assert (process.J is integrated) == evaluated, 'the residual was evaluated again'
+        assert np.array_equal(got, looped()), x
 
 
 def test_the_atT_cross_term_carries_its_number():
@@ -1097,7 +1200,7 @@ def test_J_off_a_node_is_the_linear_blend_and_carries_its_number(calibration):
     rho, q = process.rho, sp.loadings
     variance = 0.0
     for k, l in itertools.product(range(2), range(2)):
-        blend = process.J[k][l][hi - 1] * (1.0 - weight) + process.J[k][l][hi] * weight
+        blend = torch.lerp(process.J[k][l][hi - 1], process.J[k][l][hi], weight)
         variance = variance + rho[k][l] * q[k] * q[l] * blend
     assert as_float(variance.reshape(())) == as_float(sp.variance), 'not the linear blend'
 
@@ -1133,8 +1236,8 @@ def test_J_off_a_node_is_the_linear_blend_and_carries_its_number(calibration):
 
 
 def test_the_analytic_swaption_refuses_rather_than_extrapolates(calibration):
-    """Two refusals plus the un-precalculated one. Reading `J` past the grid would flat-extrapolate
-    silently, because `utils.interpolate_tensor` clips."""
+    """Two refusals plus the one before any `covariance`. Reading `J` past the grid would
+    flat-extrapolate silently, because `utils.interpolate_tensor` clips."""
     process, _ = sp_at(calibration)
     horizon = process.cache['time_grid_years'][-1]
     with pytest.raises(Exception, match='outside'):
@@ -1145,7 +1248,7 @@ def test_the_analytic_swaption_refuses_rather_than_extrapolates(calibration):
     from derivus.stochasticprocess import HullWhite2FactorImpliedInterestRateModel as HW2F
     fresh = HW2F.__new__(HW2F)
     fresh.J = None
-    with pytest.raises(Exception, match='precalculate'):
+    with pytest.raises(Exception, match='call covariance'):
         HW2F.schrager_pelsser_swaption(fresh, SP_EXPIRY, SP_PAY, SP_TAU)
 
 
@@ -1825,17 +1928,17 @@ ID_ANALYTIC_THETA = {
 #: re-derives. It is a fast factor beside a nearly driftless one, which is the shape the separated
 #: seed was chosen to reach.
 MC_FOUR_THETA = {
-    'Alpha_1': [0.8859193968327339],
-    'Alpha_2': [0.0035325142958618078],
-    'Correlation': [-0.6426383568018209],
-    'Sigma_1': [0.012046624047036679, 0.022251129016057927, 0.012042932966706044,
-                0.0172820637346968, 0.017826150927446164, 0.027022278144058744,
-                0.0386543479684687, 0.005165477991520709, 0.024200300426027232,
-                0.021719192159269426],
-    'Sigma_2': [0.024870512059662925, 0.020792824744115642, 0.02014695581523466,
-                0.01981112132564825, 0.02250190832443811, 0.020531026456088775,
-                0.01835815090030687, 0.018447094050318805, 0.018423528079446833,
-                0.018494324371045073]}
+    'Alpha_1': [0.8838007550308329],
+    'Alpha_2': [0.003535189936568309],
+    'Correlation': [-0.6419756319237072],
+    'Sigma_1': [0.012047319694228177, 0.02227051267828342, 0.012091242994301123,
+                0.01740206383132365, 0.01774116173728521, 0.027016509817851496,
+                0.03867626467919327, 0.005168163617332369, 0.024200982189423993,
+                0.021719957574151984],
+    'Sigma_2': [0.024878683236274846, 0.02079944609698879, 0.020153462431508604,
+                0.019816901557477774, 0.02249887722361669, 0.020533678204244878,
+                0.018359296040413333, 0.018447203297860343, 0.018423637547130632,
+                0.01849443039231784]}
 
 #: theta* on the FOUR-quote fixture under `Objective: 'Analytic'`, AS SOLVED - the analytic twin of
 #: `MC_FOUR_THETA`, so the theta-comparison is taken on the under-determined block as well as the
@@ -1843,17 +1946,17 @@ MC_FOUR_THETA = {
 #: 133 for the vector above. `||J'r||` 7.36e-8 against `||r||` 6.67e-7: four quotes against 23
 #: parameters, so it INTERPOLATES, and no authored vector lands there.
 AN_FOUR_THETA = {
-    'Alpha_1': [0.3236619328305925],
-    'Alpha_2': [0.0315956928067235],
-    'Correlation': [-0.1565027209493458],
-    'Sigma_1': [0.010723201021296683, 0.004717111297103278, 0.011059663361074838,
-                0.0029869335048099297, 0.006147380389090318, 0.014499710735079356,
-                0.008805534957702086, 0.013599648498332492, 0.022065576959448645,
-                0.013758711762273506],
-    'Sigma_2': [0.01124433410115683, 0.006337283793399102, 0.019914566141800965,
-                0.007078448710682721, 0.03277363201134675, 0.015805185073393978,
-                0.024763248899365223, 0.02530511362329578, 0.025989908060650796,
-                0.020323839660220794]}
+    'Alpha_1': [0.323661932830242],
+    'Alpha_2': [0.03159569261797087],
+    'Correlation': [-0.1565027209520926],
+    'Sigma_1': [0.010723201046859759, 0.004717111321190352, 0.011059663477626812,
+                0.002986933695598358, 0.006147380562845235, 0.014499710725002904,
+                0.00880553497317613, 0.01359964849345319, 0.02206557694530572,
+                0.013758711750200029],
+    'Sigma_2': [0.011244334108156806, 0.00633728378363769, 0.019914566174582177,
+                0.007078448636907672, 0.032773632027104524, 0.01580518502219187,
+                0.0247632490577204, 0.025305113566282105, 0.025989907901600842,
+                0.020323839594396483]}
 
 
 def flat_theta(calibration, named):
@@ -2427,7 +2530,7 @@ def test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixt
     declared 1e-8 cutoff keeps a dozen to fifteen of 23 directions, the Monte Carlo one 1.76e-6 and 17.
 
     Which is why the four-quote arm's 4.16bp rms is asserted as a CROSS-METRIC reading and not as a
-    fit: both chains interpolate there (`||r||` 1.1e-11 and 6.67e-7), so what it measures is how
+    fit: both chains interpolate there (`||r||` 3.4e-9 and 6.67e-7), so what it measures is how
     far apart two ESTIMATORS are - SP's freezing bias plus the simulation's numeraire error, adding
     at the 10Y x 10Y corner to 7.82bp. The fit itself is the `||r||` pair, held at the end.
     """
@@ -2478,7 +2581,7 @@ def test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixt
 
     # the four-quote fit in the metric each objective actually minimises - the half the vol-space
     # column cannot see, and the only thing here that says the fit is a fit
-    for objective, named, before, now in (('Monte_Carlo', MC_FOUR_THETA, 4.4e-8, 1.1015e-11),
+    for objective, named, before, now in (('Monte_Carlo', MC_FOUR_THETA, 4.4e-8, 3.4230e-09),
                                           ('Analytic', AN_FOUR_THETA, 4.0e-7, 6.6686e-07)):
         cal, _ = calibration_at(named, benchmarks=CHECKER_BENCHMARKS, Objective=objective)
         norm = stationarity(cal, flat_theta(cal, named))[1]
@@ -2551,7 +2654,7 @@ def test_the_analytic_solve_is_deterministic_and_the_seed_moves_what_the_quotes_
     expected and is not evidence for the objective. Across seeds 5120 / 7 / 99 on the four-quote
     block the Monte Carlo chain returns a bit-identical theta* every time while the analytic one
     spreads 0.331 in `Alpha_1`. Four quotes against 23 parameters leaves theta* a MANIFOLD both
-    objectives interpolate exactly (`||r||` 1.1e-11 and 6.67e-7), so what differs is which point of
+    objectives interpolate exactly (`||r||` 3.4e-9 and 6.67e-7), so what differs is which point of
     it the search reaches: the analytic evaluation is 13x cheaper, the chain makes 3x as many, and
     it actually explores. The evidence for the objective is the stationarity gate.
 
@@ -3180,17 +3283,17 @@ NORMAL_VOLS = (1.45, 1.33, 1.26, 1.18)
 #: and no authored vector lands there. It is NOT `AN_FOUR_THETA` and must not be - the same four
 #: numeric quotes read as normal vols are a different market, priced an order of magnitude higher.
 NORMAL_FOUR_THETA = {
-    'Alpha_1': [0.5555267433624334],
-    'Alpha_2': [0.05085529674963202],
-    'Correlation': [-0.11586826972094402],
-    'Sigma_1': [0.009502118044499413, 0.008059746255857262, 0.010967514150762723,
-                0.01009919503996338, 0.010321465920301464, 0.012672409532607678,
-                0.010495377221346816, 0.01072088711432834, 0.011154272829304576,
-                0.012094065552307312],
-    'Sigma_2': [0.007948731970219995, 0.011434082601715675, 0.01241906686652632,
-                0.009902496736026497, 0.022426820914752656, 0.007940070255411654,
-                0.011363999337440357, 0.025882367311000735, 0.01854105583414078,
-                0.017109846965996513]}
+    'Alpha_1': [0.5555312157883685],
+    'Alpha_2': [0.050855281882129996],
+    'Correlation': [-0.11587381800632042],
+    'Sigma_1': [0.009501826349250491, 0.00805992854829932, 0.01096761152849312,
+                0.010099280437250818, 0.010321513205475289, 0.012672415019454793,
+                0.010495375470454737, 0.010720887218587315, 0.01115427212123802,
+                0.012094076813327694],
+    'Sigma_2': [0.007948791483118051, 0.011434121258168572, 0.01241910196318798,
+                0.009902536307395458, 0.02242683518662646, 0.007940075543639524,
+                0.011364055541835625, 0.025882366231038397, 0.01854105471843774,
+                0.017109845852116033]}
 
 
 def surface_world(**declared):
