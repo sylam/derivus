@@ -1372,7 +1372,7 @@ class CurveTenor(object):
     def get_index(self, tenor_points_in_years):
         if isinstance(tenor_points_in_years, torch.Tensor):
             clipped_points = tenor_points_in_years.clip(self.min, self.max)
-            if not self.tensor_cache:
+            if 'tenor' not in self.tensor_cache:
                 self.tensor_cache['tenor'] = tenor_points_in_years.new(self.tenor)
                 self.tensor_cache['delta'] = tenor_points_in_years.new(self.delta)
             tenor = self.tensor_cache['tenor']
@@ -1416,6 +1416,16 @@ class CurveTenor(object):
         if key not in self.tensor_cache:
             years = like.new(daycount(points))
             self.tensor_cache[key] = (years,) + tuple(self.get_index(years))
+        return self.tensor_cache[key]
+
+    def device_index(self, points, like):
+        """`get_index` of numpy `points` as `like`'s tensors, the weight a column in its dtype, built
+        once per key as `read_index` is."""
+        key = ('device', points.dtype, points.shape, points.tobytes(), like.dtype, like.device)
+        if key not in self.tensor_cache:
+            index, index_next, alpha = self.get_index(points)
+            self.tensor_cache[key] = (like.new_tensor(index, dtype=torch.int64), like.new_tensor(
+                index_next, dtype=torch.int64), like.new(alpha).reshape(-1, 1))
         return self.tensor_cache[key]
 
 
@@ -1668,14 +1678,14 @@ class DealTimeDependencies(object):
 
     def events(self, deal_time_grid, expiry):
         """The events interpolated from and the mtm position the days run to: the index, the next
-        index and the weight of every day, with the cached tensor weight cleared."""
+        index and the weight of every day, with their cached tensors cleared."""
         self.deal_time_grid = deal_time_grid
         self.interp = self.mtm_time_grid[self.mtm_time_grid <= self.mtm_time_grid[expiry]]
         self.index = np.searchsorted(deal_time_grid, np.arange(self.interp.size), side='right') - 1
         self.index_next = (self.index + 1).clip(0, deal_time_grid.size - 1)
         self.alpha = ((self.interp - self.interp[deal_time_grid[self.index]])
                       / self.delta[self.index]).reshape(-1, 1)
-        self.t_alpha = None
+        self.t_read = {}
 
     def assign(self, other):
         """Narrowed in place to `other`'s events up to this expiry, the days still running to it."""
@@ -4393,12 +4403,13 @@ def interpolate_tensor(t, tenor, rate_tensor):
 
 
 def gather_interp_matrix(mtm, deal_time_dep):
-    if deal_time_dep.alpha.any():
-        if deal_time_dep.t_alpha is None:
-            deal_time_dep.t_alpha = mtm.new(deal_time_dep.alpha)
-        return torch.lerp(mtm[deal_time_dep.index], mtm[deal_time_dep.index_next], deal_time_dep.t_alpha)
-    else:
-        return mtm[deal_time_dep.index]
+    key = (mtm.device, mtm.dtype)
+    if key not in deal_time_dep.t_read:
+        deal_time_dep.t_read[key] = (mtm.new_tensor(deal_time_dep.index, dtype=torch.int64),
+                                     mtm.new_tensor(deal_time_dep.index_next, dtype=torch.int64),
+                                     mtm.new(deal_time_dep.alpha) if deal_time_dep.alpha.any() else None)
+    index, index_next, alpha = deal_time_dep.t_read[key]
+    return mtm[index] if alpha is None else torch.lerp(mtm[index], mtm[index_next], alpha)
 
 
 def gather_scenario_interp(interp_obj, time_grid, shared, as_curve_tensor=True):
@@ -4923,10 +4934,8 @@ class VolSurface:
         time_code = ('surface_interp', code[:2], tuple(expiry), calc_std)
 
         if time_code not in shared.t_Buffer:
-            expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
-            index, index_next, alpha = expiry_tenor.get_index(expiry)
+            index, index_next, alpha = code[FACTOR_INDEX_Expiry_Index].device_index(expiry, surface)
             time_modifier = np.sqrt(expiry) if calc_std else 1.0
-            alpha = surface.new(alpha).reshape(-1, 1)
 
             shared.t_Buffer[time_code] = torch.lerp(surface[index], surface[index_next], alpha) * time_modifier
 

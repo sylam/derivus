@@ -4801,10 +4801,8 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
             """
             shared_mem.clear()
             process.covariance(base_date, time_grid, stoch_var, shared_mem, 0, implied_var)
-            swaptions = {name: process.schrager_pelsser_swaption(
-                market_data.schedule.expiry, market_data.schedule.pay_times,
-                market_data.schedule.accruals)
-                for name, market_data in market_swaps.items()}
+            swaptions = dict(zip(market_swaps, stochasticprocess.hw2f_rows(
+                process.schrager_pelsser_swaptions(schedules))))
             return ({name: swaption.premium for name, swaption in swaptions.items()},
                     {name: market_swaps[name].normal_vol_error(swaption)
                      for name, swaption in swaptions.items()})
@@ -4834,6 +4832,8 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         # compiled here rather than by a DealStructure, so they bind here
         for market_data in market_swaps.values():
             utils.bind_schedules(market_data.deal_data.Factor_dep, shared_mem.one)
+        # one list for the life of the closure: the analytic swaptions build its legs once
+        schedules = [market_data.schedule for market_data in market_swaps.values()]
         # set up the variables
         implied_var = {}
         stoch_var = torch.tensor(

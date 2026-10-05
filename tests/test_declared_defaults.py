@@ -968,6 +968,52 @@ def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_v
     assert paydates(Accrual_Calendars='', Payment_Calendars='') != omitted
 
 
+def test_a_calendar_file_is_parsed_once_and_again_when_it_changes(tmp_path):
+    """A calendar file is parsed once per process: a second config loading it holds the first one's
+    holidays, the same objects, and a third loading an edited file reads the edit - the service is
+    long-running. The edit is a Johannesburg holiday on a Tuesday, a business day off it.
+
+    Killed by: the parse kept by path alone - the third config reads the unedited calendar."""
+    path = tmp_path / 'calendars.cal'
+    with open(CALENDARS, encoding='utf-8') as handle:
+        text = handle.read()
+    path.write_text(text, encoding='utf-8')
+    first, second = Config(), Config()
+    first.parse_calendar_file(str(path))
+    second.parse_calendar_file(str(path))
+    assert second.holidays is first.holidays and CALENDAR in first.holidays
+    anchor = 'Location="{}" Weekends="Saturday and Sunday" Holidays="'.format(CALENDAR)
+    path.write_text(text.replace(anchor, anchor + '2031-06-17|Edited Day, '), encoding='utf-8')
+    third = Config()
+    third.parse_calendar_file(str(path))
+    roll = pd.Timestamp('2031-06-16') + third.holidays[CALENDAR]['businessday']
+    assert '2031-06-17' in third.holidays[CALENDAR]['holidays'] and roll == pd.Timestamp('2031-06-18')
+    assert pd.Timestamp('2031-06-16') + first.holidays[CALENDAR]['businessday'] == pd.Timestamp(
+        '2031-06-17'), 'the edit reached the configs loaded before it'
+
+
+def test_a_location_stating_no_holidays_has_none(tmp_path):
+    """A location whose `Holidays` is empty rolls on its weekends alone: between two locations that
+    close on a Tuesday, the one stating nothing is open that day - as the shipped file's LBMA is,
+    which states none after Santiago's 598.
+
+    Killed by: the holidays read only where stated, the location before it lending its own - the
+    Tuesday rolls to Wednesday and LBMA reads Santiago's."""
+    path = tmp_path / 'three.cal'
+    path.write_text('<Calendars>{}</Calendars>'.format(''.join(
+        '<Calendar Location="{}" Weekends="Saturday and Sunday" Holidays="{}"/>'.format(name, days)
+        for name, days in (('First', '2031-06-17|Closed'), ('Silent', ''), ('Last', '2031-06-17|Closed')))),
+        encoding='utf-8')
+    three, shipped = Config(), Config()
+    three.parse_calendar_file(str(path))
+    shipped.parse_calendar_file(CALENDARS)
+    monday = pd.Timestamp('2031-06-16')
+    assert [monday + three.holidays[name]['businessday'] for name in ('First', 'Silent', 'Last')] == [
+        pd.Timestamp('2031-06-18'), pd.Timestamp('2031-06-17'), pd.Timestamp('2031-06-18')]
+    assert three.holidays['Silent']['holidays'] == {} == shipped.holidays['LBMA']['holidays']
+    assert shipped.holidays['Santiago']['holidays']
+
+
 def wire_default(field):
     """One declared default in the WIRE form an author writes it, spelled here rather than read off
     `engine_default` - the whole point being that the two are different paths to one value.

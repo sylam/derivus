@@ -128,7 +128,7 @@ def start_of_return(index, source):
     return source[at - 1]
 
 
-def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=None, val2=None):
+def integrate_piecewise_linear(fn, shared, time_grid, tenor1, val1, tenor2=None, val2=None):
     def final_integration_points(only_np, int_points, interp_value):
         # return all but last point and make a tensor if necessary
         return int_points[:-1] if only_np else shared.t_PreCalc.setdefault(
@@ -137,7 +137,6 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
     t = np.union1d(0.0, time_grid)
     np_only = isinstance(val1, np.ndarray)
     max_time = time_grid.max()
-    fn, norm = fn_norm
     integration_points = np.union1d(t, tenor1[:tenor1.searchsorted(max_time)])
 
     if val2 is not None:
@@ -153,10 +152,10 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
         int_fn = fn(t_integration_points, interp_val, dt, m)
 
     if np_only:
-        integral = np.pad(np.cumsum(int_fn) / norm, [1, 0], 'constant')
+        integral = np.pad(np.cumsum(int_fn), [1, 0], 'constant')
         return integral[integration_points.searchsorted(time_grid)]
     else:
-        integral = nnf.pad(torch.cumsum(int_fn, dim=0) / norm, (1, 0))
+        integral = nnf.pad(torch.cumsum(int_fn, dim=0), (1, 0))
         if integration_points.size == time_grid.size:
             return integral
         else:
@@ -165,19 +164,17 @@ def integrate_piecewise_linear(fn_norm, shared, time_grid, tenor1, val1, tenor2=
 
 # Hull white analytic integrals for 1 and 2 factor models (assuming piecewise linear vols)
 
-#: Reversion speeds below these are evaluated from the integrand's own power series in `a` rather
-#: than from the closed form: every closed form here divides by a power of `a`, and every one of
-#: those is a REMOVABLE singularity, so what fails as `a` approaches zero is silent cancellation
-#: rather than a raise. Readings from `tests/test_hw2f_analytic`, each set where that function's
-#: relative error crosses 1e-10 on the worst sigma term structure and a clear step below the 0.1
-#: every authored reversion speed carries.
-HW_ALPHA_SERIES_H = 1e-2
-HW_ALPHA_SERIES_IJK = 3e-2
-HW_ALPHA_SERIES_B = 1e-3
-#: 16 terms is where the truncation drops under the closed form's own error at the threshold even
-#: on a 40-year integration step - 5.2e-12 against 4e-11. The series runs in `a * dt`, so the
-#: integration step and not the horizon sets this.
-HW_SERIES_TERMS = 16
+#: Every closed form here divides by a power of the reversion speed and cancels in x = a dt, the
+#: speed times the step it integrates over (a T for B), so a step with |x| under this takes the
+#: integrand's power series in x and one above it the closed form. Either side of it both hold
+#: value, first and second derivative to 4e-15 of mpmath; the closed form lost 1e-11 at a = 0.05
+#: over a calibration's ten days, and its second derivative 3e-5 at x = 1e-6.
+HW_SERIES_REACH = 2.0
+#: The series' truncation is 1.5e-28 at the reach.
+HW_SERIES_TERMS = 32
+#: $g_n(x)=\int_0^1e^{xs}s^n ds=\sum_k x^k/(k!(k+n+1))$ for n = 0, 1, 2, a column each.
+HW_SERIES = 1.0 / (np.cumprod(np.maximum(np.arange(HW_SERIES_TERMS), 1.0))[:, None]
+                   * (np.arange(HW_SERIES_TERMS)[:, None] + np.arange(1, 4)))
 #: The AtT cross term divides by the OTHER reversion speed a difference that vanishes with it, so
 #: that quotient carries no removable power of alpha - see `hw_alpha_floor`.
 HW_ALPHA_FLOOR = 1e-8
@@ -198,11 +195,11 @@ def hw_alpha_floor(a):
     The 1 factor bracket is identically zero at $\\alpha=0$, so $0\\cdot\\inf$ puts a NaN where a
     repaired $B$ looks handled; both are floored in their own `precalculate`.
 
-    The floor sits two orders above where the quotient stops carrying information: its error is
-    the closed form's own at the OTHER reversion speed amplified by $1/\\alpha$, reaching 5.4e-2
-    at 1e-10 and O(10) by 1e-12. Below it the model is evaluated at $\\pm$`HW_ALPHA_FLOOR`, a
-    perturbation of 1.4e-7 relative on $B$ at thirty years; clamping the DIVISOR alone instead
-    zeroes a third of AtT and moves the benchmark price 0.5%.
+    The quotient's error is the integrals' own at the OTHER reversion speed amplified by
+    $1/\\alpha$: 3.8e-8 at the floor, 4.1e-4 at 1e-12, and none of the number at 1e-16. Below it
+    the model is evaluated at $\\pm$`HW_ALPHA_FLOOR`, a perturbation of 1.4e-7 relative on $B$ at
+    thirty years; clamping the DIVISOR alone instead zeroes a third of AtT and moves the benchmark
+    price 0.5%.
 
     Bit-identical above the floor - `where` selects, it does not round. The array library comes
     off `a` because the 2 factor model hands a tensor and the 1 factor one a python float.
@@ -213,99 +210,86 @@ def hw_alpha_floor(a):
     return np.where(np.abs(a) < HW_ALPHA_FLOOR, np.copysign(HW_ALPHA_FLOOR, a), a)
 
 
-def hw_alpha_branch(a, threshold):
-    """`(pick, select)` for a reversion speed that may be at, or through, zero, the series taken
-    below `threshold`: `pick` runs legs handed as functions of nothing, `select` chooses between
-    two values already built - a scalar's, as cheap to build as to skip.
+def hw_series(x):
+    """`[g_0, g_1, g_2]` at `x` on a last axis by their power series (`HW_SERIES`), entire and so
+    exact through x = 0. The powers by repeated squaring: a cumulative product's double backward
+    divides by x and lost 2e-10 of a second derivative at x = 1e-6."""
+    lib = torch if isinstance(x, torch.Tensor) else np
+    powers, square = lib.concatenate([lib.ones_like(x)[..., None], x[..., None]], -1), x * x
+    while powers.shape[-1] < HW_SERIES_TERMS:
+        powers, square = lib.concatenate([powers, powers * square[..., None]], -1), square * square
+    return powers @ (x.new_tensor(HW_SERIES) if lib is torch else HW_SERIES)
 
-    The speed is a calibrated variable with a gradient on it. On a device a python `if` is a host
-    sync and takes the whole batch down one leg, so `pick` runs both legs and selects; on the
-    host, and for a python or numpy speed, the test is free and only the leg taken runs.
+
+def hw_series_branch(x, a, series, closed):
+    """A step integral at `x` = a dt: `series()` where |x| is under `HW_SERIES_REACH`, `closed(a)`
+    above it, `a` held at one where the series is taken so the closed leg stays finite there.
+
+    On the host, and in numpy, a call whose steps all take one leg runs that leg alone; a mixed
+    call, and every call on a device - where the test would be a sync - runs both and selects.
     """
-    small, where = (a.abs() < threshold, torch.where) if isinstance(a, torch.Tensor) else (
-        abs(a) < threshold, np.where)
-
-    def select(series, closed):
-        return where(small, series, closed)
-
-    if isinstance(a, torch.Tensor) and a.device.type != 'cpu':
-        return lambda series, closed: select(series(), closed()), select
-    taken = bool(small)
-    return lambda series, closed: series() if taken else closed(), select
+    lib = torch if isinstance(x, torch.Tensor) else np
+    small = abs(x) < HW_SERIES_REACH
+    if lib is np or x.device.type == 'cpu':
+        if small.all():
+            return series()
+        if not small.any():
+            return closed(a)
+    return lib.where(small, series(), closed(lib.where(small, 1.0, a)))
 
 
 def hw_calc_H(a, exp):
-    # sympy.simplify(sympy.integrate(sympy.exp(a * s) * (v + m * (s - t)), (s, t, t + dt)))
-    # leave the division till later and simplify
-    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_H)
-
+    """$\\int_t^{t+dt}e^{as}(v+m(s-t))ds$ per step, by `hw_series_branch`."""
     def H(t, v, dt, m):
+        x = a * dt
+
+        def closed(a):
+            # sympy.simplify(sympy.integrate(sympy.exp(a * s) * (v + m * (s - t)), (s, t, t + dt)))
+            return ((-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))) / (a * a)
+
         def series():
-            # the same integral as its power series in `a`, which is entire and so converges for
-            # every one of them - int_0^dt e^{au}(v+mu)du = dt sum_k (a dt)^k/k! (v/(k+1) + m dt/(k+2))
-            x, acc, term = a * dt, 0.0 * v, 1.0 + 0.0 * (a * dt)
-            for k in range(HW_SERIES_TERMS):
-                acc = acc + term * (v / (k + 1) + m * dt / (k + 2))
-                term = term * x / (k + 1)
-            return acc * dt * exp(a * t)
+            g = hw_series(x)
+            return (v * g[..., 0] + m * dt * g[..., 1]) * dt * exp(a * t)
 
-        return pick(series, lambda: (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t)))
+        return hw_series_branch(x, a, series, closed)
 
-    # the divisor goes to ONE under the series branch rather than to something small: the series is
-    # the integral itself and not its numerator, so nothing divides by a near-zero number at all
-    return H, select(1.0 + 0.0 * a, a * a)
+    return H
 
 
 def hw_calc_IJK(a, exp):
-    # sympy.simplify(sympy.integrate(sympy.exp(a*s)*(vi+mi*(s-t))*(vj+mj*(s-t)), (s,t,t+dt)))
-    # leave the division till later and simplify
-    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_IJK)
-
+    """$\\int_t^{t+dt}e^{as}(v_i+m_i(s-t))(v_j+m_j(s-t))ds$ per step, by `hw_series_branch`."""
     def IJK(t, vi, vj, dt, mi, mj):
-        a2, dt2, mi_mj, mj_vi_p_mi_vj, vi_vj = a * a, dt * dt, mi * mj, mj * vi + mi * vj, vi * vj
+        x, dt2, mi_mj, mj_vi_p_mi_vj, vi_vj = a * dt, dt * dt, mi * mj, mj * vi + mi * vj, vi * vj
+
+        def closed(a):
+            # sympy.simplify(sympy.integrate(sympy.exp(a*s)*(vi+mi*(s-t))*(vj+mj*(s-t)), (s,t,t+dt)))
+            a2 = a * a
+            return ((a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
+                     - a * mj_vi_p_mi_vj) * exp(a * dt) - a2 * vi_vj + a * mj_vi_p_mi_vj
+                    - 2 * mi_mj) * exp(a * t) / (a * a2)
 
         def series():
-            # the closed form's numerator is O(a^3) built from O(1) terms, so its relative error
-            # runs like eps/a^3 - 1e9 out at a=1e-8, measured. The series carries the a^3 instead
-            S, Q = mj_vi_p_mi_vj * dt, mi_mj * dt2
-            x, acc, term = a * dt, 0.0 * vi, 1.0 + 0.0 * (a * dt)
-            for k in range(HW_SERIES_TERMS):
-                acc = acc + term * (vi_vj / (k + 1) + S / (k + 2) + Q / (k + 3))
-                term = term * x / (k + 1)
-            return acc * dt * exp(a * t)
+            g = hw_series(x)
+            return (vi_vj * g[..., 0] + dt * (mj_vi_p_mi_vj * g[..., 1] + dt * mi_mj * g[..., 2])
+                    ) * dt * exp(a * t)
 
-        return pick(series, lambda: (
-            (a2 * (dt2 * mi_mj + dt * mj_vi_p_mi_vj + vi_vj) + 2 * mi_mj * (1 - a * dt)
-             - a * mj_vi_p_mi_vj) * exp(a * dt) - a2 * vi_vj + a * mj_vi_p_mi_vj - 2 * mi_mj) * exp(a * t))
+        return hw_series_branch(x, a, series, closed)
 
-    return IJK, select(1.0 + 0.0 * a, a ** 3)
+    return IJK
 
 
 def hw_calc_B(a, tenor):
-    """$B(T)=\\frac{1-e^{-aT}}{a}$, the Hull-White tenor loading, spelled once for both models.
-
-    Divides by the reversion speed, so it carries the same removable singularity as `hw_calc_H`
-    and `hw_calc_IJK` - more forgiving, the numerator being only O(a), but 1.7e-6 relative at
-    a=1e-8 on a one-day tenor and NaN at a=0. On a device both legs run, so the divisor is
-    clamped inside the dividing leg and selected after.
+    """$B(T)=\\frac{1-e^{-aT}}{a}=Tg_0(-aT)$, the Hull-White tenor loading, spelled once for both
+    models, by `hw_series_branch`: the closed form's value is exact, its derivatives in `a` are a
+    quotient's and cancel as `hw_calc_IJK` does.
 
     A finite $B$ is not a finite $A$: both models divide this by the reversion speed again when
     they assemble `AtT`, which is `hw_alpha_floor`'s business rather than this series'.
     """
-    pick, select = hw_alpha_branch(a, HW_ALPHA_SERIES_B)
-    # keyed off `a` and not `tenor`, so this and the branch above cannot land in two libraries
-    expm1 = torch.expm1 if isinstance(a, torch.Tensor) else np.expm1
-    safe = select(1.0 + 0.0 * a, a)
-
-    def series():
-        # sum_k (-a)^k T^{k+1}/(k+1)!
-        acc, term = 0.0 * tenor, tenor
-        for k in range(HW_SERIES_TERMS):
-            acc = acc + term
-            term = term * (-a) * tenor / (k + 2)
-        return acc
-
-    return pick(series, lambda: -expm1(-safe * tenor) / safe)
+    x = -a * tenor
+    expm1 = torch.expm1 if isinstance(x, torch.Tensor) else np.expm1
+    return hw_series_branch(
+        x, a, lambda: tenor * hw_series(x)[..., 0], lambda a: -expm1(-a * tenor) / a)
 
 
 def hmm_forward_backward(log_pi, log_P, log_emit):
@@ -822,7 +806,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         self.scenario_horizon = time_grid.scen_time_grid.size
         vol_tenor = self.implied.param['Vol'].array[:, 0]
         self.V = torch.unsqueeze(integrate_piecewise_linear(
-            (calc_vol, 1.0), shared, time_grid.time_grid_years, vol_tenor, implied_tensor['Vol']), dim=1)
+            calc_vol, shared, time_grid.time_grid_years, vol_tenor, implied_tensor['Vol']), dim=1)
         # per-step incremental vol, anchored at V(0)=0 so the first step evolves from today (t=0)
         self.delta_vol = torch.sqrt(self.V - nnf.pad(self.V[:-1], (0, 0, 1, 0)))
         # we always evolve from today: prepend 0 to the sample times so the step sizes are the
@@ -835,7 +819,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
         if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None:
             self.C = torch.unsqueeze(integrate_piecewise_linear(
-                (cal_quanto_fx_vol, 1.0), shared, time_grid.time_grid_years,
+                cal_quanto_fx_vol, shared, time_grid.time_grid_years,
                 vol_tenor, implied_tensor['Vol'], self.quanto_fx_tenor, implied_tensor['Quanto_FX_Volatility']),
                 dim=1)
             self.rho = implied_tensor['Quanto_FX_Correlation']
@@ -992,6 +976,18 @@ class GBMPriceIndexCalibration(object):
 #: a disagreement with the Monte Carlo lives in.
 HW2FSwaption = collections.namedtuple(
     'HW2FSwaption', 'premium normal_vol annuity swap_rate variance loadings')
+#: What a set of swaptions reads that theta does not reach, a row a swaption padded to one block -
+#: the last time repeated, the weights past it zero - the J read's neighbours and blend, and the
+#: distinct `times` with each block entry's `place` among them.
+SwaptionLegs = collections.namedtuple(
+    'SwaptionLegs', 'times P annuity swap_rate weight expiry index index_next blend place')
+
+
+def hw2f_rows(batch):
+    """A batch of `HW2FSwaption`s as one per row, each field a view of the batch's."""
+    loadings = zip(*(q.unbind() for q in batch.loadings))
+    return [HW2FSwaption(*fields, loadings=list(q))
+            for *fields, q in zip(*(field.unbind() for field in batch[:5]), loadings)]
 
 
 class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
@@ -1214,7 +1210,14 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         self.drift = fwd_curve + 0.5 * self.align_rank(AtT, fwd_curve.ndim)
 
     def schrager_pelsser_swaption(self, expiry, pay_times, accruals):
-        """The Schrager-Pelsser ATM payer swaption, analytic, off the arrays `covariance` built.
+        """One swaption, the one-row case of `schrager_pelsser_swaptions`."""
+        return hw2f_rows(self.schrager_pelsser_swaptions(
+            [utils.swaption_schedule_class(expiry, pay_times, accruals)]))[0]
+
+    def schrager_pelsser_swaptions(self, schedules):
+        """The Schrager-Pelsser ATM payer swaptions on `schedules`, analytic, off the arrays
+        `covariance` built, a row a schedule in one call - what theta does not reach built once
+        per list of schedules (`swaption_legs`).
 
         THE APPROXIMATION. The forward swap rate is an exact function of the two state variables
         $x_k(t)=e^{-\\alpha_k t}Y_k(t)$ and a driftless martingale under the annuity measure; what
@@ -1258,51 +1261,63 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 'HullWhite2FactorImpliedInterestRateModel: schrager_pelsser_swaption reads J, the '
                 'reversion speeds and the correlation off covariance, and none has run - call '
                 'covariance against this swaption\'s TimeGrid first')
-        grid = self.cache['time_grid_years']
-        if not 0.0 < expiry <= grid[-1]:
-            raise Exception(
-                'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is '
-                'outside the (0, {:g}] that J was integrated over - add the expiry to the TimeGrid '
-                'this process was precalculated against'.format(expiry, grid[-1]))
-        node = int(grid.searchsorted(expiry))
-        if grid[node] != expiry:
-            # the chord's cost is the LOCAL step's, so the step is named rather than the fact
-            warnings.warn(
-                'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is not a '
-                'node of the grid J was integrated on - it is read as the chord across the '
-                '[{:g}, {:g}] step, {:g} years wide, which costs 0.0013 basis points of normal vol '
-                'across ten days and up to 2.1 across two years - add the expiry to the TimeGrid '
-                'this process was precalculated against'.format(
-                    expiry, grid[node - 1], grid[node], grid[node] - grid[node - 1]))
-
-        times = np.concatenate(([expiry], np.asarray(pay_times, dtype=np.float64)))
-        # P(0,T) off the t=0 curve in numpy - see the docstring for why it is severed here
-        P = self.J[0][0].new_tensor(np.exp(-self.factor.current_value(times) * times))
-        tau = P.new_tensor(np.asarray(accruals, dtype=np.float64))
-        annuity = (tau * P[1:]).sum()
-        swap_rate = (P[0] - P[-1]) / annuity
-        weight = tau * P[1:] / annuity
-        # B inherits the reversion speed's series branch, so the loadings hold through alpha -> 0
-        t_times = P.new_tensor(times)
-        B = [hw_calc_B(a, t_times) for a in self.alpha]
-        q = [swap_rate * (weight * Bk[1:]).sum() - (P[0] * Bk[0] - P[-1] * Bk[-1]) / annuity
-             for Bk in B]
-
-        # the one read of J, all four at the expiry - see the docstring for the interpolation and
-        # its cost
-        J_T0 = utils.interpolate_tensor(np.array([expiry]), grid, torch.stack(sum(self.J, []), 1))[0]
+        if self.cache.get('swaptions', (None,))[0] is not schedules:
+            self.cache['swaptions'] = (schedules, self.swaption_legs(schedules))
+        legs = self.cache['swaptions'][1]
+        # B takes the series where the speed times the time is small, so the loadings hold through
+        # alpha -> 0 - read once a distinct time and placed in the block
+        B = [hw_calc_B(a, legs.times)[legs.place] for a in self.alpha]
+        q = [legs.swap_rate * (legs.weight * Bk[:, 1:]).sum(-1)
+             - (legs.P[:, 0] * Bk[:, 0] - legs.P[:, -1] * Bk[:, -1]) / legs.annuity for Bk in B]
+        # the one read of J, all four at each expiry - see the docstring for the blend and its cost
+        J = torch.stack(sum(self.J, []), 1)
+        J_T0 = torch.lerp(J[legs.index], J[legs.index_next], legs.blend)
         # no e^{-(alpha_k+alpha_l)T_0} in front of J - `q` loads the SCALED martingale Y
         variance = 0.0
         for kl, (k, l) in enumerate(itertools.product(range(2), range(2))):
-            variance = variance + self.rho[k][l] * q[k] * q[l] * J_T0[kl]
-
-        # `Correlation` is a one-element parameter VECTOR, so the off-diagonal terms come out
-        # rank 1 and carry the sum with them - flattened once here rather than in four places
-        variance = variance.reshape(())
+            variance = variance + self.rho[k][l] * q[k] * q[l] * J_T0[:, kl]
         return HW2FSwaption(
-            premium=annuity * torch.sqrt(variance / (2.0 * np.pi)),
-            normal_vol=torch.sqrt(variance / expiry),
-            annuity=annuity, swap_rate=swap_rate, variance=variance, loadings=q)
+            premium=legs.annuity * torch.sqrt(variance / (2.0 * np.pi)),
+            normal_vol=torch.sqrt(variance / legs.expiry),
+            annuity=legs.annuity, swap_rate=legs.swap_rate, variance=variance, loadings=q)
+
+    def swaption_legs(self, schedules):
+        """The `SwaptionLegs` of `schedules`: each row's P(0,T) off the t=0 curve in numpy - see
+        `schrager_pelsser_swaptions` for why it is severed there - its annuity, swap rate and
+        weights, and its expiry checked against the grid J was integrated on."""
+        grid = self.cache['time_grid_years']
+        width = 1 + max(len(s.pay_times) for s in schedules)
+        rows = []
+        for expiry, pay_times, accruals in schedules:
+            if not 0.0 < expiry <= grid[-1]:
+                raise Exception(
+                    'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is '
+                    'outside the (0, {:g}] that J was integrated over - add the expiry to the '
+                    'TimeGrid this process was precalculated against'.format(expiry, grid[-1]))
+            node = int(grid.searchsorted(expiry))
+            if grid[node] != expiry:
+                # the chord's cost is the LOCAL step's, so the step is named rather than the fact
+                warnings.warn(
+                    'HullWhite2FactorImpliedInterestRateModel: a swaption expiry of {:g} years is '
+                    'not a node of the grid J was integrated on - it is read as the chord across the '
+                    '[{:g}, {:g}] step, {:g} years wide, which costs 0.0013 basis points of normal '
+                    'vol across ten days and up to 2.1 across two years - add the expiry to the '
+                    'TimeGrid this process was precalculated against'.format(
+                        expiry, grid[node - 1], grid[node], grid[node] - grid[node - 1]))
+            times = np.pad(np.concatenate(([expiry], np.asarray(pay_times, dtype=np.float64))),
+                           (0, width - 1 - len(pay_times)), mode='edge')
+            P = self.J[0][0].new_tensor(np.exp(-self.factor.current_value(times) * times))
+            tau = P.new_tensor(np.asarray(accruals, dtype=np.float64))
+            annuity = (tau * P[1:1 + tau.numel()]).sum()
+            rows.append((torch.from_numpy(times), P, annuity, (P[0] - P[-1]) / annuity,
+                         nnf.pad(tau * P[1:1 + tau.numel()] / annuity, (0, width - 1 - tau.numel()))))
+        expiry = np.array([s.expiry for s in schedules])
+        index, index_next, blend = utils.TimeGrid._index_alpha(grid, expiry)
+        times, P, annuity, swap_rate, weight = (torch.stack(field) for field in zip(*rows))
+        times, place = np.unique(times.numpy(), return_inverse=True)
+        return SwaptionLegs(
+            P.new_tensor(times), P, annuity, swap_rate, weight, P.new_tensor(expiry), index, index_next,
+            P.new_tensor(blend).reshape(-1, 1), place.reshape(P.shape))
 
     def calc_factors(self, factor1, factor1and2):
         if factor1.ndim == 2:

@@ -252,6 +252,31 @@ def test_a_static_read_is_indexed_once_and_reads_its_own_day_count_and_points():
     assert tenor.read_index(act365, READ_DAYS[0], like.float())[0].dtype == torch.float32
 
 
+def test_a_static_index_is_copied_to_the_device_once_and_reads_its_own_points():
+    """The vol surface's expiry read and a deal's mtm gather keep their index and weight as the
+    surface's or the mtm's own tensors across batches, keyed on the points, dtype and device: the
+    same read twice is one set of tensors, and two expiry sets of one shape each read their own -
+    the expiry blend against `torch.lerp` by hand, the gather against its numpy index, both devices.
+
+    Killed by: the key dropped to the points' shape - the second set reads the first's weights."""
+    from types import SimpleNamespace
+    tenor = utils.CurveTenor(READ_KNOTS)
+    for device in ['cpu'] + ['cuda'] * bool(torch.cuda.device_count()):
+        surface = torch.linspace(0.1, 0.3, READ_KNOTS.size, dtype=torch.float64, device=device).reshape(-1, 1)
+        for expiry in (np.array([0.3, 1.7]), np.array([2.2, 4.4])):
+            index, index_next, alpha = tenor.get_index(expiry)
+            want = torch.lerp(surface[index], surface[index_next], surface.new(alpha).reshape(-1, 1))
+            got = utils.VolSurface._interp(surface, (None, 'v', None, None, tenor), expiry,
+                                           SimpleNamespace(t_Buffer={}), False)
+            assert torch.equal(got, want), (device, expiry)
+            assert tenor.device_index(expiry.copy(), surface) is tenor.device_index(expiry, surface)
+        timing = utils.DealTimeDependencies(np.array([0, 30, 90, 180, 365]), np.array([0, 2, 4]))
+        mtm = torch.arange(15.0, dtype=torch.float64, device=device).reshape(5, 3)
+        rows = utils.gather_interp_matrix(mtm, timing)
+        assert torch.equal(rows, torch.lerp(mtm[timing.index], mtm[timing.index_next], mtm.new(timing.alpha)))
+        assert utils.gather_interp_matrix(mtm, timing) is not rows and len(timing.t_read) == 1
+
+
 def _nodes(out):
     seen, stack = set(), [out.grad_fn]
     while stack:
@@ -331,7 +356,7 @@ def test_a_flat_surface_reads_flat_at_every_weight():
     reads = {
         'interpolate_tensor': lambda s, q: utils.interpolate_tensor(queries[q], grid, s),
         'gather_interp_matrix': lambda s, q: utils.gather_interp_matrix(s, SimpleNamespace(
-            index=segment[q], index_next=segment[q] + 1, t_alpha=None, alpha=(
+            index=segment[q], index_next=segment[q] + 1, t_read={}, alpha=(
                 (queries[q] - grid[segment[q]]) / np.diff(grid)[segment[q]]).reshape(-1, 1))),
         'expiry': lambda s, q: utils.VolSurface._interp(
             s, (None, 'flat', None, None, utils.CurveTenor(grid)), queries[q],

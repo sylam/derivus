@@ -1947,12 +1947,7 @@ class Credit_Monte_Carlo(Calculation):
                 output[k].append(v.cpu().detach().numpy())
 
             if self.params['Generate_Cashflows'] == 'Yes':
-                dates = np.array(sorted(self.time_grid.mtm_dates))
-                for currency, values in shared_mem.t_Cashflows.items():
-                    cash_index = dates[sorted(values.keys())]
-                    output.setdefault('cashflows', {}).setdefault(currency, []).append(
-                        pd.DataFrame(
-                            [v.cpu().detach().numpy() for _, v in sorted(values.items())], index=cash_index))
+                shared_mem.save_cashflows(output, self.time_grid)
 
             if self.params.get('Calc_Scenarios', 'No') != 'No':
                 for key, value in self.stoch_factors.items():

@@ -19,7 +19,7 @@ import operator
 from collections import Counter, deque
 from functools import reduce
 
-from xml.etree.ElementTree import ElementTree
+from xml.etree.ElementTree import fromstring
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,9 @@ from .stochasticprocess import construct_calibration_config, construct_process, 
 
 Timestamp = pd.Timestamp
 DateOffset = pd.DateOffset
+#: Every calendar file this process parsed, by path: the bytes it read and their holidays, shared
+#: read-only by each config loading the file until its bytes change.
+CALENDARS = {}
 
 
 class ModelParams(object):
@@ -567,17 +570,23 @@ class Config(object):
         return dates
 
     def parse_calendar_file(self, filename):
-        """Parses the xml calendar file in filename."""
-        self.holidays = {}
-        for elem in ElementTree(file=filename).iter():
-            if elem.attrib.get('Location'):
-                if elem.attrib['Holidays']:
+        """Parses the xml calendar file in filename, once per process while its bytes stand - a job
+        load reads every location's `CustomBusinessDay`, and nothing writes them (`CALENDARS`)."""
+        with open(filename, 'rb') as handle:
+            data = handle.read()
+        path = os.path.abspath(filename)
+        if CALENDARS.get(path, (None,))[0] != data:
+            parsed = {}
+            for elem in fromstring(data).iter():
+                if elem.attrib.get('Location'):
                     holidays = dict(tuple(x.split("|")) for x in
                                     elem.attrib['Holidays'].split(', ')) if elem.attrib['Holidays'] else {}
-                self.holidays[elem.attrib['Location']] = {
-                    'businessday': pd.tseries.offsets.CustomBusinessDay(
-                        holidays=holidays.keys(), weekmask=utils.WeekendMap[elem.attrib['Weekends']]),
-                    'holidays': holidays}
+                    parsed[elem.attrib['Location']] = {
+                        'businessday': pd.tseries.offsets.CustomBusinessDay(
+                            holidays=holidays.keys(), weekmask=utils.WeekendMap[elem.attrib['Weekends']]),
+                        'holidays': holidays}
+            CALENDARS[path] = (data, parsed)
+        self.holidays = CALENDARS[path][1]
 
     def fetch_all_calibration_factors(self, override={}):
         """`{'present': ..., 'absent': ...}` for `calibrate_factors` - the Price Factors entries

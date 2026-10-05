@@ -89,11 +89,6 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The engine
 
-- **The Hull-White covariance integral loses four to five digits at the calibration's own steps**
-  (2026-10-05). `hw_calc_IJK` takes its power series below a threshold on the reversion speed
-  alone, but the closed form's cancellation runs with speed times step: at a speed of 0.05 on a
-  ten-day step it is 9.6e-12 off per step where the series is 2e-16. S: the branch chosen on the
-  product; it moves every two-factor Hull-White number at that size.
 - **A rate leg stated by its terms reads eight of its conventions not at all** (2026-09-30).
   `Reset_Type` in `Arrears` or `Advance`, `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`,
   `Index_Offset`, the calendars and `First_Coupon_Date` are declared on the swap, the cap, the

@@ -1,20 +1,19 @@
 """Hull-White near zero reversion speed, the Schrager-Pelsser swaption, and the analytic objective.
 
-THE SERIES BRANCH. `hw_calc_H` divides by `a*a`, `hw_calc_IJK` by `a**3`, `hw_calc_B` by `a`, and
-the HW2F `AtT` divides one factor's `B` by the OTHER factor's speed. Every one is a REMOVABLE
-singularity, so the failure is silent cancellation and not a raise: pre-fix `IJK` read 2.7e+10 out
-at |a| = 1e-8, and a benchmark priced 21% low at alpha_2 = 1e-4 with `params_ok` still True
-(it guards the Cholesky, not this). The second locus is `alpha_1 + alpha_2 -> 0` - `J[i][j]` is
-taken at `alpha_i + alpha_j` - a hyperplane through the box needing no small speed anywhere.
-Zero is reachable without solving: `Alpha_1`/`Alpha_2` declare `default=0`.
+THE SERIES BRANCH. `hw_calc_H` divides by `a*a`, `hw_calc_IJK` by `a**3`, `hw_calc_B`'s derivatives
+by powers of `a`, and the HW2F `AtT` divides one factor's `B` by the OTHER factor's speed. Every one
+is a REMOVABLE singularity, so the failure is silent cancellation and not a raise: pre-fix `IJK`
+read 2.7e+10 out at |a| = 1e-8, and a benchmark priced 21% low at alpha_2 = 1e-4 with `params_ok`
+still True (it guards the Cholesky, not this). The second locus is `alpha_1 + alpha_2 -> 0` -
+`J[i][j]` is taken at `alpha_i + alpha_j`. Zero is reachable without solving: `Alpha_1`/`Alpha_2`
+declare `default=0`.
 
-THE THRESHOLDS ARE READINGS: relative error crosses 1e-10 at 2e-3 (H), 1.5e-2 (IJK) and 1.3e-4 (B),
-so `HW_ALPHA_SERIES_H/IJK/B` are 1e-2 / 3e-2 / 1e-3 - each a rung above its crossing and a step
-below the 0.1 anything authored carries. Above its threshold each function is BIT-IDENTICAL to the
-expression it always was. IJK's crossing rides the sigma slope (3.5e-2 on a 5x-jagged term
-structure), which is what is left on the table at 1.7e-10. The `AtT` cross term is the one division
-no series repairs: `HW_ALPHA_FLOOR` is 1e-8, two orders above where the quotient stops carrying
-information at all, and the 1-factor `AtT` was all NaN at `Alpha`'s own default of 0.
+THE CANCELLATION RUNS IN x = a dt, the speed times the step (a T for B), so a step takes the power
+series below |x| = `HW_SERIES_REACH` and the closed form above it: a calibration's ten-day steps
+take the series at every speed in the box, where the closed form alone lost 1e-11 at a = 0.05. The
+`AtT` cross term is the one division no series repairs: `HW_ALPHA_FLOOR` is 1e-8, where the
+quotient reads to 3.8e-8 - it carries its number down to about 1e-14 and nothing at 1e-16 - and the
+1-factor `AtT` was all NaN at `Alpha`'s own default of 0.
 
 THE ANALYTIC SWAPTION. `schrager_pelsser_swaption` assembles the ATM premium out of the tensors
 `precalculate` already carries. Four things hold before any comparison means anything: the loadings
@@ -86,12 +85,11 @@ from derivus.bootstrappers import (HullWhite2FactorModelParameters,
                                    RiskNeutralInterestRate_State, SwaptionCalibration)
 from derivus.utils import LeastSquaresSolve
 from derivus.config import ModelParams
-from derivus.stochasticprocess import (HW_ALPHA_FLOOR, HW_ALPHA_SERIES_B, HW_ALPHA_SERIES_H,
-                                       HW_ALPHA_SERIES_IJK, HW_SERIES_TERMS, TENOR_FLOOR,
+from derivus.stochasticprocess import (HW_ALPHA_FLOOR, HW_SERIES_REACH, HW_SERIES_TERMS, TENOR_FLOOR,
                                        HullWhite1FactorInterestRateModel,
                                        HullWhite2FactorImpliedInterestRateModel,
                                        PCAInterestRateModel, hw_alpha_floor,
-                                       hw_calc_B, hw_calc_H, hw_calc_IJK,
+                                       hw_calc_B, hw_calc_H, hw_calc_IJK, hw2f_rows,
                                        integrate_piecewise_linear)
 
 BASE = pd.Timestamp('2026-08-03')
@@ -140,7 +138,7 @@ def taylor_H(a, exp, terms=REF_TERMS):
             term = term * a / (k + 1)
         return acc * exp(a * t)
 
-    return H, 1.0
+    return H
 
 
 def taylor_IJK(a, exp, terms=REF_TERMS):
@@ -154,11 +152,11 @@ def taylor_IJK(a, exp, terms=REF_TERMS):
             term = term * a / (k + 1)
         return acc * exp(a * t)
 
-    return IJK, 1.0
+    return IJK
 
 
 def taylor_B(a, tenor, terms=REF_TERMS):
-    acc, term = np.zeros_like(tenor), 1.0
+    acc, term = 0.0 * tenor, 1.0
     for k in range(terms):
         acc = acc + term * tenor ** (k + 1) / (k + 1)
         term = term * (-a) / (k + 1)
@@ -192,22 +190,22 @@ def simpson_cross(ai, aj, t, sigma_i, sigma_j, n=200001):
         f[0] + f[-1] + 4 * f[1:-1:2].sum() + 2 * f[2:-2:2].sum())
 
 
-# ------------------------------------------------- the expressions as they stood, for bit identity
+# ------------------------------------------------------ the closed forms, taken at every step
 
 def prefix_H(a, exp):
     def H(t, v, dt, m):
-        return (-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))
+        return ((-a * v + m) * exp(a * t) + (a * m * dt + a * v - m) * exp(a * (dt + t))) / (a * a)
 
-    return H, a * a
+    return H
 
 
 def prefix_IJK(a, exp):
     def IJK(t, vi, vj, dt, mi, mj):
         a2, dt2, Q, S, P = a * a, dt * dt, mi * mj, mj * vi + mi * vj, vi * vj
         return ((a2 * (dt2 * Q + dt * S + P) + 2 * Q * (1 - a * dt) - a * S) * exp(a * dt)
-                - a2 * P + a * S - 2 * Q) * exp(a * t)
+                - a2 * P + a * S - 2 * Q) * exp(a * t) / a ** 3
 
-    return IJK, a ** 3
+    return IJK
 
 
 def prefix_B(a, tenor):
@@ -216,13 +214,13 @@ def prefix_B(a, tenor):
 
 # ---------------------------------------------------------------- helpers
 
-def integral(fn_norm, sigma_i, sigma_j=None, grid=TIME_GRID):
+def integral(fn, sigma_i, sigma_j=None, grid=TIME_GRID):
     shared = Shared()
     t1 = torch.tensor(sigma_i, dtype=DTYPE)
     if sigma_j is None:
-        return integrate_piecewise_linear(fn_norm, shared, grid, VOL_TENOR, t1).numpy()
+        return integrate_piecewise_linear(fn, shared, grid, VOL_TENOR, t1).numpy()
     return integrate_piecewise_linear(
-        fn_norm, shared, grid, VOL_TENOR, t1, VOL_TENOR, torch.tensor(sigma_j, dtype=DTYPE)).numpy()
+        fn, shared, grid, VOL_TENOR, t1, VOL_TENOR, torch.tensor(sigma_j, dtype=DTYPE)).numpy()
 
 
 def rel(got, want):
@@ -359,92 +357,76 @@ def test_the_series_agrees_with_a_reference_that_shares_nothing_with_it():
 
 @pytest.mark.parametrize('a', LADDER)
 def test_the_crossover_is_where_the_thresholds_say_it_is(a):
-    """Post-fix every function is under 1e-10 at every rung; pre-fix IJK is over 1.0 at |a| <= 1e-6.
-    The pre-fix column is asserted too, or the thresholds are a taste rather than a reading.
+    """Every function is within 2e-15 of the 40-term reference at every rung, each step taking the
+    series under `HW_SERIES_REACH` in a dt and the closed form over it; the closed form alone is
+    over 1.0 out at |a| <= 1e-6 and 1.3e-11 at 0.1, and nowhere the better one.
 
-    The one place 1e-10 is not reached: on the JAGGED sigma the branch reads 1.7e-10 at 3.2e-2,
-    because that curve crosses at 4e-2. Raising the threshold to meet it would put the branch
-    within a factor of two of the 0.1 every authored speed carries.
+    Killed by: the reach at 1e-3 - the closed form at the steps under 2, 4.3e-8 out at a = 1e-2.
     """
     post = {'H': worst(hw_calc_H, taylor_H, a, curves=ALL_CURVES),
-            'IJK': worst(hw_calc_IJK, taylor_IJK, a),
+            'IJK': worst(hw_calc_IJK, taylor_IJK, a, curves=ALL_CURVES),
             'IJK cross': worst(hw_calc_IJK, taylor_IJK, a, cross=True)}
     if a * FACTOR_TENOR.max() < 3.0:
         # past |a T| ~ 3 the 40-term reference is the inaccurate one, not B
         post['B'] = rel(hw_calc_B(torch.tensor(a, dtype=DTYPE), torch.tensor(FACTOR_TENOR)).numpy(),
                         taylor_B(a, FACTOR_TENOR))
     for name, error in post.items():
-        assert error < 1e-10, '{} at a={:g} is {:.3e} after the repair'.format(name, a, error)
-    jagged = worst(hw_calc_IJK, taylor_IJK, a, curves=('humped',))
-    assert jagged < 2e-10, 'IJK on a jagged sigma at a={:g} is {:.3e}'.format(a, jagged)
-
-    pre = {'H': worst(prefix_H, taylor_H, a, curves=ALL_CURVES),
-           'IJK': worst(prefix_IJK, taylor_IJK, a, curves=ALL_CURVES)}
-    if a < HW_ALPHA_SERIES_H:
-        assert pre['H'] >= post['H'], 'H at a={:g}: the branch has to be an improvement'.format(a)
-    if a < HW_ALPHA_SERIES_IJK:
-        assert pre['IJK'] >= post['IJK'], 'IJK at a={:g}'.format(a)
+        assert error < 2e-15, '{} at a={:g} is {:.3e}'.format(name, a, error)
+    pre = worst(prefix_IJK, taylor_IJK, a, curves=ALL_CURVES)
+    assert pre >= post['IJK'], 'IJK at a={:g}: the closed form alone is the better one'.format(a)
     if a <= 1e-6:
-        # the defect this repairs, still visible: IJK is 2.7e+04 out at 1e-6 and 2.7e+10 at 1e-8
-        assert pre['IJK'] > 1.0, 'IJK at a={:g} reads {:.3e} pre-fix'.format(a, pre['IJK'])
+        # the defect the series repairs: the closed form is 2.7e+04 out at 1e-6 and 2.7e+10 at 1e-8
+        assert pre > 1.0, 'IJK at a={:g} reads {:.3e} by the closed form'.format(a, pre)
+
+
+@pytest.mark.parametrize('side', [1.0 - 1e-3, 1.0 + 1e-3, 5e-7])
+def test_both_legs_hold_their_digits_at_the_reach_and_beside_zero(side):
+    """A step at x = a dt just under `HW_SERIES_REACH` takes the series and one just over it the
+    closed form, and each holds its value and its first and second derivative in the speed to
+    5e-15 of the 40-term reference, at four speeds of both signs (mpmath reads both under 3e-15) -
+    and so does the series at x = 1e-6, where B's closed form lost 7e-4 of its second derivative.
+
+    Killed by: 16 terms - the series 1e-10 out at the reach; the powers as a cumulative product,
+    whose double backward divides by x - B's second derivative 2.4e-10 out at x = 1e-6.
+    """
+    t, vi, vj, mi, mj = (torch.tensor([x], dtype=DTYPE) for x in (1.3, 0.011, 0.007, 0.004, -0.002))
+    for a in (0.05, 0.32, 2.4, -0.5):
+        dt = torch.tensor([HW_SERIES_REACH * side / abs(a)], dtype=DTYPE)
+        for fn, ref in ((lambda b: hw_calc_H(b, torch.exp)(t, vi, dt, mi),
+                         lambda b: taylor_H(b, torch.exp)(t, vi, dt, mi)),
+                        (lambda b: hw_calc_IJK(b, torch.exp)(t, vi, vj, dt, mi, mj),
+                         lambda b: taylor_IJK(b, torch.exp)(t, vi, vj, dt, mi, mj)),
+                        (lambda b: hw_calc_B(b, dt), lambda b: taylor_B(b, dt))):
+            readings = []
+            for f in (fn, ref):
+                ta = torch.tensor(a, dtype=DTYPE, requires_grad=True)
+                value = f(ta).sum()
+                d1, = torch.autograd.grad(value, ta, create_graph=True)
+                d2, = torch.autograd.grad(d1, ta)
+                readings.append([float(value.detach()), float(d1.detach()), float(d2)])
+            for got, want in zip(*readings):
+                assert abs(got - want) <= 5e-15 * abs(want), (a, side, got, want)
 
 
 def test_the_thresholds_are_the_readings():
-    """The four constants pinned directly: 1e-2 / 3e-2 / 1e-3 and a 1e-8 floor.
+    """The constants pinned directly: the reach at 2 in a dt, 32 terms, and a 1e-8 floor.
 
-    Every other gate READS a threshold, so this is the only assertion that fails when
-    `HW_ALPHA_SERIES_IJK` moves 3e-2 -> 3.5e-2 - a mutation that otherwise passes the suite while
-    every |a| in [3e-2, 3.5e-2) silently swaps the closed form for the series.
+    Every other gate READS the reach, so this is the only assertion that fails when it moves 2 -> 3,
+    a mutation that otherwise passes the suite while the steps in [2, 3) swap the closed form for
+    the series - both accurate there, which is why the reach is a reading and not a taste.
     """
-    assert (HW_ALPHA_SERIES_H, HW_ALPHA_SERIES_IJK, HW_ALPHA_SERIES_B) == (1e-2, 3e-2, 1e-3), (
-        'the thresholds are readings off `test_the_crossover_is_where_the_thresholds_say_it_is` - '
-        'H crosses 1e-10 at 2e-3, IJK at 1.5e-2 and B at 1.3e-4 - so moving one is a re-measurement '
-        'and this gate is where it gets recorded')
+    assert (HW_SERIES_REACH, HW_SERIES_TERMS) == (2.0, 32), (
+        'the reach is where both legs hold value, first and second derivative to 4e-15 of mpmath, '
+        'and 32 terms truncate at 1e-17 there - moving either is a re-measurement and this gate is '
+        'where it gets recorded')
     assert HW_ALPHA_FLOOR == 1e-8, (
-        'the floor is `test_the_atT_cross_term_carries_its_number`\'s reading: two orders above the '
-        '1e-10 where the AtT quotient stops carrying information at all')
+        'the floor is where `test_the_atT_cross_term_carries_its_number` reads the AtT quotient to '
+        '3.8e-8, its cost 1.4e-7 on B at thirty years')
 
 
-def test_bit_identity_at_the_reversion_speeds_this_repository_carries():
-    """Above its threshold each function is BIT-IDENTICAL to the expression it always was.
-
-    Pinned at FIXED speeds the repository carries - `ALPHA_SEED`, `SP_THETA`, `ID_THETA`'s solved
-    pair with their sums and doubles, both ends of `alpha_bounds` - never at a threshold, because a
-    guard `if abs(a) >= HW_ALPHA_SERIES_*` switches the gate off instead of failing when the
-    constant it exists to pin moves. The last lines drive the branch at an explicit rung, so the
-    loop is a statement about where the identity is closed rather than about a branch never taken.
-    """
-    a1, a2 = ID_THETA['Alpha_1'][0], ID_THETA['Alpha_2'][0]
-    authored = tuple(ALPHA_SEED) + tuple(
-        SP_THETA['Alpha_1'] + SP_THETA['Alpha_2']) + (2.4, -0.5, -0.1)
-    solved = (a1, a2, 2.0 * a1, 2.0 * a2, a1 + a2)
-    tenor = torch.tensor(FACTOR_TENOR)
-    for a in authored + solved:
-        ta = torch.tensor(a, dtype=DTYPE)
-        for name, sigma in SIGMA.items():
-            assert np.array_equal(integral(hw_calc_H(ta, torch.exp), sigma),
-                                  integral(prefix_H(ta, torch.exp), sigma)), ('H', a, name)
-            assert np.array_equal(integral(hw_calc_IJK(ta, torch.exp), sigma, sigma),
-                                  integral(prefix_IJK(ta, torch.exp), sigma, sigma)), (
-                'IJK', a, name)
-        assert torch.equal(hw_calc_B(ta, tenor), prefix_B(ta, tenor)), ('B', a)
-        assert torch.equal(hw_alpha_floor(ta), ta), ('floor', a)
-    # every speed above was ABOVE the threshold, which is what makes the loop a bit-identity claim
-    for a in authored + solved:
-        assert abs(a) > HW_ALPHA_SERIES_IJK, (
-            '{:.6g} is inside the IJK threshold, so the loop above is not the claim it reads '
-            'as'.format(a))
-    # and below it the branch IS the series
-    inside = torch.tensor(HW_ALPHA_SERIES_IJK / 2.0, dtype=DTYPE)
-    assert not np.array_equal(
-        integral(hw_calc_IJK(inside, torch.exp), SIGMA['humped'], SIGMA['humped']),
-        integral(prefix_IJK(inside, torch.exp), SIGMA['humped'], SIGMA['humped']))
-
-
-def test_the_branch_never_engages_on_an_authored_reversion_speed():
-    """`Alpha_Seed`'s default is the only HW2F alpha this repository authors, and neither coordinate
-    nor their sum engages a series branch. The slow half, 0.05, clears `HW_ALPHA_SERIES_IJK` by
-    1.7x. A family declaring another seed starts a cold block there.
+def test_a_declared_alpha_seed_starts_the_block():
+    """`Alpha_Seed`'s default is the only HW2F alpha this repository authors, read off the family's
+    declaration, and a family declaring another seed starts a cold block there.
 
     Killing mutation: the seed read off a constant, so a declared 0.3,0.03 starts at 0.5,0.05.
     """
@@ -456,13 +438,7 @@ def test_the_branch_never_engages_on_an_authored_reversion_speed():
         CCY, price_factors, {}, ir_curve, rate)[0].current_value()
         for block in ({}, {'Alpha_Seed': '0.3,0.03'}))
     assert (float(declared['Alpha_1'][0]), float(declared['Alpha_2'][0])) == (0.3, 0.03), declared
-    for name in ('Alpha_1', 'Alpha_2'):
-        alpha = float(seeded[name][0])
-        assert abs(alpha) > HW_ALPHA_SERIES_IJK, '{} = {} engages the series branch'.format(
-            name, alpha)
-        assert abs(alpha) > HW_ALPHA_SERIES_H and abs(alpha) > HW_ALPHA_SERIES_B, name
-    # and the pair, because J is taken at alpha_1 + alpha_2
-    assert abs(float(seeded['Alpha_1'][0]) + float(seeded['Alpha_2'][0])) > HW_ALPHA_SERIES_IJK
+    assert (float(seeded['Alpha_1'][0]), float(seeded['Alpha_2'][0])) == tuple(ALPHA_SEED), seeded
 
 
 @pytest.mark.parametrize('a', [0.0, 1e-12, -1e-12, 1e-9, -1e-9, 1e-4, 0.02, 0.1, -0.1])
@@ -480,48 +456,47 @@ def test_the_gradient_survives_the_branch(a):
     assert torch.isfinite(out) and torch.isfinite(d_alpha) and torch.isfinite(d_sigma).all(), a
 
 
-def graph_size(out):
-    """The autograd nodes behind `out` - the work its backward does."""
+def wheres(out):
+    """The `where` nodes behind `out` - a selection between two legs built."""
     seen, stack = set(), [out.grad_fn]
     while stack:
         node = stack.pop()
         if node is not None and node not in seen:
             seen.add(node)
             stack.extend(f for f, _ in node.next_functions)
-    return len(seen)
+    return sum(type(node).__name__ == 'WhereBackward0' for node in seen)
 
 
-@pytest.mark.parametrize('a', [0.0, 1e-4, 0.02, 0.06, 0.35, -0.5])
+@pytest.mark.parametrize('a', [0.0, 1e-4, 0.35, -0.5, 2.4, 40.0])
 def test_the_host_runs_the_leg_it_takes(a):
-    """On the host a speed's branch is decided by its value and only that leg runs. Above each
-    threshold the closed form's value, gradient and second derivative are the prefix spelling's to
-    the bit, off the prefix's own graph but for the scalar divisor's select - a series leg would add
-    `HW_SERIES_TERMS` steps; below it the series' first and second derivatives pass `gradcheck`.
+    """A step's leg is decided by its x = a dt against `HW_SERIES_REACH`. On the host a call whose
+    steps all take one leg builds that leg alone - no `where` in its graph - and a mixed call both,
+    selected per step; the card runs both always and agrees with the host to 4 ulp of the
+    reading's largest. First and second derivatives pass `gradcheck` whichever legs a call takes.
 
-    Killed by: the host picking with `torch.where` - both legs run, the series' steps in the graph."""
+    Killed by: the host selecting with `torch.where` - a one-leg call's graph carries both."""
     sigma = torch.tensor(SIGMA['humped'], dtype=DTYPE, requires_grad=True)
-    tenor = torch.tensor(FACTOR_TENOR)
+    steps = np.diff(np.union1d(np.union1d(0.0, TIME_GRID), VOL_TENOR))
     readings = (
-        (hw_calc_H, prefix_H, HW_ALPHA_SERIES_H, lambda f, ta, s: integrate_piecewise_linear(
-            f(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s)),
-        (hw_calc_IJK, prefix_IJK, HW_ALPHA_SERIES_IJK, lambda f, ta, s: integrate_piecewise_linear(
-            f(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s, VOL_TENOR, s)),
-        (hw_calc_B, prefix_B, HW_ALPHA_SERIES_B, lambda f, ta, s: f(ta, tenor) * s.sum()))
-    for fn, prefix, threshold, reading in readings:
+        (lambda ta, s: integrate_piecewise_linear(
+            hw_calc_H(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s), steps),
+        (lambda ta, s: integrate_piecewise_linear(
+            hw_calc_IJK(ta, torch.exp), Shared(), TIME_GRID, VOL_TENOR, s, VOL_TENOR, s), steps),
+        (lambda ta, s: hw_calc_B(ta, torch.tensor(FACTOR_TENOR, device=ta.device)) * s.sum(),
+         FACTOR_TENOR))
+    for reading, spans in readings:
+        small = np.abs(a * spans) < HW_SERIES_REACH
         ta = torch.tensor(a, dtype=DTYPE, requires_grad=True)
-        if abs(a) < threshold:
-            assert torch.autograd.gradcheck(lambda x, s: reading(fn, x, s), (ta, sigma))
-            assert torch.autograd.gradgradcheck(lambda x, s: reading(fn, x, s), (ta, sigma))
-            continue
-        got, want = (reading(f, ta, sigma) for f in (fn, prefix))
-        assert torch.equal(got, want) and graph_size(got) < graph_size(want) + HW_SERIES_TERMS, (
-            fn.__name__, a, graph_size(got), graph_size(want))
-        direction = torch.linspace(-1.0, 1.0, got.numel(), dtype=DTYPE)
-        firsts = [torch.autograd.grad((x * direction).sum(), (ta, sigma), create_graph=True)
-                  for x in (got, want)]
-        assert all(torch.equal(g, w) for g, w in zip(*firsts)), (fn.__name__, a)
-        seconds = [torch.autograd.grad(d_a + d_s.sum(), (ta, sigma)) for d_a, d_s in firsts]
-        assert all(torch.equal(g, w) for g, w in zip(*seconds)), (fn.__name__, a)
+        got = reading(ta, sigma)
+        assert bool(wheres(got)) == (small.any() and not small.all()), (a, small)
+        # read at its own scale, or a difference quotient of e^{24} is round-off and not a slope
+        scaled = lambda x, s, scale=float(got.abs().max()): reading(x, s) / scale
+        assert torch.autograd.gradcheck(scaled, (ta, sigma))
+        assert torch.autograd.gradgradcheck(scaled, (ta, sigma))
+        if torch.cuda.device_count():
+            card = reading(ta.detach().cuda().requires_grad_(), sigma.detach().cuda())
+            assert wheres(card) and float((card.detach().cpu() - got).abs().max()) <= 4.0 * np.finfo(
+                np.float64).eps * float(got.abs().max()), a
 
 
 def test_the_numpy_leg_takes_the_same_branch():
@@ -775,9 +750,8 @@ def test_the_analytic_residual_integrates_what_it_reads_and_nothing_else():
     def oracle():
         shared.clear()
         process.precalculate(BASE, world['time_grid'], curve, shared, 0, implied_tensor=implied_var)
-        return [swap.normal_vol_error(process.schrager_pelsser_swaption(
-            swap.schedule.expiry, swap.schedule.pay_times, swap.schedule.accruals))
-            for swap in swaps.values()]
+        return [swap.normal_vol_error(sp) for swap, sp in zip(swaps.values(), hw2f_rows(
+            process.schrager_pelsser_swaptions([swap.schedule for swap in swaps.values()])))]
 
     leaves, direction, readings = list(implied_var.values()), None, []
     for residual in (lambda: list(world['loss'](implied_var)[1].values()), oracle):
@@ -792,6 +766,37 @@ def test_the_analytic_residual_integrates_what_it_reads_and_nothing_else():
     assert process.BtT is not None
     for analytic, full in zip(*readings):
         assert analytic == full if isinstance(full, bool) else torch.equal(analytic.detach(), full.detach())
+
+
+def test_every_benchmark_is_priced_in_one_call_and_each_row_is_its_own_swaption():
+    """`schrager_pelsser_swaptions` prices the identified block's 25 benchmarks in one call, what
+    theta does not reach built once for the list, and each row is the one-row call's swaption -
+    premium, normal vol and loadings to 4 ulp, the premiums' gradient and a Hessian-vector product
+    to 1e-13 of their largest - though the rows' legs run 4 to 40 payments, padded to one block.
+
+    Killed by: the block padded with zeros - a short row's last discount factor reads one."""
+    world = identified_closure(Objective='Analytic')
+    process, leaves = world['process'], list(world['implied_var'].values())
+    world['loss'](world['implied_var'])
+    schedules = [swap.schedule for swap in world['swaps'].values()]
+    process.schrager_pelsser_swaptions(schedules)
+    legs = process.cache['swaptions'][1]
+    batch = process.schrager_pelsser_swaptions(schedules)
+    assert process.cache['swaptions'][1] is legs, 'the legs were built again for the same list'
+    assert {len(s.pay_times) for s in schedules} >= {4, 40}
+    rows = [process.schrager_pelsser_swaption(*s) for s in schedules]
+    for got, want in [(batch.premium, [r.premium for r in rows]), (batch.normal_vol, [r.normal_vol for r in rows])] + [
+            (batch.loadings[k], [r.loadings[k] for r in rows]) for k in range(2)]:
+        want = torch.stack(want).detach()
+        assert float((got.detach() - want).abs().max()) <= 4 * np.spacing(float(want.abs().max()))
+    weights = torch.linspace(0.5, 1.5, len(rows), dtype=DTYPE)
+    readings = []
+    for premiums in (batch.premium, torch.stack([r.premium for r in rows])):
+        g = torch.cat(torch.autograd.grad((premiums * weights).sum(), leaves, create_graph=True))
+        direction = torch.linspace(-1.0, 1.0, g.numel(), dtype=DTYPE)
+        readings.append((g, torch.cat(torch.autograd.grad((g * direction).sum(), leaves, retain_graph=True))))
+    for got, want in zip(*readings):
+        assert float((got - want).abs().max()) <= 1e-13 * float(want.abs().max()), (got, want)
 
 
 def test_the_least_squares_jacobian_is_one_backward_off_the_residual_last_evaluated():
@@ -821,12 +826,13 @@ def test_the_least_squares_jacobian_is_one_backward_off_the_residual_last_evalua
 
 def test_the_atT_cross_term_carries_its_number():
     """The division `hw_alpha_floor` guards rather than repairs, against a cancellation-free
-    reference. One order of error per order of alpha_j: under 1e-8 at 1e-2, under 1e-2 at the 1e-8
-    floor, and over 1.0 at 1e-12 - which is why the floor is not lower.
+    reference. One order of error per order of alpha_j below Simpson's own 3.5e-10: 3.8e-8 at the
+    1e-8 floor, 4.1e-4 at 1e-12, and wrong at 1e-16, where alpha_i + alpha_j rounds to alpha_i -
+    the integrals' 4e-16 amplified by 1/alpha_j. The closed form's 1e-11 put that edge at 1e-12.
     """
     ai, si, sj = 0.1, SIGMA['sloped'], SIGMA['humped']
     reading = {}
-    for aj in (1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12):
+    for aj in (1e-2, 1e-4, 1e-6, 1e-8, 1e-12, 1e-16):
         tai, taj = torch.tensor(ai, dtype=DTYPE), torch.tensor(aj, dtype=DTYPE)
         I = integral(hw_calc_IJK(tai, torch.exp), si, sj)
         J = integral(hw_calc_IJK(tai + taj, torch.exp), si, sj)
@@ -838,11 +844,12 @@ def test_the_atT_cross_term_carries_its_number():
     assert reading[1e-2] < 1e-8, '1e-2: {:.3e}'.format(reading[1e-2])
     assert reading[1e-4] < 1e-6, '1e-4: {:.3e}'.format(reading[1e-4])
     assert reading[1e-6] < 1e-4, '1e-6: {:.3e}'.format(reading[1e-6])
-    assert reading[HW_ALPHA_FLOOR] < 1e-2, 'at the floor: {:.3e}'.format(reading[HW_ALPHA_FLOOR])
-    # and why the floor is not lower: below it the quotient is not small, it is wrong
-    assert reading[1e-12] > 1.0, (
-        'the quotient reads {:.3e} at 1e-12 - if that is now small, the floor is in the wrong '
-        'place and this gate has stopped measuring anything'.format(reading[1e-12]))
+    assert reading[HW_ALPHA_FLOOR] < 1e-6, 'at the floor: {:.3e}'.format(reading[HW_ALPHA_FLOOR])
+    assert reading[1e-12] < 1e-3, '1e-12: {:.3e}'.format(reading[1e-12])
+    # and where it stops: not small, wrong
+    assert reading[1e-16] > 0.5, (
+        'the quotient reads {:.3e} at 1e-16 - if that is now small, this gate has stopped '
+        'measuring anything'.format(reading[1e-16]))
     # Simpson's own accuracy, so none of the above is a reading of the reference instead
     assert reading[1e-2] > 1e-10, 'the reference floor is in the way: {:.3e}'.format(reading[1e-2])
 
@@ -869,9 +876,9 @@ def test_the_basin_step_can_decay_but_never_cross():
     whole search - decay toward zero, never a crossing.
 
     Reachability at the seed the engine starts from, 2000 walks of 50 steps: `ALPHA_SEED` has a
-    median floor of 0.0366 and reaches below `HW_ALPHA_SERIES_IJK` in 28.0% of searches, against
-    0.0616 and 2.3% for the retired (0.1, 0.1). Worst floor 7.04e-3, above the B threshold; the
-    pure-decay bound off the 0.05 coordinate is 9.65e-5.
+    median floor of 0.0366 against 0.0616 for the retired (0.1, 0.1), its worst 7.04e-3; the
+    pure-decay bound off the 0.05 coordinate is 9.65e-5. Whatever it reaches, every speed in the box
+    integrates a calibration's ten-day steps by the series.
 
     It also SEPARATES an equal pair - one multiplier per coordinate, ratio 1.0064 after one step -
     so the retired symmetric seed cost basin hopping's iteration-0 descent and not the search
@@ -885,20 +892,13 @@ def test_the_basin_step_can_decay_but_never_cross():
             '{}: a multiplicative step cannot change sign'.format(tag))
         assert floors.min() < 0.05, (
             '{}: but it decays - worst floor reached {:.3g}'.format(tag, floors.min()))
-    # the LIVE seed's own reachability, which is the reading the module docstring quotes
-    assert 0.2 < float((live < HW_ALPHA_SERIES_IJK).mean()) < 0.4, (
-        'the shipped seed drops its slow factor into the IJK series branch in {:.1%} of searches '
-        'against a recorded 28.0% - this is the reading that says which branch the random search '
-        'spends its time in'.format(float((live < HW_ALPHA_SERIES_IJK).mean())))
-    assert float((live < HW_ALPHA_SERIES_IJK).mean()) > 5.0 * float(
-        (old < HW_ALPHA_SERIES_IJK).mean()), (
-        'the shipped seed no longer reaches the series branch an order of magnitude more often '
-        'than the retired one did: {:.1%} against {:.1%}'.format(
-            float((live < HW_ALPHA_SERIES_IJK).mean()),
-            float((old < HW_ALPHA_SERIES_IJK).mean())))
-    assert live.min() > HW_ALPHA_SERIES_B, (
-        'a walk off the shipped seed reached {:.3g}, below the B threshold, where the recorded '
-        'worst of 2000 is 7.04e-3'.format(live.min()))
+    # the LIVE seed's own reachability, which is the reading the docstring quotes
+    assert live.min() > 5e-3, (
+        'a walk off the shipped seed reached {:.3g}, where the recorded worst of 2000 is '
+        '7.04e-3'.format(live.min()))
+    # which leg integrates the search: the series, at every speed the box holds
+    assert 2.0 * max(map(abs, HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_bounds)) * (
+        10.0 / 365.0) < HW_SERIES_REACH
     # the separation: an equal pair NEVER comes back equal, over 2000 independent walks
     assert (ratios != 1.0).all(), (
         'the step returned an equal pair - it draws one multiplier per coordinate and cannot')
@@ -914,7 +914,7 @@ def test_the_basin_step_can_decay_but_never_cross():
     one = np.array([0.1, 0.1]) * np.exp(np.random.RandomState(5120).uniform(-0.125, 0.125, 2))
     assert abs(one[0] / one[1] - 1.0064054) < 1e-6, one
     # the bound if every draw went the same way, off the seed's own SLOW coordinate
-    assert min(ALPHA_SEED) * np.exp(-0.125 * 50) < HW_ALPHA_SERIES_B
+    assert abs(min(ALPHA_SEED) * np.exp(-0.125 * 50) - 9.65e-5) < 1e-7
 
 
 def test_least_squares_can_cross_zero_outright():
@@ -947,10 +947,6 @@ def test_the_declared_alpha_seed_is_asymmetric_and_the_first_descent_leaves_the_
     assert lo < a1 < hi and lo < a2 < hi, (
         'the seed {} is outside the box ({}, {}) that `bounds_check` tests strictly'.format(
             ALPHA_SEED, lo, hi))
-    assert min(abs(a1), abs(a2)) > HW_ALPHA_SERIES_IJK, (
-        'the seed opens a small-alpha series branch at evaluation zero: {}'.format(
-            ALPHA_SEED))
-    assert abs(a1 + a2) > HW_ALPHA_SERIES_IJK, 'the seed sits on the alpha-sum singular locus'
     assert a1 > 0.0 and a2 > 0.0, (
         'the basin step is multiplicative and preserves sign, so a seed that is to carry its '
         'separation through the random search has to be one-signed')
@@ -1846,36 +1842,6 @@ def test_the_declared_sample_shape_is_the_shape_the_engine_uses():
                 name, as_float(absent[name]), as_float(said[name])))
 
 
-def test_the_solved_fixture_no_longer_engages_the_series_branch_and_that_is_the_finding():
-    """theta* is not the seed, and this fixture's calibrated point used to sit inside the series
-    region - `Alpha_2` solved to -0.017851, so `I[1][*]` took the branch at the repository's own
-    solved vector. It solves to +0.059856 since the 2026-09-02 re-mark.
-
-    What the gate records is REACHABILITY, which has not changed: the branch is not engaged at this
-    theta* (no gate here relies on it), the bound that made it reachable still straddles zero, and
-    the margin is stated - 2.0x the IJK threshold on `Alpha_2`, not ten rungs. The series code is
-    driven directly at fixed speeds by the gates above; what this fixture stopped being is the
-    live witness.
-    """
-    alpha_1, alpha_2 = ID_THETA['Alpha_1'][0], ID_THETA['Alpha_2'][0]
-    assert alpha_2 > 0.0, (
-        'the solved Alpha_2 is {:.6g}: this fixture is back inside the region the gate was '
-        're-based off, and the docstring above needs re-taking'.format(alpha_2))
-    # nothing this theta* is read at takes a series branch
-    for a in (alpha_1, alpha_2, alpha_1 + alpha_2, 2.0 * alpha_1, 2.0 * alpha_2):
-        assert abs(a) > HW_ALPHA_SERIES_IJK, (
-            'a reversion speed this theta* is read at, {:.6g}, is inside the IJK threshold '
-            '{:g}'.format(a, HW_ALPHA_SERIES_IJK))
-    # and the margin, stated: the tightest of them against the highest threshold
-    tightest = min(abs(a) for a in (alpha_1, alpha_2, alpha_1 + alpha_2))
-    assert tightest / HW_ALPHA_SERIES_IJK > 1.5, (
-        'the tightest reversion speed is {:.4g}, only {:.2f}x the IJK threshold - the recorded '
-        'margin is 2.0x on Alpha_2'.format(tightest, tightest / HW_ALPHA_SERIES_IJK))
-    # the reachability claim itself is unchanged and lives on the BOX, not on this vector
-    low, high = HullWhite2FactorModelParameters({}, DEVICE, DTYPE).alpha_bounds
-    assert low < 0.0 < high, 'the bound that made the series region reachable has moved'
-
-
 def test_the_recorded_theta_is_a_stationary_point_of_the_recorded_world(checker):
     """`ID_THETA` still prices its own world's benchmarks within 10% of the market, against the 4.4%
     the solve reached. Not a re-solve - that costs 2304 s, and
@@ -1928,17 +1894,17 @@ ID_ANALYTIC_THETA = {
 #: re-derives. It is a fast factor beside a nearly driftless one, which is the shape the separated
 #: seed was chosen to reach.
 MC_FOUR_THETA = {
-    'Alpha_1': [0.8838007550308329],
-    'Alpha_2': [0.003535189936568309],
-    'Correlation': [-0.6419756319237072],
-    'Sigma_1': [0.012047319694228177, 0.02227051267828342, 0.012091242994301123,
-                0.01740206383132365, 0.01774116173728521, 0.027016509817851496,
-                0.03867626467919327, 0.005168163617332369, 0.024200982189423993,
-                0.021719957574151984],
-    'Sigma_2': [0.024878683236274846, 0.02079944609698879, 0.020153462431508604,
-                0.019816901557477774, 0.02249887722361669, 0.020533678204244878,
-                0.018359296040413333, 0.018447203297860343, 0.018423637547130632,
-                0.01849443039231784]}
+    'Alpha_1': [0.883801533911014],
+    'Alpha_2': [0.0035352953412713783],
+    'Correlation': [-0.641976313762279],
+    'Sigma_1': [0.012047298736667014, 0.022274180231299005, 0.012089579518623649,
+                0.017402155265992248, 0.017741049375634917, 0.027016209122506418,
+                0.03867629049537819, 0.00516817041034064, 0.024200987167664192,
+                0.02171996281406313],
+    'Sigma_2': [0.024878696528723092, 0.020799458880922963, 0.020153475029105923,
+                0.019816914864636555, 0.022498889719601067, 0.02053366795818638,
+                0.01835929311318266, 0.01844720297729204, 0.018423637228881327,
+                0.01849443007020964]}
 
 #: theta* on the FOUR-quote fixture under `Objective: 'Analytic'`, AS SOLVED - the analytic twin of
 #: `MC_FOUR_THETA`, so the theta-comparison is taken on the under-determined block as well as the
@@ -1946,17 +1912,17 @@ MC_FOUR_THETA = {
 #: 133 for the vector above. `||J'r||` 7.36e-8 against `||r||` 6.67e-7: four quotes against 23
 #: parameters, so it INTERPOLATES, and no authored vector lands there.
 AN_FOUR_THETA = {
-    'Alpha_1': [0.323661932830242],
-    'Alpha_2': [0.03159569261797087],
-    'Correlation': [-0.1565027209520926],
-    'Sigma_1': [0.010723201046859759, 0.004717111321190352, 0.011059663477626812,
-                0.002986933695598358, 0.006147380562845235, 0.014499710725002904,
-                0.00880553497317613, 0.01359964849345319, 0.02206557694530572,
-                0.013758711750200029],
-    'Sigma_2': [0.011244334108156806, 0.00633728378363769, 0.019914566174582177,
-                0.007078448636907672, 0.032773632027104524, 0.01580518502219187,
-                0.0247632490577204, 0.025305113566282105, 0.025989907901600842,
-                0.020323839594396483]}
+    'Alpha_1': [0.32366193283076616],
+    'Alpha_2': [0.03159569266668131],
+    'Correlation': [-0.1565027209516267],
+    'Sigma_1': [0.010723201039816721, 0.0047171113138259465, 0.01105966344498534,
+                0.0029869336448657097, 0.006147380519528253, 0.014499710721411836,
+                0.008805534966408953, 0.013599648494531245, 0.02206557694852036,
+                0.013758711752955581],
+    'Sigma_2': [0.0112443341051478, 0.006337283787322206, 0.019914566165825723,
+                0.007078448665925047, 0.032773632020118466, 0.01580518503862898,
+                0.024763249005316706, 0.025305113582427433, 0.025989907947955082,
+                0.02032383961283696]}
 
 
 def flat_theta(calibration, named):
@@ -2530,7 +2496,7 @@ def test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixt
     declared 1e-8 cutoff keeps a dozen to fifteen of 23 directions, the Monte Carlo one 1.76e-6 and 17.
 
     Which is why the four-quote arm's 4.16bp rms is asserted as a CROSS-METRIC reading and not as a
-    fit: both chains interpolate there (`||r||` 3.4e-9 and 6.67e-7), so what it measures is how
+    fit: both chains interpolate there (`||r||` 1.7e-9 and 6.67e-7), so what it measures is how
     far apart two ESTIMATORS are - SP's freezing bias plus the simulation's numeraire error, adding
     at the 10Y x 10Y corner to 7.82bp. The fit itself is the `||r||` pair, held at the end.
     """
@@ -2581,7 +2547,7 @@ def test_the_two_answers_agree_in_vol_space_and_the_theta_space_half_is_the_fixt
 
     # the four-quote fit in the metric each objective actually minimises - the half the vol-space
     # column cannot see, and the only thing here that says the fit is a fit
-    for objective, named, before, now in (('Monte_Carlo', MC_FOUR_THETA, 4.4e-8, 3.4230e-09),
+    for objective, named, before, now in (('Monte_Carlo', MC_FOUR_THETA, 4.4e-8, 1.6718e-09),
                                           ('Analytic', AN_FOUR_THETA, 4.0e-7, 6.6686e-07)):
         cal, _ = calibration_at(named, benchmarks=CHECKER_BENCHMARKS, Objective=objective)
         norm = stationarity(cal, flat_theta(cal, named))[1]
@@ -3249,17 +3215,17 @@ NORMAL_VOLS = (1.45, 1.33, 1.26, 1.18)
 #: and no authored vector lands there. It is NOT `AN_FOUR_THETA` and must not be - the same four
 #: numeric quotes read as normal vols are a different market, priced an order of magnitude higher.
 NORMAL_FOUR_THETA = {
-    'Alpha_1': [0.5555312157883685],
-    'Alpha_2': [0.050855281882129996],
-    'Correlation': [-0.11587381800632042],
-    'Sigma_1': [0.009501826349250491, 0.00805992854829932, 0.01096761152849312,
-                0.010099280437250818, 0.010321513205475289, 0.012672415019454793,
-                0.010495375470454737, 0.010720887218587315, 0.01115427212123802,
-                0.012094076813327694],
-    'Sigma_2': [0.007948791483118051, 0.011434121258168572, 0.01241910196318798,
-                0.009902536307395458, 0.02242683518662646, 0.007940075543639524,
-                0.011364055541835625, 0.025882366231038397, 0.01854105471843774,
-                0.017109845852116033]}
+    'Alpha_1': [0.5555315297659514],
+    'Alpha_2': [0.050855280560511334],
+    'Correlation': [-0.11587421035818762],
+    'Sigma_1': [0.009501811840573101, 0.008059939142867921, 0.010967617725217269,
+                0.010099285932717222, 0.010321516527696964, 0.01267241550283446,
+                0.010495375642981088, 0.010720887153551188, 0.011154272000922815,
+                0.012094077646593593],
+    'Sigma_2': [0.007948795822569065, 0.011434124254887828, 0.012419104749059403,
+                0.009902539287191049, 0.022426835991526096, 0.00794007599664759,
+                0.011364058956321279, 0.025882366228182286, 0.018541054716096905,
+                0.017109845850319622]}
 
 
 def surface_world(**declared):
