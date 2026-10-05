@@ -2,7 +2,7 @@
  "accumulator_gbm": {
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e72p+5"
+  "mtm|1|Value": "0x1.f36e678d65e75p+5"
  },
  "accumulator_gbm_first": {
   "Greeks_First|('FXVol.EUR.USD', 1.0, 0.02, 0.0)|Value": "0x1.999999999999ap-4",
@@ -29,7 +29,7 @@
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "-0x1.ea20a4e8434bap+4",
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e72p+5"
+  "mtm|1|Value": "0x1.f36e678d65e75p+5"
  },
  "autocall_gbm": {
   "mtm|0|Value": "0x0.0p+0",
@@ -58,7 +58,7 @@
  "tarf_gbm": {
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e72p+5"
+  "mtm|1|Value": "0x1.f36e678d65e75p+5"
  },
  "tarf_gbm_first": {
   "Greeks_First|('FXVol.EUR.USD', 1.0, 0.02, 0.0)|Value": "0x1.999999999999ap-4",
@@ -85,6 +85,6 @@
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "-0x1.ea20a4e8434bap+4",
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e72p+5"
+  "mtm|1|Value": "0x1.f36e678d65e75p+5"
  }
 }

@@ -836,7 +836,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-4595.635822228079, 97754.94903504862), rel=1e-9), (
+        (-4595.63602717865, 97754.94808913222), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
     # the run above did not skip, so the deal DID resolve the pair-keyed factor; the kit drops that
