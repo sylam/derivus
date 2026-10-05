@@ -494,8 +494,10 @@ class Context:
                 cfg.merge_section(section, section_data)
 
         if data['Calc'].get('CalendDataFile'):
-            cfg.parse_calendar_file(self.parse_path(data['Calc']['CalendDataFile']))
-            self.holiday_cfg_cache[data['Calc']['CalendDataFile']] = cfg.holidays
+            if data['Calc']['CalendDataFile'] not in self.holiday_cfg_cache:
+                cfg.parse_calendar_file(self.parse_path(data['Calc']['CalendDataFile']))
+                self.holiday_cfg_cache[data['Calc']['CalendDataFile']] = cfg.holidays
+            cfg.holidays = self.holiday_cfg_cache[data['Calc']['CalendDataFile']]
 
         if 'Deals' in data['Calc']:
             cfg.deals = {'Attributes': {'Reference': data['Calc']['Deals'].get('Reference')}}
