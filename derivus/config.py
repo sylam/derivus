@@ -1211,6 +1211,7 @@ class Config(object):
                 )
             if options.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
                 add_interest_rate(options['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
+                add_interest_rate(options['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve'])
                 add_interest_rate(options['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
 
                 # need to weight the FVA by the survival prob of the counterparty (if defined)

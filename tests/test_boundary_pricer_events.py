@@ -538,16 +538,17 @@ def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     assert r.agrees(tol=0.08), f'{r}'
 
 
-def _fva(spot, gradient, batch=1024, mcmc=192, batches=16):
+def _fva(spot, gradient, batch=1024, mcmc=192, batches=16, benefit='FUND'):
     """FVA and its equity-spot gradient. A funding SPREAD is what makes it non-zero: with cost,
     benefit and risk-free curves equal the adjustment is identically zero."""
     c = bb._cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
-    c.params['Price Factors']['InterestRate.FUND'] = {
-        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
-        'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])}
+    for name in ('FUND', benefit):
+        c.params['Price Factors']['InterestRate.' + name] = {
+            'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+            'Curve': utils.Curve([], [[0.0, 0.02], [10.0, 0.02]])}
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(DISCRETE_BARRIER, {})}]
     _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides={
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
@@ -555,7 +556,7 @@ def _fva(spot, gradient, batch=1024, mcmc=192, batches=16):
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
         'Funding_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Funding_Cost_Interest_Curve': 'FUND',
-            'Funding_Benefit_Interest_Curve': 'FUND', 'Risk_Free_Curve': 'USD',
+            'Funding_Benefit_Interest_Curve': benefit, 'Risk_Free_Curve': 'USD',
             'Counterparty': 'CPTY', 'Gradient': 'Yes' if gradient else 'No'}})
     if not gradient:
         return float(out['Results']['fva'])
@@ -575,6 +576,13 @@ def test_fva_gradient_carries_the_boundary_term_too():
     aad = _fva(bb.SPOT, gradient=True)
     r = ladder(price=lambda s: _fva(s, False), aad=aad, base=bb.SPOT, rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'the fva gradient is missing its boundary term\n{r}'
+
+
+def test_a_funding_benefit_curve_no_deal_reads_is_a_dependency_of_the_run():
+    """The dependency walk registers the benefit curve as it does the cost curve: named apart from
+    it and carrying the same values, it gives the same FVA to the bit. MUTATION - the walk
+    registering the cost curve alone - raises `Cannot find InterestRate.BEN`."""
+    assert _fva(bb.SPOT, False, batches=1, benefit='BEN') == _fva(bb.SPOT, False, batches=1)
 
 
 def test_the_correction_generalises_to_the_other_barrier_direction():
