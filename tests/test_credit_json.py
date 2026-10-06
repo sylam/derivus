@@ -16,7 +16,7 @@ import derivus
 import rates_world
 import test_declared_defaults as book
 import trial_credit
-from derivus import spine, utils
+from derivus import riskfactors, spine, utils
 from derivus.config import CustomJsonEncoder
 
 B = book.WORLD_BASE
@@ -73,6 +73,48 @@ def test_an_upfront_is_paid_by_the_protection_buyer_on_its_day():
     _, out = book.simulated([upfront], ('USD',), trial_credit.FACTORS, Generate_Cashflows='Yes')
     assert float(out['Results']['cashflows']['USD'].loc[day].iloc[0]) == pytest.approx(
         -2e5, rel=1e-6)
+
+
+def cds_world(hazard=0.02, rate=0.03, curve=None):
+    """A flat hazard (or `curve`, a negative log survival) and a flat zero curve as the engine's own
+    factor objects, with the descriptors `utils.calc_cds_rates` reads them through."""
+    factors = {'S': riskfactors.SurvivalProb({'Recovery_Rate': 0.4, 'Curve': curve or utils.Curve(
+        [], [[0.0, 0.0], [10.0, 10.0 * hazard]])}), 'D': riskfactors.InterestRate({
+            'Currency': 'USD', 'Day_Count': 'ACT_365', 'Curve': utils.Curve(
+                [], [[0.0, rate], [10.0, rate]])})}
+    days = lambda d: d / 365.0
+    return [None, 'S', None, None, days], [None, 'D', None, None, days], factors
+
+
+def test_a_par_cds_rate_holds_across_the_quarter_and_a_tenor_bump_holds_the_other_tenors():
+    """The ISDA standard model on a flat 2% hazard: the 5y par rate is (1 - R)h to the coupon
+    effect and the same on every day of the quarter, the accrued since the last standard date
+    SUBTRACTED and the first coupon the next standard date; and the curve one tenor's bump implies
+    moves that tenor's par rate by the bump and no other's, the later segments re-solved.
+    MUTATIONS: the accrued added (`v_fee = -tau[0]`) reads the rate 1.08%-1.30% across the
+    quarter; the first date a quarter late on the 20th of a non-roll month (20 April to
+    20 September) is caught by name; the shift dropped after its segment leaks 1-3.5% of the
+    bump into the later tenors against 1e-9 here."""
+    rates = {}
+    for day in ('2026-03-20', '2026-04-20', '2026-05-20', '2026-06-19'):
+        survival, discount, factors = cds_world()
+        rates[day] = utils.calc_cds_rates(
+            0.4, survival, discount, pd.Timestamp(day), [5.0], factors, bump=0)[5.0]
+    assert max(rates.values()) - min(rates.values()) < 2e-6, rates
+    assert abs(rates['2026-03-20'] - 0.6 * 0.02) < 1e-4, rates
+    assert utils.cds_dates(pd.Timestamp('2026-04-20'), 3)[0] == pd.Timestamp('2026-06-20')
+    assert utils.cds_dates(pd.Timestamp('2026-06-20'), 3)[0] == pd.Timestamp('2026-09-20')
+
+    survival, discount, factors = cds_world()
+    base, tenors = pd.Timestamp('2026-06-10'), [1.0, 3.0, 5.0]
+    par, knots, shifted = utils.calc_cds_rates(0.4, survival, discount, base, tenors, factors)
+    for bumped, curve in zip(tenors, shifted[1:]):
+        survival, discount, factors = cds_world(
+            curve=utils.Curve([], np.column_stack([knots, curve]).tolist()))
+        moved = utils.calc_cds_rates(0.4, survival, discount, base, tenors, factors, bump=0)
+        for tenor in tenors:
+            assert abs(moved[tenor] - par[tenor] - 1e-4 * (tenor == bumped)) < 1e-9 * 1e-4, (
+                bumped, tenor, moved[tenor] - par[tenor])
 
 
 def test_a_survival_curve_ending_before_the_maturity_hazards_on_at_its_last_rate():

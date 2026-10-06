@@ -2788,39 +2788,38 @@ def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip
 
 
 def cds_dates(base, num_months):
-    base_month = base.month
-    initial = pd.DateOffset(months=(3 - base_month % 3) % 3, day=20)
+    """The standard quarterly CDS dates strictly after `base`, the 20th of March, June, September
+    and December, out to `num_months` beyond it."""
     months = pd.DateOffset(months=3)
-    last_date = (base + initial) if base.day < 20 else (base + initial + months)
-    res = [last_date]
-
-    while last_date < base + pd.DateOffset(months=num_months):
-        last_date = last_date + months
-        res.append(last_date)
-
+    first = pd.Timestamp(year=base.year, month=base.month, day=20) + pd.DateOffset(
+        months=(3 - base.month % 3) % 3)
+    if first <= base:
+        first += months
+    res = [first]
+    while res[-1] < base + pd.DateOffset(months=num_months):
+        res.append(res[-1] + months)
     return res
 
 
 def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bump=0.01 * 0.01):
-    def calc_par_cds(S_j, cds_tenor, delta=0.0, start_time=None, end_time=None):
-        if delta:
-            S_vals = S_j.copy()
-            S_vals[start_time: end_time] += delta * (S_ti[start_time: end_time] - S_ti[start_time])
-        else:
-            S_vals = S_j
-
+    """The par CDS rate per tenor off the survival and discount curves, under the ISDA standard
+    model - piecewise-constant hazard and forward rates, standard quarterly coupons, accrual on
+    default, the accrued since the last standard date subtracted - and with `bump` the log-survival
+    curve each tenor's rate bumped ALONE implies: the hazard rate shifted over that tenor's
+    segment and carried beyond it, every later segment re-solved so its own rate holds."""
+    def calc_par_cds(S_vals, cds_tenor):
         h = (S_vals[1:] - S_vals[:-1]) / (S_ti[1:] - S_ti[:-1])
         S = np.exp(-S_vals)
         F = D * S
         V_prot = ((F[:-1] - F[1:]) * h) / (h + f)
 
         cds_pay_dates = cds_dates(base_date, int(cds_tenor * 12))
-        # insert the previous standard date (3 months prior)
+        # the accrual start of the first coupon is the standard date before it
         cds_pay_dates.insert(0, cds_pay_dates[0] - pd.DateOffset(months=3))
         tau = np.array([survival[FACTOR_INDEX_Daycount]((x - base_date).days) for x in cds_pay_dates])
         alpha = tau[1:] - tau[:-1]
         n = S_ti.searchsorted(tau[1:])
-        v_fee = -tau[0]
+        v_fee = tau[0]
         prev_n = 0
 
         for alpha_j, prev_tau, n_j in zip(alpha, tau[:-1], n):
@@ -2834,6 +2833,22 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
 
         v_prot = (1.0 - R) * V_prot[:n_j].sum()
         return v_prot / v_fee, n[-1]
+
+    def shifted(S_vals, delta, start, end):
+        """`S_vals` with its hazard rate shifted by `delta` between knots `start` and `end`, the
+        shift carried whole beyond `end`."""
+        return S_vals + delta * np.clip(S_ti - S_ti[start], 0.0, S_ti[end] - S_ti[start])
+
+    def bootstrapped(targets):
+        """The curve whose par rates are `targets`, one root per tenor's segment on the curve the
+        earlier segments made."""
+        S_vals, start = S_vals_0, 0
+        for tenor, (_, end) in CDS_rates.items():
+            delta = scipy.optimize.brentq(
+                lambda x: calc_par_cds(shifted(S_vals, x, start, end), tenor)[0] - targets[tenor],
+                -0.1, 0.1)
+            S_vals, start = shifted(S_vals, delta, start, end), end
+        return S_vals
 
     max_cds_dates = cds_dates(base_date, int(max(CDS_tenors) * 12))
     time_to_add = [survival[FACTOR_INDEX_Daycount]((x - base_date).days) for x in max_cds_dates]
@@ -2850,27 +2865,13 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
     D = np.exp(-D_vals)
 
     S_vals_0 = S_factor.current_value(S_ti)
-    CDS_rates = {}
-    for tenor in CDS_tenors:
-        CDS_rates[tenor] = calc_par_cds(S_vals_0, tenor)
-
-    if bump:
-        S_j = [S_vals_0]
-        start = 0
-
-        for k, v in CDS_rates.items():
-            end = v[1] + 1
-            delta_j = scipy.optimize.brentq(
-                lambda x: calc_par_cds(S_vals_0, k, delta=x, start_time=start, end_time=end)[0] - (v[0] + bump), -0.1,
-                0.1)
-
-            S_j.append(S_vals_0.copy())
-            S_j[-1][start: end] += delta_j * (S_ti[start: end] - S_ti[start])
-            start = v[1]
-
-        return {k: v[0] for k, v in CDS_rates.items()}, S_ti, S_j
-    else:
-        return {k: v[0] for k, v in CDS_rates.items()}
+    CDS_rates = {tenor: calc_par_cds(S_vals_0, tenor) for tenor in sorted(CDS_tenors)}
+    par = {k: v[0] for k, v in CDS_rates.items()}
+    if not bump:
+        return par
+    S_j = [S_vals_0] + [bootstrapped({k: v + bump * (k == tenor) for k, v in par.items()})
+                        for tenor in CDS_rates]
+    return par, S_ti, S_j
 
 
 def index_cds_par_spread(
