@@ -125,7 +125,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   end-to-end result, a batched curve within 4 ulps of its looped columns, and to the bit on the
   card. A replay pinned from another box is compared for equality unless a tolerance policy
   stands, so a home replaying host-priced results across boxes wants one declared.
-- **Nothing declares the market data file or the calendar in the record yet** (2026-10-05). A job
+- **Nothing declares the files a job names in the record yet** (2026-10-05). A job
   names each by its path, the evidence the record stores does too, so a replay reads whatever the
   file holds then; and outside the XVA tab the calendar is in no hash at all - two jobs differing
   only in a calendar's content priced 1.1e-3 apart under one result id. Nothing is missing to do it

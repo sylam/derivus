@@ -33,22 +33,26 @@ agreement it is THE CREDIT VIEW - the netting set a valuation adjustment or an e
 prices and a collateral call is made on, netted across every portfolio. Neither is stored: both
 are the same rows, narrowed.
 
-**The market a run reads is what stands.** Three things, each moving at its own pace: the market
-data file - the configuration a bank calibrates and governs, its models, correlations and
-benchmarks, usually one for the risk-neutral measure and one for the real-world - every few weeks;
-the calendar; and the day's values, declared under a market's name and made official at a close.
-The engine keeps the files parsed in a session and loads each job as a light document over them
-([Architecture](architecture.md#market-data-context-job)), so what the hub runs at a close - a
-bootstrap, the valuation adjustments, the day's official numbers - is the same job on a desk's own
-box.
+**The market a run reads is what stands.** The record is a linked filesystem, not a database: a
+job refers to files by name, the latest of each name is the one in force, and nothing is copied
+into a job that a file already says. Each file moves at its own pace - a market data file, the
+configuration a bank calibrates and governs, its models, correlations, benchmarks and
+interpolation rules, every few weeks, and as many of them as the bank keeps, a risk-neutral one
+and a real-world one being usual; a calendar; and the day's values, declared under a market's name
+and made official at a close. The engine's session is built for it: `load_json` is called again
+and again on one context, each load merging what it names over what is there, which is how a
+calibration runs - a bootstrap writes its parameters into the context and the jobs after it read
+them ([Architecture](architecture.md#market-data-context-job)). So what the hub runs at a close -
+a bootstrap, the valuation adjustments, the day's official numbers - is the same job on a desk's
+own box. Which files exist, what each carries and which jobs name which is policy.
 
 **What a bank decides is data.** Who the seats are and what each may do, the tree of portfolios,
 the tiers a ticket is routed through and who approves, when a close is struck and what runs at it,
 how many market data files there are, who declares them and how often they are recalibrated: all
 declared, read by the mechanisms above, and nowhere in the code.
 
-Two parts of this picture are not built, and are on the [Roadmap](roadmap.md): the two files are
-named by a job's path rather than declared in the record, and a job's deal tree is read off the
+Two parts of this picture are not built, and are on the [Roadmap](roadmap.md): the files a job
+names are named by path rather than declared in the record, and a job's deal tree is read off the
 book file with the record's positions written onto it, rather than composed from the fold.
 
 The rest of the page follows the order it was built in. **1 through 7 — the design is built**: the log, the blob store
