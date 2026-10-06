@@ -35,11 +35,13 @@ are the same rows, narrowed.
 
 **The market a run reads is what stands.** The record is a linked filesystem, not a database: a
 job refers to files by name, the latest of each name is the one in force, and nothing is copied
-into a job that a file already says. Each file moves at its own pace - a market data file, the
-configuration a bank calibrates and governs, its models, correlations, benchmarks and
-interpolation rules, every few weeks, and as many of them as the bank keeps, a risk-neutral one
-and a real-world one being usual; a calendar; and the day's values, declared under a market's name
-and made official at a close. The engine's session is built for it: `load_json` is called again
+into a job that a file already says. What a file can carry is scoped, not open-ended: a calendar,
+or any of the config's declared sections - the calibrations a bootstrap writes (`Price Factors`,
+`Price Models`) and the parameter sections (`System Parameters`, `Model Configuration`,
+`Price Factor Interpolation`, `Correlations`, `Market Prices`, `Valuation Configuration`,
+`Bootstrapper Configuration`) - and each file moves at its own pace: a market data file every few
+weeks, a risk-neutral one and a real-world one being usual; a calendar rarely; the day's values,
+declared under a market's name and made official at a close, daily. The engine's session is built for it: `load_json` is called again
 and again on one context, each load merging what it names over what is there, which is how a
 calibration runs - a bootstrap writes its parameters into the context and the jobs after it read
 them ([Architecture](architecture.md#market-data-context-job)). So what the hub runs at a close -
