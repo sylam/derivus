@@ -318,11 +318,19 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   leg).
 - **Barrier state as a fold over fixings, what remains.** `Barrier_Dates` and `Price_Fixing` are
   filled from the record at compile; still terms-only are continuous monitoring, which reads daily
-  `(low, high)` bars under `(index, date, source)` — `utils.bars_touched` is the predicate and is
-  gated — so the one-touch and partial-time barriers price from terms alone. The autocall's coupon
-  and threshold ladders fold with the put barrier and the pricer's barrier-hit read (it tests for
-  presence, so it fires on a declared `'No'`) retires with them; the TARF's and accumulator's
-  decisions-remain arm is folded parameters, not a substituted deal.
+  `(low, high)` bars - `utils.bars_touched` is the predicate and is gated, and nothing files a bar
+  yet: the prints fact below carries low and high beside the close - so the one-touch and
+  partial-time barriers price from terms alone. A bar has a span and a monitoring window has
+  edges, open at the booking's effective time and closed at the expiry cut: a bar inside the
+  window decides, touch being weak and a bar bracketing every print of its span; a bar that does
+  not touch decides "no" even straddling an edge; a bar straddling an edge that does touch is
+  undecidable from bars, and the plan refuses by name unless finer bars inside the window decide
+  it or a `determination` stands, filed by the agent the contract vests it in. One rule serves the
+  trade date, the expiry cut and the partial-time windows, a migrated trade's window opening at
+  the booking time its fill carries. The autocall's coupon and threshold ladders fold with the put
+  barrier and the pricer's barrier-hit read (it tests for presence, so it fires on a declared
+  `'No'`) retires with them; the TARF's and accumulator's decisions-remain arm is folded
+  parameters, not a substituted deal.
 - **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
   `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing
   and the payoff read together, which is a pricer's answer rather than a schedule's. One smaller
@@ -340,6 +348,38 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   book, or an agreement, the credit view netted across portfolios - and a point in the record give
   the light job, its deals the instruments under the agreement's own terms. The XVA tab lists its
   netting sets off the file until then.
+- **Prints as one fact, the archive as their fold.** A history for a rate, a close's row, a vendor
+  correction and a day's reset are all cells under `(index, date, source)`, so they are ONE fact:
+  a source and a blob of rows, each row a date with whichever of close, low and high the source
+  has, filed with any dates - a fact's content carries its own dates and the LSN only says when it
+  was filed, so a three-year history filed at take-on is ordinary. One fold resolves a cell, the
+  latest print per `(index, date)` with sources ordered by the `fixings` policy; the diary reads it
+  at a short window, and the ARCHIVE a real-world calibration reads is the same fold over a long
+  window, materialised as a table named by its hash. The calibrated file is then a result over two
+  hashes, the archive's and the authorised calibration JSON's, pinned and cached by them. The day's
+  official close is already a blob, flattened to a row by the engine's column convention, so the
+  archive grows a row a day with no vendor file for the live period; a split is the adjusted
+  series re-declared, its cells superseding, raw prints and a corporate-action fact only if raw
+  must be kept. Not on the take-on path: on day one the archive is a declared file version, and
+  this replaces it the first time a recalibration wants the closes since. M: the fact, the fold
+  reading batches, the materialiser, the close's flatten.
+- **Fixings as a price factor, the deal keeping its dates.** The compile writes a print into the
+  deal's own table, and `plan_hash` hashes the deals whole, so a barrier under monitoring is a new
+  plan every day; on a factor's value-bound field the same print moves `values_hash` alone, the
+  side a market number belongs on, and the instrument stays as booked - terms and a schedule. A
+  static `Fixings` factor per index, dates to close, low and high, sourced from the prints fold:
+  one source per index, so two deals observing one index cannot disagree and the document carries
+  no copy of the history; the compile fills one block per index instead of cells across every
+  type's table, and a print the record lacks is a missing factor by name, the engine's own
+  refusal; the per-type table writing and the six-types row above retire with it. It is the price
+  index's own pattern, history in the factor and dates on the deal, and an FX cross stays the
+  ratio of two base-relative histories. Deals keep their schedules and per-date terms - a barrier
+  level on its date, an Asian's weights - and lose the observed-value column. The cost is every
+  pricer that reads a past fixing: barrier, target redemption forward, accumulator, autocall, the
+  Asians, the swap family's known rates, inflation; the banked documents all carry table fixings,
+  so the numbers must come out identical. Two steps: the compile fills today's tables from the
+  block, pricers untouched and bit-identical by construction; then the reads move and the value
+  columns retire. L.
 - **What a product controller's P&L carries beside the marks.** `GET /book/pnl` says what the book
   made and its explain why the held positions moved - carry, market per risk factor, residual - but
   not the reserves beside the mid, a new deal's sales margin transferred to sales on day one, the

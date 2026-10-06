@@ -53,9 +53,11 @@ the tiers a ticket is routed through and who approves, when a close is struck an
 how many market data files there are, who declares them and how often they are recalibrated: all
 declared, read by the mechanisms above, and nowhere in the code.
 
-Two parts of this picture are not built, and are on the [Roadmap](roadmap.md): the files a job
-names are named by path rather than declared in the record, and a job's deal tree is read off the
-book file with the record's positions written onto it, rather than composed from the fold.
+Three parts of this picture are not built, and are on the [Roadmap](roadmap.md): the files a job
+names are named by path rather than declared in the record; a job's deal tree is read off the
+book file with the record's positions written onto it, rather than composed from the fold; and a
+print - a history's row, a close's, a reset's, a day's low and high - is not yet one fact whose
+fold is both the archive a calibration reads and the fixings a deal reads off a factor of its own.
 
 The rest of the page follows the order it was built in. **1 through 7 — the design is built**: the log, the blob store
 and the chain (riding on them: identity, capability enforcement and key custody), on top of those the
