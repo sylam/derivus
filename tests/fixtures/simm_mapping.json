@@ -1,0 +1,17 @@
+{
+	"Netting_Sets": {
+		"NS": {"Counterparty": "CPTY", "PostRegulations": "SEC", "CollectRegulations": "SEC"}
+	},
+	"Product_Class": {
+		"Instruments": {"SwapInterestDeal": "RatesFX", "FXOptionDeal": "RatesFX"},
+		"Structures": {}
+	},
+	"Factors": {
+		"InterestRate.USD-OIS": {"SIMM": {"RiskType": "Risk_IRCurve", "Qualifier": "USD", "Bucket": "1", "Label2": "OIS"}, "FRTB_SA": null},
+		"InterestRate.ZAR-JIBAR": {"SIMM": {"RiskType": "Risk_IRCurve", "Qualifier": "ZAR", "Bucket": "3", "Label2": "Libor3m"}, "FRTB_SA": null},
+		"InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP": {"SIMM": null, "FRTB_SA": null},
+		"FxRate.USD": {"SIMM": {"RiskType": "Risk_FX", "Qualifier": "USD"}, "FRTB_SA": null},
+		"FxRate.ZAR": {"SIMM": {"RiskType": "Risk_FX", "Qualifier": "ZAR"}, "FRTB_SA": null},
+		"FXVol.USD.ZAR": {"SIMM": {"RiskType": "Risk_FXVol", "Qualifier": "USDZAR"}, "FRTB_SA": null}
+	}
+}

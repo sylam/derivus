@@ -19,14 +19,18 @@ __all__ = ['version_info', '__version__', '__author__', '__license__', 'Context'
 import os
 import json
 import torch
+import pickle
 import hashlib
 import numbers
 import pathlib
 import logging
+import traceback
 import numpy as np
 import pandas as pd
 import collections.abc
 import torch.multiprocessing as mp
+from queue import Empty
+from functools import partial
 
 from ._version import version_info, __version__
 # schema FIRST: it assembles `mapping` from the declaring modules, and importing one of those
@@ -226,6 +230,18 @@ def run_baseval(context, prec=torch.float64, overrides=None):
     return calc, out
 
 
+def run_simm(context, overrides=None):
+    """Runs a SIMM calculation - ISDA's CRIF by bump and revaluation, a booked trade at a time - on
+    the provided context: `(calculation, output)`, the CRIF under `output['Results']['CRIF']`."""
+    from .calculation import construct_calculation
+
+    params = dict(context.deals['Calculation'])
+    if overrides is not None:
+        update_dict(params, overrides)
+    calc = construct_calculation('SIMM', context)
+    return calc, calc.execute(params)
+
+
 def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
     from .calculation import construct_calculation, HedgeMonteCarlo
     from .schema import declared_defaults
@@ -382,6 +398,50 @@ def worker_count(runparallel):
             'runparallel is a worker count: True for one per device, or an int >= 1, got '
             '{!r}'.format(runparallel))
     return count
+
+
+def shielded(target, job, queue, *args, **kwargs):
+    """A worker's body: `target`, which answers on `queue` itself, and on a raise the error put
+    there as worker `job`'s answer instead - so the parent re-raises it rather than waiting."""
+    try:
+        target(*args, **kwargs)
+    except Exception as error:
+        try:
+            pickle.loads(pickle.dumps(error))
+        except Exception:
+            # an error that cannot cross the process boundary crosses as its own traceback
+            error = RuntimeError(traceback.format_exc())
+        queue.put({'Job': job, 'Error': error})
+
+
+def gathered(workers, queue):
+    """Start `workers` and take one answer each off `queue`, returned in worker order though the
+    queue hands them back in completion order: a worker's error is raised here with the others
+    stopped, and a worker dead without answering is named rather than waited on."""
+    answers = {}
+    for worker in workers:
+        worker.start()
+    try:
+        while len(answers) < len(workers):
+            try:
+                answer = queue.get(timeout=1.0)
+            except Empty:
+                silent = ['{} (exit {})'.format(job, worker.exitcode)
+                          for job, worker in enumerate(workers)
+                          if worker.exitcode not in (None, 0) and job not in answers]
+                if silent:
+                    raise RuntimeError('worker {} died without answering'.format(
+                        ', '.join(silent)))
+                continue
+            if 'Error' in answer:
+                raise answer['Error']
+            answers[answer['Job']] = answer
+    finally:
+        for worker in workers:
+            if len(answers) < len(workers) and worker.is_alive():
+                worker.terminate()
+            worker.join()
+    return [answers[job] for job in range(len(workers))]
 
 
 def quote_delta(name, container, points, values):
@@ -802,6 +862,8 @@ class Context:
             return self.Base_Valuation(overrides)
         elif self.current_cfg.deals['Calculation']['Object'] == 'HedgeMonteCarlo':
             return self.Hedge_Monte_Carlo(overrides)
+        elif self.current_cfg.deals['Calculation']['Object'] == 'SIMM':
+            return run_simm(self.current_cfg, overrides)
         else:
             raise Exception('Unknown Calculation {}'.format(self.current_cfg.deals['Calculation']['Object']))
 
@@ -824,28 +886,16 @@ class Context:
         if runparallel:
             num_workers = worker_count(runparallel)
             results = mp.Queue()
-            workers = [mp.Process(target=run_cmc, args=(
-                self.current_cfg, torch.float32, overrides, i, num_workers, results),
-                kwargs={'deterministic_batches': True, 'device': device})
-                            for i in range(num_workers)]
-
-            for w in workers:
-                w.start()
-
-            post_processing = []
-            for i in range(num_workers):
-                post_processing.append(results.get())
-
-            results.close()
-
-            for w in workers:
-                w.join()
-                if w.is_alive():
-                    w.close()
+            workers = [mp.Process(target=partial(shielded, run_cmc, i, results),
+                                  args=(self.current_cfg, torch.float32, overrides, i,
+                                        num_workers, results),
+                                  kwargs={'deterministic_batches': True, 'device': device})
+                       for i in range(num_workers)]
 
             # the queue hands them back in completion order, which is a race; the merge is keyed
             # by worker so a pooled reduction reads its operands in the same order every run
-            post_processing.sort(key=lambda payload: payload['Job'])
+            post_processing = gathered(workers, results)
+            results.close()
 
             post_results = {}
             for output in post_processing:

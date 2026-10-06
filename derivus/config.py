@@ -27,9 +27,9 @@ import pandas as pd
 from ._version import __version__
 from . import utils
 from . import schema
-from .bootstrappers import (bootstrap_dependents, bootstrap_order, construct_bootstrapper,
-                            family_class, market_prices_for, InterestRateCurveParameters,
-                            FAMILIES, PRICES_KEY)
+from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_precedents,
+                            bootstrap_writers, construct_bootstrapper, family_class,
+                            market_prices_for, InterestRateCurveParameters, FAMILIES, PRICES_KEY)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -612,14 +612,16 @@ class Config(object):
 
         return {'present': model_factor, 'absent': remaining_factor}
 
-    def bootstrap(self, only=None):
+    def bootstrap(self, only=None, wanted=None):
         """Runs all the bootstrappers in one process. For multiprocessing
         bootstrapping, call `construct_bootstrapper` directly.
 
         `only` NARROWS THE RUN to the `Market Prices` blocks whose numbers moved: those and every
         block that reads one of them (`bootstrappers.bootstrap_dependents`) are covered and the
         rest are left exactly as they stand, so a tick of one curve re-solves that curve and what
-        discounts on it rather than the whole market. None is every block.
+        discounts on it rather than the whole market. None is every block. `wanted` narrows it
+        again, to what the price factors it names stand on (`bootstrappers.bootstrap_writers`,
+        `bootstrap_precedents`), so a run for one book leaves what the book never reads standing.
 
         THE CONFIGURATION DRIVES THE LOOP: each `Bootstrapper Configuration` entry names a family,
         `bootstrappers.market_prices_for` selects the blocks that family reads, and the family is
@@ -651,6 +653,9 @@ class Config(object):
         # every entry names a class before any of them runs, and the order is what it reads
         section = [(name, entries[name]) for name in bootstrap_order(entries)]
         selected = None if only is None else bootstrap_dependents(prices, only)
+        if wanted is not None:
+            standing = bootstrap_precedents(prices, bootstrap_writers(prices, wanted))
+            selected = standing if selected is None else selected & standing
         claimed = {family_class(name).market_factor_type for name, _ in section}
         unclaimed = sorted({utils.check_rate_name(x)[0] for x in prices} - claimed)
         if unclaimed:

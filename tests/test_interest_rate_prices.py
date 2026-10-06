@@ -34,7 +34,7 @@ import torch
 
 import test_declared_defaults as book
 import trial_rates
-from derivus import riskfactors, schema, utils
+from derivus import bootstrappers, riskfactors, schema, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
                                    author_quote,
@@ -191,17 +191,12 @@ def discount_of(market_price, block):
 
 
 def par_quotes(block, discount_rate, price_factors, interp=None):
-    """The rate, in percent, at which each benchmark is worth exactly zero on `price_factors`.
-
-    PV is affine in the quote, so `PV(0) / (PV(0) - PV(1))` is the root and not an approximation of
-    one - which matters, because a quote generated to anything less than machine precision would
-    put a floor under what the round trip can recover. Bracketing at 0 and 1 PERCENT returns the
-    root in percent, which is the unit every quote field on every one of these deals is read in.
+    """The rate, in percent, at which each benchmark is worth exactly zero on `price_factors` - the
+    library's own inverse map, exact rather than searched, which matters because a quote generated
+    to anything less than machine precision would put a floor under what the round trip recovers.
     """
-    priced = [BenchmarkInstruments(
-        block_nodes(block, discount_rate, quote), price_factors, interp or INTERP, BASE,
-        block['Currency'], {}, [], DEVICE)({}).detach().numpy() for quote in (0.0, 1.0)]
-    return priced[0] / (priced[0] - priced[1])
+    return bootstrappers.par_quotes(block['Points'], discount_rate, block['Currency'],
+                                    price_factors, interp or INTERP, BASE, {})
 
 
 def authored_world(world, interp=None):

@@ -5786,6 +5786,102 @@ def quote_knots(nodes, base_date, day_count, calendars):
         base_date, (maturity - base_date).days, code) for maturity in maturities])
 
 
+def par_quotes(points, discount_rate, currency, price_factors, factor_interp, base_date,
+               calendars):
+    """The quote at which each benchmark of `points` is worth exactly zero on `price_factors`.
+
+    PV is affine in the quote, so the root is `PV(0) / (PV(0) - PV(1))` and not a search - in the
+    unit each type reads its quote in, percent for a rate and the outright for an FX forward."""
+    level = [dict(point, Quoted_Market_Value=0.0) for point in points]
+    priced = [BenchmarkInstruments(
+        quote_nodes(level, discount_rate, shift), price_factors, factor_interp, base_date, currency,
+        calendars, [], torch.device('cpu'))({}).detach().cpu().numpy() for shift in (0.0, 1.0)]
+    return priced[0] / (priced[0] - priced[1])
+
+
+def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conventions=(),
+                fras_to=None):
+    """`(Market Prices name, block)` quoting `curve` on its OWN knots, each benchmark at the quote
+    it is worth exactly zero at on the curve as it stands - the bootstrap run backwards, which is
+    how a book taken on with curves and no quotes gets market prices.
+
+    One benchmark per knot, maturing on it under the knot rule (`quote_knots`), so solving the block
+    returns the curve: a knot within one `Float_Frequency` of the base date is a deposit from it -
+    a FRA from it where the block discounts on another curve, a deposit pinning its rate and so
+    reading that curve alone - one whose float period starts before `fras_to` a FRA over that
+    period, any other a swap from the base date. `conventions` states block fields over the
+    family's declarations; the near split is the curve's own. A knot no whole day lands on refuses.
+    """
+    def period(value):
+        return utils.parse_period(value) if isinstance(value, str) else value
+
+    rate = utils.check_rate_name(curve)
+    name = '.'.join(rate)
+    factor = price_factors[utils.check_tuple_name(utils.Factor('InterestRate', rate))]
+    stated = declared_defaults(InterestRateCurveParameters, dict(
+        {'Currency': factor['Currency'], 'Day_Count': factor['Day_Count']}, **dict(conventions)))
+    block = dict({key: stated[key] for key in (
+        'Currency', 'Day_Count', 'Discount_Rate', 'Fixed_Day_Count', 'Float_Day_Count',
+        'Front_Day_Count', 'Compounding')}, **{key: period(stated[key]) for key in (
+            'Fixed_Frequency', 'Float_Frequency')})
+    if factor.get('Near_Interpolation') and factor.get('Near_Date'):
+        block['Near_Interpolation'] = riskfactors.factor_interp_map.get(
+            factor['Near_Interpolation'], riskfactors.INTERPOLATION_DEFAULT)
+        block['Near_Tenor'] = pd.DateOffset(days=(factor['Near_Date'] - base_date).days)
+
+    code = utils.DayCount.code(block['Day_Count'])
+    landed, stray = [], []
+    for knot in factor['Curve'].array[:, 0]:
+        day = min(range(int(knot * 360) - 1, int(knot * 366) + 2),
+                  key=lambda day: abs(utils.DayCount.accrual(base_date, day, code) - knot))
+        if day > 0 and abs(utils.DayCount.accrual(base_date, day, code) - knot) < 1e-9:
+            landed.append(base_date + pd.Timedelta(days=day))
+        else:
+            stray.append('{:.12g}'.format(knot))
+    if stray:
+        raise ValueError('{}: no benchmark matures on the knot(s) {} - no whole day from the base '
+                         'date {:%Y-%m-%d} accrues to them in {}'.format(
+                             name, ', '.join(stray), base_date, block['Day_Count']))
+
+    fixed, floating = block['Fixed_Frequency'], block['Float_Frequency']
+    fras_to, zero = period(fras_to), pd.DateOffset(months=0)
+    foreign = block['Discount_Rate'] not in ('', name)
+    points = []
+    for end in landed:
+        start, span = end - floating, pd.DateOffset(days=(end - base_date).days)
+        terms = {'Reference': '{}_{:%Y%m%d}'.format(name, end), 'Currency': block['Currency'],
+                 'Interest_Rate': name, 'Maturity_Date': end}
+        front = end <= base_date + floating or start <= base_date
+        if front and not foreign:
+            kind, deal = 'DepositDeal', dict(
+                terms, Effective_Date=base_date, Payment_Frequency=span, Interest_Frequency=span,
+                Accrual_Day_Count=block['Front_Day_Count'], Amount=1e6,
+                Interest_Rate_Schedule=utils.DateList({}))
+        elif front or (fras_to is not None and start < base_date + fras_to):
+            start = base_date if front else start
+            kind, deal = 'FRADeal', dict(
+                terms, Effective_Date=start, Reset_Date=start, Day_Count=block['Float_Day_Count'],
+                Principal=1e6, FRA_Rate=0.0, Borrower_Lender='Borrower')
+        else:
+            kind, deal = 'SwapInterestDeal', dict(
+                terms, Effective_Date=base_date, Pay_Rate_Type='Fixed', Pay_Frequency=fixed,
+                Pay_Interest_Frequency=fixed, Pay_Day_Count=block['Fixed_Day_Count'],
+                Receive_Frequency=floating, Receive_Interest_Frequency=zero,
+                Receive_Day_Count=block['Float_Day_Count'], Index_Tenor=zero, Index_Frequency=zero,
+                Index_Day_Count=block['Float_Day_Count'], Compounding_Method=block['Compounding'],
+                Principal=1e6, Swap_Rate=0.0)
+        points.append({'Use': 'Yes', 'Descriptor': '{} {} {:%Y-%m-%d}'.format(name, kind, end),
+                       'DealType': kind, 'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0,
+                       'Deal': deal})
+
+    for point, quote in zip(points, par_quotes(
+            points, block['Discount_Rate'] or name, block['Currency'], price_factors, factor_interp,
+            base_date, calendars)):
+        point['Quoted_Market_Value'] = float(quote)
+    return '{}.{}'.format(InterestRateCurveParameters.market_factor_type, name), {
+        'instrument': dict(block, Points=points)}
+
+
 class InterestRateCurveParameters(Construction):
     """A zero curve solved from deposit, FRA, swap and FX forward quotes, priced by the engine's
     own pricers.
@@ -6909,6 +7005,15 @@ def bootstrap_precedents(market_prices, wanted):
         for reader in readers:
             reads.setdefault(reader, []).append(written)
     return closed_over(reads, wanted)
+
+
+def bootstrap_writers(market_prices, factors):
+    """The blocks writing one of the price factors named in `factors` - a block writes its family's
+    `price_factor_type` under its own name."""
+    writes = {cls.market_factor_type: cls.price_factor_type for cls in FAMILIES}
+    return {name for name in market_prices
+            for rate in [utils.check_rate_name(name)] if rate[0] in writes
+            and utils.check_tuple_name(utils.Factor(writes[rate[0]], rate[1:])) in factors}
 
 
 def market_prices_for(btype, market_prices, declared=None):

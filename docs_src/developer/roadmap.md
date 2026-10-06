@@ -155,6 +155,26 @@ unmeasured — a limitation without a number is absolution, not documentation
   data file carries: on a kept context a later set funding off the file's curve read a fifth of
   what a fresh context does. The XVA tab drops its context after such a run, a parse per set; the
   write belongs on the run's own copy. S.
+- **A SIMM run re-solves each benchmark move in every worker** (2026-10-07). The `SIMM`
+  calculation prices a booked trade at a time - base, one market move, the curve or surface it
+  feeds re-solved, revalue - and each worker repeats the solves its trades need, so four workers
+  give 1.3x over one on a 19-trade set (431 s against 576 s); solving the moves once in a first
+  round is estimated at 2.5x. The dependency walk hands each trade its FX chains too, so 1,924
+  repricings write 274 rows. A move that values a trade to NaN writes a NaN row unless
+  `Exclude_Deals_With_Missing_Market_Data` is No. M.
+- **A vega vertex on a skew surface moves its base** (2026-10-07). A vertex bump is a one-point
+  tent at the vertex's expiry, so a surface gains a pillar at each vertex it lacks, read off its
+  own interpolation; Explicit and Malz surfaces then price the same to the bit, but the engine
+  blends a Skew surface's two pillar smiles in expiry and no smile at an inserted pillar equals the
+  blend - 14.5 vol points apart deep in one wing - so two of five structures move, by 4.8e-4 and
+  1.5e-2 of the trade. The rows are taken against the augmented base, so the deltas are
+  consistent and the base is not the book's. S-M: the tent through the blend rather than a
+  pillar.
+- **A one-point vol move carries cross-vertex convexity** (2026-10-07). On the autocalls the twelve
+  vertex rows differ from one parallel point by -0.8% to +13% (0.1% to 1.2% on FX), the same at
+  three seeds and two path counts, a tenth of a point cutting it tenfold. The one-point move is
+  the regulation's definition, so it is stated, not fixed. Interest-rate vega, credit, commodity
+  and inflation sensitivities are refused by name until a book carries them.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should
@@ -388,6 +408,15 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   positions' P&L, and no threshold a desk declares watches it.
 - **Sensitivity estimators as first-class objects** — a `SensitivityProfile` per pricer, so a
   consumer can tell a pathwise derivative from one carrying a boundary term.
+- **SIMM in-graph, phase 2.** Phase 1 is the `SIMM` calculation: a CRIF by bump and
+  revaluation, the booked structure the trade, market prices a condition - a curve no benchmark
+  set bootstraps refuses by name - and the mapping and the regulation's parameters files the run
+  names. Phase 2 keeps the class and replaces its execute: one backward pass per netting set, the
+  CRIF projection and the aggregation in-graph so the margin's own gradient survives,
+  `dSIMM/dtheta` as one Hessian-vector product, never a full Hessian, and the margin in quote
+  space through the calibration. It waits on the row below and on second derivatives in quote
+  space, which the calibration refuses backwards; the margin itself needs neither, curvature
+  being scaled vega, and the notebook aggregating the phase 1 CRIF is its oracle meanwhile.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,
   forward-over-reverse. First consumers: the SIMM calc's dSIMM/dθ, FVA's splits.
 - **Incremental XVA as risk-impact v2** — `CVA(book + mirror) − CVA(book)` through
