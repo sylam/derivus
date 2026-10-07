@@ -13,8 +13,8 @@
 
 """What a sales desk sells, declared - and the runner that turns one into a priced quote.
 
-A STRUCTURE is a class in this module. Its name is the registry key, and it states four things and
-no logic at all:
+A STRUCTURE is a subclass of `Structure`. Its name is the registry key, and it states four things
+and no logic at all:
 
   - `vernacular`, the names a salesperson says out loud
   - `fields`, `schema.F` descriptors for the PARAMETERS a client quotes in
@@ -78,126 +78,6 @@ from . import utils
 from . import schema
 from .schema import F, REQUIRED
 
-#: How wide the runner brackets a strike solve, as a multiple of the market spot. A vanilla's value
-#: is monotone in its strike, so any bracket spanning deep in- and out-of-the-money holds the root;
-#: `brentq` refuses by name where a zero-cost leg does not sit inside these ends.
-STRIKE_BRACKET = (0.25, 4.0)
-
-#: The same bracket for an ACCRUAL strike, moved in. A strip's value saturates at the low end -
-#: flat at the discounted `target x notional` once every fixing redeems at once - so nothing is
-#: given up, while `0.25 x spot` prices NaN off a surface quoted over moneyness [0.8, 1.2].
-ACCRUAL_BRACKET = (0.5, 2.0)
-
-#: How far a re-solve looks either side of a root it already has, as a fraction of it. A charge
-#: moves a coordinate by a spread's width - measured under half a percent on every form here - so
-#: this is four times the move it has to hold, and a bracket that does not straddle falls back.
-SEED_BRACKET = 0.02
-
-#: A fixing settles on its own spot value date, two days on. CALENDAR days rather than business:
-#: the runner holds no calendar, and a settlement date is a cashflow date rather than an
-#: observation, so a weekend costs two days of discounting and nothing else.
-FIXING_LAG = 2
-
-#: The accrual deals a leg may name beside the two vanilla ones. Each carries a fixing SCHEDULE the
-#: runner grows from the tenor, rather than the single expiry a vanilla is struck to.
-ACCRUAL_DEALS = ('FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
-
-#: Where each accrual deal files that schedule. The field name is the deal's own; the ROW is one
-#: shape either way - `[fixing date, settlement date, observed fixing]`, untagged.
-SCHEDULE_FIELD = {'FXTARFOptionDeal': 'TARF_ExpiryDates',
-                  'FXAccumulatorOptionDeal': 'Accumulator_ExpiryDates'}
-
-#: `<SpotModel>ModelParameters.<the pair's key>`, the naming convention
-#: `get_spot_model_params_factor` resolves the parameters by (`utils.spot_model_currency` picks the
-#: token) - so the presence check here and the engine's own lookup are one key.
-SPOT_MODEL_FACTOR = '{}ModelParameters.{}'
-
-#: The model an accrual leg is priced under WHERE THE BOOK CARRIES A CALIBRATION. The switch lives
-#: in `Valuation Configuration` per deal TYPE, not on a deal, and both accrual deals declare it in
-#: their own `spot_models`.
-SPOT_MODEL = 'LogVar2FJ'
-
-#: Every vanilla leg is European. Pinned per leg rather than injected by the runner: it is an
-#: `FXOptionDeal` field, and an `FXBarrierOption` declares no such field.
-VANILLA = {'Option_Style': 'European'}
-
-#: Where a pair's two-way lives: the `Market Prices` block a surface is filed under, which is the
-#: leg's own `FX_Volatility` name with the family in front of it. The price factor is `FXVol.<n>`.
-FX_VOL_PRICES = 'FXVolPrices.{}'
-FX_VOL_FACTOR = 'FXVol.{}'
-
-#: Where a desk's quoting MANDATE lives: a section of the JOB, beside `Calculation` and
-#: `MergeMarketData`, not inside `ExplicitMarketData` - `Context.load_json` raises `KeyError` on a
-#: section `Config` does not declare. Every reader of a job walks `Calc` by name, so an unknown key
-#: there travels through load, pricing and the book file untouched.
-QUOTE_POLICY = 'Quote Policy'
-
-#: What the policy means where the block is silent, read with `.get` so a desk states only what it
-#: is changing. The ABSENCE OF THE BLOCK is the off switch, not these values. `firm_seconds` is the
-#: one field this module does not act on - the approval verb reads that clock.
-POLICY_DEFAULTS = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
-                   'bucket_limit': None, 'min_ticket_bp': 0.0, 'firm_seconds': 600}
-
-#: `min_ticket_bp` is bp of notional, and a bp is this.
-BASIS_POINT = 1e-4
-
-#: The book-alone risk vector by the book's own content etag, bounded. The book's risk moves only
-#: when the market ticks or something books, and both change the etag, so a repeat quote on a
-#: standing book pays one greeks run instead of two. Bounded because the dict would otherwise leak.
-RISK_CACHE = {}
-RISK_CACHE_LIMIT = 16
-
-#: What a leg says where neither reading of it publishes a quote sensitivity: there is no vega to
-#: price the two-way against, so nothing was charged on it and the row says so rather than a zero.
-NO_VEGA = ('the two-way could not reach this leg - neither the surface nor a lognormal reading of '
-           'it publishes an FX vol quote sensitivity, so no spread was charged on it')
-
-#: A barrier's DIRECTION is a statement about the PAIR, so it crosses to the engine axis with the
-#: strike: a barrier above USDZAR 18.50 is below 1/18.50 dollars per rand. In/Out says what the
-#: payoff does on touch and means the same on either axis, so only Up/Down moves.
-BARRIER_FLIP = {'Up_And_In': 'Down_And_In', 'Down_And_In': 'Up_And_In',
-                'Up_And_Out': 'Down_And_Out', 'Down_And_Out': 'Up_And_Out'}
-
-#: The option SENSE, read twice: crossing to the engine axis (a market Call is the right to buy the
-#: base currency, so it is a Put on the quote one) and reflecting a variation into the trade the
-#: other side of the pair deals.
-OPTION_FLIP = {'Call': 'Put', 'Put': 'Call'}
-
-#: The other side of the pair, which is the side a variation's mirror image serves.
-OPPOSITE = {'base': 'quote', 'quote': 'base'}
-
-#: The parameters every FX structure quotes in, shared as module constants for the reason the
-#: schema's field groups are: a copy per class is a copy that drifts.
-PAIR = F('pair', 'Text', default=REQUIRED,
-         description='The market pair, base then quote - USDZAR is ZAR per USD')
-EXPIRY = F('expiry', 'Period', default=REQUIRED,
-           description="Tenor from the book's Base_Date - 3M, 1Y - or an ISO date for a broken one")
-NOTIONAL = F('notional', 'Float', default=REQUIRED,
-             description='The amount, in notional_currency, each leg is struck on')
-NOTIONAL_CURRENCY = F('notional_currency', 'Text', default=REQUIRED,
-                      description='Which side of the pair the notional is in; it becomes the '
-                                  'option underlying, and naming the quote currency is what '
-                                  'inverts the strike axis')
-
-#: WHICH WAY a structure with more than one variation is dealt, stated as the client's own two
-#: cashflows. They are SELECTORS rather than parameters - they choose a form instead of filling a
-#: leg - so they are optional to state and never defaulted: `variation_for` reads them beside the
-#: level a ticket names, which selects on its own wherever the variations differ in one.
-SELL_CURRENCY = F('sell_currency', 'Text',
-                  description='Currency the client sells: one side of pair')
-BUY_CURRENCY = F('buy_currency', 'Text',
-                 description='Currency the client buys: the other side of pair')
-SELECTORS = (SELL_CURRENCY, BUY_CURRENCY)
-
-#: What a strike-like parameter means, said once. A structure's strikes are the client's numbers.
-MARKET_STRIKE = 'In MARKET terms, as the pair is quoted (USDZAR 15.50)'
-
-
-def strike(name, description):
-    """A strike-like parameter: a market-terms number the runner converts to the engine axis."""
-    return F(name, 'Float', default=REQUIRED,
-             description='{}. {}'.format(description, MARKET_STRIKE))
-
 
 class Leg(object):
     """One named leg of a structure: a declared `Instrument` type, what the structure PINS on it,
@@ -217,6 +97,11 @@ class Leg(object):
         self.pinned = dict(pinned or {})
         self.slots = dict(slots or {})
 
+    @classmethod
+    def vanilla(cls, role, slots=None, **pinned):
+        """A European `FXOptionDeal` leg pinning `pinned` - every vanilla a structure sells."""
+        return cls(role, 'FXOptionDeal', dict(Option_Style='European', **pinned), slots)
+
     def descriptor(self):
         """This leg as a `mapping['Structure'][...]['legs']` entry."""
         return {'deal_type': self.deal_type, 'pinned': dict(self.pinned), 'slots': dict(self.slots)}
@@ -233,6 +118,9 @@ class Variation(object):
     required exactly as the shared ones are.
     """
     __slots__ = ('buys', 'fields', 'legs')
+
+    #: The side of the pair a variation's client buys.
+    BUYS = F('buys', 'Text', values=['base', 'quote'], description='The side the client buys')
 
     def __init__(self, buys, fields, legs):
         self.buys, self.fields, self.legs = buys, list(fields), list(legs)
@@ -304,6 +192,13 @@ class Solve(object):
     """
     __slots__ = ('role', 'field', 'target')
 
+    #: A strike solve's ends as multiples of the spot: a vanilla is monotone in its strike.
+    STRIKE_BRACKET = (0.25, 4.0)
+    #: An accrual strike's, moved in: a strip saturates low and prices NaN off quoted moneyness.
+    ACCRUAL_BRACKET = (0.5, 2.0)
+    #: How far a seeded re-solve looks either side of its root, as a fraction of it.
+    SEED_BRACKET = 0.02
+
     def __init__(self, role, field, target):
         self.role = role
         self.field = field
@@ -315,59 +210,116 @@ class Solve(object):
             str(self.target) if isinstance(self.target, Premium) else '{:g}'.format(self.target))
 
 
+def crossed(deal_type, block):
+    """`block` read from the other side of the pair: its option sense and barrier direction flipped
+    under `deal_type`'s own declarations, every other field as written. In/Out never moves."""
+    from . import instruments
+    declared = schema.declared_fields(getattr(instruments, deal_type))
+    return {key: schema.flipped(declared[key], value) if key in ('Option_Type', 'Barrier_Type')
+            else value for key, value in block.items()}
+
+
 def reflected(variation, rename, fields):
     """`variation`'s mirror image: the same structure dealt for the other side of the pair.
 
-    Every leg's `Option_Type` swaps and every `Barrier_Type` crosses through `BARRIER_FLIP`, a
-    level said about the pair reading the other way round for a client standing the other side of
-    it. Two things do NOT move: In and Out describe what the payoff does on touch and mean the same
-    to either client, and `Buy_Sell` is the CLIENT's side on both sheets - an importer buys their
-    protection exactly as an exporter buys theirs - so paper becoming the bank's position stays
-    `mirror`'s one seam.
+    Every leg is `crossed`, a level said about the pair reading the other way round for a client
+    standing the other side of it. `Buy_Sell` does NOT move: it is the CLIENT's side on both
+    sheets - an importer buys their protection exactly as an exporter buys theirs - so paper
+    becoming the bank's position stays `mirror`'s one seam.
 
     `rename` is the variation's own parameters under their mirror names (`{'floor': 'cap'}`),
     applied to the leg slots that fill from them, and `fields` is those mirror parameters as the
     declarer writes them: prose says what a level MEANS to the client on that side, which is not
     something a rename can derive.
     """
-    legs = []
-    for leg in variation.legs:
-        pinned = dict(leg.pinned)
-        for field, flip in (('Option_Type', OPTION_FLIP), ('Barrier_Type', BARRIER_FLIP)):
-            if field in pinned:
-                pinned[field] = flip[pinned[field]]
-        legs.append(Leg(leg.role, leg.deal_type, pinned,
-                        {field: rename.get(slot, slot) for field, slot in leg.slots.items()}))
-    return Variation(OPPOSITE[variation.buys], fields, legs)
+    return Variation(schema.flipped(Variation.BUYS, variation.buys), fields, [
+        Leg(leg.role, leg.deal_type, crossed(leg.deal_type, leg.pinned),
+            {field: rename.get(slot, slot) for field, slot in leg.slots.items()})
+        for leg in variation.legs])
 
 
-class Straddle:
+class Structure(object):
+    """What every structure shares. A structure is a subclass declaring `vernacular`, `fields`,
+    `legs` or `variations`, and `recipe` - and nothing else."""
+
+    #: The parameters every structure quotes in, listed first in its `fields`.
+    QUOTED = (F('pair', 'Text', default=REQUIRED,
+                description='The market pair, base then quote - USDZAR is ZAR per USD'),
+              F('expiry', 'Period', default=REQUIRED,
+                description="Tenor from the book's Base_Date - 3M, 1Y - or an ISO date for a "
+                            "broken one"),
+              F('notional', 'Float', default=REQUIRED,
+                description='The amount, in notional_currency, each leg is struck on'),
+              F('notional_currency', 'Text', default=REQUIRED,
+                description='Which side of the pair the notional is in; it becomes the option '
+                            'underlying, and naming the quote currency is what inverts the strike '
+                            'axis'))
+    #: Which way a structure with variations is dealt, as the client's own two cashflows: they
+    #: choose a form rather than fill a leg, so they are optional to state and never defaulted.
+    SELL_CURRENCY = F('sell_currency', 'Text',
+                      description='Currency the client sells: one side of pair')
+    BUY_CURRENCY = F('buy_currency', 'Text',
+                     description='Currency the client buys: the other side of pair')
+    SELECTORS = (SELL_CURRENCY, BUY_CURRENCY)
+    #: The desk's quoting mandate, a section of the job beside `Calculation`; no block, no policy.
+    POLICY = schema.Group('Quote Policy', [
+        F('participation', 'Float', default=0.5, convention=True,
+          description='The share of a measured hedge-cost saving passed to the client'),
+        F('floor', 'Text', default='mid', convention=True,
+          description="Where a tightened quote stops: 'mid', which it never crosses"),
+        F('scope', 'Text', default='vol', convention=True,
+          description="The book the residual is measured in: 'vol'"),
+        F('bucket_limit', 'Float', convention=True,
+          description='The |risk after| per bucket, in its own vega units, past which nothing '
+                      'is tightened; none is no limit'),
+        F('min_ticket_bp', 'Float', default=0.0, convention=True,
+          description='The floor under the edge, in bp of notional'),
+        F('firm_seconds', 'Float', default=600, convention=True,
+          description='How long a quote stays approvable, in seconds')])
+    #: The factor family a leg's `FX_Volatility` names; its quotes are filed as this plus `Prices`.
+    SURFACE = 'FXVol'
+    #: Calendar days from a fixing to its settlement - a cashflow date, not an observation.
+    fixing_lag = 2
+    #: The model an accrual leg is priced under where the book carries a calibration for its pair.
+    spot_model = 'LogVar2FJ'
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if 'vernacular' not in vars(cls):
+            raise TypeError('{} declares no vernacular - a structure states the names a desk says, '
+                            'its fields, its legs or variations, and its recipe'.format(
+                                cls.__name__))
+
+    @staticmethod
+    def strike(name, description):
+        """A strike-like parameter: a market-terms number the runner converts to the engine axis."""
+        return F(name, 'Float', default=REQUIRED, description=description + (
+            '. In MARKET terms, as the pair is quoted (USDZAR 15.50)'))
+
+
+class Straddle(Structure):
     """Both wings at one strike, both bought - the way volatility itself is traded."""
     vernacular = 'straddle, at-the-money volatility, vol trade'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              strike('strike', 'The one strike both wings are struck at')]
-    legs = [Leg('call', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Buy'),
-                {'Strike_Price': 'strike'}),
-            Leg('put', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'strike'})]
+    fields = [*Structure.QUOTED,
+              Structure.strike('strike', 'The one strike both wings are struck at')]
+    legs = [Leg.vanilla('call', {'Strike_Price': 'strike'}, Option_Type='Call', Buy_Sell='Buy'),
+            Leg.vanilla('put', {'Strike_Price': 'strike'}, Option_Type='Put', Buy_Sell='Buy')]
     recipe = [Price('call'), Price('put')]
 
 
-class Strangle:
+class Strangle(Structure):
     """The straddle's wings pulled apart: both bought, each at its own strike, so the client pays
     less and needs a bigger move. Both strikes are the client's - nothing is solved."""
     vernacular = 'strangle, wide straddle, bought cylinder'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY,
-              strike('floor', 'The lower strike, bought as a put on the pair'),
-              strike('cap', 'The upper strike, bought as a call on the pair')]
-    legs = [Leg('floor', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-                {'Strike_Price': 'floor'}),
-            Leg('cap', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Buy'),
-                {'Strike_Price': 'cap'})]
+    fields = [*Structure.QUOTED,
+              Structure.strike('floor', 'The lower strike, bought as a put on the pair'),
+              Structure.strike('cap', 'The upper strike, bought as a call on the pair')]
+    legs = [Leg.vanilla('floor', {'Strike_Price': 'floor'}, Option_Type='Put', Buy_Sell='Buy'),
+            Leg.vanilla('cap', {'Strike_Price': 'cap'}, Option_Type='Call', Buy_Sell='Buy')]
     recipe = [Price('floor'), Price('cap')]
 
 
-class ZeroCostCollar:
+class ZeroCostCollar(Structure):
     """Protection paid for by giving up the other side. The client names the level they want; the
     other one is whatever strike makes the sold wing fund the bought one exactly, which is why it
     is solved rather than quoted.
@@ -376,42 +328,41 @@ class ZeroCostCollar:
     the two is being dealt.
     """
     vernacular = 'zero-cost collar, range forward, cylinder'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    fields = [*Structure.QUOTED, *Structure.SELECTORS]
     variations = {'floor': Variation(
-        'quote', [strike('floor', 'The protected level; the cap is solved to fund it')],
-        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-             {'Strike_Price': 'floor'}),
-         Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))])}
+        'quote', [Structure.strike('floor', 'The protected level; the cap is solved to fund it')],
+        [Leg.vanilla('protection', {'Strike_Price': 'floor'}, Option_Type='Put', Buy_Sell='Buy'),
+         Leg.vanilla('financing', Option_Type='Call', Buy_Sell='Sell')])}
     variations['cap'] = reflected(
         variations['floor'], {'floor': 'cap'},
-        [strike('cap', 'The protected level; the floor is solved to fund it')])
+        [Structure.strike('cap', 'The protected level; the floor is solved to fund it')])
     recipe = [Price('protection'),
               Solve('financing', 'Strike_Price', -Premium('protection'))]
 
 
-class Seagull:
+class Seagull(Structure):
     """A collar cheapened by selling a second wing. The client names the level they want protected
     and the one past which they are willing to be unprotected again; the third strike is solved so
     the three legs sum to nothing."""
     vernacular = 'seagull, three-way, participating collar'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    fields = [*Structure.QUOTED, *Structure.SELECTORS]
     variations = {'floor': Variation(
-        'quote', [strike('floor', 'The protected level; the cap is solved against it'),
-                  strike('lower_floor', 'Where protection stops, sold back against the floor')],
-        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-             {'Strike_Price': 'floor'}),
-         Leg('participation', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Sell'),
-             {'Strike_Price': 'lower_floor'}),
-         Leg('financing', 'FXOptionDeal', dict(VANILLA, Option_Type='Call', Buy_Sell='Sell'))])}
+        'quote', [Structure.strike('floor', 'The protected level; the cap is solved against it'),
+                  Structure.strike('lower_floor',
+                                   'Where protection stops, sold back against the floor')],
+        [Leg.vanilla('protection', {'Strike_Price': 'floor'}, Option_Type='Put', Buy_Sell='Buy'),
+         Leg.vanilla('participation', {'Strike_Price': 'lower_floor'},
+                     Option_Type='Put', Buy_Sell='Sell'),
+         Leg.vanilla('financing', Option_Type='Call', Buy_Sell='Sell')])}
     variations['cap'] = reflected(
         variations['floor'], {'floor': 'cap', 'lower_floor': 'upper_cap'},
-        [strike('cap', 'The protected level; the floor is solved against it'),
-         strike('upper_cap', 'Where protection stops, sold back against the cap')])
+        [Structure.strike('cap', 'The protected level; the floor is solved against it'),
+         Structure.strike('upper_cap', 'Where protection stops, sold back against the cap')])
     recipe = [Price('protection'), Price('participation'),
               Solve('financing', 'Strike_Price', -Premium('protection', 'participation'))]
 
 
-class ForwardExtra:
+class ForwardExtra(Structure):
     """A zero-cost forward extra, in the client's stated cashflow direction.
 
     A client selling the pair's quote currency and buying its base currency caps the pair: they buy
@@ -420,24 +371,24 @@ class ForwardExtra:
     knocks in, either form reverts to a forward at the named cap or floor.
     """
     vernacular = 'forward extra, forward plus, at-worst forward'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY]
+    fields = [*Structure.QUOTED, *Structure.SELECTORS]
     variations = {'floor': Variation(
-        'quote', [strike('floor', 'The floor: the rate the client is protected at, and the '
-                                  'forward the structure reverts to once the barrier trades')],
-        [Leg('protection', 'FXOptionDeal', dict(VANILLA, Option_Type='Put', Buy_Sell='Buy'),
-             {'Strike_Price': 'floor'}),
+        'quote', [Structure.strike('floor', 'The floor: the rate the client is protected at, and '
+                                            'the forward the structure reverts to once the '
+                                            'barrier trades')],
+        [Leg.vanilla('protection', {'Strike_Price': 'floor'}, Option_Type='Put', Buy_Sell='Buy'),
          Leg('reversion', 'FXBarrierOption',
              {'Option_Type': 'Call', 'Buy_Sell': 'Sell', 'Barrier_Type': 'Up_And_In'},
              {'Strike_Price': 'floor'})])}
     variations['cap'] = reflected(
         variations['floor'], {'floor': 'cap'},
-        [strike('cap', 'The cap: the rate the client is protected at, and the forward the '
-                       'structure reverts to once the barrier trades')])
+        [Structure.strike('cap', 'The cap: the rate the client is protected at, and the forward '
+                                 'the structure reverts to once the barrier trades')])
     recipe = [Price('protection'),
               Solve('reversion', 'Barrier_Price', -Premium('protection'))]
 
 
-class TargetRedemptionForward:
+class TargetRedemptionForward(Structure):
     """A better rate than the forward at every fixing, bought with gearing and a redemption cap.
 
     At each fixing to the tenor the client deals `notional` at the solved strike: they accrue the
@@ -457,7 +408,7 @@ class TargetRedemptionForward:
     falls, so the direction is the only thing that tells the two apart and a TARF states one.
     """
     vernacular = 'tarf, target redemption forward, target forward'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY,
+    fields = [*Structure.QUOTED, *Structure.SELECTORS,
               F('fixing_frequency', 'Period', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
@@ -476,7 +427,7 @@ class TargetRedemptionForward:
     recipe = [Solve('tarf', 'Strike_Price', 0.0)]
 
 
-class Accumulator:
+class Accumulator(Structure):
     """The same bargain with a LEVEL instead of a cap: accumulate at a better-than-forward strike
     until the pair trades through the knock-out.
 
@@ -493,11 +444,12 @@ class Accumulator:
     TARF it is the DIRECTION that says which is being dealt.
     """
     vernacular = 'accumulator, decumulator, accumulator forward, accu'
-    fields = [PAIR, EXPIRY, NOTIONAL, NOTIONAL_CURRENCY, SELL_CURRENCY, BUY_CURRENCY,
+    fields = [*Structure.QUOTED, *Structure.SELECTORS,
               F('fixing_frequency', 'Period', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
-              strike('knockout', 'The level that cancels the strip when a fixing observes it'),
+              Structure.strike('knockout',
+                               'The level that cancels the strip when a fixing observes it'),
               F('leverage', 'Float', default=2.0,
                 description='The loss-side gearing: how many notionals the client deals on an '
                             'unfavourable fixing, against one on a favourable one')]
@@ -510,21 +462,17 @@ class Accumulator:
 
 
 def registry():
-    """`{name: class}` for every structure declared here - the same scan `emit_structures` makes.
-
-    A structure IS a class in this module carrying `vernacular`, so the key is the class name.
-    """
-    return {name: cls for name, cls in globals().items()
-            if isinstance(cls, type) and 'vernacular' in vars(cls)}
+    """`{name: class}` for every declared structure - each subclass of `Structure`."""
+    return {cls.__name__: cls for cls in Structure.__subclasses__()}
 
 
 def structure_named(name):
     """The structure class `name` refers to, or a refusal carrying the roster."""
-    found = globals().get(name)
-    if not (isinstance(found, type) and 'vernacular' in vars(found)):
+    roster = registry()
+    if name not in roster:
         raise ValueError('{!r} is not a structure - the roster is {}'.format(
-            name, ', '.join(sorted(registry()))))
-    return found
+            name, ', '.join(sorted(roster))))
+    return roster[name]
 
 
 def split_pair(pair):
@@ -576,13 +524,13 @@ def expiry_date(base_date, expiry):
     return {'.Timestamp': expires.strftime('%Y-%m-%d')}
 
 
-def fixing_grid(base_date, expiry, frequency):
+def fixing_grid(base_date, expiry, frequency, lag):
     """An accrual deal's fixing SCHEDULE, in the wire form both declarations read.
 
     `[[fixing, settlement, observed], ...]` - the row shape `TARF_ExpiryDates` and
     `Accumulator_ExpiryDates` share, untagged, with the observed fixing 0.0 because a quote is
     struck today. Fixings run from the book's `Base_Date` at `frequency` up to and including the
-    tenor; each settles `FIXING_LAG` days later.
+    tenor; each settles `lag` calendar days later.
 
     Each fixing is `base + n x frequency` rather than a step off the previous one, an offset
     applied repeatedly from a month end walking (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
@@ -606,7 +554,7 @@ def fixing_grid(base_date, expiry, frequency):
         if fixing > last:
             break
         rows.append([{'.Timestamp': fixing.strftime('%Y-%m-%d')},
-                     {'.Timestamp': (fixing + pd.DateOffset(days=FIXING_LAG)).strftime('%Y-%m-%d')},
+                     {'.Timestamp': (fixing + pd.DateOffset(days=lag)).strftime('%Y-%m-%d')},
                      0.0])
         step += 1
     if not rows:
@@ -644,7 +592,7 @@ def client_buys(params, side):
     """
     sides = {currency: name for name, currency in side.items()}
     buys = None
-    for field, bought in ((BUY_CURRENCY, True), (SELL_CURRENCY, False)):
+    for field, bought in ((Structure.BUY_CURRENCY, True), (Structure.SELL_CURRENCY, False)):
         if not stated(params, field.key):
             continue
         # read as `split_pair` reads the pair it is checked against, off the same ticket
@@ -653,7 +601,7 @@ def client_buys(params, side):
             raise ValueError('{} {!r} is not a side of {}{} - the client deals the two currencies '
                              'of the pair being quoted'.format(
                                  field.key, currency, side['base'], side['quote']))
-        named = sides[currency] if bought else OPPOSITE[sides[currency]]
+        named = sides[currency] if bought else schema.flipped(Variation.BUYS, sides[currency])
         if buys is not None and buys != named:
             raise ValueError('a client cannot buy {0} and sell {0} - buy_currency and '
                              'sell_currency are the two sides of {1}{2}'.format(
@@ -677,7 +625,7 @@ def variation_for(structure, params):
     variations = getattr(structure, 'variations', None)
     if not variations:
         return None, None
-    side = dict(zip(('base', 'quote'), split_pair(params['pair'])))
+    side = dict(zip(Variation.BUYS.values, split_pair(params['pair'])))
     buys = client_buys(params, side)
     own = {name: {f.key for f in variation.fields} for name, variation in variations.items()}
     given = {key for keys in own.values() for key in keys if stated(params, key)}
@@ -702,7 +650,7 @@ def variation_for(structure, params):
         '{}: a client selling {} and buying {} deals {}, which states {}, not {}. buy_currency and '
         'sell_currency are the CLIENT\'s own side of the trade - not the desk\'s, and not the side '
         'the notional is quoted in'.format(
-            structure.__name__, side[OPPOSITE[buys]], side[buys],
+            structure.__name__, side[schema.flipped(Variation.BUYS, buys)], side[buys],
             ' or '.join(dealt) or 'nothing at all', ', '.join(takes) or 'no level of its own',
             ', '.join(sorted(given.difference(takes)))))
 
@@ -743,13 +691,13 @@ def declared(structure, params):
             structure.__name__, ', '.join(unknown),
             ', '.join(sorted(others.union(f.key for f in fields)))))
     declarations = {f.key: f.default for f in fields
-                    if f.default is not REQUIRED and f not in SELECTORS}
+                    if f.default is not REQUIRED and f not in structure.SELECTORS}
     return {key: value for key, value in dict(declarations, **params).items()
             if stated(params, key) or key not in others}
 
 
-def spot_model(document, deal_type, underlying, settlement):
-    """Pin `SPOT_MODEL` on `deal_type` where THIS book carries a calibration for the leg's pair.
+def spot_model(document, deal_type, underlying, settlement, model):
+    """Pin `model` on `deal_type` where THIS book carries a calibration for the leg's pair.
     Returns the leg's note, or `None` when the model was pinned.
 
     The switch is a `Valuation Configuration` entry per deal TYPE, and the parameters resolve by
@@ -773,9 +721,9 @@ def spot_model(document, deal_type, underlying, settlement):
     factors = market_data(document)
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     standing = (market.get('Valuation Configuration', {}).get(deal_type) or {}).get('SpotModel')
-    model = standing or SPOT_MODEL
+    model = standing or model
     token = utils.spot_model_currency(underlying, settlement, base_currency(document))
-    factor = SPOT_MODEL_FACTOR.format(model, token)
+    factor = utils.spot_model_factor(model, token)
     if factor in factors:
         market.setdefault('Valuation Configuration', {}).setdefault(
             deal_type, {})['SpotModel'] = model
@@ -820,7 +768,7 @@ def pin_models(document, deal, pinned):
         # will not ask for
         token = utils.spot_model_currency(
             block['Underlying_Currency'], block['Currency'], base)
-        factor = SPOT_MODEL_FACTOR.format(entry['SpotModel'], token)
+        factor = utils.spot_model_factor(entry['SpotModel'], token)
         if factor not in factors:
             raise ValueError(
                 'this quote was priced under {} and the book no longer carries {} - booking the '
@@ -934,6 +882,11 @@ def with_live_spots(document, crosses):
     return written
 
 
+def prices_block(surface):
+    """The `Market Prices` block `surface` is bootstrapped from, and quoted two-way on."""
+    return '{}Prices.{}'.format(Structure.SURFACE, surface)
+
+
 def quote_points(document, surface):
     """The quotes `surface` was built from - `FXVolSurfaceParameters.used`'s filter over the
     `FXVolPrices` block, and empty where the book carries no such block at all.
@@ -947,7 +900,7 @@ def quote_points(document, surface):
     """
     prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
         'ExplicitMarketData', {}).get('Market Prices', {})
-    block = (prices.get(FX_VOL_PRICES.format(surface)) or {}).get('instrument')
+    block = (prices.get(prices_block(surface)) or {}).get('instrument')
     return [point for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'] \
         if block and block.get('Points') else []
 
@@ -1014,7 +967,10 @@ def leg_vega(document, leg, surface):
     bare = without_spot_model(run, leg.deal['Object'])
     vega = vol_risk(bare, [], surface)
     return (vega, 'surface' if bare is run else 'lognormal reading', leg.note) if vega \
-        else (None, None, ' '.join(filter(None, (leg.note, NO_VEGA))))
+        else (None, None, ' '.join(filter(None, (
+            leg.note, 'the two-way could not reach this leg - neither the surface nor a lognormal '
+                      'reading of it publishes an FX vol quote sensitivity, so no spread was '
+                      'charged on it'))))
 
 
 def spread_block(vega, source, halves, scale=1.0):
@@ -1083,13 +1039,14 @@ def materialize(structure, params, document):
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
                          "the structure's own".format(notional))
     factors = market_data(document)
+    family = Structure.SURFACE + '.'
     spellings = ('{}.{}'.format(base, quote_ccy), '{}.{}'.format(quote_ccy, base))
-    surface = next((pair for pair in spellings if FX_VOL_FACTOR.format(pair) in factors), None)
+    surface = next((pair for pair in spellings if family + pair in factors), None)
     if surface is None:
         raise ValueError('{} is not a pair this book quotes - it carries {}'.format(
             params['pair'], ', '.join(name.split('.', 1)[1].replace('.', '')
                                       for name in sorted(factors)
-                                      if name.startswith('FXVol.')) or 'no FX surface'))
+                                      if name.startswith(family)) or 'no FX surface'))
     settlement = quote_ccy if underlying == base else base
     # the quoted axis is the deal's own only when the notional is the pair's BASE currency
     inverted = underlying == quote_ccy
@@ -1100,12 +1057,13 @@ def materialize(structure, params, document):
     seed = engine_spot(document, underlying, settlement)
 
     out = []
+    furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
     variation = variation_for(structure, params)[1]
     for leg in (variation.legs if variation else structure.legs):
-        if leg.deal_type not in ('FXOptionDeal', 'FXBarrierOption') + ACCRUAL_DEALS:
-            raise ValueError('{}: the runner furnishes FXOptionDeal, FXBarrierOption and the '
-                             'accrual deals {}, not {}'.format(
-                                 leg.role, ', '.join(ACCRUAL_DEALS), leg.deal_type))
+        if leg.deal_type not in furnished:
+            raise ValueError('{}: the runner furnishes {} and the accrual deals {}, not {}'.format(
+                leg.role, ', '.join(t for t in furnished if not accrues(t)),
+                ', '.join(t for t in furnished if accrues(t)), leg.deal_type))
         deal = dict(shared, Object=leg.deal_type)
         deal.update(leg.pinned)
         for field, slot in leg.slots.items():
@@ -1117,11 +1075,10 @@ def materialize(structure, params, document):
                 'Strike_Price', 'Barrier_Price') else value
         # senses and directions convert AFTER pinned and slots merge, so a structure letting the
         # client choose either still crosses the axis exactly once
+        market_type = deal.get('Barrier_Type')
         if inverted:
             # a call on the pair is a put on the quote currency
-            for field, flip in (('Option_Type', OPTION_FLIP), ('Barrier_Type', BARRIER_FLIP)):
-                if field in deal:
-                    deal[field] = flip[deal[field]]
+            deal = crossed(leg.deal_type, deal)
         # a level the CLIENT stated must sit on the LIVE side of its own direction, both being on
         # the engine axis by now, and a level ON the spot is through it already - the pricer's own
         # survival is strict both ways. A SOLVED level is the recipe's, bracketed on that side
@@ -1133,8 +1090,7 @@ def materialize(structure, params, document):
                 'checked against - an Up level is quoted above the spot and a Down one below it, '
                 'and a level on it is through already. State one the pair has to travel to, or '
                 'quote the structure the other way round'.format(
-                    leg.role, BARRIER_FLIP[deal['Barrier_Type']] if inverted
-                    else deal['Barrier_Type'],
+                    leg.role, market_type,
                     1.0 / deal['Barrier_Price'] if inverted else deal['Barrier_Price'],
                     1.0 / seed if inverted else seed))
         # an unsolved strike still has to be a number the splice can price - the solve replaces it
@@ -1149,20 +1105,26 @@ def materialize(structure, params, document):
             # read off the ENGINE axis the type now sits on
             deal.setdefault('Barrier_Price',
                             seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
-        note = furnish_accrual(deal, params, document, base_date, underlying, inverted) \
-            if leg.deal_type in ACCRUAL_DEALS else None
+        note = furnish_accrual(structure, deal, params, document, base_date, underlying,
+                               inverted) if accrues(leg.deal_type) else None
         out.append(Materialized(leg.role, deal, inverted, note))
     return out
 
 
-def furnish_accrual(deal, params, document, base_date, underlying, inverted):
+def accrues(deal_type):
+    """Whether `deal_type` observes a fixing SCHEDULE - an accrual leg - rather than one expiry."""
+    return getattr(schema.OBSERVES.get(deal_type), 'table', None) is not None
+
+
+def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted):
     """The rest of an accrual leg: its fixing strip, its geared notional, and the one axis question
     a strip asks that a single expiry does not. Returns the leg's note.
 
-    THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, filed under the
-    deal's own field name. `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST
-    SETTLEMENT rather than to the tenor; `FXAccumulatorOptionDeal` declares no such field, so the
-    shared block's is REMOVED - a deal block is the field dict the pricer reads.
+    THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, settling the
+    structure's `fixing_lag` on, and it is filed under the table the deal declares it observes.
+    `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST SETTLEMENT rather than to the
+    tenor; `FXAccumulatorOptionDeal` declares no such field, so the shared block's is REMOVED - a
+    deal block is the field dict the pricer reads.
 
     THE NOTIONALS. `Underlying_Amount` is the notional per fixing, already in `notional_currency`;
     `LeverageNotional` is `leverage` times it. Neither has an axis: `notional_currency` IS the
@@ -1176,8 +1138,8 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
     FIRST statement, since a refusal firing later has already written the block the caller holds. An
     accumulator has no target and crosses freely.
 
-    THE MODEL. `spot_model` pins `SPOT_MODEL` where the book carries a calibration for this leg's
-    PAIR, and hands back the note where it does not.
+    THE MODEL. `spot_model` pins the structure's `spot_model` where the book carries a calibration
+    for this leg's PAIR, and hands back the note where it does not.
     """
     if inverted and deal['Object'] == 'FXTARFOptionDeal':
         raise ValueError(
@@ -1185,8 +1147,9 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
             'an accrual cap in the pair\'s own units, the deal accrues on the axis its notional '
             'puts it on, and a sum of differences has no reading on the reciprocal - '
             '{} would cap a move nobody quoted'.format(underlying))
-    schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'])
-    deal[SCHEDULE_FIELD[deal['Object']]] = schedule
+    schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'],
+                           structure.fixing_lag)
+    deal[schema.OBSERVES[deal['Object']].table] = schedule
     deal['LeverageNotional'] = float(params['leverage']) * float(params['notional'])
     if deal['Object'] == 'FXTARFOptionDeal':
         deal['Expiry_Date'] = dict(schedule[-1][1])
@@ -1196,7 +1159,7 @@ def furnish_accrual(deal, params, document, base_date, underlying, inverted):
         deal.setdefault('Barrier', 0.0)
     else:
         deal.pop('Expiry_Date', None)
-    return spot_model(document, deal['Object'], underlying, deal['Currency'])
+    return spot_model(document, deal['Object'], underlying, deal['Currency'], structure.spot_model)
 
 
 def declared_paths():
@@ -1259,8 +1222,8 @@ def run_price(document, deal):
 def run_solve(document, leg, field, target, spot, seed=None):
     """`derivus.solve_deal_field` over one leg, bracketed, writing the answer back onto the leg.
 
-    A strike is bracketed around the market spot by `STRIKE_BRACKET` - `ACCRUAL_BRACKET` for a
-    strip - and crossed to the engine axis, where inverting swaps the ends, so they are sorted
+    A strike is bracketed around the market spot by `Solve.STRIKE_BRACKET` - `ACCRUAL_BRACKET` for
+    a strip - and crossed to the engine axis, where inverting swaps the ends, so they are sorted
     rather than assumed. A BARRIER is bracketed on the side its own type lives on, off the same
     ends. Any other field is left to the secant from its current value, which is exact in two
     pricings for anything the value is affine in. Returns `(solved, premium at the solved value)`.
@@ -1275,17 +1238,17 @@ def run_solve(document, leg, field, target, spot, seed=None):
     iterate, deal_path = alone(document, leg.deal)
     bounds = None
     if field == 'Strike_Price':
-        ends = ACCRUAL_BRACKET if leg.deal['Object'] in ACCRUAL_DEALS else STRIKE_BRACKET
+        ends = Solve.ACCRUAL_BRACKET if accrues(leg.deal['Object']) else Solve.STRIKE_BRACKET
         bounds = sorted([spot / end if leg.inverted else spot * end for end in ends])
     elif field == 'Barrier_Price':
         # `spot` and the leg's Barrier_Type are both already on the ENGINE axis, so the direction
         # names the side directly - with a hair of buffer so the barrier never lands on the spot
-        bounds = sorted([spot * STRIKE_BRACKET[0], spot * 0.9999]) \
+        bounds = sorted([spot * Solve.STRIKE_BRACKET[0], spot * 0.9999]) \
             if leg.deal['Barrier_Type'].startswith('Down') \
-            else sorted([spot * 1.0001, spot * STRIKE_BRACKET[1]])
+            else sorted([spot * 1.0001, spot * Solve.STRIKE_BRACKET[1]])
     ends = [bounds] if bounds is None or seed is None else [
-        [max(bounds[0], seed * (1.0 - SEED_BRACKET)),
-         min(bounds[1], seed * (1.0 + SEED_BRACKET))], bounds]
+        [max(bounds[0], seed * (1.0 - Solve.SEED_BRACKET)),
+         min(bounds[1], seed * (1.0 + Solve.SEED_BRACKET))], bounds]
     for attempt, span in enumerate(ends):
         try:
             solved, _, _, out = solve_deal_field(
@@ -1383,26 +1346,16 @@ def check_netting_set(document, reference):
 
 
 def read_policy(document):
-    """The desk's quoting mandate off `Calc['Quote Policy']`, or `None` where the book declares
-    none - and `None` turns the whole risk-impact feature off, which is the compatibility contract.
-
-    Six fields, each read with `.get` against `POLICY_DEFAULTS` so a block may state one of them:
-
-      - `participation` - how much of a measured hedge-cost SAVING is passed to the client
-      - `floor` - 'mid': the scale never goes below zero, so a quote never crosses the mid
-      - `scope` - 'vol', all v1 measures; anything else refuses
-      - `bucket_limit` - a per-bucket cap on `|risk after|` in the bucket's own vega units, past
-        which no tightening applies however good the saving looks
-      - `min_ticket_bp` - flat bp of notional, the ops floor under the edge
-      - `firm_seconds` - how long a quote stays approvable; the approval verb reads it, and this
-        module carries it through so a desk states its mandate in ONE block
-
-    A field that will not read refuses HERE rather than at the later verb that compares against it.
+    """The desk's quoting mandate off `Calc['Quote Policy']`, completed by `Structure.POLICY`'s
+    declarations, or `None` where the book declares none - which turns the risk-impact half off. A
+    field that will not read refuses HERE rather than at the later verb that compares against it.
     """
-    policy = document.get('Calc', {}).get(QUOTE_POLICY)
+    section = Structure.POLICY.name
+    policy = document.get('Calc', {}).get(section)
     if policy is None:
         return None
-    read = {name: policy.get(name, default) for name, default in POLICY_DEFAULTS.items()}
+    completed = schema.declared_defaults(Structure.POLICY, policy)
+    read = {f.key: completed.get(f.key) for f in Structure.POLICY.fields}
     try:
         read['firm_seconds'] = float(read['firm_seconds'])
         if read['firm_seconds'] < 0.0:
@@ -1410,15 +1363,15 @@ def read_policy(document):
     except (TypeError, ValueError):
         raise ValueError('{}: firm_seconds {!r} - a quote is firm for a NUMBER of seconds, and a '
                          'window that cannot be read is one no approval could be measured '
-                         'against'.format(QUOTE_POLICY, policy.get('firm_seconds'))) from None
+                         'against'.format(section, policy.get('firm_seconds'))) from None
     if read['scope'] != 'vol':
         raise ValueError('{}: scope {!r} - v1 measures the vol book and nothing else, so any '
                          'other scope would quote a residual it never looked at'.format(
-                             QUOTE_POLICY, read['scope']))
+                             section, read['scope']))
     if read['floor'] != 'mid':
         raise ValueError('{}: floor {!r} - the only floor v1 implements is the mid, which is the '
                          'ruling that a quote never goes through it automatically'.format(
-                             QUOTE_POLICY, read['floor']))
+                             section, read['floor']))
     return read
 
 
@@ -1440,7 +1393,7 @@ def risk_document(document, nodes, surface):
     run['Calc']['Calculation'] = priced_job(run['Calc']['Calculation'], Greeks='First')
     schema.job_children(run).extend(nodes)
     block = run['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Market Prices'][FX_VOL_PRICES.format(surface)]
+        'Market Prices'][prices_block(surface)]
     points = [dict(point, Use=point.get('Use', 'Yes'))
               for point in block['instrument'].get('Points') or []]
     block['instrument'] = dict(block['instrument'], Points=points, Quote_Sensitivity='Yes')
@@ -1477,24 +1430,19 @@ def vol_risk(document, nodes, surface):
     return risk
 
 
-def book_risk(document, surface):
-    """The book's OWN vol risk, cached on the book's content etag.
-
-    The book alone is the half of the measurement that does not depend on what is being quoted, so
-    a desk quoting repeatedly against a standing book pays for one greeks run rather than two per
-    quote. The etag is over everything the run reads - a rolled `Base_Date` over an unmoved book is
-    a different risk vector.
-    """
+def book_risk(document, surface, cache):
+    """The book's OWN vol risk, kept in `cache` - an LRU the caller owns - under a hash of
+    everything the run reads; `None` caches nothing. The book alone is the half of the measurement
+    that does not depend on what is quoted, so a standing book pays one greeks run per quote."""
+    if cache is None:
+        return vol_risk(document, [], surface)
     from . import content_hash
     etag = content_hash({'deals': document['Calc']['Deals']['Deals'],
                          'market': document['Calc']['MergeMarketData'],
                          'calculation': document['Calc']['Calculation'],
                          'surface': surface})
-    if etag not in RISK_CACHE:
-        if len(RISK_CACHE) >= RISK_CACHE_LIMIT:
-            RISK_CACHE.pop(next(iter(RISK_CACHE)))
-        RISK_CACHE[etag] = vol_risk(document, [], surface)
-    return RISK_CACHE[etag]
+    found = cache.get(etag)
+    return found if found is not None else cache.put(etag, vol_risk(document, [], surface))
 
 
 def risk_buckets(before, after, halves):
@@ -1600,13 +1548,13 @@ def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=No
     return legs, premiums, solved
 
 
-def risk_impact(document, params, reference, surface, legs, halves, charge_full):
+def risk_impact(document, params, reference, surface, legs, halves, charge_full, cache):
     """The whole risk-impact step over a candidate the two-way has already been charged on.
 
-    Measures the book with the candidate's MIRROR on it and without, prices the difference at the
-    market's own two-way, applies the policy, and hands back the `risk` block the outcome carries -
-    `scale` included, which is what the quote's charge is multiplied by before the coordinate is
-    re-solved.
+    Measures the book with the candidate's MIRROR on it and without - the book alone through
+    `cache` - prices the difference at the market's own two-way, applies the policy, and hands back
+    the `risk` block the outcome carries - `scale` included, which is what the quote's charge is
+    multiplied by before the coordinate is re-solved.
 
     Five ways out, each leaving `scale` at None with the reason NAMED rather than reported as a
     scale of 1 nobody can distinguish from a decision: the book declares no `Quote Policy`; it
@@ -1620,10 +1568,10 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full)
              'charge_effective': None, 'scale': None, 'policy': policy}
     if policy is None:
         return dict(empty, note='the book declares no {} block - the quote is the full two-way '
-                                'spread, exactly as it was before'.format(QUOTE_POLICY))
+                                'spread, exactly as it was before'.format(Structure.POLICY.name))
     if not halves:
         return dict(empty, note='{} carries no two-way - there is no spread to tighten'.format(
-            FX_VOL_PRICES.format(surface)))
+            prices_block(surface)))
     if charge_full is None:
         return dict(empty, note='no leg of this structure publishes an FX vol quote sensitivity - '
                                 'the two-way reached none of them, so nothing was charged and '
@@ -1636,7 +1584,7 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full)
     # the MIRROR is the desk's side, and the same verb the approval books through, so the risk
     # measured and the trade booked cannot disagree by a sign
     candidate = book_node(mirror(compose(reference, legs)))
-    before = book_risk(document, surface)
+    before = book_risk(document, surface, cache)
     after = vol_risk(document, [candidate], surface)
     if not (before or after):
         return dict(empty, charge_full=charge_full,
@@ -1647,7 +1595,7 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full)
     rows, cost = risk_buckets(before, after, halves)
     # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
     # is in the run's, so the ops floor crosses on the same FxRate ratio `engine_spot` reads
-    min_ticket =float(policy['min_ticket_bp']) * BASIS_POINT * float(params['notional']) * \
+    min_ticket = float(policy['min_ticket_bp']) * 1e-4 * float(params['notional']) * \
         engine_spot(document, str(params['notional_currency']).upper(),
                     document['Calc']['Calculation']['Currency'])
     scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
@@ -1656,7 +1604,8 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full)
             'policy': policy, 'note': note}
 
 
-def quote(document, structure_name, params, spot_source=None, netting_set=None, margin=None):
+def quote(document, structure_name, params, spot_source=None, netting_set=None, margin=None,
+          cache=None):
     """Price a structure against a book, and hand back the quote plus the deal it would book.
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
@@ -1711,7 +1660,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     does, the mid candidate is MIRRORED into the desk's side and the book's vol risk is measured
     with it and without it in quote coordinates. Each bucket's move in ABSOLUTE risk times that
     bucket's own half-spread is what hedging the residual costs; a negative total is a SAVING, and
-    `participation` of it comes off the charge, `charge_effective = scale x charge_full`.
+    `participation` of it comes off the charge, `charge_effective = scale x charge_full`. `cache`
+    holds the book-alone half across quotes - `book_risk`'s - and `None` measures it every time.
 
     ONE PASS, NOT A FIXED POINT - a stated approximation. Both the vegas and the risk buckets are
     the MID solution's while the charge moves the solved coordinate, so the quoted structure's vega
@@ -1747,7 +1697,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # before the outcome reports the parameters, rather than inside `materialize` alone
     params = declared(structure, params)
     variation, dealt = variation_for(structure, params)
-    side = dict(zip(('base', 'quote'), split_pair(params['pair'])))
+    side = dict(zip(Variation.BUYS.values, split_pair(params['pair'])))
     quote_id = content_hash({
         'structure': structure_name, 'params': params, 'netting_set': netting_set,
         'margin': margin,
@@ -1774,7 +1724,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
               if block['spread_charge'] is not None]
     # a charge NO leg could be read for is not a charge of nothing; it is a charge nobody measured
     full = sum(priced) if priced else None
-    risk = risk_impact(document, params, reference, surface, legs, halves, full)
+    risk = risk_impact(document, params, reference, surface, legs, halves, full, cache)
     # what the charge was levied AT: the base pass takes the full two-way, a tightened quote the
     # policy's own scale, and the rows below are rebuilt at the money that was really charged
     charged = 1.0 if risk['scale'] is None else risk['scale']
@@ -1791,7 +1741,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # was priced rather than off the ticket, so the booking and the account of it agree. Both
         # null for a structure declaring one form
         'variation': variation,
-        'client': {'buys': side[dealt.buys], 'sells': side[OPPOSITE[dealt.buys]]}
+        'client': {'buys': side[dealt.buys],
+                   'sells': side[schema.flipped(Variation.BUYS, dealt.buys)]}
         if dealt else None,
         # WHO the quote is for, always said: a null is the root booking, never an unanswered
         # question
@@ -1821,7 +1772,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # and it IS the charge, so it is non-negative by construction
         'edge': levied,
         'spread_note': None if halves else '{} {} - there is no two-way to charge, so the quote '
-        'is the mid'.format(FX_VOL_PRICES.format(surface),
+        'is the mid'.format(prices_block(surface),
                             'carries no Quoted_Bid/Quoted_Ask'
                             if quote_points(document, surface) else 'is not on this book'),
         # what the RUNNER did to this job that the book did not say - the quote prices a simulated

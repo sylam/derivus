@@ -8,13 +8,17 @@ runner own the rest.
 
 ## A structure is a class, and everything on it is a declaration
 
-The class name is the registry key (`globals()` dispatch, the house pattern), and it declares:
+A structure subclasses `Structure`, its class name is the registry key (`Structure.__subclasses__()`,
+so declaring one IS registering it), and it declares these four and nothing else - one declaring no
+`vernacular` refuses at import:
 
 - **`vernacular`** — the sales names, comma-separated (`'zero-cost collar, range forward, cylinder'`).
   `describe_structure` matches these as well as the class name, so a model that says "cylinder" lands
   on `ZeroCostCollar`.
 - **`fields`** — the parameters as `schema.F` descriptors, so `describe_structure` renders exactly like
-  `describe_instrument_type` and every client shares one rendering path.
+  `describe_instrument_type` and every client shares one rendering path. The ones every structure
+  shares are the base's — `Structure.QUOTED` (pair, expiry, notional and its currency), the two
+  `SELECTORS`, and `Structure.strike(name, description)` for a market-terms level.
 - **`legs`** — named legs, each a `DealType` plus a PARTIAL deal block. This is the [Market Prices quote
   pattern](market_prices.md#a-quote) verbatim: a leg never restates an instrument's fields — the
   `Instrument` store's declarations ARE the leg's schema — it pins what the structure fixes and maps
@@ -27,8 +31,8 @@ The class name is the registry key (`globals()` dispatch, the house pattern), an
   leg solves to `-Premium('protection')` and a seagull's to the negative of a sum). Steps run in order;
   each prices the leg ALONE against the book document.
 
-`mapping['Structure']` is `schema.emit_structures(structures)`, assembled with the other stores, so
-`GET /schema` publishes the vocabulary and a front end can grow a structures screen for free. An entry
+`mapping['Structure']` is `schema.emit_structures(structures.Structure)`, assembled with the other
+stores, so `GET /schema` publishes the vocabulary and a front end can grow a structures screen for free. An entry
 carries `legs` or `variations` and never both, so a consumer reads which shape it has off the entry.
 
 ## One structure, more than one booking {#variations}
@@ -40,8 +44,9 @@ whichever was dealt. The same is true of every structure here bar the straddle a
 variation is DECLARED data rather than a branch in the runner.
 
 **`reflected(variation, rename, fields)` derives the mirror image** where there is one. Every leg's
-`Option_Type` swaps and every `Barrier_Type` crosses through `BARRIER_FLIP`, a level said about the pair
-reading the other way round for a client standing the other side of it. Two things do not move: In and
+`Option_Type` swaps and every `Barrier_Type`'s direction turns (`schema.flipped`, read off the leg type's
+own declaration), a level said about the pair reading the other way round for a client standing the
+other side of it. Two things do not move: In and
 Out describe what the payoff does on touch and mean the same to either client, and `Buy_Sell` is the
 CLIENT's own side on both sheets — an importer buys their protection exactly as an exporter buys theirs
 — so client paper becoming the bank's position stays [`mirror`](#two-sided)'s one seam. `rename` carries
@@ -83,9 +88,10 @@ for every structure at once:
 - a BARRIER leg crosses on a third axis. `Barrier_Price` inverts exactly as a strike does (it is a level
   on the same pair) and the barrier's DIRECTION inverts with it — the `Up_And_In` a forward extra
   declares on the pair is booked `Down_And_In` on a rand notional — while In/Out describes the PAYOFF
-  rather than the axis and never moves. `BARRIER_FLIP` is that map, declared beside `VANILLA` and
-  applied exactly where `Option_Type` flips. `Option_Style` is NOT pinned on a barrier leg:
-  `FXBarrierOption` declares no such field.
+  rather than the axis and never moves. `schema.flipped` is that map, read off the deal type's own
+  `Barrier_Type` values and applied exactly where `Option_Type` flips — the arithmetic `spine.scaled`
+  takes on a `side` field. `Option_Style` is NOT pinned on a barrier leg: `FXBarrierOption` declares no
+  such field, which is why only `Leg.vanilla` pins it.
 
 An **accrual** leg asks the axis question a fourth time and gets the first NO. A knock-out is a LEVEL
 and crosses exactly as a barrier does, so an accumulator quotes from either side of the pair. A
@@ -135,7 +141,8 @@ buffer at the spot so the level never lands exactly on it: `Down_*` over `(0.25,
 `Up_*` over `(1.0001, 4.0) × spot`, both read on the ENGINE axis the leg's `Barrier_Type` has already
 crossed to. A knock-in's premium is monotone in its barrier, so brentq owns the root or refuses by name.
 
-An **accrual** strike is bracketed over `ACCRUAL_BRACKET` — `(0.5, 2.0) ×` spot — and the reason is
+An **accrual** strike — a leg whose type observes a fixing table — is bracketed over
+`Solve.ACCRUAL_BRACKET` — `(0.5, 2.0) ×` spot — and the reason is
 measured. A strip's value is monotone in its strike but SATURATES at the low end: past the point where
 every fixing redeems the target at once it is flat at `target × notional` discounted, so moving the end
 in gives up no root. What leaving it out gives up is the solve itself — at `0.25 ×` spot on
@@ -171,8 +178,9 @@ price. `furnish_accrual` is where a leg becomes a strip:
 - **the schedule.** `fixing_grid` grows `[[fixing, settlement, observed], ...]` — the untagged row shape
   both declarations read by iterating — from the tenor and `fixing_frequency`, each fixing at
   `base + n × frequency` rather than a step off the last (an offset applied repeatedly from a month end
-  walks: 31 Jan + 1M + 1M is 28 Mar), settling `FIXING_LAG` days on, observed 0.0 because a quote is
-  struck today. A tenor holding no whole fixing period refuses rather than returning an empty strip.
+  walks: 31 Jan + 1M + 1M is 28 Mar), settling the structure's `fixing_lag` days on, observed 0.0
+  because a quote is struck today, and filed under the table the deal's `observes` names. A tenor
+  holding no whole fixing period refuses rather than returning an empty strip.
 - **the two ways a strip comes out SHORT**, neither allowed to be silent. A frequency that does not
   DIVIDE the tenor stops at the last fixing that fits — a 1Y ticket at 5M fixes in November and April,
   the `Expiry_Date` becomes the April settlement, and the deal is priced, reported and two-way spread at
@@ -188,7 +196,7 @@ price. `furnish_accrual` is where a leg becomes a strip:
   `leverage ×` it. `leverage` is the registry's first parameter with a DEFAULT (2.0, the market's own
   gearing), published as the descriptor's `value` and read through `declared()` rather than a `.get`.
 - **the model.** Both deals declare `spot_models = ('None', 'LogVar2FJ')`, and the runner pins
-  `LogVar2FJ` (`structures.SPOT_MODEL`). The switch is a `Valuation Configuration` entry per deal
+  `LogVar2FJ` (the structure's `spot_model`). The switch is a `Valuation Configuration` entry per deal
   TYPE resolved by naming
   convention off [the pair's key](#the-join) — `LogVar2FJModelParameters.ZAR` for a USDZAR leg on a
   USD book, whichever side the notional is on, because the base currency is a numeraire and can name
@@ -519,12 +527,14 @@ gate's 1m ZAR collar, a desk holding one and quoted the same one back, the offse
 −456.19 at a 0.002 half, `BF 0.25 1` by −45.48 at 0.001 and `RR 0.25 1` by −8281.52 at 0.001, for a
 measured saving of **9.2394 USD** against a full charge of **105.9701 USD**.
 
-**The policy** is a declared `Quote Policy` block on `Calc`, beside `Calculation` and `MergeMarketData`
-— not inside `ExplicitMarketData`, because `Context.load_json` does `cfg.params[section].update(...)`
-and a section `Config` does not declare raises `KeyError` on load (measured), and a mandate is not
-market data anyway. Every reader of a job walks `Calc` by name, so an unknown key there travels through
-load, pricing and the book file untouched, and `structures.quote` is its only reader. Six fields, each
-read with `.get`:
+**The policy** is a `Quote Policy` block on `Calc`, beside `Calculation` and `MergeMarketData` — not
+inside `ExplicitMarketData`, because `Context.load_json` does `cfg.params[section].update(...)` and a
+section `Config` does not declare raises `KeyError` on load, and a mandate is not market data anyway.
+Every reader of a job walks `Calc` by name, so an unknown key there travels through load, pricing and
+the book file untouched. Its six fields are DECLARED — `Structure.POLICY`, a `schema.Group` named for
+the section, each field a `convention` — so `read_policy` completes a block stating one of them through
+`schema.declared_defaults` like every other declaration, and `GET /schema` publishes them under
+`Quote Policy`:
 
 | field | default | what it decides |
 | --- | --- | --- |
@@ -569,11 +579,10 @@ position: the repeat quotes a cap of 19.14881898 (the full-charge cap, to the bi
 Client-better, and never through the mid.
 
 **The cache.** The book-alone half of the measurement does not depend on what is being quoted and moves
-only when the market ticks or something books — both of which change the book's content etag — so it is
-kept in a bounded module dict keyed by that etag, and a desk quoting repeatedly against a standing book
-pays one greeks run per quote instead of two. Measured: a miss is **30.5 ms** and a hit **0.115 ms**,
-against a cold run of 105.8 ms. Bounded at 16 entries because a book that ticks every 30s would
-otherwise leak a vector per tick.
+only when the market ticks or something books — both of which change its content hash — so the served
+`Book` keeps it, a `utils.LRUCache` of 16 beside the one of 8 `/book/risk` keeps its consolidated risk
+in, and a desk quoting repeatedly against a standing book pays one greeks run per quote instead of two.
+`structures.quote` takes the cache as an argument; a caller passing none measures every time.
 
 ## The quote lifecycle
 

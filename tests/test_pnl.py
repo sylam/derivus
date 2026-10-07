@@ -1746,12 +1746,13 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     assert [row['key'] for row in worklist()['calls']] == ['CSA-A', 'CSA-B']
 
     risk = CLIENT.get('/book/risk').json()
-    cached = service.BOOK_RISK_CACHE[risk['etag']]
+    cached = service.BOOK.risk_cache.get(risk['etag'])
+    assert cached is not None, 'the risk was never kept on the book'
     moved('CSA-A', a['call'], 'USD', 'collateral', 'COL-A1', '2024-06-28')
     moved('CSA-A', 2_000_000.0, 'USD', 'margin', 'MRG-A1', '2024-06-28')
     moved('CSA-B', b['call'], 'ZAR', 'collateral', 'COL-B1', '2024-07-01')
     again = CLIENT.get('/book/risk').json()
-    assert again == risk and service.BOOK_RISK_CACHE[again['etag']] is cached, \
+    assert again == risk and service.BOOK.risk_cache.get(again['etag']) is cached, \
         'a settlement threw the risk away'
     settled = called('2024-06-28')
     assert (settled['CSA-A']['call'], settled['CSA-A']['direction']) == (0.0, None), \

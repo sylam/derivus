@@ -523,6 +523,10 @@ class Book:
         self.lock = threading.Lock()
         self._cache = (None, 0, None, None)  # (stamp and size, read at, etag, last parsed text)
         self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
+        # the consolidated risk by `risk_etag`, and the book-alone vol risk a quote measures
+        # against by `structures.book_risk`'s hash: a standing book pays one greeks run for each
+        self.risk_cache = utils.LRUCache(8)
+        self.vol_risk_cache = utils.LRUCache(16)
 
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
@@ -1482,13 +1486,6 @@ def run_calculation(request: dict):
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
 
 
-#: The blotter's consolidated risk keyed by the content of everything the run reads - the
-#: `structures.RISK_CACHE` discipline over the whole-book gradient. A standing book pays for ONE
-#: greeks run and every later poll is a dict lookup; bounded, so a 30s tick leaks no vector per tick.
-BOOK_RISK_CACHE = OrderedDict()
-BOOK_RISK_LIMIT = 8
-
-
 def as_of():
     """When a projection or a risk vector was computed, as one ISO stamp - what a blotter shows
     beside a number to say how old it is. Milliseconds, not seconds: two recalcs of one set can
@@ -1691,28 +1688,27 @@ def book_risk():
     Counterparties do not matter here - the greeks are aggregated over the entire book and there is
     nothing to slice by; the per-set reading is `/book/xva`.
 
-    Computed on a MISS and cached under `etag`, a hash of everything the run reads, so a blotter
-    polls this on the same beat it polls `/book`. An empty book answers zeros without running
-    anything; a book that will not price answers 422 naming the cause and caches nothing.
+    Computed on a MISS and kept on the live `Book` under `etag`, a hash of everything the run
+    reads, so a blotter polls this on the same beat it polls `/book`. An empty book answers zeros
+    without running anything; a book that will not price answers 422 naming the cause and caches
+    nothing.
 
     `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
     value}` flattened off the gradient frame, trimmed at the last non-zero coordinate; `quotes` is
     `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
     quoted, `quoted` the factors those rows stand for and `quote_note` why not where they are not.
     """
-    document = priced(live_book().read()[0], 'BaseValuation')
+    live = live_book()
+    document = priced(live.read()[0], 'BaseValuation')
     etag = risk_etag(document)
-    if etag not in BOOK_RISK_CACHE:
+    answer = live.risk_cache.get(etag)
+    if answer is None:
         try:
-            answer = consolidated_risk(document)
+            answer = live.risk_cache.put(etag, consolidated_risk(document))
         except Exception as error:
             raise HTTPException(422, 'the book will not price a consolidated risk run: {}'.format(
                 error))
-        if len(BOOK_RISK_CACHE) >= BOOK_RISK_LIMIT:
-            BOOK_RISK_CACHE.popitem(last=False)
-        BOOK_RISK_CACHE[etag] = answer
-    BOOK_RISK_CACHE.move_to_end(etag)
-    return dict(BOOK_RISK_CACHE[etag], etag=etag)
+    return dict(answer, etag=etag)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -5689,23 +5685,21 @@ def book_setup(request: dict):
 
 def spot_model_family(family):
     """The bootstrapper class that fits `family`, by the naming convention the pin resolves its
-    parameters on (`structures.SPOT_MODEL_FACTOR`). A family that authors no quote block off the
+    parameters on (`utils.spot_model_factor`). A family that authors no quote block off the
     book's own built surface has nothing for this verb to run, and refuses by name."""
     calibrator = getattr(bootstrappers, family + 'ModelParameters', None)
     if not hasattr(calibrator, 'fx_surface_block'):
         raise ValueError(
             '{0!r} names no spot model this verb calibrates - {0}ModelParameters authors no quote '
             'block off a built surface. The model this book pins is {1!r}'.format(
-                family, structures.SPOT_MODEL))
+                family, structures.Structure.spot_model))
     return calibrator
 
 
 def spot_model_factor(family, block_name):
-    """The price factor a `<family>ModelPrices.<name>` block writes. A family declares the two
-    strings ARE different (`market_factor_type` against the class name) and no rule recovers one
-    from the other, so the name is composed on `structures.SPOT_MODEL_FACTOR` - the same key the
-    pin checks and the engine's own lookup takes."""
-    return structures.SPOT_MODEL_FACTOR.format(family, block_name.split('.', 1)[1])
+    """The price factor a `<family>ModelPrices.<name>` block writes - `utils.spot_model_factor`,
+    the key the pin checks and the engine's own lookup takes."""
+    return utils.spot_model_factor(family, block_name.split('.', 1)[1])
 
 
 def desk_leverage_prior(pair, underlying):
@@ -5813,8 +5807,8 @@ class SpotModelJob:
 def book_model(request: dict):
     """`{pair, family}` - fit one FX pair's spot-model parameters against the vega-weighted vols
     that family's own ladder reads off the surface the book already carries, and land them in it.
-    `family` defaults to `structures.SPOT_MODEL`, the model an accrual leg is pinned to, so a desk
-    that calibrates and a runner that pins cannot name two different models.
+    `family` defaults to `structures.Structure.spot_model`, the model an accrual leg is pinned to,
+    so a desk that calibrates and a runner that pins cannot name two different models.
 
     ON REQUEST, NEVER ON THE TICK. The fit is minutes of work, so it is queued at the heavy cost
     class and a desk's quotes keep jumping it. A market tick moves the surface and leaves these
@@ -5835,7 +5829,7 @@ def book_model(request: dict):
     """
     live = live_book()
     document, etag = live.read()
-    pair, family = request.get('pair'), request.get('family') or structures.SPOT_MODEL
+    pair, family = request.get('pair'), request.get('family') or structures.Structure.spot_model
     if not pair:
         raise HTTPException(422, 'a calibration names the pair it fits, e.g. {"pair": "USDZAR"}')
     try:
@@ -6406,7 +6400,8 @@ class StructureJob:
         # the BOOK a risk-impact step reads is the book as it prices; the pins above and the ticket
         # below are the file's, which is what the acceptance re-derives them from
         outcome = structures.quote(priced(self.document, 'BaseValuation'), self.structure,
-                                   self.params, spot_source, self.netting_set, self.margin)
+                                   self.params, spot_source, self.netting_set, self.margin,
+                                   live_book().vol_risk_cache)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
@@ -6613,14 +6608,14 @@ def book_quote(request: dict):
                                      'unknown age is not an age inside a window: {} holds a quote '
                                      'firm for {:.0f}s - re-quote: the market has had an unknown '
                                      'number of seconds to move'.format(
-                                         quote_id, structures.QUOTE_POLICY, firm))
+                                         quote_id, structures.Structure.POLICY.name, firm))
         if age > firm:
             # the age to a tenth: a zero-second window refused at 0.1s must name an age a desk can
             # tell from the window it broke
             raise HTTPException(422, 'quote {} was given {:.1f}s ago and {} holds a quote firm '
                                      'for {:.0f}s - re-quote: the market has had {:.1f} seconds '
-                                     'to move'.format(quote_id, age, structures.QUOTE_POLICY,
-                                                      firm, age))
+                                     'to move'.format(quote_id, age,
+                                                      structures.Structure.POLICY.name, firm, age))
 
     quoted = pending.get('quote') or {}
     parent, models = quoted.get('netting_set'), quoted.get('valuation_configuration')

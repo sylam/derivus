@@ -37,7 +37,7 @@ artifacts, markdown and scripts no test imports select nothing.
 WHAT THIS DOES NOT REPLACE: the full suite at a campaign boundary, for three reasons. A statistical
 gate can be execution-order sensitive (the global torch RNG stream moves with the selected set); the
 map is a snapshot, blind to a dependency a test gained after it; and a value one test leaves in an
-engine-level cache (`structures.RISK_CACHE`, the service's book caches, `quad_nodes`) is charged to
+engine-level cache (the service book's risk caches, its diary cache, `quad_nodes`) is charged to
 that test alone, so a later test of the same file reading it comes only through a shared fixture or
 helper - `--files` rounds that residue away.
 """

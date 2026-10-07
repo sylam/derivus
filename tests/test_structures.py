@@ -22,7 +22,6 @@ import copy
 import json
 import os
 import sys
-from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -253,7 +252,7 @@ def test_the_registry_publishes_exactly_the_declared_structures():
         needed = any(set(one['fields']) <= set(other['fields'])
                      for one in dealt.values() for other in dealt.values() if one is not other)
         # and a selector is the declared field OBJECT, never a parameter sharing its name
-        selects = {f.key for f in cls.__dict__['fields'] if f in structures.SELECTORS}
+        selects = {f.key for f in cls.__dict__['fields'] if f in structures.Structure.SELECTORS}
         told_apart = []
         for word, variation in dealt.items():
             assert variation['buys'] in (None, 'base', 'quote'), (name, word, variation['buys'])
@@ -907,8 +906,8 @@ def test_a_seeded_solve_costs_less_and_a_missed_seed_still_answers_the_full_brac
     """WHAT THE SEEDED BRACKET BUYS, AND WHAT A MISS COSTS - counted, not asserted in prose.
 
     The charged pass re-solves a coordinate a spread's width from the mid one, so it brackets
-    `SEED_BRACKET` around that root and falls back to the full ends where the narrow span does not
-    straddle. Neither half of that is visible in a price, so both are counted here: the collar's
+    `Solve.SEED_BRACKET` around that root and falls back to the full ends where the narrow span does
+    not straddle. Neither half of that is visible in a price, so both are counted here: the collar's
     financing leg solved to its zero-cost target three times against the same book, once with no
     seed, once seeded on the answer, once seeded 50% away from it.
 
@@ -957,7 +956,7 @@ POLICY = {'participation': 0.5, 'floor': 'mid', 'scope': 'vol',
 def with_policy(document, **stated):
     """`document` with a `Quote Policy` block on it - the whole risk-impact feature's on switch."""
     out = copy.deepcopy(document)
-    out['Calc'][structures.QUOTE_POLICY] = dict(POLICY, **stated)
+    out['Calc'][structures.Structure.POLICY.name] = dict(POLICY, **stated)
     return out
 
 
@@ -992,7 +991,8 @@ def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_b
                             params(floor=SPOT * 0.95))
 
     assert plain['risk']['scale'] is None and plain['risk']['buckets'] == []
-    assert plain['risk']['policy'] is None and structures.QUOTE_POLICY in plain['risk']['note']
+    assert plain['risk']['policy'] is None and \
+        structures.Structure.POLICY.name in plain['risk']['note']
     assert zero['risk']['scale'] == 1.0 and zero['risk']['buckets'], 'the layer never ran'
     assert zero['risk']['policy'] == dict(POLICY, participation=0.0)
 
@@ -1152,7 +1152,7 @@ def test_the_cap_and_the_floor(two_sided_book, standing):
         'a capped quote is not the full-spread quote')
 
     # bp of notional, crossed to the report currency exactly as the runner crosses it
-    per_bp = structures.BASIS_POINT * NOTIONAL / SPOT
+    per_bp = 1e-4 * NOTIONAL / SPOT
     tight, full = free['risk']['charge_effective'], free['risk']['charge_full']
     ticket_bp = 0.5 * (tight + full) / per_bp
     floored = structures.quote(with_policy(twice, min_ticket_bp=ticket_bp), COLLAR, ask)
@@ -1575,15 +1575,16 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
     """
     import pandas as pd
 
+    lag = structures.Structure.fixing_lag
     with pytest.raises(ValueError) as refusal:
-        structures.fixing_grid(BASE, '1Y', '5M')
+        structures.fixing_grid(BASE, '1Y', '5M', lag)
     assert '2025-04-28' in str(refusal.value), 'the refusal must name the fixing it would end on'
     assert '5M' in str(refusal.value) and '1Y' in str(refusal.value)
     assert 'divides the tenor' in str(refusal.value), 'a refusal without a remedy'
 
     stamped = structures.fixing_grid(pd.Timestamp(BASE) + pd.Timedelta(hours=16, minutes=30),
-                                     '1Y', '1M')
-    assert len(stamped) == len(structures.fixing_grid(BASE, '1Y', '1M')) == 12
+                                     '1Y', '1M', lag)
+    assert len(stamped) == len(structures.fixing_grid(BASE, '1Y', '1M', lag)) == 12
     assert stamped[-1][0] == {'.Timestamp': '2025-06-28'}, 'the last fixing IS the expiry'
 
     # and the quote refuses through the runner, not just the helper
@@ -1604,8 +1605,9 @@ def test_the_axis_refusal_fires_before_the_deal_is_furnished(book):
     """
     deal = {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
     with pytest.raises(ValueError) as refusal:
-        structures.furnish_accrual(
-            deal, params(target=TARGET, fixing_frequency='5M'), book, BASE, 'ZAR', True)
+        structures.furnish_accrual(structures.TargetRedemptionForward, deal,
+                                   params(target=TARGET, fixing_frequency='5M'), book, BASE, 'ZAR',
+                                   True)
 
     assert 'accrual cap' in str(refusal.value) and 'ZAR' in str(refusal.value)
     assert '5M' not in str(refusal.value), 'the schedule was built before the axis was checked'
@@ -2154,6 +2156,10 @@ def test_each_variation_is_the_structure_it_says_it_is(quoted):
                 '{}.{} solved two coordinates for one trade'.format(name, word))
 
 
+#: What every strike-like parameter's description ends in, as the store publishes it.
+MARKET_STRIKE = 'In MARKET terms, as the pair is quoted (USDZAR 15.50)'
+
+
 def written_out(variation):
     """A variation as plain data, for comparing against one written out by hand."""
     return (variation.buys, [(f.key, f.description) for f in variation.fields],
@@ -2172,7 +2178,7 @@ def test_a_reflected_variation_is_the_legs_written_out_by_hand():
     assert written_out(structures.ForwardExtra.variations['cap']) == (
         'base',
         [('cap', 'The cap: the rate the client is protected at, and the forward the structure '
-                 'reverts to once the barrier trades. ' + structures.MARKET_STRIKE)],
+                 'reverts to once the barrier trades. ' + MARKET_STRIKE)],
         [('protection', 'FXOptionDeal',
           {'Option_Style': 'European', 'Option_Type': 'Call', 'Buy_Sell': 'Buy'},
           {'Strike_Price': 'cap'}),
@@ -2182,10 +2188,8 @@ def test_a_reflected_variation_is_the_legs_written_out_by_hand():
 
     assert written_out(structures.Seagull.variations['cap']) == (
         'base',
-        [('cap', 'The protected level; the floor is solved against it. '
-                 + structures.MARKET_STRIKE),
-         ('upper_cap', 'Where protection stops, sold back against the cap. '
-                       + structures.MARKET_STRIKE)],
+        [('cap', 'The protected level; the floor is solved against it. ' + MARKET_STRIKE),
+         ('upper_cap', 'Where protection stops, sold back against the cap. ' + MARKET_STRIKE)],
         [('protection', 'FXOptionDeal',
           {'Option_Style': 'European', 'Option_Type': 'Call', 'Buy_Sell': 'Buy'},
           {'Strike_Price': 'cap'}),
@@ -2389,19 +2393,22 @@ def test_a_selector_is_the_declared_field_itself_and_not_its_name():
     required parameter nobody is ever asked for - and the registry's own roster of the two names
     would agree with the mistake rather than catch it.
 
-    The emitter is a pure function of the module it reads, so this hands it one declared here.
+    The emitter is a pure function of the base it reads, so this hands it one declared here - a
+    subclass of `Structure` itself would join the desk's own registry.
     """
-    class Impostor:
+    class Desk:
+        SELECTORS = structures.Structure.SELECTORS
+
+    class Impostor(Desk):
         vernacular = 'impostor'
-        fields = [structures.PAIR, structures.SELL_CURRENCY,
+        fields = [*structures.Structure.QUOTED, structures.Structure.SELL_CURRENCY,
                   schema.F('buy_currency', 'Text', default=schema.REQUIRED,
                            description='its own parameter, not the one the runner selects on')]
         variations = {'only': structures.Variation('base', [], [
             structures.Leg('leg', 'FXOptionDeal', {'Option_Type': 'Call'})])}
         recipe = [structures.Price('leg')]
 
-    emitted = schema.emit_structures(SimpleNamespace(
-        SELECTORS=structures.SELECTORS, Impostor=Impostor))['Impostor']['fields']
+    emitted = schema.emit_structures(Desk)['Impostor']['fields']
 
     assert emitted['sell_currency']['selector'] == 'optional'
     assert 'value' not in emitted['sell_currency'], 'a selector has no value to offer'

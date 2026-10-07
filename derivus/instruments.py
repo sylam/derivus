@@ -550,7 +550,7 @@ def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, 
     dependency loop turns into a skipped deal, never a silent GBM fallback."""
     if spot_model == 'None':
         return None
-    mp = utils.Factor(spot_model + 'ModelParameters', name)
+    mp = utils.spot_model_factor(spot_model, name)
     if static_offsets.get(mp) is not None:
         stoch = False
     elif stochastic_offsets.get(mp) is not None:

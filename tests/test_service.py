@@ -6278,9 +6278,9 @@ def declare_policy(path, **stated):
     """
     document = json.loads(path.read_text())
     if stated:
-        document['Calc'][structures.QUOTE_POLICY] = dict(stated)
+        document['Calc'][structures.Structure.POLICY.name] = dict(stated)
     else:
-        document['Calc'].pop(structures.QUOTE_POLICY, None)
+        document['Calc'].pop(structures.Structure.POLICY.name, None)
     path.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     return path.read_bytes()

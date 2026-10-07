@@ -255,6 +255,16 @@ def declared_fields(cls):
     return {f.key: f for group in getattr(cls, 'fields', []) for f in group.fields}
 
 
+def flipped(field, value):
+    """`value` read from the other side under `field`'s declaration: the other of two values, or
+    among more the one differing from it in its first token alone (`Up_And_In` is `Down_And_In`)."""
+    if len(field.values) == 2:
+        return field.values[1] if value == field.values[0] else field.values[0]
+    rest = value.split('_', 1)[1:]
+    return next(other for other in field.values
+                if other != value and other.split('_', 1)[1:] == rest)
+
+
 def required_fields(cls):
     """Every field a class declares REQUIRED, inherited declarations included."""
     return [key for key, f in declared_fields(cls).items() if f.default is REQUIRED]
@@ -630,8 +640,9 @@ def emit_calibration(module):
         and 'model_type' in cls.__dict__}
 
 
-def emit_structures(module):
-    """The `types` of `mapping['Structure']` - each SALES structure holding what it is made of.
+def emit_structures(base):
+    """The `types` of `mapping['Structure']` - each subclass of `base`, a SALES structure, holding
+    what it is made of.
 
     Keyed by the class name, the registry key `structures.structure_named` dispatches on, so a menu
     and the runner pricing the choice read the same word. `vernacular`, `fields` as descriptors and
@@ -641,23 +652,17 @@ def emit_structures(module):
     reads which shape it has off the entry. A leg NAMES a declared `Instrument` type rather than
     expanding its schema, so the two cannot drift.
 
-    A SELECTOR is published as one, with no `value`: it chooses which variation is being quoted
-    rather than filling a leg, so a front end must not ask a client to state it like a parameter.
-    It is the declared field OBJECT that says so and never its key, or a structure's own parameter
-    that merely shares the name would be published as a selector - stripped of its value, and
-    optional where it was declared required. Whether one MUST be stated is computed from the
-    declarations rather than listed: `"required"` where some variation's own parameters do not tell
-    it apart from another's (a strip's two forms name one level, so only the client's side can say
-    which is dealt) and `"optional"` where naming the level is enough.
-
-    Own-attr only, gated on `vernacular` rather than `fields` alone, so the module's own vocabulary
-    classes do not emit as empty structures.
+    A SELECTOR - one of `base.SELECTORS` - is published as one, with no `value`: it chooses which
+    variation is being quoted rather than filling a leg, so a front end must not ask a client to
+    state it like a parameter. It is the declared field OBJECT that says so and never its key, or a
+    structure's own parameter that merely shares the name would be published as a selector -
+    stripped of its value, and optional where it was declared required. Whether one MUST be stated
+    is computed from the declarations rather than listed: `"required"` where some variation's own
+    parameters do not tell it apart from another's (a strip's two forms name one level, so only the
+    client's side can say which is dealt) and `"optional"` where naming the level is enough.
     """
     entries = {}
-    for name, cls in vars(module).items():
-        if not (isinstance(cls, type) and 'vernacular' in cls.__dict__
-                and isinstance(cls.__dict__.get('fields'), list)):
-            continue
+    for cls in base.__subclasses__():
         variations = cls.__dict__.get('variations')
         own = [{f.key for f in variation.fields} for variation in (variations or {}).values()]
         needed = any(one <= other for index, one in enumerate(own)
@@ -665,7 +670,7 @@ def emit_structures(module):
         fields = {}
         for f in cls.__dict__['fields']:
             published = f.descriptor()
-            if f in module.SELECTORS:
+            if f in base.SELECTORS:
                 published = dict({k: v for k, v in published.items() if k != 'value'},
                                  selector='required' if needed else 'optional')
             fields[f.key] = published
@@ -676,7 +681,7 @@ def emit_structures(module):
                                    for word, variation in variations.items()}
         else:
             entry['legs'] = {leg.role: leg.descriptor() for leg in cls.__dict__['legs']}
-        entries[name] = entry
+        entries[cls.__name__] = entry
     return entries
 
 
@@ -1282,7 +1287,10 @@ mapping = {
     # the two market-data sections a book states its bootstrap in, and what each entry may carry
     'Configuration': emit_configuration(bootstrappers, riskfactors.INTERPOLATION_DEFAULT),
     # a SALES structure holds its vernacular, parameters, legs and recipe
-    'Structure': {'types': emit_structures(structures)},
+    'Structure': {'types': emit_structures(structures.Structure)},
+    # the desk's quoting mandate, a section of the job beside `Calculation`
+    structures.Structure.POLICY.name: {
+        'fields': {f.key: f.descriptor() for f in structures.Structure.POLICY.fields}},
     # the UI's two menus, the same declarations read the other way round
     'Process_factor_map': _process_factor_map,
     'Interpolation_factor_map': emit_interpolation(riskfactors),

@@ -1954,7 +1954,7 @@ def test_a_stale_desk_window_refuses_before_the_record_is_asked_anything(recorde
     provenance, so a quote past `firm_seconds` never reaches the record's own checks - asserted on
     the wording, which is the desk's, and on a head that did not move."""
     document = json.loads(quoting.read_text())
-    document['Calc'][structures.QUOTE_POLICY] = {'firm_seconds': 0}
+    document['Calc'][structures.Structure.POLICY.name] = {'firm_seconds': 0}
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
 
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
@@ -1962,7 +1962,7 @@ def test_a_stale_desk_window_refuses_before_the_record_is_asked_anything(recorde
     refused = accept(quote)
 
     assert refused.status_code == 422
-    assert structures.QUOTE_POLICY in refused.json()['detail']
+    assert structures.Structure.POLICY.name in refused.json()['detail']
     assert 'the book moved under it' not in refused.json()['detail']
     assert head(recorded) == before
 

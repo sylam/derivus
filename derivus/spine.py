@@ -58,7 +58,7 @@ from . import Context, content_hash, instruments, riskfactors
 from ._version import __version__
 from .calculation import Base_Revaluation, Diary, construct_calculation
 from . import schema
-from .schema import (declared_fields, index_named, instrument_of, job_children, mapping,
+from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
 from .config import Config, CustomJsonEncoder, as_json
 from .structures import base_currency, timestamp
@@ -789,8 +789,7 @@ def scaled(node, quantity):
         if key not in deal and field.sized and field.convention and field.default:
             terms[key], count = field.default * factor, count + 1
     for side in sides if flip else ():
-        held = deal.get(side.key, side.default)
-        terms[side.key] = side.values[1] if held == side.values[0] else side.values[0]
+        terms[side.key] = flipped(side, deal.get(side.key, side.default))
     held = dict(node, Instrument=dict(node['Instrument'], **{'.Deal': terms}))
     if node.get('Children'):
         legs = factor if getattr(cls, 'option_on_children', False) else quantity

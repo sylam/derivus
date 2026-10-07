@@ -5434,6 +5434,13 @@ def spot_model_currency(underlying, currency, base):
     return '{}.{}'.format(law, priced_in) if isinstance(underlying, str) else (law, priced_in)
 
 
+def spot_model_factor(model, key):
+    """The factor `model`'s parameters for `key` are filed under, in the caller's spelling: a
+    `Factor` for a checked tuple, its dotted name for a flat one."""
+    factor = Factor(model + 'ModelParameters', key)
+    return factor if isinstance(key, tuple) else '.'.join(factor)
+
+
 def implied_correlation(factor, sign=1.0):
     """The market implied correlation between a rate pair, read off the `Correlation` price factor
     `Factor_dep` carries. `None` is an unauthored pair, which is uncorrelated.
@@ -5728,6 +5735,32 @@ class CalibrationArtifact(object):
         d_quote = d_quote.detach()
         return ((residual.detach() + d_quote @ (quotes - self.quotes)) /
                 d_quote.abs().amax(dim=1))
+
+
+class LRUCache(object):
+    """The `size` most recently used values by key, locked across threads."""
+
+    def __init__(self, size):
+        self.size = size
+        self.entries = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        """The value under `key`, now the most recently used, or None."""
+        with self.lock:
+            if key not in self.entries:
+                return None
+            self.entries.move_to_end(key)
+            return self.entries[key]
+
+    def put(self, key, value):
+        """`value` filed under `key`, the least recently used dropped past `size`; returns it."""
+        with self.lock:
+            self.entries[key] = value
+            self.entries.move_to_end(key)
+            if len(self.entries) > self.size:
+                self.entries.popitem(last=False)
+            return value
 
 
 class ArtifactStore(object):

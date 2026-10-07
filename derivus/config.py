@@ -397,8 +397,8 @@ conditional_fields = {
     # like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so it is
     # an FXVol whatever asset class the underlying belongs to.
     'EquityPrice': lambda instrument, factor_fields, params:
-    ([utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                   utils.check_rate_name(instrument.field['Equity']))]
+    ([utils.spot_model_factor(instrument.options['SpotModel'],
+                              utils.check_rate_name(instrument.field['Equity']))]
      if instrument.options.get('SpotModel', 'None') != 'None'
      and instrument.field.get('Equity') is not None else []) +
     ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
@@ -428,12 +428,12 @@ def spot_model_factors(instrument, params):
             field.get('Underlying_Currency'), field.get('Currency')):
         return []
     try:
-        return [utils.Factor(instrument.options['SpotModel'] + 'ModelParameters',
-                             utils.spot_model_currency(
-                                 utils.check_rate_name(field['Underlying_Currency']),
-                                 utils.check_rate_name(field['Currency']),
-                                 utils.check_rate_name(
-                                     params['System Parameters']['Base_Currency'])))]
+        return [utils.spot_model_factor(instrument.options['SpotModel'],
+                                        utils.spot_model_currency(
+                                            utils.check_rate_name(field['Underlying_Currency']),
+                                            utils.check_rate_name(field['Currency']),
+                                            utils.check_rate_name(
+                                                params['System Parameters']['Base_Currency'])))]
     except (ValueError, KeyError):
         return []
 
