@@ -921,6 +921,48 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
     F('Dividends', 'Text', default='', convention=True, obj='Tuple')
 ])
 
+#: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
+#: quote - said on every FX field that carries one, since the declarations are what a model reads
+#: before it books.
+FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying_Currency, so a '
+           'USDZAR level of 17.50 on a USD book is authored as 1/17.50. solve_structure takes FX '
+           'strikes in market terms and crosses the axis itself')
+
+#: What a one-touch and a no-touch on an equity share both are - every field but when a one-touch
+#: pays, a no-touch paying at expiry alone.
+EQUITY_TOUCH = own('EquityOneTouchOption', [
+    F('Payoff_Currency', 'Text', default='', convention=True),
+    F('Equity', 'Text', default='', obj='Tuple'),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
+    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
+    F('Barrier_Price', 'Float', default=0),
+    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
+    F('Equity_Volatility', 'Text', default='', obj='Tuple'),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Currency', 'Text', default='')
+])
+
+#: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
+#: pays, a no-touch paying at expiry alone.
+FX_TOUCH = own('FXOneTouchOption', [
+    F('Payoff_Currency', 'Text', default='', convention=True),
+    F('Underlying_Currency', 'Text', default=''),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
+    F('Barrier_Price', 'Float', default=0,
+      description=FX_AXIS.format('Barrier price')),
+    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    F('Expiry_Date', 'Date', default=''),
+    F('FX_Volatility', 'Text', default='', obj='Tuple'),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Currency', 'Text', default='')
+])
+
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
