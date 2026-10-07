@@ -639,7 +639,7 @@ def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
 def test_a_fra_row_is_a_fradeal_spanning_the_two_tenors_its_label_names():
     """`1Mx4M` IS THE INSTRUMENT: both dates measured off spot, each rolled Modified Following, and
     the reset AT the effective date - the forward the curve carries over that window, which is what
-    the solve holds at par. `FRA_Rate` is authored at zero; `QUOTE_WRITERS['FRADeal']` puts the
+    the solve holds at par. `FRA_Rate` is authored at zero; `FRADeal.quote` puts the
     print in."""
     row = points_of(block_of('ZAR')[1])['6Mx9M']
     assert row['DealType'] == 'FRADeal'
@@ -768,7 +768,7 @@ def test_the_front_point_is_the_one_the_seed_declared():
 
 
 def test_the_quote_is_never_authored_into_the_deal():
-    """THE CAUSE OF THE TICK. `QUOTE_WRITERS` is where a number lands in an instrument, so every
+    """THE CAUSE OF THE TICK. A type's own `quote` is where a number lands in an instrument, so every
     rate-carrying field the emitter writes is a NEUTRAL zero and the print rides in
     `Quoted_Market_Value` alone: a row's `Deal` half is a function of the calendar and the
     conventions and of nothing that moves between prints. Author the quote in and every tick is

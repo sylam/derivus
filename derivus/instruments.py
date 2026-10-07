@@ -672,6 +672,16 @@ class Deal(object):
     #: stamps it: a deal that cannot be priced is skipped, where `No` refuses the run naming it.
     exclude_unpriceable = True
 
+    #: The field a market quote of this type lands in, in that field's own unit - a benchmark's
+    #: declaration of itself, None for a type no quote set authors. `quote` writes it; a type
+    #: whose quote reaches more than one place says how.
+    quoted = None
+
+    @classmethod
+    def quote(cls, deal, value):
+        """Write `value`, a quote, into the authored block `deal` where `quoted` says."""
+        deal[cls.quoted] = value
+
     def __init__(self, params, valuation_options):
         # a declared model this type cannot honour is a malformed program, not a market-data miss
         spot_model = valuation_options.get('SpotModel', 'None')
@@ -2093,6 +2103,7 @@ class FXSwapDeal(Deal):
 
 class FXForwardDeal(Deal):
     vernacular = 'FX forward, outright forward, deliverable forward'
+    quoted = 'Buy_Amount'
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default=''),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
@@ -2121,6 +2132,14 @@ class FXForwardDeal(Deal):
         '- $\\tilde D$ is the buy currency discount factor',
         '- $X$ is the price of the sell currency in base currency',
         '- $\\tilde X$ is the price of the buy currency in base currency'])
+
+    @classmethod
+    def quote(cls, deal, value):
+        """The quote is the FORWARD OUTRIGHT - units of `Buy_Currency` per one unit of
+        `Sell_Currency` - and the amount it buys is where that number lands: with `Sell_Amount` and
+        both discount curves fixed the value is exactly affine in it, an exact quote-space
+        residual. Not a percent, and nothing converts it: each type's field carries its own unit."""
+        deal['Buy_Amount'] = value * deal['Sell_Amount']
 
     def __init__(self, params, valuation_options):
         super(FXForwardDeal, self).__init__(params, valuation_options)
@@ -2276,6 +2295,7 @@ class DepositDeal(Deal):
     """
     vernacular = 'deposit, money-market deposit, placement'
     observes = Observes('Interest_Rate', 'InterestRate')
+    quoted = 'Interest_Rate_Schedule'
     fields = [ADMIN, own('DepositDeal', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -2315,6 +2335,15 @@ class DepositDeal(Deal):
         'otherwise forecast from **Interest_Rate** - and $D(t,T)$ is the discount factor from',
         '**Discount_Rate**.',
     ])
+
+    @classmethod
+    def quote(cls, deal, value):
+        """A deposit has no rate field of its own: the quote is pinned at every accrual start,
+        which prices it as a fixed leg and keeps it off the forecast curve a solve builds -
+        `reset` drops that dependency when the schedule covers every start."""
+        starts = utils.generate_dates_backward(
+            deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'])[:-1]
+        deal['Interest_Rate_Schedule'] = utils.DateList({date: value for date in starts})
 
     def __init__(self, params, valuation_options):
         super(DepositDeal, self).__init__(params, valuation_options)
@@ -2387,6 +2416,7 @@ class SwapInterestDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
     observes = Observes('Interest_Rate', 'InterestRate')
+    quoted = 'Swap_Rate'
     fields = [ADMIN, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -2529,6 +2559,7 @@ class SwapInterestDeal(Deal):
 
 class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
+    quoted = 'Cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
         F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']), F('FixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Fixed_Amount', 'Float', sized=True), F('Discounted', 'Text', values=['Yes', 'No']), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Settlement_Amount', 'Float', default=0.0, sized=True),
@@ -2542,6 +2573,12 @@ class CFFixedInterestListDeal(Deal):
 
     documentation = (
         'Interest Rates', ['A series of fixed interest cashflows as described [here](#fixed-interest-cashflows)'])
+
+    @classmethod
+    def quote(cls, deal, value):
+        """The fixed leg of a two-leg benchmark carries the quote on every row of its schedule."""
+        for item in deal['Cashflows']['Items']:
+            item['Rate'] = utils.Percent(value)
 
     def __init__(self, params, valuation_options):
         super(CFFixedInterestListDeal, self).__init__(params, valuation_options)
@@ -7079,6 +7116,7 @@ class DealDefaultSwap(Deal):
 class FRADeal(Deal):
     vernacular = 'forward rate agreement, FRA'
     observes = Observes('Interest_Rate', 'InterestRate')
+    quoted = 'FRA_Rate'
     fields = [ADMIN, own('FRADeal', [
         F('Use_Known_Rate', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Known_Rate', 'Float', default=0, convention=True, obj='Percent'),

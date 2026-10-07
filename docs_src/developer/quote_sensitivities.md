@@ -89,8 +89,8 @@ name rather than report a zero `dV/dq` row (`test_a_forward_block_refuses_quote_
 
 `BenchmarkInstruments` therefore takes the benchmark set **twice**, at its quotes and one percent
 higher. The difference is the exact ∂(schedule)/∂q, so
-[`QUOTE_WRITERS`](market_prices.md#interestrateprices) stays the only place a quotable instrument
-declares where its number goes. The splice is
+[the type's own `quoted`](market_prices.md#interestrateprices) stays the only place a quotable
+instrument declares where its number goes. The splice is
 
 $$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\frac{\partial \text{column}}{\partial q}$$
 

@@ -27,7 +27,7 @@ come from `discover.strip_candidates` walked against the workstation's own verif
 ticker grammar is spelled once in this package and a strip the terminal never verified cannot enter
 a block on a seed's say-so.
 
-The quote is not authored into the deal: `QUOTE_WRITERS` is where a number lands, off
+The quote is not authored into the deal: each type's own `quote` is where a number lands, off
 `Quoted_Market_Value`, and every rate-carrying field is authored at a neutral zero, so a value-only
 re-tick passes `schema.update_market_quote` as 'updated' rather than refusing as a moved plan.
 
@@ -740,7 +740,7 @@ def declared_only(deal):
 
     Everything an author must state - the terms, the dates, the amounts, the type - stands whatever
     it carries, a placeholder declaring nothing to agree with. `Interest_Rate_Schedule` is authored
-    empty rather than dropped: it is the plan half `QUOTE_WRITERS['DepositDeal']` moves the quote
+    empty rather than dropped: it is the plan half `DepositDeal.quote` moves the quote
     into, and a block that never names it has nothing for a re-tick to compare.
     """
     return {key: value for key, value in deal.items()
@@ -754,7 +754,7 @@ def _deposit(reference, currency, curve, effective, maturity, tenor, day_count, 
     The rate is pinned through `Interest_Rate_Schedule`, which keeps a front quote off the forecast
     curve entirely: `DepositDeal.reset` drops the `Interest_Rate` dependency when the schedule
     covers every accrual start, so the point cannot depend on the curve it identifies. The schedule
-    is authored EMPTY because `QUOTE_WRITERS['DepositDeal']` writes it from the quote - an authored
+    is authored EMPTY because `DepositDeal.quote` writes it from the quote - an authored
     one would put a rate in the block's plan half and make every re-tick a re-authoring.
     """
     return {
@@ -778,7 +778,7 @@ def _fra(reference, currency, curve, effective, maturity, conventions):
     maturity]`, and a lag would price a rate fixed off a date the strip says nothing about.
 
     `FRA_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`, where
-    `QUOTE_WRITERS['FRADeal']` puts it.
+    `FRADeal.quote` puts it.
     """
     return {
         'Object': 'FRADeal', 'Reference': reference, 'Currency': currency,
@@ -803,7 +803,7 @@ def _swap(reference, currency, curve, effective, maturity, conventions):
     one item per business day, which is two orders of magnitude of JSON for the same number.
 
     `Swap_Rate` is authored at ZERO and the print rides in `Quoted_Market_Value`:
-    `QUOTE_WRITERS['SwapInterestDeal']` writes it, so a re-tick moves the value plane alone.
+    `SwapInterestDeal.quote` writes it, so a re-tick moves the value plane alone.
     """
     calendar = conventions.calendar or None
     return {

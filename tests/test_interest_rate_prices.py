@@ -571,14 +571,14 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
 def test_a_benchmarks_LEGS_complete_their_conventions_before_the_quote_is_written():
     """A BENCHMARK IS A DEAL AND SO IS EVERY LEG OF ONE. `quote_nodes` builds the block through
     `DealFields` before `author_quote` runs, because a quote WRITER reads the block's own
-    conventions: `QUOTE_WRITERS['DepositDeal']` pins the schedule off `Payment_Frequency`, which a
+    conventions: `DepositDeal.quote` pins the schedule off `Payment_Frequency`, which a
     strip that states only its terms does not carry. The container half of that is `completed`'s
     recursion into `Children` - a two-leg benchmark whose leg is the one the writer reads.
 
     The leg here states its terms and NOTHING ELSE: currency, curve, the two dates, the amount.
 
     KILLING MUTATION: `completed` stops recursing (`if deal.get('Children') and False`). The leg
-    reaches `_pin_deposit_schedule` as the raw block the author wrote and it dies
+    reaches `DepositDeal.quote` as the raw block the author wrote and it dies
     `KeyError: 'Payment_Frequency'` - the failure the whole seam exists to end, one level down.
     """
     terms = {key: value for key, value in deposit('LEG', 'USD', 'USD', 6, 4.0).items()

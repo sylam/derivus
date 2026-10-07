@@ -24,7 +24,7 @@ is not:
   * registries read as DATA: the five `construct_*` reach WHOLE what their store selects
     (`calc_type`, `market_factor_type`, `factor_types`, `model_type`, `Deal` subclasses), and so
     does every module-level `UPPER = {key: symbol}` dict, found by shape rather than by name
-    (`OSS_SPOT_MODEL_KITS`, `QUOTE_WRITERS`);
+    (`OSS_SPOT_MODEL_KITS`);
   * a class -> its bases and its `__init__` (plus an autograd `Function`'s `forward`/`backward`,
     reached from C). NAMING a class constructs it; it does not run all of it. An `isinstance(x,
     Config)` that reached `Config.bootstrap` put every deal on every bootstrapper;
@@ -302,7 +302,7 @@ class Graph:
     def _tables(self):
         """Module-level `UPPER = {key: symbol}` - a registry read as DATA, per the house rule.
 
-        `OSS_SPOT_MODEL_KITS` and `QUOTE_WRITERS` are found this way rather than named, so the next
+        `OSS_SPOT_MODEL_KITS` is found this way rather than named, so the next
         registry is picked up the day it is written. A member is reached WHOLE (a kit is used
         through duck-typed verbs), which is the over-approximation the registry licenses.
         """

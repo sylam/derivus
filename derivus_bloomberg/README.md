@@ -289,8 +289,8 @@ fix. What ships:
   schedule, so an `OIS` declaration whose `float_frequency` differs from its `fixed_frequency`
   refuses by name rather than emitting a block that ignores it. The `Swap` path reads both.
 - **The quote never enters the deal.** Every rate-carrying field is authored at a neutral zero and
-  the print rides in `Quoted_Market_Value`, because `QUOTE_WRITERS` is where the family puts a
-  number. That is what makes a value-only re-tick pass `config.update_market_quote` as *updated*
+  the print rides in `Quoted_Market_Value`, because the type's own `quote` is where the family
+  puts a number. That is what makes a value-only re-tick pass `config.update_market_quote` as *updated*
   instead of refusing as a moved plan.
 - **Size, stated up front.** An OIS block grows with the *sum* of its strip's tenors: the shipped
   USD strip is about 26,000 authored fixings and **~14 MB** of JSON (measured live). `CurveScreen.

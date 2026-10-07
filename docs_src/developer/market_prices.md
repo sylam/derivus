@@ -372,8 +372,9 @@ deal and completes its own reads like one.
 
 `Quoted_Market_Value` is read in its own `DealType`'s unit, and where it lands is a property of the
 instrument TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a fixed leg's
-`Rate` column. That correspondence is a registry (`QUOTE_WRITERS`) rather than a branch, so a new
-quotable instrument is a row. Nothing is scaled centrally: a rate benchmark is quoted in **percent**
+`Rate` column. The type declares it - `quoted` beside `observes` and `settles`, and `quote` where
+the number reaches more than one place - so a new quotable instrument declares itself and the
+family names no type. Nothing is scaled centrally: a rate benchmark is quoted in **percent**
 because that deal's own field semantics divide by 100, so a quote that is not a rate rides untouched.
 `Quote_Type` declares the one convention that is built, `Par_Rate`: every benchmark held at PV zero.
 

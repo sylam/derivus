@@ -5573,7 +5573,7 @@ class BenchmarkInstruments(object):
         Which columns those are is MEASURED: the same set authored one percent higher is compiled,
         and the columns that moved are the value columns with the difference as their slope. The
         authoring map is affine in the quote, so one bumped compile IS the derivative - which keeps
-        `QUOTE_WRITERS` the only place a quotable instrument is declared.
+        each type's own `quoted` the only place a quotable instrument is declared.
 
         The splice is `base + (q - q.detach()) * slope`, exactly zero forward with derivative one,
         so enabling quote gradients cannot move the solve. It is a derivative carrier and NOT a
@@ -5681,10 +5681,10 @@ def quote_nodes(points, discount_rate, shift=0.0):
 def completed(deal):
     """A benchmark block that answers a read by name the way a priced deal's does, legs included.
 
-    A quote WRITER runs before the deal is constructed and reads the block's own conventions -
-    `_pin_deposit_schedule` wants the payment frequency - so a benchmark stating only its terms is
-    completed through the one seam a `default=` reaches a deal by. Completion answers a read, so
-    the block still holds exactly the keys the family authored.
+    A type's `quote` runs before the deal is constructed and reads the block's own conventions -
+    a deposit's wants the payment frequency - so a benchmark stating only its terms is completed
+    through the one seam a `default=` reaches a deal by. Completion answers a read, so the block
+    still holds exactly the keys the family authored.
     """
     node = DealFields(deal, getattr(instruments, deal['Object'], None))
     if deal.get('Children'):
@@ -5692,61 +5692,21 @@ def completed(deal):
     return node
 
 
-def _pin_deposit_schedule(deal, quote):
-    """A deposit has no rate field of its own. Pinning every accrual start is what makes it price
-    as a fixed leg, which is also what keeps it off the forecast curve the solve is building -
-    `DepositDeal.reset` drops that dependency when the schedule covers every start."""
-    starts = utils.generate_dates_backward(
-        deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'])[:-1]
-    deal['Interest_Rate_Schedule'] = utils.DateList({date: quote for date in starts})
-
-
-def _fixed_cashflow_rate(deal, quote):
-    """The fixed leg of a two-leg benchmark carries the quote on every row of its schedule."""
-    for item in deal['Cashflows']['Items']:
-        item['Rate'] = utils.Percent(quote)
-
-
-def _fx_forward_outright(deal, quote):
-    """An FX forward's quote is the FORWARD OUTRIGHT - units of `Buy_Currency` per one unit of
-    `Sell_Currency` - and the amount it buys is where that number lands.
-
-    The authored benchmark fixes `Sell_Amount` and both discount-rate names, so the quote moves
-    `Buy_Amount` alone and `FXForwardDeal.generate` is exactly affine in it at fixed curves - which
-    is what `utils.CalibrationArtifact.mispricing` reads as an exact quote-space residual.
-
-    The outright is not a percent and nothing here converts it, because no writer converts anything:
-    a percent-quoted type carries its scaling in its own field semantics (`DepositDeal` divides by
-    100, `FRADeal` wraps in a `Basis`, `_fixed_cashflow_rate` writes a `utils.Percent`).
-    """
-    deal['Buy_Amount'] = quote * deal['Sell_Amount']
-
-
-#: Where a quote's number goes, per instrument type, keyed by the `Object` string - the one thing
-#: the family knows about a type beyond that type's own declarations. A registry, so a new quotable
-#: instrument is a row. A container carries no rate; its fixed leg does.
-QUOTE_WRITERS = {
-    'DepositDeal': _pin_deposit_schedule,
-    'FRADeal': lambda deal, quote: deal.update({'FRA_Rate': quote}),
-    'SwapInterestDeal': lambda deal, quote: deal.update({'Swap_Rate': quote}),
-    'CFFixedInterestListDeal': _fixed_cashflow_rate,
-    'FXForwardDeal': _fx_forward_outright,
-}
-
-
 def author_quote(deal, quote, discount_rate):
     """Author an instrument block AT its quote, discounting on `discount_rate`.
 
     What an instrument PROJECTS off it names itself; what the quote set DISCOUNTS on is a property
     of the curve set, stated once on the block. Recurses into `Children`, so a two-leg benchmark
-    gets the quote on the leg that holds a rate and the discount curve on both.
+    gets the quote on the leg that holds a rate and the discount curve on both. Where the number
+    lands, and in what unit, is the type's own declaration (`Deal.quoted`, `Deal.quote`): a
+    container declares none and its fixed leg does.
     """
     for child in deal.get('Children', ()):
         author_quote(child, quote, discount_rate)
     deal['Discount_Rate'] = discount_rate
-    writer = QUOTE_WRITERS.get(deal['Object'])
-    if writer:
-        writer(deal, quote)
+    declared = getattr(instruments, deal['Object'], None)
+    if declared is not None and declared.quoted:
+        declared.quote(deal, quote)
 
 
 def quote_node(deal, valuation_options):
@@ -6013,7 +5973,7 @@ class InterestRateCurveParameters(Construction):
                           'reads: a rate benchmark is quoted in percent, and an FXForwardDeal is '
                           'quoted as a forward OUTRIGHT - units of Buy_Currency per one unit of '
                           'Sell_Currency. The family scales nothing; each type\'s field semantics '
-                          'do - see QUOTE_WRITERS. The one value key a patch cannot clear '
+                          'do - see the type\'s own `quoted`. The one value key a patch cannot clear '
                           '(schema.MARKET_QUOTE_REQUIRED): a mid is moved, never removed'),
             F('Quoted_Bid', 'Float',
               description='The bid side of this quote, in the same unit as the mid. QUOTE-LAYER '
@@ -6147,7 +6107,7 @@ class InterestRateCurveParameters(Construction):
         The `/100` is the SEED's and not the quote's - `author_quote` scales nothing. So an
         amount-valued quote seeds nonsense and converges anyway: an 18.32 outright seeds an 18.32%
         zero rate against a true 8.99% and damped Newton walks it to zero residual. Branching on the
-        deal type here would put knowledge of a type somewhere other than `QUOTE_WRITERS`.
+        deal type here would put knowledge of a type somewhere other than its own `quote`.
         """
         curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
