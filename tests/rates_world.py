@@ -5,7 +5,7 @@ it to GENERATE the quotes, then requires the bootstrap to recover the curve - so
 have to be plausibly shaped.
 
 The builders return authored deal BLOCKS - raw JSON as `Trade Data` carries it, a container holding
-its legs under `Children`. `bootstrappers.quote_node` turns one into a deal-tree node, and a quote
+its legs under `Children`. `instruments.deal_node` turns one into a deal-tree node, and a quote
 carries the same block under `Deal`.
 
 Quotes are in PERCENT throughout, because that is what the engine reads: `DepositDeal` divides its

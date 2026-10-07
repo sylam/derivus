@@ -38,10 +38,9 @@ from derivus import bootstrappers, riskfactors, schema, utils
 from derivus.bootstrappers import (BenchmarkInstruments,
                                    InterestRateCurveParameters,
                                    author_quote,
-                                   completed,
-                                   quote_knots,
-                                   quote_node,
                                    quote_nodes)
+from derivus.instruments import deal_node
+from derivus.schema import completed
 from derivus.utils import damped_newton
 from derivus.config import Config, ModelParams
 from derivus.instruments import construct_instrument
@@ -181,7 +180,7 @@ def block_nodes(block, discount_rate, quote=None):
     for point in block['Points']:
         deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
         author_quote(deal, point['Quoted_Market_Value'] if quote is None else quote, discount_rate)
-        nodes.append(quote_node(deal, {}))
+        nodes.append(deal_node(deal, {}))
     return nodes
 
 
@@ -214,7 +213,8 @@ def authored_world(world, interp=None):
     true_curves = {}
     for market_price, block in blocks.items():
         discount_rate = discount_of(market_price, block)
-        knots = quote_knots(block_nodes(block, discount_rate, 0.0), BASE, block['Day_Count'], {})
+        knots = InterestRateCurveParameters.quote_knots(
+            block_nodes(block, discount_rate, 0.0), BASE, block['Day_Count'], {})
         assert (np.diff(knots) > 0).all(), 'the quotes must be authored in maturity order'
         true_curves[curve_of(market_price)] = knots
         price_factors[curve_of(market_price)] = dict({
@@ -558,8 +558,8 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
 
     for label, factors in (('flat', flat), ('sloped', price_factors)):
         for months in (12, 24, 60, 120):
-            listed = quote_node(ois_swap('LIST', 'USD', 'USD-OIS', months, 4.0), {})
-            term = quote_node(par_swap('TERM', 'USD', 'USD-OIS', 'USD-OIS', 0, 4.0,
+            listed = deal_node(ois_swap('LIST', 'USD', 'USD-OIS', months, 4.0), {})
+            term = deal_node(par_swap('TERM', 'USD', 'USD-OIS', 'USD-OIS', 0, 4.0,
                                        fixed_frequency=12, float_frequency=12, months=months,
                                        compounding='OIS'), {})
             pvs = [float(BenchmarkInstruments([node], factors, INTERP, BASE, 'USD', {}, [],
@@ -630,7 +630,7 @@ def test_the_damping_never_engages_on_these_worlds():
         'InterestRate.ZAR-JIBAR-3M': {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'ZAR', 'Day_Count': 'ACT_365',
             'Curve': utils.Curve([], list(zip(
-                quote_knots(nodes, BASE, 'ACT_365', {}),
+                InterestRateCurveParameters.quote_knots(nodes, BASE, 'ACT_365', {}),
                 [p['Quoted_Market_Value'] / 100.0 for p in block['Points']])))}}
     curve = utils.Factor('InterestRate', ('ZAR-JIBAR-3M',))
     benchmarks = BenchmarkInstruments(
@@ -721,7 +721,8 @@ def fx_world():
     price_factors['InterestRate.' + USD_CURVE] = {
         'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'USD', 'Day_Count': 'ACT_365',
         'Curve': utils.Curve([], list(zip(
-            quote_knots(block_nodes(usd_block, USD_CURVE, 0.0), BASE, 'ACT_365', {}),
+            InterestRateCurveParameters.quote_knots(
+                block_nodes(usd_block, USD_CURVE, 0.0), BASE, 'ACT_365', {}),
             FX_USD_TRUE)))}
     for point, quote in zip(usd_block['Points'], par_quotes(usd_block, USD_CURVE, price_factors)):
         point['Quoted_Market_Value'] = quote

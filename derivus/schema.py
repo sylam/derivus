@@ -1030,6 +1030,31 @@ def walk_job_deals(children, path=()):
         yield from walk_job_deals(node.get('Children', []), deal_path)
 
 
+def walk_blocks(block):
+    """Every block of a wire instrument tree - `block` itself and its `Children`, depth first."""
+    yield block
+    for child in block.get('Children', ()):
+        yield from walk_blocks(child)
+
+
+def leaf_deals(node):
+    """The deals a constructed deal-tree node prices - itself, or its children's if a container."""
+    if node.get('Children'):
+        return [leaf for child in node['Children'] for leaf in leaf_deals(child)]
+    return [node['Instrument']]
+
+
+def completed(block):
+    """A wire instrument tree that answers a read by name the way a constructed deal does, legs
+    included: a block stating only its terms completed through the one seam a `default=` reaches a
+    deal by. Completion answers a read, so the block still holds exactly the keys it was authored
+    with."""
+    node = DealFields(block, getattr(instruments, block['Object'], None))
+    if block.get('Children'):
+        node['Children'] = [completed(child) for child in block['Children']]
+    return node
+
+
 def splice_deal(document, deal, parent_reference=None):
     """Append `deal` to a wire-form job document IN PLACE and return the new node's `deal_path`.
 

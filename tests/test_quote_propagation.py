@@ -35,7 +35,7 @@ import torch
 
 import derivus
 from derivus import utils
-from derivus.bootstrappers import InterestRateCurveParameters, quote_knots
+from derivus.bootstrappers import InterestRateCurveParameters
 from derivus.config import Config, CustomJsonEncoder, ModelParams
 from derivus.instruments import construct_instrument
 
@@ -576,7 +576,7 @@ def x_world():
         price_factors[curve_of(market_price)] = {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'XXX',
             'Day_Count': 'ACT_365', 'Curve': utils.Curve([], list(zip(
-                quote_knots(knots, BASE, 'ACT_365', {}), truth[curve_of(market_price)])))}
+                InterestRateCurveParameters.quote_knots(knots, BASE, 'ACT_365', {}), truth[curve_of(market_price)])))}
     for market_price, block in blocks.items():
         for point, quote in zip(block['Points'], par_quotes(
                 block, discount_of(market_price, block), price_factors)):

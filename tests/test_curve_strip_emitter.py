@@ -1358,14 +1358,15 @@ def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
     `test_every_authored_deal_key_is_one_the_committed_schema_declares`.
     """
     import pandas as pd
-    from derivus.bootstrappers import quote_knots, quote_nodes
+    from derivus.bootstrappers import InterestRateCurveParameters, quote_nodes
 
     prices = decoded_blocks(CURVES)
     for curve, expected in CURVES.items():
         instrument = prices[ir_curve.market_price_name(curve)]['instrument']
         assert len(instrument['Points']) == expected
         nodes = quote_nodes(instrument['Points'], instrument['Currency'])
-        knots = quote_knots(nodes, pd.Timestamp(AS_OF), instrument['Day_Count'], {})
+        knots = InterestRateCurveParameters.quote_knots(
+            nodes, pd.Timestamp(AS_OF), instrument['Day_Count'], {})
         assert len(knots) == expected
         assert list(knots) == sorted(knots), (curve, knots)
         assert all(knot > 0.0 for knot in knots), (curve, knots)
@@ -1399,7 +1400,9 @@ def test_every_authored_shape_solves_to_par():
     import pandas as pd
     import torch
     from derivus.bootstrappers import (BenchmarkInstruments, InterestRateCurveParameters,
-                                       author_quote, completed, quote_node)
+                                       author_quote)
+    from derivus.instruments import deal_node
+    from derivus.schema import completed
     from derivus.config import ModelParams
 
     base, device = pd.Timestamp(AS_OF), torch.device('cpu')
@@ -1419,7 +1422,7 @@ def test_every_authored_shape_solves_to_par():
         for point in block['Points']:
             deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
             author_quote(deal, point['Quoted_Market_Value'], curve)
-            nodes.append(quote_node(deal, {}))
+            nodes.append(deal_node(deal, {}))
         priced = BenchmarkInstruments(nodes, price_factors, ModelParams(), base, currency, {}, [],
                                       device)({}).detach().numpy()
         # a notional of a million, so 1e-6 is a thousandth of a basis point of the principal

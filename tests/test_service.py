@@ -1288,7 +1288,9 @@ def par_residuals(path, curve='ZAR', interp=None):
     import copy
 
     import torch
-    from derivus.bootstrappers import (BenchmarkInstruments, author_quote, completed, quote_node)
+    from derivus.bootstrappers import BenchmarkInstruments, author_quote
+    from derivus.instruments import deal_node
+    from derivus.schema import completed
     from derivus.config import Config, ModelParams
 
     market = Config().read_json(str(path))['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -1301,7 +1303,7 @@ def par_residuals(path, curve='ZAR', interp=None):
         # only what differs from its declaration - the same seam `quote_nodes` builds through
         deal = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
         author_quote(deal, point['Quoted_Market_Value'], curve)
-        nodes.append(quote_node(deal, {}))
+        nodes.append(deal_node(deal, {}))
     return BenchmarkInstruments(
         nodes, market['Price Factors'],
         interp or market.get('Price Factor Interpolation') or ModelParams(),

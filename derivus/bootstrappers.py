@@ -26,8 +26,9 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
-from .schema import (DAY_COUNTS, DealFields, F, OPTION_QUOTE, PRICES_KEY, QUOTE_TWO_WAY, REQUIRED,
-                     Row, declared_defaults, partition_market_price, quote_table)
+from .schema import (DAY_COUNTS, F, OPTION_QUOTE, PRICES_KEY, QUOTE_TWO_WAY, REQUIRED, Row,
+                     completed, declared_defaults, leaf_deals, partition_market_price, quote_table,
+                     walk_blocks)
 from ._version import __version__
 
 import scipy.optimize
@@ -5448,12 +5449,6 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         return riskfactors.HullWhite2FactorModelParameters(param)
 
 
-def leaf_deals(node):
-    """The deals a deal-tree node prices - itself, or its children if it is a container."""
-    if node.get('Children'):
-        return [leaf for child in node['Children'] for leaf in leaf_deals(child)]
-    return [node['Instrument']]
-
 
 class Benchmark_State(utils.Calculation_State):
     """The pricing state a t0 benchmark valuation needs: one date, one path, float64.
@@ -5670,73 +5665,24 @@ def quote_nodes(points, discount_rate, shift=0.0):
     for point in points:
         authored = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
         author_quote(authored, point['Quoted_Market_Value'] + shift, discount_rate)
-        nodes.append(quote_node(authored, {}))
+        nodes.append(instruments.deal_node(authored, {}))
     return nodes
 
 
-def completed(deal):
-    """A benchmark block that answers a read by name the way a priced deal's does, legs included.
-
-    A type's `quote` runs before the deal is constructed and reads the block's own conventions -
-    a deposit's wants the payment frequency - so a benchmark stating only its terms is completed
-    through the one seam a `default=` reaches a deal by. Completion answers a read, so the block
-    still holds exactly the keys the family authored.
-    """
-    node = DealFields(deal, getattr(instruments, deal['Object'], None))
-    if deal.get('Children'):
-        node['Children'] = [completed(child) for child in deal['Children']]
-    return node
-
-
-def author_quote(deal, quote, discount_rate):
-    """Author an instrument block AT its quote, discounting on `discount_rate`.
+def author_quote(block, quote, discount_rate):
+    """Author an instrument block AT its quote, discounting on `discount_rate`, legs included.
 
     What an instrument PROJECTS off it names itself; what the quote set DISCOUNTS on is a property
-    of the curve set, stated once on the block. Recurses into `Children`, so a two-leg benchmark
-    gets the quote on the leg that holds a rate and the discount curve on both. Where the number
-    lands, and in what unit, is the type's own declaration (`Deal.quoted`, `Deal.quote`): a
-    container declares none and its fixed leg does.
+    of the curve set, stated once on the block. A type's `quote` runs before the deal is
+    constructed and reads the block's own conventions - a deposit's wants the payment frequency -
+    so the block is `completed` first. Where the number lands, and in what unit, is the type's own
+    declaration (`Deal.quoted`, `Deal.quote`): a container declares none and its fixed leg does.
     """
-    for child in deal.get('Children', ()):
-        author_quote(child, quote, discount_rate)
-    deal['Discount_Rate'] = discount_rate
-    declared = getattr(instruments, deal['Object'], None)
-    if declared is not None and declared.quoted:
-        declared.quote(deal, quote)
-
-
-def quote_node(deal, valuation_options):
-    """A deal-tree node from an authored instrument block - the shape `set_calculation_children`
-    takes. `Config.parse_json` builds it from `.Deal` markers and a `Children` list; a quote carries
-    the same block inline, so it is built here instead."""
-    node = {'Instrument': instruments.construct_instrument(
-        {key: value for key, value in deal.items() if key != 'Children'}, valuation_options)}
-    if deal.get('Children'):
-        node['Children'] = [quote_node(child, valuation_options) for child in deal['Children']]
-    return node
-
-
-def quote_knots(nodes, base_date, day_count, calendars):
-    """The curve's knot grid: one knot per benchmark, at that benchmark's last cashflow date.
-
-    The only placement that makes the system square - a knot with no instrument maturing at it is
-    unidentified, and two instruments between one pair of knots leave the curve under-determined.
-    Below the shortest knot the curve is flat by `CurveTenor`'s clipping, so the front stub costs no
-    unknown. The output grid IS this grid: interpolating onto a second would stop the curve
-    repricing its quotes.
-
-    Returned in NODE order and in the curve's own day count, so a caller can pair each knot with the
-    quote that identifies it; the curve itself is sorted.
-    """
-    code = utils.DayCount.code(day_count)
-    maturities = []
-    for node in nodes:
-        leaves = leaf_deals(node)
-        for leaf in leaves:
-            leaf.reset(calendars)
-        maturities.append(max(max(leaf.get_reval_dates()) for leaf in leaves))
-    return np.array([utils.DayCount.accrual(
-        base_date, (maturity - base_date).days, code) for maturity in maturities])
+    for leg in walk_blocks(block):
+        leg['Discount_Rate'] = discount_rate
+        declared = getattr(instruments, leg['Object'], None)
+        if declared is not None and declared.quoted:
+            declared.quote(leg, quote)
 
 
 def par_quotes(points, discount_rate, currency, price_factors, factor_interp, base_date,
@@ -6002,6 +5948,29 @@ class InterestRateCurveParameters(Construction):
         self.published = []
 
     @staticmethod
+    def quote_knots(nodes, base_date, day_count, calendars):
+        """The curve's knot grid: one knot per benchmark, at that benchmark's last cashflow date.
+
+        The only placement that makes the system square - a knot with no instrument maturing at it
+        is unidentified, and two instruments between one pair of knots leave the curve
+        under-determined. Below the shortest knot the curve is flat by `CurveTenor`'s clipping, so
+        the front stub costs no unknown. The output grid IS this grid: interpolating onto a second
+        would stop the curve repricing its quotes.
+
+        Returned in NODE order and in the curve's own day count, so a caller can pair each knot
+        with the quote that identifies it; the curve itself is sorted.
+        """
+        code = utils.DayCount.code(day_count)
+        maturities = []
+        for node in nodes:
+            leaves = leaf_deals(node)
+            for leaf in leaves:
+                leaf.reset(calendars)
+            maturities.append(max(max(leaf.get_reval_dates()) for leaf in leaves))
+        return np.array([utils.DayCount.accrual(
+            base_date, (maturity - base_date).days, code) for maturity in maturities])
+
+    @staticmethod
     def benchmark_curves(block, market_price=None):
         """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
         type's own `factor_fields` and recursing into `Children`.
@@ -6111,7 +6080,7 @@ class InterestRateCurveParameters(Construction):
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
         points = self.used_quotes(block, market_price)
         nodes = quote_nodes(points, discount_rate)
-        knots = quote_knots(nodes, base_date, block['Day_Count'], calendars)
+        knots = self.quote_knots(nodes, base_date, block['Day_Count'], calendars)
         # a knot at tenor zero identifies nothing - the curve is flat below its shortest by
         # clipping - and the Newton solve meets it as a singular Jacobian rather than a bad curve
         dead = ['{} (last cashflow {:%Y-%m-%d})'.format(

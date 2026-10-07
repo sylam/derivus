@@ -30,7 +30,7 @@ from . import schema
 from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_precedents,
                             bootstrap_writers, construct_bootstrapper, family_class,
                             market_prices_for, InterestRateCurveParameters, FAMILIES)
-from .instruments import construct_instrument, Deal
+from .instruments import construct_instrument, deal_node, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
 Timestamp = pd.Timestamp
@@ -517,13 +517,11 @@ class Config(object):
 
     def deals_from_object_map(self, object_map):
         """A `{Object: {Reference: field}}` map (a Hedging_Problem's Tradable_Instruments or
-        Liabilities block) as `[{'Instrument': Deal}, ...]` - the same adapter `parse_json` uses
-        for `.Deal` nodes."""
-        return [{'Instrument': construct_instrument(
-            {'Object': obj_type, 'Reference': ref, **obj_field},
-            self.params['Valuation Configuration'])}
-            for obj_type, obj_data in object_map.items()
-            for ref, obj_field in obj_data.items()]
+        Liabilities block) as `[{'Instrument': Deal}, ...]`, through the one block adapter."""
+        return [deal_node({'Object': obj_type, 'Reference': ref, **obj_field},
+                          self.params['Valuation Configuration'])
+                for obj_type, obj_data in object_map.items()
+                for ref, obj_field in obj_data.items()]
 
     def set_calculation_children(self, nodes):
         """Install constructed instrument nodes as the canonical deal-tree children."""

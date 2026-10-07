@@ -7532,5 +7532,15 @@ def construct_instrument(param, all_valuation_options):
         return globals().get(param.get('Object'))(param, deal_options)
 
 
+def deal_node(block, all_valuation_options):
+    """A deal-tree node from a wire block, its `Children` blocks nodes under it - the shape
+    `Config.set_calculation_children` takes, the one adapter a block reaches a constructed tree by."""
+    node = {'Instrument': construct_instrument(
+        {key: value for key, value in block.items() if key != 'Children'}, all_valuation_options)}
+    if block.get('Children'):
+        node['Children'] = [deal_node(child, all_valuation_options) for child in block['Children']]
+    return node
+
+
 if __name__ == '__main__':
     pass

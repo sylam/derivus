@@ -4052,7 +4052,7 @@ class SIMM(Calculation):
         """Every move ISDA defines a sensitivity of trade `index` by, in a fixed order: each
         benchmark quote of every curve block the walk stands on, then each other mapped factor."""
         from .bootstrappers import (InterestRateCurveParameters, bootstrap_precedents,
-                                    bootstrap_writers, quote_knots, quote_nodes)
+                                    bootstrap_writers, quote_nodes)
 
         walk = self.walk(index)
         reference = self.trades[index][1]['Instrument'].field.get('Reference')
@@ -4090,8 +4090,9 @@ class SIMM(Calculation):
                         ' and mapped {}'.format(stated['RiskType']) if stated else ''))
             if stated is None:
                 continue
-            tenors = quote_knots(quote_nodes(used, instrument['Discount_Rate'] or '.'.join(
-                utils.check_rate_name(block)[1:])), base_date, 'ACT_365', self.config.holidays)
+            discount = instrument['Discount_Rate'] or '.'.join(utils.check_rate_name(block)[1:])
+            tenors = InterestRateCurveParameters.quote_knots(
+                quote_nodes(used, discount), base_date, 'ACT_365', self.config.holidays)
             positions = [position for position, point in enumerate(instrument['Points'])
                          if any(point is quote for quote in used)]
             moves.extend(self.Bump(factor, stated, utils.vertex_weights(tenor, self.vertices),
