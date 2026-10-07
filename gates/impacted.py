@@ -367,10 +367,9 @@ class Selector:
             for path in list(self.map['files']) + sorted('tests/' + os.path.basename(t)
                                                          for t in tests):
                 text = show(self.target, path)
-                pattern = text and reader(batch, path, text)
-                if not pattern:
+                lines = text and reads(batch, path, text)
+                if not lines:
                     continue
-                lines = {ln for ln, line in enumerate(text.splitlines(), 1) if pattern.search(line)}
                 if path.startswith('tests/'):
                     out |= self.index(self.test_lines(path, text, lines))
                     continue
@@ -476,18 +475,32 @@ class Selector:
         return out
 
 
-def reader(batch, path, text):
-    """The pattern a line of `path` matches where it reads one of `batch`'s `(name, home)`: an
-    attribute anywhere for a class's (`home` None), the bare name in its home or in a file importing
-    it by name, `module.name` anywhere else - or None where `text` reads none."""
-    parts = []
+@functools.lru_cache(maxsize=None)
+def read_names(text):
+    """`{line: {read}}` for the code of `text` - every name a line reads, as the syntax tree holds
+    it and never a comment, a docstring or a string: a bare name `('', name)`, an attribute of
+    anything `('.', attr)`, and `module.name` `(module, name)`."""
+    out = {}
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            out.setdefault(node.lineno, set()).add(('', node.id))
+        elif isinstance(node, ast.Attribute):
+            out.setdefault(node.lineno, set()).add(('.', node.attr))
+            if isinstance(node.value, ast.Name):
+                out[node.lineno].add((node.value.id, node.attr))
+    return out
+
+
+def reads(batch, path, text):
+    """The lines of `path` that read one of `batch`'s `(name, home)`: an attribute anywhere for a
+    class's (`home` None), the bare name in its home or in a file importing it by name,
+    `module.name` anywhere else."""
+    wanted = set()
     for name, home in batch:
         stem = home and os.path.basename(home)[:-3]
-        bare = home is None and r'\.%s\b' or (home == path or name in imported(text, stem)) \
-            and r'\b%s\b' or r'\b%s\.%s\b' % (stem, '%s')
-        parts.append(bare % re.escape(name))
-    pattern = re.compile('|'.join(parts))
-    return pattern if pattern.search(text) else None
+        wanted.add(('.', name) if home is None else ('', name)
+                   if home == path or name in imported(text, stem) else (stem, name))
+    return {ln for ln, got in read_names(text).items() if got & wanted}
 
 
 @functools.lru_cache(maxsize=None)
