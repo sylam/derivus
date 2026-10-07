@@ -3889,7 +3889,7 @@ class SIMM(Calculation):
 
     def setup(self, params):
         """The run's inputs read and its book listed - what the run and each of its workers share."""
-        from .bootstrappers import PRICES_KEY, market_prices_for
+        from .bootstrappers import market_prices_for
 
         params = declared_defaults(type(self), params)
         missing = [name for name in ('Base_Date', 'Mapping', 'Parameters') if not params.get(name)]
@@ -3932,7 +3932,7 @@ class SIMM(Calculation):
         # what a configured family solves, and nothing a family the configuration omits carries
         self.claimed = {name for family, entry in self.config.params[
             'Bootstrapper Configuration'].items() for name in market_prices_for(
-            family, prices, declared=entry.get(PRICES_KEY) if isinstance(entry, dict) else None)}
+            family, prices, declared=entry.get(schema.PRICES_KEY) if isinstance(entry, dict) else None)}
         self.moved = {}
 
     def execute(self, params):

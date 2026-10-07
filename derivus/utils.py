@@ -639,21 +639,15 @@ class DayCount:
     ACT30_E360 = 4
     ACTACTICMA = 5
 
+    #: The code each convention's name maps to - the menu every day-count field declares.
+    CODES = {'ACT_365': ACT365, 'ACT_360': ACT360, 'ACT_365_ISDA': ACT365IDSA,
+             '_30_360': ACT30_360, '_30E_360': ACT30_E360, 'ACT_ACT_ICMA': ACTACTICMA}
+
     @staticmethod
     def code(name):
-        if name == 'ACT_365':
-            return DayCount.ACT365
-        elif name == 'ACT_360':
-            return DayCount.ACT360
-        elif name == '_30_360':
-            return DayCount.ACT30_360
-        elif name == '_30E_360':
-            return DayCount.ACT30_E360
-        elif name == 'ACT_365_ISDA':
-            return DayCount.ACT365IDSA
-        elif name == 'ACT_ACT_ICMA':
-            return DayCount.ACTACTICMA
-        else:
+        try:
+            return DayCount.CODES[name]
+        except KeyError:
             raise Exception('Daycount {} Not implemented'.format(name))
 
     @staticmethod
@@ -2936,6 +2930,17 @@ def bars_touched(bars, level, barrier_up):
         if (high >= level) if barrier_up else (low <= level):
             return True
     return False
+
+
+def closed_over(edges, start):
+    """`start` and everything `edges` reaches from it."""
+    covered, pending = set(start), list(start)
+    while pending:
+        for reached in edges.get(pending.pop(), ()):
+            if reached not in covered:
+                covered.add(reached)
+                pending.append(reached)
+    return covered
 
 
 def vertex_weights(tenor, vertices):

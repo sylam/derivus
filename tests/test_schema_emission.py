@@ -824,7 +824,7 @@ def test_the_configuration_store_is_the_families_own_declarations():
     for cls in bootstrappers.FAMILIES:
         declared = {f.key: f for f in cls.fields}
         dials = dict(entries[cls.price_factor_type]['fields'])
-        stem = dials.pop(bootstrappers.PRICES_KEY)
+        stem = dials.pop(schema.PRICES_KEY)
         assert stem['value'] + 'Prices' == cls.market_factor_type, (
             f'{cls.price_factor_type} routes on {stem["value"]!r}, which is not its block')
         assert set(dials) == {key for key, f in declared.items()

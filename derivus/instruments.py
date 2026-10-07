@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, F, Observes, REQUIRED, Row, own, DealFields,
+    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields,
     ADMIN, FX_ADMIN, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -2281,7 +2281,7 @@ class DepositDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
@@ -2389,7 +2389,7 @@ class SwapInterestDeal(Deal):
     observes = Observes('Interest_Rate', 'InterestRate')
     fields = [ADMIN, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Rate_Multiplier', 'Float', default=1.0, convention=True),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -2421,10 +2421,10 @@ class SwapInterestDeal(Deal):
         F('Pay_Accrual_Calendars', 'Text', default='', convention=True),
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Pay_Payment_Calendars', 'Text', default='', convention=True),
-        F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA'])
+        F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS)
 ], 'Pay'), own('SwapInterestDeal', [
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
-        F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_Accrual_Calendars', 'Text', default='', convention=True),
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -2530,7 +2530,7 @@ class SwapInterestDeal(Deal):
 class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
-        F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']), F('FixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Fixed_Amount', 'Float', sized=True), F('Discounted', 'Text', values=['Yes', 'No']), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']), F('FixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Fixed_Amount', 'Float', sized=True), F('Discounted', 'Text', values=['Yes', 'No']), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Settlement_Amount', 'Float', default=0.0, sized=True),
         F('Calendars', 'Text', default='', convention=True)
 ])]
@@ -2724,7 +2724,7 @@ class CFFloatingInterestListDeal(Deal):
         F('Rate_Adjustment_Method', 'Text', default='None', convention=True, values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
         F('Forecast_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Settlement_Amount', 'Float', default=0.0),
-        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Rate_Calendars', 'Text', default='', convention=True),
@@ -2851,7 +2851,7 @@ class YieldInflationCashflowListDeal(Deal):
     fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default=''),
         F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1, 'Days_In_Period': 0}, sub_fields=[F('Months_Lag', 'Integer', default=1), F('Quarters_Lag', 'Integer', default=0), F('Quarter_Reference_Month', 'Integer', default=1), F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type', values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'), F('Reference_Day', 'Integer', default=1), F('Days_In_Period', 'Integer', default=0)]),
-        F('Real_Yield_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'), F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'), F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']), F('Accrual_Year_Fraction', 'Float'), F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'), F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
+        F('Real_Yield_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'), F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'), F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'), F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
         F('Calendars', 'Text', default='', convention=True),
         F('Is_Forward_Deal', 'Text', default='No', convention=True, values=['Yes', 'No'])
 ])]
@@ -2976,7 +2976,7 @@ class CapDeal(Deal):
     fields = [ADMIN, own('CapDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
@@ -2992,7 +2992,7 @@ class CapDeal(Deal):
         F('Averaging_Method', 'Text', default='Average_Rate', convention=True, values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Cap_Rate', 'Float', default=0.0),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
@@ -3097,7 +3097,7 @@ class FloorDeal(Deal):
     fields = [ADMIN, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
@@ -3114,7 +3114,7 @@ class FloorDeal(Deal):
         F('Averaging_Method', 'Text', default='Average_Rate', convention=True, values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
@@ -3221,7 +3221,7 @@ class SwaptionDeal(Deal):
         F('Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Swap_Rate', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Expiry_Date', 'Date', default=''),
@@ -3247,11 +3247,11 @@ class SwaptionDeal(Deal):
         F('Pay_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Payment_Calendars', 'Text', default='', convention=True),
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Pay_Calendars', 'Text', default='', convention=True)
 ], 'Pay'), own('SwaptionDeal', [
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
@@ -6936,7 +6936,7 @@ class DealDefaultSwap(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Currency', 'Text', default=''),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -7085,7 +7085,7 @@ class FRADeal(Deal):
         F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Principal', 'Float', default=0.0, sized=True),
         F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
+        F('Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Calendars', 'Text', default='', convention=True),
         F('Reset_Date', 'Date', default='', convention=True),
         F('Effective_Date', 'Date', default=''),

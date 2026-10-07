@@ -109,8 +109,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from . import (Context, bootstrappers, content_hash, instruments, riskfactors, solve_deal_field,
                spine, structures, utils)
-from .schema import (mapping, deal_at, instrument_of, job_children, quote_plan, quote_stamps,
-                     remove_deal, settlement_days, sniff_indent, splice_deal, tables_of,
+from .schema import (PRICES_KEY, mapping, deal_at, instrument_of, job_children, quote_plan,
+                     quote_stamps, remove_deal, settlement_days, sniff_indent, splice_deal, tables_of,
                      tenor_fields, update_market_quote, validate_instrument, value_message,
                      walk_job_deals)
 from ._version import __version__
@@ -3884,7 +3884,7 @@ def bootstrapper_entry(market, entry, fields):
         if message:
             raise ValueError('{}: {}'.format(key, message))
     current = section.get(key)
-    merged = {bootstrappers.PRICES_KEY: family.market_factor_type[:-len('Prices')],
+    merged = {PRICES_KEY: family.market_factor_type[:-len('Prices')],
               **(current if isinstance(current, dict) else {}), **fields}
     bootstrappers.construct_bootstrapper(key, merged)
     section[key] = merged

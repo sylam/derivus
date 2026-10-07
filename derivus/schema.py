@@ -54,6 +54,14 @@ BLANK = {
 #: `[[moneyness, expiry, vol], ...]`. Only the last column is content, so `bind` splits the field.
 SHAPED = tuple(BLANK)
 
+#: The day-count menu every rate field declares - the conventions the engine accrues, spelled
+#: once there.
+DAY_COUNTS = tuple(utils.DayCount.CODES)
+
+#: The one key of a `Bootstrapper Configuration` entry that is not a hyperparameter: the STEM of
+#: the `Market Prices` type the entry routes on, the type being that value plus `Prices`.
+PRICES_KEY = 'Prices'
+
 #: The VALUE keys of a `Market Prices` quote row, for every family at once. Read by both
 #: `update_market_quote`'s tick guard and `partition_market_price`'s projection.
 MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
@@ -590,9 +598,9 @@ def emit_configuration(module, interpolation_default):
     entries = {}
     for cls in module.FAMILIES:
         stem = cls.market_factor_type[:-len('Prices')]
-        dials = {module.PRICES_KEY: F(module.PRICES_KEY, 'Text', default=stem,
-                                      description='The Market Prices stem this entry routes on'
-                                      ).descriptor()}
+        dials = {PRICES_KEY: F(PRICES_KEY, 'Text', default=stem,
+                               description='The Market Prices stem this entry routes on'
+                               ).descriptor()}
         dials.update({f.key: f.descriptor() for f in cls.fields
                       if f.type not in ('Table', 'Container')})
         entries[cls.price_factor_type] = {

@@ -29,7 +29,7 @@ from . import utils
 from . import schema
 from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_precedents,
                             bootstrap_writers, construct_bootstrapper, family_class,
-                            market_prices_for, InterestRateCurveParameters, FAMILIES, PRICES_KEY)
+                            market_prices_for, InterestRateCurveParameters, FAMILIES)
 from .instruments import construct_instrument, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -664,13 +664,13 @@ class Config(object):
                             'read'.format(', '.join(unclaimed),
                                           ', '.join(name for name, _ in section) or 'nothing'))
         for bootstrapper_name, params in section:
-            stem = params.get(PRICES_KEY) if isinstance(params, dict) else None
+            stem = params.get(schema.PRICES_KEY) if isinstance(params, dict) else None
             if isinstance(params, dict) and stem is None:
                 logging.warning(
                     'Bootstrapper Configuration.{0} declares no {1} - in process the family is '
                     'looked up and {2} used, but the multiprocessing path routes without the '
                     'engine and needs it. Write {1} {3!r}'.format(
-                        bootstrapper_name, PRICES_KEY,
+                        bootstrapper_name, schema.PRICES_KEY,
                         family_class(bootstrapper_name).market_factor_type,
                         family_class(bootstrapper_name).market_factor_type[:-len('Prices')]))
             blocks = market_prices_for(

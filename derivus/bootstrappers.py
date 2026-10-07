@@ -26,15 +26,12 @@ import torch
 
 # Internal modules
 from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
-from .schema import (DealFields, F, OPTION_QUOTE, QUOTE_TWO_WAY, REQUIRED, Row, declared_defaults,
-                     partition_market_price, quote_table)
+from .schema import (DAY_COUNTS, DealFields, F, OPTION_QUOTE, PRICES_KEY, QUOTE_TWO_WAY, REQUIRED,
+                     Row, declared_defaults, partition_market_price, quote_table)
 from ._version import __version__
 
 import scipy.optimize
 import scipy.stats
-
-#: The day-count menu every rate instrument declares, spelled once for the blocks that quote one.
-DAY_COUNTS = ('ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA')
 
 
 def resolve_factor(name, price_factors, candidates):
@@ -6902,12 +6899,6 @@ class FXVolSurfaceParameters(Construction):
                                          skews[T], T, nodes).max()), tolerance))
 
 
-#: The one key of a `Bootstrapper Configuration` entry that is not a hyperparameter: the STEM of
-#: the `Market Prices` type it routes on, the type being that value plus `Prices`. DATA rather than
-#: a lookup because `derivus_bootstrap`'s parent routes blocks to workers before any of them
-#: imports torch, and this module does.
-PRICES_KEY = 'Prices'
-
 
 def family_class(btype):
     """The price family a `Bootstrapper Configuration` entry names: the `Price Factors` TYPE it
@@ -6979,21 +6970,10 @@ def block_readers(market_prices):
     return readers
 
 
-def closed_over(edges, start):
-    """`start` and everything `edges` reaches from it."""
-    covered, pending = set(start), list(start)
-    while pending:
-        for reached in edges.get(pending.pop(), ()):
-            if reached not in covered:
-                covered.add(reached)
-                pending.append(reached)
-    return covered
-
-
 def bootstrap_dependents(market_prices, moved):
     """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
     numbers: those blocks, plus every block that reads what one of them writes, closed over."""
-    return closed_over(block_readers(market_prices), moved)
+    return utils.closed_over(block_readers(market_prices), moved)
 
 
 def bootstrap_precedents(market_prices, wanted):
@@ -7004,7 +6984,7 @@ def bootstrap_precedents(market_prices, wanted):
     for written, readers in block_readers(market_prices).items():
         for reader in readers:
             reads.setdefault(reader, []).append(written)
-    return closed_over(reads, wanted)
+    return utils.closed_over(reads, wanted)
 
 
 def bootstrap_writers(market_prices, factors):
