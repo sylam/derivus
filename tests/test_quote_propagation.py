@@ -35,7 +35,7 @@ import torch
 
 import derivus
 from derivus import utils
-from derivus.bootstrappers import ARTIFACTS, InterestRateCurveParameters, quote_knots
+from derivus.bootstrappers import InterestRateCurveParameters, quote_knots
 from derivus.config import Config, CustomJsonEncoder, ModelParams
 from derivus.instruments import construct_instrument
 
@@ -101,7 +101,7 @@ def key_of(config, *names):
 
 
 def artifact_of(config, *names):
-    return ARTIFACTS.get(key_of(config, *names))
+    return config.artifacts.get(key_of(config, *names))
 
 
 def with_deals(config, book=None, currency=CCY, curve=CURVE, discount=CURVE,
@@ -138,7 +138,7 @@ def quotes_of(config, *names):
     """The quote vector in the order the artifact for that set indexes it, on its device."""
     market_prices = config.params['Market Prices']
     names = names or (BLOCK,)
-    artifact = next((found for found in ARTIFACTS.artifacts.values()
+    artifact = next((found for found in config.artifacts.artifacts.values()
                      if names[0] in found.members), None)
     return torch.tensor(
         [point['Quoted_Market_Value'] for name in names
@@ -151,7 +151,8 @@ def fitted_quotes(prepared, block=BLOCK):
     """The quotes the artifact covering `block` was FITTED at - that block's slice of the set-wide
     `q0`, which is the origin every tick here is written off."""
     market_prices = prepared.params['Market Prices']
-    artifact = next(found for found in ARTIFACTS.artifacts.values() if block in found.members)
+    artifact = next(found for found in prepared.artifacts.artifacts.values()
+                    if block in found.members)
     start = 0
     for name in artifact.members:
         used = len(InterestRateCurveParameters.used_quotes(
@@ -175,16 +176,6 @@ def ticked(prepared, tick, tolerance=1e9, signs=None, block=BLOCK):
                                  SIGNS if signs is None else signs):
         point['Quoted_Market_Value'] = float(base + tick * sign)
     return prepared
-
-
-@pytest.fixture(autouse=True)
-def empty_store():
-    """Every gate starts on a COLD process. The store is module-level and content-addressed, so a
-    slot filled by the test before this one is exactly the state a restart does not have - and a
-    gate that read it would be measuring the suite's order."""
-    ARTIFACTS.artifacts.clear()
-    yield
-    ARTIFACTS.artifacts.clear()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -430,7 +421,6 @@ def test_the_tick_shape_that_used_to_be_admitted_over_tolerance_now_refuses():
 
     # the same ride through the engine, under a tolerance the OLD proxy cleared (it read 0.886x of
     # the truth on this shape) and the truth does not
-    ARTIFACTS.artifacts.clear()
     prepared = with_deals(bootstrapped(market(True)))
     with pytest.raises(utils.CalibrationStale, match='Drift_Tolerance'):
         baseval(with_deals(ticked(prepared, tick, tolerance=0.95 * true_drift, signs=signs)))
@@ -501,7 +491,7 @@ def test_a_coupled_set_solves_as_one_system_and_rides_whole():
     prepared = usd_book(usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})))
     artifact = artifact_of(prepared, USD_OIS, USD_PROJ)
     assert artifact.members == (USD_OIS, USD_PROJ), 'the two blocks did not solve as one set'
-    assert ARTIFACTS.covering(utils.Factor('InterestRate', ('USD-3M',))) == [artifact], (
+    assert prepared.artifacts.covering(utils.Factor('InterestRate', ('USD-3M',))) == [artifact], (
         'the projection curve answers to a different artifact than the one it was solved with')
     assert artifact.jacobian.shape == (17, 17), artifact.jacobian.shape
 
@@ -515,7 +505,6 @@ def test_a_coupled_set_solves_as_one_system_and_rides_whole():
     moved = usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})
     for point in moved[USD_OIS]['instrument']['Points']:
         point['Quoted_Market_Value'] += tick
-    ARTIFACTS.artifacts.clear()
     refit_config = usd_book(usd_config(moved))
     _, refit = baseval(refit_config)
     refit_nodes = curve_of_block(refit_config, USD_PROJ)
@@ -547,7 +536,6 @@ def test_the_coupled_ride_is_second_order_in_the_tick_it_used_to_be_first_order_
     moved = usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})
     for point in moved[USD_OIS]['instrument']['Points']:
         point['Quoted_Market_Value'] += tick
-    ARTIFACTS.artifacts.clear()
     _, refit = baseval(usd_book(usd_config(moved)))
 
     assert abs(refit - base) > 10.0, 'the tick barely moved the book - nothing is being measured'
@@ -607,7 +595,7 @@ def test_the_coupling_is_measured_not_declared():
     7.7e-16. `BenchmarkInstruments.reads` puts every constant on the tape and asks the backward pass.
     """
     prepared = bootstrapped(x_world(), currency='XXX', spot_curve='X-3M')
-    artifact, = ARTIFACTS.covering(utils.Factor('InterestRate', ('X-DISC',)))
+    artifact, = prepared.artifacts.covering(utils.Factor('InterestRate', ('X-DISC',)))
     assert artifact.members == ('InterestRatePrices.X-3M', 'InterestRatePrices.X-DISC'), (
         'the undeclared coupling was not measured: {}'.format(artifact.members))
     assert all(block['instrument']['Discount_Rate'] == ''
@@ -621,7 +609,6 @@ def test_the_coupling_is_measured_not_declared():
     moved = x_world()
     for point in moved['InterestRatePrices.X-3M']['instrument']['Points']:
         point['Quoted_Market_Value'] += 0.10
-    ARTIFACTS.artifacts.clear()
     refit = curve_of_block(bootstrapped(moved, currency='XXX', spot_curve='X-3M'),
                            'InterestRatePrices.X-DISC')
 
@@ -645,7 +632,6 @@ def test_a_partial_declaration_over_a_coupled_set_refuses():
     with pytest.raises(Exception, match='COUPLED SET'):
         usd_config(usd_market({USD_PROJ: 'Linear'}))
 
-    ARTIFACTS.artifacts.clear()
     both = usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'}))
     assert artifact_of(both, USD_OIS, USD_PROJ) is not None
 
@@ -661,7 +647,7 @@ def test_the_set_is_only_measured_where_an_operator_is_asked_for():
     tolerance. `Tol` is 1e-14 on a rate of order 1e-2, and they agree to 1e-15.
     """
     plain = usd_config(usd_market({}))
-    assert not ARTIFACTS.artifacts, 'a section that asked for nothing published an artifact'
+    assert not plain.artifacts.artifacts, 'a section that asked for nothing published an artifact'
     coupled = usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'}))
     for market_price in (USD_OIS, USD_PROJ):
         moved = np.abs(curve_of_block(plain, market_price) -
@@ -694,7 +680,7 @@ def test_the_switch_off_is_todays_path_bit_for_bit():
     lifecycle exists to prevent.
     """
     plain = with_deals(bootstrapped(market(False)))
-    assert not ARTIFACTS.artifacts, 'a block that declined the switch published an artifact'
+    assert not plain.artifacts.artifacts, 'a block that declined the switch published an artifact'
     connected = with_deals(bootstrapped(market(True)))
     assert artifact_of(connected) is not None
     assert np.array_equal(curve_values(plain), curve_values(connected)), (
@@ -752,7 +738,8 @@ def test_the_refit_publishes_the_drift_of_the_ride_it_replaced(caplog):
     that replaced it.
 
     The numbers are checked against the ride computed independently, not merely asserted present:
-    a drift block full of zeros would pass a presence check and say nothing.
+    a drift block full of zeros would pass a presence check and say nothing. The refit is the
+    same config bootstrapped again on moved quotes - the store is the config's own.
     """
     first = bootstrapped(market(True))
     artifact = artifact_of(first)
@@ -762,8 +749,10 @@ def test_the_refit_publishes_the_drift_of_the_ride_it_replaced(caplog):
     quotes = quotes_of(ticked(first, tick))
     ridden = artifact.ride(quotes)
 
+    refit = first
+    refit.params['Market Prices'] = market(True, tick=tick)
     with caplog.at_level(logging.INFO):
-        refit = bootstrapped(market(True, tick=tick))
+        refit.bootstrap()
     published = artifact_of(refit)
 
     assert published.drift['rode'] == artifact.artifact_id
@@ -879,6 +868,11 @@ def test_the_artifact_survives_a_job_document_round_trip_by_key():
     reloaded = derivus.Context().load_json((document, 'posted')).current_cfg
     assert key_of(reloaded) == key, (
         'the decoder rebuilt the block into a different slot, so a reloaded job refuses forever')
+    # a fresh context holds no artifact; handed the one the session published, it rides as the
+    # session does, which is the slot matching to the bit
+    with pytest.raises(utils.CalibrationStale, match='no calibration artifact'):
+        reloaded.propagated_factor(FACTOR)
+    reloaded.artifacts.put(artifact_of(prepared))
     assert np.array_equal(reloaded.propagated_factor(FACTOR)[0],
                           prepared.propagated_factor(FACTOR)[0]), (
         'the reloaded job rode to a different curve')
@@ -909,7 +903,7 @@ def test_a_cold_process_refuses_rather_than_pricing_something_else():
     ticked(prepared, 0.02)
     priced = baseval(with_deals(prepared))[1]
 
-    ARTIFACTS.artifacts.clear()
+    prepared.artifacts.artifacts.clear()
     with pytest.raises(utils.CalibrationStale, match='no calibration artifact'):
         baseval(with_deals(prepared))
 
@@ -936,7 +930,7 @@ def test_an_evicted_slot_refuses_instead_of_silently_repricing():
     rode = out['Stats']['Calibrations']
     assert rode == {CURVE_NAME: artifact_of(context.current_cfg).artifact_id}, rode
 
-    ARTIFACTS.artifacts.pop(key_of(context.current_cfg))
+    context.current_cfg.artifacts.artifacts.pop(key_of(context.current_cfg))
     with pytest.raises(utils.CalibrationStale, match='no calibration artifact'):
         run(with_deals(context.current_cfg))
     assert (context.plan_hash(), context.values_hash()) == replay, (
@@ -948,7 +942,7 @@ def test_a_reauthored_partner_block_takes_the_slot_with_it():
     artifact whose `J` was fitted against quotes that no longer exist is exactly the one that must
     not be findable by the curve it still covers."""
     prepared = usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'}))
-    assert ARTIFACTS.covering(utils.Factor('InterestRate', ('USD-3M',)))
+    assert prepared.artifacts.covering(utils.Factor('InterestRate', ('USD-3M',)))
 
     prepared.params['Market Prices'][USD_OIS]['instrument']['Points'][-1]['Use'] = 'No'
     for factor in ('USD-OIS', 'USD-3M'):
@@ -964,6 +958,9 @@ class Slot(object):
         self.key = key
         self.factors = (utils.Factor('InterestRate', (key,)),)
 
+    def replacing(self, previous):
+        return self
+
 
 def test_the_store_evicts_the_least_recently_used_and_not_the_oldest():
     """The store is bounded, so WHICH thing goes is a correctness property. A tick stream rides one
@@ -971,14 +968,15 @@ def test_the_store_evicts_the_least_recently_used_and_not_the_oldest():
     and every eviction is a refusal the caller has to refit through. Gated because the mutation
     survived everything else: flipping `move_to_end` off passed the entire suite.
     """
-    for index in range(ARTIFACTS.size):
-        ARTIFACTS.put(Slot('slot-{}'.format(index)))
-    assert len(ARTIFACTS.artifacts) == ARTIFACTS.size
+    store = utils.ArtifactStore()
+    for index in range(store.size):
+        store.put(Slot('slot-{}'.format(index)))
+    assert len(store.artifacts) == store.size
 
-    ARTIFACTS.get('slot-0')
-    ARTIFACTS.put(Slot('slot-new'))
-    assert ARTIFACTS.get('slot-0') is not None, 'a touched slot was evicted - the store is FIFO'
-    assert 'slot-1' not in ARTIFACTS.artifacts, (
+    store.get('slot-0')
+    store.put(Slot('slot-new'))
+    assert store.get('slot-0') is not None, 'a touched slot was evicted - the store is FIFO'
+    assert 'slot-1' not in store.artifacts, (
         'the untouched least-recently-used slot survived - nothing was evicted at all')
 
 
@@ -991,14 +989,15 @@ def test_a_ride_counts_as_use_of_the_slot_it_rode():
     ticked(prepared, 0.02)
     key = key_of(prepared)
 
-    for index in range(ARTIFACTS.size - 1):
-        ARTIFACTS.put(Slot('slot-{}'.format(index)))
-    assert next(iter(ARTIFACTS.artifacts)) == key, 'the real artifact is not the oldest entry'
+    store = prepared.artifacts
+    for index in range(store.size - 1):
+        store.put(Slot('slot-{}'.format(index)))
+    assert next(iter(store.artifacts)) == key, 'the real artifact is not the oldest entry'
 
     assert prepared.propagated_factor(FACTOR) is not None
-    ARTIFACTS.put(Slot('slot-new'))
-    assert ARTIFACTS.get(key) is not None, 'the slot a tick stream is riding was evicted under it'
-    assert 'slot-0' not in ARTIFACTS.artifacts, 'nothing was evicted at all'
+    store.put(Slot('slot-new'))
+    assert store.get(key) is not None, 'the slot a tick stream is riding was evicted under it'
+    assert 'slot-0' not in store.artifacts, 'nothing was evicted at all'
 
 
 def test_the_interpolation_scheme_addresses_a_different_slot():

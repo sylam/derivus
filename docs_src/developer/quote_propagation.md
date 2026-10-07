@@ -105,7 +105,7 @@ calculation, price factors, market prices — while a slot names only the calibr
 with different `plan_hash`es (a different book, netting set or reporting currency) legitimately ride
 **one** artifact. A calibration is a property of the market data, not of the trades priced against it.
 
-**Where it lives.** `bootstrappers.ARTIFACTS`, in process, bounded and least-recently-used — the plan
+**Where it lives.** `Config.artifacts`, an `ArtifactStore` on the config whose market it was fitted on, kept for the session that bootstrapped, bounded and least-recently-used — the plan
 cache's discipline. It holds tensors and a compiled deal tree, so neither `Price Factors` (data, written
 back out as JSON) nor a file is an option. LRU rather than FIFO is a correctness property and gated as
 one: a tick stream rides one slot over and over while unrelated jobs publish around it, and FIFO throws

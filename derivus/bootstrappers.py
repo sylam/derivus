@@ -5660,10 +5660,6 @@ class BenchmarkInstruments(object):
             for legs in self.benchmarks])
 
 
-#: Where a published calibration artifact lives - in process, beside the service's plan cache. It
-#: holds tensors and a compiled benchmark set, so neither `Price Factors` nor a file is an option.
-ARTIFACTS = utils.ArtifactStore()
-
 
 def quote_nodes(points, discount_rate, shift=0.0):
     """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` percent.
@@ -5998,10 +5994,12 @@ class InterestRateCurveParameters(Construction):
         # the host: three desk curves in 5 s there against 17 s on the card
         self.device = torch.device('cpu')
         #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
-        #: per curve, plus the quote leaf per block. `Config.bootstrap` harvests both - tensors
-        #: cannot live in `Price Factors`.
+        #: per curve, plus the quote leaf per block; and what `Quote_Propagation` publishes, one
+        #: artifact per coupled set. `Config.bootstrap` harvests all three - tensors cannot live in
+        #: `Price Factors`.
         self.calibrated = {}
         self.quote_leaves = {}
+        self.published = []
 
     @staticmethod
     def benchmark_curves(block, market_price=None):
@@ -6262,7 +6260,8 @@ class InterestRateCurveParameters(Construction):
                 self.calibrated[curve] = solved[curve]
                 self.quote_leaves[market_price] = (descriptors, benchmarks.quotes)
         if all(propagate):
-            self.publish(members, factor_interp, base_date, benchmarks, theta.detach())
+            self.published.append(
+                self.publish(members, factor_interp, base_date, benchmarks, theta.detach()))
 
         residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
         logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
@@ -6345,46 +6344,19 @@ class InterestRateCurveParameters(Construction):
 
     @classmethod
     def publish(cls, members, factor_interp, base_date, benchmarks, theta):
-        """Freeze this solve as an artifact, and measure what the last one would have been worth.
-
-        With the previous artifact still in the slot, `theta_refit - theta_ridden` says how far the
-        operator had drifted by the time it was replaced, and the ridden theta's benchmark residual
-        says the same in the space the tolerance is declared in. Both are published ON the new
-        artifact, so the record of how stale the last calibration got travels with its replacement.
-
-        The refreshed artifact takes the old one's SLOT under a new `artifact_id`.
-        """
-        key = cls.plan_key(members, factor_interp, base_date)
-        artifact = utils.CalibrationArtifact(
-            key, [market_price for market_price, _ in members], theta,
+        """Freeze this solve as an artifact for the config's store, which scores it against the
+        one it takes the slot of (`utils.CalibrationArtifact.replacing`) under a new `artifact_id`."""
+        return utils.CalibrationArtifact(
+            cls.plan_key(members, factor_interp, base_date),
+            [market_price for market_price, _ in members], theta,
             utils.calibration_jacobian(benchmarks, utils.split_theta(benchmarks, theta)),
-            benchmarks.quotes.detach(), benchmarks)
-        name = ' + '.join(market_price for market_price, _ in members)
-
-        previous = ARTIFACTS.get(key)
-        if previous is not None:
-            ridden = previous.ride(artifact.quotes)
-            artifact.drift = {
-                'tick': float((artifact.quotes - previous.quotes).abs().max()),
-                'theta': float((theta - ridden).abs().max()),
-                'quote': float(artifact.mispricing(ridden, artifact.quotes).abs().max()),
-                'rode': previous.artifact_id, 'fitted': previous.timestamp}
-            logging.info(
-                '{} refit: artifact {} (fitted {}) rode a {:.4g}% tick to a drift of {:.3g} in '
-                'theta and {:.3g}% in quote space (solver Tol {:.3g}), replaced by {}'.format(
-                    name, previous.artifact_id[:12], previous.timestamp, artifact.drift['tick'],
-                    artifact.drift['theta'], artifact.drift['quote'],
-                    min(float(block['Tol']) for _, block in members),
-                    artifact.artifact_id[:12]))
-        else:
-            logging.info('{} refit: artifact {} published, nothing in the slot to score'.format(
-                name, artifact.artifact_id[:12]))
-        ARTIFACTS.put(artifact)
+            benchmarks.quotes.detach(), benchmarks, min(float(block['Tol']) for _, block in members))
 
     @classmethod
-    def propagate(cls, factor, market_prices, factor_interp, base_date):
-        """The curve `factor` RIDDEN to the quotes standing in `market_prices` now, or `None` where
-        no block asks for one - the operator, evaluated per EXECUTE and storing nothing.
+    def propagate(cls, artifacts, factor, market_prices, factor_interp, base_date):
+        """The curve `factor` RIDDEN to the quotes standing in `market_prices` now off the config's
+        `artifacts`, or `None` where no block asks for one - the operator, evaluated per EXECUTE and
+        storing nothing.
 
         Two ways to get `None`: a factor this family does not write, and a block that did not ask
         for `Quote_Propagation`.
@@ -6392,7 +6364,7 @@ class InterestRateCurveParameters(Construction):
         A block that DID ask and finds no artifact REFUSES - a miss is a 404 rather than a different
         number. That closes the replay hole: falling back to `theta*` reprices the book (13.4% on
         the eviction probe) while `plan_hash`, `values_hash`, the engine version and the seed all
-        stay identical. A cold process rides nothing and says so, an artifact being unserialisable.
+        stay identical. A fresh context rides nothing and says so, an artifact being unserialisable.
 
         A ride leaving the benchmarks further out of par than `Drift_Tolerance` refuses too. The
         tolerance is the SET's strictest, so a coupled set rides or refuses whole, and `slot`
@@ -6405,7 +6377,7 @@ class InterestRateCurveParameters(Construction):
         if block is None or declared_defaults(cls, block)['Quote_Propagation'] != 'Linear':
             return None
 
-        covering = ARTIFACTS.covering(factor)
+        covering = artifacts.covering(factor)
         artifact = next((found for found in covering if found.key == cls.slot(
             found.members, market_prices, factor_interp, base_date)), None)
         if artifact is None:
@@ -6413,13 +6385,13 @@ class InterestRateCurveParameters(Construction):
                 '{}: Quote_Propagation is Linear and no calibration artifact answers to this plan '
                 '- {}. Bootstrap the job and the same EXECUTE runs off the artifact that publishes; '
                 'an artifact holds tensors and a compiled benchmark set, so it cannot be serialised '
-                'and a fresh process has none. A plan the store cannot answer is a MISS, and a miss '
+                'and a fresh context has none. A plan the store cannot answer is a MISS, and a miss '
                 'is not permission to price off the curve the last bootstrap wrote.'.format(
                     market_price, 'the store holds none for this curve' if not covering else
                     '{} cover it, each fitted against a different plan ({})'.format(
                         len(covering), '; '.join(' + '.join(found.members) for found in covering))))
         # a ride is a USE: a ridden slot must not age out under one merely published beside it
-        ARTIFACTS.get(artifact.key)
+        artifacts.get(artifact.key)
 
         tolerance = min(
             float(declared_defaults(cls, market_prices[name]['instrument'])['Drift_Tolerance'])

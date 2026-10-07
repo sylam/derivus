@@ -5537,11 +5537,11 @@ class CalibrationArtifact(object):
     a NEW artifact into the same slot.
 
     It holds tensors and a compiled deal tree, so it cannot live in `Price Factors` and cannot be
-    serialised: it lives in `ARTIFACTS`, in process. A cold start has none and the first tick
-    REFUSES rather than pricing something else.
+    serialised: it lives in the config's `ArtifactStore`, in the session that bootstrapped. A
+    fresh context has none and the first tick REFUSES rather than pricing something else.
     """
 
-    def __init__(self, key, members, theta, jacobian, quotes, benchmarks, drift=None):
+    def __init__(self, key, members, theta, jacobian, quotes, benchmarks, tolerance, drift=None):
         # `config` imports from this module, so the package edge runs one way only
         from . import content_hash
 
@@ -5551,9 +5551,34 @@ class CalibrationArtifact(object):
         self.jacobian = jacobian
         self.quotes = quotes
         self.benchmarks = benchmarks
+        self.tolerance = tolerance
         self.drift = drift
         self.timestamp = pd.Timestamp.utcnow()
         self.artifact_id = content_hash({'key': key, 'quotes': quotes.tolist()})
+
+    def replacing(self, previous):
+        """Score what `previous`, the artifact this one takes the slot of, would have been worth
+        by now: `theta_refit - theta_ridden` is how far the operator had drifted when it was
+        replaced, and the ridden theta's benchmark residual says the same in the space the
+        tolerance is declared in. Both are kept ON this artifact, so the record of how stale the
+        last calibration got travels with its replacement."""
+        name = ' + '.join(self.members)
+        if previous is None:
+            logging.info('{} refit: artifact {} published, nothing in the slot to score'.format(
+                name, self.artifact_id[:12]))
+            return self
+        ridden = previous.ride(self.quotes)
+        self.drift = {
+            'tick': float((self.quotes - previous.quotes).abs().max()),
+            'theta': float((self.theta - ridden).abs().max()),
+            'quote': float(self.mispricing(ridden, self.quotes).abs().max()),
+            'rode': previous.artifact_id, 'fitted': previous.timestamp}
+        logging.info(
+            '{} refit: artifact {} (fitted {}) rode a {:.4g}% tick to a drift of {:.3g} in theta '
+            'and {:.3g}% in quote space (solver Tol {:.3g}), replaced by {}'.format(
+                name, previous.artifact_id[:12], previous.timestamp, self.drift['tick'],
+                self.drift['theta'], self.drift['quote'], self.tolerance, self.artifact_id[:12]))
+        return self
 
     @property
     def factors(self):
@@ -5627,8 +5652,17 @@ class ArtifactStore(object):
         self.artifacts = OrderedDict()
         self.lock = threading.Lock()
 
+    def __getstate__(self):
+        # an artifact cannot be serialised and a lock cannot cross a process: a copy is cold
+        return {'size': self.size}
+
+    def __setstate__(self, state):
+        self.__init__(state['size'])
+
     def put(self, artifact):
+        """File `artifact` in its slot, scored against whatever held the slot before it."""
         with self.lock:
+            artifact.replacing(self.artifacts.get(artifact.key))
             self.artifacts[artifact.key] = artifact
             self.artifacts.move_to_end(artifact.key)
             if len(self.artifacts) > self.size:

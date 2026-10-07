@@ -467,9 +467,12 @@ class Config(object):
         self.archive = None
         self.archive_columns = {}
 
-        # tensor outputs of a graph-keeping bootstrap - see docstring
+        # tensor outputs of a graph-keeping bootstrap - see docstring - and the calibration
+        # artifacts a propagating one published, kept by the config whose market they were fitted
+        # on for the session that bootstrapped
         self.calibrated_factors = {}
         self.quote_leaves = {}
+        self.artifacts = utils.ArtifactStore()
 
         # the default state of the system; the version stamps the ENGINE that loaded the
         # document - no document is read for one and none is kept
@@ -713,6 +716,8 @@ class Config(object):
                                      if utils.check_rate_name(name)[0] != block}
             self.calibrated_factors.update(getattr(bootstrapper, 'calibrated', {}))
             self.quote_leaves.update(getattr(bootstrapper, 'quote_leaves', {}))
+            for artifact in getattr(bootstrapper, 'published', ()):
+                self.artifacts.put(artifact)
 
             # empty result = the bootstrapper silently did nothing - see docstring
             if blocks and not [x for x in self.params['Price Factors'] if x.startswith(written + '.')]:
@@ -727,13 +732,13 @@ class Config(object):
         The id travels with the numbers because a ride is the one thing the replay tuple cannot
         name: `plan_hash`, `values_hash`, the engine version and the seed are all blind to WHICH
         artifact was in the store. Pure: reads `Market Prices`, the base date, the interpolation
-        scheme and a content-addressed artifact, and writes none of them, so two EXECUTEs over one
-        `(artifact, quotes)` mint the same leaf. One family answers today: the one whose operator
-        has a unique fixed point.
+        scheme and a content-addressed artifact of this config's own store, and writes none of
+        them, so two EXECUTEs over one `(artifact, quotes)` mint the same leaf. One family answers
+        today: the one whose operator has a unique fixed point.
         """
         return InterestRateCurveParameters.propagate(
-            factor, self.params['Market Prices'], self.params['Price Factor Interpolation'],
-            self.params['System Parameters']['Base_Date'])
+            self.artifacts, factor, self.params['Market Prices'],
+            self.params['Price Factor Interpolation'], self.params['System Parameters']['Base_Date'])
 
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):
