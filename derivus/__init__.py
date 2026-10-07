@@ -232,14 +232,35 @@ def run_baseval(context, prec=torch.float64, overrides=None):
 
 def run_simm(context, overrides=None):
     """Runs a SIMM calculation - ISDA's CRIF by bump and revaluation, a booked trade at a time - on
-    the provided context: `(calculation, output)`, the CRIF under `output['Results']['CRIF']`."""
+    the provided context: `(calculation, output)`, the CRIF under `output['Results']['CRIF']`.
+    `Workers` above one deals the trades in turn over that many processes, each on a context of its
+    own, a book's heavy trades sitting together; the CRIF is the same to the bit either way."""
     from .calculation import construct_calculation
 
     params = dict(context.deals['Calculation'])
     if overrides is not None:
         update_dict(params, overrides)
     calc = construct_calculation('SIMM', context)
-    return calc, calc.execute(params)
+    calc.setup(params)
+    count = min(worker_count(calc.params['Workers']), max(len(calc.trades), 1))
+    if count == 1:
+        return calc, calc.execute(params)
+    with calc.prepared():
+        queue = mp.Queue()
+        valued = dict(pair for answer in gathered([mp.Process(
+            target=partial(shielded, simm_shard, job, queue), args=(
+                context, calc.params, list(range(job, len(calc.trades), count)), job, queue))
+            for job in range(count)], queue) for pair in answer['Trades'])
+    return calc, calc.report([valued[index] for index in range(len(calc.trades))])
+
+
+def simm_shard(config, params, indices, job, queue):
+    """A worker's share of a SIMM run's trades, on a context of its own, each keyed by its place."""
+    from .calculation import construct_calculation
+
+    calc = construct_calculation('SIMM', config)
+    calc.setup(params)
+    queue.put({'Job': job, 'Trades': [(index, calc.trade(index)) for index in indices]})
 
 
 def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):

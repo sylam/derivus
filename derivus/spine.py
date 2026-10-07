@@ -57,7 +57,8 @@ from copy import deepcopy
 from . import Context, content_hash, instruments, riskfactors
 from ._version import __version__
 from .calculation import Base_Revaluation, Diary, construct_calculation
-from .schema import (OBSERVES, declared_fields, index_named, instrument_of, job_children, mapping,
+from . import schema
+from .schema import (declared_fields, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
 from .config import Config, CustomJsonEncoder, as_json
 from .structures import base_currency, timestamp
@@ -820,9 +821,10 @@ def _observing(document):
     except (KeyError, TypeError, ValueError):
         return []
     deals = [node['Instrument']['.Deal'] for _, node in nodes]
-    return [(deal, OBSERVES[deal['Object']]) for deal in deals
-            if OBSERVES.get(deal.get('Object')) is not None
-            and OBSERVES[deal['Object']].table and deal.get(OBSERVES[deal['Object']].table)]
+    observes = schema.OBSERVES
+    return [(deal, observes[deal['Object']]) for deal in deals
+            if observes.get(deal.get('Object')) is not None
+            and observes[deal['Object']].table and deal.get(observes[deal['Object']].table)]
 
 
 def _day(row):

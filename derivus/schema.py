@@ -54,13 +54,6 @@ BLANK = {
 #: `[[moneyness, expiry, vol], ...]`. Only the last column is content, so `bind` splits the field.
 SHAPED = tuple(BLANK)
 
-#: `{factor_type: {json_key: F}}`, filled by `emit_factor`. The partition and the emitted store read
-#: the same declarations, so neither can drift.
-FACTOR_FIELDS = {}
-
-#: `{deal type: Observes}`, off each type's OWN `observes` by `emit_instrument` - never a parent's.
-OBSERVES = {}
-
 #: The VALUE keys of a `Market Prices` quote row, for every family at once. Read by both
 #: `update_market_quote`'s tick guard and `partition_market_price`'s projection.
 MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp')
@@ -68,17 +61,6 @@ MARKET_QUOTE_VALUES = ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Times
 #: Which of those a row cannot be without: a mid is MOVED and never removed, so a patch clearing it
 #: refuses. Sides and stamp are absent whenever the source has no print for them.
 MARKET_QUOTE_REQUIRED = ('Quoted_Market_Value',)
-
-#: Which table on a block carries the value plane - a row that DECLARES the four value keys,
-#: whatever the table is called. Derived by `quote_containers` at the bottom of this file; empty
-#: until then, and read only at call time. `partition_market_price` is the one reader.
-MARKET_QUOTE_CONTAINERS = ()
-
-#: Which of those value keys is a CLOCK, and which value-bound field of each factor type is one.
-#: Both derived at the bottom of this file off the same declarations - see `quote_clocks` and
-#: `value_clocks` - and read only at call time, by `without_clocks`.
-MARKET_QUOTE_CLOCKS = ()
-VALUE_CLOCKS = {}
 
 #: How `mapping` renders each type for Handsontable. Rendering only, derived on the way out.
 WIDGET_FORMAT = {
@@ -354,10 +336,6 @@ BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
                'CreditSupportList': lambda: utils.CreditSupportList([]),
                'DateValueList': list, None: list}
 
-#: `{deal class: {key: engine-form default}}`, filled by `deal_defaults`.
-_DEAL_DEFAULTS = {}
-
-
 def engine_default(field):
     """One declared default in the form the ENGINE reads, not the form a widget shows.
 
@@ -381,13 +359,14 @@ def deal_defaults(cls):
 
     A placeholder is absent here: its declared default is what a blank panel shows, and answering
     `FXBarrierOption.Strike_Price` 0.0 turns a schema-invalid block into a plausible wrong number -
-    741.53 against the 78.93 the author meant. Built once per class and never handed out directly.
+    741.53 against the 78.93 the author meant. Built once per class, kept on it, and never handed
+    out directly.
     """
-    if cls not in _DEAL_DEFAULTS:
-        _DEAL_DEFAULTS[cls] = {f.key: engine_default(f)
-                               for group in getattr(cls, 'fields', []) or []
-                               for f in group.fields if f.convention}
-    return _DEAL_DEFAULTS[cls]
+    if '_convention_defaults' not in cls.__dict__:
+        cls._convention_defaults = {f.key: engine_default(f)
+                                    for group in getattr(cls, 'fields', []) or []
+                                    for f in group.fields if f.convention}
+    return cls._convention_defaults
 
 
 class DealFields(dict):
@@ -494,7 +473,7 @@ def emit_instrument(module):
     layout order. A section OWNS its descriptors, so `Payment_Timing` is `Touch`/`Expiry` on a
     one-touch and `End`/`Begin`/`Discounted` on a cashflow leg and both are right. `containers` is
     read off `Deal.accepts_children`, so a client renders it without importing the engine, and
-    `vernacular` off each type's own plain names - never a parent's, as `OBSERVES` is filled.
+    `vernacular` off each type's own plain names - never a parent's, as `observes` is read.
     """
     types, sections, containers, vernacular = {}, {}, [], {}
     for deal_type, cls in vars(module).items():
@@ -503,8 +482,6 @@ def emit_instrument(module):
             continue
         types[deal_type] = [g.name for g in groups]
         vernacular[deal_type] = cls.__dict__.get('vernacular')
-        if cls.__dict__.get('observes') is not None:
-            OBSERVES[deal_type] = cls.__dict__['observes']
         if getattr(cls, 'accepts_children', False):
             containers.append(deal_type)
         for g in groups:
@@ -512,19 +489,28 @@ def emit_instrument(module):
     return types, sections, sorted(containers), vernacular
 
 
+def observes(module):
+    """`{deal type: Observes}`, off each type's OWN `observes` - never a parent's."""
+    return {deal_type: cls.__dict__['observes'] for deal_type, cls in vars(module).items()
+            if isinstance(cls, type) and cls.__dict__.get('observes') is not None}
+
+
+def factor_fields(module):
+    """`{factor_type: {json_key: F}}` - each factor type's own declarations, which the partition
+    and the emitted store both read, so neither can drift."""
+    return {factor_type: {f.key: f for f in cls.__dict__['fields']}
+            for factor_type, cls in vars(module).items()
+            if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
+
+
 def emit_factor(module):
     """The `types` of `mapping['Factor']` - each factor TYPE holding its own descriptors.
 
     A `Price Factors` block is one flat dict, so the type IS that list's descriptors, keyed by the
-    JSON key. Own-attr only, matching `emit_instrument`. The declarations are also recorded in
-    `FACTOR_FIELDS`, which `partition_factor` reads - one scan, one source.
+    JSON key. Own-attr only, matching `emit_instrument`.
     """
-    declared = {factor_type: {f.key: f for f in cls.__dict__['fields']}
-                for factor_type, cls in vars(module).items()
-                if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
-    FACTOR_FIELDS.update(declared)
     return {factor_type: {key: f.descriptor() for key, f in fields.items()}
-            for factor_type, fields in declared.items()}
+            for factor_type, fields in factor_fields(module).items()}
 
 
 def emit_process(module, factor_types):
@@ -1182,13 +1168,19 @@ from . import bootstrappers, calculation, instruments, riskfactors, stochasticpr
 # structures is last: its legs name Instrument types, meaningful only beside an emitted store
 from . import structures  # noqa: E402
 
-#: Filled from the declarations now that the families are imported - see `quote_containers`.
+#: Which table on a block carries the value plane - a row that DECLARES the four value keys,
+#: whatever the table is called (`partition_market_price` is the one reader); which of those keys
+#: is a CLOCK; and which value-bound field of each factor type is one - read at call time by
+#: `without_clocks`. All off the declarations, now that the families are imported.
 MARKET_QUOTE_CONTAINERS = quote_containers(bootstrappers)
 MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 
+#: The registries the store and the partition read, each off its declarations - read at call time
+#: through this module, never bound by name at import, as the families import from here.
+OBSERVES = observes(instruments)
+FACTOR_FIELDS = factor_fields(riskfactors)
 _types, _sections, _containers, _vernacular = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
-#: After `emit_factor`, which is what fills `FACTOR_FIELDS` - see `value_clocks`.
 VALUE_CLOCKS = value_clocks()
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
 

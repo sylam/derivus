@@ -2938,6 +2938,40 @@ def bars_touched(bars, level, barrier_up):
     return False
 
 
+def vertex_weights(tenor, vertices):
+    """`[(label, weight)]` - `tenor`, in years of 365 days, split linearly between the two of the
+    `(label, years)` `vertices` either side of it, wholly onto the end one beyond either end: a
+    vertex's weight over every tenor is its tent."""
+    labels, points = zip(*vertices)
+    upper = int(np.searchsorted(points, tenor))
+    if upper in (0, len(points)):
+        return [(labels[min(upper, len(points) - 1)], 1.0)]
+    weight = (points[upper] - tenor) / (points[upper] - points[upper - 1])
+    return [(label, share) for label, share in ((labels[upper - 1], weight),
+                                                (labels[upper], 1.0 - weight)) if share]
+
+
+class CapturedErrors(logging.Handler):
+    """What the engine has to say for itself on this thread while it runs - a bootstrap reporting
+    a family that could not run, a run skipping a deal - the ERROR channel on the root logger,
+    captured and nothing else.
+
+    IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. The root logger is every thread's - a queued
+    `/book/price` logging a CRITICAL inside a tick's window turned a good tick into
+    `written: False` with a foreign run's message as the reason. `record.thread` against the
+    constructing thread's ident is the whole filter, so single-threaded behaviour is byte-identical.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+        self.thread = threading.get_ident()
+
+    def emit(self, record):
+        if record.thread == self.thread:
+            self.messages.append(record.getMessage())
+
+
 # Math Type stuff
 
 def hermite_interpolation(tenors, rates):

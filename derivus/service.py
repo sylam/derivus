@@ -3675,28 +3675,11 @@ def book_xva_view():
     return {'as_of': as_of(), 'path': xva_path(), 'sets': entries}
 
 
-class CapturedErrors(logging.Handler):
-    """What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could
-    not run or wrote nothing off its blocks at ERROR and carries on, so a market update captures
-    that channel and refuses the write when anything landed on it - a book must never carry a
-    market its own bootstrap complained about.
-
-    IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. `Config.bootstrap` publishes on the ROOT logger,
-    which is every thread's - a queued `/book/price` logging a CRITICAL inside a tick's window
-    turned a good tick into `written: False` with a foreign run's message as the reason.
-    `record.thread` against the constructing thread's ident is the whole filter, so single-threaded
-    behaviour is byte-identical."""
-
-    def __init__(self):
-        super().__init__(level=logging.ERROR)
-        self.messages = []
-        #: the tick's own thread - a root handler hears the whole process
-        self.thread = threading.get_ident()
-
-    def emit(self, record):
-        if record.thread == self.thread:
-            self.messages.append(record.getMessage())
-
+#: What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could not run
+#: or wrote nothing off its blocks at ERROR and carries on, so a market update captures that
+#: channel and refuses the write when anything landed on it - a book must never carry a market
+#: its own bootstrap complained about.
+CapturedErrors = utils.CapturedErrors
 
 #: What a tick cannot do without, in the one wording both market verbs refuse in.
 NO_BOOTSTRAPPER = ('the book declares no Bootstrapper Configuration - nothing can turn quotes '

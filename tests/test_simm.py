@@ -199,7 +199,7 @@ def test_a_tenor_is_split_between_the_vertices_either_side_of_it(serial):
         '2w', '1m', '3m', '6m', '1y', '2y', '3y', '5y', '10y', '15y', '20y', '30y']
     assert [years for _, years in grid] == pytest.approx(
         [14 / 365.0, 1 / 12.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 30.0], rel=1e-15)
-    weights = calculation.vertex_weights
+    weights = utils.vertex_weights
     assert weights(4.0, grid) == [('3y', 0.5), ('5y', 0.5)]
     assert weights(5.0, grid) == [('5y', 1.0)]
     assert weights(0.01, grid) == [('2w', 1.0)] and weights(40.0, grid) == [('30y', 1.0)]
@@ -224,7 +224,8 @@ def test_the_crif_is_isdas_format(serial, tmp_path):
     assert tuple(frame.columns) == (
         'TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations', 'ProductClass',
         'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2', 'Amount', 'AmountUSD')
-    assert not frame.duplicated(list(calculation.CRIF_KEY)).any()
+    assert not frame.duplicated(
+        ['TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2']).any()
     assert set(frame['TradeID']) == {'SWAP', 'FXO'} == set(trades['TradeID'])
     assert set(frame['RiskType']) == {'Risk_IRCurve', 'Risk_FX', 'Risk_FXVol'}
     vertices = {label for label, _ in calc.vertices}

@@ -414,6 +414,53 @@ class Factor2D(object):
         return [[x, T, vol] for T, nodes in grid.items()
                 for x, vol in zip(nodes, cls.malz_sigma(skews[T], T, nodes))]
 
+    @classmethod
+    def augmented(cls, block, years):
+        """`block`, a vol surface, with a pillar at each expiry of `years` it lacks, read off its
+        own interpolation in expiry so it prices as it stood: linear in vol on an Explicit surface,
+        in variance on a Malz one - solved first, its bootstrapped form - and in each parameter on
+        a Skew one, which reproduces its central regions and not, between two pillars, its wings."""
+        if block.get('Surface_Type', 'Explicit') == 'Skew':
+            def augment(curve):
+                rows = curve.array
+                return utils.Curve(curve.meta, rows.tolist() + [
+                    [t, np.interp(t, rows[:, 0], rows[:, 1])] for t in years if t not in rows[:, 0]])
+
+            return dict(block, **{name: augment(block[name]) for name in cls.skew_params})
+        variance = block.get('Surface_Type') == 'Malz'
+        if variance and 'Delta_Surface' in block:
+            deltas = block['Delta_Surface'].array
+            skews = cls.malz_skews(deltas, np.unique(deltas[:, 1]))
+            block = dict({key: value for key, value in block.items() if key != 'Delta_Surface'},
+                         Surface=utils.Curve([], cls.malz_surface(skews, cls.malz_grid(skews))))
+        rows = block['Surface'].array
+        expiries = np.unique(rows[:, 1])
+        slices = {t: rows[rows[:, 1] == t] for t in expiries}
+
+        def level(t, nodes):
+            # a pillar read at moneyness `nodes` as the engine reads it: its vol, or its variance
+            return np.interp(nodes, slices[t][:, 0], slices[t][:, 2] ** (2 if variance else 1))
+
+        added = []
+        for t in years:
+            upper = int(np.searchsorted(expiries, t))
+            if t in expiries:
+                continue
+            if upper in (0, len(expiries)):
+                # flat in vol before the first pillar; past the last, flat in vol or in variance
+                edge = expiries[min(upper, len(expiries) - 1)]
+                nodes, vols = slices[edge][:, 0], slices[edge][:, 2] * (
+                    np.sqrt(edge / t) if variance and upper else 1.0)
+            else:
+                low, high = expiries[upper - 1], expiries[upper]
+                nodes = np.union1d(slices[low][:, 0], slices[high][:, 0])
+                weight = (t - low) / (high - low)
+                vols = np.sqrt(((1.0 - weight) * low * level(low, nodes) + weight * high * level(
+                    high, nodes)) / t) if variance else (1.0 - weight) * level(
+                    low, nodes) + weight * level(high, nodes)
+            added.extend([x, t, vol] for x, vol in zip(nodes, vols))
+        return dict(block, Surface=utils.Curve(block['Surface'].meta, rows.tolist() + added))
+
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""
         surface = self.param['Surface'].array

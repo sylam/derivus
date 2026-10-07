@@ -12,6 +12,7 @@
 ########################################################################
 
 
+import contextlib
 import time
 import json
 import logging
@@ -19,8 +20,7 @@ import itertools
 import pandas as pd
 import numpy as np
 import torch
-import torch.multiprocessing as mp
-from functools import partial, reduce
+from functools import reduce
 
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
@@ -29,8 +29,9 @@ from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_
                           get_interest_factor, get_survival_factor)
 from .pricing import SensitivitiesEstimator, fixed_payments
 from . import utils, pricing, riskfactors
-from .schema import (F, OBSERVES, REQUIRED, Row, declared_defaults, declared_settlements,
-                     index_named, settlement_days)
+from . import schema
+from .schema import (F, REQUIRED, Row, declared_defaults, declared_settlements, index_named,
+                     settlement_days)
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
@@ -564,49 +565,6 @@ DETERMINISTIC_KERNELS = (
     'clock of a collateralised CVA gradient. It pins ONE machine and ONE build: the same document '
     'on another card or another torch version is not pinned to these bits.')
 
-#: What the margin calculation reads off a CRIF, in the order `SIMM` writes it. `Amount` is in the
-#: calculation currency.
-CRIF_COLUMNS = ('TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations',
-                'ProductClass', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2', 'Amount',
-                'AmountUSD')
-
-#: One CRIF row per trade and these coordinates.
-CRIF_KEY = ('TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2')
-
-#: The CRIF risk types `SIMM` moves: the risk class each belongs to, and how its factor moves - a
-#: basis point on each benchmark quote of the curve's block or on every node of a basis, a percent
-#: of a currency's price in the calculation currency or of a spot, a point of vol per vertex.
-SIMM_MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
-              'Risk_XCcyBasis': ('InterestRate', 'parallel'),
-              'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
-              'Risk_FXVol': ('FX', 'vega'), 'Risk_EquityVol': ('Equity', 'vega')}
-
-#: Per `Surface_Type`, the block a point of vega moves and the column its expiry is in, the vol
-#: being the last. A Skew smile is added to its ATM level, so moving the level holds its skew.
-VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1)}
-
-#: The curve benchmarks quoted as a price rather than a rate in percent, which no basis point moves.
-OUTRIGHTS = ('FXForwardDeal',)
-
-#: One move of one market input: the factor its rows are reported under, that factor's SIMM
-#: coordinates, `[(Label1, weight)]` its amount is split by, the move itself - a key
-#: `SIMM.move` turns into price factors - and the move its difference is taken against.
-Bump = namedtuple('Bump', 'factor coordinates split move base')
-
-
-class Skips(logging.Handler):
-    """The engine's own sentences for whatever it skipped while one trade was valued."""
-
-    def __init__(self):
-        super(Skips, self).__init__(logging.ERROR)
-        self.said = []
-
-    def emit(self, record):
-        # the engine says so in so many words, wherever it skips a deal or a structure
-        if 'skipp' in record.getMessage().lower():
-            self.said.append(record.getMessage())
-
-
 def batch_seed(random_seed, batch_index):
     """The seed a batch runs under: a SplitMix64 mix of (seed, global batch), not `seed + batch`.
 
@@ -638,67 +596,6 @@ def sobol_points(dimension, position, n, device, first=0):
     for bit in range(engine.MAXBIT):
         points = points ^ (((gray >> bit) & 1) * directions[:, bit])
     return points
-
-
-def vertex_weights(tenor, vertices):
-    """`[(label, weight)]` - `tenor`, in years of 365 days, split linearly between the two of the
-    `(label, years)` `vertices` either side of it, wholly onto the end one beyond either end: a
-    vertex's weight over every tenor is its tent."""
-    labels, points = zip(*vertices)
-    upper = int(np.searchsorted(points, tenor))
-    if upper in (0, len(points)):
-        return [(labels[min(upper, len(points) - 1)], 1.0)]
-    weight = (points[upper] - tenor) / (points[upper] - points[upper - 1])
-    return [(label, share) for label, share in ((labels[upper - 1], weight),
-                                                (labels[upper], 1.0 - weight)) if share]
-
-
-def augmented_surface(block, years):
-    """`block`, a vol surface, with a pillar at each expiry of `years` it lacks, read off its own
-    interpolation in expiry so it prices as it stood: linear in vol on an Explicit surface, in
-    variance on a Malz one - solved first, its bootstrapped form - and in each parameter on a Skew
-    one, which reproduces its central regions and not, between two pillars, its wings."""
-    if block.get('Surface_Type', 'Explicit') == 'Skew':
-        def augment(curve):
-            rows = curve.array
-            return utils.Curve(curve.meta, rows.tolist() + [
-                [t, np.interp(t, rows[:, 0], rows[:, 1])] for t in years if t not in rows[:, 0]])
-
-        return dict(block, **{name: augment(block[name])
-                              for name in riskfactors.Factor2D.skew_params})
-    variance = block.get('Surface_Type') == 'Malz'
-    if variance and 'Delta_Surface' in block:
-        deltas = block['Delta_Surface'].array
-        skews = riskfactors.Factor2D.malz_skews(deltas, np.unique(deltas[:, 1]))
-        block = dict({key: value for key, value in block.items() if key != 'Delta_Surface'},
-                     Surface=utils.Curve([], riskfactors.Factor2D.malz_surface(
-                         skews, riskfactors.Factor2D.malz_grid(skews))))
-    rows = block['Surface'].array
-    expiries = np.unique(rows[:, 1])
-    slices = {t: rows[rows[:, 1] == t] for t in expiries}
-
-    def level(t, nodes):
-        # a pillar read at moneyness `nodes` as the engine reads it: its vol, or its variance
-        return np.interp(nodes, slices[t][:, 0], slices[t][:, 2] ** (2 if variance else 1))
-
-    added = []
-    for t in years:
-        upper = int(np.searchsorted(expiries, t))
-        if t in expiries:
-            continue
-        if upper in (0, len(expiries)):
-            # flat in vol before the first pillar; past the last, flat in vol or in variance
-            edge = expiries[min(upper, len(expiries) - 1)]
-            nodes, vols = slices[edge][:, 0], slices[edge][:, 2] * (
-                np.sqrt(edge / t) if variance and upper else 1.0)
-        else:
-            low, high = expiries[upper - 1], expiries[upper]
-            nodes, weight = np.union1d(slices[low][:, 0], slices[high][:, 0]), (t - low) / (high - low)
-            vols = np.sqrt(((1.0 - weight) * low * level(low, nodes) + weight * high * level(
-                high, nodes)) / t) if variance else (1.0 - weight) * level(
-                low, nodes) + weight * level(high, nodes)
-        added.extend([x, t, vol] for x, vol in zip(nodes, vols))
-    return dict(block, Surface=utils.Curve(block['Surface'].meta, rows.tolist() + added))
 
 
 class CMC_State(utils.Calculation_State):
@@ -2589,7 +2486,7 @@ class Diary(Base_Revaluation):
         that need no schedule, so the expired branch says what the live one last said.
         """
         fields = deal.field
-        terms = OBSERVES.get(fields.get('Object'))
+        terms = schema.OBSERVES.get(fields.get('Object'))
         reference = fields.get('Reference')
         rows = [cls._expiry_row(deal, cls.EXPIRED)]
         rows.extend(cls._expiry_fixing(fields, terms, index_named(fields, terms, deal.base_currency),
@@ -2625,7 +2522,7 @@ class Diary(Base_Revaluation):
         """One deal's whole diary: its schedules, its monitoring table, the payments its
         declarations settle, and its expiry."""
         fields = deal.field
-        terms = OBSERVES.get(fields.get('Object'))
+        terms = schema.OBSERVES.get(fields.get('Object'))
         reference = fields.get('Reference')
         indices = index_named(fields, terms, deal.base_currency)
         settlement = deal.get_settlement_currencies()
@@ -2769,7 +2666,7 @@ class Diary(Base_Revaluation):
         """One row per deal at the last day it can pay, carrying what its expiry leaves to an actor:
         `election` where the terms vest a choice, and null where a fixing determines the payoff."""
         fields = deal.field
-        terms = OBSERVES.get(fields.get('Object'))
+        terms = schema.OBSERVES.get(fields.get('Object'))
         dates = deal.get_reval_dates()
         elects = terms is not None and terms.elects and fields.get(terms.elects) == cls.PHYSICAL
         return cls._row(cls.EXPIRY, fields.get('Reference'), cls.EXPIRY_LEG, 0,
@@ -3940,6 +3837,27 @@ class SIMM(Calculation):
     reported per trade in its own sentence and the trade's rows written regardless.
     """
     calc_type = 'SIMM'
+    #: The CRIF risk types the run moves: the risk class each belongs to and how its factor moves -
+    #: a basis point on each benchmark quote of the curve's block or on every node of a basis, a
+    #: percent of a currency's price in the calculation currency or of a spot, a point of vol per
+    #: vertex; the curve benchmarks quoted as a price, which no basis point moves; and per
+    #: `Surface_Type` the block a point of vega moves and the column its expiry is in, the vol
+    #: being the last - a Skew smile is added to its ATM level, so moving the level holds its skew.
+    MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
+             'Risk_XCcyBasis': ('InterestRate', 'parallel'),
+             'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
+             'Risk_FXVol': ('FX', 'vega'), 'Risk_EquityVol': ('Equity', 'vega')}
+    OUTRIGHTS = ('FXForwardDeal',)
+    VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1)}
+    #: What the margin calculation reads off a CRIF, in the order it is written, `Amount` in the
+    #: calculation currency.
+    CRIF_COLUMNS = ('TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations',
+                    'ProductClass', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2',
+                    'Amount', 'AmountUSD')
+    #: One move of one market input: the factor its rows are reported under, that factor's
+    #: coordinates, `[(Label1, weight)]` its amount is split by, the move itself - a key `move`
+    #: turns into price factors - and the move its difference is taken against.
+    Bump = namedtuple('Bump', 'factor coordinates split move base')
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default='USD',
@@ -4018,9 +3936,16 @@ class SIMM(Calculation):
         self.moved = {}
 
     def execute(self, params):
-        from . import gathered, shielded, worker_count
-
+        """The run in this process alone; `run_simm` deals the trades over workers."""
         self.setup(params)
+        with self.prepared():
+            return self.report([self.trade(index) for index in range(len(self.trades))])
+
+    @contextlib.contextmanager
+    def prepared(self):
+        """The config as every valuation of the run reads it - the valuation calculation, its
+        date, the curves its market prices solve, each trade's moves, classes and agreements -
+        put back as it stood on the way out."""
         config = self.config
         deals, calculation = config.deals['Deals'], config.deals['Calculation']
         try:
@@ -4032,19 +3957,12 @@ class SIMM(Calculation):
                 self.product_class(node)
                 self.agreement(agreement['Instrument'].field.get('Reference'))
             config.deals['Deals'] = deals
-            count = min(worker_count(self.params['Workers']), max(len(self.trades), 1))
-            if count > 1:
-                # dealt in turn rather than in runs, a book's heavy trades sitting together
-                queue = mp.Queue()
-                done = dict(pair for answer in gathered([mp.Process(
-                    target=partial(shielded, simm_shard, job, queue), args=(
-                        config, self.params, list(range(job, len(self.trades), count)), job, queue))
-                    for job in range(count)], queue) for pair in answer['Trades'])
-                trades = [done[index] for index in range(len(self.trades))]
-            else:
-                trades = [self.trade(index) for index in range(len(self.trades))]
+            yield
         finally:
             config.deals['Deals'], config.deals['Calculation'] = deals, calculation
+
+    def report(self, trades):
+        """The run's results off its valued `trades`: the CRIF and a row per trade."""
         self.output = {'CRIF': self.frame(trades), 'Trades': pd.DataFrame(
             [dict({key: value for key, value in trade.items() if key != 'Rows'},
                   Skipped='; '.join(trade['Skipped']), Written=len(trade['Rows']))
@@ -4063,10 +3981,10 @@ class SIMM(Calculation):
         stated = self.mapping['Factors'][factor]['SIMM']
         if stated is None:
             return None
-        kind = SIMM_MOVES.get(stated.get('RiskType'))
+        kind = self.MOVES.get(stated.get('RiskType'))
         if kind is None:
             raise ValueError('SIMM: {} maps to {}, and the risk types moved here are {}'.format(
-                factor, stated.get('RiskType'), ', '.join(sorted(SIMM_MOVES))))
+                factor, stated.get('RiskType'), ', '.join(sorted(self.MOVES))))
         risk_class = utils.FactorRiskClass[utils.check_rate_name(factor)[0]]
         if risk_class != kind[0]:
             raise ValueError('SIMM: {} is a factor of the {} class and maps to {}, a risk type of '
@@ -4162,8 +4080,8 @@ class SIMM(Calculation):
             read = sorted(curve for curve in {instrument['Discount_Rate']} |
                           InterestRateCurveParameters.benchmark_curves(instrument, block)
                           if curve and family + curve not in prices)
-            if read or any(point['DealType'] in OUTRIGHTS for point in used) or (
-                    stated is not None and SIMM_MOVES[stated['RiskType']][1] != 'quote'):
+            if read or any(point['DealType'] in self.OUTRIGHTS for point in used) or (
+                    stated is not None and self.MOVES[stated['RiskType']][1] != 'quote'):
                 raise ValueError(
                     'SIMM: {} quotes {} in {}{}{} - a basis point moves a curve quoted in rates, '
                     'priced off curves quoted so and mapped Risk_IRCurve'.format(
@@ -4176,14 +4094,14 @@ class SIMM(Calculation):
                 utils.check_rate_name(block)[1:])), base_date, 'ACT_365', self.config.holidays)
             positions = [position for position, point in enumerate(instrument['Points'])
                          if any(point is quote for quote in used)]
-            moves.extend(Bump(factor, stated, vertex_weights(tenor, self.vertices),
-                              ('quote', block, position), None)
+            moves.extend(self.Bump(factor, stated, utils.vertex_weights(tenor, self.vertices),
+                                   ('quote', block, position), None)
                          for position, tenor in zip(positions, tenors))
 
         currency = self.valuation['Currency']
         for factor in walk:
             stated = self.coordinates(factor, reference)
-            kind = None if stated is None else SIMM_MOVES[stated['RiskType']][1]
+            kind = None if stated is None else self.MOVES[stated['RiskType']][1]
             rate = utils.check_rate_name(factor)
             key = utils.resolve_factor_key(utils.Factor(rate[0], rate[1:]), factors)
             if kind == 'quote' and not any(move.factor == factor for move in moves):
@@ -4191,14 +4109,15 @@ class SIMM(Calculation):
                                  'quotes, and no InterestRatePrices block quotes it - map it null '
                                  'where it rides on its parent'.format(factor))
             elif kind in ('parallel', 'spot') or (kind == 'fx' and rate[1] != currency):
-                moves.append(Bump(factor, stated, [('', 1.0)], (kind, key), None))
+                moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, key), None))
             elif kind == 'vega':
                 surface = factors[key].get('Surface_Type', 'Explicit')
-                if surface not in VOL_PILLARS:
+                if surface not in self.VOL_PILLARS:
                     raise ValueError('SIMM: {} is a {} surface, and a point of vega moves the vols '
-                                     'of a {} one'.format(factor, surface, ', '.join(VOL_PILLARS)))
-                moves.extend(Bump(factor, stated, [(label, 1.0)], ('vega', key, label),
-                                  ('augmented', key)) for label, _ in self.vertices)
+                                     'of a {} one'.format(factor, surface,
+                                                          ', '.join(self.VOL_PILLARS)))
+                moves.extend(self.Bump(factor, stated, [(label, 1.0)], ('vega', key, label),
+                                       ('augmented', key)) for label, _ in self.vertices)
         return moves
 
     def move(self, move):
@@ -4223,13 +4142,15 @@ class SIMM(Calculation):
             elif kind in ('fx', 'spot'):
                 moved = {name: dict(factors[name], Spot=factors[name]['Spot'] * spot)}
             elif kind == 'augmented':
-                moved = {name: augmented_surface(factors[name], [t for _, t in self.vertices])}
+                moved = {name: riskfactors.Factor2D.augmented(factors[name],
+                                                              [t for _, t in self.vertices])}
             else:
                 block = self.move(('augmented', name))[name]
-                held, column = VOL_PILLARS[block.get('Surface_Type', 'Explicit')]
+                held, column = self.VOL_PILLARS[block.get('Surface_Type', 'Explicit')]
                 rows = block[held].array.copy()
-                rows[:, -1] += self.params['Vol_Shift'] * 0.01 * np.array([dict(vertex_weights(
-                    t, self.vertices)).get(move[2], 0.0) for t in rows[:, column]])
+                rows[:, -1] += self.params['Vol_Shift'] * 0.01 * np.array([dict(
+                    utils.vertex_weights(t, self.vertices)).get(move[2], 0.0)
+                    for t in rows[:, column]])
                 moved = {name: dict(block, **{held: utils.Curve(block[held].meta, rows)})}
             self.moved[move] = moved
         return self.moved[move]
@@ -4268,7 +4189,7 @@ class SIMM(Calculation):
         factors = self.config.params['Price Factors']
         standing = {name: factors.get(name) for name in moved}
         factors.update(moved)
-        heard = Skips()
+        heard = utils.CapturedErrors()
         logging.getLogger().addHandler(heard)
         try:
             self.booked(index)
@@ -4280,11 +4201,13 @@ class SIMM(Calculation):
                     factors.pop(name)
                 else:
                     factors[name] = block
+        # the engine says so in so many words, wherever it skips a deal or a structure
+        skipped = [said for said in heard.messages if 'skipp' in said.lower()]
         held = [deal for agreement in calc.netting_sets.sub_structures for deal in
                 [structure.obj for structure in agreement.sub_structures] + agreement.dependencies]
         if not held or 'Value' not in held[0].Calc_res:
-            return None, heard.said + ['the trade itself was not valued']
-        return held[0].Calc_res['Value'].item(), heard.said
+            return None, skipped + ['the trade itself was not valued']
+        return held[0].Calc_res['Value'].item(), skipped
 
     def trade(self, index):
         """Trade `index`'s CRIF rows, its base value, the moves it took and what the engine skipped
@@ -4327,20 +4250,13 @@ class SIMM(Calculation):
                                  ProductClass=trade['ProductClass'], RiskType=risk_type,
                                  Qualifier=qualifier, Bucket=bucket, Label1=label1, Label2=label2,
                                  Amount=amount, AmountUSD=amount * usd))
-        return pd.DataFrame(rows, columns=list(CRIF_COLUMNS))
+        return pd.DataFrame(rows, columns=list(self.CRIF_COLUMNS))
 
-    @staticmethod
-    def write(frame, path):
+    @classmethod
+    def write(cls, frame, path):
         """A CRIF as the interchange carries it and the margin calculation reads it, tab
         separated."""
-        frame.to_csv(path, sep='\t', index=False, columns=list(CRIF_COLUMNS))
-
-
-def simm_shard(config, params, indices, job, queue):
-    """A worker's share of a SIMM run's trades, on a context of its own, each keyed by its place."""
-    calc = SIMM(config)
-    calc.setup(params)
-    queue.put({'Job': job, 'Trades': [(index, calc.trade(index)) for index in indices]})
+        frame.to_csv(path, sep='\t', index=False, columns=list(cls.CRIF_COLUMNS))
 
 
 def construct_calculation(calc_type, config, **kwargs):
