@@ -958,33 +958,6 @@ opens. A pin is applied to every name without an 18-month wing, so a floor-BY-DE
 understate a whole book's 2–5 year vol in one direction; the floor `σ_l ≥ 0.3` is the BOX beneath
 all three instead, a declared prior under it refusing by name.
 
-Where the pair is pinned the report reads the ladder under all three priors, at ONE extra forward
-pass each — everything but the slow pair held at θ\*, the `L` strip re-bootstrapped so every ATM
-still reprices, the wings re-priced, no outer search — with the wing RMSE and the **5-year log-vol
-sd** `½√(σ_s²(1−e^{−10κ_s})/2κ_s + σ_l²(1−e^{−10κ_l})/2κ_l)`, which is the number a phase-3 exposure
-row will read:
-
-| pinned ladder | the floor (·, 0.3) | the class default | the index seed (−0.4, 1.0) |
-|---|---|---|---|
-| reduced USDZAR (`FxRate`), 12 wings | 0.143 / sd 0.515 | **0.132 / sd 0.553** (in force) | 0.324 / sd 0.701 |
-| the 22-rung USDZAR ladder, 16 wings | 0.158 / sd 0.521 | **0.135 / sd 0.558** (in force) | 0.422 / sd 0.705 |
-| CJOW cut to 4 maturities (`EquityPrice`), `Global` | 1.448 / sd 0.516 | **1.279 / sd 0.701** (in force) = the seed | — |
-| the same in `Fit_Mode` `Bootstrap` | 1.330 / sd 0.482 | **1.056 / sd 0.677** (in force) = the seed | — |
-
-Two priors that land on the same pair are ONE pass named for both, which is what an index's class
-default IS. And the two classes want opposite things: on FX the floor beats the seed and the class
-default beats the floor, while on the index surface the floor is the WORST of the three (1.448
-against 1.279) — a floor-by-default would have been the wrong answer for every equity book, which is
-the whole reason it is the guard and not the default. The row in force is exact; the others
-APPROXIMATE the re-fit they are not, and the table says so, because a re-fit lets the fast pair take
-back some of what the slow one gives. The size of that is
-measured: the ladder's index-seed row reads 0.422 where the same ladder RE-FITTED at the index seed
-banked **0.202**, so a distant prior's cost is overstated about twofold by one pass. What the
-comparison is for is the ORDER, and the order is unambiguous — the FX class default costs the
-22-rung ladder **0.135 against the 0.132** a slow pair fitted to nothing bought before the
-identification rule existed, where the index seed cost 0.202. The whole 0.070 the rule appeared to
-cost was the seed being wrong-sized for FX, not the rule.
-
 **Risk in quote space.** `Quote_Sensitivity` **Yes** keeps the written parameters connected to the
 numbers quoted. The outer fit is a least-squares minimum, so its half is the Gauss-Newton contraction
 at the stationarity point — **`LeastSquaresSolve`, the one node the swaption family also solves
@@ -1057,10 +1030,6 @@ of exactly `+0.00` — sticky-delta is what it is aimed at, not what it reaches 
 CLOSER than the ratio target did, `ψ_skew` 0.906 / 0.819 against 0.859 / 0.713, on a fit that also
 lands a better surface: 0.433 wings against 0.512.
 
-The ratios are still REPORTED beside the differences, but only where the spot side exceeds **0.5
-vol points**; where it does not the row prints `no ratio, spot +0.39 inside 0.5 vol points` and no
-number, which is `ψ_bfly(1y into 1y)` on that very ladder and two of the three tenors on CJOW.
-
 **Wherever the forward smile was not QUOTED the number is a reserve, and the factor carries its
 model half.** `Stickiness_Band` (default **0.5 vol points**, the spread between the sticky-delta and
 LSV-like views) is the band; a deal's reserve is `|∂PV/∂Δ_skew| × band`, and with `Prior` withdrawn
@@ -1104,10 +1073,7 @@ two largest unmoved. A block declaring `Prior` refuses by name and is told which
 are and where a view is carried instead. The tie-breaker form of `Prior` — a declared view
 CONSTRAINED to 0.1 vol points of vanilla degradation on stage 5 — was built, measured and
 withdrawn: a cap that covers one stage while the damage occurs in another is not a cap, and on a
-one-bucket ladder, which is every block in the book, stage 5 does not run at all. What the report
-keeps is the measurement the withdrawal rests on: where a source does run, the vanilla RMSE at the
-forward rows' own maturities is reported as it moved over stage 5 AND the polish, cumulative, which
-is the number a per-stage cap could not see. `Vanilla_Guard`, `Vanilla_Band` and `Stickiness_Prior`
+one-bucket ladder, which is every block in the book, stage 5 does not run at all. `Vanilla_Guard`, `Vanilla_Band` and `Stickiness_Prior`
 refuse by name from the retired block; a source that names a TABLE still refuses in `Fit_Mode:
 Bootstrap` by name.
 
@@ -1125,13 +1091,8 @@ asked one question with two tolerances: a row survived reachability because its 
 over an empty set and `torch.stack` raised. A ladder with no rung inside the tolerance now REFUSES
 by name rather than judging a stage on no rows at all.
 
-**The lever is the calendar bucket, and it was measured on the Poisson residual against CJOW.** With
-ONE bucket a forward target has nothing to move but the vanillas and trips the failure mode by name
-(+0.215 and +0.212 vol points on the guarded RMSE for the two sources); with a year-two bucket of
-the skew pair to move, the fit reached `ψ_skew` 1.021 / 1.034 / 0.935 against the reference's 0.975
-/ 1.008 / 0.552 with a composition residual of 0.104 at 2y and a stage-5 degradation of +0.184. The
-reference and its harness are retired, so those are records; the mechanism they measured is
-unchanged, the lever now being `β(t)` beside `ρ_s(t)` on the same buckets. A rung that does not
+**The lever is the calendar bucket.** With ONE bucket a forward target has nothing to move but the
+vanillas; a later bucket of the skew pair, `β(t)` beside `ρ_s(t)`, is what it moves instead. A rung that does not
 reach 90 or 110 is named in the log, since `Δ` at that tenor is then measured against an understated
 spot slope.
 

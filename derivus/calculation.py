@@ -1045,24 +1045,14 @@ class Credit_Monte_Carlo(Calculation):
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
         F('Boundary_AAD_Window_Touch', 'Text', default='Yes', values=['Yes', 'No'],
           description='Register the partial-time barrier\'s window-touch decision as a boundary '
-                      'latch - the default, on its SIGN: on a grid carrying six live decisions '
-                      'every CRN reading over five seeds is negative where the unregistered delta '
-                      'is positive, and the pooled oracle sits 0.5% from the registered delta '
-                      'against 168% from the unregistered one. Its magnitude is known to about a '
-                      'third, the ladder 13-35% off flat. `No` is the unregistered estimator, one '
-                      'value away. The latch exists on the endpoint branch alone - the quote leg '
-                      'simulated too, so the bridge has no variance - and with the bridge live '
-                      'ordinary AAD already carries the flux; a base valuation never reaches the '
-                      'observed-spot branch it lives in, and declares no such field'),
+                      'latch on the endpoint branch; `No` is the unregistered estimator'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
         F('Checkpoint_Outer_Walk', 'Text', default='Yes', values=['Yes', 'No'],
           description='Checkpoint the SCENARIO generator\'s own internal walk, recomputing each '
                       'segment\'s intermediates and redrawing its shocks in backward() instead of '
-                      'taping them. Two tapes, two named switches: this one is the outer walk, '
-                      '`Recompute_Inner_MC` the pricer\'s. Read only by a process that walks an '
-                      'internal clock (`LogVar2FJImpliedSpotModel`) and ignored by every other'),
+                      'taping them'),
         F('Credit_Valuation_Adjustment', 'Container',
           default={"Calculate": "No", "Counterparty": "", "Bank": "",
                    "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
@@ -1075,9 +1065,8 @@ class Credit_Monte_Carlo(Calculation):
               F('Stochastic_Hazard_Rates', 'Text', default='No', values=['Yes', 'No']),
               F('Gradient', 'Text', default='No', values=['Yes', 'No']),
               F('Hessian', 'Text', default='No', values=['Yes', 'No'],
-                description='Second derivatives of the CVA as well as the first. Read only beside '
-                            'Gradient: Yes - the tape they are taken through is the one the first '
-                            'derivatives are reported off - and refused without it'),
+                description='Second derivatives of the CVA as well as the first, read only beside '
+                            'Gradient: Yes'),
               F('CDS_Tenors', 'Container', default=[],
                 description='Tenors in years to add to the survival curve so CDS rates can be '
                             'interpolated off it')]),
@@ -2061,43 +2050,25 @@ class Base_Revaluation(Calculation):
         F('Currency', 'Text', default='ZAR'),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths a simulated pricer spends per reporting row, '
-                      'mirrored (z, -z); an analytic deal never reads it. THE NUMBER A QUOTE AND '
-                      'A MARK SHARE - a strip walking a fitted spot model solves a strike 2.8e-2 '
-                      'wide per path, so the two notional sides of one zero-cost forward strip '
-                      'land inside 1e-3 of each other here against 7.3e-2 at a single path, and a '
-                      'fitted accumulator quotes in about two seconds'),
+                      'mirrored (z, -z); an analytic deal never reads it'),
         F('Random_Seed', 'Integer', default=5120),
         F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
           description=DETERMINISTIC_KERNELS),
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
           description='First order factor sensitivities, or `All` for the second order block '
-                      '(`Greeks_Second`) as well - see the class docstring for its shape'),
+                      '(`Greeks_Second`) as well'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
         F('Branch_And_Weight', 'Text', default='Yes', values=['Yes', 'No'],
-          description='THE DEFAULT: price fixing-observed knockouts (TARF, accumulator, discrete '
-                      'barrier, autocall) with the SMOOTH estimator - the fired branch of each '
-                      'fixing integrated analytically against that interval\'s own lognormal law, '
-                      'the continuing branch drawn from the truncated one. Same expectation, lower '
-                      'variance, and no indicator on the tape, so second-order greeks flow where '
-                      'the crisp estimator has to refuse them. An AVERAGING autocall FALLS BACK to '
-                      'the crisp pricer by name, its conditioning law being a mean of spots rather '
-                      'than one fixing interval\'s. `No` is the crisp path bit for bit, and is what '
-                      '`CreditMonteCarlo` always prices on, declaring no such field: a deal\'s mark '
-                      'and its exposure grid come from two estimators that agree within noise and '
-                      'are not the same number. Either setting is a RE-ESTIMATION of the same deal '
-                      '- it changes which estimator prices a settlement convention, never which '
-                      'convention the deal settles on'),
+          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
+                      'autocall) with the SMOOTH estimator, each fixing\'s fired branch integrated '
+                      'analytically; `No` is the crisp estimator'),
         F('Correlation_Bump', 'Float', default=0.025,
-          description='Half-width of the CRN bump reporting a quanto or compo correlation delta. '
-                      '`Correlation` is a `DimensionLessFactor` and mints no leaf, so that delta '
-                      'is not on the tape and a reported zero would be a false statement: each '
-                      'correlation a priced deal reads is re-valued once each side on the job\'s '
-                      'own seed and the central difference lands beside the tape\'s greeks, named '
-                      'as the bump it is in `Correlation_Bump`. 0 turns it off')
+          description='Half-width of the CRN bump reporting a quanto or compo correlation delta; '
+                      '0 turns it off')
     ]
 
     def __init__(self, config, **kwargs):
@@ -2909,9 +2880,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Charge a matched roll one calendar half-cost instead of two '
                                   'outright half-spreads'),
                     F('Calendar_Spread_Bps', 'Float', default=None,
-                      description='Half-spread bps of the calendar roll leg. Setting it arms the '
-                                  'matched-leg pricing everywhere - the argmax charge, the fitted '
-                                  'target and the realized accounting'),
+                      description='Half-spread bps of the calendar roll leg; setting it arms the '
+                                  'matched-leg pricing everywhere'),
                     F('IM_Funding_Spread_Bps', 'Float', default=0.0,
                       description='Spread paid to fund initial margin; 0 switches the term off'),
                     F('IM_Vol_Multiplier', 'Float', default=0.0,
@@ -2924,13 +2894,11 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Cap on the absolute signed book total; 0 = uncapped'),
                     F('Max_Trade_Per_Step', 'Float', default=0.0,
                       description='Per-leg cap on |position change| per decision step at the '
-                                  'argmax; 0 = uncapped. Execution policy only - training is '
-                                  'unaffected, so a trained policy can be re-rolled under it'),
+                                  'argmax; 0 = uncapped'),
                     F('Decision_Deadband_Sigma', 'Float', default=0.0,
-                      description='No-trade band: the argmax must beat HOLDING the standing '
-                                  'book by this many standard errors of the paired inner-draw '
-                                  'difference before it trades; 0 = trade on any improvement. '
-                                  'Execution policy only, like the cap above'),
+                      description='Standard errors of the paired inner-draw difference by which '
+                                  'the argmax must beat HOLDING the book before it trades; 0 = '
+                                  'trade on any improvement'),
                     F('Total_Position_Schedule', 'Table', default=None,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Min_Total', 'Float', default=0.0),
@@ -2940,18 +2908,15 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('Allocation_Mode', 'Text', default='Exposure',
                       values=['Exposure', 'Carry_Variance'],
                       description='How the net cover splits across the hedge legs: Exposure = '
-                                  'the declared Allocation_Weights table; Carry_Variance = the '
-                                  'solver DERIVES per-step weights from the warmup sims (carry '
-                                  'vs tracking vs the capital line), stamps them into the '
-                                  'checkpoint, and a load restores the stamped table'),
+                                  'the declared Allocation_Weights table; Carry_Variance = '
+                                  'per-step weights the solver DERIVES from the warmup sims'),
                     F('Allocation_Weights', 'Table', default=None,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
                       description='Piecewise-constant split of the NET cover across the hedge '
-                                  'legs, by decision step. Present, the argmax searches one '
-                                  'ladder over the total instead of the product of per-leg '
-                                  'levels, and this table decides the composition')]),
+                                  'legs, by decision step; absent, the argmax searches the product '
+                                  'of per-leg levels')]),
               F('Solver', 'Container', default={},
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
@@ -2964,9 +2929,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('T_Min', 'Integer', default=0,
                       description='Earliest step the backward sweep fits; 0 = full sweep'),
                     F('Training_Action_Grid_Levels_Per_Axis', 'Integer', default=11,
-                      description='Levels per hedge axis in the greedy action grid - or, under '
-                                  'Evaluator.Allocation_Weights, rungs on the NET cover, where '
-                                  'it must be at least as large as the net range in contracts'),
+                      description='Levels per hedge axis in the greedy action grid, or rungs on '
+                                  'the NET cover under Evaluator.Allocation_Weights'),
                     F('Training_Action_Chunk_Size', 'Integer', default=64,
                       description='Actions scored per batched argmax pass'),
                     F('Use_Advantage_Decomp', 'Text', default='Yes', values=['Yes', 'No'],
@@ -2978,32 +2942,27 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                     F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
                       description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
                     F('DiffV2_Risk_Aversion', 'Float', default=1.0,
-                      description='The backward DP aversion — the causal proxy for the '
-                                  'clairvoyant seed floor no causal pass can enforce: divides '
-                                  'the capital line in the LogWealth reward (1.0 neutral; '
-                                  'higher = less capital at risk = more averse). The forward '
-                                  'pass takes no dial.'),
+                      description='The backward DP aversion, dividing the capital line in the '
+                                  'LogWealth reward (1.0 neutral; higher = less capital at risk = '
+                                  'more averse)'),
                     F('DiffV2_Drift_Threshold_Sigmas', 'Float', default=3.0,
                       description='The drift tripwire tail: how many validation-measured null '
                                   'sigmas the inference CUSUM must exceed to trip'),
                     F('DiffV2_Drift_Beta', 'Float', default=0.0,
                       description='On-trip correction strength: the forecast used by the '
                                   'ranking is biased toward the REALIZED drift by beta times '
-                                  'the observed average residual. 0 = report-only; tuned '
-                                  'post-training by re-rolling saved checkpoints'),
+                                  'the observed average residual; 0 = report-only'),
                     F('DiffV2_Load_Horizon_Pad', 'Text', default='No', values=['Yes', 'No'],
-                      description='Yes loads a value-function checkpoint fitted on a different '
-                                  'decision horizon: per-step nets, trust bounds and scale '
-                                  'schedules clamp to the saved range, the tail repeating the '
-                                  'last fitted step. No refuses any t_min/T_dec mismatch'),
+                      description='Yes loads a value-function checkpoint fitted on another '
+                                  'decision horizon, clamped to its saved range with the last '
+                                  'fitted step repeated; No refuses the mismatch'),
                     F('DiffV2_Returns_State', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes makes the value state dimensionless: price columns as '
                                   'log-returns vs the calibrated t0 spot, basis columns as '
                                   'fractions of it, wealth as a fraction of the t0 book '
-                                  'notional. Checkpoints stamp the coordinate system and refuse '
-                                  'a mismatched load'),
+                                  'notional'),
                     F('DiffV2_Weight_Decay', 'Float', default=0.0,
-                      description='Residual-net weight decay; a crutch for path-starved problems'),
+                      description='Residual-net weight decay'),
                     F('DiffV2_Hidden', 'Integer', default=32,
                       description='Hidden width of each residual net'),
                     F('DiffV2_Lambda_Grad', 'Float', default=1.0,
@@ -3014,31 +2973,27 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Charge the L1 repositioning cost at the verdict argmax'),
                     F('DiffV2_Fit_Tol', 'Float', default=0.001,
                       description='Relative loss-plateau tolerance at which an INHERITED '
-                                  'net\'s fit stops early; the terminal anchor always runs '
-                                  'the full DiffV2_Fit_Iters budget. 0 = never stop early'),
+                                  'net\'s fit stops early; 0 = never stop early'),
                     F('DiffV2_Temporal_Proximity', 'Float', default=0.0,
                       description='Weight pulling each net\'s parameters toward its fitted '
                                   'successor\'s during the fit; 0 = off'),
                     F('DiffV2_Churn_Lambda', 'Float', default=0.0,
                       description='Quadratic repositioning charge in currency per contract^2, '
-                                  'subtracted from the wealth entering the continuation at the '
-                                  'argmax and at the training-label argmax; 0 = off'),
+                                  'taken off the wealth entering the continuation at the argmax '
+                                  'and the training-label argmax; 0 = off'),
                     F('DiffV2_Position_State', 'Text', default='No', values=['Yes', 'No'],
                       description='Frictional Bellman: the signed net book fraction becomes a '
                                   'state coordinate of the fitted value and the repositioning '
-                                  'charge enters the regressed target, so turnover compounds '
-                                  'down the recursion instead of being a one-day toll'),
+                                  'charge enters the regressed target'),
                     F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
                       description='Drop the wealth column from the value net\'s inputs, so the '
                                   'fitted residual reads market state (and the position, under '
-                                  'DiffV2_Position_State) alone and the continuation bends in '
-                                  'wealth exactly as the utility anchor does'),
+                                  'DiffV2_Position_State) alone'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
                     F('DiffV2_Decision_Curve_Dump', 'Text', default='',
                       description='Path a per-decision CSV of the stepper rollout\'s FULL '
-                                  'ranking curve is written to (empty = off). Pure diagnostic: '
-                                  'it changes no decision and no reported number'),
+                                  'ranking curve is written to; empty = off'),
                     F('DiffV2_Per_Column_Grad_Norm', 'Text', default='Yes', values=['Yes', 'No'],
                       description='Normalize twin-loss greeks per input column; No = pooled'),
                     F('DiffV2_Save_Value_Fn', 'Text', default='',
@@ -3869,7 +3824,7 @@ class SIMM(Calculation):
                       'vertices the rows land on'),
         F('Workers', 'Integer', default=1,
           description='Processes the trades are dealt over, each on a context of its own; 1 values '
-                      'them in this one. The CRIF is the same to the bit either way'),
+                      'them in this one'),
         F('Rate_Shift', 'Float', default=1.0,
           description='Basis points a benchmark quote, a curve node or a basis moves by, ISDA\'s '
                       'one; another is scaled to it'),

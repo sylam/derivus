@@ -782,17 +782,12 @@ class ObservedBasis(Factor0D):
     fields = [F('Spot', 'Float', default=0, bind='value',
                 description='Initial basis level $b_0$'),
               F('Chained_Basis', 'Text', default='',
-                description='Name of the factor this one is chained to - another basis (a chain '
-                            'may run link to link and may or may not close a loop) or the '
-                            'primary itself. The declaration is the whole contract: whenever '
-                            'this factor enters a calculation\'s universe its link follows, '
-                            'and a chained process reads exactly the link it declares'),
+                description='Name of the factor this one is chained to, another basis or the '
+                            'primary itself; blank for none'),
               F('Chained_Lag', 'Integer', default=0,
                 description='Rows back at which this factor\'s law references its declared '
-                            'link. 0 (same row) makes the link a generation dependency - the '
-                            'link simulates first; 1 marks the chain\'s day boundary (this '
-                            'factor steps off the link\'s PREVIOUS row) and orders nothing. '
-                            'A closed chain must lag somewhere, or it is a same-instant loop')]
+                            'link: 0 (same row) simulates the link first, 1 steps off the link\'s '
+                            'PREVIOUS row and orders nothing')]
 
     def __init__(self, param):
         super(ObservedBasis, self).__init__(param)
@@ -938,7 +933,7 @@ class SurvivalProb(Factor1D):
     """
     fields = [
         F('Recovery_Rate', 'Float', default=0.4, bounds=(0.0, 1.0), bind='value',
-          description='The assumed recovery amount. Enter 0.4 for 40%'),
+          description='The assumed recovery amount, entered as 0.4 for 40%'),
         F('Minimum_Recovery_Rate', 'Text', default='<undefined>'),
         F('Issuer', 'Text', default=''),
         F('Curve', 'Curve', bind='value', description='Negative log survival probability')
@@ -1205,14 +1200,11 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Kappa_S', 'Float', default=0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Cap_A', 'Float', default=None,
-          description='Log-variance corner $a$ - STRUCTURAL: the walk takes $\\min(\\ell+s, a)$, exactly '
-                      'the identity below the level. The fit writes it six stationary deviations '
-                      'above the fitted level, so only a runaway path reaches it; null is unbounded'),
+          description='Log-variance corner $a$, the walk taking $\\min(\\ell+s, a)$; null is '
+                      'unbounded - STRUCTURAL'),
         F('Steps_Per_Year', 'Float', default=252.0,
-          description='Trading days a year the fitted block stepped - the clock the parameters '
-                      'MEAN, so the pricer\'s internal walk and the xVA outer\'s scenario grid '
-                      'read it here and a deal declaring a different one refuses by name. A '
-                      'factor written before this field existed loads at 252 - STRUCTURAL'),
+          description='Trading days a year the fitted block stepped, the clock the parameters '
+                      'MEAN - STRUCTURAL'),
         F('C_Min', 'Float', default=utils.LogVar2FJ.C_MIN,
           description='Floor on the idiosyncratic share $c(t)=1-\\rho_s(t)^2-\\rho_\\ell^2$, '
                       'asserted in every bucket at load - STRUCTURAL'),
@@ -1220,26 +1212,17 @@ class LogVar2FJModelParameters(CurveModelParameters):
           description='NIG is the model; Gaussian drops the mixer and reads the clock as the '
                       'variance - a limit/test mode, logged as one - STRUCTURAL'),
         F('Skew_Gradient', 'Text', default='',
-          description='THE RESERVE LINE the calibration wrote: '
-                      '$\\partial\\Delta_{skew}/\\partial\\beta$ and '
+          description='The calibration\'s reserve line '
+                      '$\\partial\\Delta_{skew}/\\partial\\beta$, '
                       '$\\partial\\Delta_{skew}/\\partial\\rho_s$ in the LAST bucket at the '
-                      'DECLARED forward tenor, in vol points per unit, comma separated. A deal '
-                      'reporting Greeks First composes '
-                      '$|\\partial PV/\\partial\\Delta_{skew}|\\times$ **Stickiness_Band** from '
-                      'it and its own two derivatives (`utils.LogVar2FJ.skew_reserve`). Blank '
-                      'where the fit stated none - STRUCTURAL'),
+                      'DECLARED forward tenor, vol points per unit, comma separated; blank where '
+                      'the fit stated none - STRUCTURAL'),
         F('On_Guard', 'Text', default='',
-          description='Every guard the calibration that wrote this factor landed ON, as its own '
-                      'sentence - a $\\sigma$ on its box, $|\\beta|/\\alpha$ at the conditioning '
-                      'bound, $c$ on **C_Min**, or a PRIOR ROW on a coordinate the quotes do not '
-                      'identify - and blank where the fit is clean. A held '
-                      'parameter is the BOX speaking and not the data, so anything priced off it '
-                      'inherits that: `Base_Revaluation` reports the flag in `Stats` under the '
-                      'same key. Written by the fit, never authored - STRUCTURAL'),
+          description='Every guard the calibration landed ON, one sentence each and blank where '
+                      'the fit is clean; written by the fit, never authored - STRUCTURAL'),
         F('Stickiness_Band', 'Float', default=0.0,
-          description='The band, in VOL POINTS, Skew_Gradient\'s reserve is taken over - the '
-                      'calibration\'s own Stickiness_Band, carried so the deal side needs no '
-                      'second declaration of it. 0 reports no reserve - STRUCTURAL'),
+          description='The band, in VOL POINTS, Skew_Gradient\'s reserve is taken over; 0 '
+                      'reports no reserve - STRUCTURAL'),
         F('Xi_Curve', 'Curve', bind='value',
           description='Expected forward variance $\\xi(t)=E[h_t]$, piecewise constant and '
                       'strictly positive on the segment each knot (years) starts, flat beyond '
@@ -1512,7 +1495,7 @@ class VolatilityGrid(Factor2D):
           values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
         F('Surface', 'Surface', bind='value',
           description='(moneyness, expiry, volatility) triples, flat extrapolated and linearly '
-                      'interpolated. Read when Surface Type is Explicit'),
+                      'interpolated, read when Surface Type is Explicit'),
         F('Moneyness_Rule', 'Text', default='Sticky_Moneyness',
           values=['Sticky_Strike', 'Sticky_Moneyness', 'Sticky_Delta']),
         # NOT bind='value': update() runs the Malz solver on these and rebuilds Surface on an
@@ -1536,14 +1519,13 @@ class VolatilityGrid(Factor2D):
         # bind='value' because it TRAVELS WITH THE VOLS: a tick delivers new numbers and the time
         # it saw them, and a stamp that invalidated the plan would recompile on every tick
         F('Quote_Timestamp', 'Date', default='', bind='value',
-          description='When the quotes this surface was bootstrapped from were observed - the '
-                      'latest contributing one. Reported for staleness, never read by pricing'),
+          description='When the latest quote this surface was bootstrapped from was observed, '
+                      'reported for staleness and never read by pricing'),
         # STRUCTURAL, unlike the stamp beside it: it says what the moneyness grid IS, so a
         # re-bootstrap asking for another one is asking for another grid
         F('Grid_Tolerance', 'Float', default=0.0,
-          description='The vol error the moneyness grid of a bootstrapped surface was refined to. '
-                      '0 on a surface no bootstrapper built. Never read by pricing - it is what a '
-                      're-bootstrap checks before reusing these nodes')
+          description='The vol error the moneyness grid of a bootstrapped surface was refined to; '
+                      '0 on a surface no bootstrapper built')
     ]
 
 
@@ -1578,15 +1560,10 @@ class InterestYieldVol(Factor3D):
           description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
                       'linearly interpolated'),
         F('Shift', 'Float', default=0, obj='Percent',
-          description='Displacement of the shifted lognormal quote. Read by the calibration as '
-                      'well as by the deal path since 2026-09-01: a non-zero value outranks the '
-                      'undeclared Property_Aliases legacy, and one authored beside a Normal '
-                      'distribution refuses by name rather than being ignored'),
+          description='Displacement of the shifted lognormal quote'),
         F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'],
-          description='The convention these vols are quoted in. It reaches the HW2F calibration '
-                      'through the benchmark PREMIUM - Lognormal strikes it with Black, Normal '
-                      'with Bachelier off an absolute normal vol - and the deal path through '
-                      'get_subtype')
+          description='The convention these vols are quoted in: Lognormal (Black) or Normal '
+                      '(Bachelier, an absolute normal vol)')
     ]
 
     def __init__(self, param):

@@ -933,9 +933,9 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
         F('Date', 'Date', settles=Cash('Payoff_Currency')), F('Value', 'Float')]), tag='DateValueList'),
     F('Coupon_Observations', 'Table', default='null', convention=True,
       row=Row([F('Coupon', 'Date'), F('Observation', 'Date')]),
-      description='Which price fixing each coupon is observed on, one row per coupon. Absent - '
-                  'the default - the pairing is DERIVED from the schedule: a coupon observes '
-                  'every fixing after its predecessor up to and including its own date'),
+      description='Which price fixing each coupon is observed on, one row per coupon; absent, a '
+                  'coupon observes every fixing after its predecessor up to and including its own '
+                  'date'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Observation', 'Text', default='Spot', convention=True, values=['Spot', 'Average'],
@@ -952,20 +952,15 @@ QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
 
 ADMIN = Group('Admin', [
     F('Object', 'Text', default=REQUIRED,
-      description='The deal TYPE this block is, spelled as the engine names it. The loader '
-                  'dispatches on it and refuses a block that names none, so it is the one field '
-                  'nothing can stand in for'),
+      description='The deal TYPE this block is, spelled as the engine names it'),
     F('Reference', 'Text', default='', convention=True),
     F('MtM', 'Text', default='', convention=True),
     F('Sales_Margin', 'Float', default=0, convention=True,
       description='What the desk charged for this ticket over the mid, in Sales_Margin_Currency '
-                  'and positive when the desk earns it. A RECORD of what was agreed: the charge '
-                  'is already inside the terms, so nothing is priced off this field. Every deal '
-                  'declares it, a margin being a property of the ticket rather than of an asset '
-                  'class'),
+                  'and positive when the desk earns it, a RECORD nothing is priced off'),
     F('Sales_Margin_Currency', 'Text', default='', convention=True,
-      description='The currency Sales_Margin is stated in. A margin is an AMOUNT rather than a '
-                  'rate, and it need not be a currency this deal settles or discounts in')
+      description='The currency Sales_Margin is stated in, which need not be one this deal '
+                  'settles or discounts in')
 ])
 
 FX_ADMIN = Group('FXAdmin', [
@@ -980,9 +975,7 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
                 F('Option_Type', 'Text', values=['Call', 'Put']), F('Units', 'Float'),
                 F('Weight', 'Float', description='Relative weight in the objective'),
                 F('Quoted_Market_Value', 'Float',
-                  description='The quote, read per Quote_Type; 0 reads the vol surface. The one '
-                              'value key a patch cannot clear (MARKET_QUOTE_REQUIRED): a mid is '
-                              'moved, never removed')]
+                  description='The quote, read per Quote_Type; 0 reads the vol surface')]
 
 #: The EVIDENCE beside a mid: the two-way the print was dealt on and its clock. A row carrying these
 #: declares all four `MARKET_QUOTE_VALUES`, which is what `quote_containers` reads to put that table
@@ -990,15 +983,13 @@ OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 re
 #: against; they are declared so a machine-fetched quote has somewhere to put what it saw.
 QUOTE_TWO_WAY = [
     F('Quoted_Bid', 'Float',
-      description='The bid side of this quote, in the same unit as the mid. QUOTE-LAYER data: the '
-                  'fit reads Quoted_Market_Value alone. Optional, because a contract the source '
-                  'quotes no two-way for stays mid-only rather than borrowing a spread'),
+      description='The bid side of this quote, in the same unit as the mid, optional and never '
+                  'read by the fit'),
     F('Quoted_Ask', 'Float',
       description='The offer side, the pair of Quoted_Bid, and optional on the same terms'),
     F('Timestamp', 'Date', default='',
-      description='When this quote was seen - the contract\'s own last print, which is what says a '
-                  'listed strike is still a market. Stored and reported, never read by the fit: '
-                  'what counts as too old is the consumer\'s policy')]
+      description='When this quote was seen, the contract\'s own last print, stored and reported '
+                  'but never read by the fit')]
 
 
 # ---------------------------------------------------------------------------------------

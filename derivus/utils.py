@@ -3805,6 +3805,98 @@ class LogVar2FJ:
             raise ValueError('{}: bounds must be lower < upper, read {:g},{:g}'.format(name, lo, hi))
         return lo, hi
 
+    @classmethod
+    def parse_class_priors(cls, text, name, count, classes):
+        """A `class:numbers; class:numbers` field as `{asset class: tuple}`, one entry per class in
+        `classes`, refusing BY NAME on a foreign class, a wrong count or a missing class."""
+        priors = {}
+        for entry in str(text).split(';'):
+            if not entry.strip():
+                continue
+            asset, _, numbers = entry.partition(':')
+            asset = asset.strip()
+            if asset not in classes:
+                raise ValueError('{}: {!r} is no underlying this family fits - write {}'.format(
+                    name, asset, '/'.join(classes)))
+            priors[asset] = cls.parse_floats(numbers, '{} {}'.format(name, asset), count)
+        missing = [asset for asset in classes if asset not in priors]
+        if missing:
+            raise ValueError('{}: no prior for {} - a fit resolving to it would have none to fall '
+                             'back on, so every class carries one'.format(name, '/'.join(missing)))
+        return priors
+
+    @classmethod
+    def sd_band(cls, text, name, classes, asset=None):
+        """`lower,upper` for every asset class, or `class:lower,upper; ...` per class: the band for
+        `asset`, or the whole table validated where no asset is asked for."""
+        if ':' not in str(text):
+            return cls.parse_bounds(text, name)
+        table = cls.parse_class_priors(text, name, 2, classes)
+        return table if asset is None else table[asset]
+
+    @classmethod
+    def share_priors(cls, read, classes):
+        """`({asset class: (share,)}, spread)` for the residual's skew row, refusing BY NAME on a
+        target outside the admissible `|beta|/alpha` or a spread that cannot weight a row."""
+        priors = cls.parse_class_priors(
+            read['Residual_Skew_Share_Defaults'], 'Residual_Skew_Share_Defaults', 1, classes)
+        bound = np.sqrt(1.0 - cls.COND_MIN)
+        outside = {name: share for name, (share,) in priors.items() if abs(share) >= bound}
+        if outside:
+            raise ValueError(
+                'Residual_Skew_Share_Defaults: {} - the residual\'s skew share beta/alpha lives '
+                'inside (-{:.4f}, {:.4f}), the conditioning bound sqrt(1 - {:g}) the factor asserts '
+                'at load, so a fit could not reach the prior at all'.format(
+                    ', '.join('{} {:+g}'.format(*row) for row in sorted(outside.items())),
+                    bound, bound, cls.COND_MIN))
+        spread = float(read['Residual_Skew_Share_Sd'])
+        if not spread > 0.0:
+            raise ValueError(
+                'Residual_Skew_Share_Sd reads {:g}. It is the spread the skew-share row is weighted '
+                'by - q1/Sd - and the bar a history\'s own error has to beat to be believed, so a '
+                'non-positive one divides the row by nothing'.format(spread))
+        return priors, spread
+
+    @classmethod
+    def typed(cls, where, block, classes, asset=None):
+        """Every hyperparameter of a completed block that is not a plain number, each refusing BY
+        NAME: the box, the stage horizons, the log-vol band (narrowed to `asset` where one is asked
+        for), the node counts, the strike grid and the class prior tables over `classes`."""
+        typed = dict(
+            box={name: cls.parse_bounds(block[name + '_Bounds'], name + '_Bounds')
+                 for name in ('Sigma_L', 'Rho_L', 'Sigma_S', 'Alpha', 'Beta')},
+            horizons=cls.parse_bounds(block['Stage_Horizons'], 'Stage_Horizons'),
+            band=cls.sd_band(block['Log_Vol_Sd_Band'], 'Log_Vol_Sd_Band', classes, asset),
+            nodes=[int(x) for x in cls.parse_floats(
+                block['Quadrature_Nodes'], 'Quadrature_Nodes', 2)],
+            strikes=cls.parse_floats(block['Psi_Strikes'], 'Psi_Strikes', 3),
+            reference=float(block['Sigma_S_Reference']),
+            share=cls.share_priors(block, classes),
+            **{key: cls.parse_class_priors(block[name], name, count, classes)
+               for key, name, count in (
+                   ('slow', 'Slow_Factor_Prior_Defaults', 2),
+                   ('leverage', 'Leverage_Prior_Defaults', 1),
+                   ('product', 'Leverage_Product_Defaults', 1),
+                   ('alpha', 'Alpha_Prior_Defaults', 1))})
+        if not typed['strikes'][0] < typed['strikes'][2]:
+            raise ValueError('Psi_Strikes: the low and high strikes must be ordered, read {!r}'
+                             .format(block['Psi_Strikes']))
+        if not typed['reference'] > 0.0:
+            raise ValueError(
+                '{}: Sigma_S_Reference reads {:g}. It is the vol-of-vol a declared Leverage_Prior '
+                'is multiplied by to reach the product rho_s sigma_s the row is on, and it scales '
+                "the row's own weight - a non-positive one flips the prior's sign or divides the "
+                'weight by nothing. Write the Q-sized vol-of-vol, or leave the field at its '
+                'default'.format(where, typed['reference']))
+        crossed = [c for c, (product,) in typed['product'].items()
+                   if product * typed['leverage'][c][0] < 0.0]
+        if crossed:
+            raise ValueError(
+                'Leverage_Product_Defaults and Leverage_Prior_Defaults disagree in SIGN on {}: '
+                'the product is the row and the rho_s signs the seed, so a fit would seed against '
+                'its own prior'.format('/'.join(crossed)))
+        return typed
+
 
 # Correlated sub-stepping -- exact within-interval dynamics between coarse scenario nodes. A coarse
 # exposure grid still owes each factor the dynamics it would have had on the calibration clock:

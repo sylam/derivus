@@ -885,8 +885,8 @@ class NettingCollateralSet(Deal):
         F('Settlement_Period', 'Integer', default=0, convention=True),
         F('Post_Regulations', 'Text', default='', convention=True,
           description='The regulatory regimes initial margin is POSTED under this agreement by, as '
-                      'the CRIF carries them (comma-separated where several); a term of the '
-                      'agreement, blank where none is declared, which a margin calculation refuses'),
+                      'the CRIF carries them (comma-separated where several), blank where none is '
+                      'declared'),
         F('Collect_Regulations', 'Text', default='', convention=True,
           description='The regimes initial margin is COLLECTED under this agreement by, as the '
                       'CRIF carries them; a term of the agreement, blank where none is declared')
@@ -5580,8 +5580,8 @@ class EquitySwapLeg(Deal):
         F('Known_Dividends', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Calendars', 'Text', default='', convention=True,
-          description='The calendar the payment offset is rolled on. Blank - the default - is '
-                      'the leg\'s own Accrual_Calendars, and blank on both is Monday to Friday'),
+          description='The calendar the payment offset is rolled on; blank is the leg\'s own '
+                      'Accrual_Calendars, and blank on both is Monday to Friday'),
         F('Payment_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -6873,7 +6873,7 @@ class CreditNthToDefault(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Principal', 'Float', default=0.0, sized=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', 'ACT_ACT_ICMA'],
-          description='ACT family only: the 30/360 walkers need date-anchored segments the sampled accrual grid does not carry'),
+          description='Accrual day count, ACT family only'),
         F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('CDS_Index', 'Text', default='', obj='Tuple')
 ])]

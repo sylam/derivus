@@ -456,8 +456,7 @@ def test_the_wing_rmse_is_inside_its_declared_bound(fitted):
     log-moneyness, fitted to 0.789 vol points RMSE unweighted.
 
     The bound is 1.0 vol points, 27% over the reading, because what this gate defends is that the
-    ladder is FITTED at all - the same document read at its own seed is 3.247 vol points, which
-    the report prints beside the fit as the slow pair's unfitted row.
+    ladder is FITTED at all - the same document read at its own seed is 3.247 vol points.
     """
     rmse = _report_floats(fitted[1], 'RMSE', 'vol points unweighted')[0]
     assert rmse <= 1.0, rmse
@@ -546,7 +545,7 @@ def test_a_prior_on_a_bucket_lever_holds_every_bucket():
          'Param_Buckets': [{'Tenor': 0.0}, {'Tenor': 1.0}]})
     fit.soft_priors()
     priors = {row[0]: row[1:] for row in fit.prior_rows}
-    assert list(priors) == ['Rho_S', fit.LEVERAGE, 'Alpha', fit.SHARE], list(priors)
+    assert list(priors) == ['Rho_S', fit.prior.LEVERAGE, 'Alpha', fit.prior.SHARE], list(priors)
     fit.state['Rho_S'] = [-0.5, -0.3]
     fit.state['Alpha'] = [priors['Alpha'][0] * 1.25, priors['Alpha'][0] * 0.8]
     coords = [(lever, k) for lever in ('Rho_S', 'Sigma_S', 'Beta', 'Alpha') for k in (0, 1)]
