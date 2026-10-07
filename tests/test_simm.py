@@ -105,7 +105,8 @@ def world(calculation=None, prices=None, option=None, configuration=None, system
         'Calculation': dict(SIMM, **(calculation or {})),
         'Deals': {'Reference': 'simm', 'Deals': {'Children': [{
             'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
-                                     'Netted': 'True', 'Collateralized': 'False'}},
+                                     'Netted': 'True', 'Collateralized': 'False',
+                                     'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
             'Children': [{'Instrument': {'.Deal': swap}},
                          {'Instrument': {'.Deal': dict(OPTION, **(option or {}))}}]}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
@@ -238,7 +239,7 @@ def test_the_crif_is_isdas_format(serial, tmp_path):
     vega = frame[frame['RiskType'] == 'Risk_FXVol']
     assert set(vega['Qualifier']) == {'USDZAR'} and set(vega['Label1']) <= vertices
     assert (frame['AmountUSD'] == frame['Amount']).all()
-    assert set(frame['Counterparty']) == {'CPTY'} and set(frame['ProductClass']) == {'RatesFX'}
+    assert set(frame['Counterparty']) == {'NS'} and set(frame['ProductClass']) == {'RatesFX'}
 
     calculation.SIMM.write(frame, tmp_path / 'crif.tsv')
     read = pd.read_csv(tmp_path / 'crif.tsv', sep='\t', dtype={'Bucket': str},

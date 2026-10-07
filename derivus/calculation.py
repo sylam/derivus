@@ -3826,9 +3826,10 @@ class SIMM(Calculation):
     currency; and a point of vol in a TENT on each vertex - the surface given a pillar at every
     vertex expiry it lacks, read off its own interpolation, then each vertex alone moved, so an
     option's vega lands on its own expiry and the rows sum to the parallel move. Where the rows
-    land - risk type, qualifier, bucket, labels - a trade's product class and an agreement's
-    regulations are the bank's `Mapping`, held to `utils.FactorRiskClass`; the vertices are the
-    regime's `Parameters`. A shift other than ISDA's is scaled to it.
+    land - risk type, qualifier, bucket, labels - and a trade's product class are the bank's
+    `Mapping`, held to `utils.FactorRiskClass`; the vertices are the regime's `Parameters`; the
+    regimes margin is posted and collected under are the agreement's own terms, declared on the
+    netting set. A shift other than ISDA's is scaled to it.
 
     MARKET PRICES ARE A CONDITION: an interest rate a trade reads that no configured family
     bootstraps, and that is no child of one that does, refuses by name. A leg the engine skips is
@@ -3862,8 +3863,7 @@ class SIMM(Calculation):
           description='The calculation currency the CRIF amounts are in'),
         F('Mapping', 'Text', default=REQUIRED,
           description='Path to the regime mapping: per price factor its SIMM coordinates or null, '
-                      'per instrument type and per structure a product class, per netting set its '
-                      'counterparty and regulations'),
+                      'per instrument type and per structure a product class'),
         F('Parameters', 'Text', default=REQUIRED,
           description='Path to the ISDA SIMM parameters file, whose interest-rate weights name the '
                       'vertices the rows land on'),
@@ -4003,13 +4003,19 @@ class SIMM(Calculation):
         return found
 
     def agreement(self, reference):
-        """The netting set's counterparty and regulations, as the CRIF carries them."""
-        stated = self.mapping['Netting_Sets'].get(reference)
-        if stated is None:
-            raise ValueError('SIMM: the mapping states no Counterparty, PostRegulations and '
-                             'CollectRegulations for the netting set {}'.format(reference))
-        return {key: stated[key] for key in ('Counterparty', 'PostRegulations',
-                                             'CollectRegulations')}
+        """What the CRIF carries of the agreement a trade sits under: the netting set's reference
+        as its counterparty - the id a margin is reconciled by - and the regimes it declares margin
+        posted and collected under, each a term of the agreement a blank one refuses by name."""
+        terms = next(agreement['Instrument'].field for agreement, _ in self.trades
+                     if agreement['Instrument'].field.get('Reference') == reference)
+        regimes = {key: terms.get(field) or '' for key, field in (
+            ('PostRegulations', 'Post_Regulations'), ('CollectRegulations', 'Collect_Regulations'))}
+        blank = [field for field, regime in regimes.items() if not regime]
+        if blank:
+            raise ValueError('SIMM: the netting set {} declares no {} - the regimes margin is '
+                             'posted and collected under are terms of the agreement'.format(
+                                 reference, ' or '.join(blank)))
+        return dict(regimes, Counterparty=reference)
 
     def booked(self, index):
         """Install trade `index` alone under its netting set as the config's book, valued as the

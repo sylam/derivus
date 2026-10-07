@@ -882,7 +882,14 @@ class NettingCollateralSet(Deal):
         F('Credit_Support_Amounts', 'Container', default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [], 'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True, sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''), F('Independent_Amount', 'Table', default='[[0,1]]', row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Posted_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Posted', 'Table', default='[[0,1]]', row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList')]),
         F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
-        F('Settlement_Period', 'Integer', default=0, convention=True)
+        F('Settlement_Period', 'Integer', default=0, convention=True),
+        F('Post_Regulations', 'Text', default='', convention=True,
+          description='The regulatory regimes initial margin is POSTED under this agreement by, as '
+                      'the CRIF carries them (comma-separated where several); a term of the '
+                      'agreement, blank where none is declared, which a margin calculation refuses'),
+        F('Collect_Regulations', 'Text', default='', convention=True,
+          description='The regimes initial margin is COLLECTED under this agreement by, as the '
+                      'CRIF carries them; a term of the agreement, blank where none is declared')
 ])]
 
     factor_fields = {'Agreement_Currency': ['FxRate'],

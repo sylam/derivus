@@ -880,7 +880,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    assert sum(dropped(deal) for deal in BOOK) == 165
+    assert sum(dropped(deal) for deal in BOOK) == 167
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)
