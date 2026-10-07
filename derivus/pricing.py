@@ -232,9 +232,10 @@ class LogVar2FJKit(object):
         between ATM expiries, the four levers on their calendar buckets - because both are calendar
         time from the base date, not time from this row. ``antithetic`` is REQUIRED because the
         wrong value is a shape error at every consumer, never a quiet bias; ``mixers`` is the row's
-        own uniform per residual draw, drawn by the pricer beside its OSS ones. ``quanto`` is this
-        row's per-step loading (`quanto_step_loading`), which the walk turns into the
-        payoff-currency drift; None is a single-currency payoff and bit-identical.
+        own uniform per residual draw beside its exact complement, ``[2, draws, ...]``, drawn by the
+        pricer beside its OSS ones. ``quanto`` is this row's per-step loading
+        (`quanto_step_loading`), which the walk turns into the payoff-currency drift; None is a
+        single-currency payoff and bit-identical.
 
         ``carry`` is the DEAL's own either way - on the reciprocal axis the walk and the mixer are
         the only things that change measure, and the law they hand back is already ``1/S``'s.
@@ -268,7 +269,8 @@ class LogVar2FJKit(object):
                         None if quanto is None else quanto[a:b],
                         use_reentrant=False, preserve_rng_state=False)
                     m, clock, j = m + dm, clock + dA, j + 1
-                u = None if self.gaussian else mixers[drawn]
+                # the double the root reads, off the exact pair; `residual` is the outer walk's too
+                u = None if self.gaussian else mixer_uniform(mixers[:, drawn])
                 drift, G = torch.utils.checkpoint.checkpoint(
                     self.residual, clock, self.curves['Alpha'].values[bucket],
                     self.curves['Beta'].values[bucket], u,
@@ -496,30 +498,40 @@ def quanto_step_loading(kit, factor_dep, rho, row_t, deltas, shared):
 
 
 def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
-    """Antithetic uniforms for a one-step-survival loop, as ``(oss, mixers)``: the OSS columns
-    ``[n_fix, batch, 2 * num_sims]`` in the job's dtype and the ``extra`` mixer columns beside them.
+    """Antithetic uniforms for a one-step-survival loop, as ``(oss, mixers)``: the OSS rows
+    ``[n_fix, batch or 1, 2 * num_sims]`` in the job's dtype and the ``extra`` mixer rows beside
+    them as exact pairs, ``[2, extra, batch or 1, 2 * num_sims]`` - each uniform and its own
+    complement.
 
-    One Sobol/pseudo draw plus its ``1 - u`` mirror, pairing an OSS step's truncated final draws
-    with the antithetic halves of the kit's own walk. ``extra`` widens the request AFTER the OSS
-    columns - a walking kit's mixer uniform per residual draw - so a GBM deal asks for nothing new
-    and its stream is untouched, and the mixers come back in DOUBLE, a draw carrying them being
-    taken that way: the inverse-Gaussian root reads a tail 24 bits cannot express. NOT used by
-    ``pv_MC_AutoCallSwap``'s no-averaging loop, which draws the same Sobol block but consumes it
-    raw - adopting this there would change that estimator.
+    The antithetic half is the ``1 - u`` mirror, pairing an OSS step's truncated final draws with
+    the antithetic halves of the kit's own walk. Under Sobol the rows are the canonical inner
+    block's (`CMC_State.inner_block`), one per fixing broadcast over every outer path, its mirror
+    the complement taken on the integer. ``extra`` widens the request AFTER the OSS rows - a walking
+    kit's mixer uniform per residual draw - so a GBM deal asks for nothing new. The pseudo-random
+    arm draws a row carrying mixers in DOUBLE. NOT used by ``pv_MC_AutoCallSwap``'s no-averaging
+    loop, which consumes the same rows raw.
     """
     rows = n_fix + extra
     if sobol:
-        draw = shared.quasi_rng(shared.simulation_batch, rows * num_sims)
-        shape = lambda x: x.T.reshape(rows, shared.simulation_batch, -1)
-        # one reshape where the mixers want the wide draw - a cast and a permutation commute
-        wide = shape(draw[2]) if extra else None
-        u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
-    else:
-        wide = torch.rand([rows, shared.simulation_batch, num_sims],
-                          dtype=torch.float64 if extra else shared.one.dtype, device=shared.one.device)
-        u = wide.to(shared.one.dtype)
+        u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
+        both = torch.concat([u, ubar], dim=-1)
+        return both[:n_fix], torch.stack(
+            [both[n_fix:], torch.concat([ubar[n_fix:], u[n_fix:]], dim=-1)]) if extra else None
+    wide = torch.rand([rows, shared.simulation_batch, num_sims],
+                      dtype=torch.float64 if extra else shared.one.dtype, device=shared.one.device)
     mirror = lambda x: torch.concat([x, 1.0 - x], dim=-1)
-    return mirror(u[:n_fix]), mirror(wide[n_fix:]) if extra else None
+    mixers = mirror(wide[n_fix:])
+    return mirror(wide[:n_fix].to(shared.one.dtype)), torch.stack(
+        [mixers, 1.0 - mixers]) if extra else None
+
+
+def mixer_uniform(pair):
+    """A mixer's uniform in DOUBLE from its exact ``(u, 1 - u)`` pair: ``u`` where it is the smaller
+    and ``1 - (1 - u)`` where its complement is, so each tail keeps its relative precision whatever
+    the pair's dtype - the inverse-Gaussian root reads a tail 24 bits of ``u`` cannot express near
+    one. On a double pair it is ``u``, bit for bit."""
+    u, ubar = utils.LogVar2FJ.wide(pair[0]), utils.LogVar2FJ.wide(pair[1])
+    return torch.where(u <= 0.5, u, 1.0 - ubar)
 
 
 def oss_stream(step, state, n, chunk):
@@ -953,9 +965,10 @@ class InnerMCRecompute(torch.autograd.Function):
     the SAME callable under ``enable_grad``, contracting the cotangent through one block's graph at
     a time. Subsystem documentation: calc_lifecycle.md#recompute-inner-mc.
 
-    THE COUNTER IS THE STORAGE: what is saved is where each random stream stood
-    (``utils.rng_position``), never what it produced. Sobol draws are memoized, so rewinding the
-    counter replays the same tensors; the plain generator's state is saved, restored and put back.
+    THE POSITION IS THE STORAGE: what is saved is where the plain generator stood
+    (``utils.rng_position``), never what it drew - its state is saved, restored and put back. The
+    Sobol rows are the canonical inner block's, a function of their shape, so the replay reads them
+    again with nothing to rewind.
 
     THE ADOPTER'S SHAPE: ``simulate(*bound)(*theta)`` - bound arguments are the block's shape, theta
     every graph-carrying tensor (anything read from a closure differentiates as a constant). It
@@ -1976,10 +1989,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     scalars = oss_model_scalars(factor_dep, shared)
     kit = oss_model_kit(factor_dep, scalars)
 
-    sobol = False
-    if shared.simulation_batch > 16:
-        sobol = True
-        shared.reset_qrg()
+    sobol = shared.simulation_batch > 16
 
     expiry = daycount_fn(tau)
     expiry_years_key = ('Expiry_Years', tuple(expiry))
@@ -2998,10 +3008,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         alive_seq.append(state)
     fixing_days = fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day]
 
-    sobol = False
-    if shared.simulation_batch > 16:
-        sobol = True
-        shared.reset_qrg()
+    sobol = shared.simulation_batch > 16
 
     row_ofs = 0
     for b_idx, (discount_block, spot_block) in enumerate(
@@ -3391,10 +3398,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         alive_after.append(alive)
         fact_after.append(fact)
 
-    sobol = False
-    if shared.simulation_batch > 16:
-        sobol = True
-        shared.reset_qrg()
+    sobol = shared.simulation_batch > 16
 
     def oss_extend(prev_spot, log_inc, var_inc, barrier, u):
         """Continuation probability and the extended-branch draw at one decision."""
@@ -4039,12 +4043,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             # the same walk UNCLAMPED: the clamp kills the derivative AT the decision
             raw.append(raw[-1] + accrued(sample_val, strike, callOrPut, invertedTarget))
 
-    sobol = False
-    # a quasi random generator for large batches; the counter is reset so that subsequent runs
-    # reuse the same quasi random numbers
-    if shared.simulation_batch > 16:
-        sobol = True
-        shared.reset_qrg()
+    sobol = shared.simulation_batch > 16
 
     for b_idx, (discount_block, spot_block) in enumerate(
             utils.split_counts([discount, spot], counts, shared)):
@@ -4384,18 +4383,18 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
                     rows = reduced_samples + n_mix
                     if sobol:
-                        draw = shared.quasi_rng(shared.simulation_batch, rows * num_sims)
-                        shape = lambda x: x.T.reshape(rows, shared.simulation_batch, -1)
-                        # one reshape: a cast and a permutation commute, so the narrow columns
-                        # come off the wide draw rather than being shuffled a second time
-                        wide = shape(draw[2]) if n_mix else None
-                        u = shape(draw[1]) if wide is None else wide.to(shared.one.dtype)
-                        mix = None if wide is None else wide[reduced_samples:]
+                        # the canonical block's rows, raw: one per fixing broadcast over every
+                        # outer path, each mixer beside its exact complement
+                        u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
+                        mix = torch.stack([u[reduced_samples:], ubar[reduced_samples:]]
+                                          ) if n_mix else None
                     else:
                         wide = torch.rand([rows, shared.simulation_batch, num_sims],
                                           dtype=torch.float64 if n_mix else shared.one.dtype,
                                           device=shared.one.device)
-                        u, mix = wide.to(shared.one.dtype), wide[reduced_samples:] if n_mix else None
+                        mix = wide[reduced_samples:]
+                        u, mix = wide.to(shared.one.dtype), torch.stack(
+                            [mix, 1.0 - mix]) if n_mix else None
                 Sj = torch.unsqueeze(
                     s if last_fixing is None else past_fixings[last_fixing], 1)
                 if kit is not None and reduced_samples:
@@ -4666,8 +4665,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             for i, (row_at, D, s, r, sigma, floating) in enumerate(zip(
                     row_days, discount_rates, spot_prices, drift, vol, floating_leg)):
                 if sobol:
-                    z = shared.quasi_rng(shared.simulation_batch, num_samples * num_sims)[0].T.reshape(
-                        num_samples, shared.simulation_batch, -1)
+                    z = utils.norm_icdf(shared.inner_block(num_samples, num_sims)[0]).unsqueeze(1)
                 else:
                     z = torch.randn([num_samples, shared.simulation_batch, num_sims],
                                     dtype=shared.one.dtype, device=shared.one.device)
@@ -4790,12 +4788,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # model is only wired into the OSS arm
     scalars = oss_model_scalars(factor_dep, shared)
 
-    sobol = False
-    # a quasi random generator for large batches; the counter is reset so subsequent runs reuse the
-    # same quasi random numbers
-    if shared.simulation_batch > 16:
-        sobol = True
-        shared.reset_qrg()
+    sobol = shared.simulation_batch > 16
 
     # an autocall taken on the reporting row's own spot is a real redemption, so the value is not
     # wrong; what ordinary AAD drops is the flux of scenarios across the threshold

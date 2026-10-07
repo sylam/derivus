@@ -5,18 +5,18 @@ once, while the simulation that built them is cheap. `pricing.InnerMCRecompute` 
 a second forward: the node's forward runs under `no_grad`, its backward re-runs the SAME callable
 under `enable_grad` and contracts the cotangent through one graph that dies immediately.
 
-THE COUNTER IS THE STORAGE. What is saved is where each stream stood (`utils.rng_position`), never
-what it produced. Sobol draws are memoized per (dimension, sample_size, batch), so rewinding hands
-the replay the same tensor; the regular generator has no memo, so its state is saved and restored.
-Which stream each fixture reads is ATTRIBUTED rather than assumed: `pv_MC_Tarf` takes Sobol above 16
-scenarios, so base valuation's one scenario reads `torch.rand` and the 512-scenario exposure reads
-Sobol, and desynchronising ONE moves that fixture's gradient and the other's by exactly zero
-(measured 2.80e+05 and 1.17e+03).
+THE POSITION IS THE STORAGE. What is saved is where the regular generator stood
+(`utils.rng_position`), never what it drew, and its state is restored for the replay; the Sobol rows
+are the canonical inner block's, a function of their shape, with no position to save. Which stream
+each fixture reads is ATTRIBUTED rather than assumed: `pv_MC_Tarf` takes Sobol above 16 scenarios,
+so base valuation's one scenario reads `torch.rand` - the generator one draw ahead moves its
+gradient by 5.73e+03 - and the 512-scenario exposure reads the block, its replay bit-identical with
+the generator and the quasi counter both a draw ahead.
 
 THE GRADIENT GATE IS `array_equal` AND NOT A TOLERANCE. The replay is the same kernels on the same
 inputs in the same order, and a tolerance would let a desynchronised stream through as "close
 enough". Measured bit-identical on both paths, base valuation (7 factors) and CVA (14), while the
-smallest mutation below moves the gradient by 1.5e-04 relative. Also GRID-INVARIANT: re-taken on
+smallest mutation below moves the gradient by 1.2e-04 relative. Also GRID-INVARIANT: re-taken on
 `0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)`, with `Dynamic_Scenario_Dates` off and on, every one of
 cva, profile, cashflows and gradient is equal to the last bit.
 
@@ -27,9 +27,9 @@ it, the coefficient arriving as that output's cotangent. `NoBoundaryInjection` d
 cotangent and the gradient moves.
 
 The mutations are the point. Bit-identity passes trivially against a node that reuses the forward's
-graph or never rewinds, so the counter is desynchronised by one draw, the boundary cotangent is
+graph or never rewinds, so the generator is desynchronised by one draw, the boundary cotangent is
 dropped, and the replay is fed stale inputs - each breaking the gradient it is meant to (as a
-fraction of the largest entry: 7.5e-02 / 1.5e-04 base, 1.4e-02 / 2.8e-01 / 8.4e-05 CVA). The
+fraction of the largest entry: 1.5e-03 / 9.9e-04 base, 4.5e-02 / 1.2e-04 CVA). The
 boundary half is scored on the CVA grid alone: under GBM a fixing interval that is one simulated
 step integrates its knock-in by the conditional-p mixture and registers no boundary, so a base
 valuation's node carries no gap cotangent to drop. A `Recompute_Inner_MC: 'Yes'` that silently
@@ -55,11 +55,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
 import derivus
 from derivus import calculation, pricing, run_baseval, utils
+from derivus.instruments import construct_instrument
 from derivus.schema import declared_defaults
 import test_boundary_tarf_events as tarf
 
@@ -92,7 +94,7 @@ def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
 def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
         deterministic='No'):
     """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 512 scenarios, so the pricer
-    takes the Sobol branch - the memoized half of the stream contract - and the boundary
+    takes the Sobol branch - the inner block's half of the stream contract - and the boundary
     correction has a population to fit a kernel to."""
     overrides = {
         'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
@@ -290,7 +292,8 @@ def desynced_node(quasi, regular):
 
             def replay(*theta):
                 if quasi:
-                    ctx.shared.t_quasi_rng_batch = AheadByOne(ctx.shared.t_quasi_rng_batch)
+                    ctx.shared.t_quasi_rng_batch = AheadByOne(
+                        getattr(ctx.shared, 't_quasi_rng_batch', {}))
                 if regular:
                     torch.rand(1, dtype=ctx.shared.one.dtype, device=ctx.shared.one.device)
                 return simulate(*theta)
@@ -370,18 +373,17 @@ def cva_gradient(recompute):
 
 @pytest.mark.parametrize('mutant,run,stream', [
     (DesyncedStreams, base_gradient, 'torch.rand'), (StaleInputs, base_gradient, 'torch.rand'),
-    (DesyncedStreams, cva_gradient, 'Sobol'), (NoBoundaryInjection, cva_gradient, 'Sobol'),
-    (StaleInputs, cva_gradient, 'Sobol')])
+    (NoBoundaryInjection, cva_gradient, 'Sobol'), (StaleInputs, cva_gradient, 'Sobol')])
 def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch):
     """Every mutation must break the gradient the unmutated node reproduces bit for bit, with the
     unmutated reading taken in the same run so the gate cannot measure nothing.
 
     Scored on the gradient alone: all three leave the forward pass untouched, so the reported value
     agrees in every digit - which is why a price gate over this subsystem is worth nothing. As a
-    fraction of the gradient's largest entry (3.73e+06 base, 8.22e+04 CVA) the kills are
-    7.5e-02 / 1.5e-04 and 1.4e-02 / 2.8e-01 / 8.4e-05, in parametrized order. The boundary
-    mutation runs on the CVA grid alone: on the one-row base valuation every knock-in is integrated
-    by the mixture and the node carries no gap cotangent, so there is nothing for it to drop.
+    fraction of the gradient's largest entry (3.80e+06 base, 8.21e+04 CVA) the kills are
+    1.5e-03 / 9.9e-04 and 4.5e-02 / 1.2e-04, in parametrized order. The boundary mutation runs on
+    the CVA grid alone: on the one-row base valuation every knock-in is integrated by the mixture
+    and the node carries no gap cotangent, so there is nothing for it to drop.
     """
     value_off, grad_off = run('No')
     monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
@@ -449,29 +451,24 @@ def test_the_accumulator_latch_is_live_and_rides_no_cotangent(monkeypatch, tmp_p
           '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
 
 
-@pytest.mark.parametrize('run,stream,kills,spectates', [
-    (base_gradient, 'torch.rand', GENERATOR_AHEAD, SOBOL_AHEAD),
-    (cva_gradient, 'Sobol', SOBOL_AHEAD, GENERATOR_AHEAD)], ids=['torch.rand', 'Sobol'])
-def test_each_fixture_reads_the_stream_it_claims(run, stream, kills, spectates, monkeypatch):
-    """One HALF of the desynchronisation at a time, so the file states which stream each fixture
-    covers. Mutating both kills everything and would go on doing so if a fixture quietly stopped
-    reading one; here the OTHER half must be a NO-OP, bit for bit.
+@pytest.mark.parametrize('run,stream,moved_by', [
+    (base_gradient, 'torch.rand', (GENERATOR_AHEAD, DesyncedStreams)), (cva_gradient, 'Sobol', ())],
+    ids=['torch.rand', 'Sobol'])
+def test_each_fixture_reads_the_stream_it_claims(run, stream, moved_by, monkeypatch):
+    """Each half of the desynchronisation and the pair, so the file states which position each
+    fixture's replay rewinds: the plain generator one draw ahead moves the base gradient by
+    5.73e+03 and the quasi counter is a no-op there; the CVA fixture's inner rows are the canonical
+    inner block's, a function of their shape, so its replay is bit-identical under all three.
 
-    Measured: the regular generator one draw ahead moves the base gradient by 2.80e+05 and the CVA
-    gradient by exactly 0.0; the Sobol counter one batch ahead moves the CVA gradient by 1.17e+03
-    and the base gradient by exactly 0.0.
-    """
+    Killing mutation for the Sobol case: the rows drawn at the quasi stream's running position,
+    which the counter one draw ahead then moves by 10.7 on a largest entry of 8.2e+04."""
     _, grad_off = run('No')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', kills)
-    _, grad_desynced = run('Yes')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', spectates)
-    _, grad_other = run('Yes')
-    assert not np.array_equal(grad_off, grad_desynced), (
-        f'{stream} is not the stream the {run.__name__} fixture reads: desynchronising it '
-        f'changed nothing')
-    assert np.array_equal(grad_off, grad_other), (
-        f'the {run.__name__} fixture also reads the other stream, so {stream} is not what the '
-        f'combined mutation kills it on:\n{grad_off}\n{grad_other}')
+    for mutant in (GENERATOR_AHEAD, SOBOL_AHEAD, DesyncedStreams):
+        monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
+        _, grad = run('Yes')
+        assert np.array_equal(grad_off, grad) != (mutant in moved_by), (
+            '{} on the {} fixture {} the gradient'.format(
+                mutant.__name__, stream, 'kept' if mutant in moved_by else 'moved'))
 
 
 def test_a_cashflow_settled_inside_the_replay_moves_only_the_frame(monkeypatch):
@@ -550,3 +547,39 @@ def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient():
     assert peak < STREAM_PEAK_MIB < whole_peak, (
         'peak {:.1f} MiB streamed, {:.1f} unstreamed, bound {}'.format(
             peak, whole_peak, STREAM_PEAK_MIB))
+
+
+# ---------------------------------------------------------------- (g) a trade's draws are its own
+
+def knock_in_tensor(neighbour):
+    """The knock-in TARF's own exposure tensor at 64 x 128, booked alone or after an accumulator
+    fixing on its first three dates, which asks the inner draws for other strip lengths first."""
+    config = tarf._cfg(KNOCK_IN_CMC, tarf.SPOT, counterparty=True, simulate_fx=True)
+    if neighbour:
+        dates = [tarf.BASE + pd.Timedelta(days=d) for d in tarf.BIMONTHLY[:3]]
+        config.deals['Deals']['Children'].insert(0, {'Instrument': construct_instrument({
+            'Object': 'FXAccumulatorOptionDeal', 'Reference': 'ACC1', 'Currency': 'USD',
+            'Underlying_Currency': 'AUD', 'Discount_Rate': 'USD', 'FX_Volatility': 'AUD.USD',
+            'Buy_Sell': 'Sell', 'Option_Type': 'Call', 'Strike_Price': tarf.STRIKE,
+            'Underlying_Amount': tarf.N1, 'LeverageNotional': tarf.N2,
+            'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 0.75,
+            'Accumulator_ExpiryDates': [[d, d, None] for d in dates]}, {})})
+    calc, _ = derivus.run_cmc(config, prec=DTYPE, overrides={
+        'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': 64,
+        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'MCMC_Simulations': 128,
+        'Deflation_Interest_Rate': 'USD', 'DealLevel': True, 'Keep_Tensor': 'Yes'})
+    deal, = [x for x in calc.netting_sets.dependencies
+             if x.Instrument.field['Reference'] == 'TARF1']
+    return deal.Calc_res['tensor'].detach().cpu().numpy()
+
+
+def test_a_trade_is_valued_on_its_own_draws_whatever_is_booked_before_it():
+    """The TARF's own exposure is bit for bit the same booked alone and after an accumulator: a
+    trade's inner draws are the canonical block's first rows, whatever else the job asked for.
+
+    Killing mutation: the block keyed on the request, each new strip length drawn at the stream's
+    running position as the memoized quasi stream drew it, moves the TARF by 7.3e+03 on a largest
+    entry of 9.1e+05."""
+    alone, beside = knock_in_tensor(False), knock_in_tensor(True)
+    assert alone.std() > 0.0 and np.array_equal(alone, beside), (
+        'a neighbour moved the TARF by {:.6g}'.format(float(np.abs(alone - beside).max())))

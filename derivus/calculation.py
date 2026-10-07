@@ -545,6 +545,14 @@ QUASI_ANCHOR = 1024
 #: `torch.quasirandom.SobolEngine`'s dimension cap. A draw wider than this is taken in chunks.
 SOBOL_MAX_DIMENSION = 21201
 
+#: The canonical inner block's chunk: an inner path is ONE scrambled Sobol point over all its
+#: fixings, read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1)
+#: wide.
+INNER_CHUNK = 64
+
+#: The inner block's distance from 0 and 1 in units of 2^-30 - the stream's 1e-6 margin rounded up.
+INNER_MARGIN = 1074
+
 #: `Deterministic_Kernels`, one description for the three calculations that declare it beside
 #: `Random_Seed`.
 DETERMINISTIC_KERNELS = (
@@ -615,6 +623,21 @@ def batch_seed(random_seed, batch_index):
     z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
     return (z ^ (z >> 31)) & 0x7FFFFFFFFFFFFFFF
+
+
+def sobol_points(dimension, position, n, device, first=0):
+    """`n` points of the scrambled Sobol stream from `position`, its dimensions from `first` on, as
+    30-bit integers on `device`: `SobolEngine`'s own points bit for bit - its shift XORed with the
+    scrambled direction numbers of the bits of `i ^ (i >> 1)` - at any position, without stepping
+    and without a double."""
+    engine = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True, seed=QUASI_SEED)
+    directions = engine.sobolstate[first:].to(device)
+    index = torch.arange(position, position + n, dtype=torch.int64, device=device)
+    gray = (index ^ (index >> 1)).reshape(-1, 1)
+    points = engine.shift[first:].to(device).reshape(1, -1).expand(n, -1)
+    for bit in range(engine.MAXBIT):
+        points = points ^ (((gray >> bit) & 1) * directions[:, bit])
+    return points
 
 
 def vertex_weights(tenor, vertices):
@@ -701,8 +724,9 @@ class CMC_State(utils.Calculation_State):
         self.t_cholesky = cholesky
         self.t_random_numbers = None
         self.t_Scenario_Buffer = {}
-        self.t_quasi_rng = {}
         self.t_quasi_rng_batch = {}
+        # the canonical inner block per inner path count - see `inner_block`
+        self.t_inner_block = {}
         # Where each REQUESTED width's stream stands, and separately the engine cached per ENGINE
         # width with its own standing position - a chunked draw's two keys are not the same number.
         # Tracking position is what lets one `quasi_rng` serve both arms - see there.
@@ -718,7 +742,7 @@ class CMC_State(utils.Calculation_State):
         self.scale_survival = scale_survival
 
     def quasi_rng(self, dimension, sample_size):
-        """One quasi-random draw, memoized per `(dimension, sample_size, index)`.
+        """One quasi-random draw of `sample_size` points in `dimension` dimensions.
 
         SHARDING CHANGES ONLY WHERE THE DRAW IS TAKEN FROM. The stream is a fixed scrambled Sobol
         sequence at a fixed offset, neither derived from `Random_Seed`, so it is reproducible; what
@@ -740,7 +764,7 @@ class CMC_State(utils.Calculation_State):
         One chunk - every dimension at or below the cap - is the single draw unchanged, engine,
         position and bytes.
 
-        The memo, the clamp and the icdf happen once, below, for both arms. THE DRAW IS TAKEN IN
+        The clamp and the icdf happen once, below, for both arms. THE DRAW IS TAKEN IN
         DOUBLE and returned three ways - `(icdf, u, u in double)` - the first two in the job's own
         dtype and bit-identical to a float32 draw, a Sobol point being a dyadic rational both
         conversions round the same way. A float32 uniform holds 24 bits, so `1 - u` at the clamp's
@@ -752,42 +776,33 @@ class CMC_State(utils.Calculation_State):
         span = -(-dimension // SOBOL_MAX_DIMENSION)
 
         if self.quasi_batch is None:
-            index = call
             position = self.sobol_position.get(dimension, QUASI_ANCHOR)
         else:
             if call:
                 # a genuine second draw of one shape inside one batch, which has no distinct batch
-                # position. The inner-MC replay idiom zeroes this counter through `reset_qrg` first
+                # position
                 raise RuntimeError(
                     'deterministic sharding cannot cover a second draw of one quasi-random stream '
                     'inside a batch: (dimension={}, sample_size={}) was asked for a {} time while '
                     'running global batch {}, and anchoring gives a draw the position of its '
                     'BATCH, so two of them in one batch have no distinct position to take. Two '
-                    'factors sharing a shape, or an inner Monte Carlo pricer drawing beside the '
-                    'outer path, is the usual source - run such a job unsharded, or give the '
-                    'second consumer its own dimension.'.format(
+                    'factors sharing a shape is the usual source - run such a job unsharded, or '
+                    'give the second consumer its own dimension.'.format(
                         dimension, sample_size, call + 1, self.quasi_batch))
-            index = self.quasi_batch
-            position = QUASI_ANCHOR + index * span * sample_size
+            position = QUASI_ANCHOR + self.quasi_batch * span * sample_size
 
-        sample_key = (dimension, sample_size, index)
-
-        if sample_key not in self.t_quasi_rng:
-            chunks, at = [], position
-            for start in range(0, dimension, SOBOL_MAX_DIMENSION):
-                engine = self._sobol_at(min(SOBOL_MAX_DIMENSION, dimension - start), at)
-                chunks.append(engine.draw(sample_size, dtype=torch.float64))
-                at += sample_size
-                self.sobol_engine[engine.dimension] = (engine, at)
-            self.sobol_position[dimension] = at
-            sample_sobol = chunks[0] if len(chunks) == 1 else torch.cat(chunks, dim=1)
-            margin = 1.0e-6
-            u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
-            self.t_quasi_rng[sample_key] = (utils.norm_icdf(u.to(self.one.dtype)), u)
-
+        chunks, at = [], position
+        for start in range(0, dimension, SOBOL_MAX_DIMENSION):
+            engine = self._sobol_at(min(SOBOL_MAX_DIMENSION, dimension - start), at)
+            chunks.append(engine.draw(sample_size, dtype=torch.float64))
+            at += sample_size
+            self.sobol_engine[engine.dimension] = (engine, at)
+        self.sobol_position[dimension] = at
+        sample_sobol = chunks[0] if len(chunks) == 1 else torch.cat(chunks, dim=1)
+        margin = 1.0e-6
+        u = sample_sobol.clamp(min=margin, max=1.0 - margin).to(self.one.device)
         self.t_quasi_rng_batch[batch_key] += 1
-        z, u = self.t_quasi_rng[sample_key]
-        return z, u.to(self.one.dtype), u
+        return utils.norm_icdf(u.to(self.one.dtype)), u.to(self.one.dtype), u
 
     def _sobol_at(self, dimension, position):
         """This dimension's engine, standing at `position`.
@@ -805,8 +820,28 @@ class CMC_State(utils.Calculation_State):
             engine.fast_forward(position - standing)
         return engine
 
-    def reset_qrg(self):
-        self.t_quasi_rng_batch = {}
+    def inner_block(self, rows, sims):
+        """The canonical inner block, `(u, 1 - u)`, each `[rows, sims]` in the job's dtype.
+
+        Row k is fixing k and column j inner path j, each path ONE scrambled Sobol point over the
+        fixings: chunk c of `INNER_CHUNK` rows is dimensions `64c` on of an engine `64(c + 1)` wide,
+        at the same points from `QUASI_ANCHOR`. A longer strip is more dimensions of one point set,
+        never more points of one engine - point `i + 2^k` is point `i` with a constant XORed in, so
+        those rows would repeat the first chunk's. So it is a function of the row and the path count
+        alone - every product, outer path, batch and worker reads the same rows, the inner error
+        common to the outer paths rather than averaged over them - and the complement is taken on
+        the integer, `2^30 - m`, so each half keeps its own tail."""
+        block = self.t_inner_block.get(sims)
+        have = 0 if block is None else block[0].shape[0]
+        if have < rows:
+            halves = [[], []] if block is None else [[block[0]], [block[1]]]
+            for chunk in range(have // INNER_CHUNK, -(-rows // INNER_CHUNK)):
+                m = sobol_points(INNER_CHUNK * (chunk + 1), QUASI_ANCHOR, sims, self.one.device,
+                                 INNER_CHUNK * chunk).T.clamp(INNER_MARGIN, 2 ** 30 - INNER_MARGIN)
+                halves[0].append(m.to(self.one.dtype) * 2.0 ** -30)
+                halves[1].append(((1 << 30) - m).to(self.one.dtype) * 2.0 ** -30)
+            block = self.t_inner_block[sims] = (torch.cat(halves[0]), torch.cat(halves[1]))
+        return block[0][:rows], block[1][:rows]
 
     def set_quasi_batch(self, batch_num):
         """Anchor the quasi stream to a GLOBAL batch index (deterministic sharding only).
@@ -814,17 +849,9 @@ class CMC_State(utils.Calculation_State):
         Resets the per-`(dimension, sample_size)` counter along with it, because under anchoring
         that counter means "draws so far WITHIN this batch" - which is what makes a repeated draw
         detectable instead of silently aliasing onto the next batch's position.
-
-        Also drops the previous batch's memo, which anchoring makes safe: an anchored draw's
-        position derives entirely from its key, so re-drawing is bit-identical. On the historical arm
-        it must live for the whole run, since that arm's position is wherever its engine has crawled
-        to; run-long it grew without bound, 20,480 bytes a batch on a two-state HMM.
-
-        Cleared at the START of a batch, so the within-batch replay idiom is untouched.
         """
         self.quasi_batch = batch_num
         self.t_quasi_rng_batch = {}
-        self.t_quasi_rng = {}
 
     def reset_cashflows(self, time_grid):
         self.t_Cashflows = {k: {t_i: self.one.new_zeros(self.simulation_batch)
@@ -3886,8 +3913,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 shared_mem.fillvalue = borrowed_fill
                 shared_mem.t_Buffer.clear()
                 shared_mem.t_Scenario_Buffer.clear()
-                # drop the Sobol sample cache (keyed by sample_size; unbounded across t-steps)
-                shared_mem.t_quasi_rng.clear()
 
         return result
 

@@ -115,7 +115,7 @@ def _ulps(a, b):
 
 def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralised=False):
     """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 256 scenarios, so the pricer
-    takes the Sobol branch - the memoized half of the stream contract - and the boundary
+    takes the Sobol branch - the inner block's half of the stream contract - and the boundary
     registration has a population to fit a kernel to."""
     overrides = {
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
@@ -312,15 +312,20 @@ def cva_gradient(pricer, recompute):
     return cva, gradient
 
 
+#: The mutations each stream's fixture must fail: the generator a draw ahead and stale inputs on
+#: `torch.rand`, stale inputs on the inner block, which has no position to lose.
+MUTATIONS = [(rc.DesyncedStreams, base_gradient, 'torch.rand'),
+             (rc.StaleInputs, base_gradient, 'torch.rand'), (rc.StaleInputs, cva_gradient, 'Sobol')]
+
+
 @pytest.mark.parametrize('pricer', PRICERS)
-@pytest.mark.parametrize('mutant', [rc.DesyncedStreams, rc.StaleInputs])
-@pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
+@pytest.mark.parametrize('mutant,run,stream', MUTATIONS)
 def test_a_mutated_node_fails_the_gradient_gate(pricer, mutant, run, stream, monkeypatch):
     """Bit-identity passes trivially against a node that quietly reuses the forward's own graph or
-    never rewinds anything, so the counter is desynchronised by one draw and the replay is fed
+    never rewinds anything, so the generator is desynchronised by one draw and the replay is fed
     inputs a basis point off, and each must break the gradient it is supposed to break, on BOTH
-    streams and BOTH pricers. The mutations are imported rather than restated - one definition of
-    each defect, whichever adopter is under it.
+    pricers. The mutations are imported rather than restated - one definition of each defect,
+    whichever adopter is under it.
 
     `StaleInputs` perturbs theta[0], which is why every adopter puts its spot strip there.
 
@@ -334,6 +339,23 @@ def test_a_mutated_node_fails_the_gradient_gate(pricer, mutant, run, stream, mon
     assert not np.array_equal(grad_off, grad_on), (
         '{} on {} over the {} stream reproduced the taped gradient exactly, so the gate it is '
         'meant to fail measures nothing:\n{}'.format(mutant.__name__, pricer, stream, grad_off))
+
+
+@pytest.mark.parametrize('pricer', PRICERS + ['averaging'])
+def test_the_inner_replay_has_no_position_to_lose(pricer, monkeypatch):
+    """Each adopter's Sobol rows - the averaging branch's whole paths included - are the canonical
+    inner block's, a function of their shape, so its replay is bit-identical with the quasi
+    counter and the generator both a draw ahead.
+
+    Killing mutation: the rows drawn at the quasi stream's running position, which the counter
+    ahead then moves by 2.0e-07 / 8.0e-04 / 2.3e-04 on largest entries of 1.1e-03 / 0.70 / 2.3e-03,
+    in parametrized order."""
+    _, grad_off = cva_gradient(pricer, 'No')
+    monkeypatch.setattr(pricing, 'InnerMCRecompute', rc.DesyncedStreams)
+    _, grad_on = cva_gradient(pricer, 'Yes')
+    assert np.array_equal(grad_off, grad_on), (
+        'the {} replay moved with its streams a draw ahead:\n{}\n{}'.format(
+            pricer, grad_off, grad_on))
 
 
 # ------------------------------------------- where the gap lives, which is where the two differ
@@ -554,8 +576,7 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
             grad_off, grad_on))
 
 
-@pytest.mark.parametrize('mutant', [rc.DesyncedStreams, rc.StaleInputs])
-@pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
+@pytest.mark.parametrize('mutant,run,stream', MUTATIONS)
 def test_a_mutated_node_fails_the_averaging_gradient_gate(mutant, run, stream, monkeypatch):
     """The same two defects as section (e), against the branch that draws a whole path rather than
     a survival uniform - a bit-identity gate is worth what it can fail, and this branch's draw and

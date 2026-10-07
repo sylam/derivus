@@ -39,8 +39,8 @@ DISCRETE_BARRIER = dict(bb.BARRIER_DEAL, Barrier_Dates=MONTHLY)
 # fva 11.2% against 3.2%. So every gate whose decision is LIVE reads the large window.
 #
 # The two ATTRIBUTION gates keep the small one for the opposite reason: their trigger is
-# unreachable, the payoff is smooth, and the large bumps measure curvature instead - 0.37% at
-# 5e-4..2e-3 against 3.45% at 2e-3..1e-2 on an AAD that is provably already right.
+# unreachable, the payoff is smooth, and the large bumps measure curvature instead - 0.31% flatness
+# at 5e-4..2e-3 against 1.07% at 2e-3..1e-2 on an AAD that is provably already right.
 LIVE_RUNGS = (2e-3, 3e-3, 5e-3, 7e-3, 1e-2)
 SMOOTH_RUNGS = (5e-4, 1e-3, 2e-3)
 
@@ -441,14 +441,19 @@ def test_asking_for_sensitivities_does_not_move_the_autocall_exposure(collateral
 
 def test_the_autocall_trigger_is_what_the_residual_is():
     """ATTRIBUTION, and the control for the gates that do move. With no scenario near either
-    indicator the registration still runs and costs nothing: 0.37% apart at 3.82% flatness, and
-    deleting the correction repeats the AAD to every digit.
+    indicator the registration still runs and costs almost nothing: 0.27% apart at 0.31% flatness,
+    and deleting the correction moves the AAD by 0.10%.
 
     `SMOOTH_RUNGS`, the one place in the file where that is right: with the trigger unreachable the
-    payoff is smooth in spot, so the large bumps measure curvature (3.45%) on the same AAD."""
+    payoff is smooth in spot, so the large bumps measure curvature (1.07%) on the same AAD.
+
+    Taken 1% above `bb.SPOT`, off the CVA's own kink: the inception exposure is the positive part
+    of one value every path shares, and at `bb.SPOT` that value crosses zero 0.065% above the spot,
+    inside every rung - 7.8% apart at 14.5% flatness there."""
+    base = bb.SPOT * 1.01
     kw = dict(batch=1024, mcmc=256, batches=16)
-    aad = _run(AUTOCALL_NO_TRIGGER, gradient=True, **kw)[2]
-    r = ladder(price=lambda s: _run(AUTOCALL_NO_TRIGGER, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
+    aad = _run(AUTOCALL_NO_TRIGGER, spot=base, gradient=True, **kw)[2]
+    r = ladder(price=lambda s: _run(AUTOCALL_NO_TRIGGER, spot=s, **kw)[1], aad=aad, base=base,
                rungs=SMOOTH_RUNGS)
     assert r.agrees(tol=0.02), f'an unreachable trigger should already agree\n{r}'
 

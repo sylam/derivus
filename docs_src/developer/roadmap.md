@@ -175,6 +175,23 @@ unmeasured — a limitation without a number is absolution, not documentation
   three seeds and two path counts, a tenth of a point cutting it tenfold. The one-point move is
   the regulation's definition, so it is stated, not fixed. Interest-rate vega, credit, commodity
   and inflation sensitivities are refused by name until a book carries them.
+- **The inner Monte Carlo is launch-bound, and a batch carries ~1,500 host syncs** (2026-10-07).
+  Measured at 512 x 8,192 on the card: a value batch is 45% busy on the autocall and 64-79% on the
+  others, every one-step-survival step being ~50 separate elementwise kernels on
+  `[batch, 2 x inner]`, and each batch makes 1,566-2,602 host syncs - 1,130 of the autocall's per
+  fixing on a device `delta_t`, and ~1,450 in every world from per-row host-to-device index copies
+  in `utils`. Fusing the step is the speed lever past ~16k paths (`torch.compile` wants Triton,
+  absent on the measuring box); the index copies are a respelling. M.
+- **The LogVar2FJ walk's cumsum is a 21-step innermost axis** (2026-10-07). At 512 x 8,192 it
+  costs 50 ms a call, 4.2 s of a 21.9 s batch; the same sum as a matmul by a 21 x 21
+  upper-triangular ones matrix is 1.7 ms, equal to 2.3e-7 relative - a different summation order,
+  so the LogVar2FJ documents re-bank. Its inverse-Gaussian root computes in double (`log_ndtr`,
+  `erfc`, a division), ~45% of that batch on a card with 1/64-rate double, and under a gradient the
+  walk holds 79% of the peak inside its own checkpoint segments. S for the sum, M for the root.
+- **A dense reporting grid still holds a block of rows at once** (2026-10-07). The streamed strip
+  holds `[batch, 2 x inner]` per fixing but every time-grid row of a block together, ~1.4 GB a row
+  at 512 x 8,192; a weekly grid fits in 13 GB and a daily one does not. One row per block where a
+  grid exceeds ~12 rows per fixing interval. S.
 - **A legacy trade closed before it is migrated prices short** (2026-09-26). A node the file carries
   that no fill ever booked prices as written, one unit; a close-out of it booked through the verbs
   files a fill of -1, and the compile writes the node at that net, the mirror, where nothing should

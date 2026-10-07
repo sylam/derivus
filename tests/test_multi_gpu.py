@@ -41,7 +41,8 @@ and the arms differ only in the index and position they supply. The historical a
 engine's STANDING position rather than recomputing it, because a dimension drawn at two sample
 sizes shares one engine and interleaves. The narrowed refusal covers one shape: two draws of the
 same `(dimension, sample_size)` INSIDE a batch, which have no distinct position between them.
-Inner-MC Sobol is out of scope for n-invariance, and this is where that is said.
+An inner Monte Carlo's Sobol rows are the canonical inner block's, a function of the path count
+alone, so they need no anchor and an inner-MC book shards byte for byte too.
 
 THE BAND, MEASURED, for the unsharded-vs-sharded comparison only. Over 20 seeds the two estimates
 have seed relative sds of 1.10% and 0.99%, so their difference carries sd ~1.56%; the observed max
@@ -365,6 +366,37 @@ def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
             'from history rather than from the global batch index' % n)
 
 
+def inner_pooled(n, device='cpu'):
+    """A book priced by an inner Monte Carlo - a discretely monitored down-and-out call on the GBM
+    equity, 32 paths a batch and 64 inner, so the Sobol arm - its shards pooled in worker order."""
+    deal = dict(CALL, Object='EquityBarrierOption', Reference='EQDAO', Barrier_Type='Down_And_Out',
+                Barrier_Price=85.0, Cash_Rebate=0.0, Expiry_Date=BASE + pd.DateOffset(years=1),
+                Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 13)],
+                Barrier_Monitoring_Frequency=pd.DateOffset(days=0))
+    frames = []
+    for job_id in range(n):
+        config = job_document()
+        config.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
+        _, out = derivus.run_cmc(config, torch.float32,
+                                 dict(overrides(), Batch_Size=32, MCMC_Simulations=64),
+                                 job_id, n, None, deterministic_batches=True, device=device)
+        frames.append(out['Results']['mtm'].values)
+    return np.concatenate(frames, axis=1)
+
+
+def test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count():
+    """An inner-MC book shards byte for byte: its Sobol rows are the canonical inner block's, a
+    function of the path count alone, so no inner draw has a position to anchor.
+
+    Killing mutation: the block's anchor advancing with each batch the process runs - a position
+    reintroduced - moves the pooled matrix at n = 2 and 4."""
+    reference = sha(inner_pooled(1))
+    assert reference == 'fb1ba147026afcca', 'the sharded inner-MC CPU stream moved: %s' % reference
+    for n in (2, 4):
+        assert sha(inner_pooled(n)) == reference, (
+            'the inner-MC book moved at n=%d - an inner draw reads a position' % n)
+
+
 @needs_two_devices
 def test_a_sobol_consuming_world_is_bit_identical_across_devices():
     """The same, across the two real devices, where worker j also changes silicon."""
@@ -527,52 +559,16 @@ def test_a_wide_draw_advances_the_stream_by_every_chunk_it_took():
             previous = walked
 
 
-def test_the_anchored_memo_does_not_grow_with_the_batch_count():
-    """The memo is a WITHIN-batch convenience on the anchored arm, dropped between batches. It
-    cannot be dropped on the historical arm, where a draw's position is wherever the engine crawled
-    to; anchored, position comes entirely from the key, so a re-draw is bit-identical and keeping
-    the previous batch's entries grows a dict nothing reads (20,480 bytes a batch). Both halves:
-    it stays bounded, and bounding it moved no number.
-    """
-    walker = _quasi_state()
-    drawn, sizes = [], []
-    for b in range(8):
-        walker.set_quasi_batch(b)
-        drawn.append(walker.quasi_rng(6, 128)[1].clone())
-        sizes.append(len(walker.t_quasi_rng))
-    assert sizes == [1] * 8, (
-        'the anchored memo grows with the batch count: %s' % sizes)
-
-    # the entries a batch makes DO stand within it - the replay idiom reads them
-    walker.set_quasi_batch(99)
-    walker.quasi_rng(6, 128)
-    walker.quasi_rng(6, 64)
-    assert len(walker.t_quasi_rng) == 2, 'within-batch entries were dropped underneath the batch'
-
-    # and dropping the earlier batches changed nothing: each is still what a cold state draws
-    for b, expected in enumerate(drawn):
-        cold = _quasi_state()
-        cold.set_quasi_batch(b)
-        assert torch.equal(cold.quasi_rng(6, 128)[1], expected), (
-            'batch %d moved when the memo stopped carrying it' % b)
-
-
 def test_a_second_draw_in_one_batch_is_refused_by_name():
     """The narrowed refusal: anchoring gives a draw the position of its BATCH, so two draws of one
-    `(dimension, sample_size)` within a batch have no distinct position between them. It fires on
-    the second DRAW and not on a memoized re-read - `reset_qrg` then the same request is the
-    inner-MC replay idiom and must return the identical tensor.
+    `(dimension, sample_size)` within a batch have no distinct position between them.
     """
     state = _quasi_state()
     state.set_quasi_batch(2)
 
-    first = state.quasi_rng(4, 64)
+    state.quasi_rng(4, 64)
     with pytest.raises(RuntimeError, match='second draw of one quasi-random stream'):
         state.quasi_rng(4, 64)
-
-    # the replay idiom is not a second draw: same tensor, by identity
-    state.reset_qrg()
-    assert state.quasi_rng(4, 64)[0] is first[0]
 
     # a different shape is a different stream and is fine
     assert state.quasi_rng(4, 32)[0].shape[0] == 32
@@ -597,6 +593,50 @@ def test_the_anchored_stream_is_a_function_of_the_batch_alone():
 
     # and the batches genuinely differ from one another - the anchor is not pinning them together
     assert not torch.equal(walked[0], walked[1])
+
+
+def _block_state(batch, dtype=torch.float32):
+    """A cold `CMC_State` carrying only what the inner block reads."""
+    from derivus.calculation import CMC_State
+    state = CMC_State.__new__(CMC_State)
+    state.one, state.simulation_batch, state.t_inner_block = torch.ones(1, dtype=dtype), batch, {}
+    return state
+
+
+def test_the_inner_block_is_a_function_of_its_rows_and_paths_alone():
+    """`CMC_State.inner_block` is pure in `(rows, sims)`: states of different batch sizes asking in
+    either order read the same rows, a shorter request is a longer one's prefix, chunk c is
+    dimensions `64c` on of `SobolEngine` `64(c + 1)` wide at `QUASI_ANCHOR` - one point per path
+    over all its rows - the double halves sum to exactly one and each float32 half is its double
+    rounded once.
+
+    Killing mutations: the complement taken after the cast breaks the float32 half; the block keyed
+    on the batch breaks the two states' agreement; chunk c read `c * sims` points further along one
+    64-dimensional engine breaks chunk 1."""
+    from derivus.calculation import INNER_CHUNK, INNER_MARGIN, QUASI_ANCHOR, QUASI_SEED
+    from torch.quasirandom import SobolEngine
+
+    sims, rows = 1024, 2 * INNER_CHUNK + 2
+    wide, narrow = _block_state(512, torch.float64), _block_state(512)
+    first, short = narrow.inner_block(rows, sims), narrow.inner_block(10, sims)
+    other = _block_state(7)
+    late_short, late = other.inner_block(10, sims), other.inner_block(rows, sims)
+    exact = wide.inner_block(rows, sims)
+    for a, b, c, d, e in zip(first, short, late_short, late, exact):
+        assert torch.equal(a[:10], b) and torch.equal(b, c) and torch.equal(a, d), (
+            'the block depends on the batch or on the order it was asked in')
+        assert torch.equal(a, e.float()), 'a float32 half is not its exact double rounded once'
+    assert (exact[0] + exact[1] == 1.0).all(), 'the double halves are not exact complements'
+    margin = INNER_MARGIN * 2.0 ** -30
+    for chunk in range(3):
+        engine = SobolEngine(dimension=INNER_CHUNK * (chunk + 1), scramble=True, seed=QUASI_SEED)
+        engine.fast_forward(QUASI_ANCHOR)
+        expected = engine.draw(sims, dtype=torch.float64)[:, chunk * INNER_CHUNK:].T.clamp(
+            margin, 1.0 - margin)
+        rows_here = exact[0][chunk * INNER_CHUNK:(chunk + 1) * INNER_CHUNK]
+        assert torch.equal(rows_here, expected[:len(rows_here)]), (
+            'chunk %d is not dimensions %d on of the engine %d wide at QUASI_ANCHOR' % (
+                chunk, chunk * INNER_CHUNK, INNER_CHUNK * (chunk + 1)))
 
 
 # ------------------------------------------------------------------ deterministic in n, on CUDA

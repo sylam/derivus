@@ -262,6 +262,37 @@ def test_the_mixer_uniform_is_drawn_in_double_under_pseudo_random_sampling():
     assert abs(marks[0] / marks[1] - 1.0) < 1e-5, marks
 
 
+def test_a_float32_block_mixer_keeps_the_double_tail():
+    """Under Sobol a mixer arrives off the float32 canonical inner block as its exact pair, the
+    complement taken on the integer. At a monthly and a daily clock of the live NIG its
+    inverse-Gaussian quantile is the double uniform's - bit for bit in both tails, u below 2^-6 or
+    above 1 - 2^-6, where each half holds its integer exactly, and within 2 float32 ulps between.
+
+    Killing mutation: the complement taken after the cast moves the upper tail by up to 4.9e4
+    ulps."""
+    import torch
+    from derivus import pricing, utils
+    from derivus.calculation import CMC_State
+
+    def block(dtype):
+        state = CMC_State.__new__(CMC_State)
+        state.one, state.t_inner_block = torch.ones(1, dtype=dtype), {}
+        return state.inner_block(4, 1 << 15)
+
+    narrow, exact = block(torch.float32), block(torch.float64)
+    tails = (exact[0] < 2.0 ** -6) | (exact[0] > 1.0 - 2.0 ** -6)
+    alpha, beta = (torch.tensor(LIVE_NIG[x]['.Curve']['data'][0][1]) for x in ('Alpha', 'Beta'))
+    for clock in (0.04 / 12.0, 0.04 / 252.0):
+        delta, _, gamma = utils.LogVar2FJ.nig_budget(torch.tensor(clock), alpha, beta)
+        for half in (0, 1):
+            read = utils.LogVar2FJ.ig_quantile(pricing.mixer_uniform(torch.stack(
+                [narrow[half], narrow[1 - half]])), delta / gamma, delta * delta)
+            double = utils.LogVar2FJ.ig_quantile(exact[half], delta / gamma, delta * delta)
+            assert torch.equal(read[tails], double[tails]), (clock, half)
+            spacing = torch.from_numpy(np.spacing(double.abs().numpy()))
+            assert ((read - double).abs() / spacing).max() <= 2.0, (clock, half)
+
+
 # ------------------------------------------------------------------------------------------
 # 8  THE RESERVE IS COMPOSED AS DOCUMENTED
 # ------------------------------------------------------------------------------------------

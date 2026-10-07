@@ -367,20 +367,40 @@ def test_discrete_monitoring_prices_to_an_independent_simulation():
     than consistently with themselves. Inception carries no history, so this is the OSS's analytic
     treatment of the whole strip against a simulation derivus did not produce - 10.5m paths with
     the terminal stub integrated in closed form, V_0 = 8.4787 +- 0.0051, against a reading of
-    8.475681 (-0.036%), deterministic in `Random_Seed` because the inner OSS draws Sobol.
+    8.469040 (-0.114%), deterministic because the inner OSS draws the canonical Sobol block.
 
-    3e-3 is 8x the gap, and the slack is the inner QMC count's rather than the reference's: the
-    same configuration reads +0.80% at 128 simulations and -0.10% at 512, so both counts are
-    pinned and a sub-0.3% pricing error would not be seen here.
+    3e-3 is 2.6x the gap, and the slack is the inner QMC count's rather than the reference's: at
+    inception every outer path reads the same inner rows, so the reading is ONE inner sample's -
+    +1.34% at 256 inner paths, +0.64% at 1024, -0.12% at 4096, -0.05% at 65536 - and the batch
+    is the Sobol arm's smallest.
 
-    MUTATION: the OSS skipping the strip's first observation KILLED at +1.41%. LIMIT: the OSS
+    MUTATION: the OSS skipping the strip's first observation KILLED at +1.36%. LIMIT: the OSS
     monitoring expiry SURVIVES, the barrier at 90 being below the strike at 100, so a path the
     extra observation knocks out already pays zero and only a rebate would reveal it."""
-    v0 = _profile('0d 3m(3m)', batch=1024, mcmc=256,
+    v0 = _profile('0d 3m(3m)', batch=32, mcmc=8192,
                   deal=dict(BARRIER_DEAL, Barrier_Dates=MONTHLY_BARRIER)).values.mean(axis=1)[0]
     assert v0 == pytest.approx(8.4787, rel=3e-3), (
         f'inception {v0:.6f} against an independent 10.5m-path 8.4787 +- 0.0051 '
         f'({(v0 - 8.4787) / 8.4787:+.3%}) - the discrete strip is not being priced as authored')
+
+
+def test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation():
+    """The same down-and-out observed every three days - 121 observations, so its strip runs past
+    the inner block's 64-row chunk - against an exact GBM walk derivus did not produce: 294m
+    antithetic paths in float64, V_0 = 7.6649 +- 0.0008, against a reading of 7.650688 (-0.185%).
+
+    5e-3 is the inner QMC count's slack, not the reference's: one inner sample at inception reads
+    -0.185% at 8192 paths, -0.17% at 32768 and -0.11% at 131072, the pseudo-random arm +0.03%.
+
+    MUTATION: chunk c read `c * sims` points further along one 64-dimensional engine, so row
+    64 + k is row k with a constant XORed in, KILLED at -14.2% - and +1.7% at 32768 paths, the
+    error not shrinking with them."""
+    every_third_day = [BASE + pd.Timedelta(days=d) for d in range(3, 365, 3)]
+    v0 = _profile('0d 3m(3m)', batch=32, mcmc=8192,
+                  deal=dict(BARRIER_DEAL, Barrier_Dates=every_third_day)).values.mean(axis=1)[0]
+    assert v0 == pytest.approx(7.6649, rel=5e-3), (
+        f'inception {v0:.6f} against an independent 294m-path 7.6649 +- 0.0008 '
+        f'({(v0 - 7.6649) / 7.6649:+.3%}) - a strip past one chunk is walked on the wrong law')
 
 
 def test_discrete_barrier_rebate_is_paid_and_is_absolute_cash():
@@ -580,5 +600,5 @@ def test_a_row_that_is_not_an_observation_date_is_untouched():
     profile = _profile('0d 1y(1m)', deal=dict(BARRIER_DEAL, Barrier_Price=90.0,
                                               Barrier_Dates=monthly), batch=1024, mcmc=128)
     rows = np.asarray(profile, dtype=float)
-    assert float(rows[0].mean()) == 8.502928579398969, float(rows[0].mean())
+    assert float(rows[0].mean()) == 8.444798793160231, float(rows[0].mean())
     assert not np.array_equal(rows[1], rows[0]), 'the profile is flat - nothing is being compared'
