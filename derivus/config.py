@@ -872,14 +872,11 @@ class Config(object):
     def walk_deals(self):
         """Every instrument in the book, depth first. `walk_groups` semantics: an `Ignore` node is
         skipped whole, and recursion is on `Children` being PRESENT, never on the type."""
-        def walk(nodes):
-            for node in nodes:
-                if node.get('Ignore') == 'True':
-                    continue
-                yield node['Instrument']
-                yield from walk(node.get('Children', []))
+        def live(node):
+            return node.get('Ignore') != 'True'
 
-        return walk(self.deals['Deals']['Children'])
+        return (node['Instrument'] for _, node in schema.walk(self.deals['Deals']['Children'], live)
+                if live(node))
 
     def factor_universe(self):
         """Every price factor the deal walk reaches, split by whether the market data has a block

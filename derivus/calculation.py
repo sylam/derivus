@@ -2459,17 +2459,15 @@ class Diary(Base_Revaluation):
                         else [self._unreadable_row(base_date, path, deal)])
         return rows
 
-    @classmethod
-    def _leaves(cls, children, path=()):
+    @staticmethod
+    def _leaves(children):
         """Every LEAF deal of a compiled config's tree, as `(deal path, deal)`. A container is its
         structure and carries no schedule of its own."""
-        for position, node in enumerate(children):
-            if node.get('Ignore') == 'True' or not isinstance(node.get('Instrument'), Deal):
-                continue
-            if node.get('Children'):
-                yield from cls._leaves(node['Children'], path + (position,))
-            else:
-                yield '/'.join(map(str, path + (position,))), node['Instrument']
+        def live(node):
+            return node.get('Ignore') != 'True' and isinstance(node.get('Instrument'), Deal)
+
+        return ((path, node['Instrument']) for path, node in schema.walk(children, live)
+                if live(node) and not node.get('Children'))
 
     def _expired(self, base_date, deal):
         """Whether the compile left this deal out because it has EXPIRED - the engine's own expiry

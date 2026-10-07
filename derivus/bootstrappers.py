@@ -25,10 +25,9 @@ import pandas as pd
 import torch
 
 # Internal modules
-from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation
+from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation, schema
 from .schema import (DAY_COUNTS, F, OPTION_QUOTE, PRICES_KEY, QUOTE_TWO_WAY, REQUIRED, Row,
-                     completed, declared_defaults, leaf_deals, partition_market_price, quote_table,
-                     walk_blocks)
+                     completed, declared_defaults, leaf_deals, partition_market_price, quote_table)
 from ._version import __version__
 
 import scipy.optimize
@@ -5678,7 +5677,7 @@ def author_quote(block, quote, discount_rate):
     so the block is `completed` first. Where the number lands, and in what unit, is the type's own
     declaration (`Deal.quoted`, `Deal.quote`): a container declares none and its fixed leg does.
     """
-    for leg in walk_blocks(block):
+    for _, leg in schema.walk([block]):
         leg['Discount_Rate'] = discount_rate
         declared = getattr(instruments, leg['Object'], None)
         if declared is not None and declared.quoted:
@@ -5983,17 +5982,13 @@ class InterestRateCurveParameters(Construction):
         read it is strictly weaker than `BenchmarkInstruments.reads`, which measures the same
         coupling but needs every curve to exist first.
         """
-        def walk(deal, object_type):
-            declared = getattr(instruments, object_type, None)
-            for field, candidates in getattr(declared, 'factor_fields', {}).items():
-                if 'InterestRate' in candidates and deal.get(field):
-                    yield '.'.join(utils.check_rate_name(deal[field]))
-            for child in deal.get('Children', ()):
-                yield from walk(child, child.get('Object', ''))
-
-        return {curve for point in quote_table(block, market_price)
-                if point.get('Use', 'Yes') == 'Yes'
-                for curve in walk(point['Deal'], point['DealType'])}
+        return {'.'.join(utils.check_rate_name(deal[field]))
+                for point in quote_table(block, market_price) if point.get('Use', 'Yes') == 'Yes'
+                for path, deal in schema.walk([point['Deal']])
+                for field, candidates in getattr(getattr(
+                    instruments, point['DealType'] if path == '0' else deal.get('Object', ''),
+                    None), 'factor_fields', {}).items()
+                if 'InterestRate' in candidates and deal.get(field)}
 
     def in_dependency_order(self, market_prices):
         """This family's blocks, one that READS a curve another block BUILDS coming after it.

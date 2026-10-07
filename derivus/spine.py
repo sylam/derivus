@@ -690,11 +690,6 @@ def _hold(document, nets):
     containers = mapping['Instrument']['containers']
     carried, inside = set(), {}
 
-    def legs(children, agreement, holder):
-        for node in children:
-            inside[(content_hash(instrument_of(node)), agreement)] = (node, holder)
-            legs(node.get('Children', []), agreement, holder)
-
     def walk(children, agreement):
         for position, node in enumerate(children):
             deal = node['Instrument']['.Deal']
@@ -706,7 +701,8 @@ def _hold(document, nets):
                     walk(node.get('Children', []), deal.get('Reference') if deal.get('Object')
                          == 'NettingCollateralSet' else agreement)
                 continue
-            legs(node.get('Children', []), agreement, deal)
+            inside.update(((content_hash(instrument_of(leg)), agreement), (leg, deal))
+                          for _, leg in schema.walk(node.get('Children', ())))
             if key in carried or not nets[key]:
                 node['Ignore'] = 'True'
             elif nets[key] != 1:
@@ -1774,15 +1770,14 @@ class PnL:
         the record's own copy of the terms where the file no longer holds one."""
         containers, found = mapping['Instrument']['containers'], {}
 
-        def walk(children):
-            for node in children:
-                address = content_hash(instrument_of(node))
-                if address in wanted:
-                    found.setdefault(address, instrument_of(node))
-                elif node['Instrument']['.Deal'].get('Object') in containers:
-                    walk(node.get('Children', []))
+        def frame(node):
+            return content_hash(instrument_of(node)) not in wanted and node['Instrument'][
+                '.Deal'].get('Object') in containers
 
-        walk(job_children(document))
+        for _, node in walk_job_deals(document, frame):
+            address = content_hash(instrument_of(node))
+            if address in wanted:
+                found.setdefault(address, instrument_of(node))
         for address in sorted(set(wanted) - set(found)):
             found[address] = json.loads(stored(address).decode('utf-8'))
         return found
@@ -1796,18 +1791,20 @@ class PnL:
         address."""
         containers, found = mapping['Instrument']['containers'], {}
 
-        def walk(nodes):
-            for node in nodes:
-                address = content_hash(instrument_of(node))
-                filed = node['Instrument']['.Deal'].get('Reference')
-                holder = address if address in known else filed if filed in known else None
-                if holder is not None:
-                    found.update((content_hash(instrument_of(leg)), holder)
-                                 for leg in cls._leaves(node.get('Children', [])))
-                elif node['Instrument']['.Deal'].get('Object') in containers:
-                    walk(node.get('Children', []))
+        def holder_of(node):
+            address = content_hash(instrument_of(node))
+            filed = node['Instrument']['.Deal'].get('Reference')
+            return address if address in known else filed if filed in known else None
 
-        walk(children)
+        def frame(node):
+            return holder_of(node) is None and node['Instrument']['.Deal'].get(
+                'Object') in containers
+
+        for _, node in schema.walk(children, frame):
+            holder = holder_of(node)
+            if holder is not None:
+                found.update((content_hash(instrument_of(leg)), holder)
+                             for leg in schema.leaves(node.get('Children', ())))
         return found
 
     @classmethod
@@ -1817,7 +1814,7 @@ class PnL:
         beside the ones it replaced - is read once per unit, each unit in a group of its own."""
         groups = []
         for unit in units:
-            leaves = {part for leaf in cls._leaves([unit]) for part in (
+            leaves = {part for leaf in schema.leaves([unit]) for part in (
                 leaf['Instrument']['.Deal'].get('Reference'), content_hash(instrument_of(leaf)))}
             group = next((group for group in groups if not group[1] & leaves), None)
             if group is None:
@@ -1826,15 +1823,6 @@ class PnL:
                 group[0].append(unit)
                 group[1].update(leaves)
         return [group for group, _ in groups]
-
-    @classmethod
-    def _leaves(cls, nodes):
-        """Every node under `nodes` with no children of its own - a node with none being its own."""
-        for node in nodes:
-            if node.get('Children'):
-                yield from cls._leaves(node['Children'])
-            else:
-                yield node
 
     @classmethod
     def marks_job(cls, document, terms, cut=None):

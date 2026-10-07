@@ -1018,30 +1018,32 @@ def job_children(document):
     return children
 
 
-def walk_job_deals(children, path=()):
-    """Every deal node of a wire-form job, as `(deal_path, node)`, from the document or from a
-    `Children` list. The positional path ('0/2/1') is the node's identity, because References are
-    not unique in a book."""
-    if isinstance(children, dict):
-        children = job_children(children)
-    for position, node in enumerate(children):
+def walk(nodes, descend=None, path=()):
+    """Every node of a tree kept under `Children` - a wire job's, a constructed one's, a
+    benchmark block's - as `(deal_path, node)`, depth first, a node before what is under it.
+    `descend(node)` says whether to go under a node, everywhere where None; the node itself is
+    yielded either way, so a rule that skips a node whole tests it again on what comes out. The
+    positional path ('0/2/1') is a node's identity, References not being unique in a book."""
+    for position, node in enumerate(nodes):
         deal_path = path + (position,)
         yield '/'.join(map(str, deal_path)), node
-        yield from walk_job_deals(node.get('Children', []), deal_path)
+        if descend is None or descend(node):
+            yield from walk(node.get('Children', ()), descend, deal_path)
 
 
-def walk_blocks(block):
-    """Every block of a wire instrument tree - `block` itself and its `Children`, depth first."""
-    yield block
-    for child in block.get('Children', ()):
-        yield from walk_blocks(child)
+def walk_job_deals(children, descend=None):
+    """`walk` over a wire-form job, from the document or from a `Children` list."""
+    return walk(job_children(children) if isinstance(children, dict) else children, descend)
+
+
+def leaves(nodes):
+    """Every node under `nodes` with no children of its own, a node with none being its own."""
+    return (node for _, node in walk(nodes) if not node.get('Children'))
 
 
 def leaf_deals(node):
     """The deals a constructed deal-tree node prices - itself, or its children's if a container."""
-    if node.get('Children'):
-        return [leaf for child in node['Children'] for leaf in leaf_deals(child)]
-    return [node['Instrument']]
+    return [leaf['Instrument'] for leaf in leaves([node])]
 
 
 def completed(block):

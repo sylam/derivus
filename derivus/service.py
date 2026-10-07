@@ -1777,17 +1777,17 @@ def booked_instruments(document, compiled=None):
     reference two live deals share maps to neither: guessing the address mis-labels a row."""
     found = {}
 
-    def walk(nodes, written):
-        for node, held in zip(nodes, written):
-            if node.get('Ignore') == 'True':
-                continue
+    def live(node):
+        return node.get('Ignore') != 'True'
+
+    # the compiled job keeps the file's paths, so the file's node is read at the compiled one's
+    for path, node in walk_job_deals(compiled or document, live):
+        if live(node):
+            held = deal_at(document, path)
             reference = held['Instrument']['.Deal'].get('Reference')
             address = content_hash(instrument_of(held))
             # a partial unwind is a second node of the SAME terms, which names one instrument
             found[reference] = address if found.get(reference, address) == address else None
-            walk(node.get('Children', []), held.get('Children', []))
-
-    walk(job_children(compiled or document), job_children(document))
     return found
 
 
@@ -1799,21 +1799,16 @@ def file_positions(document, known):
     through rather than reported: a netting set is the book's frame rather than a trade nobody
     booked, and an empty one is still a frame.
     """
-    containers = mapping['Instrument']['containers']
-    found = {}
+    containers, found = mapping['Instrument']['containers'], {}
 
-    def walk(children, path=()):
-        for position, node in enumerate(children):
-            address = content_hash(instrument_of(node))
-            if address not in known and node['Instrument']['.Deal'].get(
-                    'Object') in containers:
-                walk(node.get('Children', []), path + (position,))
-                continue
-            found.setdefault(address, []).append(
-                {'deal_path': '/'.join(map(str, path + (position,))),
-                 'reference': node['Instrument']['.Deal'].get('Reference')})
+    def frame(node):
+        return content_hash(instrument_of(node)) not in known and node['Instrument'][
+            '.Deal'].get('Object') in containers
 
-    walk(job_children(document))
+    for path, node in walk_job_deals(document, frame):
+        if not frame(node):
+            found.setdefault(content_hash(instrument_of(node)), []).append(
+                {'deal_path': path, 'reference': node['Instrument']['.Deal'].get('Reference')})
     return found
 
 
