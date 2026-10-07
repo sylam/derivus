@@ -522,6 +522,36 @@ def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
     return mirror(u[:n_fix]), mirror(wide[n_fix:]) if extra else None
 
 
+def oss_stream(step, state, n, chunk):
+    """Walk ``step(j, *state) -> (state, outputs)`` over a strip's ``n`` fixings: the final state
+    and every step's outputs in order.
+
+    Under a gradient - grad mode on and a tensor of the state or of the step's bound row carrying
+    one - each ``chunk`` fixings are ONE checkpoint, so a row's tape is its state at the chunk edges
+    and one chunk's intermediates; otherwise, or at ``chunk`` 0, it is the plain loop: a value run
+    has grad mode on too. The step must be PURE and bind its row's tensors as defaults - a
+    checkpoint replays it after the row loop moved on.
+    """
+    def run(lo, hi, *state):
+        outputs = []
+        for j in range(lo, hi):
+            state, out = step(j, *state)
+            outputs.append(out)
+        return state, outputs
+
+    taped = torch.is_grad_enabled() and any(
+        torch.is_tensor(x) and x.requires_grad for v in state + (step.__defaults__ or ())
+        for x in (v if isinstance(v, tuple) else (v,)))
+    if not (chunk and taped):
+        return run(0, n, *state)
+    outputs = []
+    for lo in range(0, n, chunk):
+        state, out = torch.utils.checkpoint.checkpoint(
+            run, lo, min(lo + chunk, n), *state, use_reentrant=False, preserve_rng_state=False)
+        outputs.extend(out)
+    return state, outputs
+
+
 def oss_truncated_draw(u, z_bound, survive_below):
     """Survival probability and the survival-truncated standard normal draw - one spelling.
 
@@ -1773,6 +1803,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         for blk, (s, D) in enumerate(zip(spot_prices, discount_rates)):
             # s: [batch], D: [N_fix, batch]
             N_fix = D.shape[0]
+            r = sigma = law = None
             if kit is None:
                 r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each
 
@@ -1813,7 +1844,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             # initialise Sj by broadcasting spot into [batch, 2*num_sims]
             Sj = s.reshape(-1, 1) + P
 
-            for j in range(N_fix):
+            def fixing(j, Sj, P, L, surv_payoff, r=r, sigma=sigma, law=law, u=u, D=D, blk=blk,
+                       N_fix=N_fix):
+                """One observation: the state it leaves (see `oss_stream`)."""
                 if kit is None:
                     r_j, sig_j = r[j].reshape(-1, 1), sigma[j].reshape(-1, 1)  # [batch, 1] each
                 else:
@@ -1849,7 +1882,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     surv_payoff = L * joint
                     if isBarrierDate_block[j] > 0:
                         L = p * L
-                    continue
+                    return (Sj, P, L, surv_payoff), None
 
                 if isBarrierDate_block[j] > 0:
                     if zero_step[blk][j]:
@@ -1881,7 +1914,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     # non-barrier observation date: unrestricted GBM step
                     Z = utils.norm_icdf(torch.clamp(u[j], eps, 1.0 - eps))
 
-                Sj = Sj * torch.exp(r_j + sig_j * Z)
+                return (Sj * torch.exp(r_j + sig_j * Z), P, L, surv_payoff), None
+
+            (Sj, P, L, surv_payoff), _ = oss_stream(fixing, (Sj, P, L, surv_payoff), N_fix,
+                                                    shared.oss_chunk)
 
             # terminal payoff on paths that survived all barrier dates; surv_payoff is already
             # L-weighted when the last step was integrated rather than sampled (GBM digitals)
@@ -2805,23 +2841,27 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 if boundary_aad:
                     alive.append(shared.one.new_zeros(shared.simulation_batch))
                 continue
-            if kit is None:
-                vols = vols_all[i]
+            vols = vols_all[i] if kit is None else None
             n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
             u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
+            law = None
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                 law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True, mix)
             Sj = torch.unsqueeze(s, 1)
             P = shared.one.new_zeros((shared.simulation_batch, 2 * num_sims))
             L = prev_alive.reshape(-1, 1) * shared.one.new_ones((shared.simulation_batch, 2 * num_sims))
+            P_alive = L_alive = None
             if boundary_aad:
                 # the alive branch: observed indicators (the latch's decisions) never zero it;
                 # the smooth future survivals still apply - the left limit, not a re-simulation
                 P_alive, L_alive = P, torch.ones_like(L)
             # started at `prev_alive`, not at one: the observed prefix has already killed paths
             ledger = SurvivalLedger(L) if smooth else None
-            for j in range(reduced_samples):
+
+            def fixing(j, Sj, P, L, P_alive, L_alive, D=D, carry_rate=carry_rate, delta_t=delta_t,
+                       tau=tau, vols=vols, u=u, law=law, ledger=ledger):
+                """One fixing: the state it leaves and the settlement it returns (`oss_stream`)."""
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
                 if dt > 0:
@@ -2859,12 +2899,22 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 else:
                     L = L * p
                 if boundary_aad:
-                    P_alive = P_alive + Dj * L_alive * p_alive * cashflow
-                    L_alive = L_alive * p_alive
+                    # read detached by the latch, so built off the tape: a checkpoint's replay
+                    # would otherwise rebuild its saved tensors and hold them
+                    with torch.no_grad():
+                        P_alive = P_alive + Dj * L_alive * p_alive * cashflow
+                        L_alive = L_alive * p_alive
                 # grouped settlements: EVERY fixing whose value date is today returns its own
                 # (row, amount) pair - RETURNED, because a recompute would settle twice
-                if tau[j] == 0:
-                    settled.append(cf_step.mean(axis=1))
+                return (Sj, P, L, P_alive, L_alive), cf_step.mean(axis=1) if tau[j] == 0 else None
+
+            # a ledger is mutated step by step, so a smoothed row walks the plain loop
+            (Sj, P, L, P_alive, L_alive), settles = oss_stream(
+                fixing, (Sj, P, L, P_alive, L_alive), reduced_samples,
+                shared.oss_chunk if ledger is None else 0)
+            for j, settle in enumerate(settles):
+                if settle is not None:
+                    settled.append(settle)
                     settle_rows.append(i)
                     settle_cols.append(fixing_offset + j)
             if ledger is not None:
@@ -3668,8 +3718,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
             # the number of fixings still to simulate in this block
             reduced_samples = len(delta_t)
-            if kit is None:
-                vols = vols_all[i]
+            vols = vols_all[i] if kit is None else None
+            u = law = None
             if reduced_samples:
                 n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
                 u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
@@ -3697,7 +3747,13 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             N_itm = notional1
             N_otm = notional2
             row_pend = []
-            for j in range(reduced_samples):
+
+            def fixing(j, Sj, P, L, R, P_alive, L_alive, D=D, carry_rate=carry_rate,
+                       delta_t=delta_t, tau=tau, vols=vols, u=u, law=law, ledger=ledger,
+                       remaining_target=remaining_target):
+                """One fixing: the state it leaves and the settlement, the pending payment and the
+                knock-in decision it returns (see `oss_stream`)."""
+                settle = pend = knock = None
                 # `carry` and `vols` both arrive as INTERVAL strips (forward_carry_rate,
                 # forward_vol_rate)
                 dt = delta_t[j]
@@ -3746,7 +3802,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # `(1 - p) * R` IS its conditional expectation
                     P = P + (1.0 - p) * L * R * Dj
                     if boundary_aad:
-                        P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
+                        # the alive branch is read detached by the latch, so built off the tape: a
+                        # checkpoint's replay would otherwise rebuild and hold its saved tensors
+                        with torch.no_grad():
+                            P_alive = P_alive + (1.0 - p) * L_alive * R * Dj
                     # THE KNOCK-IN, INTEGRATED: `otm_bound` carries the strike's side and the
                     # barrier's, so this tail lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
@@ -3807,7 +3866,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if boundary_aad and use_past_fixing:
                     # what a row that has already REDEEMED still carries: this fixing's payment on
                     # a weight of one, which the latch counts over the fixings the path reached
-                    row_pend.append((Dj * (cf_itm - cf_otm)).mean(axis=1))
+                    with torch.no_grad():
+                        pend = (Dj * (cf_itm - cf_otm)).mean(axis=1)
                 P = P + Dj * cf_step
                 if integrated:
                     P = P - otm_analytic
@@ -3817,15 +3877,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # the registration below, or the flux double counts
                     P = P + splice_conditional_p(-Dj * L * p * cf_otm, -otm_analytic)
                 if boundary_aad:
-                    P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
+                    with torch.no_grad():
+                        P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
                     if barrier > 0.0 and otm_analytic is None:
                         # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
                         # `expand_as` covers the already-observed fixing too. Skipped wherever the
                         # conditional-p mixture took this decision - ONE estimator per decision
                         jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
-                        gaps.append((callOrPut * torch.log(barrier / S_fix)).expand_as(jump))
-                        jumps.append(jump)
-                        knock_rows.append(i)
+                        knock = ((callOrPut * torch.log(barrier / S_fix)).expand_as(jump), jump)
                 # the remaining target, decremented by this fixing's accrual on survivors
                 accr = cf_itm  # correct for both standard and inverted targets
                 if smooth:
@@ -3847,10 +3906,26 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if boundary_aad:
                     # the weight NO redemption zeroed - the block's own or an observed fixing's,
                     # both of which register and both of which the latch reconstructs from here
-                    L_alive = p * L_alive
+                    with torch.no_grad():
+                        L_alive = p * L_alive
                 # a settlement at tau == 0 is RETURNED, because a recompute would settle twice
                 if j == 0 and tau[0] == 0:
-                    settled.append(cf_step.mean(axis=1))
+                    settle = cf_step.mean(axis=1)
+                return (Sj, P, L, R, P_alive, L_alive), (settle, pend, knock)
+
+            # a ledger is mutated step by step, so a smoothed row walks the plain loop
+            (Sj, P, L, R, P_alive, L_alive), steps = oss_stream(
+                fixing, (Sj, P, L, R, P_alive, L_alive), reduced_samples,
+                shared.oss_chunk if ledger is None else 0)
+            for settle, pend, knock in steps:
+                if pend is not None:
+                    row_pend.append(pend)
+                if knock is not None:
+                    gaps.append(knock[0])
+                    jumps.append(knock[1])
+                    knock_rows.append(i)
+                if settle is not None:
+                    settled.append(settle)
                     settle_rows.append(i)
             if ledger is not None:
                 ledger.check('TARF row {}'.format(i))
@@ -4303,6 +4378,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 # zero when only the floating leg is left
                 reduced_samples = len(delta_t)
+                u = law = None
                 if reduced_samples:
                     # the mixer columns come AFTER the OSS ones, so a GBM row asks for nothing new
                     n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
@@ -4343,8 +4419,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 coupon_index = coupon_count = 0
 
-                for j, (coup, thresh, FloatingDate, barrier) in enumerate(
-                        zip(coupon, threshold, isFloatingDate, isBarrierDate)):
+                def fixing(j, Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                           coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t,
+                           carry_rate=carry_rate, v=v, row_at=row_at, ledger=ledger):
+                    """One date of the strip: the state it leaves, and the decision, the settlement
+                    and the put leg's indicator it returns (see `oss_stream`)."""
+                    coup, thresh = coupon[j], threshold[j]
+                    FloatingDate, barrier = isFloatingDate[j], isBarrierDate[j]
+                    event = settle = bar = None
                     # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
                     # None - the put leg below integrates against it, and only a fresh one is one
                     interval = None
@@ -4355,7 +4437,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     if FloatingDate > 0:
                         P = P + L * fx * -FloatingDate * D[j]
                         if P_cf is not None:
-                            P_cf = P_cf + L_cf * fx * -FloatingDate * D[j]
+                            # the counterfactual is read detached, so it is built off the tape
+                            with torch.no_grad():
+                                P_cf = P_cf + L_cf * fx * -FloatingDate * D[j]
 
                     if coup > 0:
                         K = thresh * strike
@@ -4433,20 +4517,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # every LATER coupon is the same smooth p in both worlds - the weight
                             # never feeds back into Sj, so the fork is one extra accumulator rather
                             # than a second simulation
-                            P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
-                            L_cf = p * L_cf
+                            with torch.no_grad():
+                                P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
+                                L_cf = p * L_cf
                         elif boundary_aad and not ahead:
                             # the autocall is OBSERVED here, so `decided` is the scenario's own
                             # average and gap > 0 means the trigger FIRED. The branches are
                             # DEAD-AWARE: a scenario an earlier fixing latched has nothing to jump
-                            event_rows.append(i)
-                            gaps.append(torch.log(decided / K).squeeze(dim=1))
-                            fired.append(torch.where(
-                                dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach())
-                            # the payment the trigger makes IF it fires, UNMASKED: which worlds
-                            # reach it is the latch's question, and a scenario dead as booked is
-                            # alive where an earlier trigger is forced off
-                            cash_on.append((fx * coup * D[j]).squeeze(1).detach())
+                            event = (torch.log(decided / K).squeeze(dim=1), torch.where(
+                                dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach(),
+                                # the payment the trigger makes IF it fires, UNMASKED: which worlds
+                                # reach it is the latch's question, and a scenario dead as booked is
+                                # alive where an earlier trigger is forced off
+                                (fx * coup * D[j]).squeeze(1).detach())
                             P_cf, L_cf = P, L
 
                         # the payment this coupon makes: the knocked-out weight times the coupon,
@@ -4467,13 +4550,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # SETTLE HERE, not at the bottom of the loop: a test down there holds
                             # for every coupon and would book the running `P` - the accumulated
                             # VALUE, not the payment - once per coupon
-                            row_cash = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
+                            settle = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
                             if logging.getLogger().isEnabledFor(logging.DEBUG):
                                 logging.debug(
                                     'AUTOCALL_SETTLE row=%d j=%d coup=%.6g cash=%.6g P=%.6g',
-                                    i, j, float(coup), float(row_cash.mean()), float(P.mean()))
-                            settled.append(row_cash)
-                            settle_rows.append(i)
+                                    i, j, float(coup), float(settle.mean()), float(P.mean()))
 
                         if ahead:
                             # prevent underflow or overflow
@@ -4519,8 +4600,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     rebate - (1.0 - decided / strike))
                                 P = P + crisp + splice_conditional_p(crisp, analytic)
                                 if P_cf is not None:
-                                    P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                        rebate - (1.0 - decided / strike))
+                                    with torch.no_grad():
+                                        P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                            rebate - (1.0 - decided / strike))
                         else:
                             # no conditioning step this iteration, and EXACT on the level the deal
                             # names in both the ways that happens: an OBSERVED fixing, and a block
@@ -4529,17 +4611,36 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
                             P = P + breach * put_leg
                             if P_cf is not None:
-                                P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                    rebate - (1.0 - decided / strike))
+                                with torch.no_grad():
+                                    P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                        rebate - (1.0 - decided / strike))
                             if boundary_aad and putBarrier > 0.0:
                                 # ONE decision per inner path, gap > 0 BREACHED, the jump what the
                                 # row gains if its indicator flips - here only, the splice taking it
                                 # where `interval` is set; no barrier decides nothing (log(0))
-                                bar_jumps.append(put_leg.detach())
-                                bar_gaps.append(
-                                    torch.log(putBarrier / at).expand_as(bar_jumps[-1]))
-                                bar_rows.append(i)
+                                jump = put_leg.detach()
+                                bar = (torch.log(putBarrier / at).expand_as(jump), jump)
+                    return (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                            coupon_count), (event, settle, bar)
 
+                # a ledger is mutated step by step, so a smoothed row walks the plain loop
+                (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                 coupon_count), steps = oss_stream(
+                    fixing, (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                             coupon_count), len(coupon), shared.oss_chunk if ledger is None else 0)
+                for event, settle, bar in steps:
+                    if event is not None:
+                        event_rows.append(i)
+                        gaps.append(event[0])
+                        fired.append(event[1])
+                        cash_on.append(event[2])
+                    if settle is not None:
+                        settled.append(settle)
+                        settle_rows.append(i)
+                    if bar is not None:
+                        bar_gaps.append(bar[0])
+                        bar_jumps.append(bar[1])
+                        bar_rows.append(i)
 
                 if ledger is not None:
                     ledger.check('AUTOCALL row {}'.format(i))

@@ -1459,6 +1459,9 @@ class Calculation_State(object):
         # (`Recompute_Inner_MC`); off is the taped path bit for bit. Declared here rather than by
         # the calculations that set it, so every pricer reads it without a fallback.
         self.recompute_inner_mc = False
+        # Fixings per checkpoint of a one-step-survival strip under a gradient
+        # (`pricing.oss_stream`); 0 walks the strip unstreamed
+        self.oss_chunk = 4
         # Second derivatives are wanted (`Greeks: 'All'`, base valuation only), so the reverse
         # sweep runs with `create_graph`. Declared here for the same reason as the switch above.
         self.gamma = False

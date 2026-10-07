@@ -46,6 +46,7 @@ WHAT THE NODE CANNOT DO is gated too. Detaching the saved inputs is what stops t
 back into the outer graph, and also why a SECOND derivative through it is severed and comes back
 partly zero - so `backward` refuses `create_graph` naming the switch.
 """
+import gc
 import json
 import os
 import sys
@@ -491,3 +492,61 @@ def test_a_cashflow_settled_inside_the_replay_moves_only_the_frame(monkeypatch):
     assert not all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
         'a cashflow settled inside the replay did not move the reported frame, so the cashflow '
         'half of the exposure gate measures nothing')
+
+
+# ---------------------------------------------------------------- (f) the strip is streamed
+
+#: The replay's peak bound for `streamed` at 16 x 4096, float32.
+STREAM_PEAK_MIB = 265.0
+
+
+class Unstreamed(calculation.Credit_Monte_Carlo):
+    """A credit Monte Carlo whose pricers walk every fixing strip unstreamed."""
+
+    def _init_shared_mem(self, *args, **kwargs):
+        shared = super()._init_shared_mem(*args, **kwargs)
+        shared.oss_chunk = 0
+        return shared
+
+
+def streamed(calc=calculation.Credit_Monte_Carlo, batch=16, inner=4096):
+    """(cva, CVA gradient, the run's peak in MiB above its floor) of a 24-fixing knock-in TARF
+    reported monthly, its gradient replayed by `Recompute_Inner_MC`, float32 on the device."""
+    deal = tarf._tarf(tarf.UNREACHABLE_TARGET, [30 * (i + 1) for i in range(24)],
+                      barrier=tarf.BARRIER, buy_sell='Sell')
+    params = {
+        'Base_Date': tarf.BASE, 'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Currency': 'USD',
+        'Time_grid': '0d 1m(1m)', 'Batch_Size': batch, 'Simulation_Batches': 1, 'Random_Seed': 1,
+        'Tenor_Offset': 0.0, 'MCMC_Simulations': inner, 'Deflation_Interest_Rate': 'USD',
+        'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': 'Yes',
+        'Credit_Valuation_Adjustment': {
+            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
+            'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}}
+    # the cycle a boundary registration makes outlives refcounting, so collect before the floor
+    gc.collect()
+    torch.cuda.empty_cache()
+    floor = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    out = calc(tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
+               device=utils.calculation_device(None, 0), prec=torch.float32).execute(params)
+    peak = (torch.cuda.max_memory_allocated() - floor) / 2.0 ** 20
+    return (float(out['Results']['cva']),
+            out['Results']['grad_cva']['Gradient'].values.astype(np.float64), peak)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient():
+    """The replay's strip checkpointed `oss_chunk` fixings at a time peaks under
+    `STREAM_PEAK_MIB` and reproduces the unstreamed loop's cva and gradient bit for bit.
+
+    Readings: streamed 197 MiB, unstreamed 909; a process's first run carries cuBLAS's 32 MiB
+    workspace too. Killing mutations, each read as a first run: the alive branch back on the tape
+    (the stream's `no_grad` blocks removed) 388 MiB; the whole strip one piece (`oss_chunk` 0)
+    941."""
+    cva, gradient, peak = streamed()
+    whole_cva, whole_gradient, whole_peak = streamed(Unstreamed)
+    assert cva == whole_cva and np.array_equal(gradient, whole_gradient), (
+        'streaming moved the CVA or its gradient:\n{}\n{}'.format(gradient, whole_gradient))
+    assert peak < STREAM_PEAK_MIB < whole_peak, (
+        'peak {:.1f} MiB streamed, {:.1f} unstreamed, bound {}'.format(
+            peak, whole_peak, STREAM_PEAK_MIB))
