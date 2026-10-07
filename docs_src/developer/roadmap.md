@@ -539,6 +539,14 @@ every risk-neutral calibration inherits.
 
 ## Tidy-ups
 
+- **The test suite is large and brittle** (2026-10-07). 84 files hold 1,586 test functions, 2,440
+  once parametrised; 595 name no killing mutation in their docstring, and one claim is often
+  pinned by several tests, so a respelling that moves no number turns files red - a moved import
+  line selected 1,421 tests before the selector read names off the syntax tree. The record set is
+  348 tests and the service's 152, both `fsync`-bound. The fold, module by module as each is
+  touched rather than as one pass: a census of what each test holds - the claim, the mutation, the
+  fixture - tests pinning one claim folded into one, every survivor naming its mutation and its
+  kill size, worlds priced once per module. M-L; the record and service sets first.
 - `gates/impacted.py` fails open to the whole suite on any change to `derivus/__init__.py`, which
   carries the context's verbs: read line by line it would still select nine tests in ten.
 - `derivus_jupyter.py`, tracked but not in the wheel and superseded for viewing by the web UI,
