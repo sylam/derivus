@@ -1423,12 +1423,31 @@ class CurveTenor(object):
         return self.tensor_cache[key]
 
 
-@torch.jit.script
 class Calculation_State(object):
     """
     Note that all pricing functions depend on this class being correctly setup. All calculations
     should inherit from this calculation state and extend accordingly
     """
+
+    #: The quasi-random stream's identity, shared by every state that draws from it: the scramble
+    #: seed of each Sobol engine and the position it starts at, fixed rather than the job's seed.
+    QUASI_SEED = 1234
+    QUASI_ANCHOR = 1024
+
+    @classmethod
+    def sobol_points(cls, dimension, position, n, device, first=0):
+        """`n` points of the scrambled Sobol stream from `position`, dimensions `first` on, as
+        30-bit integers on `device`: `SobolEngine`'s own points bit for bit, at any position,
+        without stepping and without a double."""
+        engine = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True,
+                                               seed=cls.QUASI_SEED)
+        directions = engine.sobolstate[first:].to(device)
+        index = torch.arange(position, position + n, dtype=torch.int64, device=device)
+        gray = (index ^ (index >> 1)).reshape(-1, 1)
+        points = engine.shift[first:].to(device).reshape(1, -1).expand(n, -1)
+        for bit in range(engine.MAXBIT):
+            points = points ^ (((gray >> bit) & 1) * directions[:, bit])
+        return points
 
     def __init__(self, static_buffer, unit, mcmc_sims, report_currency: List[Tuple[bool, int]],
                  nomodel: str, simulation_batch: int, keep_tensor: bool):
@@ -1464,6 +1483,19 @@ class Calculation_State(object):
         # registers no `BoundarySet`. False HERE keeps `Credit_Monte_Carlo` on the crisp path.
         self.branch_and_weight = False
 
+    def rng_position(self, position=None):
+        """Where the plain generator stands, seeking to `position` first where one is given, so
+        one call both rewinds and records where to rewind back to; the device generator's state
+        copies back to the host, hence once per pricing block."""
+        was = (torch.get_rng_state(),
+               torch.cuda.get_rng_state(self.one.device) if self.one.is_cuda else None)
+        if position is not None:
+            cpu_state, device_state = position
+            torch.set_rng_state(cpu_state)
+            if device_state is not None:
+                torch.cuda.set_rng_state(device_state, self.one.device)
+        return was
+
 
 def calculation_device(requested=None, job_id=0):
     """Which silicon a calculation runs on, and the cuBLAS pin its reductions need to reproduce.
@@ -1487,28 +1519,6 @@ def calculation_device(requested=None, job_id=0):
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         torch.cuda.empty_cache()
     return device
-
-
-def rng_position(shared, position=None):
-    """Where the plain generator a calculation draws from STANDS, and optionally a seek.
-
-    Returns the position it was at, and seeks to `position` FIRST if one is given - so one call both
-    rewinds and records where to rewind back to, the whole idiom a recompute needs
-    (`pricing.InnerMCRecompute`). A free function because `Calculation_State` is
-    `torch.jit.script`ed and none of this compiles. The generator's position is its own state;
-    the inner Sobol rows have none, being a function of their shape (`CMC_State.inner_block`).
-
-    The device generator is only asked for its state on a device, which copies back to the host and
-    synchronises - hence once per pricing block.
-    """
-    was = (torch.get_rng_state(),
-           torch.cuda.get_rng_state(shared.one.device) if shared.one.is_cuda else None)
-    if position is not None:
-        cpu_state, device_state = position
-        torch.set_rng_state(cpu_state)
-        if device_state is not None:
-            torch.cuda.set_rng_state(device_state, shared.one.device)
-    return was
 
 
 # often we need a numpy array and its tensor equivalent at the same time

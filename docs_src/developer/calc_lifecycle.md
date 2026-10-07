@@ -155,7 +155,7 @@ The adopter's shape is the rest of the contract:
 - It returns a **tuple**: element 0 is the block's marks, the rest by-products the caller performs once, each with the plain-Python row index that places it. Non-tensors pass through with a `None` cotangent; a pricer with no by-products returns `(mtm,)`.
 - Every graph-carrying by-product is a **top-level** element. A tensor nested in a returned list is not an output (`requires_grad` False, no `grad_fn`), so its half of a correction is silently zero.
 
-**The counter is the storage.** What is saved is where the plain generator stood (`utils.rng_position`), never what it produced, and the live position is put back after the replay. The inner Sobol rows have no position at all: they are the canonical inner block below, a function of their shape, so a replay reads the same rows by construction.
+**The counter is the storage.** What is saved is where the plain generator stood (`Calculation_State.rng_position`), never what it produced, and the live position is put back after the replay. The inner Sobol rows have no position at all: they are the canonical inner block below, a function of their shape, so a replay reads the same rows by construction.
 
 Three ways to be silently wrong:
 

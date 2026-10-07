@@ -6,7 +6,7 @@ a second forward: the node's forward runs under `no_grad`, its backward re-runs 
 under `enable_grad` and contracts the cotangent through one graph that dies immediately.
 
 THE POSITION IS THE STORAGE. What is saved is where the regular generator stood
-(`utils.rng_position`), never what it drew, and its state is restored for the replay; the Sobol rows
+(`rng_position`), never what it drew, and its state is restored for the replay; the Sobol rows
 are the canonical inner block's, a function of their shape, with no position to save. Which stream
 each fixture reads is ATTRIBUTED rather than assumed: `pv_MC_Tarf` takes Sobol above 16 scenarios,
 so base valuation's one scenario reads `torch.rand` - the generator one draw ahead moves its

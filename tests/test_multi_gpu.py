@@ -475,7 +475,8 @@ def test_the_historical_arm_is_still_one_free_running_engine():
     two sample sizes interleaves on a single engine. Neither hash-gated world does that, so the
     unsharded pins would not have caught it.
     """
-    from derivus.calculation import QUASI_ANCHOR, QUASI_SEED
+    from derivus.utils import Calculation_State
+    QUASI_ANCHOR, QUASI_SEED = Calculation_State.QUASI_ANCHOR, Calculation_State.QUASI_SEED
     from torch.quasirandom import SobolEngine
 
     state = _quasi_state()
@@ -505,8 +506,10 @@ def test_a_draw_wider_than_the_engine_is_its_chunks_at_successive_positions():
     width does. Held here against `SobolEngine` itself, both sides of the cap: 21201 is one engine
     at the anchor, 32768 is 21201 at the anchor plus 11567 one sample_size on.
     """
-    from derivus.calculation import QUASI_ANCHOR, QUASI_SEED, SOBOL_MAX_DIMENSION
     from torch.quasirandom import SobolEngine
+    from derivus.utils import Calculation_State
+    QUASI_ANCHOR, QUASI_SEED = Calculation_State.QUASI_ANCHOR, Calculation_State.QUASI_SEED
+    SOBOL_MAX_DIMENSION = SobolEngine.MAXDIM
 
     margin, size = 1.0e-6, 8
 
@@ -542,7 +545,8 @@ def test_a_wide_draw_advances_the_stream_by_every_chunk_it_took():
     two arms agree draw for draw, which is what makes anchoring a repositioning rather than a
     second model.
     """
-    from derivus.calculation import SOBOL_MAX_DIMENSION
+    from torch.quasirandom import SobolEngine
+    SOBOL_MAX_DIMENSION = SobolEngine.MAXDIM
 
     size = 8
     for dimension in (1024, SOBOL_MAX_DIMENSION, SOBOL_MAX_DIMENSION + 1, 32768, 63603):
@@ -613,7 +617,9 @@ def test_the_inner_block_is_a_function_of_its_rows_and_paths_alone():
     Killing mutations: the complement taken after the cast breaks the float32 half; the block keyed
     on the batch breaks the two states' agreement; chunk c read `c * sims` points further along one
     64-dimensional engine breaks chunk 1."""
-    from derivus.calculation import INNER_CHUNK, INNER_MARGIN, QUASI_ANCHOR, QUASI_SEED
+    from derivus.calculation import CMC_State
+    INNER_CHUNK, INNER_MARGIN = CMC_State.INNER_CHUNK, CMC_State.INNER_MARGIN
+    QUASI_ANCHOR, QUASI_SEED = CMC_State.QUASI_ANCHOR, CMC_State.QUASI_SEED
     from torch.quasirandom import SobolEngine
 
     sims, rows = 1024, 2 * INNER_CHUNK + 2

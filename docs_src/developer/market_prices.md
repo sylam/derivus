@@ -617,7 +617,7 @@ how much of a fitted number is the surface. `Pseudo` is the generator this famil
 before the field existed and is what a bit-identity gate against a banked fit declares. `Sobol`
 is a scrambled sequence over the `2 × steps + blocks` dimensions in the calculation's own
 convention (`calculation.CMC_State.quasi_rng` — one engine at `QUASI_ANCHOR`, that clamp margin,
-that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than `SOBOL_MAX_DIMENSION` refuses
+that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than the engine's `MAXDIM` refuses
 by name rather than chunking, the calculation chunking because a scenario grid can be that wide
 and a calibration grid that is saying the grid is wrong. **`Pseudo` STAYS THE DEFAULT** and `Paths` stays 8192, and the PRODUCTION objective — priors on
 and the forward rows in, which is what a book fits under — is not the cure. Across `Random_Seed`

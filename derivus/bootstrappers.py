@@ -25,7 +25,7 @@ import pandas as pd
 import torch
 
 # Internal modules
-from . import utils, pricing, instruments, riskfactors, stochasticprocess, calculation, schema
+from . import utils, pricing, instruments, riskfactors, stochasticprocess, schema
 from .schema import (DAY_COUNTS, F, OPTION_QUOTE, PRICES_KEY, QUOTE_TWO_WAY, REQUIRED, Row,
                      completed, declared_defaults, leaf_deals, partition_market_price, quote_table)
 from ._version import __version__
@@ -1468,15 +1468,15 @@ class LVFit(utils.Residual):
         draw whatever device the fit runs on."""
         half = max(int(paths) // 2, 1)
         if self.sampling == 'Sobol':
-            width = 2 * int(steps) + int(blocks)
-            if width > calculation.SOBOL_MAX_DIMENSION:
+            width, cap = 2 * int(steps) + int(blocks), torch.quasirandom.SobolEngine.MAXDIM
+            if width > cap:
                 raise ValueError(
                     '{}: Sampling Sobol wants {} dimensions - two per internal step plus one per '
                     'block - against the {} one scrambled engine carries. Declare Sampling Pseudo, '
                     'or coarsen Steps_Per_Year.'.format(
-                        self.market_price, width, calculation.SOBOL_MAX_DIMENSION))
+                        self.market_price, width, cap))
             engine = torch.quasirandom.SobolEngine(width, scramble=True, seed=int(seed))
-            engine.fast_forward(calculation.QUASI_ANCHOR)
+            engine.fast_forward(utils.Calculation_State.QUASI_ANCHOR)
             draws = engine.draw(half, dtype=self.prec).clamp(1e-6, 1.0 - 1e-6)
             z_l, z_s = (utils.norm_icdf(draws[:, :steps]),
                         utils.norm_icdf(draws[:, steps:2 * steps]))

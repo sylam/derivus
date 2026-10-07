@@ -344,6 +344,13 @@ class Calculation(object):
     #: compile that only reads the book skips one whatever the document says.
     valuation = True
 
+    #: `Deterministic_Kernels`, declared once for the calculations that take a seed.
+    DETERMINISTIC_KERNELS = F(
+        'Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
+        description="Pin the GPU backward to torch's deterministic kernels (warn_only) so a "
+                    "gradient's last bits repeat between runs on one machine and one build, at "
+                    'about 1.03x the wall clock')
+
     def __init__(self, config, prec=torch.float32, device=torch.device('cpu')):
         """Construct a new calculation - all calculations set up their own tensors."""
 
@@ -537,34 +544,6 @@ class Calculation(object):
                 'set the switch to Yes to value the book without them'.format('; '.join(refused)))
 
 
-#: The quasi-random stream's fixed identity: the scramble seed of every Sobol engine and the offset
-#: each one starts at. Deliberately NOT derived from the job's `Random_Seed`, which is why sharding
-#: raises a question about POSITION in this stream rather than about randomness.
-QUASI_SEED = 1234
-QUASI_ANCHOR = 1024
-
-#: `torch.quasirandom.SobolEngine`'s dimension cap. A draw wider than this is taken in chunks.
-SOBOL_MAX_DIMENSION = 21201
-
-#: The canonical inner block's chunk: an inner path is ONE scrambled Sobol point over all its
-#: fixings, read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1)
-#: wide.
-INNER_CHUNK = 64
-
-#: The inner block's distance from 0 and 1 in units of 2^-30 - the stream's 1e-6 margin rounded up.
-INNER_MARGIN = 1074
-
-#: `Deterministic_Kernels`, one description for the three calculations that declare it beside
-#: `Random_Seed`.
-DETERMINISTIC_KERNELS = (
-    'Pin the GPU backward wherever torch has a deterministic kernel. The backward of `gather` and '
-    'of `index_select` accumulates atomically wherever indices collide - a collateralised netting '
-    'set does - so one gradient entry can differ in its last bits between two runs of identical '
-    'inputs. `Yes` selects torch\'s deterministic kernels with `warn_only` - an operation torch '
-    'cannot pin warns and runs unpinned rather than refusing the valuation - at 1.03x the wall '
-    'clock of a collateralised CVA gradient. It pins ONE machine and ONE build: the same document '
-    'on another card or another torch version is not pinned to these bits.')
-
 def batch_seed(random_seed, batch_index):
     """The seed a batch runs under: a SplitMix64 mix of (seed, global batch), not `seed + batch`.
 
@@ -583,22 +562,14 @@ def batch_seed(random_seed, batch_index):
     return (z ^ (z >> 31)) & 0x7FFFFFFFFFFFFFFF
 
 
-def sobol_points(dimension, position, n, device, first=0):
-    """`n` points of the scrambled Sobol stream from `position`, its dimensions from `first` on, as
-    30-bit integers on `device`: `SobolEngine`'s own points bit for bit - its shift XORed with the
-    scrambled direction numbers of the bits of `i ^ (i >> 1)` - at any position, without stepping
-    and without a double."""
-    engine = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True, seed=QUASI_SEED)
-    directions = engine.sobolstate[first:].to(device)
-    index = torch.arange(position, position + n, dtype=torch.int64, device=device)
-    gray = (index ^ (index >> 1)).reshape(-1, 1)
-    points = engine.shift[first:].to(device).reshape(1, -1).expand(n, -1)
-    for bit in range(engine.MAXBIT):
-        points = points ^ (((gray >> bit) & 1) * directions[:, bit])
-    return points
-
-
 class CMC_State(utils.Calculation_State):
+    #: The canonical inner block's chunk: an inner path is one Sobol point over all its fixings,
+    #: read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1) wide.
+    INNER_CHUNK = 64
+
+    #: The inner block's distance from 0 and 1 in units of 2^-30, the stream's 1e-6 margin.
+    INNER_MARGIN = 1074
+
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
         """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
@@ -654,7 +625,7 @@ class CMC_State(utils.Calculation_State):
         STANDING position rather than recomputing it: one dimension drawn at two sample sizes shares
         one engine and interleaves, and that interleaving must survive byte for byte.
 
-        ABOVE `SOBOL_MAX_DIMENSION` the draw is taken in `span` dimension chunks at successive
+        ABOVE the engine's `MAXDIM` the draw is taken in `span` dimension chunks at successive
         positions and concatenated, each chunk advancing the stream by `sample_size` exactly as one
         draw of that width does. A wide draw therefore CONSUMES `span * sample_size` of the stream,
         which is the stride both arms step by, or consecutive batches would read the same points.
@@ -670,10 +641,11 @@ class CMC_State(utils.Calculation_State):
         """
         batch_key = (dimension, sample_size)
         call = self.t_quasi_rng_batch.setdefault(batch_key, 0)
-        span = -(-dimension // SOBOL_MAX_DIMENSION)
+        cap = torch.quasirandom.SobolEngine.MAXDIM
+        span = -(-dimension // cap)
 
         if self.quasi_batch is None:
-            position = self.sobol_position.get(dimension, QUASI_ANCHOR)
+            position = self.sobol_position.get(dimension, self.QUASI_ANCHOR)
         else:
             if call:
                 # a genuine second draw of one shape inside one batch, which has no distinct batch
@@ -686,11 +658,11 @@ class CMC_State(utils.Calculation_State):
                     'factors sharing a shape is the usual source - run such a job unsharded, or '
                     'give the second consumer its own dimension.'.format(
                         dimension, sample_size, call + 1, self.quasi_batch))
-            position = QUASI_ANCHOR + self.quasi_batch * span * sample_size
+            position = self.QUASI_ANCHOR + self.quasi_batch * span * sample_size
 
         chunks, at = [], position
-        for start in range(0, dimension, SOBOL_MAX_DIMENSION):
-            engine = self._sobol_at(min(SOBOL_MAX_DIMENSION, dimension - start), at)
+        for start in range(0, dimension, cap):
+            engine = self._sobol_at(min(cap, dimension - start), at)
             chunks.append(engine.draw(sample_size, dtype=torch.float64))
             at += sample_size
             self.sobol_engine[engine.dimension] = (engine, at)
@@ -708,10 +680,10 @@ class CMC_State(utils.Calculation_State):
         position it already stands at, so it never seeks; a sharded worker pays the jump to the
         start of its own slice once and then advances the same way.
         """
-        engine, standing = self.sobol_engine.get(dimension, (None, QUASI_ANCHOR))
+        engine, standing = self.sobol_engine.get(dimension, (None, self.QUASI_ANCHOR))
         if engine is None or position < standing:
             engine = torch.quasirandom.SobolEngine(
-                dimension=dimension, scramble=True, seed=QUASI_SEED)
+                dimension=dimension, scramble=True, seed=self.QUASI_SEED)
             engine.fast_forward(position)
         elif position > standing:
             engine.fast_forward(position - standing)
@@ -732,9 +704,10 @@ class CMC_State(utils.Calculation_State):
         have = 0 if block is None else block[0].shape[0]
         if have < rows:
             halves = [[], []] if block is None else [[block[0]], [block[1]]]
-            for chunk in range(have // INNER_CHUNK, -(-rows // INNER_CHUNK)):
-                m = sobol_points(INNER_CHUNK * (chunk + 1), QUASI_ANCHOR, sims, self.one.device,
-                                 INNER_CHUNK * chunk).T.clamp(INNER_MARGIN, 2 ** 30 - INNER_MARGIN)
+            chunk, margin = self.INNER_CHUNK, self.INNER_MARGIN
+            for c in range(have // chunk, -(-rows // chunk)):
+                m = self.sobol_points(chunk * (c + 1), self.QUASI_ANCHOR, sims, self.one.device,
+                                      chunk * c).T.clamp(margin, 2 ** 30 - margin)
                 halves[0].append(m.to(self.one.dtype) * 2.0 ** -30)
                 halves[1].append(((1 << 30) - m).to(self.one.dtype) * 2.0 ** -30)
             block = self.t_inner_block[sims] = (torch.cat(halves[0]), torch.cat(halves[1]))
@@ -1025,8 +998,7 @@ class Credit_Monte_Carlo(Calculation):
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         F('Random_Seed', 'Integer', default=5120),
-        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
-          description=DETERMINISTIC_KERNELS),
+        Calculation.DETERMINISTIC_KERNELS,
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
@@ -2052,8 +2024,7 @@ class Base_Revaluation(Calculation):
           description='Inner Monte Carlo paths a simulated pricer spends per reporting row, '
                       'mirrored (z, -z); an analytic deal never reads it'),
         F('Random_Seed', 'Integer', default=5120),
-        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
-          description=DETERMINISTIC_KERNELS),
+        Calculation.DETERMINISTIC_KERNELS,
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
           description='First order factor sensitivities, or `All` for the second order block '
                       '(`Greeks_Second`) as well'),
@@ -2789,8 +2760,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         F('Random_Seed', 'Integer', default=5120),
-        F('Deterministic_Kernels', 'Text', default='No', values=['Yes', 'No'],
-          description=DETERMINISTIC_KERNELS),
+        Calculation.DETERMINISTIC_KERNELS,
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
         F('MCMC_Simulations', 'Integer', default=2048),

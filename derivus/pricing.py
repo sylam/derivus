@@ -136,7 +136,7 @@ class LogVar2FJKit(object):
 
         REGENERATED, NEVER STORED: the checkpoint's backward re-draws them where a stored tape
         would have held them, so no tensor of the whole grid's shape exists at any point. The key
-        is the row's ``base`` - one int64 off the plain generator, which `utils.rng_position`
+        is the row's ``base`` - one int64 off the plain generator, which `rng_position`
         replays under `InnerMCRecompute` - plus the segment's index. ``antithetic`` mirrors along
         the SIMS axis, ``-eta``; the mixer's uniforms are the PRICER's, mirrored there.
         """
@@ -966,7 +966,7 @@ class InnerMCRecompute(torch.autograd.Function):
     a time. Subsystem documentation: calc_lifecycle.md#recompute-inner-mc.
 
     THE POSITION IS THE STORAGE: what is saved is where the plain generator stood
-    (``utils.rng_position``), never what it drew - its state is saved, restored and put back. The
+    (``rng_position``), never what it drew - its state is saved, restored and put back. The
     Sobol rows are the canonical inner block's, a function of their shape, so the replay reads them
     again with nothing to rewind.
 
@@ -1016,11 +1016,11 @@ class InnerMCRecompute(torch.autograd.Function):
         for i in wanted:
             theta[i].requires_grad_(True)
         with torch.enable_grad():
-            live = utils.rng_position(ctx.shared, ctx.position)
+            live = ctx.shared.rng_position(ctx.position)
             try:
                 outputs = ctx.simulate(*theta)
             finally:
-                utils.rng_position(ctx.shared, live)
+                ctx.shared.rng_position(live)
             paired = [(out, cotangent) for out, cotangent in zip(outputs, cotangents)
                       if cotangent is not None and out.requires_grad]
             grads = torch.autograd.grad(
@@ -1040,7 +1040,7 @@ class InnerMCRecompute(torch.autograd.Function):
         directly; on, it goes through the node with the RNG position taken at the call site, where
         the streams stand where the replay must find them.
         """
-        return (cls.apply(simulate, utils.rng_position(shared), shared, *theta)
+        return (cls.apply(simulate, shared.rng_position(), shared, *theta)
                 if shared.recompute_inner_mc else simulate(*theta))
 
 
