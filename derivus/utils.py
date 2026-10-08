@@ -1095,34 +1095,37 @@ class Interpolation(UnroutedInterpolation):
     """Tenor and time interpolation over ONE physical scenario tensor.
 
     A leaf, and the only class base valuation / credit Monte Carlo / the outer hedge loop ever
-    build. `build` prepares what a given interpolation kind stores — an RT kind folds the tenor into
-    the values, Hermite derives its coefficient pair. Dividend curves are plain here; what makes
-    them different lives in `CurveTenor`.
+    build. What a kind derives from the values - the tenor an RT kind folds in, Hermite's
+    coefficient pair - a curve carrying a graph holds, so a derivative sums its reads into them
+    before the derivation; a graph-free curve derives them at the read from the values it gathers.
+    Dividend curves are plain here; what makes them different lives in `CurveTenor`.
 
     It knows nothing about inner MC, block boundaries, logical rows or batch fan-out: the rows
     reaching it are already in its own frame, and it flattens them against its OWN tenor stride,
     which is what lets a tenor segment be the same kind of object.
     """
 
-    def __init__(self, tensor, interp_params):
+    def __init__(self, tensor, interp_params, scale=None, knots=None):
         self.tensor = tensor
         self.shape = tuple(tensor.shape)
         self.indexed_tensor = tensor.reshape(-1, tensor.shape[-1])
         self.interp_params = [p.reshape(-1, p.shape[-1]) for p in interp_params]
+        # a graph-free curve's tenor to fold in and Hermite time terms, both read per tenor
+        self.scale, self.knots = scale, knots
 
     @classmethod
     def build(cls, tensor, kind, tenor):
-        """What an interpolation of `kind` stores: the values, and whatever it derives from them.
-        Rate*time folds the tenor into the values; Hermite derives its coefficient pair."""
-        if kind == 'Linear':
+        """What an interpolation of `kind` stores: the values, and on a curve carrying a graph what
+        it derives from them - rate*time folded in, Hermite's coefficient pair - else the tenors and
+        `hermite_knots` the read derives them from."""
+        if kind not in ('LinearRT', 'Hermite', 'HermiteRT'):
             return cls(tensor, [])
         t = tensor.new(tenor[:tensor.shape[1]]).reshape(1, -1, 1)
-        if kind in ('Hermite', 'HermiteRT'):
-            values = tensor * t if kind == 'HermiteRT' else tensor
-            return cls(values, hermite_interpolation_tensor(t, values))
-        if kind == 'LinearRT':
-            return cls(tensor * t, [])
-        return cls(tensor, [])
+        rt, hermite = kind.endswith('RT'), kind.startswith('Hermite')
+        if tensor.requires_grad:
+            values = tensor * t if rt else tensor
+            return cls(values, hermite_interpolation_tensor(t, values) if hermite else [])
+        return cls(tensor, [], t.reshape(-1) if rt else None, hermite_knots(t) if hermite else None)
 
     @staticmethod
     def calc_hermite_curve(t_a, g, c, curve_t0, curve_t1):
@@ -1147,14 +1150,43 @@ class Interpolation(UnroutedInterpolation):
         means every row is row 0 — a static curve, or a stochastic one gathered only at the base
         date — and skips the add entirely."""
         base = None if rows is None else rows.reshape(-1, 1) * self.shape[1]
-        i0, i1x = (i1, i2) if base is None else (base + i1, base + i2)
         if tenor_data[0].startswith('Hermite'):
-            g, c = self.interp_params
-            return self.calc_hermite_curve(
-                w2, self.take(g, i0), self.take(c, i0), self.take(self.indexed_tensor, i0),
-                self.take(self.indexed_tensor, i1x))
+            return self.calc_hermite_curve(w2, *self.hermite_at(base, i1, i2))
         # default to linear, blended into the first gather - a fresh tensor, the weight graphless
-        return self.take(self.indexed_tensor, i0).lerp_(self.take(self.indexed_tensor, i1x), w2)
+        return self.at(base, i1).lerp_(self.at(base, i2), w2)
+
+    def at(self, base, tenor):
+        """The values at `tenor` of the flattened rows `base`, a fresh gather, the tenor folded in
+        where a graph-free RT curve folds it at the read."""
+        value = self.take(self.indexed_tensor, tenor if base is None else base + tenor)
+        return value if self.scale is None else value.mul_(self.scale[tenor].unsqueeze(-1))
+
+    def hermite_at(self, base, i1, i2):
+        """`(g, c, y0, y1)` at tenor `i1`: the pair gathered where it is held, else derived from the
+        values at `i1 - 1` to `i1 + 2` by `hermite_interpolation_tensor`'s own operations in its own
+        order, the end expressions selected at the ends, so to the bit. `i2` is `i1 + 1` clamped."""
+        if self.interp_params:
+            i0 = i1 if base is None else base + i1
+            g, c = (self.take(p, i0) for p in self.interp_params)
+            return g, c, self.at(base, i1), self.at(base, i2)
+        n = self.shape[1]
+        td_m, td_0, td_p, span_j, span_j1, lever_1, span_1, scale_n, lever_n = \
+            self.knots[i1].unsqueeze(-1).unbind(-2)
+        y0, y1 = self.at(base, i1), self.at(base, i2)
+        rd_0 = y1 - y0
+        # each outer difference carried into the one ratio of r_i that reads it, in place
+        a = (y0 - self.at(base, (i1 - 1).clamp(min=0))).mul_(td_0).div_(td_m)
+        b = self.at(base, (i1 + 2).clamp(max=n - 1)).sub_(y1).mul_(td_0).div_(td_p)
+        ri_j = torch.where((i1 == 0).unsqueeze(-1),
+                           (rd_0 * lever_1).div_(td_0).sub_(b).div_(span_1),
+                           (rd_0 * td_m).div_(td_0).add_(a).div_(span_j))
+        ri_j1 = torch.where((i1 == n - 2).unsqueeze(-1),
+                            a.sub_((rd_0 * lever_n).div_(td_0)).mul_(scale_n),
+                            (rd_0 * td_p).div_(td_0).add_(b).div_(span_j1))
+        last = (i1 == n - 1).unsqueeze(-1)
+        g = (ri_j * td_0).sub_(rd_0).masked_fill_(last, 0.0)
+        c = (rd_0 * 2.0).sub_(ri_j.add_(ri_j1).mul_(td_0)).masked_fill_(last, 0.0)
+        return g, c, y0, y1
 
     def blend(self, raw, nxt, alpha):
         """Linear time interpolation between two raw reads, into the first."""
@@ -5280,6 +5312,20 @@ def hermite_interpolation_tensor(t, rate_tensor):
     ci = torch.cat([2.0 * rate_diff - time_diff * (ri[:, :-1, :] + ri[:, 1:, :]), zero], dim=1)
 
     return gi, ci
+
+
+def hermite_knots(t):
+    """`hermite_interpolation_tensor`'s time terms by knot `j`, a row per knot, its indices clamped
+    to the grid: the steps from `j - 1`, `j` and `j + 1`, the spans about `j` and `j + 1`, and the
+    first and last slopes' lever and span, each the same operation on the same knots."""
+    n = t.shape[1]
+    time_diff, span = t[0, 1:, 0] - t[0, :-1, 0], t[0, 2:, 0] - t[0, :-2, 0]
+    ends = [t[:, 2, :] + t[:, 1, :] - 2.0 * t[:, 0, :], t[:, 2, :] - t[:, 0, :],
+            -1.0 / (t[:, -1, :] - t[:, -3, :]), 2.0 * t[:, -1, :] - t[:, -2, :] - t[:, -3, :]]
+    k = torch.arange(n, device=t.device)
+    return torch.stack([time_diff[(k + d).clamp(0, n - 2)] for d in (-1, 0, 1)] +
+                       [span[(k + d).clamp(0, n - 3)] for d in (-1, 0)] +
+                       [end.reshape(1).expand(n) for end in ends], dim=-1)
 
 
 # Graph operations - needed for dependency solving

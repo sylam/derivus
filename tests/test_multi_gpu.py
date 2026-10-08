@@ -63,6 +63,7 @@ import ast
 import hashlib
 import inspect
 import os
+import re
 import sys
 import textwrap
 import traceback
@@ -80,7 +81,7 @@ from torch.overrides import TorchFunctionMode
 
 import derivus
 import rates_world
-from derivus import utils
+from derivus import calculation, utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
 
@@ -554,7 +555,7 @@ def test_a_wide_draw_advances_the_stream_by_every_chunk_it_took():
 
     size = 8
     for dimension in (1024, SOBOL_MAX_DIMENSION, SOBOL_MAX_DIMENSION + 1, 32768, 63603):
-        historical = _quasi_state()
+        historical, previous = _quasi_state(), None
         for batch in range(3):
             walked = historical.quasi_rng(dimension, size)[1]
             anchored = _quasi_state()
@@ -1007,3 +1008,33 @@ def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
     assert per_batch <= HOST_TRAFFIC_PER_BATCH, (
         '%s host reads and uploads a batch on %s against %d, over two batches: %s' % (
             per_batch, device, HOST_TRAFFIC_PER_BATCH, (thrice - once).most_common(12)))
+
+
+# ------------------------------------------------------------------ a batch that would page
+
+class OnASmallCard(calculation.Credit_Monte_Carlo):
+    """A credit Monte Carlo told its device has 16 KiB free, wherever it runs."""
+
+    def device_free_bytes(self):
+        return 2 ** 14
+
+
+def small_card_run(batch, calc=OnASmallCard):
+    """`job_document` at `batch` paths, one batch, on the host."""
+    job = job_document()
+    return calc(job, prec=torch.float32, device=torch.device('cpu')).execute(
+        dict(job.deals['Calculation'], **dict(overrides(), Batch_Size=batch, Simulation_Batches=1)))
+
+
+def test_a_batch_that_would_page_is_refused_naming_the_width_that_fits():
+    """A `Batch_Size` past the device's free memory is refused before its first batch naming the
+    largest that fits, which runs while one path more is refused; the host checks nothing. Killed
+    by: the guard not called; the width that fits off by a path; the host checked."""
+    with pytest.raises(ValueError, match='Batch_Size %d needs' % BATCH_SIZE) as refused:
+        small_card_run(BATCH_SIZE)
+    fits = int(re.search(r'Batch_Size (\d+) fits', str(refused.value)).group(1))
+    assert 0 < fits < BATCH_SIZE, str(refused.value)
+    small_card_run(fits)
+    with pytest.raises(ValueError, match='Batch_Size %d needs' % (fits + 1)):
+        small_card_run(fits + 1)
+    small_card_run(BATCH_SIZE, calculation.Credit_Monte_Carlo)

@@ -135,7 +135,7 @@ before — which is why every document that does not name the process is bit-ide
 
     **A source is write-once.** Built after every process's `generate` has published, and nothing writes into `t_Scenario_Buffer` afterwards. It answers only `shape` / `new` / the RT tenor rescale, so a late write fails loud rather than materializing the grid it exists to avoid.
 
-    **Hermite coefficients are built eagerly.** Blocks store the past at `B_outer`, so eager `g,c` costs single-digit MB: measured 179 s / 0.617 GiB eager against 193 s / 0.595 GiB deferred, the deferral's span bookkeeping adding a device sync per gather. The one shape it would help is a full-horizon fork, and a fork prices exactly `{t, t+1}`.
+    **A graph-free curve derives at the read.** `Interpolation.hermite_at` gathers the values at `j - 1` to `j + 2` and runs `hermite_interpolation_tensor`'s operations on them in its order, the end expressions selected where `j` is an end, and an RT kind's tenor is folded in at the gather - so the read is the held pair's to the bit, through device indices and no sync. Held, the pair and the folded copy were half of a credit Monte Carlo batch: on a 58-leg bank netting set, peak 3.27 GB to 1.71 at 1,024 paths and 12.93 to 6.69 at 4,096. A curve carrying a graph holds both still, because a derivative sums every read into the held pair before the Hermite map, and a pair derived per read would sum them after - a last-bit move in every Greek.
 
 ## The inner draws are one canonical block, and the strip streams {#inner-block}
 

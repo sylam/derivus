@@ -1027,6 +1027,11 @@ class Credit_Monte_Carlo(Calculation):
                 description='Multiplier on the delta charge before the liquidity add-on')])
     ]
 
+    #: A batch's peak device memory, reserved, per byte of its scenario buffers: 2.09, the slope of
+    #: the two between 1,024 and 4,096 paths of a 58-leg bank netting set on an RTX 3090 (2.08 on
+    #: to 8,192) - what the reads, the pricers and the draws hold beside the simulated factors.
+    PEAK_PER_SCENARIO_BYTE = 2.1
+
     def __init__(self, config, **kwargs):
         super(Credit_Monte_Carlo, self).__init__(config, **kwargs)
         self.reset_dates = None
@@ -1044,8 +1049,39 @@ class Credit_Monte_Carlo(Calculation):
         self.update_time_grid(base_date, reset_dates, settlement_currencies,
                               dynamic_scenario_dates=params['Dynamic_Scenario_Dates'] == 'Yes')
 
-        return self._build_factor_state(
+        shared_mem = self._build_factor_state(
             dependent_factors, stochastic_factors, implied_factors, params, base_date, job_id, num_jobs)
+        self.refuse_a_batch_that_pages(shared_mem)
+        return shared_mem
+
+    def device_free_bytes(self):
+        """What the device can still hand a batch - free, and held unused by torch's cache - or None
+        on the host, which has nothing to page."""
+        if self.device.type != 'cuda':
+            return None
+        free, _ = torch.cuda.mem_get_info(self.device)
+        cached = torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device)
+        return free + cached
+
+    def refuse_a_batch_that_pages(self, shared_mem):
+        """Refuse by name, before its first batch, a `Batch_Size` whose peak - every simulated
+        factor's rows by tenors by paths, by `PEAK_PER_SCENARIO_BYTE` - passes the device's free
+        memory: past the card the driver pages over the bus rather than fail, 16 times the wall."""
+        free = self.device_free_bytes()
+        if free is None:
+            return
+        per_path = self.PEAK_PER_SCENARIO_BYTE * shared_mem.one.element_size() * sum(
+            grid.scen_time_grid.size * self.stoch_var[key].numel()
+            for key, (grid, _) in self._factor_precalc_args.items())
+        need = per_path * self.batch_size
+        if need > free:
+            fits = int(free // per_path)
+            remedy = 'Batch_Size {} fits, Simulation_Batches carrying the rest of the paths'.format(
+                fits) if fits else 'no Batch_Size fits beside what the calculation already holds'
+            raise ValueError(
+                'Batch_Size {} needs about {:.2f} GB of {} and {:.2f} GB is free - past the card a '
+                'batch is paged over the bus rather than refused: {}'.format(
+                    self.batch_size, need / 2 ** 30, self.device, free / 2 ** 30, remedy))
 
     def _build_factor_state(self, dependent_factors, stochastic_factors, implied_factors,
                             params, base_date, job_id, num_jobs):
