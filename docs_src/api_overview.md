@@ -261,8 +261,9 @@ just before execution. Common overrides:
 - `Run_Date` / `Base_Date` — switch the valuation date without editing the JSON
 - `Currency` — change the reporting currency
 - `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo reproducibility and size;
-  on a CUDA device a credit Monte Carlo whose `Batch_Size` would pass the free memory is refused
-  by name before its first batch, naming the largest that fits, rather than paged over the bus
+  on a CUDA device a credit Monte Carlo reports what it held at its peak beside what the device
+  has (`Stats.Device_Memory`), and warns where the peak passed the device, since the driver pages
+  such a batch over the bus rather than refusing it
 - `Greeks` — Base Valuation sensitivities (`'No'` / `'First'` / `'All'`); a Monte Carlo turns
   gradients on per sub-block (`Gradient`) and picks its variables with `Gradient_Variables`
   (`'All'` / `'Factors'` / `'Implied'`)

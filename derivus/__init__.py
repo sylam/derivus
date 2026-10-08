@@ -381,6 +381,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
 
     calc = construct_calculation('Credit_Monte_Carlo', context, device=device, prec=prec)
     out = calc.execute(params_mc, job_id, num_jobs, deterministic_batches)
+    calc.report_device_memory(out['Stats'])
     out['Results']['exposure_profile'] = summarize_data(
         out['Results']['mtm'], params_mc.get('Percentile', '95').replace(' ', ''))
 

@@ -62,8 +62,8 @@ closures, so it could not be pickled into a spawned child. The grammar is derive
 import ast
 import hashlib
 import inspect
+import logging
 import os
-import re
 import sys
 import textwrap
 import traceback
@@ -1010,31 +1010,37 @@ def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
             per_batch, device, HOST_TRAFFIC_PER_BATCH, (thrice - once).most_common(12)))
 
 
-# ------------------------------------------------------------------ a batch that would page
+# ------------------------------------------------------------------ what a batch held
 
 class OnASmallCard(calculation.Credit_Monte_Carlo):
-    """A credit Monte Carlo told its device has 16 KiB free, wherever it runs."""
+    """A credit Monte Carlo that measured a peak past its device, wherever it runs."""
 
-    def device_free_bytes(self):
-        return 2 ** 14
+    def device_memory(self):
+        return {'Peak_GB': 2.0, 'Device_GB': 1.0}
 
 
-def small_card_run(batch, calc=OnASmallCard):
-    """`job_document` at `batch` paths, one batch, on the host."""
+def test_a_run_reports_what_it_held_and_warns_where_it_passed_the_device(caplog):
+    """A credit Monte Carlo on a CUDA device reports its peak reserved memory beside the device's
+    under `Stats.Device_Memory`, the peak at or under the device and nothing warned; a peak past
+    the device - which the driver pages over the bus rather than refuses - is a warning naming the
+    batch; the host reports nothing. Killed by: the stat not written; the warning on every run;
+    the host reporting a device."""
     job = job_document()
-    return calc(job, prec=torch.float32, device=torch.device('cpu')).execute(
-        dict(job.deals['Calculation'], **dict(overrides(), Batch_Size=batch, Simulation_Batches=1)))
+    calc = OnASmallCard(job, prec=torch.float32, device=torch.device('cpu'))
+    stats = {'Batch_Size': BATCH_SIZE}
+    with caplog.at_level(logging.WARNING):
+        calc.report_device_memory(stats)
+    assert stats['Device_Memory'] == {'Peak_GB': 2.0, 'Device_GB': 1.0}
+    assert 'Batch_Size %d held 2.00 GB at its peak on a 1.00 GB device' % BATCH_SIZE in caplog.text
+    caplog.clear()
+    plain = calculation.Credit_Monte_Carlo(job, prec=torch.float32, device=torch.device('cpu'))
+    plain.report_device_memory(stats := {})
+    assert stats == {} and not caplog.text
+    if torch.cuda.is_available():
+        _, out = derivus.run_cmc(job_document(), torch.float32, dict(overrides(), Simulation_Batches=1),
+                                 device='cuda')
+        memory = out['Stats']['Device_Memory']
+        assert 0.0 < memory['Peak_GB'] <= memory['Device_GB'], memory
+        assert 'held' not in caplog.text
 
 
-def test_a_batch_that_would_page_is_refused_naming_the_width_that_fits():
-    """A `Batch_Size` past the device's free memory is refused before its first batch naming the
-    largest that fits, which runs while one path more is refused; the host checks nothing. Killed
-    by: the guard not called; the width that fits off by a path; the host checked."""
-    with pytest.raises(ValueError, match='Batch_Size %d needs' % BATCH_SIZE) as refused:
-        small_card_run(BATCH_SIZE)
-    fits = int(re.search(r'Batch_Size (\d+) fits', str(refused.value)).group(1))
-    assert 0 < fits < BATCH_SIZE, str(refused.value)
-    small_card_run(fits)
-    with pytest.raises(ValueError, match='Batch_Size %d needs' % (fits + 1)):
-        small_card_run(fits + 1)
-    small_card_run(BATCH_SIZE, calculation.Credit_Monte_Carlo)
