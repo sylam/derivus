@@ -4,7 +4,7 @@ The internal object walk behind a calculation. Public entry points and output sh
 
 ## Dispatch
 
-`Context.run_job` branches on `Calculation['Object']` into `run_cmc` / `run_baseval` / `run_hedgemontecarlo`. Each picks the device, injects the runtime-derived keys only (`Run_Date`, plus `Time_grid` for the two MC modes), then calls `construct_calculation` — `globals().get(calc_type)(config, **kwargs)`. The seed default is declared on the calculation class (`F('Random_Seed', 'Integer', default=5120)`) and applied by `torch.manual_seed` in the state constructor. The three classes are `Credit_Monte_Carlo`, `Base_Revaluation` and `HedgeMonteCarlo` (`calculation.py`).
+`Context.run_job` branches on `Calculation['Object']` into `run_cmc` / `run_baseval` / `run_hedgemontecarlo` / `run_simm`. Each picks the device, injects the runtime-derived keys only (`Run_Date`, plus `Time_grid` for the two MC modes), then calls `construct_calculation` — `globals().get(calc_type)(config, **kwargs)`. The seed default is declared on the calculation class (`F('Random_Seed', 'Integer', default=5120)`) and applied by `torch.manual_seed` in the state constructor. The four classes are `Credit_Monte_Carlo`, `Base_Revaluation`, `HedgeMonteCarlo` and `SIMM` (`calculation.py`).
 
 ## Compile phase 1 — `calculate_dependencies`
 
@@ -43,8 +43,8 @@ A step *inside* phase 2: `_build_factor_state` → `_init_shared_mem` → `get_c
 3. **`resolve_structure`** — walks the netting tree, calls `deal.calculate` → `generate` + `pricing.interpolate`, accumulates MTM, runs `post_process`; owns cashflow reset/save for accumulating sub-structures and the `FLIP`-prefix sign inversion.
 4. CVA/FVA/CollVA/IM adjustments follow. **Do-not-touch** ([Change Scope](conventions.md#change-scope)).
 
-!!! warning "Invariant — `t_Buffer` is the memo table"
-    Cleared between batches (`reset`) and between inner forks; never carried across a random-number reset or a batch-size change.
+!!! warning "Invariant — `t_Buffer` is the memo table, `t_PreCalc` the per-calculation one"
+    `t_Buffer` is cleared between batches (`reset`) and between inner forks; never carried across a random-number reset or a batch-size change. `t_PreCalc` is what a run reads unchanged every batch — a process's integral precalcs, a curve or skew read's gathered indices, a deal-static array through `Calculation_State.upload`, one copy per calculation keyed by its bytes — and `reset` leaves it alone; nothing carrying a graph goes in it.
 
 !!! warning "Invariant — publish-as-you-go + the `(factor_key, kind)` convention"
     Every process publishes its own path to `t_Scenario_Buffer[key]` as `generate` returns, and any sufficient statistic under `(factor_key, kind)` (e.g. `(key,'regimes')`, `(key,'garch_log_h')`). The calc/solver never name a regime/belief/variance directly — they iterate the model-agnostic verbs, whose base implementations are inert no-ops.
