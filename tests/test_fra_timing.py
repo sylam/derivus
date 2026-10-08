@@ -237,8 +237,15 @@ def test_the_pv_discounts_from_the_date_the_timing_names(timing):
 
     `End` and `Discounted` COINCIDE here by ruling rather than accident: both book at maturity and
     discount from there, so what separates them is where the cash settles and how long the deal
-    stays alive, neither of which a base valuation sees. `Begin` moves by `D(T_e)/D(T_s)`.
+    stays alive, neither of which a base valuation sees. `Begin` moves by `D(T_e)/D(T_s)` - a
+    real number, not a rounding one, or three timings agreeing with a reference that never looked
+    at the timing would prove nothing.
+
+    Killing mutation: `End` discounted from the effective date, 1.2889% high on all four.
     """
+    assert abs(PERIOD_DISCOUNT - 1.0) > 1e-2, (
+        'the period discount is {:.6f} - too close to one for this fixture to separate '
+        'anything'.format(PERIOD_DISCOUNT))
     cases = [('BORROW_LOW', 'Borrower', LOW_STRIKE), ('BORROW_HIGH', 'Borrower', HIGH_STRIKE),
              ('LEND_LOW', 'Lender', LOW_STRIKE), ('LEND_HIGH', 'Lender', HIGH_STRIKE)]
     values = priced([fra(ref, timing, side, strike) for ref, side, strike in cases])
@@ -253,25 +260,6 @@ def test_the_pv_discounts_from_the_date_the_timing_names(timing):
     assert values['LEND_LOW'] == -values['BORROW_LOW'], 'a Lender is the mirror of a Borrower'
 
 
-def test_end_and_discounted_price_alike_and_begin_is_the_one_that_moves():
-    """The identity the table states, and the placebo check on the gate above: three timings
-    agreeing to 1e-12 against a reference that never looked at the timing would prove nothing, so
-    the ratio SEPARATING `Begin` is asserted against the discount factors it is made of - and
-    required to be a real number rather than a rounding one.
-    """
-    values = {timing: float(priced([fra('F1', timing, 'Borrower', LOW_STRIKE)])['F1'])
-              for timing in ('End', 'Discounted', 'Begin')}
-
-    assert values['End'] == values['Discounted'], (
-        'End and Discounted must PV identically - both discount the full amount from maturity')
-    assert abs(values['End'] / values['Begin'] - PERIOD_DISCOUNT) < 1e-12, (
-        'Begin values from the effective date, so it sits exactly D(T_e)/D(T_s) = {:.8f} away: '
-        '{}'.format(PERIOD_DISCOUNT, values))
-    assert abs(PERIOD_DISCOUNT - 1.0) > 1e-2, (
-        'the period discount is {:.6f} - too close to one for this fixture to separate '
-        'anything'.format(PERIOD_DISCOUNT))
-
-
 def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
     """A reset fixing before the effective date reads the rate over [Effective, Maturity] - the
     period the FRA accrues - not [Reset, Maturity]. Gated by pricing one trade at two very
@@ -282,6 +270,8 @@ def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
     touching the accrual: the forward is read over 134 days and divided by an 89-day year fraction,
     8.7024% against 5.9011%, four times the trade's value. The second assertion derives that
     counterfactual from the same formula, so the gate says how far wrong the alternative is.
+
+    Killing mutation: the reset row's rate window opened at its own fixing date.
     """
     values = priced([fra('LAG_0', 'End', 'Borrower', LOW_STRIKE, fixing_lag=0),
                      fra('LAG_45', 'End', 'Borrower', LOW_STRIKE, fixing_lag=45)])
@@ -309,7 +299,12 @@ def test_the_exposure_ends_and_the_cash_books_where_the_timing_says(timing):
     enough alone. The profile says where the deal stops being a position, the ledger what was paid
     and when - and `End` and `Discounted` agree at every row they share and at the base date, so
     nothing but these two readings separates them. Both against the hand derivation to 1e-12, which
-    the zero-vol Hull-White world is what buys.
+    the zero-vol Hull-White world is what buys. Across the three, `End` and `Discounted` agree on
+    the PV and disagree on the ledger, `Begin` and `Discounted` agree on the date and disagree on
+    the amount, `End` and `Begin` the reverse - three branches, not two spellings of one.
+
+    Killing mutations: `End` handed the effective date as its pay date (the deal is skipped); the
+    ledger booking the deal's first row rather than its settlement row.
     """
     side, strike = CMC_CASES[timing]
     calc, out = cmc([fra('FRA1', timing, side, strike)])
@@ -349,6 +344,8 @@ def test_the_deal_contributes_nothing_after_its_own_date_on_a_grid_that_outlives
     the horizon is the book's own last settlement. With a three-year swap beside it the grid runs
     two years past every timing, and every row past the FRA's own date is the swap's value and
     nothing else, which is what "dead" means where a portfolio keeps reporting.
+
+    Killing mutation: `End` handed the effective date as its pay date.
     """
     dead = {}
     for timing in ('End', 'Discounted', 'Begin'):
@@ -375,33 +372,15 @@ def test_the_deal_contributes_nothing_after_its_own_date_on_a_grid_that_outlives
     assert dead == {'End': MATURITY, 'Discounted': EFFECTIVE, 'Begin': EFFECTIVE}, dead
 
 
-def test_the_three_timings_book_three_different_things_on_the_same_trade():
-    """The separation on ONE trade priced three ways. `End` and `Discounted` agree on the PV and
-    disagree on the ledger; `Begin` and `Discounted` agree on the ledger DATE and disagree on the
-    amount; `End` and `Begin` agree on the amount and disagree on the date. All three pairs
-    together is what says these are three branches rather than two spellings of one.
-    """
-    booked = {}
-    for timing in ('End', 'Discounted', 'Begin'):
-        _, out = cmc([fra('FRA1', timing, 'Borrower', LOW_STRIKE)])
-        (date, amount), = settled_rows(out).items()
-        booked[timing] = (date, float(np.mean(amount)))
-
-    assert booked['End'][0] == MATURITY, booked
-    assert booked['Discounted'][0] == booked['Begin'][0] == EFFECTIVE, booked
-    assert booked['End'][1] == booked['Begin'][1], (
-        'End and Begin book the SAME undiscounted amount on different dates: {}'.format(booked))
-    assert abs(booked['Discounted'][1] / booked['Begin'][1] - PERIOD_DISCOUNT) < 1e-12, (
-        'Discounted books the period-discounted amount, {:.8f} of Begin\'s: {}'.format(
-            PERIOD_DISCOUNT, booked))
-
-
 def test_the_ledger_survives_a_live_simulation():
     """The same three statements under a real Hull-White vol, where the profile is a distribution -
     which is what says the zero-vol gates are exact for the right reason rather than because the
     pricer went down a degenerate branch. The date, the reval end and `booked == the deal's own
     last row` stay EXACT path for path; the AMOUNT cannot, and is compared against its own STANDARD
     ERROR rather than a hand-chosen tolerance, the payoff's spread being a fifth of its level.
+
+    Killing mutation: the ledger booking the paths' mean settlement rather than each path's own,
+    which every zero-vol gate reads as the same number.
 
     The residual is NOISE and not bias, which is what makes that the right shape: across three
     seeds the timings sit at 0.28 to 2.32 standard errors, and raising the count to 16384 takes the

@@ -80,7 +80,9 @@ def run(doc, tmp_path, name):
 def test_the_base_currency_s_curve_simulates_like_any_other(tmp_path):
     """A USD swap on a USD-base book with a Hull-White model on USD walks a DISPERSED profile - the
     same document on an EUR-base book is the witness that dispersion is what a simulated curve
-    looks like here. Before the fix the USD-base run had nothing to simulate at all."""
+    looks like here. Before the fix the USD-base run had nothing to simulate at all.
+
+    Killing mutation: every factor named by the base currency held static, its curve included."""
     _, usd_base = run(job('USD'), tmp_path, 'usd_base')
     _, eur_base = run(job('EUR'), tmp_path, 'eur_base')
     assert usd_base.shape[0] > 4 and np.isfinite(usd_base).all()
@@ -88,16 +90,17 @@ def test_the_base_currency_s_curve_simulates_like_any_other(tmp_path):
     assert usd_base[0].std() == 0.0, 'row 0 is today: one number across scenarios'
 
 
-def test_the_base_currency_s_fx_rate_stays_static_whatever_model_is_declared(tmp_path):
+def test_the_base_currency_s_fx_rate_stays_static_whatever_model_is_declared():
     """`FxRate.USD` on a USD book is identically one: a GBM model declared for it is ignored and it
-    never enters the stochastic set, while the curve beside it does."""
-    cx, _ = run(job('USD', fx_model=True), tmp_path, 'usd_base_fx_model')
-    cfg = cx.current_cfg
-    _, stochastic, *_ = cfg.calculate_dependencies(cfg.deals['Calculation'], pd.Timestamp(BASE), '0d', False)
-    factors = {(m.type, f.type, f.name) for m, f in stochastic.items()}
-    logging.debug('stochastic set on the USD-base book: %s', sorted(factors))
+    never enters the stochastic set the run simulates, while the curve beside it does.
+
+    Killing mutation: the base currency's FX rate let into the stochastic set by its model."""
+    context = derivus.Context()
+    context.load_json((json.dumps(job('USD', fx_model=True), cls=CustomJsonEncoder), 'fx_model'))
+    calc, _ = derivus.run_cmc(context.current_cfg)
+    factors = {(type(process).__name__, key.type, key.name) for key, process in calc.stoch_factors.items()}
     assert ('HullWhite1FactorInterestRateModel', 'InterestRate', ('USD',)) in factors, factors
-    assert not any(f.type == 'FxRate' and f.name == ('USD',) for _, f in stochastic.items()), factors
+    assert not any(kind == 'FxRate' for _, kind, _ in factors), factors
 
 
 def test_a_static_spot_beside_a_simulated_curve_prices_as_a_spot_that_never_moves():

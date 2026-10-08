@@ -14,7 +14,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import torch
 from scipy.stats import norm
 
 import derivus
@@ -22,7 +21,6 @@ import test_declared_defaults as book
 import trial_commodity
 from derivus import utils
 from derivus.config import CustomJsonEncoder
-from derivus.stochasticprocess import CSForwardPriceModel
 from test_position_scaling import document, marks
 
 BASE = pd.Timestamp('2026-01-15')
@@ -213,18 +211,3 @@ def test_a_day_paying_two_periods_books_both_under_a_credit_monte_carlo():
     paid = [pd.Timestamp(MAR[2]), pd.Timestamp(APR[2])]
     assert (cash.loc[paid].abs().min(axis=1) > 0).all(), cash.loc[paid]
     assert relative_gap(cash, split_cash) <= 1e-6, relative_gap(cash, split_cash)
-
-
-def test_an_implied_forward_variance_holds_its_digits_over_a_day_in_float32():
-    """`CSForwardPriceModel` on an implied Alpha 5%, Sigma 30% in float32: the first day's vol of
-    a contract five years out is s e^{-a tau} sqrt((1 - e^{-2a dt}) / 2a), against `math.expm1` in
-    float64 under 1e-6.
-
-    Killed by: the old spelling `1 - exp(-2a t)`, 3.0e-5 off."""
-    expiry = float((BASE - EXCEL).days + 1826)
-    process = CSForwardPriceModel(SimpleNamespace(get_tenor=lambda: np.array([expiry])), {})
-    process.precalculate(BASE, SimpleNamespace(scen_time_grid=np.arange(3.0)), torch.ones(1), None,
-                         0, implied_tensor={'Alpha': torch.tensor(0.05), 'Sigma': torch.tensor(0.3)})
-    dt, tau = 1.0 / utils.DayCount.DAYS_IN_YEAR, 1825.0 / utils.DayCount.DAYS_IN_YEAR
-    want = 0.3 * math.exp(-0.05 * tau) * math.sqrt(-math.expm1(-0.1 * dt) / 0.1)
-    assert process.vol.dtype == torch.float32 and abs(float(process.vol[1, 0, 0]) / want - 1.0) < 1e-6

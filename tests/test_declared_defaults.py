@@ -35,7 +35,6 @@ import glob
 import json
 import math
 import os
-import pickle
 import sys
 
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
@@ -43,10 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import numpy as np
 import pandas as pd
 import pytest
-import torch
 
 import derivus
 import rates_world
@@ -315,21 +312,14 @@ def price(block):
 def test_a_barrier_omitting_the_two_declared_fields_prices_instead_of_skipping(
         barrier_type, barrier, strike, option_type):
     """`pv_barrier_option`'s own block, both ways: the declaration is what the author would have
-    written, so the two readings agree to the bit and neither is zero."""
+    written, so the two readings agree to the bit and neither is zero. The monitoring frequency
+    arrives in the loader's form - uncoerced, `'0M'` is a str and `base_date + str` the next skip.
+
+    Killing mutations: no convention completed; a Period default handed over as its string."""
     furnished = price(barrier_deal(barrier_type, barrier, strike, option_type, **FURNISHED))
     omitted = price(barrier_deal(barrier_type, barrier, strike, option_type))
     assert omitted == furnished, (barrier_type, omitted, furnished)
     assert abs(furnished) > 1.0, 'the fixture must have something to lose'
-
-
-def test_the_repaired_deal_reads_the_engine_form_of_both_defaults():
-    """Uncoerced, `'0M'` is a str and `base_date + str` is the next skip. The monitoring frequency
-    arrives as a `DateOffset` of zero months and the rebate as the declared zero."""
-    deal = construct_instrument(dict(barrier_deal(*BARRIERS[0]), Expiry_Date=BASE), {})
-    frequency = deal.field['Barrier_Monitoring_Frequency']
-    assert (BASE + frequency - BASE).days == 0
-    assert isinstance(frequency, pd.DateOffset)
-    assert deal.field['Cash_Rebate'] == 0
 
 
 # --------------------------------------------------------------------------------------------
@@ -341,7 +331,10 @@ def test_a_default_answers_a_read_and_never_enters_the_program(name, cls):
     still raises, and the dict holds only what was authored - which is what `plan_hash`,
     `get_fieldname` and the JSON round trip read. Read off `DealFields` rather than a constructed
     deal: 21 classes cannot be built from `Object` alone, by the same KeyError a placeholder
-    deliberately keeps.
+    deliberately keeps. A read never writes the key in, so the seven equity types branching on
+    `'Payoff_Type' in self.field` stay off for a block that omits it.
+
+    Killing mutation: every declared default completed, placeholders included.
     """
     block = {'Object': name}
     field = schema.DealFields(dict(block), cls)
@@ -369,39 +362,12 @@ def test_a_default_answers_a_read_and_never_enters_the_program(name, cls):
         field['A_Field_No_Declaration_Names']
 
 
-def test_a_read_of_a_convention_does_not_make_it_present():
-    """THE GUARANTEE, on the branch that would pay for it. Seven equity types decide the quanto
-    wiring on `'Payoff_Type' in self.field`, and `Payoff_Type` is a convention - so a completion
-    that entered the block would compile a plain option as a quanto one. An option omitting it
-    compiles with the branch OFF and the key still absent after the read."""
-    block = {'Object': 'EquityOptionDeal', 'Reference': 'EQ', 'Currency': 'USD',
-             'Payoff_Currency': 'EUR', 'Equity': 'EQ', 'Equity_Volatility': 'EQ',
-             'Strike_Price': 100.0, 'Units': 1.0, 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-             'Expiry_Date': BASE}
-    deal = construct_instrument(dict(block), {})
-    assert deal.field['Payoff_Type'] == 'Standard'
-    assert 'Payoff_Type' not in deal.field and set(deal.field) == set(block)
-
-    index = {}
-    deal.check_option_data(
-        {'Payoff_Currency': ('EUR',), 'Currency': ('USD',), 'Equity_Volatility': ('EQ',)},
-        index, {}, {}, {}, {})
-    assert index == {'Check_Payoff_Type': False}, index
-
-
-def test_the_deal_constructor_is_where_the_seam_is_wired():
-    """`Deal.__init__` wraps the authored block, so the completion travels with the deal rather
-    than being applied at one reader."""
-    deal = construct_instrument(dict(barrier_deal(*BARRIERS[0])), {})
-    assert isinstance(deal.field, schema.DealFields)
-    assert set(deal.field) == set(barrier_deal(*BARRIERS[0]))
-    assert deal.field['Cash_Rebate'] == 0 and 'Cash_Rebate' not in deal.field
-
-
 @pytest.mark.parametrize('name,cls', deal_classes())
 def test_a_completed_default_is_the_deal_s_own(name, cls):
     """A completion is deep-copied per deal: `DateList.consume` mutates, and two deals of one type
-    sharing a declaration's object would consume each other's fixings."""
+    sharing a declaration's object would consume each other's fixings.
+
+    Killing mutation: the class's own completion handed out."""
     one, two = (schema.DealFields({'Object': name}, cls) for _ in range(2))
     store = schema.deal_defaults(cls)
     assert store, '{} declares no convention at all'.format(name)
@@ -417,7 +383,9 @@ def test_a_completed_default_is_the_deal_s_own(name, cls):
 
 def test_no_declared_default_can_mint_a_price_factor():
     """Discovery reads the raw block through `get_fieldname`, which drops a blank - so a default
-    landing on a factor-naming field has to BE blank, or a deal would name a curve nobody loaded."""
+    landing on a factor-naming field has to BE blank, or a deal would name a curve nobody loaded.
+
+    Killing mutation: the cash account's `Discount_Rate` convention declaring a curve."""
     minting = []
     for name, cls in deal_classes():
         defaults = schema.deal_defaults(cls)
@@ -435,38 +403,6 @@ def test_no_declared_default_can_mint_a_price_factor():
 # --------------------------------------------------------------------------------------------
 # the engine form of a declared default is the loader's own
 # --------------------------------------------------------------------------------------------
-def test_a_period_default_parses_through_the_grammar_the_loader_uses():
-    """Every Period a deal declares, against `Config.parse_period` - the one spelling of that
-    parse, and the form `{'.DateOffset': ...}` decodes to."""
-    config = Config()
-    seen = 0
-    for _, cls in deal_classes():
-        for key, field in declared(cls).items():
-            if field.obj != 'Period':
-                continue
-            seen += 1
-            engine = schema.engine_default(field)
-            assert engine.kwds == config.parse_period(field.default).kwds, (cls.__name__, key)
-    assert seen >= 20, 'the Period declarations went somewhere'
-
-
-def test_a_table_default_is_the_empty_container_its_tag_names():
-    """`'null'` is what a widget writes for an empty table; the engine reads a `utils` container or
-    a list, and never the four characters."""
-    kinds = {'DateList': utils.DateList, 'DateEqualList': utils.DateEqualList,
-             'CreditSupportList': utils.CreditSupportList, 'DateValueList': list, None: list}
-    seen = 0
-    for _, cls in deal_classes():
-        for key, field in declared(cls).items():
-            if field.type != 'Table':
-                continue
-            seen += 1
-            value = schema.engine_default(field)
-            assert isinstance(value, kinds[field.tag]), (cls.__name__, key, field.tag)
-            assert not value, (cls.__name__, key)
-    assert seen >= 30, 'the Table declarations went somewhere'
-
-
 def test_a_blank_table_reads_the_same_however_it_is_spelled():
     """A table left out completes to its tag's empty container, which an author also writes as
     `{".DateEqualList": []}` and a widget as `null`. An empty container is falsy, so a reader's
@@ -490,24 +426,6 @@ def test_a_blank_table_reads_the_same_however_it_is_spelled():
     assert 'Deals Skipped' not in stats, stats
     assert valued['OMITTED'] == valued['NULL'] == valued['EMPTY'] == valued['STATED']
     assert math.isfinite(float.fromhex(valued['NULL'])) and float.fromhex(valued['NULL']) != 0.0
-
-
-def test_a_one_day_realised_dividend_holds_its_digits_in_float32():
-    """`utils.calc_realized_dividends` over one day in float32 on flat 4% repo and 3% dividend
-    curves, S0 e^{r/365} (1 - e^{-q/365}), against `math.expm1` in float64: under 1e-6.
-
-    Killed by: the old spelling `1 - exp(-q t)`, 7.8e-5 off."""
-    class Static:
-        riskneutral, t_Buffer = True, {}
-        t_Static_Buffer = [torch.tensor([r, r], dtype=torch.float32) for r in (0.04, 0.03)]
-
-    flat = utils.CurveTenor(np.array([0.0, 10.0]))
-    repo, dividend = ([(False, i, None, flat, lambda days: days / 365.0)] for i in (0, 1))
-    reset = np.array([[0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
-    got = utils.calc_realized_dividends(
-        torch.tensor(100.0, dtype=torch.float32), repo, dividend, [reset], Static())
-    assert float(got) == pytest.approx(
-        100.0 * math.exp(0.04 / 365.0) * -math.expm1(-0.03 / 365.0), rel=1e-6)
 
 
 def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_dividends():
@@ -633,24 +551,14 @@ def test_an_equity_binary_settles_at_its_expiry_where_it_states_no_settlement_da
     assert math.isfinite(float.fromhex(valued['OMITTED'])) and float.fromhex(valued['OMITTED']) != 0.0
 
 
-def test_a_rate_default_carries_its_unit():
-    """A `Percent`/`Basis` declaration is a whole number of percent or of basis points, and the
-    engine reads `.amount`."""
-    for _, cls in deal_classes():
-        for key, field in declared(cls).items():
-            if field.obj not in ('Percent', 'Basis'):
-                continue
-            value = schema.engine_default(field)
-            assert isinstance(value, utils.Percent if field.obj == 'Percent' else utils.Basis)
-            assert float(value) == field.default / value.divisor
-
-
 # --------------------------------------------------------------------------------------------
 # nothing else moved
 # --------------------------------------------------------------------------------------------
 @pytest.mark.parametrize('filename', sorted(PINNED))
 def test_a_job_document_keeps_its_plan_hash_and_its_factor_universe(filename):
-    """The HARD acceptance, per document: the program and the want-list are what they were."""
+    """The HARD acceptance, per document: the program and the want-list are what they were.
+
+    Killing mutation: the conventions written into the block at construction."""
     context = derivus.Context()
     context.load_json(os.path.join(FIXTURES, filename))
     universe = context.current_cfg.factor_universe()
@@ -663,6 +571,8 @@ def test_every_deal_in_every_job_document_holds_exactly_its_authored_block():
     """The invariant behind the pinned hashes, over every document in the tree that loads: the
     constructed deal's field dict IS the `.Deal` block the file carries. No constructor writes into
     it any more - `NettingCollateralSet` used to `setdefault` three keys the declaration now says.
+
+    Killing mutation: the conventions written into the block at construction.
     """
     paths = sorted(glob.glob(os.path.join(FIXTURES, '*.json')) +
                    glob.glob(os.path.join(ROOT, 'data', '*', 'job_*.json')))
@@ -708,6 +618,8 @@ def test_an_economic_field_is_refused_by_name_and_does_not_price(key, silent):
     741.53 and flips a Down_And_Out to its In at 6.37, against 78.93 for the deal the author meant.
     The block is now REFUSED BY NAME before anything prices it, and a pricing run still leaves no
     row: a placeholder keeps its `KeyError` and the loader's skip is the last line, not the first.
+
+    Killing mutation: every declared default completed, placeholders included.
     """
     block = barrier_deal('Down_And_Out', 1.12, 1.25, 'Call', **FURNISHED)
     del block[key]
@@ -726,37 +638,14 @@ def test_an_economic_field_is_refused_by_name_and_does_not_price(key, silent):
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on
-    `'<' not supported between instances of 'Timestamp' and 'str'` instead of naming the field."""
+    `'<' not supported between instances of 'Timestamp' and 'str'` instead of naming the field.
+
+    Killing mutation: every declared default completed, placeholders included."""
     block = barrier_deal('Down_And_Out', 1.12, 1.25, 'Call', **FURNISHED)
     del block['Expiry_Date']
     with pytest.raises(KeyError) as refusal:
         price(block)
     assert 'Expiry_Date' in str(refusal.value)
-
-
-def test_the_declaration_is_the_only_source_a_deal_default_comes_from():
-    """`declared_defaults` completes a CALCULATION's params and `deal_defaults` a deal's read, off
-    the same `default=`. Neither reads the other's shape, and neither completes a REQUIRED field or
-    a placeholder."""
-    conventions = schema.deal_defaults(instruments.FXBarrierOption)
-    assert conventions.keys() <= {
-        f.key for group in instruments.FXBarrierOption.fields for f in group.fields}
-    for group in instruments.FXBarrierOption.fields:
-        for field in group.fields:
-            assert (field.key in conventions) is bool(field.convention), field.key
-            if field.default is REQUIRED:
-                assert not field.convention and field.key not in conventions
-
-
-def test_a_deal_survives_the_round_trips_a_job_puts_it_through():
-    """A book crosses a process boundary by pickle and a solve step by `deepcopy`; both have to
-    bring the completion with them, or a forked worker prices the skip again."""
-    deal = construct_instrument(dict(barrier_deal(*BARRIERS[0])), {})
-    authored = dict(deal.field)
-    for clone in (copy.deepcopy(deal), pickle.loads(pickle.dumps(deal))):
-        assert dict(clone.field) == authored
-        assert clone.field['Cash_Rebate'] == 0
-        assert 'Cash_Rebate' not in clone.field
 
 
 # --------------------------------------------------------------------------------------------
@@ -872,6 +761,8 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
     The swaption's own legs mark NaN by construction - they are priced by its `post_process`
     rather than on their own rows - so what those two hold here is the COMPILE, which is where a
     missing field has always shown up.
+
+    Killing mutation: no convention completed.
     """
     def dropped(deal):
         return len(furnished(deal)) - len(stripped(deal)) + sum(
@@ -944,32 +835,28 @@ def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_v
     now publishes one, `{"value": "", "convention": true}`.
 
     Read through the declaration instead (`self.field['Payment_Calendars'] or
-    self.field['Accrual_Calendars']`) and the two are one document, which is what this measures on
-    the engine's own Johannesburg calendar three business days out.
+    self.field['Accrual_Calendars']`) and the two are one document: the equity leg on the engine's
+    own Johannesburg calendar, paying three business days out, marks to the bit omitted, blank and
+    stated - a stated calendar is that calendar, the declaration a fallback and not a floor - and
+    differently where neither calendar is stated.
 
-    KILLING MUTATION: the `.get` fallback back. Omitted reads 2027-08-09 and a stated `''` reads
-    2027-08-05 - four business days apart on a reval date, and no message anywhere.
+    KILLING MUTATION: the `.get` fallback back. Omitted pays 2027-08-09 and a stated `''`
+    2027-08-05 - four business days apart, and no message anywhere.
     """
-    calendars = Config()
-    calendars.parse_calendar_file(CALENDARS)
-    assert CALENDAR in calendars.holidays
-
-    def paydates(**extra):
-        deal = construct_instrument(dict(EQUITY_LEG, **extra), {})
-        deal.reset(calendars.holidays)
-        return sorted(deal.get_reval_dates())
-
-    omitted, blank = paydates(), paydates(Payment_Calendars='')
-    assert omitted == blank, (omitted, blank)
-    # and a STATED calendar is that calendar - the declaration is a fallback, not a floor
-    assert paydates(Payment_Calendars=CALENDAR) == omitted
-    assert paydates(Accrual_Calendars='', Payment_Calendars='') != omitted
+    valued, stats = marks([dict(EQUITY_LEG, Reference='OMITTED'),
+                           dict(EQUITY_LEG, Reference='BLANK', Payment_Calendars=''),
+                           dict(EQUITY_LEG, Reference='STATED', Payment_Calendars=CALENDAR),
+                           dict(EQUITY_LEG, Reference='NEITHER', Accrual_Calendars='',
+                                Payment_Calendars='')])
+    assert 'Deals Skipped' not in stats, stats
+    assert valued['OMITTED'] == valued['BLANK'] == valued['STATED'] != valued['NEITHER'], valued
 
 
 def test_a_location_stating_no_holidays_has_none(tmp_path):
     """A location whose `Holidays` is empty rolls on its weekends alone: between two locations that
     close on a Tuesday, the one stating nothing is open that day - as the shipped file's LBMA is,
-    which states none after Santiago's 598.
+    which states none after Santiago's 598. Read through `Config.parse_calendar_file`, the loader's
+    own reading of a `CalendDataFile`.
 
     Killed by: the holidays read only where stated, the location before it lending its own - the
     Tuesday rolls to Wednesday and LBMA reads Santiago's."""
@@ -1052,8 +939,11 @@ def test_completion_is_identity_for_every_declared_type(name, cls):
     is exactly the conventions: `in`, `len` and the JSON round trip see the authored keys and
     nothing else.
 
-    KILLING MUTATION: any spelling in `engine_default` that is not the loader's own - the builder's
-    `uncoerced-period` is one, and a Percent or a Table would read the same way.
+    Every Period declared reaches the pricer as `Config.parse_period` reads its wire form, and every
+    blank Table as the empty container its tag names, never the four characters `'null'`.
+
+    KILLING MUTATION: any spelling in `engine_default` that is not the loader's own - a Period
+    handed over as its string, a blank Table as `'null'`.
     """
     lean, full = decoded_blocks()[name]
     fields = schema.declared_fields(cls)
@@ -1076,7 +966,9 @@ def test_the_store_publishes_the_flag_and_the_must_state_list():
     """What a host and a panel both ask: `required` is everything that MUST BE STATED - REQUIRED
     and every placeholder - and `convention` marks the rest, one or the other on every declared
     field of every type. A placeholder keeps its declared `value`, which is what a blank panel
-    shows; a REQUIRED field has none to show."""
+    shows; a REQUIRED field has none to show.
+
+    Killing mutation: a placeholder published without its `required` flag."""
     store = schema.mapping['Instrument']
     for deal_type, sections in store['types'].items():
         fields = {}

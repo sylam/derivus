@@ -253,30 +253,16 @@ def test_every_declared_amount_is_stated_and_non_zero_in_a_trial():
     assert not missing, missing
 
 
-def wire_node(family, reference):
-    """The node holding `reference` in the family's wire document."""
-    return next(node for node in nodes(document(family)['Calc']['Deals']['Deals']['Children'])
-                if node['Instrument']['.Deal']['Reference'] == reference)
+def test_a_swaption_holds_its_legs_as_terms():
+    """Where the mirror is taken on a swaption. Held short it flips ITS side and keeps its
+    underlying's legs as they were written, sized at the quantity's magnitude - the one placement
+    no mark can see, the swaption's row being valued off its own terms; a collar's and a cap's
+    legs, and a swap's signed principal and unsigned amortisation, mark through the half and short
+    readings above.
 
-
-def test_a_swaption_holds_its_legs_as_terms_and_every_other_container_as_positions():
-    """Where the mirror is taken. A swaption held short flips ITS side and keeps its underlying's
-    legs as they were written, sized at the quantity's magnitude; a collar and a cap, neither an
-    option on its legs, flip each leg; a swap, declaring no side at all, signs its principal and
-    keeps its amortisation, a step the engine takes off the principal's magnitude.
-
-    Killing mutations: the flip carried into a swaption's legs, which prices the short swaption on a
-    receiver underlying; a cap's caplets sized and never flipped, which prices a short cap long;
-    an amortisation step signed, which grows a short swap's principal instead of paying it down.
+    Killing mutation: the flip carried into a swaption's legs, which writes the short swaption on a
+    receiver underlying (every mark unmoved: measured green on the half-and-short gate).
     """
-    cap = spine.scaled(wire_node(trial_rates, 'CAP_LIST'), -1.0)
-    assert [leg['Instrument']['.Deal']['Buy_Sell'] for leg in cap['Children']] == ['Sell']
-    swap = wire_node(trial_rates, 'SWAP_AMORT')['Instrument']['.Deal']
-    short = spine.scaled(wire_node(trial_rates, 'SWAP_AMORT'), -2.0)['Instrument']['.Deal']
-    assert short['Principal'] == -2 * swap['Principal']
-    assert [amount for _, amount in short['Amortisation']['.DateList']] == [
-        2 * amount for _, amount in swap['Amortisation']['.DateList']]
-
     swaption = next(deal for deal in CORE.DEALS if deal['Reference'] == 'SWPT')
     short = held(swaption, -2.0)
     assert (short['Buy_Sell'], short['Principal']) == ('Sell', 2 * swaption['Principal'])
@@ -284,11 +270,6 @@ def test_a_swaption_holds_its_legs_as_terms_and_every_other_container_as_positio
         leg['Buy_Sell'] for leg in swaption['Children']]
     assert short['Children'][0]['Cashflows']['Items'][0]['Notional'] == \
         2 * swaption['Children'][0]['Cashflows']['Items'][0]['Notional']
-
-    collar = next(deal for deal in CORE.DEALS if deal['Reference'] == 'COLLAR')
-    assert [leg['Buy_Sell'] for leg in held(collar, -1.0)['Children']] == ['Sell', 'Buy']
-    swap = next(deal for deal in CORE.DEALS if deal['Reference'] == 'SWAP')
-    assert held(swap, -1.0)['Principal'] == -swap['Principal']
 
 
 def test_a_deal_stating_none_of_its_amounts_refuses_a_position_other_than_one_by_name():

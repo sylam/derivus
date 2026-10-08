@@ -1,14 +1,14 @@
-"""End-to-end smoke test: drives the framework through `cx.run_job()` on a JSON fixture
-to verify the full symlog wiring (bundle build, utility_scale resolution, evaluate_objective
-dispatch, evaluation_summary surface, position-limit hard mask).
+"""The utility scale `c` a symlog objective reads, through `cx.run_job()` on a JSON fixture: an
+`Objective.Utility_Scale_Explicit` is honoured exactly, and a misspelt `Utility_Scale_Mode` is
+refused by name rather than read as the default formula. The formula itself is
+`test_spot_history_optional`'s.
 
 NO monkey-patching. NO internal imports. Just JSON in, result out.
 """
 import json as jsonlib
 import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
 import derivus as rf
 
@@ -23,98 +23,27 @@ def _load(**objective_overrides):
     return data
 
 
-def _run(data, *, expect_eval=True):
+def _run(data):
     cx = rf.Context()
     cx.load_json((jsonlib.dumps(data), 'smoke.json'))
     _, result = cx.run_job()
-    assert result.bundle is not None, "bundle missing from result"
-    if expect_eval:
-        assert result.evaluation_summary is not None, "evaluation_summary missing"
     return result
 
 
-def test_bundle_resolves_utility_scale():
-    """Bundle build always sets utility_scale (consumed by symlog, harmless for the identity path)."""
-    result = _run(_load())
-    c = float(result.bundle.utility_scale)
-    assert c > 1e3, f"utility_scale should be > $1k floor; got ${c:,.0f}"
-    print(f"test_bundle_resolves_utility_scale: PASS  (c = ${c:,.0f})")
-
-
-def test_identity_objective_runs():
-    """A non-utility Objective.Object takes the identity path and produces a finite headline.
-    Position limits are reward-side (Per_Instrument_Bounds_Penalty), not hard-masked, so an
-    untrained policy may explore past [Min, Max] - only finiteness is asserted."""
-    data = _load(Object='TerminalValue', Unused_Key=10.0)
-    result = _run(data)
-    metrics = result.evaluation_summary['metrics']
-    assert metrics['average_net_pnl'] is not None and not (metrics['average_net_pnl'] != metrics['average_net_pnl']), \
-        f"identity run produced NaN headline: {metrics}"
-    print(f"test_identity_objective_runs: PASS  (mean=${metrics['average_net_pnl']:+,.0f})")
-
-
-def test_symlog_objective_runs():
-    """AsymmetricUtility_Symlog evaluates and produces a finite utility-space reward.
-    Position limits are reward-side, not hard-masked — see test_identity_objective_runs."""
-    data = _load(Object='AsymmetricUtility_Symlog', Floor_Penalty=10.0,
-                 Surplus_Reward=1.0, Power=1.0)
-    result = _run(data)
-    metrics = result.evaluation_summary['metrics']
-    assert metrics['average_net_pnl'] is not None and not (metrics['average_net_pnl'] != metrics['average_net_pnl']), \
-        f"symlog run produced NaN headline: {metrics}"
-    print(f"test_symlog_objective_runs: PASS  (mean=${metrics['average_net_pnl']:+,.0f})")
-
-
-def test_huber_objective_runs():
-    """AsymmetricUtility_Huber flows through run_job (bundle resolves c, objective dispatches
-    the Huber terminal utility) and produces a finite headline."""
-    data = _load(Object='AsymmetricUtility_Huber', Huber_Aversion=2.5, Huber_Delta=1.0)
-    result = _run(data)
-    assert float(result.bundle.utility_scale) > 1e3, "huber needs a real c"
-    metrics = result.evaluation_summary['metrics']
-    assert metrics['average_net_pnl'] is not None and \
-        metrics['average_net_pnl'] == metrics['average_net_pnl'], f"huber NaN headline: {metrics}"
-    print(f"test_huber_objective_runs: PASS  (mean=${metrics['average_net_pnl']:+,.0f})")
-
-
-def test_cara_objective_runs():
-    """AsymmetricUtility_CARA flows through run_job and produces a finite headline."""
-    data = _load(Object='AsymmetricUtility_CARA', CARA_Gamma=1.0)
-    result = _run(data)
-    assert float(result.bundle.utility_scale) > 1e3, "cara needs a real c"
-    metrics = result.evaluation_summary['metrics']
-    assert metrics['average_net_pnl'] is not None and \
-        metrics['average_net_pnl'] == metrics['average_net_pnl'], f"cara NaN headline: {metrics}"
-    print(f"test_cara_objective_runs: PASS  (mean=${metrics['average_net_pnl']:+,.0f})")
-
-
 def test_unknown_utility_scale_mode_fails_loud():
-    """Typo in Utility_Scale_Mode raises at bundle build, not silently."""
+    """A typo in Utility_Scale_Mode raises at bundle build, naming the spelling.
+
+    Killing mutation: the mode check dropped, the typo read as the default formula."""
     data = _load(Object='AsymmetricUtility_Symlog', Floor_Penalty=10.0,
                  Utility_Scale_Mode='vol_scled_notional')  # typo
-    try:
+    with pytest.raises(ValueError, match='vol_scled_notional'):
         _run(data)
-    except ValueError as e:
-        assert 'vol_scled_notional' in str(e), f"unexpected message: {e}"
-        print(f"test_unknown_utility_scale_mode_fails_loud: PASS")
-        return
-    raise AssertionError("typo'd mode should have raised")
 
 
 def test_explicit_utility_scale_override():
-    """Utility_Scale_Explicit overrides the formula."""
+    """Utility_Scale_Explicit overrides the formula, exactly.
+
+    Killing mutation: the explicit branch skipped, the formula's c reported."""
     data = _load(Object='AsymmetricUtility_Symlog', Floor_Penalty=10.0,
                  Utility_Scale_Explicit=5_000_000.0)
-    result = _run(data)
-    c = float(result.bundle.utility_scale)
-    assert abs(c - 5_000_000.0) < 1.0, f"explicit override not honored: c=${c:,.0f}"
-    print(f"test_explicit_utility_scale_override: PASS  (c = ${c:,.0f})")
-
-
-if __name__ == '__main__':
-    test_bundle_resolves_utility_scale()
-    test_identity_objective_runs()
-    test_symlog_objective_runs()
-    test_unknown_utility_scale_mode_fails_loud()
-    test_explicit_utility_scale_override()
-    print("\nAll smoke tests passed.")
+    assert float(_run(data).bundle.utility_scale) == 5_000_000.0

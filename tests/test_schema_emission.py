@@ -8,12 +8,15 @@ section IS its descriptors), and one field name resolving to another deal's desc
 
 What remains gateable is what the declarations can still get wrong: a malformed descriptor, a
 section declared two ways, a shared group copied instead of shared, a deal type no create-menu
-offers, a process no factor menu offers, and a calculation type `run_job` cannot dispatch.
+offers, a process no factor menu offers, a calculation type `run_job` cannot dispatch, and a
+switch a run reads declared somewhere other than where it reads it.
+
+The census is per store and per family: each test reads every declaration of its kind, so it is
+fast and drives no document - a store equal to its declaration IS the outcome.
 """
 import ast
 import inspect
 import os
-import subprocess
 import sys
 import textwrap
 import types
@@ -101,12 +104,30 @@ def every_field(group):
         yield from walk(top)
 
 
-def test_the_store_is_generated():
-    """Guards the gate itself: every assertion below is vacuously true over an empty declaration
-    set, so an import error or a filter bug would read as a green schema."""
-    assert declared_classes(), 'no class declares `fields` - these gates are vacuous'
-    assert INSTRUMENT['types'] == schema.emit_instrument(instruments)[0], (
-        'the Instrument store is not the emitted view - a hand-written copy has come back')
+def test_every_store_is_the_emitted_view():
+    """Every store a front end renders from is what its emitter builds off the declarations, and
+    none is empty - every gate below is vacuously true over an empty declaration set, so an import
+    error or a filter bug would otherwise read as a green schema. Nor does a flat name-keyed store
+    sit beside the per-type ones.
+
+    Killing mutation: a hand-written entry beside the emitted Factor types."""
+    process_types, factor_map = schema.emit_process(stochasticprocess, FACTOR['types'])
+    emitted = {
+        'Instrument': (INSTRUMENT['types'], schema.emit_instrument(instruments)[0]),
+        'Factor': (FACTOR['types'], schema.emit_factor(riskfactors)),
+        'Process': (PROCESS['types'], process_types),
+        'Process_factor_map': (PROCESS_FACTOR_MAP, factor_map),
+        'Calculation': (CALCULATION['types'], schema.emit_calculation(calculation)),
+        'MarketPrices': (MARKET_PRICES['types'], schema.emit_market_prices(bootstrappers)),
+        'Calibration': (CALIBRATION['types'], schema.emit_calibration(stochasticprocess)),
+        'Interpolation_factor_map': (INTERPOLATION_MAP, schema.emit_interpolation(riskfactors))}
+    for name, (store, view) in emitted.items():
+        assert store, f'the {name} store is empty - every gate over it is vacuous'
+        assert store == view, f'the {name} store is not the emitted view - a hand-written copy'
+    for store in (FACTOR, PROCESS, CALCULATION, CALIBRATION):
+        assert 'fields' not in store, 'a flat name-keyed store has come back beside the types'
+    assert set(MARKET_PRICES) == {'types', 'values'}, (
+        f'sub-stores have come back beside the types: {sorted(set(MARKET_PRICES) - {"types", "values"})}')
 
 
 def test_every_deal_type_carries_its_own_plain_names():
@@ -153,43 +174,45 @@ def test_every_deal_type_names_the_days_its_tenor_is_read_off():
 def test_the_fields_shim_serves_the_same_objects():
     """`derivus.fields` is deprecated for one release and holds nothing of its own. `fields.mapping`
     was the documented surface and the package is on PyPI, so an external caller that bound it keeps
-    working - on the same object, not a copy, which is the whole point of the retirement."""
+    working - on the same object, not a copy, which is the whole point of the retirement.
+
+    Killing mutation: the shim binding a copy of the store."""
     assert derivus.fields.mapping is schema.mapping
     assert derivus.fields.default is schema.default
     src = inspect.getsource(derivus.fields)
     assert 'mapping = {' not in src, 'the shim has grown a store of its own'
 
 
-def test_the_store_survives_a_declaring_module_being_imported_first():
-    """`schema.py` assembles `mapping` at the BOTTOM, after the vocabulary its declaring modules
-    import from it. A declaring module initialised first would have `emit_*` read a half-initialised
-    module and return an EMPTY store rather than raising - which every gate here would pass right
-    through, since they compare the store to the emitter.
-
-    A submodule import always initialises the package first and `derivus/__init__` imports schema
-    before any declaring module; this holds that fixed. In a subprocess, because by the time this
-    module is collected the answer is cached in `sys.modules`."""
-    out = subprocess.run(
-        [sys.executable, '-c', 'import derivus.instruments, derivus;'
-         'print(len(derivus.schema.mapping["Instrument"]["types"]))'],
-        capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
-    assert out.returncode == 0, out.stderr
-    assert int(out.stdout) == len(INSTRUMENT['types']), (
-        'importing a declaring module first yields a different store')
+FAMILIES = ('Instrument', 'Factor', 'Process', 'Calculation', 'MarketPrices', 'Calibration')
 
 
-@pytest.mark.parametrize('cls_name', sorted(declared_classes()))
-def test_descriptor_shape(cls_name):
+@pytest.mark.parametrize('family', FAMILIES)
+def test_descriptor_shape(family):
     """The descriptor is a tagged union on `widget` and consumers destructure it positionally: a
     `Table` missing `sub_types` raises in the UI's cell renderer, a `Dropdown` missing `values`
-    renders an empty list.
+    renders an empty list. Containers are recursed - the CVA, FVA, CollVA and initial-margin
+    blocks, the quote container and the generation parameters are where the nesting is - and the
+    shapeless arrays are pinned separately, below.
 
-    Parametrized over CLASSES and reading the DECLARATIONS: sections are shared objects, so walking
-    the store visits `Admin` once however many types list it.
-    """
-    for group in declared_classes()[cls_name]:
-        for f in every_field(group):
-            check_descriptor(f'{cls_name}.{group.name}.{f.key}', f.descriptor())
+    Deals read the DECLARATIONS class by class: sections are shared objects, so walking the store
+    visits `Admin` once however many types list it.
+
+    Killing mutation: a Dropdown's `values` left out of its descriptor."""
+    if family == 'Instrument':
+        for cls_name, groups in declared_classes().items():
+            for group in groups:
+                for f in every_field(group):
+                    check_descriptor(f'{cls_name}.{group.name}.{f.key}', f.descriptor())
+    elif family == 'Factor':
+        for cls_name, fields in factor_classes().items():
+            for f in fields:
+                check_descriptor(f'{cls_name}.{f.key}', f.descriptor())
+    else:
+        store = {'Process': PROCESS, 'Calculation': CALCULATION, 'MarketPrices': MARKET_PRICES,
+                 'Calibration': CALIBRATION}[family]
+        for type_name, descriptors in store['types'].items():
+            for key, d in descriptors.items():
+                check_shape(f'{type_name}.{key}', d)
 
 
 # Descriptors whose JSON value is an array or map whose SHAPE is an OUTPUT - an NxN transition
@@ -270,7 +293,9 @@ def test_the_widget_vocabulary_names_no_plotting_library():
     """'Flot' (jQuery-flot) and 'Three' (three.js/k3d) are plotting libraries, not types. The tokens
     denote a curve OBJECT and a surface OBJECT, and the store says so: 'Curve', and 'Surface'
     covering both shaped types, so a renderer branches on row arity rather than on the token. The
-    legacy spellings live in the front end's `LEGACY_WIDGET` map."""
+    legacy spellings live in the front end's `LEGACY_WIDGET` map.
+
+    Killing mutation: the Curve type's widget spelt `Flot` again."""
     widgets = set()
     for key, d in every_descriptor():
         assert d['widget'] not in ('Flot', 'Three'), key
@@ -287,7 +312,9 @@ def test_the_column_default_map_is_keyed_by_a_column_token():
 
     The last assert is the jupyter hazard: `set_value_from_widget` reads `obj or widget` into ONE
     variable and picks the decoder off it, so a column token spelled like a shape widget would
-    decode a table as a curve."""
+    decode a table as a curve.
+
+    Killing mutation: a `Curve` blank in the column map."""
     column_tokens = set(schema.OBJ_TOKEN.values()) | set(TAG_ARITY)
     assert set(schema.default) <= column_tokens, sorted(set(schema.default) - column_tokens)
     shape_widgets = {schema.F.WIDGET[t] for t in schema.SHAPED}
@@ -302,19 +329,27 @@ def test_the_column_default_map_is_keyed_by_a_column_token():
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from
-    every group is fully declared, fully priceable and unreachable from the UI."""
+    every group is fully declared, fully priceable and unreachable from the UI.
+
+    Killing mutation: `StructuredDeal` dropped from its menu group."""
     menued = {t for members in INSTRUMENT['groups'].values() for t in members}
     assert not sorted(set(INSTRUMENT['types']) - menued), (
         f'declared deal types in no menu group: {sorted(set(INSTRUMENT["types"]) - menued)}')
 
 
-def test_one_name_may_carry_two_descriptors_in_different_sections():
-    """The capability the per-section store exists for, pinned so a return to a flat one fails.
+def test_one_name_may_carry_two_descriptors_in_different_types():
+    """The capability the per-section and per-type stores exist for, pinned so a return to a flat
+    one fails - the JSON is per deal, per process and per factor type, so only a store keyed by
+    field name across all of them was ambiguous, one silently winning and the loser carrying an
+    alias.
 
-    `Payment_Timing` is `Touch`/`Expiry` on a one-touch and `End`/`Begin`/`Discounted` on a cashflow
-    leg. Both are right: the JSON is per-deal, so only a store keyed by field name across every deal
-    was ambiguous - under that store one silently won and the loser carried an alias.
-    """
+    `Payment_Timing` is `Touch`/`Expiry` on a one-touch and `End`/`Begin`/`Discounted` on a
+    cashflow leg; `Sigma` a scalar on the OU/hazard/Clewlow-Strickland models and a term-structure
+    curve on Hull-White (once filed as `sigma`); `Surface` a (moneyness, expiry, vol) triple list on
+    a `VolatilityGrid` and a quad list on the three vol SPACES (once filed as `Space`).
+
+    Killing mutation: the Instrument emitter filing each descriptor under its field name across
+    every section, the first declaration winning."""
     sections = INSTRUMENT['sections']
     seen = {tuple(d['values']) for s in sections.values()
             for k, d in s.items() if k == 'Payment_Timing'}
@@ -327,21 +362,46 @@ def test_one_name_may_carry_two_descriptors_in_different_sections():
     assert values_for('FXOneTouchOption') == [['Touch', 'Expiry']]
     assert values_for('CapDeal') == [['End', 'Begin', 'Discounted']]
 
+    processes = PROCESS['types']
+    assert processes['LogOUSpotModel']['Sigma']['widget'] == 'Float'
+    assert processes['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Curve'
+    assert processes['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
+    assert not any('sigma' in d for d in processes.values()), 'the lowercase alias key is back'
 
-@pytest.mark.parametrize('cls_name', sorted(declared_classes()))
-def test_no_group_declares_a_key_twice(cls_name):
-    """A section is a dict keyed by the JSON name, so a name declared twice in one group loses a
-    descriptor outright. `Net_Cashflows` was declared twice verbatim on `StructuredDeal`. No
-    cross-class version: two SECTIONS may key the same name differently, which is the point."""
-    for group in declared_classes()[cls_name]:
-        keys = [f.key for f in group.fields]
-        dupes = sorted({k for k in keys if keys.count(k) > 1})
-        assert not dupes, f'{cls_name}.{group.name} declares {dupes} more than once'
+    assert FACTOR['types']['VolatilityGrid']['Surface']['value'] == schema.BLANK['Surface']
+    for space in ('InterestYieldVol', 'InterestRateVol', 'ForwardPriceVol'):
+        assert FACTOR['types'][space]['Surface']['value'] == schema.BLANK['Space']
+
+
+@pytest.mark.parametrize('family', FAMILIES)
+def test_no_type_declares_a_key_twice(family):
+    """A section or a type is a dict keyed by the JSON name, so a name declared twice in one loses a
+    descriptor outright. `Net_Cashflows` was declared twice verbatim on `StructuredDeal`, and the
+    option family builds its eight factor-reference fields from `factor_types`, which is exactly
+    the shape that can produce one. No cross-type version: two SECTIONS may key the same name
+    differently, which is the point.
+
+    Killing mutation: `Greeks` declared twice on the base valuation."""
+    keys = {
+        'Instrument': lambda: {f'{c}.{g.name}': [f.key for f in g.fields]
+                               for c, groups in declared_classes().items() for g in groups},
+        'Factor': lambda: {c: [f.key for f in fields] for c, fields in factor_classes().items()},
+        'Process': lambda: {c: [f.key for f in fields] for c, fields in process_classes().items()},
+        'Calculation': lambda: {t: [f.key for f in c.__dict__['fields']]
+                                for t, c in calculation_classes().items()},
+        'MarketPrices': lambda: {t: [f.key for f in c.__dict__['fields']]
+                                 for t, c in market_price_classes().items()},
+        'Calibration': lambda: {t: ['Method'] + [f.key for f in c.__dict__['fields']]
+                                for t, c in calibration_classes().items()}}[family]()
+    dupes = {name: sorted({k for k in found if found.count(k) > 1}) for name, found in keys.items()}
+    assert not {name: d for name, d in dupes.items() if d}, f'{family} keys declared twice'
 
 
 def test_no_section_is_declared_two_ways():
     """The same hazard one level up: `sections` is keyed by group NAME, so two groups sharing a name
-    and differing in fields silently collapse to one panel."""
+    and differing in fields silently collapse to one panel.
+
+    Killing mutation: the one-touch listing an `FXAdmin` one field short."""
     seen = {}
     for cls_name, groups in declared_classes().items():
         for g in groups:
@@ -352,138 +412,60 @@ def test_no_section_is_declared_two_ways():
 
 def test_shared_groups_are_shared_not_copied():
     """`FXAdmin` is one object listed by eight classes. Copying it per class would let the copies
-    drift - which is the whole defect the name-keyed dict has, reintroduced one level down."""
+    drift - which is the whole defect the name-keyed dict has, reintroduced one level down.
+
+    Killing mutation: the one-touch listing a copy of `FXAdmin`, field for field."""
     users = [f for f in declared_classes().values() if any(g.name == 'FXAdmin' for g in f)]
     assert len(users) > 1, 'FXAdmin is declared by fewer than two classes - nothing to share'
     groups = {id(g) for f in users for g in f if g.name == 'FXAdmin'}
     assert len(groups) == 1, f'FXAdmin exists as {len(groups)} distinct objects, not one'
 
 
-def test_the_factor_store_is_generated():
-    """The same guard as above, for factors: every Factor assertion here is vacuously true over an
-    empty declaration set."""
-    assert factor_classes(), 'no riskfactors class declares `fields` - these gates are vacuous'
-    assert FACTOR['types'] == schema.emit_factor(riskfactors), (
-        'the Factor store is not the emitted view - a hand-written copy has come back')
-    assert 'fields' not in FACTOR, 'a flat name-keyed store has come back beside the types'
+def test_the_factor_types_are_the_riskfactor_classes():
+    """Both directions. `construct_factor` does `globals().get(factor.type)(block)`, so a declared
+    type naming no class is `None(block)` - a TypeError at compile time rather than a logged miss;
+    `ConvenienceYield` sat in that state, declared with two fields and no class. And a factor class
+    no schema declares cannot be authored or documented. The exemptions are the four dimension
+    bases and the curve-model base, which are never a `Factor.type`, and the Jacobian, whose block
+    is keyed by benchmark instrument rather than by a fixed field set.
 
-
-def test_every_declared_factor_type_is_constructible():
-    """`construct_factor` does `globals().get(factor.type)(block)`, so a declared type naming no
-    class is `None(block)` - a TypeError at compile time rather than a logged miss.
-    `ConvenienceYield` sat in that state, declared with two fields and no class."""
+    Killing mutation: `ForwardPriceSample`'s declaration withdrawn."""
     undispatchable = sorted(set(FACTOR['types']) - set(riskfactor_classes()))
     assert not undispatchable, f'schema offers factor types with no class: {undispatchable}'
-
-
-def test_every_riskfactor_class_is_declarable():
-    """The converse: a factor class no schema declares cannot be authored or documented. The
-    exemptions are the four dimension bases and the curve-model base, which are never a
-    `Factor.type`, and the Jacobian, whose block is keyed by benchmark instrument rather than by
-    a fixed field set."""
     missing = sorted(set(riskfactor_classes()) - set(FACTOR['types']) - set(UNDECLARED_FACTORS))
     assert not missing, f'riskfactors classes no schema can author: {missing}'
 
 
-@pytest.mark.parametrize('cls_name', sorted(factor_classes()))
-def test_factor_descriptor_shape(cls_name):
-    """`check_descriptor` again, over the factor declarations - same tagged union, same
-    consumers."""
-    for f in factor_classes()[cls_name]:
-        check_descriptor(f'{cls_name}.{f.key}', f.descriptor())
+def test_the_process_types_are_the_process_classes():
+    """Both directions. `construct_process` does `globals().get(sp_type)(factor, param,
+    implied_factor)`, so a declared type naming no class is a TypeError as the scenario engine
+    builds; and a process class no schema declares cannot be authored from the Workbench or found
+    in the JSON reference - `GARCHSpotModel` sat there, calibrated, shipped in a fixture,
+    documented, and absent from both the Price Models panel and every process menu.
 
-
-@pytest.mark.parametrize('cls_name', sorted(factor_classes()))
-def test_no_factor_declares_a_key_twice(cls_name):
-    """A factor type is one dict keyed by the JSON name, so a name declared twice loses a
-    descriptor outright."""
-    keys = [f.key for f in factor_classes()[cls_name]]
-    dupes = sorted({k for k in keys if keys.count(k) > 1})
-    assert not dupes, f'{cls_name} declares {dupes} more than once'
-
-
-def test_the_process_store_is_generated():
-    """The same guard again, for processes - every Process assertion here is vacuous over an empty
-    declaration set."""
-    assert process_classes(), 'no stochasticprocess class declares `fields` - these gates are vacuous'
-    types, factor_map = schema.emit_process(stochasticprocess, FACTOR['types'])
-    assert PROCESS['types'] == types, (
-        'the Process store is not the emitted view - a hand-written copy has come back')
-    assert PROCESS_FACTOR_MAP == factor_map, 'the process/factor map is not the emitted view'
-    assert 'fields' not in PROCESS, 'a flat name-keyed store has come back beside the types'
-
-
-def test_every_declared_process_type_is_dispatchable():
-    """`construct_process` does `globals().get(sp_type)(factor, param, implied_factor)`, so a
-    declared type naming no class is `None(...)` - a TypeError as the scenario engine builds,
-    after the market data has loaded and the deals have compiled."""
+    Killing mutation: `LogOUSpotModel`'s declaration withdrawn."""
     undispatchable = sorted(set(PROCESS['types']) - set(concrete_processes()))
     assert not undispatchable, f'schema offers process types with no class: {undispatchable}'
-
-
-def test_every_process_class_is_declarable():
-    """The converse: a process class no schema declares cannot be authored from the Workbench or
-    found in the JSON reference. `GARCHSpotModel` sat in that state - calibrated, shipped in a
-    fixture, documented, and absent from both the Price Models panel and every process menu."""
     missing = sorted(set(concrete_processes()) - set(PROCESS['types']))
     assert not missing, f'process classes no schema can author: {missing}'
 
 
-@pytest.mark.parametrize('cls_name', sorted(process_classes()))
-def test_process_descriptor_shape(cls_name):
-    """`check_descriptor` again, over the process declarations - same tagged union, same
-    consumers. The shapeless arrays are pinned separately, below."""
-    for f in process_classes()[cls_name]:
-        check_shape(f'{cls_name}.{f.key}', f.descriptor())
-
-
-@pytest.mark.parametrize('cls_name', sorted(process_classes()))
-def test_no_process_declares_a_key_twice(cls_name):
-    """A process type is one dict keyed by the JSON name, so a name declared twice loses a
-    descriptor outright."""
-    keys = [f.key for f in process_classes()[cls_name]]
-    dupes = sorted({k for k in keys if keys.count(k) > 1})
-    assert not dupes, f'{cls_name} declares {dupes} more than once'
-
-
-def test_every_factor_type_has_a_process_menu():
+def test_the_process_menu_is_every_factor_type_by_the_declared_processes():
     """The Workbench indexes the map by the type of the factor in front of it
     (`possible_risk_process[factor.type]`), so a factor type with no entry is a KeyError that takes
-    the whole Price Factors page down - not an empty dropdown. Emitting the keys from the factor
-    declarations is what makes that unreachable."""
+    the whole Price Factors page down; the panel looks an offered process's descriptors up by name,
+    so an entry naming no declared type is a KeyError one click later; and a process no factor's
+    menu offers cannot be selected at all - three implied models were in that state, plus
+    `GARCHSpotModel`.
+
+    Killing mutation: `HWHazardRateModel` declaring no factor type."""
     assert set(PROCESS_FACTOR_MAP) == set(FACTOR['types']), (
         f'process menu and factor types disagree: '
         f'{sorted(set(PROCESS_FACTOR_MAP) ^ set(FACTOR["types"]))}')
-
-
-def test_every_mapped_process_is_a_declared_type():
-    """The menu offers a process by name and the panel then looks its descriptors up by that name,
-    so an entry naming no declared type is a KeyError one click later."""
     offered = {p for members in PROCESS_FACTOR_MAP.values() for p in members}
-    assert not offered - set(PROCESS['types']), (
-        f'process menu offers undeclared types: {sorted(offered - set(PROCESS["types"]))}')
-
-
-def test_every_process_reaches_a_factor_menu():
-    """The converse, which was drifting: a process the engine constructs but no factor's menu offers
-    cannot be selected at all. Three implied models were in that state, plus `GARCHSpotModel`,
-    which was in no store at all."""
-    offered = {p for members in PROCESS_FACTOR_MAP.values() for p in members}
-    assert not set(PROCESS['types']) - offered, (
-        f'declared processes no factor menu offers: {sorted(set(PROCESS["types"]) - offered)}')
-
-
-def test_one_name_may_carry_two_shapes_in_different_processes():
-    """The capability the per-type store exists for, pinned so a return to a flat one fails.
-
-    `Sigma` carries two shapes: a scalar on the OU/hazard/Clewlow-Strickland models and a
-    term-structure curve on Hull-White. Under the flat store the scalar had to be filed as `sigma`
-    with `Sigma` as an alias."""
-    types = PROCESS['types']
-    assert types['LogOUSpotModel']['Sigma']['widget'] == 'Float'
-    assert types['HullWhite1FactorInterestRateModel']['Sigma']['widget'] == 'Curve'
-    assert types['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
-    assert not any('sigma' in d for d in types.values()), 'the lowercase alias key is back'
+    assert offered == set(PROCESS['types']), (
+        f'offered but undeclared: {sorted(offered - set(PROCESS["types"]))}; declared but in no '
+        f'menu: {sorted(set(PROCESS["types"]) - offered)}')
 
 
 def calculation_classes():
@@ -509,56 +491,20 @@ def dispatched_calculations():
     return found
 
 
-def test_the_calculation_store_is_generated():
-    """The same guard again - every Calculation assertion here is vacuous over an empty
-    declaration set."""
-    assert calculation_classes(), 'no calculation class declares `fields` - these gates are vacuous'
-    assert CALCULATION['types'] == schema.emit_calculation(calculation), (
-        'the Calculation store is not the emitted view - a hand-written copy has come back')
-    assert 'fields' not in CALCULATION, 'a flat name-keyed store has come back beside the types'
+def test_the_calculation_types_are_what_run_job_dispatches():
+    """Both directions. `run_job` branches on the `Object` string and RAISES on a miss, so a declared
+    type naming no branch is a calculation the create menu offers and the engine refuses to run;
+    and the converse was where the drift was - `HedgeMonteCarlo` had a `run_job` branch, a
+    documented contract and two shipped fixtures, and no schema row, so opening a job that used it
+    raised KeyError in `CalculationPage.load_items`. The type is the `Object` string, not the class
+    name (`Base_Revaluation` is authored as `BaseValuation`), which the class states with
+    `calc_type` because no rule recovers one word from the other.
 
-
-def test_every_declared_calculation_type_is_dispatchable():
-    """`run_job` branches on the `Object` string and RAISES on a miss, so a declared type naming no
-    branch is a calculation the create menu offers and the engine refuses to run. The type is the
-    `Object` string, not the class name (`Base_Revaluation` is authored as `BaseValuation`), which
-    the class states with `calc_type` because no rule recovers one word from the other."""
+    Killing mutation: `run_job`'s HedgeMonteCarlo branch keyed on another string."""
     undispatchable = sorted(set(CALCULATION['types']) - dispatched_calculations())
     assert not undispatchable, f'schema offers calculations run_job cannot dispatch: {undispatchable}'
-
-
-def test_every_dispatchable_calculation_is_declared():
-    """The converse, where the drift was: `HedgeMonteCarlo` had a `run_job` branch, a documented
-    contract and two shipped fixtures, and no schema row - so the create menu did not offer it and
-    opening a job that used it raised KeyError in `CalculationPage.load_items`."""
     undeclared = sorted(dispatched_calculations() - set(CALCULATION['types']))
     assert not undeclared, f'calculations run_job dispatches that no schema declares: {undeclared}'
-
-
-@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
-def test_calculation_descriptor_shape(calc_type):
-    """`check_descriptor` over the calculation declarations, containers recursed - the CVA, FVA,
-    CollVA and initial-margin blocks are where the nesting is."""
-    for key, d in CALCULATION['types'][calc_type].items():
-        check_shape(f'{calc_type}.{key}', d)
-
-
-@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
-def test_no_calculation_declares_a_key_twice(calc_type):
-    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor."""
-    keys = [f.key for f in calculation_classes()[calc_type].__dict__['fields']]
-    dupes = sorted({k for k in keys if keys.count(k) > 1})
-    assert not dupes, f'{calc_type} declares {dupes} more than once'
-
-
-#: Calculation knobs whose declared default is NOT the engine's fallback, pinned so the gate below
-#: covers everything else. Each changes what a job means depending on how it was written; they are
-#: recorded rather than fixed because moving either side moves a shipped default.
-KNOWN_CALCULATION_DEFAULT_DRIFT = {
-    ('BaseValuation', 'Random_Seed'): (5120, 1),
-    ('CreditMonteCarlo', 'Generate_Cashflows'): ('Yes', 'No'),
-    ('CreditMonteCarlo', 'Dynamic_Scenario_Dates'): ('Yes', 'No'),
-}
 
 
 def calculation_fallback_reads(cls_name, module_ast):
@@ -587,14 +533,16 @@ def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(
 
     Scoped to keys the type DECLARES. A knob read but never declared is a different defect - the
     panel cannot write it - and `HedgeMonteCarlo` reads a dozen without declaring any.
+
+    Killing mutation: the credit Monte Carlo's `Keep_Tensor` declared `Yes` where the engine
+    falls back to `No`.
     """
     module_ast = ast.parse(inspect.getsource(calculation))
     cls_name = calculation_classes()[calc_type].__name__
     declared = declared_values(CALCULATION['types'][calc_type])
     drift = {key: (declared[key], fallback)
              for key, fallback in calculation_fallback_reads(cls_name, module_ast).items()
-             if key in declared and declared[key] != fallback
-             and KNOWN_CALCULATION_DEFAULT_DRIFT.get((calc_type, key)) != (declared[key], fallback)}
+             if key in declared and declared[key] != fallback}
     assert not drift, f'{calc_type} declares one default and falls back to another: {drift}'
 
 
@@ -659,6 +607,8 @@ def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
     rather than a broken run.
 
     Scoped to keys the type declares WITH a menu, for the default gate's reason.
+
+    Killing mutation: `'All'` dropped from the `Greeks` menu again.
     """
     module_ast = ast.parse(inspect.getsource(calculation))
     cls_name = calculation_classes()[calc_type].__name__
@@ -670,18 +620,41 @@ def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
         f'{calc_type} acts on settings its menu cannot author: {unreachable}')
 
 
-def test_the_calculation_time_grid_is_the_key_the_engine_reads():
-    """The drift this migration fixed. The store declared `Base_Time_Grid`; `run_cmc` and
-    `run_hedgemontecarlo` read `Time_Grid` - now through `declared_defaults`, so the omitted-key
-    grid is the declared one rather than a literal that can disagree with it - and every fixture
-    and doc writes `Time_Grid`, so the Workbench's grid field wrote a key nobody reads and a
-    Workbench-authored run silently took the hardcoded default grid."""
-    assert 'Time_Grid' in CALCULATION['types']['CreditMonteCarlo']
-    assert 'Time_Grid' in CALCULATION['types']['HedgeMonteCarlo']
-    assert 'Base_Time_Grid' not in CALCULATION['types']['CreditMonteCarlo']
-    src = inspect.getsource(derivus)
-    assert src.count("declared_defaults(") >= 2 and "['Time_Grid']" in src
-    assert "calc_params.get('Time_Grid'" not in src and 'Base_Time_Grid' not in src
+#: Switches a run reads, each declared where it reads it and nowhere else, at the default and menu
+#: the engine means: `(type, key): (default, menu)`, and `(type, key): None` for a calculation that
+#: must NOT declare one.
+DECLARED_SWITCHES = {
+    ('CreditMonteCarlo', 'Time_Grid'): ('0d 2d 1w(1w) 3m(1m) 2y(3m)', None),
+    ('HedgeMonteCarlo', 'Time_Grid'): ('0d 1d(1d) 4m', None),
+    ('CreditMonteCarlo', 'Base_Time_Grid'): None,
+    ('BaseValuation', 'Greeks'): ('No', ['All', 'First', 'No']),
+    ('BaseValuation', 'Recompute_Inner_MC'): ('No', ['Yes', 'No']),
+    ('CreditMonteCarlo', 'Recompute_Inner_MC'): ('No', ['Yes', 'No']),
+    ('BaseValuation', 'Branch_And_Weight'): ('Yes', ['Yes', 'No']),
+    ('CreditMonteCarlo', 'Branch_And_Weight'): None,
+    ('HedgeMonteCarlo', 'Branch_And_Weight'): None,
+}
+
+
+def test_a_switch_is_declared_where_the_run_reads_it():
+    """A framework feature ships behind a JSON switch, declared on the calculation that reads it:
+    the grid is `Time_Grid` (the store once declared `Base_Time_Grid` beside it, which a Workbench
+    run wrote and nobody read); second derivatives are on the base valuation's `Greeks` menu at
+    `All` and off by default; `Recompute_Inner_MC` is off by default on both valuations, the trade
+    being the machine's; `Branch_And_Weight` is on by default on the base valuation alone, so the
+    crisp path's exposure, cashflow and collateral semantics have no key an author could write
+    to reach them. And a TARF's knock-in `Barrier`, which `pv_MC_Tarf` reads by name, is a field
+    of its section, so a schema-authored TARF can switch its leveraged leg on.
+
+    Killing mutations: `Greeks` defaulting to `All`; the TARF's `Barrier` withdrawn from its
+    section; `Recompute_Inner_MC` defaulting to `Yes` on the credit Monte Carlo."""
+    for (calc_type, key), declared in DECLARED_SWITCHES.items():
+        found = CALCULATION['types'][calc_type].get(key)
+        if declared is None:
+            assert found is None, (calc_type, key, 'declared where nothing reads it')
+        else:
+            assert (found['value'], found.get('values')) == declared, (calc_type, key, found)
+    assert 'Barrier' in INSTRUMENT['sections']['FXTARFOptionDeal.Fields']
 
 
 def market_price_classes():
@@ -693,17 +666,6 @@ def market_price_classes():
             and 'market_factor_type' in c.__dict__}
 
 
-def test_the_market_prices_store_is_generated():
-    """The same guard again - every MarketPrices assertion here is vacuous over an empty
-    declaration set."""
-    assert market_price_classes(), 'no bootstrapper declares `fields` - these gates are vacuous'
-    assert MARKET_PRICES['types'] == schema.emit_market_prices(bootstrappers), (
-        'the MarketPrices store is not the emitted view - a hand-written copy has come back')
-    assert set(MARKET_PRICES) == {'types', 'values'}, (
-        f'sub-stores have come back beside the types: '
-        f'{sorted(set(MARKET_PRICES) - {"types", "values"})}')
-
-
 def test_the_quote_value_plane_is_published_beside_the_families():
     """A client ticks a quote by moving its VALUE columns and nothing else, and which columns those
     are is not a name it may spell: the store publishes the one tuple `update_market_quote` refuses
@@ -712,6 +674,8 @@ def test_the_quote_value_plane_is_published_beside_the_families():
     The second half is the predicate a client finds a block's ladder BY - the declared field whose
     row carries every value key - held to `quote_containers`' own reading of the same declarations,
     because a table a client cannot find is a quote it cannot tick.
+
+    Killing mutation: the published plane one key short of the tuple.
     """
     assert MARKET_PRICES['values'] == list(schema.MARKET_QUOTE_VALUES), (
         'the published value plane is not the tuple the tick guard reads')
@@ -721,24 +685,6 @@ def test_the_quote_value_plane_is_published_beside_the_families():
     assert found == set(schema.MARKET_QUOTE_CONTAINERS), (
         'the published declarations name {} as quote tables, the engine {}'.format(
             sorted(found), sorted(schema.MARKET_QUOTE_CONTAINERS)))
-
-
-@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
-def test_market_price_descriptor_shape(market_type):
-    """`check_descriptor` over the price-family declarations - same tagged union, same consumers.
-    The quote container and the generation parameters are where the nesting is."""
-    for key, d in MARKET_PRICES['types'][market_type].items():
-        check_shape(f'{market_type}.{key}', d)
-
-
-@pytest.mark.parametrize('market_type', sorted(market_price_classes()))
-def test_no_market_price_declares_a_key_twice(market_type):
-    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor. The
-    option block builds its eight factor-reference fields from `factor_types`, which is exactly the
-    shape that can produce one."""
-    keys = [f.key for f in market_price_classes()[market_type].__dict__['fields']]
-    dupes = sorted({k for k in keys if keys.count(k) > 1})
-    assert not dupes, f'{market_type} declares {dupes} more than once'
 
 
 # The locals a bootstrapper binds from its own quote block, and therefore the reads that have to be
@@ -801,7 +747,9 @@ def test_the_quote_block_declares_what_the_bootstrapper_reads(market_type):
 
     One direction only: the converse would need the option family's factor references, which `resolve`
     reads with a COMPUTED key, and `Generate_Instruments` / `Generation_Parameters`, declared as
-    unbuilt functionality."""
+    unbuilt functionality.
+
+    Killing mutation: the FX smile family's `Grid_Tolerance` declared under another name."""
     module_ast = ast.parse(inspect.getsource(bootstrappers))
     cls_name = market_price_classes()[market_type].__name__
     undeclared = sorted(quote_reads(cls_name, module_ast) -
@@ -816,7 +764,9 @@ def test_the_configuration_store_is_the_families_own_declarations():
     Containers, which are the quote BLOCK's ladders and instrument definitions and belong to no
     section. Every family in the registry has an entry under the factor it writes, and every
     spelling the registry answers to reaches one, which is what lets a client file an older book's
-    class-name key without knowing what a price family is."""
+    class-name key without knowing what a price family is.
+
+    Killing mutation: a family's Containers published as dials."""
     store = schema.mapping['Configuration']
     entries = store['Bootstrapper Configuration']['types']
     assert set(entries) == {cls.price_factor_type for cls in bootstrappers.FAMILIES}
@@ -844,7 +794,9 @@ def test_the_interpolation_section_references_the_menu_and_the_engines_own_defau
     """The second section states no methods of its own: it NAMES the menu beside it, and its value
     is what a routed factor is actually built with where the section declares nothing for it - read
     off a constructed factor, because a store agreeing with a constant it was built from would
-    agree with the wrong one just as happily."""
+    agree with the wrong one just as happily.
+
+    Killing mutation: the section stating a default the factor is not built with."""
     from derivus.config import ModelParams
 
     declared = schema.mapping['Configuration']['Price Factor Interpolation']
@@ -888,6 +840,8 @@ def test_a_declared_default_is_the_default_the_engine_falls_back_to(market_type)
     panel gives the DECLARED value, an omitted key the FALLBACK, and nothing raises - the solve
     just runs to a different tolerance. The same mismatch class put a wrong grid KEY in the
     Calculation store beside the one the engine read.
+
+    Killing mutation: the Hull-White block's `Simulations` read with a fallback of its own.
     """
     module_ast = ast.parse(inspect.getsource(bootstrappers))
     cls_name = market_price_classes()[market_type].__name__
@@ -911,7 +865,9 @@ def test_a_quote_type_means_different_things_to_different_families():
 
     `ATM` is a real quote type to exactly one family and is declared on a TABLE COLUMN, which the
     search below had to grow a leg to see - a gate that cannot see a declaration holds it to
-    nothing."""
+    nothing.
+
+    Killing mutation: `BF` dropped from the FX smile family's quote types."""
     def find(descriptors):
         for key, d in descriptors.items():
             if key == 'Quote_Type':
@@ -952,30 +908,21 @@ def interpolated_factor_types():
             for c in comp.elts if isinstance(c, ast.Constant)}
 
 
-def test_the_interpolation_map_is_generated():
-    """The same guard again - the two Interpolation assertions below are vacuous over an empty
-    declaration set."""
-    assert INTERPOLATION_MAP, 'no factor class declares `interpolation_methods`'
-    assert INTERPOLATION_MAP == schema.emit_interpolation(riskfactors), (
-        'the interpolation menu is not the emitted view - a hand-written copy has come back')
-
-
-def test_the_interpolation_menu_is_the_types_the_engine_routes():
+def test_the_interpolation_menu_is_the_routed_types_and_their_implemented_methods():
     """`Interpolation` is not a `Price Factors` key an author writes - `construct_factor` reads it
     out of the `Price Factor Interpolation` section and injects it, only for the types listed there.
     Every `Factor1D` honours the key once it has one, so a factor type outside that opt-in offers
-    the author a setting the engine drops on the floor."""
+    the author a setting the engine drops on the floor. And `Factor1D.check_interpolation` falls
+    through to `Linear` for anything it does not know, so a method offered but not implemented is
+    not an error - it is a curve silently interpolated the wrong way. The authored value also has
+    to survive `factor_interp_map`, which is what `construct_factor` looks it up in.
+
+    Killing mutations: `DividendRate` routed with no menu of its own; a method offered that
+    `check_interpolation` does not know."""
     routed = interpolated_factor_types()
     assert set(INTERPOLATION_MAP) == routed, (
         f'interpolation menu and the routed types disagree: '
         f'{sorted(set(INTERPOLATION_MAP) ^ routed)}')
-
-
-def test_every_offered_interpolation_method_is_implemented():
-    """`Factor1D.check_interpolation` falls through to `Linear` for anything it does not know, so a
-    method offered but not implemented is not an error - it is a curve silently interpolated the
-    wrong way. The authored value also has to survive `factor_interp_map`, which is what
-    `construct_factor` looks it up in."""
     src = ast.parse(textwrap.dedent(inspect.getsource(riskfactors.Factor1D.check_interpolation)))
     implemented = {n.value for n in ast.walk(src)
                    if isinstance(n, ast.Constant) and isinstance(n.value, str)}
@@ -1005,60 +952,27 @@ def calibration_source():
             if isinstance(c, type) and n.endswith('Calibration')}
 
 
-def test_the_calibration_store_is_generated():
-    """The same guard again - every Calibration assertion here is vacuous over an empty
-    declaration set."""
-    assert calibration_classes(), 'no calibration class declares `fields` - these gates are vacuous'
-    assert CALIBRATION['types'] == schema.emit_calibration(stochasticprocess), (
-        'the Calibration store is not the emitted view - a hand-written copy has come back')
-    assert 'fields' not in CALIBRATION, 'a flat name-keyed store has come back beside the types'
-
-
-def test_every_calibration_class_is_declarable():
+def test_every_calibration_class_is_declared_under_a_process_and_dispatches_to_itself():
     """A calibration class with no schema row cannot be configured from the UI or found in the
-    docs, however well it fits. The store used to describe two PROCESSES and no calibration class
-    at all: it was keyed by the process while `construct_calibration_config` dispatches on the
-    entry's own `Method`, so the type, the block and the class carried three different names."""
+    docs, however well it fits; the store used to describe two PROCESSES and no calibration class
+    at all. An entry is filed under the PROCESS it configures - `Config.parse_json` keys
+    `calibration_process_map` by it - so a type naming no process is an entry no factor ever
+    reaches (the converse does not hold: the implied processes are bootstrapped, not calibrated).
+    And `construct_calibration_config` does `globals().get(param['Method'])(model, param)`, so a
+    `Method` naming no class is a TypeError as the config loads - which is why it is stamped from
+    the class name.
+
+    Killing mutations: `GBMAssetPriceCalibration`'s declaration withdrawn; its `model_type` naming
+    no process."""
     missing = sorted(set(calibration_source()) -
                      {c.__name__ for c in calibration_classes().values()})
     assert not missing, f'calibration classes no schema can configure: {missing}'
-
-
-def test_every_calibration_type_names_a_declared_process():
-    """A `Calibrations` entry is filed under the PROCESS it configures - `Config.parse_json` keys
-    `calibration_process_map` by it and `fetch_all_calibration_factors` looks a factor's model up
-    in that map - so a type naming no process is an entry no factor ever reaches.
-
-    The converse does NOT hold and is not gated: the implied/risk-neutral processes are
-    bootstrapped from market prices rather than calibrated from an archive, so they have no
-    calibration class and want none."""
     unknown = sorted(set(CALIBRATION['types']) - set(PROCESS['types']))
     assert not unknown, f'calibration types naming no declared process: {unknown}'
-
-
-def test_every_calibration_method_is_dispatchable():
-    """`construct_calibration_config` does `globals().get(param['Method'])(model, param)`, so a
-    `Method` naming no class is `None(...)` - a TypeError as the calibration config loads. The
-    descriptor's value is stamped from the class name for exactly that reason."""
     undispatchable = sorted(
         model for model, d in CALIBRATION['types'].items()
         if not isinstance(getattr(stochasticprocess, d['Method']['value'], None), type))
     assert not undispatchable, f'calibration Methods that dispatch to no class: {undispatchable}'
-
-
-@pytest.mark.parametrize('model_type', sorted(calibration_classes()))
-def test_calibration_descriptor_shape(model_type):
-    """`check_descriptor` over the calibration declarations - same tagged union, same consumers."""
-    for key, d in CALIBRATION['types'][model_type].items():
-        check_shape(f'{model_type}.{key}', d)
-
-
-@pytest.mark.parametrize('model_type', sorted(calibration_classes()))
-def test_no_calibration_declares_a_key_twice(model_type):
-    """One dict per type keyed by the JSON name, so a name declared twice loses a descriptor."""
-    keys = ['Method'] + [f.key for f in calibration_classes()[model_type].__dict__['fields']]
-    dupes = sorted({k for k in keys if keys.count(k) > 1})
-    assert not dupes, f'{model_type} declares {dupes} more than once'
 
 
 def param_reads(cls):
@@ -1090,7 +1004,9 @@ def test_the_declared_tuning_keys_are_the_ones_the_class_reads(model_type):
     nothing - a whole `MLE_Parameters` tree, `Data_Retrieval_Parameters` and
     `Use_Pre_Computed_Statistics` - so the panel offered fields the fit ignores and none of the
     fields it honours. `Method` is exempt: it is stamped from the class name and read by
-    `construct_calibration_config`, not by the class."""
+    `construct_calibration_config`, not by the class.
+
+    Killing mutation: `GBMAssetPriceCalibration` declaring a knob it never reads."""
     cls = calibration_classes()[model_type]
     declared = {f.key for f in cls.__dict__['fields']}
     read = param_reads(cls)
@@ -1108,7 +1024,9 @@ def test_the_descriptors_with_no_widget_are_exactly_these():
     renders it - which is every process in the platinum world, and the hedging problem itself. The
     declarations are not wrong: the shape of a transition matrix, a regime vector or a deal map
     keyed by Object then Reference is an OUTPUT, and the vocabulary has no way to say that.
-    Migrating the two stores is what made the defect expressible; the fix wants a widget."""
+    Migrating the two stores is what made the defect expressible; the fix wants a widget.
+
+    Killing mutation: a Container's `sub_fields` left out of its descriptor."""
     found = set()
 
     def walk(type_name, key, d):
@@ -1126,14 +1044,3 @@ def test_the_descriptors_with_no_widget_are_exactly_these():
             walk('Instrument', key, d)
     assert found == SHAPELESS, (
         f'appeared: {sorted(found - SHAPELESS)}; fixed or gone: {sorted(SHAPELESS - found)}')
-
-
-def test_a_2d_and_a_3d_surface_may_both_be_called_surface():
-    """The capability the per-type store exists for, pinned so a return to a flat one fails.
-
-    `Surface` is a (moneyness, expiry, vol) triple list on a `VolatilityGrid` and a quad list on
-    the three vol SPACES, and both are right - the JSON is per factor type. Under a flat store one
-    of them had to be filed as `Space` and carry `Surface` as an alias."""
-    assert FACTOR['types']['VolatilityGrid']['Surface']['value'] == schema.BLANK['Surface']
-    for space in ('InterestYieldVol', 'InterestRateVol', 'ForwardPriceVol'):
-        assert FACTOR['types'][space]['Surface']['value'] == schema.BLANK['Space']

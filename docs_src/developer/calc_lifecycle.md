@@ -51,7 +51,7 @@ A step *inside* phase 2: `_build_factor_state` → `_init_shared_mem` → `get_c
 
 ## RNG-substream ordering (the reproducibility surface)
 
-`process_ofs` is the row a factor reads from `t_random_numbers`; the iteration order is `stoch_factors` insertion order, which is the `topological_sort` output, which tie-breaks equal-depth factors by dict-insertion order (deal-walk order + `factor_fields` order + `dependant_fields` list order). A permutation preserves the correlation structure and moves realized draws bit-for-bit; stated in full on [Dependency System](dependency_system.md#rng-ordering). The HMM regime path draws from a separate Sobol `quasi_rng` stream whose batch counter advances across batches and is never reset by `reset()` — a second, parallel substream-assignment surface.
+`process_ofs` is the row a factor reads from `t_random_numbers`; the iteration order is `stoch_factors` insertion order, which is the `topological_sort` output, which tie-breaks equal-depth factors by dict-insertion order (deal-walk order + `factor_fields` order + `dependant_fields` list order). A permutation preserves the correlation structure and moves realized draws bit-for-bit; stated in full on [Dependency System](dependency_system.md#rng-ordering). The HMM regime path draws from a separate Sobol `quasi_rng` stream whose batch counter advances across batches and is never reset by `reset()` — a second, parallel substream-assignment surface. A sharded run under `deterministic_batches` is bit-identical in the worker count; against the unsharded default it is a different draw of the same law, the expected exposure within 2.9% over twenty seeds.
 
 ## Deal `Time_dep` / `Factor_dep` + pricing dispatch
 

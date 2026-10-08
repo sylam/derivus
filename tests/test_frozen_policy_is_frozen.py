@@ -61,18 +61,26 @@ def checkpoint(tmp_path_factory):
 def test_a_loaded_checkpoint_is_not_retrained(checkpoint):
     """A frozen run reports the checkpoint's own V_0 and fits nothing - the defect was a full
     backward sweep with `opt.step()` over the loaded nets. Its single batch is both the warmup
-    bundle and the held-out world."""
+    bundle and the held-out world, and it writes nothing: no artifact, the checkpoint's bytes
+    unmoved.
+
+    Killing mutations: the loaded nets swept as if untrained (`warmup` running `_sweep` after the
+    load); a loaded run emitting an artifact of its own."""
     path, ck = checkpoint
+    before = open(path, 'rb').read()
     diag, result = _run(_cfg(batches=1, load=path), 'eval_frozen')
     assert diag['per_t'] == [], 'a fit step ran on a loaded checkpoint — it is not frozen'
     assert diag['V_0'] == ck['V_0'], 'V_0 is not the checkpoint\'s — the nets moved'
     assert result.policy_artifact is None, 'a frozen eval has no new value fn to emit'
     assert diag['verdict_is_oos'] is True, 'frozen nets saw none of these paths'
+    assert open(path, 'rb').read() == before, 'the eval wrote to the checkpoint it loaded'
 
 
 def test_an_eval_may_not_ask_for_fit_batches(checkpoint):
     """The structural half: a frozen policy fits nothing, so a multi-batch stream is a request to
-    keep training - refused at the JSON boundary rather than silently consumed."""
+    keep training - refused at the JSON boundary rather than silently consumed.
+
+    Killing mutation: the `Simulation_Batches == 1` check on a load dropped."""
     path, _ck = checkpoint
     with pytest.raises(ValueError, match='requires Simulation_Batches == 1'):
         _run(_cfg(batches=3, load=path), 'eval_too_many_batches')
@@ -80,22 +88,18 @@ def test_an_eval_may_not_ask_for_fit_batches(checkpoint):
 
 def test_a_solve_needs_a_held_out_batch():
     """The other half of the contract: training on every batch would leave no unfitted world to
-    report the verdict on."""
+    report the verdict on.
+
+    Killing mutation: the `Simulation_Batches >= 2` check on a solve dropped."""
     with pytest.raises(ValueError, match='requires Simulation_Batches >= 2'):
         _run(_cfg(batches=1), 'train_no_held_out')
 
 
-def test_the_checkpoint_file_is_untouched_by_an_eval(checkpoint):
-    """An eval writes nothing to the checkpoint."""
-    path, ck = checkpoint
-    before = open(path, 'rb').read()
-    _run(_cfg(batches=1, load=path), 'eval_no_write')
-    assert open(path, 'rb').read() == before
-
-
 def test_saving_while_loading_is_a_contradiction(checkpoint):
     """Train (save) and evaluate (load) are separate runs; setting both silently dropped the
-    save."""
+    save.
+
+    Killing mutation: the save-beside-load refusal dropped."""
     path, _ck = checkpoint
     with pytest.raises(ValueError, match='DiffV2_Save_Value_Fn is set alongside'):
         _run(_cfg(batches=1, save=path + '.2', load=path), 'save_and_load')

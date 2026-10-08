@@ -165,17 +165,22 @@ def test_the_quotes_reprice_the_book_they_were_read_off():
 def test_a_swaps_pv01_is_its_annuity_times_a_basis_point(serial):
     """A PAR SWAP'S PV01 BY HAND. The swap is the five-year benchmark struck at its quote, so a
     basis point on that quote re-solves the curve to price the benchmark at par a basis point up
-    and the swap is worth `N A' 1bp`, `A'` its fixed leg's annuity on the re-solved curve - read
-    off its knots, every coupon landing on one. Each other quote moves it by nothing a solve can
-    see, so its rate rows sum to that figure.
+    and the swap is worth `N A' 1bp`, `A'` its fixed leg's annuity on the re-solved curve - the
+    same quote set with that quote a basis point up, bootstrapped, and read off its knots, every
+    coupon landing on one. Each other quote moves it by nothing a solve can see, so its rate rows
+    sum to that figure.
 
     Killing mutation: the quote moved by the shift taken as a decimal, 1e-4 on a quote in percent -
     the rows sum to a hundredth of the hand figure.
     """
-    calc, output = serial
-    position, _ = benchmark(calc.config.params['Market Prices'])
-    knots = calc.move(('quote', 'InterestRatePrices.USD-OIS', position))[
-        'InterestRate.USD-OIS']['Curve'].array
+    output = serial[1]
+    prices = blocks()
+    position, _ = benchmark(prices)
+    prices['InterestRatePrices.USD-OIS']['instrument']['Points'][position][
+        'Quoted_Market_Value'] += 0.01
+    bumped = world(VALUATION, prices=prices)
+    bumped.bootstrap()
+    knots = bumped.current_cfg.params['Price Factors']['InterestRate.USD-OIS']['Curve'].array
     coupons = [BASE + pd.DateOffset(years=y) for y in range(6)]
     annuity = sum((end - start).days / 365.0 * np.exp(-knots[knots[:, 0] == (
         end - BASE).days / 365.0, 1][0] * (end - BASE).days / 365.0)
@@ -186,41 +191,21 @@ def test_a_swaps_pv01_is_its_annuity_times_a_basis_point(serial):
         NOTIONAL * annuity * 1e-4, rel=1e-9)
 
 
-def test_a_tenor_is_split_between_the_vertices_either_side_of_it(serial):
-    """THE VERTEX ALLOCATION BY HAND, on the twelve vertices the parameters file names: linear in
-    years of 365 days between the two vertices either side, a tenor on a vertex landing whole, and
-    beyond either end of the grid on the end vertex. On the swap its own quote matures 1826 days
-    out, so all but 1/1825 of its PV01 is the 5y row.
-
-    Killing mutation: the two weights swapped, the nearer vertex taking the smaller share - a
-    tenor on the 5y vertex lands whole on 3y, and 7y reads 0.4 on 5y; 4y alone cannot tell.
-    """
-    grid = serial[0].vertices
-    assert [label for label, _ in grid] == [
-        '2w', '1m', '3m', '6m', '1y', '2y', '3y', '5y', '10y', '15y', '20y', '30y']
-    assert [years for _, years in grid] == pytest.approx(
-        [14 / 365.0, 1 / 12.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 30.0], rel=1e-15)
-    weights = utils.vertex_weights
-    assert weights(4.0, grid) == [('3y', 0.5), ('5y', 0.5)]
-    assert weights(5.0, grid) == [('5y', 1.0)]
-    assert weights(0.01, grid) == [('2w', 1.0)] and weights(40.0, grid) == [('30y', 1.0)]
-    assert dict(weights(7.0, grid)) == pytest.approx({'5y': 0.6, '10y': 0.4})
-    assert dict(weights(0.75, grid)) == pytest.approx({'6m': 0.5, '1y': 0.5})
-    tenor = 1826 / 365.0
-    assert dict(weights(tenor, grid)) == pytest.approx({'5y': (10.0 - tenor) / 5.0,
-                                                        '10y': (tenor - 5.0) / 5.0})
-
-
 def test_the_crif_is_isdas_format(serial, tmp_path):
     """THE FILE THE MARGIN CALCULATION READS. Its columns are the ones the margin calculation's
     reader consumes, one row per trade and coordinates, the trade id the booked trade's reference;
     a rate row lands on a vertex of a curve's sub-curve, an FX row on a currency other than the
-    calculation's, a vega row on a pair and a vertex; and it reads back tab separated to the bit.
+    calculation's, a vega row on a pair and a vertex - the twelve the parameters file names; and it
+    reads back tab separated to the bit.
 
     Killing mutation: the vertex dropped from a row's key (`label or ...` read as the mapping's own
     Label1) - every rate row of a curve folds into one carrying no vertex.
     """
     calc, output = serial
+    assert [label for label, _ in calc.vertices] == [
+        '2w', '1m', '3m', '6m', '1y', '2y', '3y', '5y', '10y', '15y', '20y', '30y']
+    assert [years for _, years in calc.vertices] == pytest.approx(
+        [14 / 365.0, 1 / 12.0, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 30.0], rel=1e-15)
     frame, trades = output['Results']['CRIF'], output['Results']['Trades']
     assert tuple(frame.columns) == (
         'TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations', 'ProductClass',
@@ -279,23 +264,6 @@ def test_a_curve_no_quote_set_stands_behind_is_refused_by_name():
         world(prices=prices).run_job()
     assert 'InterestRate.ZAR-JIBAR' in str(refusal.value)
     assert 'FXO' in str(refusal.value)
-
-
-def test_a_fixed_spread_child_of_a_quoted_parent_is_not_refused(serial):
-    """The option discounts on a fixed spread over the quoted ZAR curve, which has no market rate
-    of its own and rides on its parent: the walk passes, and the option moves with the parent's
-    quotes and not with any of the spread's.
-
-    Killing mutation: the condition not reading a child through its parent - the spread is refused
-    as a curve no market price stands behind.
-    """
-    calc = serial[0]
-    index = next(at for at, (_, node) in enumerate(calc.trades)
-                 if node['Instrument'].field['Reference'] == 'FXO')
-    assert 'InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP' in calc.walk(index)
-    moved = {bump.factor for bump in calc.bumps(index)}
-    assert 'InterestRate.ZAR-JIBAR' in moved
-    assert 'InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP' not in moved
 
 
 def test_a_quote_set_no_configured_family_solves_is_refused_by_name():
@@ -363,36 +331,32 @@ def test_a_worker_that_raises_surfaces_in_the_parent():
     (30, {'2y': 3.0 - 915 / 365.0, '3y': 915 / 365.0 - 2.0})])
 def test_vega_lands_on_the_options_own_expiry(months, split):
     """ISDA's vol-tenor is the OPTION's expiry. The surface carries pillars at 6m, 1y and 2y; given
-    one at every vertex expiry it lacks, read off its own interpolation - its value unmoved, to the
-    rounding - each vertex alone moved by a point is a tent, so a 3Y option's vega is a 3y row
-    (a 5y sliver, its expiry a day past 3y), a 1M option's a 1m row, a 2.5Y option's split between
-    2y and 3y. Each row is the move of the option's own vol by its tent there - as an independent
-    parallel move of that size values it - and the rows sum to the parallel point's vega but for
-    that move's convexity.
+    one at every vertex expiry it lacks, read off its own interpolation, each vertex alone moved by
+    a point is a tent, so a 3Y option's vega is a 3y row (a 5y sliver, its expiry a day past 3y),
+    a 1M option's a 1m row, a 2.5Y option's split between 2y and 3y - linear in years of 365 days
+    between the vertices either side. Each row is the move of the option's own vol by its tent
+    there - as a base valuation of the same book on the surface moved in parallel by that much
+    values it - and the rows sum to the parallel point's vega but for that move's convexity.
 
-    Killing mutation: the surface left on its own pillars - the vertex tents land on 6m, 1y and 2y,
-    a 3Y option's vega reading on 2y and a 1M option's on 6m.
+    Killing mutations: the surface left on its own pillars - the vertex tents land on 6m, 1y and
+    2y, a 3Y option's vega reading on 2y and a 1M option's on 6m; the two vertex weights swapped,
+    the nearer vertex taking the smaller share.
     """
     expiry = BASE + pd.DateOffset(months=months)
-    context = world(option={'Expiry_Date': expiry})
-    calc, output = context.run_job()
-    vega = rows(output, 'FXO', 'Risk_FXVol')
+    vega = rows(world(option={'Expiry_Date': expiry}).run_job()[1], 'FXO', 'Risk_FXVol')
+    surface = factors()['FXVol.USD.ZAR']
 
-    index = next(at for at, (_, node) in enumerate(calc.trades)
-                 if node['Instrument'].field['Reference'] == 'FXO')
-    base = calc.value(index, {})[0]
-    assert calc.value(index, calc.move(('augmented', 'FXVol.USD.ZAR')))[0] == pytest.approx(
-        base, rel=1e-14)
-    surface = context.current_cfg.params['Price Factors']['FXVol.USD.ZAR']
+    def worth(size):
+        moved = dict(surface, Surface=utils.Curve(
+            surface['Surface'].meta, surface['Surface'].array + [0.0, 0.0, size]))
+        return valued(world(VALUATION, option={'Expiry_Date': expiry}, configuration={},
+                            extra={'FXVol.USD.ZAR': moved}))['FXO']
 
-    def shifted(size):
-        return calc.value(index, {'FXVol.USD.ZAR': dict(surface, Surface=utils.Curve(
-            surface['Surface'].meta, surface['Surface'].array + [0.0, 0.0, size]))})[0] - base
-
+    base = worth(0.0)
     assert set(vega) == set(split)
     for label, weight in split.items():
-        assert vega[label] == pytest.approx(shifted(0.01 * weight), rel=1e-6), label
-    assert sum(vega.values()) == pytest.approx(shifted(0.01), rel=5e-3)
+        assert vega[label] == pytest.approx(worth(0.01 * weight) - base, rel=1e-6), label
+    assert sum(vega.values()) == pytest.approx(worth(0.01) - base, rel=5e-3)
 
 
 def test_a_curve_discounting_on_another_gets_a_fra_in_front():

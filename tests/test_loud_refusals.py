@@ -79,7 +79,9 @@ def calibration_world(tmp_path, constant):
 
 
 def test_a_calibration_that_refuses_is_reported_in_its_own_words(tmp_path, caplog):
-    """Row: the skip said 'Data errors in factor' whatever the class had said."""
+    """Row: the skip said 'Data errors in factor' whatever the class had said.
+
+    Killing mutation: the skip naming the archive column and not the class's words."""
     config, factors = calibration_world(tmp_path, constant=False)
     with caplog.at_level(logging.ERROR):
         config.calibrate_factors(pd.Timestamp('2026-01-01'), pd.Timestamp('2026-03-25'), factors)
@@ -89,14 +91,18 @@ def test_a_calibration_that_refuses_is_reported_in_its_own_words(tmp_path, caplo
 
 
 def test_a_calibration_set_where_every_factor_is_skipped_is_refused(tmp_path):
-    """Row: `AttributeError: 'NoneType' object has no attribute 'corr'`."""
+    """Row: `AttributeError: 'NoneType' object has no attribute 'corr'`.
+
+    Killing mutation: the every-factor-skipped refusal dropped."""
     config, factors = calibration_world(tmp_path, constant=True)
     with pytest.raises(ValueError, match='Every one of the 2 factors asked for was skipped'):
         config.calibrate_factors(pd.Timestamp('2026-01-01'), pd.Timestamp('2026-03-25'), factors)
 
 
 def test_a_family_refusing_at_construction_is_refused_by_name(tmp_path):
-    """Row: the refusal was logged and the factor left unwritten for the first pricer to trip on."""
+    """Row: the refusal was logged and the factor left unwritten for the first pricer to trip on.
+
+    Killing mutation: the family's construction error left unwrapped, naming no entry."""
     document = fixture('hw2f_four_quote_job.json')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Bootstrapper Configuration'] = {'LogVar2FJModelParameters': {
@@ -110,7 +116,9 @@ def test_a_family_refusing_at_construction_is_refused_by_name(tmp_path):
 
 
 def test_a_block_with_no_quote_table_is_refused_by_name(tmp_path):
-    """Row: the completed blank was iterated as a string."""
+    """Row: the completed blank was iterated as a string.
+
+    Killing mutation: the quote-table check dropped."""
     document = fixture('hw2f_four_quote_job.json')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
@@ -123,7 +131,9 @@ def test_a_block_with_no_quote_table_is_refused_by_name(tmp_path):
 
 
 def test_a_quote_carrying_no_timestamp_still_builds_its_surface(tmp_path):
-    """Row: `KeyError: 'Timestamp'` on a field declared optional."""
+    """Row: `KeyError: 'Timestamp'` on a field declared optional.
+
+    Killing mutation: every quote's `Timestamp` read by name."""
     document = fixture('hw2f_four_quote_job.json')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
@@ -154,7 +164,9 @@ def correlated_job(tmp_path, name, stale=False):
 def test_correlations_authored_in_a_job_reach_the_cholesky(tmp_path, caplog):
     """Row: an explicit section landed under a string key and read as a silent zero, so a
     correlated document needed a market-data file. The stale-key document is the control: it
-    declares the same numbers under a process nothing simulates, and prices differently."""
+    declares the same numbers under a process nothing simulates, and prices differently.
+
+    Killing mutation: the explicit section merged without its name-pair keys."""
     context = derivus.Context()
     context.load_json(correlated_job(tmp_path, 'correlated.json'))
     assert ('GARCHSpotProcess.PLATINUM_CME',
@@ -172,7 +184,9 @@ def test_correlations_authored_in_a_job_reach_the_cholesky(tmp_path, caplog):
 
 
 def test_an_implied_model_with_no_price_models_block_is_refused_by_name(tmp_path):
-    """Row: `TypeError: 'NoneType' object is not subscriptable` naming neither field nor factor."""
+    """Row: `TypeError: 'NoneType' object is not subscriptable` naming neither field nor factor.
+
+    Killing mutation: the missing-block refusal dropped."""
     document = fixture('commodity_aps_world.json')
     document['Calc']['Calculation'].update({'Batch_Size': 128, 'Simulation_Batches': 1})
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -191,7 +205,9 @@ def test_an_implied_model_with_no_price_models_block_is_refused_by_name(tmp_path
 
 
 def test_a_hessian_without_a_gradient_is_refused_by_name(tmp_path):
-    """Row: the block was a silent no-op - the run reported neither."""
+    """Row: the block was a silent no-op - the run reported neither.
+
+    Killing mutation: the Hessian-needs-Gradient refusal dropped."""
     document = fixture('commodity_aps_world.json')
     document['Calc']['Calculation'].update({
         'Batch_Size': 128, 'Simulation_Batches': 1,
@@ -207,7 +223,9 @@ def test_a_hessian_without_a_gradient_is_refused_by_name(tmp_path):
 @pytest.mark.parametrize('period', [pd.DateOffset(months=6, days=2),
                                     pd.DateOffset(days=2, months=6)])
 def test_a_two_unit_period_is_written_in_one_order(tmp_path, period):
-    """Row: the units came off a set iteration, so the file's bytes were the process's."""
+    """Row: the units came off a set iteration, so the file's bytes were the process's.
+
+    Killing mutation: the units written smallest first."""
     config = Config()
     config.params['Price Factors'] = {'InterestRate.ZAR-JIBAR-3M': {
         'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Sub_Type': None, 'Reset_Frequency': period}}
@@ -327,7 +345,9 @@ def row_value(out, reference):
 
 def test_an_energy_leg_forecasting_off_a_frozen_curve_is_refused_by_name(tmp_path):
     """Row: the join refused the shape with `Sizes of tensors must match except in dimension 0`,
-    `Deal.calculate` swallowed it, and the job SUCCEEDED at 52,499,613.11 with the leg absent."""
+    `Deal.calculate` swallowed it, and the job SUCCEEDED at 52,499,613.11 with the leg absent.
+
+    Killing mutation: `join_resets` broadcasting the frozen forecast rather than refusing it."""
     with pytest.raises(utils.UnpriceableSchedule,
                        match='PLAT_FEB26 forecasts its remaining resets off ForwardPrice.PLATINUM'):
         priced(tmp_path, 'frozen_curve.json', frozen_world(ENERGY_LEG, ENERGY_FACTORS))
@@ -345,7 +365,9 @@ def test_an_energy_leg_forecasting_off_a_frozen_curve_is_refused_by_name(tmp_pat
 
 def test_an_fx_resetting_nominal_off_a_frozen_pair_is_refused_by_name(tmp_path):
     """Row: the same shape one join earlier, on the MtM leg's FX resets, where the RuntimeError
-    `resolve_structure` re-raises killed the run naming neither the leg nor the pair."""
+    `resolve_structure` re-raises killed the run naming neither the leg nor the pair.
+
+    Killing mutation: `join_resets` broadcasting the frozen forecast rather than refusing it."""
     with pytest.raises(utils.UnpriceableSchedule,
                        match='XCCY_ZAR forecasts its remaining resets off FxRate.USD . FxRate.ZAR'):
         priced(tmp_path, 'frozen_pair.json',

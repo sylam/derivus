@@ -74,6 +74,10 @@ def _hand_mark(cfg, forward_curve):
 
 @pytest.mark.parametrize('forward_curve', ['Components', 'Direct'])
 def test_t0_mark_matches_hand_computation(forward_curve):
+    """The liability's t0 mark in either curve mode against the hand forward to 2e-4.
+
+    Killing mutations: each future fixing's forward read 30 days past its day (both modes); the
+    repo term dropped from the components' forward."""
     mark, cfg = _t0_mark(forward_curve)
     expected = _hand_mark(cfg, forward_curve)
     # float32 sim vs float64 hand-calc; Components also carries interp-detail rounding

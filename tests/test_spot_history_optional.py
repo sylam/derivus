@@ -9,7 +9,7 @@ With no `Portfolio_State.Spot_Price_History`, the solver must still train sane:
   * the history prefix no-ops (`initial_time_index == 0`), value bounded, artifact present.
 
 JSON-is-the-contract: load_json + run_job, history removed in code (the fixture template is
-never edited). Companion to test_utility_scale_unit.py (the fail-loud unit coverage)."""
+never edited). The document WITH its history is solved once and read by two gates."""
 import json as jsonlib
 import math
 import os
@@ -45,11 +45,31 @@ def _cfg_without_history():
     return cfg
 
 
+@pytest.fixture(scope='module')
+def with_history():
+    """The fixture's document as written - its `Spot_Price_History` present - solved once."""
+    cfg = jsonlib.load(open(FIXTURE))
+    calc = cfg['Calc']['Calculation']
+    calc['Execution_Mode'] = 'solve_hedge'
+    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
+    calc['Inner_Sub_Batch'] = 8
+    calc['Inner_MC_Enabled'] = 'Yes'
+    calc['Random_Seed'] = 1234
+    calc['Hedging_Problem']['Solver'] = {
+        'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
+        'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
+    cx = rf.Context()
+    cx.load_json((jsonlib.dumps(cfg), 'spot_history_prefix.json'))
+    return cfg, cx.run_job()[1]
+
+
 def test_a_history_row_at_the_base_date_is_refused():
     """History must be STRICTLY before the base date: a base-date row duplicates sim day 0 and
     shifts every *_sim view one row back, giving each decision a full day of lookahead. Without
     the refusal the in-sim greedy verdict reads +$982/oz expected on a fair three-month book, and
-    the fork's L_t equals liability_sim[t+1] BITWISE."""
+    the fork's L_t equals liability_sim[t+1] BITWISE.
+
+    Killing mutation: the at-or-after-base rows let through."""
     cfg = jsonlib.load(open(FIXTURE))
     calc = cfg['Calc']['Calculation']
     calc['Execution_Mode'] = 'solve_hedge'
@@ -71,26 +91,17 @@ def test_a_history_row_at_the_base_date_is_refused():
         cx.run_job()
 
 
-def test_the_realized_history_reaches_the_tradable_prefix():
+def test_the_realized_history_reaches_the_tradable_prefix(with_history):
     """With `Spot_Price_History` present, a commodity tradable's history prefix must BE the
     realized series, not the flat first-row broadcast. The lookup resolves the deal's raw
     `Commodity` field (a composed name) to the primary spot's full factor name - the key space
     `_spot_price_history` validates against. Keyed by the raw field it never matches: `.get()` ->
     None -> `tensor[:1].expand` -> thirty flat rows ahead of every rolling feature, silently. So
-    this asserts variation AND the values."""
-    cfg = jsonlib.load(open(FIXTURE))
-    calc = cfg['Calc']['Calculation']
-    calc['Execution_Mode'] = 'solve_hedge'
-    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
-    calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
-    calc['Random_Seed'] = 1234
-    hp = calc['Hedging_Problem']
-    hp['Solver'] = {'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
-                    'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
-    cx = rf.Context()
-    cx.load_json((jsonlib.dumps(cfg), 'spot_history_prefix.json'))
-    _, result = cx.run_job()
+    this asserts variation AND the values.
+
+    Killing mutation: the prefix looked up by the raw `Commodity` field."""
+    cfg, result = with_history
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
     bundle, runtime = result.bundle, result.runtime
 
     H = bundle.history_rows
@@ -110,26 +121,15 @@ def test_the_realized_history_reaches_the_tradable_prefix():
     assert checked > 0, 'no tradable reached the realized-prefix assertion'
 
 
-def test_the_cash_account_prices_and_its_mark_accrues():
+def test_the_cash_account_prices_and_its_mark_accrues(with_history):
     """`CashAccountDeal` is a PRICED tradable - `Units / D(t)` - and its mark ratio is the ONLY
     financing path: a skipped cash deal loses interest on cash AND margin while everything else
     stays plausible (missing `Units` -> KeyError -> no tensor mark -> `_growth_factors` {} ->
     every balance flat, with a repeated CRITICAL as the only evidence). Worth $0.54/oz at 2026
-    rates. Any non-zero `Units` restores it - only the mark RATIO is consumed."""
-    cfg = jsonlib.load(open(FIXTURE))
-    calc = cfg['Calc']['Calculation']
-    calc['Execution_Mode'] = 'solve_hedge'
-    calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
-    calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
-    calc['Random_Seed'] = 1234
-    calc['Hedging_Problem']['Solver'] = {
-        'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
-        'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
-    cx = rf.Context()
-    cx.load_json((jsonlib.dumps(cfg), 'cash_account_prices.json'))
-    _, result = cx.run_job()
-    bundle = result.bundle
+    rates. Any non-zero `Units` restores it - only the mark RATIO is consumed.
+
+    Killing mutation: the mark `Units * D(t)`, a balance that decays."""
+    bundle = with_history[1].bundle
     assert 'USD_CASH' in bundle.tradables, 'the cash account produced no mark - financing is off'
     cash = bundle.tradables['USD_CASH'][bundle.initial_time_index:, 0].detach().cpu().numpy()
     d = np.diff(cash)
@@ -139,6 +139,10 @@ def test_the_cash_account_prices_and_its_mark_accrues():
 
 
 def test_spot_price_history_optional_trains_via_calibrated_scale():
+    """Without a history the utility scale is `volume spot sigma sqrt(tau)` off the calibrated HMM's
+    stationary regime-weighted vol, to 1e-9.
+
+    Killing mutation: the scale's `sqrt(tau)` dropped."""
     # the package under test must be this checkout, not another copy earlier on sys.path
     assert os.path.dirname(os.path.dirname(os.path.abspath(__file__))) in rf.__file__, rf.__file__
     cx = rf.Context()

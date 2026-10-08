@@ -16,7 +16,7 @@ import derivus
 import rates_world
 import test_declared_defaults as book
 import trial_credit
-from derivus import riskfactors, spine, utils
+from derivus import spine, utils
 from derivus.config import CustomJsonEncoder
 
 B = book.WORLD_BASE
@@ -75,48 +75,6 @@ def test_an_upfront_is_paid_by_the_protection_buyer_on_its_day():
         -2e5, rel=1e-6)
 
 
-def cds_world(hazard=0.02, rate=0.03, curve=None):
-    """A flat hazard (or `curve`, a negative log survival) and a flat zero curve as the engine's own
-    factor objects, with the descriptors `utils.calc_cds_rates` reads them through."""
-    factors = {'S': riskfactors.SurvivalProb({'Recovery_Rate': 0.4, 'Curve': curve or utils.Curve(
-        [], [[0.0, 0.0], [10.0, 10.0 * hazard]])}), 'D': riskfactors.InterestRate({
-            'Currency': 'USD', 'Day_Count': 'ACT_365', 'Curve': utils.Curve(
-                [], [[0.0, rate], [10.0, rate]])})}
-    days = lambda d: d / 365.0
-    return [None, 'S', None, None, days], [None, 'D', None, None, days], factors
-
-
-def test_a_par_cds_rate_holds_across_the_quarter_and_a_tenor_bump_holds_the_other_tenors():
-    """The ISDA standard model on a flat 2% hazard: the 5y par rate is (1 - R)h to the coupon
-    effect and the same on every day of the quarter, the accrued since the last standard date
-    SUBTRACTED and the first coupon the next standard date; and the curve one tenor's bump implies
-    moves that tenor's par rate by the bump and no other's, the later segments re-solved.
-    MUTATIONS: the accrued added (`v_fee = -tau[0]`) reads the rate 1.08%-1.30% across the
-    quarter; the first date a quarter late on the 20th of a non-roll month (20 April to
-    20 September) is caught by name; the shift dropped after its segment leaks 1-3.5% of the
-    bump into the later tenors against 1e-9 here."""
-    rates = {}
-    for day in ('2026-03-20', '2026-04-20', '2026-05-20', '2026-06-19'):
-        survival, discount, factors = cds_world()
-        rates[day] = utils.calc_cds_rates(
-            0.4, survival, discount, pd.Timestamp(day), [5.0], factors, bump=0)[5.0]
-    assert max(rates.values()) - min(rates.values()) < 2e-6, rates
-    assert abs(rates['2026-03-20'] - 0.6 * 0.02) < 1e-4, rates
-    assert utils.cds_dates(pd.Timestamp('2026-04-20'), 3)[0] == pd.Timestamp('2026-06-20')
-    assert utils.cds_dates(pd.Timestamp('2026-06-20'), 3)[0] == pd.Timestamp('2026-09-20')
-
-    survival, discount, factors = cds_world()
-    base, tenors = pd.Timestamp('2026-06-10'), [1.0, 3.0, 5.0]
-    par, knots, shifted = utils.calc_cds_rates(0.4, survival, discount, base, tenors, factors)
-    for bumped, curve in zip(tenors, shifted[1:]):
-        survival, discount, factors = cds_world(
-            curve=utils.Curve([], np.column_stack([knots, curve]).tolist()))
-        moved = utils.calc_cds_rates(0.4, survival, discount, base, tenors, factors, bump=0)
-        for tenor in tenors:
-            assert abs(moved[tenor] - par[tenor] - 1e-4 * (tenor == bumped)) < 1e-9 * 1e-4, (
-                bumped, tenor, moved[tenor] - par[tenor])
-
-
 def test_a_survival_curve_ending_before_the_maturity_hazards_on_at_its_last_rate():
     """ISSUER_A written at a 1% hazard to one year and 4% to two: past its last knot a cumulative
     hazard goes on at its last rate, H = max(1% t, 4% t - 3%), and the five-year swap marks
@@ -131,6 +89,76 @@ def test_a_survival_curve_ending_before_the_maturity_hazards_on_at_its_last_rate
     hexes, _ = book.marks([CDS], two)
     assert float.fromhex(hexes['CDS']) == pytest.approx(by_hand(
         survival=lambda day: min(discount(day, 0.01), discount(day) * math.exp(0.03))), rel=1e-12)
+
+
+def cs01(base, curve=None):
+    """`Results['CS01']` of a credit Monte Carlo valued on `base` (a date string) beside its CVA
+    gradient: a million paid in a year under one netting set against ISSUER_A - a flat 2% hazard, or
+    `curve` (years, negative log survival) - on the flat 4% USD curve, CDS tenors 1y, 3y and 5y."""
+    factors = dict(trial_credit.FACTORS)
+    if curve is not None:
+        factors['SurvivalProb.ISSUER_A'] = dict(factors['SurvivalProb.ISSUER_A'],
+                                                Curve=utils.Curve([], curve))
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+                'Discount_Rate': 'USD', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
+    job = basket([cashflow], factors)
+    calc = job['Calc']
+    calc['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': base}, 'Currency': 'USD',
+        'Time_Grid': '0d 3m(3m)', 'Batch_Size': 16, 'Random_Seed': 1,
+        'Deflation_Interest_Rate': 'USD', 'Credit_Valuation_Adjustment': {
+            'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Gradient': 'Yes',
+            'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No',
+            'CDS_Tenors': [1.0, 3.0, 5.0]}}
+    calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
+    market = calc['MergeMarketData']['ExplicitMarketData']
+    market['System Parameters']['Base_Date'] = {'.Timestamp': base}
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'InterestRate': 'HullWhite1FactorInterestRateModel'}, 'modelfilters': {}}}
+    market['Price Models'] = {'HullWhite1FactorInterestRateModel.USD': {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.0]]}},
+        'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, 0.01], [10.0, 0.01]]}}}}
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'cs01'))
+    return context.run_job()[1]['Results']['CS01']
+
+
+def par_rates(frame):
+    """`{tenor: par CDS rate}` off a CS01 frame's column labels."""
+    return dict(zip(frame.columns.get_level_values('Tenor'),
+                    frame.columns.get_level_values('Par CDS')))
+
+
+def test_a_par_cds_rate_holds_across_the_quarter_and_a_tenor_bump_holds_the_other_tenors():
+    """The CS01 a credit Monte Carlo reports beside its CVA gradient: ISSUER_A's par CDS rates under
+    the ISDA standard model at 1y, 3y and 5y, a flat 2% hazard on the flat 4% USD curve. The 5y rate
+    is (1 - R)h to the coupon effect, 1.2%, and the same on every day of a quarter - 20 March, the
+    20th of April and of May, 19 June - the accrued since the last standard date SUBTRACTED and the
+    first coupon the NEXT standard date. Each tenor's row is the log-survival curve a basis point on
+    that tenor alone implies: valued on it, that tenor's rate is a basis point up and every other
+    tenor's where it was, the later segments re-solved.
+
+    Killing mutations: the accrued added, the 5y rate falling from 1.206% to 1.081% across the
+    quarter; the first standard date a quarter late on or after the 20th of a non-roll month (20
+    April and 20 May to 20 September), a 3.8e-6 spread; the bump carried on its own segment alone,
+    the later segments not re-solved, the 3y rate taking 0.39bp of the 1y basis point against 1e-13.
+    """
+    quarter = {day: cs01(day) for day in ('2026-03-20', '2026-04-20', '2026-05-20', '2026-06-19')}
+    five = {day: par_rates(frame)[5.0] for day, frame in quarter.items()}
+    assert max(five.values()) - min(five.values()) < 2e-6, five
+    assert abs(five['2026-03-20'] - 0.6 * 0.02) < 1e-4, five
+
+    frame = quarter['2026-04-20']
+    par, knots = par_rates(frame), frame.index.to_numpy()
+    for (bumped, _), shift in frame.items():
+        moved = par_rates(cs01('2026-04-20', np.column_stack(
+            [knots, 0.02 * knots + shift.to_numpy()]).tolist()))
+        for tenor in par:
+            assert abs(moved[tenor] - par[tenor] - 1e-4 * (tenor == bumped)) < 1e-13, (
+                bumped, tenor, moved[tenor] - par[tenor])
 
 
 def test_a_premium_is_announced_with_the_sign_its_cash_moves():
@@ -227,7 +255,8 @@ def test_a_basket_s_first_order_greeks_are_its_central_difference():
     products saved and `Greeks: First` runs: the trial basket's sensitivity to ISSUER_A's 10y
     cumulative hazard is the central difference of two base valuations 1e-5 either side of it.
 
-    KILLING MUTATION: the recurrence writing its slices in place, which refuses the backward pass.
+    KILLING MUTATION: the copula's odds detached from the graph, which drops every name's hazard
+    from the gradient.
     """
     context = derivus.Context()
     context.load_json((json.dumps(basket(Greeks='First')), 'greeks'))
@@ -245,16 +274,17 @@ def test_a_basket_s_first_order_greeks_are_its_central_difference():
 
 def test_a_basket_on_simulated_hazards_prices_every_row():
     """Under a credit Monte Carlo whose hazards are SIMULATED each name's curve is split with its
-    block like the index's, so the trial basket prices a finite, dispersed profile where it met a
-    three-row block with all 25 rows and was skipped; on static curves its mark is unmoved at the
-    number the trial reads, to the bit.
+    block like the index's, so the trial basket prices a dispersed profile opening on its base
+    valuation, where it met a three-row block with all 25 rows and was skipped; on static curves
+    its mark is unmoved at the number the trial reads, to the bit.
 
     KILLING MUTATION: the names read over every row rather than their block's.
     """
-    assert book.marks([trial_credit.DEALS[1]], trial_credit.FACTORS)[0]['NTD'] == \
-        '-0x1.28cf4f83a85a8p+18'
+    mark = book.marks([trial_credit.DEALS[1]], trial_credit.FACTORS)[0]['NTD']
+    assert mark == '-0x1.28cf4f83a85a8p+18'
     _, profiles = simulate(basket(), ('ISSUER_A', 'ISSUER_B', 'ISSUER_C', 'ISSUER_INDEX'))
     assert 'NTD' in profiles, 'the basket was skipped'
+    assert profiles['NTD'][0] == pytest.approx(float.fromhex(mark), rel=1e-12)
     assert np.isfinite(profiles['NTD']).all() and profiles['NTD'][3].std() > 0.0
 
 
