@@ -428,7 +428,8 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
     the site that knows the strip's shape - ``Sticky_Strike`` on a parametric surface answers with
     the bare strike, which carries no fixing axis and no batch.
     """
-    forward = spot.unsqueeze(-2) * torch.exp(carry_rate * carry_rate.new(cum_t).unsqueeze(-1))
+    forward = spot.unsqueeze(-2) * torch.exp(
+        carry_rate * shared.upload(cum_t, carry_rate.dtype).unsqueeze(-1))
     moneyness = torch.as_tensor(
         calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
                        use_forward=use_forwards, invert_moneyness=invert_moneyness),
@@ -4318,13 +4319,14 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
         return mtm_list.mean(axis=2)
 
-    def sim_spot(offset, times, row_days, row_times, last_fixing, windows, sobol, num_sims,
+    def sim_spot(offset, times, steps, row_days, row_times, last_fixing, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, quanto, put_vols, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``. ``times`` is bound because it is built from
-        numpy and stays numpy on a block whose fixings have all been observed; ``quanto`` is theta,
+        numpy and stays numpy on a block whose fixings have all been observed; ``steps`` is that
+        numpy, which a step's length is decided off without reading the device. ``quanto`` is theta,
         being the fx surface's own strip, and is zero-length on a single-currency payoff.
         ``put_vols`` is the PUT LEG's own interval strip, zero-length under a kit or with no put
         barrier, where the leg reads the same law as the path and is bit-identical.
@@ -4372,8 +4374,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # coupon here and dies from the next block on
             dead = (terminationDate != -1).squeeze(1)
             mcmc = []
-            for i, (row_at, df, s, v, carry_rate, delta_t, floating) in enumerate(zip(
-                    row_days, discount_rates, spot_prices, vols, carry, times, floating_leg)):
+            for i, (row_at, df, s, v, carry_rate, delta_t, host_dt, floating) in enumerate(zip(
+                    row_days, discount_rates, spot_prices, vols, carry, times, steps, floating_leg)):
 
                 # zero when only the floating leg is left
                 reduced_samples = len(delta_t)
@@ -4419,7 +4421,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                 coupon_index = coupon_count = 0
 
                 def fixing(j, Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                           coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t,
+                           coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t, host_dt=host_dt,
                            carry_rate=carry_rate, v=v, row_at=row_at, ledger=ledger):
                     """One date of the strip: the state it leaves, and the decision, the settlement
                     and the put leg's indicator it returns (see `oss_stream`)."""
@@ -4446,7 +4448,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         coupon_count += 1
                         obs = past_fixings[obs_lo:obs_lo + n_obs].sum(0).unsqueeze(1) if n_obs else 0.0
                         ahead = n_win - n_obs
-                        if ahead and delta_t[coupon_index] <= 0:
+                        if ahead and host_dt[coupon_index] <= 0:
                             # a fixing AT this row is an OBSERVATION, not a step - the row's own
                             # spot IS it, and the interval it would open has no length
                             obs, ahead, coupon_index = obs + Sj, ahead - 1, coupon_index + 1
@@ -4454,7 +4456,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         # leaves both at the constants the no-averaging arithmetic reads
                         c, G, win_end = obs / n_win, 1.0 / n_win, 1.0
                         dt = delta_t[coupon_index] if ahead else 0.0
-                        if dt > 0:
+                        if ahead and host_dt[coupon_index] > 0:
                             # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
                             forward_carry = carry_rate[coupon_index].reshape(-1, 1)
                             # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
@@ -4831,9 +4833,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
 
-        sample_ts = drifts.new(
-            np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
-        ) if fixing_block.any() else fixing_block
+        # the interval strip, and its numpy source the walk decides a step's length off
+        steps = np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]
+                          ) if fixing_block.any() else fixing_block
+        sample_ts = shared.upload(steps, drifts.dtype) if fixing_block.any() else steps
 
         if 'Forward' in factor_dep:
             cashflows = factor_dep['Cashflows'].dual(cash_start_index[sample_index_t])
@@ -4892,7 +4895,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             # the interval carry and vol strips, which put the FULL-PATH branch's `carry * dt` and
             # `vols * vols * dt` on interval integrals; both take the ZERO carry `drifts`, the strip
             # each TRIGGER's own strike and the put leg a second strip at its own
-            cum_t = drifts.new(fixing_block) if fixing_block.any() else fixing_block
+            cum_t = shared.upload(fixing_block, drifts.dtype) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
             put_vols = spot_block.new_empty(0)
@@ -4929,7 +4932,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         for t, dt in zip(row_times, sample_ts)]
                 quanto = torch.stack([F.pad(x, (0, max(y.shape[0] for y in rows) - x.shape[0]))
                                       for x in rows])
-            simulate = partial(sim_spot, sample_index_t, sample_ts, all_fixings, row_times,
+            simulate = partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
                                last_fixing, windows, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                      floating_leg,
@@ -5657,11 +5660,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # aligns with all_resets[1]
                 weight = reset_block.tn[:, utils.RESET_INDEX_Weight]
                 # each reset read back as its rate: a forecast one arrives weighted, a fixed one not
-                known = torch.as_tensor(reset_block.np[:, utils.RESET_INDEX_Reset_Day] < 0,
-                                        device=shared.one.device)
+                known = shared.upload(reset_block.np[:, utils.RESET_INDEX_Reset_Day] < 0, torch.bool)
                 all_resets = all_resets / torch.where(known, 1.0, weight).view(1, -1, 1)
-                reset_split = torch.as_tensor(
-                    reset_per_cashflows[reset_per_cashflows > 0], device=shared.one.device, dtype=torch.long)
+                reset_split = shared.upload(reset_per_cashflows[reset_per_cashflows > 0], torch.long)
                 lengths = reset_split.unsqueeze(0).expand(all_resets.shape[0], -1)
                 # Pre_Aggregation keeps the resets apart for the daily pricer below, which caps each
                 # BEFORE aggregating
@@ -5780,8 +5781,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
                 total = total + simple_margin
 
-            payments.append(total + cashflows.tn[
-                pmts_offset, utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1))
+            payments.append(total + cashflows.tn[shared.upload(pmts_offset, torch.int64),
+                                                 utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1))
 
         all_payments = torch.cat(payments, dim=0) if len(payments) > 1 else payments[0]
 

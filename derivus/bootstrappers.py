@@ -69,8 +69,6 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
     def __init__(self, scenario_keys, batch_size, device, dtype, nomodel='Constant'):
         super(RiskNeutralInterestRate_State, self).__init__(
             None, torch.ones([1, 1], dtype=dtype, device=device), 2048, None, nomodel, batch_size, False)
-        # these are tensors
-        self.t_PreCalc = {}
         self.scenario_keys = scenario_keys
         self.t_random_batch = None
         self.batch_index = 0

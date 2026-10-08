@@ -65,6 +65,8 @@ import inspect
 import os
 import sys
 import textwrap
+import traceback
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -74,8 +76,10 @@ import pandas as pd
 import pytest
 import torch
 import torch.multiprocessing as mp
+from torch.overrides import TorchFunctionMode
 
 import derivus
+import rates_world
 from derivus import utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
@@ -888,3 +892,118 @@ def test_the_unsharded_default_did_not_move():
     _, out = shard(0, 1, deterministic=False)
     assert sha(out['Results']['mtm'].values) == '2df61471b2970c5e', (
         'the unsharded path moved: %s' % sha(out['Results']['mtm'].values))
+
+
+# ------------------------------------------------------------------ host traffic per batch
+
+#: The per-batch count `HostTraffic` takes on `traffic_document`, CPU and CUDA alike: 801 while
+#: deal-static arrays went up and wing decisions came back every batch, 54 once they do not.
+HOST_TRAFFIC_PER_BATCH = 54
+
+SKEW_TENORS = [0.02, 0.25, 0.5, 0.75, 1.0, 2.0]
+SKEW = {'ATM_Vol': 0.25, 's': -0.15, 'L': 0.30, 'R': 0.20, 'C': -0.35, 'D': 0.35, 'lam': 0.5,
+        'rho': 0.5}
+QUARTERS = [BASE + pd.DateOffset(months=3 * k) for k in range(1, 5)]
+ON_SKEW = {'Equity': 'SK', 'Dividends': 'SK', 'Discount_Rate': 'USD', 'Equity_Volatility': 'SK',
+           'Currency': 'USD', 'Payoff_Currency': 'USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+           'Strike_Price': 100.0, 'Expiry_Date': QUARTERS[-1]}
+TRAFFIC_DEALS = [
+    dict(ON_SKEW, Object='EquityBarrierOption', Reference='SKB', Units=1.0, Cash_Rebate=0.0,
+         Barrier_Type='Down_And_Out', Barrier_Price=85.0,
+         Barrier_Monitoring_Frequency=pd.DateOffset(days=0),
+         Barrier_Dates=[[d, ''] for d in QUARTERS]),
+    dict(ON_SKEW, Object='QEDI_CustomAutoCallSwap', Reference='SKAC', Units=10.0,
+         Settlement_Style='Cash', Option_On_Forward='No', Option_Style='European', Barrier=0.0,
+         Payoff_Type='Standard', Price_Fixing=[[d, 0.0] for d in QUARTERS],
+         Autocall_Coupons=[[d, 0.02] for d in QUARTERS],
+         Autocall_Thresholds=[[d, 1.0] for d in QUARTERS], Barrier_Dates=[], Autocall_Floating=[]),
+    dict(rates_world.par_swap('SWAP', 'USD', 'USD', 'USD', 2, 2.0), Effective_Date=BASE,
+         Maturity_Date=BASE + pd.DateOffset(years=2))]
+
+
+def traffic_document():
+    """`job_document`'s two vanillas on a flat surface, beside a second GBM equity on a Skew
+    surface carrying a discretely monitored barrier and a one-step-survival autocall, and a swap."""
+    c = job_document()
+    c.params['Price Factors'].update({
+        'EquityPrice.SK': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
+                           'Respect_Default': 'No', 'Jump_Level': 0.0},
+        'DividendRate.SK': {'Currency': 'USD', 'Floor': None,
+                            'Curve': utils.Curve([], [[0.0, 0.01], [5.0, 0.01]])},
+        'EquityPriceVol.SK': dict(
+            {'Surface_Type': 'Skew', 'Moneyness_Rule': 'Sticky_Moneyness', 'Currency': 'USD',
+             'ATM_Ref': utils.Curve([], [[t, SPOT] for t in SKEW_TENORS])},
+            **{k: utils.Curve([], [[t, v] for t in SKEW_TENORS]) for k, v in SKEW.items()})})
+    c.params['Price Models']['GBMAssetPriceModel.SK'] = {'Vol': 0.25, 'Drift': RATE}
+    c.deals['Deals']['Children'] += [{'Instrument': construct_instrument(deal, {})}
+                                     for deal in TRAFFIC_DEALS]
+    return c
+
+
+class HostTraffic(TorchFunctionMode):
+    """Counts the torch calls that read a tensor's value on the host or hand a tensor host data,
+    by name and innermost derivus line: each is a stream sync on the card, and a call on the CPU."""
+
+    READS = {'__bool__', 'item', 'tolist', 'numpy', 'cpu', '__float__', '__int__', '__index__',
+             'nonzero', 'equal', 'allclose', 'is_nonzero', 'masked_select', 'unique'}
+
+    def __init__(self):
+        super().__init__()
+        self.sites = Counter()
+
+    @staticmethod
+    def host(value):
+        return isinstance(value, (np.ndarray, list, tuple, float, int)) and not isinstance(
+            value, bool)
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        name = getattr(func, '__name__', '')
+        if name in self.READS:
+            hit = bool(args) and torch.is_tensor(args[0])
+        elif name == '__getitem__':
+            # a gather by a device index is no sync; by numpy, another device or a mask it is
+            index = args[1] if isinstance(args[1], tuple) else (args[1],)
+            hit = any(isinstance(i, (np.ndarray, list)) or torch.is_tensor(i) and (
+                i.device != args[0].device or i.dtype == torch.bool) for i in index)
+        elif name in ('new', 'new_tensor'):
+            hit = len(args) > 1 and self.host(args[1])
+        elif name in ('tensor', 'as_tensor'):
+            hit = 'device' in kwargs and bool(args) and self.host(args[0])
+        else:
+            hit = any(isinstance(a, np.ndarray) and a.ndim for a in args)
+        if hit:
+            inner = [f for f in traceback.extract_stack()[:-1]
+                     if os.sep + 'derivus' + os.sep in os.path.normpath(f.filename)]
+            self.sites['{} {}'.format(name, '{}:{}'.format(
+                os.path.basename(inner[-1].filename), inner[-1].lineno) if inner else '')] += 1
+        return func(*args, **kwargs)
+
+
+def host_traffic(batches, device):
+    """`HostTraffic`'s sites over one run of `traffic_document`, and the deals it skipped."""
+    mode = HostTraffic()
+    with mode:
+        calc, _ = derivus.run_cmc(traffic_document(), torch.float32, dict(
+            overrides(), Batch_Size=32, MCMC_Simulations=64, Simulation_Batches=batches),
+            device=device)
+    return mode.sites, calc.calc_stats.get('Deals Skipped', 0)
+
+
+@pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=needs_cuda)])
+def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
+    """What a batch hands between host and device and recomputes from static data is the count at
+    three batches less the count at one, halved: 801 before, 54 after, on CPU and CUDA alike. A
+    surface's grid and expiry, its wings' zero test, a curve's scenario rows, a step's length and
+    a leg's index arrays are fixed for the run, so they go up or come back once a calculation.
+
+    Killed by any one reverted: the Skew read's numpy-indexed gathers and wing bools (+675), the
+    curve read's per-batch row upload (+19), the autocall walk's step test on the device (+23),
+    the flat surface's plan and the strip's and float leg's per-batch uploads (+29)."""
+    once, once_skipped = host_traffic(1, device)
+    thrice, thrice_skipped = host_traffic(3, device)
+    assert once_skipped == thrice_skipped == 0, 'a deal was skipped, so its reads went uncounted'
+    per_batch = (sum(thrice.values()) - sum(once.values())) / 2
+    assert per_batch <= HOST_TRAFFIC_PER_BATCH, (
+        '%s host reads and uploads a batch on %s against %d, over two batches: %s' % (
+            per_batch, device, HOST_TRAFFIC_PER_BATCH, (thrice - once).most_common(12)))

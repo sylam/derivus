@@ -1453,6 +1453,9 @@ class Calculation_State(object):
                  nomodel: str, simulation_batch: int, keep_tensor: bool):
         # these are tensors
         self.t_Buffer = {}
+        # the per-CALCULATION memo `t_Buffer`'s per-batch clear leaves alone: what a run reads
+        # unchanged every batch, never a tensor carrying a graph
+        self.t_PreCalc = {}
         self.t_Static_Buffer = static_buffer
         # storing a unit tensor allows the dtype and device to be encoded in the calculation state
         self.one = unit
@@ -1482,6 +1485,14 @@ class Calculation_State(object):
         # fired branch integrated against its interval's own law, and a SWAP - a deal on it
         # registers no `BoundarySet`. False HERE keeps `Credit_Monte_Carlo` on the crisp path.
         self.branch_and_weight = False
+
+    def upload(self, array, dtype=None):
+        """Numpy `array` on this state's device in `dtype`, the job's by default: copied once a
+        calculation and keyed by its bytes, so a deal-static array costs no copy after batch one."""
+        key = ('upload', array.dtype, array.shape, array.tobytes(), dtype)
+        if key not in self.t_PreCalc:
+            self.t_PreCalc[key] = self.one.new_tensor(array, dtype=dtype or self.one.dtype)
+        return self.t_PreCalc[key]
 
     def rng_position(self, position=None):
         """Where the plain generator stands, seeking to `position` first where one is given, so
@@ -4541,7 +4552,9 @@ def gather_scenario_interp(interp_obj, time_grid, shared, as_curve_tensor=True):
     index = time_grid[:, TIME_GRID_ScenarioPriorIndex].astype(np.int64)
     alpha_shape = tuple([-1] + [1] * (len(interp_obj.shape) - 1))
     alpha = time_grid[:, TIME_GRID_PriorScenarioDelta].reshape(alpha_shape)
-    curve_tensor = CurveTensor(interp_obj, index, alpha if alpha.any() else None)
+    curve_tensor = CurveTensor(
+        interp_obj, shared.upload(index, torch.int64),
+        shared.upload(alpha, interp_obj.tensor.dtype) if alpha.any() else None, np_index=index)
     return curve_tensor if as_curve_tensor else curve_tensor.interp_value()
 
 
@@ -4711,7 +4724,9 @@ def make_curve_tensor(tensor, curve_component, time_grid, shared, n_batch_dims=1
     if time_grid is not None:
         return gather_scenario_interp(shared.t_Buffer[key_code], time_grid, shared)
     else:
-        return CurveTensor(shared.t_Buffer[key_code], np.zeros(1, dtype=np.int64), None)
+        interp = shared.t_Buffer[key_code]
+        return CurveTensor(interp, interp.tensor.new_zeros(1, dtype=torch.int64), None,
+                           np_index=np.zeros(1, dtype=np.int64))
 
 
 def calc_time_grid_curve_rate(code, time_grid, shared, n_batch_dims=1):
@@ -4999,44 +5014,55 @@ class VolSurface:
         time_code = ('surface_flat', code[:2], tuple(expiry), calc_std)
 
         if time_code not in shared.t_Buffer:
-            expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
-            moneyness_max_index = np.array([x.tenor.shape[0] for x in code[FACTOR_INDEX_Flat_Index]])
-            exp_index = np.cumsum(np.append(0, moneyness_max_index[:-1]))
             time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
-            index, index_next, alpha = expiry_tenor.get_index(expiry)
-            alpha = flat_surface.new(alpha.reshape(-1, 1, 1))
-            subset = np.union1d(index, index_next)
 
-            block_indices, block_alphas = [], []
-            new_moneyness_tenor = reduce(np.union1d, [code[FACTOR_INDEX_Flat_Index][x].tenor for x in subset])
+            if time_code not in shared.t_PreCalc:
+                # the read's weights, gathers and moneyness axis are the surface's grid and the
+                # expiry alone, so they go up to the device once a calculation
+                expiry_tenor = code[FACTOR_INDEX_Expiry_Index]
+                index, index_next, alpha = expiry_tenor.get_index(expiry)
+                moneyness_max_index = np.array([x.tenor.shape[0] for x in code[FACTOR_INDEX_Flat_Index]])
+                exp_index = np.cumsum(np.append(0, moneyness_max_index[:-1]))
+                subset = np.union1d(index, index_next)
 
-            for tenor_index in subset:
-                moneyness_tenor = code[FACTOR_INDEX_Flat_Index][tenor_index]
-                moneyness_index, moneyness_index_next, moneyness_alpha = moneyness_tenor.get_index(
-                    new_moneyness_tenor)
+                block_indices, block_alphas = [], []
+                new_moneyness_tenor = reduce(np.union1d, [code[FACTOR_INDEX_Flat_Index][x].tenor for x in subset])
 
-                block_indices.append(exp_index[tenor_index] + np.stack([moneyness_index, moneyness_index_next]))
-                block_alphas.append(np.stack([1.0 - moneyness_alpha, moneyness_alpha]))
+                for tenor_index in subset:
+                    moneyness_tenor = code[FACTOR_INDEX_Flat_Index][tenor_index]
+                    moneyness_index, moneyness_index_next, moneyness_alpha = moneyness_tenor.get_index(
+                        new_moneyness_tenor)
 
-            # need to interpolate back to the tenor level
-            money_indices, money_alpha = np.array(block_indices), np.array(block_alphas)
-            subset_index = subset.searchsorted(index)
-            tenor_money_indices = flat_surface.new_tensor(money_indices[subset_index], dtype=torch.int64)
-            tenor_money_alpha = flat_surface.new(money_alpha[subset_index])
-            subset_index_next = subset.searchsorted(index_next)
-            tenor_money_alpha_next = flat_surface.new(money_alpha[subset_index_next])
-            tenor_money_indices_next = flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64)
+                    block_indices.append(exp_index[tenor_index] + np.stack([moneyness_index, moneyness_index_next]))
+                    block_alphas.append(np.stack([1.0 - moneyness_alpha, moneyness_alpha]))
+
+                # need to interpolate back to the tenor level
+                money_indices, money_alpha = np.array(block_indices), np.array(block_alphas)
+                subset_index = subset.searchsorted(index)
+                subset_index_next = subset.searchsorted(index_next)
+                shared.t_PreCalc[time_code] = (
+                    flat_surface.new(alpha.reshape(-1, 1, 1)),
+                    flat_surface.new_tensor(money_indices[subset_index], dtype=torch.int64),
+                    flat_surface.new(money_alpha[subset_index]),
+                    flat_surface.new(money_alpha[subset_index_next]),
+                    flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64),
+                    CurveTenor(new_moneyness_tenor), [flat_surface.new(x) for x in (
+                        expiry_tenor.tenor[index].reshape(-1, 1, 1),
+                        expiry_tenor.tenor[index_next].reshape(-1, 1, 1),
+                        expiry.clip(min=expiry_tenor.min).reshape(-1, 1))]
+                    if code[FACTOR_INDEX_SubType][0] == 'Malz' else None)
+
+            (alpha, tenor_money_indices, tenor_money_alpha, tenor_money_alpha_next,
+             tenor_money_indices_next, new_moneyness_tenor, terms) = shared.t_PreCalc[time_code]
 
             # index_select over take: the same elements off the 1-D surface, and a backward
             # (index_add_) that Deterministic_Kernels pins where take's put_ has no kernel
             def read(idx):
                 return flat_surface.index_select(0, idx.reshape(-1)).reshape(idx.shape)
 
-            if code[FACTOR_INDEX_SubType][0] == 'Malz':
+            if terms is not None:
                 # interpolate along variance for term
-                term_prior = flat_surface.new(expiry_tenor.tenor[index].reshape(-1, 1, 1))
-                term_post = flat_surface.new(expiry_tenor.tenor[index_next].reshape(-1, 1, 1))
-                t_expiry = flat_surface.new(expiry.clip(min=expiry_tenor.min).reshape(-1, 1))
+                term_prior, term_post, t_expiry = terms
                 var_prior = term_prior * read(tenor_money_indices)**2
                 var_post = term_post * read(tenor_money_indices_next)**2
                 var_surface = time_modifier * torch.sum(torch.lerp(
@@ -5048,7 +5074,7 @@ class VolSurface:
                     read(tenor_money_indices) * tenor_money_alpha,
                     read(tenor_money_indices_next) * tenor_money_alpha_next, alpha), dim=1)
 
-            shared.t_Buffer[time_code] = (surface.reshape(-1), code, CurveTenor(new_moneyness_tenor))
+            shared.t_Buffer[time_code] = (surface.reshape(-1), code, new_moneyness_tenor)
 
         return shared.t_Buffer[time_code]
 
@@ -5085,8 +5111,11 @@ class VolSurface:
                 shared.t_Buffer[skew_key] = (gamma, beta, alpha, gamma_r, beta_r, alpha_r)
 
             gamma, beta, alpha, gamma_r, beta_r, alpha_r = shared.t_Buffer[skew_key]
-            lam_ok = lam.all()
-            rho_ok = rho.all()
+            # a static surface's wings are the run's, so whether either is zero is read once
+            wings = skew_key + ('wings',)
+            if wings not in shared.t_PreCalc:
+                shared.t_PreCalc[wings] = (bool(lam.all()), bool(rho.all()))
+            lam_ok, rho_ok = shared.t_PreCalc[wings]
 
             # the 6 regions of the skew - check for 0 lam and rho - hold flat
             r1 = torch.ones_like(x) * (
@@ -5113,34 +5142,32 @@ class VolSurface:
             surface, rate_code, calc_std = shared.t_Buffer[key_code]
             expiry_tenor = rate_code[FACTOR_INDEX_Tenor_Index]
             time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
-            index, index_next, alpha = expiry_tenor.get_index(expiry)
-            alpha = shared.one.new(alpha.reshape(-1, 1))
+            # the numpy indices name the skew memo, their device copies gather
+            index, index_next, _ = expiry_tenor.get_index(expiry)
+            at, at_next, alpha = expiry_tenor.device_index(expiry, shared.one)
 
             # need to calculate the correct way to query the vol surface
             if moneyness is None:
                 moneyness = 0.0 * shared.one
             else:
                 if rate_code[FACTOR_INDEX_SubType][1] == 'Sticky_Strike':
-                    atm_ref = torch.lerp(surface['ATM_Ref'][index], surface['ATM_Ref'][index_next], alpha)
+                    atm_ref = torch.lerp(surface['ATM_Ref'][at], surface['ATM_Ref'][at_next], alpha)
                     moneyness = torch.log(moneyness / atm_ref)
 
             if rate_code[FACTOR_INDEX_SubType][0] == 'Skew':
-                vol_prior = calc_skew(moneyness, tuple(index), surface['ATM_Vol'][index], surface['s'][index],
-                                      surface['L'][index], surface['R'][index], surface['C'][index],
-                                      surface['D'][index], surface['lam'][index], surface['rho'][index])
-                vol_post = calc_skew(moneyness, tuple(index_next), surface['ATM_Vol'][index_next], surface['s'][index_next],
-                                      surface['L'][index_next], surface['R'][index_next], surface['C'][index_next],
-                                      surface['D'][index_next], surface['lam'][index_next], surface['rho'][index_next])
+                params = ('ATM_Vol', 's', 'L', 'R', 'C', 'D', 'lam', 'rho')
+                vol_prior, vol_post = (calc_skew(moneyness, tuple(i), *(surface[k][d] for k in params))
+                                       for i, d in ((index, at), (index_next, at_next)))
                 return torch.lerp(vol_prior, vol_post, alpha) * time_modifier
 
             elif rate_code[FACTOR_INDEX_SubType][0] == 'SVI':
-                k_m_prior = moneyness - surface['m'][index]
-                var_prior = surface['a'][index] + surface['b'][index] * (
-                        surface['rho'][index] * k_m_prior + torch.sqrt(k_m_prior ** 2 + surface['sigma'][index] ** 2))
-                k_m_post = moneyness - surface['m'][index_next]
-                var_post = surface['a'][index_next] + surface['b'][index_next] * (
-                        surface['rho'][index_next] * k_m_post + torch.sqrt(
-                    k_m_post ** 2 + surface['sigma'][index_next] ** 2))
+                k_m_prior = moneyness - surface['m'][at]
+                var_prior = surface['a'][at] + surface['b'][at] * (
+                        surface['rho'][at] * k_m_prior + torch.sqrt(k_m_prior ** 2 + surface['sigma'][at] ** 2))
+                k_m_post = moneyness - surface['m'][at_next]
+                var_post = surface['a'][at_next] + surface['b'][at_next] * (
+                        surface['rho'][at_next] * k_m_post + torch.sqrt(
+                    k_m_post ** 2 + surface['sigma'][at_next] ** 2))
                 return torch.sqrt(torch.lerp(var_prior, var_post, alpha)) * time_modifier
         else:
             surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
@@ -5150,16 +5177,10 @@ class VolSurface:
                 ratio = rate_code[FACTOR_INDEX_SubType][0] not in ('Malz', 'Relative_Forward')
                 moneyness = shared.one * (1.0 if ratio else 0.0)
             index, _, alpha = moneyness_tenor.get_index(moneyness)
-            expiry_indices = np.arange(expiry.size).astype(np.int32)
-            expiry_index_key = ('expiry_tenor', tuple(expiry_indices), moneyness_tenor.tenor.size)
-
-            if expiry_index_key not in shared.t_Buffer:
-                shared.t_Buffer[expiry_index_key] = shared.one.new_tensor(
-                    np.array([expiry_indices * moneyness_tenor.tenor.size]),
-                    dtype=torch.int32).T
-
-            expiry_offsets = shared.t_Buffer[expiry_index_key]
-            vol_index = index + expiry_offsets
+            # each expiry's row offset into the flattened surface, made on the device
+            size = moneyness_tenor.tenor.size
+            vol_index = index + torch.arange(0, expiry.size * size, size, dtype=torch.int32,
+                                             device=shared.one.device).reshape(-1, 1)
 
             vol_index_next = torch.clamp(vol_index + 1, 0, max_index)
             return torch.lerp(surface[vol_index], surface[vol_index_next], alpha)

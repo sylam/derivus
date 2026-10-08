@@ -521,15 +521,12 @@ class CMC_State(utils.Calculation_State):
         """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
         caches a batched exposure run needs on top of `Calculation_State`.
 
-        `t_PreCalc` is the per-CALCULATION memo (`t_Buffer` is the per-batch one `reset` clears), so
-        its presence is the marker pricers read for "exposure-based". `t_Bridge_Variance_Rate` holds
-        each factor's annualized log-variance RATE: a continuously monitored barrier crossing
-        between two deal-grid dates needs the SIMULATION variance of that interval, not an implied
-        vol.
+        `t_Bridge_Variance_Rate` holds each factor's annualized log-variance RATE: a continuously
+        monitored barrier crossing between two deal-grid dates needs the SIMULATION variance of that
+        interval, not an implied vol.
         """
         super(CMC_State, self).__init__(
             static_buffer, one, mcmc_sims, report_currency, nomodel, batch_size, keep_tensor=keep_tensor)
-        self.t_PreCalc = {}
         # decisions taken on simulated state, recorded forward so their derivative can be restored
         # before the reverse sweep. Per BATCH like t_Buffer - backward() runs once per batch
         self.boundary_aad = False
