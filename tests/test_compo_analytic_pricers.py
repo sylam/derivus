@@ -242,7 +242,10 @@ def test_a_composite_knock_in_plus_its_knock_out_is_the_composite_european(
     the sum misses by the whole fx translation.
 
     The local carry is flat here so the vanilla's two-business-day forward settlement is the
-    identity and the reading is float64 round-off; measured worst 2.0e-15 relative."""
+    identity and the reading is float64 round-off; measured worst 2.0e-15 relative.
+
+    Killing mutation: the barrier's composite carry without the fx forward's own.
+    """
     factors = _factors(skew=skew, q=R_USD)
     deals = [_barrier('KI', '%s_And_In' % ud, barrier, option_type),
              _barrier('KO', '%s_And_Out' % ud, barrier, option_type),
@@ -260,7 +263,8 @@ def test_a_knocked_in_discrete_composite_barrier_is_the_composite_european(skew)
     equal to 2.2e-16 on the skewed surface, where the untranslated read missed by 45% on the call
     and 36% on the put; bit for bit on the flat one. The local carry is flat, as above.
 
-    KILLING MUTATION: the discrete barrier's expiry read back at the untranslated strike.
+    Killing mutation: the discrete barrier's expiry read at the untranslated strike (`compo_strike`
+    dropped from its moneyness).
     """
     observed = [[BASE + pd.DateOffset(months=3 * k), ''] for k in range(1, 5)]
     deals = [dict(_barrier('KI' + kind[0], 'Down_And_In', 1000.0, kind), Barrier_Dates=observed)
@@ -277,7 +281,8 @@ def test_a_composite_barrier_s_strip_reads_the_local_smile_at_the_translated_str
     each prices as on a flat local surface at `_local_sigma(K)` - to the bit, where the strip read
     at the composite spot over the payoff strike missed by 0.7% and 2.1%.
 
-    KILLING MUTATION: the strip read at the composite spot over the payoff strike.
+    Killing mutation: the payoff-currency strike read untranslated (`compo_strike` returning the
+    level).
     """
     deals = [dict(_barrier(kind, kind, DOWN, 'Put'), Barrier_Dates=[[EXPIRY, '']])
              for kind in ('Down_And_In', 'Down_And_Out')]
@@ -296,8 +301,10 @@ def test_a_one_coupon_composite_autocall_is_the_composite_europeans_that_make_it
     at the local spot, each strike over its fixing's fx forward, the put leg's vol the product's
     as the path's is: equal to 1.1e-15, where the composite read missed by 1.9% and 10% on the skew.
 
-    KILLING MUTATIONS: either strip read at the composite spot over the payoff strike; the put
-    strip's vol left the local asset's, which misses by 3.9% on the flat smile.
+    Either strip read at the composite spot over the payoff strike, or the put strip's vol left the
+    local asset's (3.9% on the flat smile), fails here too.
+
+    Killing mutation: the composite variance's cross term taken with the wrong sign.
     """
     autocall = dict({'Object': 'QEDI_CustomAutoCallSwap', 'Currency': 'USD', 'Equity': 'EQ',
                      'Dividends': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
@@ -328,7 +335,10 @@ def test_the_whole_conjunction_parities_at_the_vanilla_s_settlement_lag():
     different rates, the skewed surface, a live fx vol and a live correlation, both barrier
     directions and both option types. The only residual is the vanilla's own forward settlement
     lag: four calendar days at a 3% carry move the forward by 3.3e-4, and the vanilla's forward
-    elasticity of about 4.6 carries that to the price. Measured worst 1.4e-3 relative."""
+    elasticity of about 4.6 carries that to the price. Measured worst 1.4e-3 relative.
+
+    Killing mutation: the composite process left on the local spot.
+    """
     factors = _factors()
     deals = []
     for ud, barrier in (('Up', UP), ('Down', DOWN)):
@@ -360,7 +370,10 @@ def test_a_one_touch_reads_its_crossing_on_the_composite_spot(direction, barrier
     beyond the same barrier for the wrong reason.
 
     There is no no-touch deal to complete the partition with; this is the same statement read at the
-    end where the touch probability is one."""
+    end where the touch probability is one.
+
+    Killing mutation: the composite process left on the local spot.
+    """
     out = _run(_job([_one_touch('OT', direction, barrier)], _factors()))
     ref = CASH * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'OT') - ref) / ref < 1e-12, (_mtm(out, 'OT'), ref)
@@ -371,7 +384,10 @@ def test_a_one_touch_reads_its_crossing_on_the_composite_spot(direction, barrier
 def test_a_live_one_touch_is_the_textbook_closed_form_on_the_composite(direction, barrier, up):
     """A live barrier against the textbook `erfc` pair evaluated on the composite spot, the
     composite carry and the composite vol read at the TRANSLATED barrier - the whole composite
-    spelling in one number. Measured worst 1.6e-15 relative."""
+    spelling in one number. Measured worst 1.6e-15 relative.
+
+    Killing mutation: the composite variance's cross term taken with the wrong sign.
+    """
     out = _run(_job([_one_touch('OT', direction, barrier)], _factors()))
     ref = _one_touch_closed(barrier, up, CMP_SPOT, R_EUR - Q_EQ, _compo_sigma(barrier), R_EUR)
     assert abs(_mtm(out, 'OT') - ref) / ref < 1e-9, (_mtm(out, 'OT'), ref)
@@ -395,7 +411,10 @@ def test_a_composite_on_a_unit_fx_leg_prices_the_standard_deal(name, deal):
     one's and neither fx vol nor correlation authored, every composite quantity is a multiplication
     by one or an addition of zero and the deal must reprice its Standard twin. The composite vol
     passes through `sqrt(v*v + 0 + 0)`, the one step that is not the identity by construction;
-    measured equal to the bit on every arm."""
+    measured equal to the bit on every arm.
+
+    Killing mutation: the composite vol taken without its square root.
+    """
     compo = dict(deal, Reference='CMP', Payoff_Currency='USDX', Discount_Rate='USDX',
                  Payoff_Type='Compo')
     plain = dict(deal, Reference='STD', Payoff_Currency='USD', Discount_Rate='USD')
@@ -415,8 +434,9 @@ def test_the_composite_asian_moment_matches_on_the_composite(option_type, fx_ske
     is `S*X`'s. Measured equal to the bit on both option types, and on an fx surface smiled about
     its 15% at the money, which the composite vol reads at moneyness one.
 
-    KILLING MUTATION: a ratio surface's at-the-money read at moneyness zero - the 0.8 node's 11%,
-    which misses by 3.2%.
+    A ratio surface's at-the-money read at moneyness zero - the 0.8 node's 11% - misses by 3.2%.
+
+    Killing mutation: the composite variance's cross term taken with the wrong sign.
     """
     factors = _factors(fx_skew=fx_skew)
     out = _run(_job([_asian('AS', option_type)], factors))
@@ -433,7 +453,7 @@ def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain
     where clamping the strike net of the realised average at 1e-5 priced the forward alone and
     missed by 29,404.36.
 
-    KILLING MUTATION: that strike clamped where the payoff reads it, not only where Black does.
+    Killing mutation: that strike clamped where the payoff reads it, not only where Black does.
     """
     month = lambda m: BASE + pd.DateOffset(months=m)
     samples = [[month(-6), 100.0, 1.0], [month(-3), 100.0, 1.0], [month(3), 0.0, 1.0],
@@ -462,7 +482,10 @@ def test_the_monitored_path_crosses_on_the_composite_not_the_local_spot():
     row IS the mean touch probability the monitored path decided.
 
     Measured 0.5435 on this tree against 0.0000 when the crossing reads the local spot, at 2048
-    paths and seed 1."""
+    paths and seed 1.
+
+    Killing mutation: the composite process left on the local spot.
+    """
     factors = _factors(skew=0.0, eq_vol=0.01, fx_vol=0.40)
     models = {'GBMAssetPriceModel.EQ': {'Vol': 0.01, 'Drift': 0.0},
               'GBMAssetPriceModel.EUR': {'Vol': 0.40, 'Drift': 0.0}}

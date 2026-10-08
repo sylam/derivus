@@ -65,8 +65,9 @@ def test_a_double_asian_is_its_monte_carlo_seasoned_and_with_either_leg_fixed():
     Reference, by hand: `1000 max(A1 - A2 - 0.01, 0) DF(expiry)` per path, `A` a leg's average of
     its prints and its simulated month-ends.
 
-    Killing mutations: the seasoned leg's two fixings weighted against its four weights, which
-    skips the deal; a fully fixed leg sent through the spread formula, whose empty moment is
+    The seasoned leg's two fixings weighted against its four weights skips the deal.
+
+    Killing mutation: a fully fixed leg sent through the spread formula, whose empty moment is
     `log 0` and marks NaN.
     """
     spot, df = monte_carlo()
@@ -94,7 +95,8 @@ def test_a_fixed_leg_leaving_a_strike_at_or_below_zero_is_worth_its_forward():
     Reference, by hand: `1000 DF(expiry) (0.25 (2 + 2 + F_11 + F_12) - 0.5 - 0.01)`, `F_m` the
     EURUSD forward at month-end m.
 
-    Killing mutation: Black taken at the strike it clamps to, 1e-5, which drops the 0.49.
+    Killing mutation: the exercised-for-certain arm taken at the strike clamped to 1e-5, which
+    drops the 0.49.
     """
     forward = [book.X0 * math.exp((book.DISCOUNT[0] - book.R_EUR) * (month(m) - B).days / 365.0)
                for m in (11, 12)]
@@ -113,11 +115,12 @@ def test_a_double_asian_prices_every_row_of_a_credit_monte_carlo():
     is the base valuation's mark. A static EURUSD fixes every sample at its spot, so at expiry the
     spread is -0.01, or -0.0075 seasoned at 1.24, and the option is worth nothing on any path.
 
-    Killing mutations: a leg's fixed count read with the block's counter rather than its merged
-    sample count, `KeyError(1)` on the quarterly grid; a fully fixed leg sent through the spread
-    formula, NaN from December to July on the monthly one; a static spot's one row left standing
-    for all of its leg's fixings, which prices the static run's expiry at 927.50; the seasoned
-    print joined to the static spot unbroadcast, the 256-against-1 refusal that skipped the deal.
+    A leg's fixed count read with the block's counter reads `KeyError(1)` on the quarterly grid; a
+    static spot's one row left standing for all of its leg's fixings prices the static run's expiry
+    at 927.50.
+
+    Killing mutation: a fully fixed leg sent through the spread formula, NaN from December to July
+    on the monthly grid.
     """
     gbm = ({'FxRate': 'GBMAssetPriceModel'}, {},
            {'GBMAssetPriceModel.EUR': {'Vol': book.SIGMA, 'Drift': 0.0}})

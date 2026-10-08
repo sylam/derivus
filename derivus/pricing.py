@@ -575,8 +575,8 @@ def oss_truncated_draw(u, z_bound, survive_below):
     THREE call sites still spell it inline and a defect fixed here must be checked against all
     three: ``sim_spot_oss`` twice (its down-side base ``(1-p) + u*p`` differs from ``Phi + u*p`` in
     the last bit below a half, so absorbing it would re-baseline the barrier's pinned fixtures) and
-    ``pv_MC_AutoCallSwap`` up-side only. ``tests/test_branch_and_weight.py`` gates each inline
-    spelling against this one.
+    ``pv_MC_AutoCallSwap`` up-side only; the quadrature tables in ``tests/test_branch_and_weight.py``
+    read every spelling.
     """
     eps = torch.finfo(u.dtype).eps
     Phi = utils.norm_cdf(z_bound)

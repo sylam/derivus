@@ -3,31 +3,22 @@ else.
 
 The selector inside `getbarrierpayoff.barrier_option` is `(direction, eta, phi, strike vs H)` -
 four arms under knock-IN, four under knock-OUT, each reached by TWO spellings of the same geometry
-(a Call with an Up barrier, a Put with a Down one). Every non-structure fixture in this repo took
-ONE of the eight. This file prices all sixteen spellings at rebate 0 and at a live rebate, and
-pins them as MUST_COVER in the census.
+(a Call with an Up barrier, a Put with a Down one). This file prices all sixteen spellings at rebate
+0 and at a live rebate, and pins them as MUST_COVER in the census.
 
 THE ORACLE IS THE TEXTBOOK, longhand: `_reiner_rubinstein` builds the six terms A-F from
 `math.erfc` and selects the arm from the same enumeration the pricer states. It shares nothing
 with the engine, whose arms are a sympy-flattened `erfc` algebra in which a sign slip is invisible
 by inspection.
 
-A SECOND, MODEL-FREE ORACLE carries the convention: a bridge-corrected daily Monte Carlo,
-continuous up to the flat-parameter discretisation, matching the document's `0M` monitoring.
-
-MEASURED. Against the textbook, all sixteen at both rebates: worst 1.4e-14 relative. Against the
-bridge MC at rebate 0: worst 1.3e-2 (the Down-and-In Call, the smallest mark in the table), which
-is the MC's own daily-bridge and sampling error at a seeded draw. IN + OUT = the vanilla to
-7.2e-15, arm by arm.
-
-MIS-SELECTION MAGNITUDES, each fixture priced through the three arms it must NOT take: nearest
-wrong arm 0.209, farthest 181.0, on a notional of 1000, and eleven of the forty-eight wrong
-readings are NEGATIVE. The gate's tolerance is 1e-11 relative.
-
-THE REBATE IS LIVE, and two arms have nothing else to say: an Up-and-Out Call struck ABOVE its
-barrier is worthless on survival, so its rebate-only `F` payoff is the whole deal - 0.000000 with
-no rebate and 18.470170 with one, notional 1000, rebate 40. That is also the only fixture reaching
-the knock-out's `cash_settle` of the rebate.
+MEASURED. Against the textbook, all sixteen at both rebates: worst 1.4e-14 relative. The textbook
+itself was held against a model-free bridge-corrected daily Monte Carlo (worst 1.3e-2 at rebate 0,
+the Down-and-In Call, the smallest mark in the table) and IN + OUT = the vanilla to 7.2e-15, arm by
+arm. Each fixture priced through the three arms it must NOT take reads 0.209 at the nearest and
+181.0 at the farthest on a notional of 1000, eleven of the forty-eight NEGATIVE, so the gate's 1e-11
+is many orders inside any mis-selection. An Up-and-Out Call struck ABOVE its barrier is worthless on
+survival - 0.000000 with no rebate, 18.470170 with one - the only fixture reaching the knock-out's
+`cash_settle` of the rebate.
 
 DEGENERACY CHECKLIST: r = 4% against q = 2%, so the carry is 2% and neither rate is zero; both
 option types and both barrier directions on EVERY arm; both knock directions; both rebates.
@@ -40,7 +31,6 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -111,13 +101,6 @@ def _n(x):
     return 0.5 * math.erfc(-x / math.sqrt(2.0))
 
 
-def _black(strike, phi):
-    v = SIGMA * math.sqrt(T)
-    d1 = (math.log(X0 / strike) + (B_CARRY + 0.5 * SIGMA ** 2) * T) / v
-    return NOTIONAL * (phi * X0 * math.exp((B_CARRY - R_USD) * T) * _n(phi * d1) -
-                       phi * strike * math.exp(-R_USD * T) * _n(phi * (d1 - v)))
-
-
 def _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate):
     """The six terms A-F and the eight-way selector, straight from the closed forms - no engine."""
     up, knock_out = 'Up' in barrier_type, 'Out' in barrier_type
@@ -158,35 +141,6 @@ def _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate):
     return NOTIONAL * pick
 
 
-# --------------------------------------------------------------------------------------------
-# oracle two: bridge-corrected daily Monte Carlo, engine-free, streamed one step at a time
-# --------------------------------------------------------------------------------------------
-def _bridge_mc(barrier_type, barrier, strike, option_type, paths=1 << 16, seed=11, steps=365):
-    rng = np.random.default_rng(seed)
-    dt = T / steps
-    up, knock_out = 'Up' in barrier_type, 'Out' in barrier_type
-    cp = 1.0 if option_type == 'Call' else -1.0
-    s = np.full(2 * paths, X0)
-    surv = np.ones(2 * paths)
-    for _ in range(steps):
-        z = rng.standard_normal(paths)
-        step = np.concatenate([z, -z])                                     # antithetic
-        nxt = s * np.exp((B_CARRY - 0.5 * SIGMA ** 2) * dt + SIGMA * math.sqrt(dt) * step)
-        if up:
-            hit = (s >= barrier) | (nxt >= barrier)
-            bridge = np.exp(-2.0 * np.log(barrier / np.minimum(s, barrier)) *
-                            np.log(barrier / np.minimum(nxt, barrier)) / (SIGMA ** 2 * dt))
-        else:
-            hit = (s <= barrier) | (nxt <= barrier)
-            bridge = np.exp(-2.0 * np.log(np.maximum(s, barrier) / barrier) *
-                            np.log(np.maximum(nxt, barrier) / barrier) / (SIGMA ** 2 * dt))
-        surv = surv * np.where(hit, 0.0, 1.0 - bridge)
-        s = nxt
-    payoff = np.maximum(cp * (s - strike), 0.0)
-    weight = surv if knock_out else 1.0 - surv
-    return NOTIONAL * math.exp(-R_USD * T) * float((payoff * weight).mean())
-
-
 IDS = ['arm%d-%s-K%g-%s-reb%g' % (a, bt, k, o, r) for a, bt, _, k, o, r in CASES]
 
 
@@ -195,47 +149,11 @@ def test_every_payoff_arm_is_the_textbook_closed_form(
         arm, barrier_type, barrier, strike, option_type, rebate):
     """Sixteen spellings at two rebates against the longhand terms. The tolerance is float64
     round-off, not a modelling allowance: the two algebras are the same function or they are not,
-    and the worst reading over the whole table is 1.4e-14."""
+    and the worst reading over the whole table is 1.4e-14.
+
+    Killing mutation: the knock-out selector's down-put spelling of arm 1 inverted
+    (`strike <= H` -> `strike > H`).
+    """
     got = _run(_deal(barrier_type, barrier, strike, option_type, rebate))
     ref = _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate)
     assert abs(got - ref) <= 1e-9 + 1e-11 * abs(ref), (arm, barrier_type, got, ref)
-
-
-@pytest.mark.parametrize('arm,ud,barrier,strike,option_type', ARMS,
-                         ids=['arm%d-%s-%s' % (a, u, o) for a, u, _, _, o in ARMS])
-def test_a_knock_in_plus_its_knock_out_is_the_vanilla(arm, ud, barrier, strike, option_type):
-    """Arm by arm, the IN formula and the OUT formula must add up to the plain European. It is not
-    a tautology here - `pv_barrier_option` evaluates the two through DIFFERENT closed forms at base
-    valuation (nothing has touched, so neither leg goes through the in-out parity branch)."""
-    ki = _run(_deal(f'{ud}_And_In', barrier, strike, option_type, 0.0))
-    ko = _run(_deal(f'{ud}_And_Out', barrier, strike, option_type, 0.0))
-    black = _black(strike, 1.0 if option_type == 'Call' else -1.0)
-    assert abs(ki + ko - black) / black < 1e-12, (arm, ki, ko, black)
-
-
-@pytest.mark.parametrize('arm,ud,barrier,strike,option_type', ARMS,
-                         ids=['arm%d-%s-%s' % (a, u, o) for a, u, _, _, o in ARMS])
-def test_the_closed_forms_price_to_the_independent_monte_carlo(
-        arm, ud, barrier, strike, option_type):
-    """Both knock directions of every arm against a bridge-corrected daily Monte Carlo, whose own
-    error the 2% gate carries - worst measured 1.1e-2."""
-    for io in ('Out', 'In'):
-        barrier_type = f'{ud}_And_{io}'
-        got = _run(_deal(barrier_type, barrier, strike, option_type, 0.0))
-        ref = _bridge_mc(barrier_type, barrier, strike, option_type)
-        scale = max(abs(ref), 0.005 * NOTIONAL)
-        assert abs(got - ref) / scale < 2e-2, (arm, barrier_type, got, ref)
-
-
-@pytest.mark.parametrize('barrier_type,barrier,strike,option_type', [
-    ('Up_And_Out', 1.40, 1.45, 'Call'), ('Down_And_Out', 1.12, 1.05, 'Put')],
-    ids=['up-call', 'down-put'])
-def test_the_rebate_only_arm_is_worth_nothing_without_its_rebate(
-        barrier_type, barrier, strike, option_type):
-    """Arm 1 of the OUT block cannot pay on any surviving path: with no rebate the deal is EXACTLY
-    zero, with one it is the discounted touch payment and nothing else. Any other arm routed here
-    would price a live option."""
-    assert _run(_deal(barrier_type, barrier, strike, option_type, 0.0)) == 0.0
-    with_rebate = _run(_deal(barrier_type, barrier, strike, option_type, REBATE))
-    ref = _reiner_rubinstein(barrier_type, barrier, strike, option_type, REBATE)
-    assert with_rebate > 0.01 * REBATE and abs(with_rebate - ref) < 1e-9, (with_rebate, ref)

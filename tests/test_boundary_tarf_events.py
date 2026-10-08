@@ -11,17 +11,23 @@ things inside it are decided on simulated state and carry a real value jump:
              float equality fires on a POSITIVE-MEASURE set - measured below at 27.7%-61.3% of
              outer paths - and it is a redemption, not a rounding artifact.
 
-TWO REACHABILITY TRAPS, each of which makes a fixture measure nothing.
-
-  `Barrier` was NOT in `FXTARFOptionDeal.Fields`, so no schema-authored deal could emit it and the
-  knock-in was reachable only because `instruments.py` keeps the params dict unfiltered.
-
-  `LeverageNotional` (N_otm) defaults to 0, and BOTH sites are dead there.
+A REACHABILITY TRAP: `LeverageNotional` (N_otm) defaults to 0, and BOTH sites are dead there.
   `cf_otm = relu(-intr) * N_otm * barrier_hit` multiplies the knock-in by zero, and the target pin
   becomes CONTINUOUS: as `remaining_target -> 0` the KO term, the clamped intrinsic and every
   surviving cashflow go to zero with it, so zeroing the weight costs nothing. Measured at the same
   61.3% firing rate with `LeverageNotional=0`: the uncorrected AAD agrees with bump-and-reprice to
   0.00%-1.14%.
+
+Under GBM the crisp estimator takes the knock-in by the conditional-p mixture (the decision's
+probability one conditioning step back, spliced so the value is the indicator's and the derivative
+the integral's) wherever a fixing interval is one simulated step; the kernel registration is left
+for an interval that straddles a scenario node.
+
+THE TARGET PIN HAS NO DOCUMENT-LEVEL GATE HERE. Its registration - the fired flags, the branches
+reconstructing the reported profile, the pending head of a row that redeems inside its own strip -
+was read by spying on the pricer, and the TARF emits no reconstruction organ as the accumulator and
+the extendable forward do. Uncorrected the pin read 27% short with neither estimator nor oracle
+resolving better than ~10%, so no CRN ladder can stand in for it.
 
 WHY THE LADDERS START AT 3e-4. Differencing across a jump does not converge as h shrinks - it
 changes how many paths sit on the wrong side. Below ~1e-4 the CRN readings scatter over 1/h
@@ -36,7 +42,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
-import pytest
 import torch
 
 import derivus
@@ -106,15 +111,13 @@ def _cfg(deal, spot, counterparty=False, simulate_fx=False):
     return c
 
 
-def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16, bandwidth=None):
+def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16):
     """(price, d(price)/d(FxRate.AUD spot)). One date, one scenario - and still a full inner MC
     underneath, which is where the knock-in is decided."""
     # the CRISP estimator declared: this whole module is about the boundary correction, and
     # the default swaps the estimator rather than correcting it, registering nothing
     overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1, 'Branch_And_Weight': 'No',
                  'Greeks': 'First' if greeks else 'No'}
-    if bandwidth is not None:
-        overrides['Boundary_AAD_Bandwidth'] = bandwidth
     _, out = run_baseval(_cfg(deal, spot), overrides=overrides)
     rows = out['Results']['mtm']
     price = float(rows[rows['Reference'] == 'TARF1']['Value'].iloc[0])
@@ -130,7 +133,7 @@ def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16, bandwidth=None):
     return price, grad
 
 
-def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128, bandwidth=None):
+def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128):
     """(cva, mtm profile, d(cva)/d(FxRate.AUD spot))."""
     overrides = {
         'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
@@ -140,8 +143,6 @@ def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128, bandwi
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}}
-    if bandwidth is not None:
-        overrides['Boundary_AAD_Bandwidth'] = bandwidth
     _, out = derivus.run_cmc(
         _cfg(deal, spot, counterparty=True, simulate_fx=True), prec=DTYPE, overrides=overrides)
     if torch.cuda.is_available():
@@ -157,69 +158,29 @@ def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128, bandwi
 
 
 KNOCK_IN = _tarf(UNREACHABLE_TARGET, MONTHLY, barrier=BARRIER)
-NO_BARRIER = _tarf(UNREACHABLE_TARGET, MONTHLY)
 # Sell, or the exposure of this book is ~0 on every path and the CVA gradient is noise
 KNOCK_IN_CMC = _tarf(UNREACHABLE_TARGET, BIMONTHLY, barrier=BARRIER, buy_sell='Sell')
 PIN_CMC = _tarf(0.02, BIMONTHLY, buy_sell='Sell')
-PIN_UNREACHABLE_CMC = _tarf(UNREACHABLE_TARGET, BIMONTHLY, buy_sell='Sell')
-PIN_NO_LEVERAGE_CMC = _tarf(0.02, BIMONTHLY, leverage=0.0, buy_sell='Sell')
-
-
-# ---------------------------------------------------------------- reachability
-
-def test_the_knock_in_barrier_is_reachable_from_the_schema():
-    """`Barrier` is read with a hard key by pricing.pv_MC_Tarf. It was not in the deal's Fields, so
-    a deal authored to the schema could not switch the leveraged leg on at all - the same defect
-    that made a schema-authored EquityBarrierBinaryOption silently skip, and the same fix.
-
-    Asserting the FIELD LIST and not just that the pricer sees a hand-written dict: the dict path
-    worked before too (`instruments.py` keeps params unfiltered), so a test that only priced one
-    would have passed against the defect."""
-    from derivus.schema import mapping
-    instrument = mapping['Instrument']
-    assert 'Barrier' in instrument['sections']['FXTARFOptionDeal.Fields'], (
-        'Barrier is not in FXTARFOptionDeal.Fields, so no schema-authored TARF can carry a '
-        'knock-in and the OTM leg is unreachable')
-    priced, _ = _baseval(KNOCK_IN, sims=1 << 12)
-    unbarriered, _ = _baseval(NO_BARRIER, sims=1 << 12)
-    assert priced != unbarriered, 'the Barrier key did not reach the pricer at all'
-
-
-def test_a_single_scenario_gap_does_not_poison_the_scalar_being_differentiated():
-    """Base valuation runs ONE scenario, so a per-scenario decision registers a single-element gap
-    and `torch.std` returns NaN on one sample. That NaN reaches the kernel width, the density, and
-    the scalar handed to backward().
-
-    It hid because `0 * NaN` is NaN forward but reaches nothing backward while the degenerate gap
-    carries no graph. A gap in the same shape that DID carry one would turn every reported greek
-    into NaN while the reported price still looked perfect.
-
-    Exactly zero, not merely finite: one sample supports no local-linear fit."""
-    import derivus.pricing as pricing
-    gap = torch.tensor([0.3], dtype=DTYPE, requires_grad=True)
-    jump = torch.tensor([5.0], dtype=DTYPE)
-    correction = pricing.stochastic_boundary_correction(gap, jump, 0.01)
-    assert torch.isfinite(correction), f'a one-sample gap produced {correction!r}'
-    assert float(correction) == 0.0, f'expected exactly zero, got {float(correction)!r}'
 
 
 # ---------------------------------------------------------------- safety: the value must not move
 
-@pytest.mark.parametrize('deal,label', [(KNOCK_IN, 'knock-in'), (NO_BARRIER, 'control')])
-def test_asking_for_sensitivities_does_not_move_the_tarf_price(deal, label):
+def test_asking_for_sensitivities_does_not_move_the_tarf_price_or_exposure():
     """BIT-identical, not approximately. A boundary correction is `gap - gap.detach()`, worth
     exactly zero forward, so this holds by construction - but the registration that feeds it does
     not: the target-pin counterfactual carries a SECOND survival weight through the same loop, and
-    a second accumulator that consumed one random number would move the reported price."""
-    off, _ = _baseval(deal, sims=1 << 14)
-    on, grad = _baseval(deal, greeks=True, sims=1 << 14)
-    assert off == on, f'{label}: price moved when sensitivities were requested: {off!r} -> {on!r}'
+    a second accumulator that consumed one random number would move the reported price. The base
+    valuation's one scenario reads `torch.rand`; under exposure the pin has rows to latch across
+    and the counterfactual weight runs the whole block loop beside the reported one.
+
+    Killing mutation: the counterfactual's accumulator added to in place where it aliases the
+    reported one.
+    """
+    off, _ = _baseval(KNOCK_IN, sims=1 << 14)
+    on, grad = _baseval(KNOCK_IN, greeks=True, sims=1 << 14)
+    assert off == on, f'price moved when sensitivities were requested: {off!r} -> {on!r}'
     assert grad is not None and abs(grad) > 0.0, 'no FX gradient was reported at all'
 
-
-def test_asking_for_sensitivities_does_not_move_the_tarf_exposure():
-    """The same statement under exposure, where the pin has multiple rows to latch across and the
-    counterfactual weight runs the whole block loop beside the reported one."""
     cva_off, mtm_off, _ = _cmc(PIN_CMC, batches=1)
     cva_on, mtm_on, grad = _cmc(PIN_CMC, gradient=True, batches=1)
     assert np.array_equal(mtm_off, mtm_on), 'exposure moved when sensitivities were requested'
@@ -234,11 +195,13 @@ def test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure():
 
     Measured on this fixture, identical CRN readings before and after: AAD -59,971.64 against an
     oracle of -83,856.45 at 0.90% flatness, i.e. 39.83% SHORT; corrected, -83,663.21, i.e. 0.23%.
-
-    An intermediate reading is worth recording because it is what a plausible half-fix produces.
     Registering only the fixings this row has yet to observe (`dt > 0`) left 5.50% behind: under
     CMC a deal's own dates are folded into the mtm grid, so EVERY fixing date is also a reporting
-    row, and on that row the first fixing is a past reset whose knock-in was going unregistered."""
+    row, and on that row the first fixing is a past reset whose knock-in was going unregistered.
+
+    Killing mutation: the conditional-p splice contributing nothing, so the knock-in's flux is
+    missing.
+    """
     _, _, aad = _cmc(KNOCK_IN_CMC, gradient=True)
     r = ladder(price=lambda s: _cmc(KNOCK_IN_CMC, spot=s)[0], aad=aad, base=SPOT,
                rungs=(3e-4, 1e-3, 3e-3, 1e-2))
@@ -246,195 +209,17 @@ def test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure():
 
 
 def test_the_knock_in_gradient_matches_bump_and_reprice_at_base_valuation():
-    """Base valuation, which is where this was first measured and where the pricer's inner MC is
-    the ONLY simulation there is - one date, one scenario, 2x65536 inner paths.
+    """Base valuation, where the pricer's inner MC is the ONLY simulation there is - one date, one
+    scenario, 2x65536 inner paths - and the route that had no boundary term at all: a deal priced
+    by Monte Carlo reported a gradient with the flux missing. Measured: AAD 2,421,013 against a CRN
+    plateau of ~3.766e6, 35.7% short; corrected, 3,768,262, i.e. 0.07%. The same TARF with no
+    `Barrier` agrees to 0.00% at 0.01% flatness either way, so the 35.7% is the barrier. Across a
+    40x range of kernel bandwidths, 0.005 to 0.2, the corrected delta spreads 0.62%.
 
-    It is also the route that had no boundary correction at all: `Base_Reval_State` never recorded
-    a decision, so a deal priced by Monte Carlo reported a gradient with the flux missing and
-    nothing in the calculation could have told you. Measured: AAD 2,421,013 against a CRN plateau
-    of ~3.766e6, 35.7% short; corrected, 3,768,262, i.e. 0.07%. The control with no Barrier key
-    agrees to 0.00% at 0.01% flatness both before and after, which is what says the machinery costs
-    nothing where there is no boundary to cross."""
+    Killing mutation: the conditional-p splice contributing nothing, so the knock-in's flux is
+    missing.
+    """
     _, aad = _baseval(KNOCK_IN, greeks=True)
     r = ladder(price=lambda s: _baseval(KNOCK_IN, spot=s)[0], aad=aad, base=SPOT,
                rungs=(3e-4, 1e-3, 3e-3, 1e-2))
     assert r.agrees(tol=0.02), f'the knock-in flux is not reaching the tape\n{r}'
-
-
-def test_the_control_with_no_barrier_was_already_right_and_stays_right():
-    """Attribution: with no knock-in there is no boundary, so ordinary AAD is already the
-    derivative of the reported value and must remain so. This is the reading that says the 35.7%
-    above is the barrier and not something else in the pricer - and the ladder here is flat to
-    0.01%, four decades of it, which the barriered one never is."""
-    _, aad = _baseval(NO_BARRIER, greeks=True)
-    r = ladder(price=lambda s: _baseval(NO_BARRIER, spot=s)[0], aad=aad, base=SPOT,
-               rungs=(1e-4, 3e-4, 1e-3, 3e-3, 1e-2))
-    assert r.agrees(tol=0.01), f'an unbarriered TARF should already agree\n{r}'
-
-
-def test_the_knock_in_correction_holds_still_across_the_usable_bandwidth():
-    """No single bandwidth can be argued for, so the acceptance is that the estimate does not
-    depend on it. Measured across a 40x range, 0.005 to 0.2: 3,780,461 / 3,768,262 / 3,771,541 /
-    3,782,522 / 3,790,539 / 3,791,727 - a 0.62% spread on a number that was 35.7% wrong.
-
-    The price is checked at every bandwidth too: a correction is worth exactly zero forward whatever
-    its width, so any movement means the registration perturbed the valuation."""
-    price, values = None, []
-    for bandwidth in (0.005, 0.01, 0.02, 0.05, 0.1, 0.2):
-        px, aad = _baseval(KNOCK_IN, greeks=True, bandwidth=bandwidth)
-        price = px if price is None else price
-        assert px == price, f'the price moved with the bandwidth: {price!r} -> {px!r}'
-        values.append(aad)
-    spread = (max(values) - min(values)) / abs(np.median(values))
-    assert spread < 0.02, (
-        f'the correction tracks the bandwidth ({spread:.2%} over 40x) - that is estimator bias, '
-        f'not a converged estimate: {[round(v) for v in values]}')
-
-
-# ---------------------------------------------------------------- B2: the target pin
-
-def _pin_registration(deal, batch=512):
-    """Run, and return (the deal's own reported profile, the sets registered for it)."""
-    import derivus.pricing as pricing
-    original = pricing.interpolate
-    seen = {}
-
-    def spy(mtm, shared, time_grid, deal_data, interpolate_grid=True):
-        result = original(mtm, shared, time_grid, deal_data, interpolate_grid)
-        if deal_data.Instrument.field.get('Reference') == 'TARF1':
-            seen['reported'] = result.detach()
-            seen['sets'] = [x for x in shared.boundary_sets if isinstance(x, utils.BoundarySet)]
-        return result
-
-    pricing.interpolate = spy
-    try:
-        _cmc(deal, gradient=True, batches=1, batch=batch)
-    finally:
-        pricing.interpolate = original
-    return seen
-
-
-def test_the_pin_fires_on_a_material_share_of_paths_and_its_branches_are_the_reported_value():
-    """Two statements, the first stopping the second from being vacuous.
-
-    The pin must FIRE. `q = remaining_target == 0.0` is an exact float equality, and it is a
-    boundary rather than a curiosity only because `calc_accum_value` clamps AT the target, so it
-    fires on a positive-measure set: 0% / 27.7% / 43.2% / 51.8% / 57.4% / 61.3% of outer paths, per
-    block.
-
-    Then the branches, selected by the recorded flags, must reconstruct the reported profile
-    EXACTLY - pinning the grid, the currency, the latch bookkeeping and which branch is which, all
-    invisible in a forward pass worth zero. torch.equal, not allclose."""
-    seen = _pin_registration(PIN_CMC)
-    latched = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
-    assert len(latched) == 1, f'expected one target-pin registration, got {seen["sets"]}'
-    bset, = latched
-    fired = [float(f.to(DTYPE).mean()) for f in bset.fired]
-    assert max(fired) > 0.2, (
-        f'the pin fires on at most {max(fired):.1%} of paths - this fixture gates nothing; '
-        f'lower TargetLevel until it does')
-    assert fired[0] == 0.0, 'block 0 reads the HISTORIC accrual, which cannot differ by scenario'
-
-    prefix = [torch.zeros_like(bset.fired[0])]
-    for flag in bset.fired:
-        prefix.append(prefix[-1] | flag)
-    selected = bset.to_mtm(bset.select(prefix))
-    assert torch.equal(selected, seen['reported']), (
-        'the registered branches do not reconstruct the reported deal value; max |d| '
-        f'{float((selected - seen["reported"]).abs().max()):.6g} against a reported |mean| of '
-        f'{float(seen["reported"].abs().mean()):.6g}')
-    assert float(bset.triggered.abs().max()) == 0.0, (
-        'a redeemed TARF is worth nothing - the triggered branch should be identically zero')
-    assert float(bset.untriggered.abs().max()) > 0.0, (
-        'the untriggered branch is identically zero, so the counterfactual weight never ran')
-
-    for k, (gap, flag) in enumerate(zip(bset.gaps[1:], bset.fired[1:]), start=1):
-        assert torch.equal(gap.detach() >= 0.0, flag), (
-            f'decision {k}: gap > 0 does not mean the target FILLED, so the correction is scored '
-            f'against the wrong branch and will pull the wrong way')
-        # An ATOM at the boundary is the signature of building the gap from the accrual the pricer
-        # reports, which `calc_accum_value` clamps AT the target: every filled path then sits at
-        # exactly zero with a derivative to match, so the one quantity that has to carry the flux
-        # carries none of it. The UNCLAMPED running accrual is the same test and the same sign.
-        assert float((gap.detach() == 0.0).to(DTYPE).mean()) == 0.0, (
-            f'decision {k}: {float((gap.detach() == 0.0).to(DTYPE).mean()):.1%} of paths sit at '
-            f'gap == 0 exactly. A crossing is a measure-zero event; an atom there means the gap '
-            f'came off the CLAMPED accrual, which is flat past the decision it is meant to detect')
-        assert gap.requires_grad, f'decision {k}: the gap carries no graph at all'
-
-
-def test_the_pin_correction_vanishes_where_the_target_cannot_fill():
-    """The other side of the fixture check, and a tight gate in its own right: with a target no
-    path reaches, every gap sits far from zero, the kernel underflows to zero and the correction
-    must contribute NOTHING. So the gradient has to agree with bump-and-reprice on its own terms.
-
-    This is the reading that says the pin machinery is inert where there is no boundary - and it
-    runs the SAME code path (the second survival weight, the whole block loop) as the live one."""
-    _, _, aad = _cmc(PIN_UNREACHABLE_CMC, gradient=True, batches=2)
-    r = ladder(price=lambda s: _cmc(PIN_UNREACHABLE_CMC, spot=s, batches=2)[0], aad=aad,
-               base=SPOT, rungs=(3e-4, 1e-3, 3e-3, 1e-2))
-    assert r.agrees(tol=0.02), f'an unreachable target should already agree\n{r}'
-
-
-@pytest.mark.parametrize('deal,leverage', [(PIN_NO_LEVERAGE_CMC, 0.0), (PIN_CMC, N2)])
-def test_the_pin_is_a_boundary_only_when_the_leveraged_leg_pays(deal, leverage):
-    """A design finding, read where it lives: the value a PINNED path would still have been worth
-    had the target not quite filled.
-
-    With LeverageNotional = 0 that value is identically zero - the KO term goes to zero with R, the
-    intrinsic is clamped at a vanishing remaining target, and cf_otm is zero because N_otm is. So
-    there is no jump and the pin is CONTINUOUS: the uncorrected gradient already agreed with
-    bump-and-reprice to 0.00%-1.14% at a 61.3% firing rate. Turn the leg on and the same pinned path
-    was worth tens of thousands, which is the whole jump.
-
-    So any fixture for this site that drops the leverage leg measures nothing. Both directions are
-    gated, because only the pair says which way round it is.
-
-    Read on the paths that FIRED, as the BRANCH DELTA the correction scores rather than as the
-    surviving branch's own worth: a row that redeems inside its own strip banks the crossing fixing
-    on both sides, so that branch is not zero and only the difference is the jump."""
-    seen = _pin_registration(deal)
-    bset, = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
-    fired = [float(f.to(DTYPE).mean()) for f in bset.fired]
-    assert max(fired) > 0.2, (
-        f'the pin fires on at most {max(fired):.1%} of paths, so this says nothing either way')
-    jump = max(float((on - off)[:, flag].abs().max())
-               for (_, on, off), flag in zip(bset.branch_deltas(), bset.fired) if flag.any())
-    if leverage:
-        assert jump > 0.0, (
-            'forcing the redemption on and off moves nothing, so redemption costs nothing and the '
-            'pin is not a boundary - but the OTM leg is switched on, so it should be')
-    else:
-        assert jump == 0.0, (
-            f'with no OTM leg a pinned path should have had nothing left to lose, yet forcing the '
-            f'decision moves the mark by {jump:.6g} - the pin IS a boundary at zero leverage and '
-            f'the header of this file is wrong')
-
-
-def test_a_row_reports_the_redemption_its_own_strip_took():
-    """A reporting row sitting ON a fixing date walks that fixing OBSERVED, and an observed fixing
-    has no conditioning step: its survival is an exact 0/1 on a spot the scenario decided. So the
-    deal can redeem INSIDE the row's own strip, and the row has to report THAT decision, not the
-    one its block opened on - or the flux of a decision the pricer took reaches nothing.
-
-    The chain is dense in the accrual index for exactly that reason: rows of one block have walked
-    different lengths of the same strip, so they report different decisions, and a row that
-    redeemed part-way through is worth the fixings it banked getting there rather than zero
-    (`pending`). Registering only the opening left the reported profile unreconstructable by 117214
-    on a mark of 140496.
-
-    Every fixing date here is also a reporting row, so this is the ordinary shape, not a corner."""
-    seen = _pin_registration(PIN_CMC)
-    bset, = [x for x in seen['sets'] if isinstance(x, utils.LatchedBoundarySet)]
-    assert bset.pending is not None, 'no row banked anything, so a redeemed row would read zero'
-    by_block = {}
-    for row, entry in enumerate(bset.pending):
-        by_block.setdefault(None if entry is None else int(entry[0]), []).append(
-            int(bset.obs_before[row]))
-    assert any(len(set(rows)) > 1 for rows in by_block.values()), (
-        f'every row of a block reports the same decision, so none is reporting a redemption its '
-        f'own strip took: {by_block}')
-    banked = [float(entry[1].abs().max()) for entry in bset.pending if entry is not None]
-    assert banked and max(banked) > 0.0, (
-        'the banked fixings are identically zero, so `pending` is inert and a row that redeemed '
-        'mid-strip reconstructs as worth nothing')

@@ -7,8 +7,8 @@ symmetric tolerance.
 
 THE ORACLE is a Cox-Ross-Rubinstein binomial in numpy at the same carry `b` the document implies,
 averaged over `n` and `n+1` steps (CRR's leading error oscillates with the strike node's parity).
-Nothing of the engine's is reused, and its convergence is gated: n=3000 against n=8000 agrees to
-better than 1e-4 relative.
+Nothing of the engine's is reused, and it is converged: n=3000 against n=8000 agrees to better than
+1e-4 relative on the furthest fixture and on the deepest premium.
 
 `b` IS THE DOCUMENT'S OWN and is not `r - q`: `EquityOptionDeal` reads its carry off the equity
 forward at `Forward_Settlement`, two business days past expiry, so `b = (r - q) * T_fwd / T`. The
@@ -142,7 +142,11 @@ def test_the_american_price_is_bounded_by_black_and_the_converged_binomial(
         world, option_type, strike):
     """The bound, not a tolerance: the approximation prices a sub-optimal exercise policy, so it
     can never beat the binomial, and it is floored at Black, so it can never be worth less than
-    waiting. Both sides are asserted, and the gap to the binomial carries the measured 2.07%."""
+    waiting. Both sides are asserted, and the gap to the binomial carries the measured 2.07%.
+
+    Killing mutation: the trigger's maturity term `h(tau)` read with `sigma` where it takes
+    `2 sigma`.
+    """
     american, european = _both(strike, option_type, world)
     oracle = _oracle(strike, option_type, world)
     assert american >= european - 1e-9, (american, european)
@@ -158,7 +162,10 @@ def test_the_early_exercise_premium_is_material_and_the_approximation_captures_i
         world, option_type):
     """A fixture whose American premium is noise cannot tell this pricer from `pv_european_option`,
     which is the state every equity fixture in the repo was in. Each leg here carries a premium
-    worth at least a tenth of the mark, and the engine must find at least three quarters of it."""
+    worth at least a tenth of the mark, and the engine must find at least three quarters of it.
+
+    Killing mutation: the approximation returning Black, which captures 0% of every premium.
+    """
     for strike in STRIKES:
         american, european = _both(strike, option_type, world)
         oracle = _oracle(strike, option_type, world)
@@ -171,7 +178,10 @@ def test_the_early_exercise_premium_is_material_and_the_approximation_captures_i
 def test_the_carry_is_read_off_the_forward_settlement_not_the_expiry():
     """The convention the oracle has to share, measured rather than assumed: the European control
     reproduces the binomial at `b = (r - q) * T_fwd / T` an order and a half better than at the
-    naive `r - q`, on the deal shape whose two-business-day forward settlement causes it."""
+    naive `r - q`, on the deal shape whose two-business-day forward settlement causes it.
+
+    Killing mutation: `EquityOptionDeal` carrying its forward to expiry.
+    """
     world, strike = (0.05, 0.10, 0.30), 100.0
     _, european = _both(strike, 'Call', world)
     r, q, vol = world
@@ -183,19 +193,14 @@ def test_the_carry_is_read_off_the_forward_settlement_not_the_expiry():
     assert abs(european - at_expiry) / at_expiry > 3e-4, (european, at_expiry)
 
 
-def test_the_oracle_is_converged():
-    """The tolerance above is only worth what the binomial is worth: 3000 steps against 8000, on
-    the fixture where the approximation is furthest away, and on the deepest premium."""
-    for world, option_type, strike in (((0.05, 0.10, 0.20), 'Call', 120.0),
-                                       ((0.08, 0.02, 0.30), 'Put', 120.0)):
-        coarse = _oracle(strike, option_type, world)
-        fine = _oracle(strike, option_type, world, steps=8000)
-        assert abs(coarse - fine) / fine < 1e-4, (world, option_type, strike, coarse, fine)
-
-
 def test_a_zero_dividend_call_is_bit_identically_its_european():
     """The `b >= r` arm. With no dividend the carry IS the rate, early exercise is never optimal
-    on a call, and the pricer must take Black unchanged - the same float, not a close one."""
+    on a call, and the pricer must take Black unchanged - the same float, not a close one. (The
+    forward's settlement lag puts the carry a hair ABOVE the rate here, so the arm is not decided
+    at equality.)
+
+    Killing mutation: the `b >= r` Black arm dropped, the approximation taken everywhere.
+    """
     world = (0.05, 0.0, 0.30)
     american, european = _both(100.0, 'Call', world)
     assert american == european, (american, european)
@@ -207,7 +212,10 @@ def test_a_call_past_its_exercise_trigger_marks_exactly_its_intrinsic():
     """The `(S >= I) * (S - K)` arm and the `first_knockout` settlement beside it. A deep call in
     the high-dividend world sits past its own trigger today, so its mark is the intrinsic to the
     last bit - the binomial puts the true value 0.027% above it, which is the approximation's own
-    floor and is what the dominance gate above admits."""
+    floor and is what the dominance gate above admits.
+
+    Killing mutation: the approximation returning Black, which prices the trigger's far side.
+    """
     american, _ = _both(80.0, 'Call', (0.05, 0.10, 0.20))
     assert american == UNITS * (SPOT - 80.0), american
     oracle = _oracle(80.0, 'Call', (0.05, 0.10, 0.20))

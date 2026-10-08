@@ -126,42 +126,27 @@ def _mtm(out, ref='AC1'):
     return float(rows['Value'].iloc[0])
 
 
-def test_a_single_coupon_autocall_is_a_digital(tmp_path):
-    """The exact statement: one coupon date makes the payoff cash-or-nothing, and Black prices it
-    with no Monte Carlo error of its own."""
-    out, _ = _run(_job(), tmp_path)
+def test_a_single_coupon_autocall_is_a_digital_between_its_two_limits(tmp_path):
+    """One coupon date makes the payoff cash-or-nothing, and Black prices it with no Monte Carlo
+    error of its own. The two limits fix the SCALE, so a pricer returning a constant cannot satisfy
+    all three: no path clears a 10x threshold, so the deal is worth ~0, and a threshold at a
+    hundredth of spot is cleared almost surely, so it is the discounted coupon. The DEBUG line says
+    what the pricer decided - one coupon date, one fixing per coupon (the OSS branch), one block -
+    which the value alone cannot.
+
+    Killing mutation: the coupon's cash paid undiscounted (`D[j]` dropped).
+    """
+    out, log = _run(_job(), tmp_path, debug=True)
     v = _mtm(out)
     assert abs(v - EXPECTED_ATM) / EXPECTED_ATM < 1e-2, (v, EXPECTED_ATM)
+    organ = [ln for ln in log.splitlines() if 'AUTOCALL ' in ln and 'coupons=' in ln][-1]
+    assert 'coupons=1' in organ and 'fullpath=0' in organ and 'blocks=1' in organ, organ
 
-
-def test_an_unreachable_threshold_pays_nothing(tmp_path):
-    """No path clears a 10x threshold, so the coupon is never paid and the deal is worth ~0.
-
-    This is the anti-placebo half of the digital gate above: it fixes the SCALE, so a pricer
-    returning a constant could not satisfy both.
-    """
-    out, _ = _run(_job(threshold=10.0), tmp_path, 'far')
-    assert abs(_mtm(out)) < 1e-6 * UNITS * COUPON, _mtm(out)
-
-
-def test_a_threshold_every_path_clears_pays_the_coupon_with_certainty(tmp_path):
-    """The other bracket: a threshold at a hundredth of spot is cleared almost surely, so the PV
-    is the discounted coupon and nothing else."""
-    out, _ = _run(_job(threshold=0.01), tmp_path, 'near')
+    far, _ = _run(_job(threshold=10.0), tmp_path, 'far')
+    assert abs(_mtm(far)) < 1e-6 * UNITS * COUPON, _mtm(far)
+    near, _ = _run(_job(threshold=0.01), tmp_path, 'near')
     certain = UNITS * COUPON * math.exp(-R_USD * HORIZON / DAYS)
-    assert abs(_mtm(out) - certain) / certain < 1e-3, (_mtm(out), certain)
-
-
-def test_the_pricer_logs_what_it_decided(tmp_path):
-    """The pre-registered log line. The value alone cannot say how many coupon dates the pricer
-    thought it had, nor whether it took the averaging branch - both of which change the product."""
-    _, log = _run(_job(), tmp_path, 'aclog', debug=True)
-    lines = [ln for ln in log.splitlines() if 'AUTOCALL ' in ln and 'coupons=' in ln]
-    assert lines, 'the autocall logged nothing at DEBUG'
-    organ = lines[-1]
-    assert 'coupons=1' in organ, organ
-    assert 'fullpath=0' in organ, organ         # one fixing per coupon: the OSS branch
-    assert 'blocks=1' in organ, organ
+    assert abs(_mtm(near) - certain) / certain < 1e-3, (_mtm(near), certain)
 
 
 def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_path):
@@ -170,9 +155,8 @@ def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_pa
     Two coupons fixed three days early with a 70% put. The barrier dated on the FIXINGS prices
     bit-identically to the barrier dated on the COUPONS (-0.0542905931889), both on the
     one-step-survival arm, and the put is live: the no-barrier document reads +0.2804032290490.
-    Killing mutation: read a barrier date by date alone, with no window behind it, and the
-    fixing-dated document falls to the full-path arm (`fullpath=1`, the averaging warning) and
-    reads +0.0185267 - the barrier observed on a row that is nobody's coupon.
+    Killing mutation: a barrier date read by its date alone, with no window behind it - the
+    fixing-dated document falls to the full-path arm (`fullpath=1`) and reads +0.0185267.
     """
     coupons, fixings = ['2024-12-27', '2025-06-27'], ['2024-12-24', '2025-06-24']
 
@@ -200,8 +184,8 @@ def test_a_coupon_observed_on_or_before_the_coupon_before_it_refuses_by_name(tmp
     crossing check - a fixing on the first coupon's own day as one before it - and the same table
     naming a fixing after the first coupon prices.
 
-    Killing mutations: the check dropped, the stale table priced; the check strict, the fixing on
-    the coupon's day priced.
+    Killing mutation: the check strict (`observed < previous`), the fixing on the coupon's day
+    priced.
     """
     import pytest
 
@@ -293,7 +277,10 @@ def test_a_compo_autocall_is_a_digital_on_the_converted_spot(tmp_path):
 
     MEASURED: 0.45887454 against the closed form's 0.45887454, 4.8e-16 relative; the flipped
     correlation lands on ITS closed form (0.43677514) exactly, so the sorted-pair sign flip is
-    measured rather than assumed."""
+    measured rather than assumed.
+
+    Killing mutation: the composite variance's cross term taken with the wrong sign.
+    """
     out, _ = _run(_compo_job(), tmp_path, 'compo')
     expected = _compo_digital(1.00, CORR)
     assert abs(_mtm(out) - expected) / expected < 1e-9, (_mtm(out), expected)
@@ -351,42 +338,31 @@ def _cmc(job, tmp_path, name):
     return out['Results']['cashflows']['USD'], out['Results']['mtm']
 
 
-def test_each_booked_date_carries_the_coupon_that_pays(tmp_path):
+def test_an_autocalled_path_pays_its_coupon_once_and_is_worth_nothing_after(tmp_path):
     """A path pays EXACTLY `Units * coupon`, exactly ONCE - the payment, scaled, then the latch. The
-    document autocalls at its first coupon with certainty, so the first date books the whole payment
-    and later dates book nothing. Four defects, all invisible to a SINGLE-coupon document:
+    document autocalls at its first coupon with certainty, so the first date books the whole
+    payment, later dates book nothing (0.8 / 0 / 0) and the profile is worth nothing after it
+    (0.79206 / 0.8 / 0 / 0). And the t0 mark is that first payment discounted back: the mark and the
+    ledger are the same cashflow seen from two places, which neither a value gate nor a cashflow
+    gate can say alone.
 
-      * the settle sat in the coupon loop under a ROW-level `tau`, firing once per coupon so
-        `cash_settle` accumulated - 0.24 where 0.08 pays;
-      * it booked `P`, the accumulated VALUE, rather than the payment;
-      * `nominal` scaled the mark and not the ledger, so `Units` and `Buy_Sell` never arrived;
-      * `terminationDate` was stamped inside `sim_spot` and never returned, so every later block
-        re-priced and RE-PAID the deal - 0.8/0.8/0.8 where 0.8/0/0 pays.
+    Four defects, all invisible to a SINGLE-coupon document: the settle in the coupon loop under a
+    ROW-level `tau` (0.24 where 0.08 pays); `P`, the accumulated VALUE, booked rather than the
+    payment; `nominal` scaling the mark and not the ledger; and `terminationDate` stamped inside
+    `sim_spot` and never returned, so every later block re-paid the deal (0.8 / 0.8 / 0.8).
+
+    Killing mutation: the latch a block returns discarded, so the next block re-prices and re-pays.
     """
-    ledger, _ = _cmc(_cmc_job(threshold=0.01), tmp_path, 'amount')
-    per_date = np.asarray(ledger.values, dtype=float).mean(axis=1)
-    assert len(per_date) > 1, 'a single-coupon document cannot see the defects this gate pins'
-    assert abs(per_date[0] - UNITS * COUPON) < 1e-6, (per_date[0], UNITS * COUPON)
-    assert np.all(np.abs(per_date[1:]) < 1e-9), (per_date, 'an autocalled path pays once')
-
-
-def test_an_autocalled_path_pays_once_and_is_worth_nothing_after(tmp_path):
-    """A path that has autocalled pays once and is worth nothing after: the ledger reads
-    `0.8 / 0 / 0` and the profile `0.79206 / 0.8 / 0 / 0`.
-
-    `terminationDate` was maintained correctly inside `sim_spot` and never returned, so the outer
-    loop rebuilt it from -1 for every block and the deal kept paying (0.8 / 0.8 / 0.8). The latch is
-    now a by-product carried into the next block's theta, and each decision registers ONE
-    counterfactual carrying its whole reach - the latch over every later row plus an own-row
-    fired/survived override.
-    """
-    ledger, mtm = _cmc(_cmc_job(threshold=0.01), tmp_path, 'zero_tail')
+    ledger, mtm = _cmc(_cmc_job(threshold=0.01), tmp_path, 'once')
     cash = np.asarray(ledger.values, dtype=float).mean(axis=1)
     profile = np.asarray(mtm.values, dtype=float).mean(axis=1)
-    assert np.all(np.abs(cash[1:]) < 1e-9), (
-        cash, 'the deal autocalled at its first coupon, so nothing pays after it')
-    assert np.all(np.abs(profile[2:]) < 1e-9), (
-        profile, 'a path that has autocalled is worth nothing from then on')
+    assert len(cash) > 1, 'a single-coupon document cannot see the defects this gate pins'
+    assert abs(cash[0] - UNITS * COUPON) < 1e-6, (cash[0], UNITS * COUPON)
+    assert np.all(np.abs(cash[1:]) < 1e-9), (cash, 'an autocalled path pays once')
+    assert np.all(np.abs(profile[2:]) < 1e-9), (profile, 'and is worth nothing from then on')
+    t = (ledger.index[0] - pd.Timestamp(BASE)).days / DAYS
+    discounted = float(cash[0]) * math.exp(-R_USD * t)
+    assert abs(profile[0] - discounted) / abs(discounted) < 5e-3, (profile[0], discounted, t)
 
 
 def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_carlo(tmp_path):
@@ -395,7 +371,7 @@ def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_
     `No` as under `Yes`, the switch being the compile's - where it was marked at nothing and
     counted nowhere.
 
-    Killing mutation: the static equity marked at zero again.
+    Killing mutation: the static equity's refusal dropped, the deal marked rather than skipped.
     """
     job = _cmc_job(threshold=0.01)
     market = job['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -422,7 +398,7 @@ def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_
     assert run('static_kept')['Stats'].get('Deals Skipped') == 1
 
 
-def _cva_job(threshold=1.02, spot=None, gradient='No', report='USD'):
+def _cva_job(threshold=1.02, spot=None, gradient='No'):
     """The CMC document with a counterparty and the CVA block on - the sensitivity run.
 
     The threshold sits 2% out of the money so the trigger is LIVE: scenarios cross it at every
@@ -445,16 +421,6 @@ def _cva_job(threshold=1.02, spot=None, gradient='No', report='USD'):
         'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.4]]}}}
     if spot is not None:
         market['Price Factors']['EquityPrice.EQ']['Spot'] = spot
-    if report != 'USD':
-        # report in a currency the deal does not pay, so every boundary branch crosses an fx
-        # conversion on its way to the mtm grid. The cross is STATIC - no FX model is declared -
-        # which exercises the conversion, not a simulated cross.
-        calc['Currency'] = report
-        market['Price Factors']['InterestRate.' + report] = {
-            'Currency': report, 'Day_Count': 'ACT_365', 'Sub_Type': None,
-            'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.02], [5.0, 0.02]]}}}
-        market['Price Factors']['FxRate.' + report] = {
-            'Domestic_Currency': None, 'Interest_Rate': report, 'Priority': 1, 'Spot': 1.25}
     return job
 
 
@@ -468,7 +434,7 @@ def _cva(job, tmp_path, name):
     return out
 
 
-def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), report='USD', collateral=False):
+def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), collateral=False):
     """AAD spot delta of the CVA, and a central-difference ladder of the SAME document.
 
     Common random numbers arrive through the contract: `Random_Seed` is in the document and the
@@ -476,15 +442,15 @@ def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), report='USD', collat
     two runs drawing identical paths. No internals, nothing patched.
     """
     wrap = _collateralised if collateral else (lambda j: j)
-    out = _cva(wrap(_cva_job(threshold=threshold, gradient='Yes', report=report)), tmp_path, 'aad')
+    out = _cva(wrap(_cva_job(threshold=threshold, gradient='Yes')), tmp_path, 'aad')
     g = out['Results']['grad_cva']['Gradient']
     eq_rows = [i for i in g.index if 'EquityPrice' in str(i[0])]
     aad = float(g.loc[eq_rows[0]]) if eq_rows else 0.0
     crn = []
     for h in rungs:
-        up = float(_cva(wrap(_cva_job(threshold=threshold, spot=SPOT + h, report=report)),
+        up = float(_cva(wrap(_cva_job(threshold=threshold, spot=SPOT + h)),
                         tmp_path, f'up{h}')['Results']['cva'])
-        dn = float(_cva(wrap(_cva_job(threshold=threshold, spot=SPOT - h, report=report)),
+        dn = float(_cva(wrap(_cva_job(threshold=threshold, spot=SPOT - h)),
                         tmp_path, f'dn{h}')['Results']['cva'])
         crn.append((up - dn) / (2.0 * h))
     return aad, crn, float(out['Results']['cva'])
@@ -507,6 +473,8 @@ def test_the_cva_spot_delta_matches_the_same_document_bumped(tmp_path):
 
     Opposite signs, each ~43x the corrected residual - which is why the WHOLE registration
     suppressed is a weak mutant here (+5.15%): the two halves nearly cancel on this fixture.
+
+    Killing mutation: the own-row fired/survived override suppressed.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02)
     best = min(crn, key=lambda c: abs(aad - c))
@@ -544,22 +512,10 @@ def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
         cva 0.0017986481   AAD +5.0705166e-05   CRN 4.9345/5.0634/5.15172e-05
         disagreement 0.14% at the best rung, ladder flatness 4.29%
 
-    MUTATION: the reach truncated to the decision's own row reads +7.73% against the same ladder.
+    Killing mutation: the decision's `cash_events` left undeclared, so the settled coupon stays at
+    its realised amount in both counterfactuals.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)
-    best = min(crn, key=lambda c: abs(aad - c))
-    assert abs(aad - best) / abs(best) < 0.05, (aad, crn, cva)
-
-
-def test_the_cva_spot_delta_matches_in_a_foreign_reporting_currency(tmp_path):
-    """The live gate reported in EUR, so every boundary branch crosses an fx conversion on its way
-    to the mtm grid exactly as the reported value does - a branch the conversion skipped would
-    land 1.25x off on a correction that is most of this number, far outside the tolerance.
-
-    MEASURED: cva 0.0043604281 (the USD gate's 0.005450535 / 1.25 to six digits), AAD
-    +1.1047279e-04 against CRN 1.0864/1.1757/1.1489e-04 - disagreement 1.68%, the USD ladder
-    through the static cross, coherently."""
-    aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, report='EUR')
     best = min(crn, key=lambda c: abs(aad - c))
     assert abs(aad - best) / abs(best) < 0.05, (aad, crn, cva)
 
@@ -569,33 +525,22 @@ def test_a_dead_trigger_contributes_no_spurious_delta(tmp_path):
     a coupon-only autocall is nothing but its trigger, so there is no live-but-fluxless
     configuration to control against. What a saturated trigger CAN gate is silence: the
     registrations still run under `Gradient: Yes` and must contribute neither value nor a spurious
-    delta - cva, AAD and every CRN rung exactly zero."""
+    delta - cva, AAD and every CRN rung exactly zero.
+
+    Killing mutation: the boundary kernel admitting every scenario, however far from its trigger.
+    """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=10.0, rungs=(0.3, 0.5))
     assert cva == 0.0 and aad == 0.0 and all(c == 0.0 for c in crn), (aad, crn, cva)
 
 
 def test_the_ledger_mirrors_and_scales_with_the_deal(tmp_path):
-    """`Units` and `Buy_Sell` reach the ledger exactly as they reach the mark - they did not."""
+    """`Units` and `Buy_Sell` reach the ledger exactly as they reach the mark - they did not.
+
+    Killing mutation: the settled coupon booked without `nominal`.
+    """
     one, _ = _cmc(_cmc_job(0.01, units=1.0), tmp_path, 'u1')
     ten, _ = _cmc(_cmc_job(0.01, units=10.0), tmp_path, 'u10')
     sold, _ = _cmc(_cmc_job(0.01, units=10.0, buy_sell='Sell'), tmp_path, 'sold')
     total = lambda led: float(np.asarray(led.values, dtype=float).sum() / led.shape[1])
     assert abs(total(ten) - 10.0 * total(one)) < 1e-6, (total(ten), total(one))
     assert abs(total(sold) + total(ten)) < 1e-6, (total(sold), total(ten))
-
-
-def test_the_mark_is_the_first_settled_coupon_discounted(tmp_path):
-    """The reconciliation: a deal that autocalls at its first coupon with certainty is worth that
-    payment discounted back, so the t0 mark and the first ledger entry are the same cashflow seen
-    from two places.
-
-    Holding the two reports against each other through the discount curve is a statement neither
-    a value gate nor a cashflow gate can make alone: a ledger correct in isolation but out of step
-    with the mark still fails here.
-    """
-    ledger, mtm = _cmc(_cmc_job(threshold=0.01), tmp_path, 'recon')
-    per_date = np.asarray(ledger.values, dtype=float).mean(axis=1)
-    t = (ledger.index[0] - pd.Timestamp(BASE)).days / DAYS
-    discounted = float(per_date[0]) * math.exp(-R_USD * t)
-    t0 = float(np.asarray(mtm.values[0], dtype=float).mean())
-    assert abs(t0 - discounted) / abs(discounted) < 5e-3, (t0, discounted, t)

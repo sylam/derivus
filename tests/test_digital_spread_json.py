@@ -147,7 +147,10 @@ def _spread_closed(fwd, strike, sigma_of, rate):
 
 def test_the_default_is_the_single_vol_closed_form():
     """The regression anchor: no Valuation Configuration entry, and the digital is the closed form
-    at the deal's own moneyness - the option defaulting to 0.0 IS the old pricer."""
+    at the deal's own moneyness - the option defaulting to 0.0 IS the old pricer.
+
+    Killing mutation: the closed form's cash and asset payoffs swapped.
+    """
     out, _ = _run(_job([BINARY], _equity_factors()))
     expected = _digital_closed(EQ_FWD, STRIKE, _eq_sigma(STRIKE), R_USD)
     assert abs(_mtm(out, 'BIN') - expected) / expected < 1e-9, (_mtm(out, 'BIN'), expected)
@@ -157,7 +160,10 @@ def test_a_spread_digital_is_the_two_vanillas_it_replicates():
     """The replication identity, interpolation-agnostic: the SAME document prices the binary with
     the spread on and the two EuropeanOption vanillas the spread is made of - long the low strike,
     short the high, `Payoff / (2 eps K)` units each. Both sides query the same surface at the
-    same strikes, so they must agree to float precision, whatever the smile."""
+    same strikes, so they must agree to float precision, whatever the smile.
+
+    Killing mutation: the cash spread left undivided by the strike.
+    """
     units = CASH / (2.0 * EPS * STRIKE)
     deals = [BINARY,
              _vanilla('LO', STRIKE * (1.0 - EPS), 'Buy', units),
@@ -179,8 +185,10 @@ def test_the_spread_reads_each_leg_at_its_own_vol():
     picks up. The DEBUG organ pins what the pricer read - one line per leg, low strike at the
     HIGHER vol.
 
-    MEASURED 670.395 against the closed form's 478.856. MUTATION: both legs read at the CENTER
-    moneyness prices 478.882, -28.6% against the oracle.
+    MEASURED 670.395 against the closed form's 478.856; both legs read at the CENTER moneyness
+    price 478.882, -28.6% against the oracle.
+
+    Killing mutation: both legs read at the deal's own moneyness.
     """
     out, log = _run(_job([BINARY], _equity_factors(), valuation=SPREAD_ON), debug=True)
     expected = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD)
@@ -199,7 +207,10 @@ def test_an_asset_or_nothing_digital_is_the_vanilla_plus_the_strike_times_the_ca
     cash digitals. Closed form that is `F N(w d1)` at the deal's own vol; under the spread, the
     vanilla at its strike plus the strike times the two-leg cash spread, each leg at its own vol -
     exact on the collinear skew, for the call and the put. Every other test here states no style,
-    so a cash payoff is what omitting it means."""
+    so a cash payoff is what omitting it means.
+
+    Killing mutation: the closed form's cash and asset payoffs swapped.
+    """
     discount = CASH * math.exp(-R_USD * T)
     lo, hi = STRIKE * (1.0 - EPS), STRIKE * (1.0 + EPS)
     sd = _eq_sigma(STRIKE) * math.sqrt(T)
@@ -219,7 +230,10 @@ def test_an_asset_or_nothing_digital_is_the_vanilla_plus_the_strike_times_the_ca
 
 def test_an_fx_binary_spread_reads_the_fx_smile():
     """The FX twin through its own moneyness convention (forward / strike, `use_forward`): the
-    same exact two-leg oracle on the collinear FX smile."""
+    same exact two-leg oracle on the collinear FX smile.
+
+    Killing mutation: both legs read at the deal's own moneyness.
+    """
     deal = {'Object': 'FXBinaryOption', 'Reference': 'FXB', 'Currency': 'USD',
             'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
             'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': FX_SPOT,
@@ -237,7 +251,10 @@ def test_a_compo_binary_spread_composes_each_leg():
     """A compo digital under the spread: the underlying is S*X, the strike a payoff-currency
     quantity, and each leg's vol is the COMPO composition of its own strike's read. Flat surfaces
     make the oracle exact and keep the compo conventions - the sorted-pair correlation sign flip
-    among them - the only thing the gate can fail on."""
+    among them - the only thing the gate can fail on.
+
+    Killing mutation: the cash spread left undivided by the strike.
+    """
     strike_eur = STRIKE / FX_SPOT
     deal = dict(BINARY, Payoff_Currency='EUR', Payoff_Type='Compo', Discount_Rate='EUR',
                 Strike_Price=strike_eur)
@@ -347,7 +364,10 @@ def test_a_digital_caplet_and_floorlet_default_to_the_closed_form():
     """The rates anchors, flat surface, no valuation configuration: `N(d2)` and `N(-d2)` of the
     SIMPLE forward the reset compiles to - which pins the whole convention chain (expm1 forward,
     accrual year fraction, payment-date discounting, the surface's tenor axis) before any spread
-    statement is made on top of it."""
+    statement is made on top of it.
+
+    Killing mutation: the caplet priced with no digital payoff (`cash_payoff=0`).
+    """
     out, _ = _run(_job([_cap_deal('CAP', True), _cap_deal('FLR', False)], _cap_factors(0.0)))
     for ref, cp in (('CAP', 1.0), ('FLR', -1.0)):
         expected = _digital_rate_closed(cp, 0.0)
@@ -361,7 +381,8 @@ def test_a_digital_floorlet_spread_is_its_put_spread():
     strike. Flat vols make the oracle pure replication arithmetic, so the gate can only fail on
     the sign or the width.
 
-    MUTATION: the `call_or_put` factor removed reads the floorlet at -12894.06 against +12894.06.
+    Killing mutation: the `call_or_put` factor removed - the floorlet reads -12894.06 against
+    +12894.06.
     """
     out, _ = _run(_job([_cap_deal('CAP', True), _cap_deal('FLR', False)], _cap_factors(0.0),
                        valuation=CAP_SPREAD_ON))
@@ -373,7 +394,10 @@ def test_a_digital_floorlet_spread_is_its_put_spread():
 def test_a_caplet_spread_reads_each_leg_at_its_own_cap_vol():
     """The smile statement on the cap surface: collinear nodes in the space's own moneyness
     (m = 100 (K - F)), vol falling in strike, so the digital caplet is worth more than its
-    closed form and the exact two-leg oracle says by how much."""
+    closed form and the exact two-leg oracle says by how much.
+
+    Killing mutation: both legs' cap vols read at the centre strike.
+    """
     out, _ = _run(_job([_cap_deal('CAP', True)], _cap_factors(CAP_SLOPE),
                        valuation=CAP_SPREAD_ON))
     expected = _spread_rate(1.0, CAP_SLOPE)
@@ -415,8 +439,9 @@ def test_an_aggregated_cap_prices_per_convention():
     Black time `t_end - (2/3)(t_end - t_start)`. Flat surface, both oracles exact, and the two
     conventions must separate - capping a sum is not summing the caps.
 
-    MUTATION: compounding unconditionally (no daily branch) kills this gate and the range-accrual
-    one together."""
+    Killing mutation: `Pre_Aggregation` compounded like the period pricer (no daily branch), which
+    kills the range-accrual gate below too.
+    """
     items = _agg_items(CAP_START)
     out, _ = _run(_job(
         [_cap_deal('PRE', True, items=items, averaging='Pre_Aggregation',
@@ -440,7 +465,10 @@ def test_an_aggregated_cap_prices_per_convention():
 def test_a_pre_aggregation_digital_strip_is_a_range_accrual():
     """The payoff helper is SHARED, so the daily pricer composes with the digital spread for
     free: every reset a digital caplet paying `Digital_Payoff_Rate` on its own accrual - a range
-    accrual leg - each priced as its absolute call spread."""
+    accrual leg - each priced as its absolute call spread.
+
+    Killing mutation: `Pre_Aggregation` compounded like the period pricer (no daily branch).
+    """
     out, _ = _run(_job([_cap_deal('RA', True, items=_agg_items(CAP_START),
                                   averaging='Pre_Aggregation', compounding='OIS')],
                        _cap_factors(0.0), valuation=CAP_SPREAD_ON))
@@ -460,7 +488,8 @@ def test_an_in_period_post_aggregation_cap_integrates_the_remaining_variance():
     Black guard silently prices intrinsic; the exact in-period integral
     `t_end^3 / (3 (t_end - t_start)^2)` is what the average's remaining variance actually is.
 
-    MUTATION: the plain rule reads 4.116 against the oracle's 22.868, -82%."""
+    Killing mutation: the plain decay rule inside the period - 4.116 against the oracle's 22.868.
+    """
     known = 4.0                 # ATM: the remaining-variance term IS the price here
     items = _agg_items(BASE - pd.DateOffset(days=14), known=known)
     out, _ = _run(_job([_cap_deal('MID', True, items=items, averaging='Post_Aggregation',

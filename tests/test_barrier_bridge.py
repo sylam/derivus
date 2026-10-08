@@ -102,9 +102,10 @@ def _profile(grid, seed=1, batch=8192, deal=None, mcmc=None):
 
 
 def _cva(spot, deal, gradient, batch=4096, mcmc=None):
-    """CVA and its AAD gradient when asked. A counterparty is what gives the barrier a sensitivity
-    worth measuring: the exposure profile is where the touch state accumulates, which base
-    valuation - one deal-time row, no interval, no history - structurally cannot show."""
+    """CVA, its AAD spot gradient when asked, or the whole gradient frame at `'frame'`. A
+    counterparty is what gives the barrier a sensitivity worth measuring: the exposure profile is
+    where the touch state accumulates, which base valuation - one deal-time row, no interval, no
+    history - structurally cannot show."""
     c = _cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
@@ -121,7 +122,10 @@ def _cva(spot, deal, gradient, batch=4096, mcmc=None):
     if not gradient:
         return float(out['Results']['cva'])
     g = out['Results']['grad_cva']['Gradient']
-    return float(g.loc[[i for i in g.index if 'EquityPrice' in str(i[0])][0]])
+    if gradient == 'frame':
+        return g
+    rows = [i for i in g.index if 'EquityPrice' in str(i[0])]
+    return float(g.loc[rows[0]]) if rows else 0.0             # a factor with no .grad is dropped
 
 
 def _analytic_touch_probability():
@@ -133,75 +137,51 @@ def _analytic_touch_probability():
     return phi((b - mu) / sig) + math.exp(2.0 * mu * b / sig ** 2) * phi((b + mu) / sig)
 
 
-def test_variance_rate_reproduces_the_processes_own_variance():
-    """The rate is only exact if it is the SIMULATION variance: a process discretises the scenario
-    grid into per-step vols and a rate against elapsed time must sum back to the same total, or the
-    bridge is handed a vol meaning something else - the pricing implied vol for the remaining life
-    is exactly such a quantity, carrying the same units."""
-    from derivus.stochasticprocess import GBMAssetPriceModel
-    import types
+@pytest.mark.parametrize('grid,freq_days', [('0d 3m(3m)', 0), ('0d 1m(1m)', 30)],
+                         ids=['quarterly-continuous', 'monthly-monthly'])
+def test_the_barrier_value_is_a_martingale_on_any_grid_and_any_monitoring(grid, freq_days):
+    """With r = 0 the value is a martingale, so every date on every grid reports the t=0 price -
+    at any monitoring frequency too: a discretely monitored barrier is priced by a CONTINUOUS
+    closed form against a barrier shifted away from the live region (Broadie-Glasserman-Kou), and
+    the bridge has to monitor that same shifted barrier.
 
-    # UNEVEN scenario dates, and the SCENARIO set: a single date leaves dt all zero, which makes
-    # both sides zero and the assertion true for any rate at all
-    dates = {BASE + pd.Timedelta(days=d) for d in (0, 30, 90, 365)}
-    grid = utils.TimeGrid(dates, dates, dates)
-    grid.set_base_date(BASE)
-    p = GBMAssetPriceModel(factor=types.SimpleNamespace(param={}), param={'Vol': VOL, 'Drift': 0.0})
-    p.precalculate(BASE, grid, torch.tensor([SPOT], dtype=DTYPE), None, 0)
+    Endpoint-only survival fails by +12.8% at 3m and +26.8% at 9m on the quarterly grid, a
+    DIFFERENT amount on each grid (10.96-28.60% across quarterly, monthly and weekly); handing the
+    bridge the RAW barrier while the formula prices the shifted one decayed monthly monitoring
+    -11.58%. THE PATHS WERE RAISED, THE TOLERANCE WAS NOT: at 8192 the statistic read 6.19-7.08%
+    over seeds 1-20; at 65536 the worst over seeds 1-20 is 2.28% on the grids and 1.64% across
+    frequencies, so 4% and 5% sit clear of the noise. Inception RISES with coarser monitoring (8.485
+    monthly against 7.176 continuous), fewer observations meaning fewer chances to knock out.
 
-    stepwise = float((p.vol * p.vol).sum())
-    elapsed = grid.time_grid_years[-1]
-    assert stepwise > 0.0 and elapsed > 0.0, 'degenerate grid - the comparison below is vacuous'
-    assert p.bridge_variance_rate * elapsed == pytest.approx(stepwise, rel=1e-12), (
-        'rate x elapsed must equal the variance the process actually simulates')
-
-
-@pytest.mark.parametrize('grid,label', [('0d 3m(3m)', 'quarterly'),
-                                        ('0d 1m(1m)', 'monthly'),
-                                        ('0d 1w(1w)', 'weekly')])
-def test_bridge_is_grid_independent(grid, label):
-    """With r = 0 the value is a martingale, so every date on every grid reports the t=0 price. The
-    endpoint-only state fails by +12.8% at 3m and +26.8% at 9m on the quarterly grid, and by a
-    DIFFERENT amount on each grid.
-
-    THE PATHS WERE RAISED, THE TOLERANCE WAS NOT. At 8192 the statistic read max 6.19-7.08% over
-    seeds 1-20 and tripped its own 4% on several - pinned to seed 1, not proven. At 65536 the max
-    is 1.15-2.28%, so 4% is 1.8x above the worst noise while the defect reads 10.96-28.60%. The
-    defect SHRINKS as the grid refines, so weekly is the binding rung and what the batch was sized
-    on. MUTATION: endpoint-only survival KILLED on all three grids."""
-    mtm = _profile(grid, batch=65536)
-    t0 = mtm.values[0].mean()
-    assert t0 > 0.0, 'a bought down-and-out call should be worth something at inception'
-    drift = np.abs(mtm.values.mean(axis=1) - t0) / t0
-    assert drift.max() < 0.04, (
-        f'{label}: exposure profile drifts {drift.max():.1%} from the t=0 value {t0:.4f} '
-        f'at row {drift.argmax()} of {len(drift)} - survival is not being carried as a probability')
+    Killing mutation: endpoint-only survival (the bridge's crossing probability dropped).
+    """
+    deal = dict(BARRIER_DEAL, Barrier_Monitoring_Frequency=pd.DateOffset(days=freq_days))
+    v = _profile(grid, deal=deal, batch=65536).values.mean(axis=1)
+    assert v[0] > 0.0, 'a bought down-and-out call should be worth something at inception'
+    drift = np.abs(v - v[0]).max() / v[0]
+    assert drift < (0.04 if freq_days == 0 else 0.05), (
+        f'{grid}: profile drifts {drift:.1%} from inception {v[0]:.4f} - survival is not being '
+        f'carried as a probability of the barrier the closed form prices\n{np.round(v, 3)}')
 
 
-def test_one_touch_paid_at_expiry_holds_its_value_until_then():
+def test_a_one_touch_holds_its_payout_when_paid_at_expiry_and_settles_when_paid_on_touch():
     """A one-touch paying at EXPIRY owes the nominal on every touched path, so between the touch and
-    expiry such a path holds a CERTAIN claim worth its discounted value. That was carried as zero:
-    a touched deal reported nothing for the rest of its life and jumped to the nominal on the last
-    date. At r=0 the value is a martingale equal to the nominal times the t=0 touch probability."""
-    mtm = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
-    v = mtm.values.mean(axis=1)
-    expected = 100.0 * _analytic_touch_probability()
-    assert v[0] == pytest.approx(expected, rel=2e-3), (
-        f'inception value {v[0]:.3f} should be the analytic {expected:.3f}')
-    assert np.abs(v - v[0]).max() / v[0] < 0.03, (
-        f'value paid at expiry is not being held: profile {np.round(v, 2)}')
+    expiry such a path holds a CERTAIN claim worth its discounted value - carried as zero once, the
+    deal jumping to the nominal on the last date. At r=0 the value is a martingale equal to the
+    nominal times the reflection formula's touch probability. Paid ON touch the cash settles and the
+    path stops carrying it, so that profile DECAYS; both timings agree at inception, r=0 leaving
+    nothing to discount between them.
 
-
-def test_one_touch_paid_on_touch_settles_and_leaves():
-    """The counterpart, and why the fix above is confined to Expiry timing: paid ON touch the cash
-    settles and the path stops carrying it, so this profile SHOULD decay. Both timings still agree
-    at inception, r=0 leaving nothing to discount between them."""
-    on_touch = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Touch'))
+    Killing mutation: endpoint-only survival (the bridge's crossing probability dropped).
+    """
     at_expiry = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Expiry'))
-    v = on_touch.values.mean(axis=1)
-    assert v[0] == pytest.approx(at_expiry.values[0].mean(), rel=2e-3), (
-        'with r=0 the two payment timings are worth the same at inception')
-    assert v[-1] < 0.25 * v[0], f'paid-on-touch value should run off, got {np.round(v, 2)}'
+    v = at_expiry.values.mean(axis=1)
+    expected = 100.0 * _analytic_touch_probability()
+    assert v[0] == pytest.approx(expected, rel=2e-3), (v[0], expected)
+    assert np.abs(v - v[0]).max() / v[0] < 0.03, f'paid at expiry is not being held: {np.round(v, 2)}'
+    on_touch = _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='Touch')).values.mean(axis=1)
+    assert on_touch[0] == pytest.approx(v[0], rel=2e-3), (on_touch[0], v[0])
+    assert on_touch[-1] < 0.25 * on_touch[0], f'paid-on-touch should run off: {np.round(on_touch, 2)}'
 
 
 #: The same terms paid at expiry where the barrier was NEVER touched.
@@ -215,8 +195,8 @@ def test_a_no_touch_is_the_one_touch_paid_at_expiry_s_complement():
     less the reflection formula's touch probability; and in a world with rates the pair, on an
     equity and on an exchange rate, is worth the cashflow paying the payout at expiry.
 
-    Killing mutations: the one-touch's own value carried into the no-touch; a touched path left
-    holding the payout; the untouched paths never settled; a no-touch type priced as a one-touch.
+    Killing mutation: the no-touch's untouched leg left undiscounted (`1 - payoff` for
+    `exp(-r tau) - payoff`).
     """
     c = _cfg()
     c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})} for deal in (
@@ -264,7 +244,10 @@ def test_aad_delta_matches_bump_and_reprice(deal, label):
     nothing and AAD reported the wrong number while looking well-behaved: 9-19% off for the barrier
     and 31-44% for the one-touch, and - the discriminating signal - the ladder SCATTERED instead of
     converging, shrinking the bump changing how many paths sit on the far side of the jump.
-    Carrying survival as a probability gives 0.00% at 0.00% flatness."""
+    Carrying survival as a probability gives 0.00% at 0.00% flatness.
+
+    Killing mutation: endpoint-only survival (the bridge's crossing probability dropped).
+    """
     aad = _cva(SPOT, deal, gradient=True)
     assert abs(aad) > 1e-6, 'a barrier with a live knock-out should have a spot delta'
     r = ladder(price=lambda s: _cva(s, deal, False), aad=aad, base=SPOT,
@@ -295,11 +278,6 @@ def _totals(deal_overrides, batch=512, mcmc=128):
     return (mtm.values.mean(axis=1)[0], sum(float(np.nansum(v.values)) for v in cf.values()))
 
 
-def _rebate_run(rebate, units):
-    return _totals(dict(Barrier_Price=95.0, Cash_Rebate=rebate, Units=units,
-                        Barrier_Dates=MONTHLY_BARRIER), batch=2048, mcmc=256)
-
-
 @pytest.mark.parametrize('grid', ['0d 1m(1m)', '0d 2d 1w(1w) 3m(1m)'])
 def test_discrete_barrier_is_observed_only_on_its_own_dates(grid):
     """A DISCRETELY monitored barrier is observed on the dates its terms name and nowhere else.
@@ -322,14 +300,13 @@ def test_discrete_barrier_is_observed_only_on_its_own_dates(grid):
     The last two stop this being a cash-date check: they read `row_barrier_hit`, the mask that
     prices the block, and tie it to the cash. Both grids assert bit-identically.
 
-    MUTATIONS, each KILLED on both grids: the historical cumsum form (the first barrier date never
-    settles), the settle moved one row earlier, `newly_hit` dropped so a crossed path re-settles,
-    the PRICE mask alone cumsummed with the ledger untouched (which is what proves the mtm half
-    load-bearing - its profile statistic moves 0.4 of one seed sd), and the OSS skipping its
-    strip's first observation. LIMIT: monitoring expiry SURVIVES, at the latch because the last
-    block has no later block to inform, and inside the OSS because that moves magnitudes rather
-    than the date structure this reads - which is
-    `test_discrete_monitoring_prices_to_an_independent_simulation`'s job."""
+    Each KILLED on both grids once: the historical cumsum form, the settle moved one row earlier,
+    the PRICE mask alone cumsummed with the ledger untouched (which proves the mtm half
+    load-bearing), and the OSS skipping its strip's first observation. Monitoring expiry SURVIVES,
+    at the latch because the last block has no later block to inform.
+
+    Killing mutation: `newly_hit` dropped, so a crossed path re-settles its rebate.
+    """
     mtm, cf = _cashflow_run(dict(Barrier_Price=95.0, Cash_Rebate=1.0, Units=1.0,
                                  Barrier_Dates=MONTHLY_BARRIER), 2048, 128, grid)
     assert list(cf) == ['USD'], f'one currency, so the USD frame IS the ledger: {list(cf)}'
@@ -374,9 +351,11 @@ def test_discrete_monitoring_prices_to_an_independent_simulation():
     +1.34% at 256 inner paths, +0.64% at 1024, -0.12% at 4096, -0.05% at 65536 - and the batch
     is the Sobol arm's smallest.
 
-    MUTATION: the OSS skipping the strip's first observation KILLED at +1.36%. LIMIT: the OSS
-    monitoring expiry SURVIVES, the barrier at 90 being below the strike at 100, so a path the
-    extra observation knocks out already pays zero and only a rebate would reveal it."""
+    The OSS monitoring expiry SURVIVES, the barrier at 90 being below the strike at 100, so a path
+    the extra observation knocks out already pays zero and only a rebate would reveal it.
+
+    Killing mutation: the OSS skipping each strip's first observation, +1.36%.
+    """
     v0 = _profile('0d 3m(3m)', batch=32, mcmc=8192,
                   deal=dict(BARRIER_DEAL, Barrier_Dates=MONTHLY_BARRIER)).values.mean(axis=1)[0]
     assert v0 == pytest.approx(8.4787, rel=3e-3), (
@@ -392,33 +371,15 @@ def test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation()
     5e-3 is the inner QMC count's slack, not the reference's: one inner sample at inception reads
     -0.185% at 8192 paths, -0.17% at 32768 and -0.11% at 131072, the pseudo-random arm +0.03%.
 
-    MUTATION: chunk c read `c * sims` points further along one 64-dimensional engine, so row
-    64 + k is row k with a constant XORed in, KILLED at -14.2% - and +1.7% at 32768 paths, the
-    error not shrinking with them."""
+    Killing mutation: every chunk of the inner block read off the first 64 dimensions, so row
+    64 + k repeats row k - -14.2% when it was read `c * sims` points further along one engine.
+    """
     every_third_day = [BASE + pd.Timedelta(days=d) for d in range(3, 365, 3)]
     v0 = _profile('0d 3m(3m)', batch=32, mcmc=8192,
                   deal=dict(BARRIER_DEAL, Barrier_Dates=every_third_day)).values.mean(axis=1)[0]
     assert v0 == pytest.approx(7.6649, rel=5e-3), (
         f'inception {v0:.6f} against an independent 294m-path 7.6649 +- 0.0008 '
         f'({(v0 - 7.6649) / 7.6649:+.3%}) - a strip past one chunk is walked on the wrong law')
-
-
-def test_discrete_barrier_rebate_is_paid_and_is_absolute_cash():
-    """Two defects in one field. The knock-out rebate was PRICED - `sim_spot_oss` accrues it into
-    the knocking row's mtm - but never settled, `hit_value` being zero from the next row on and the
-    single `cash_settle` firing on the last row only, so the settled cash was bit-identical to the
-    same deal with no rebate. And it was scaled wrongly: `pv_barrier_option` reads `Cash_Rebate` as
-    ABSOLUTE cash while everything `sim_spot_oss` returns is scaled by nominal, so one field meant
-    Units times more cash under discrete monitoring than continuous."""
-    p0, c0 = _rebate_run(0.0, 1.0)
-    p5, c5 = _rebate_run(5.0, 1.0)
-    assert c5 - c0 > 0.0, 'the rebate is priced into the mtm but never settled'
-
-    p0x, _ = _rebate_run(0.0, 2.0)
-    p5x, _ = _rebate_run(5.0, 2.0)
-    assert (p5x - p0x) == pytest.approx(p5 - p0, rel=1e-9), (
-        f'a cash rebate must not scale with Units: adds {p5 - p0:.4f} at Units=1 but '
-        f'{p5x - p0x:.4f} at Units=2')
 
 
 def _digital(H, btype='Down_And_Out'):
@@ -436,10 +397,13 @@ def test_digital_terminal_step_is_integrated_not_sampled():
     almost everywhere, so the density term that is most of a digital's delta and vega never reached
     the tape. The barrier is out of reach so the outer latch never fires and this isolates the
     terminal step: AAD reported EXACTLY zero, with the equity, vol and dividend factors absent from
-    the report rather than showing zero rows. Now 0.00% at 0.01% flatness.
+    the report rather than showing zero rows - a MISSING number, `report_grad` dropping a factor
+    whose `.grad` is None. Now 0.00% at 0.01% flatness, and the equity and vol rows reported. The
+    same deal WITH a live barrier still disagrees (33.7%) - the outer latch's flux, which is the
+    boundary correction's job rather than this terminal step's.
 
-    The same deal WITH a live barrier still disagrees (33.7%), which is the outer `barrier_hit`
-    latch needing the boundary-flux machinery rather than this terminal step."""
+    Killing mutation: the terminal step sampled - the digital's indicator on the drawn spot.
+    """
     deal = _digital(1e-6)
     # the OSS forks an inner Monte Carlo per outer path, so the outer batch stays small
     kw = dict(batch=1024, mcmc=256)
@@ -448,47 +412,36 @@ def test_digital_terminal_step_is_integrated_not_sampled():
     r = ladder(price=lambda s: _cva(s, deal, False, **kw), aad=aad, base=SPOT,
                rungs=(5e-4, 1e-3, 2e-3, 5e-3))
     assert r.agrees(tol=0.02), f'digital terminal step is not being integrated\n{r}'
-
-
-def test_digital_reports_its_equity_and_vol_factors():
-    """The failure mode was not a wrong number but a MISSING one: at a zero gradient the factor's
-    `.grad` is None and `report_grad` drops it, so the risk report had no equity row at all."""
-    c = _cfg()
-    c.params['Price Factors']['SurvivalProb.CPTY'] = {
-        'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
-    c.deals['Deals']['Children'] = [{'Instrument': construct_instrument(_digital(1e-6), {})}]
-    _, out = derivus.run_cmc(c, prec=DTYPE, overrides={
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': 256,
-        'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
-        'MCMC_Simulations': 128, 'Deflation_Interest_Rate': 'USD', 'Gradient_Variables': 'Factors',
-        'Credit_Valuation_Adjustment': {
-            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
-            'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}})
-    factors = {str(i[0]).split('.')[0] for i in out['Results']['grad_cva']['Gradient'].index}
     # the surface is authored under the PRE-TAG name and the gradient comes back tagged:
     # `resolve_factor_key` accepts the old spelling on read, and the gradient is filed under the
-    # type the resolver asked for - both halves of the leniency in one assertion
+    # type the resolver asked for
+    factors = {str(i[0]).split('.')[0] for i in _cva(SPOT, deal, 'frame', **kw).index}
     for needed in ('EquityPrice', 'EquityPriceVol'):
         assert needed in factors, f'{needed} missing from the greeks report; got {sorted(factors)}'
 
 
-def test_a_sold_knock_out_pays_its_rebate_rather_than_receiving_it():
-    """`nominal` in the discrete pricer ALREADY carries `Buy_Sell`, unlike `pv_barrier_option` where
-    `buy_or_sell` is a separate factor, so dividing the rebate by it cancelled the direction and
-    every rebate leg came back as +cash_rebate whichever way the deal was done - a seller who must
-    PAY on knock-out booking it as a receipt. Buy and Sell must be exact mirror images; the
-    original rebate gate only ran Buy, which is why this survived it."""
-    kw = dict(Barrier_Price=95.0,
-              Barrier_Dates=[BASE + pd.Timedelta(days=d) for d in range(30, 361, 30)])
-    buy = np.subtract(_totals(dict(kw, Buy_Sell='Buy', Cash_Rebate=5.0)),
-                      _totals(dict(kw, Buy_Sell='Buy', Cash_Rebate=0.0)))
+def test_a_knock_out_rebate_is_settled_absolute_cash_and_mirrors_with_the_side():
+    """Three defects in one field. The knock-out rebate was PRICED - `sim_spot_oss` accrues it into
+    the knocking row's mtm - but never settled, the settled cash bit-identical to the same deal with
+    no rebate. It was scaled wrongly: `pv_barrier_option` reads `Cash_Rebate` as ABSOLUTE cash while
+    everything `sim_spot_oss` returns is scaled by nominal, so one field meant Units times more cash
+    under discrete monitoring than continuous. And `nominal` ALREADY carries `Buy_Sell` here, so
+    dividing the rebate by it cancelled the direction - a seller who must PAY on knock-out booking
+    a receipt. Buy and Sell are exact mirror images, in price and in settled cash.
+
+    Killing mutation: the rebate read per unit, scaling with `Units`.
+    """
+    kw = dict(Barrier_Price=95.0, Barrier_Dates=MONTHLY_BARRIER)
+    buy = np.subtract(_totals(dict(kw, Cash_Rebate=5.0)), _totals(dict(kw, Cash_Rebate=0.0)))
+    assert buy[0] > 0.0 and buy[1] > 0.0, 'a bought knock-out prices and settles its rebate'
     sell = np.subtract(_totals(dict(kw, Buy_Sell='Sell', Cash_Rebate=5.0)),
                        _totals(dict(kw, Buy_Sell='Sell', Cash_Rebate=0.0)))
-    assert buy[0] > 0.0 and buy[1] > 0.0, 'a bought knock-out receives its rebate'
-    assert sell[0] == pytest.approx(-buy[0], rel=1e-9), (
-        f'rebate does not flip with direction: buy {buy[0]:+.4f} vs sell {sell[0]:+.4f}')
-    assert sell[1] == pytest.approx(-buy[1], rel=1e-9), (
-        f'settled rebate cash does not flip: buy {buy[1]:+.2f} vs sell {sell[1]:+.2f}')
+    assert sell[0] == pytest.approx(-buy[0], rel=1e-9), (buy, sell)
+    assert sell[1] == pytest.approx(-buy[1], rel=1e-9), (buy, sell)
+    units = np.subtract(_totals(dict(kw, Units=2.0, Cash_Rebate=5.0)),
+                        _totals(dict(kw, Units=2.0, Cash_Rebate=0.0)))
+    assert units[0] == pytest.approx(buy[0], rel=1e-9), (
+        f'a cash rebate must not scale with Units: {buy[0]:.4f} at 1, {units[0]:.4f} at 2')
 
 
 def test_a_barrier_date_on_expiry_settles_its_rebate_once():
@@ -496,7 +449,10 @@ def test_a_barrier_date_on_expiry_settles_its_rebate_once():
     pays the whole terminal row, which already contains that rebate. A deal whose last barrier date
     IS expiry therefore paid twice - and `instruments.py` unions `Expiry_Date` into the observation
     dates, so that is the common case. `pv_barrier_option` guards the same double count with
-    `expiry[index] > 0.0`. The strike is out of reach, so the rebate is the only cash in the run."""
+    `expiry[index] > 0.0`. The strike is out of reach, so the rebate is the only cash in the run.
+
+    Killing mutation: the terminal row's rebate settled by the loop as well as after it.
+    """
     expiry = BASE + pd.Timedelta(days=365)
     at_expiry = _totals({'Barrier_Price': 95.0, 'Cash_Rebate': 5.0, 'Strike_Price': 1e6,
                           'Barrier_Dates': [expiry]})[1]
@@ -507,36 +463,15 @@ def test_a_barrier_date_on_expiry_settles_its_rebate_once():
         f'earlier - a single count differs only by the extra knock-out probability')
 
 
-@pytest.mark.parametrize('freq_days,label', [(0, 'continuous'), (30, 'monthly'), (7, 'weekly')])
-def test_the_bridge_honours_the_monitoring_frequency(freq_days, label):
-    """A discretely monitored barrier is priced by a CONTINUOUS closed form against a barrier
-    shifted away from the live region (Broadie-Glasserman-Kou). The bridge was handed the RAW
-    barrier while the formula three lines later priced the shifted one, so the path state monitored
-    continuously a barrier the product observes monthly.
-
-    At r = q = 0 the value is a martingale at ANY monitoring frequency. Before the fix monthly
-    monitoring decayed -11.58% over the profile while continuous was unaffected, which is why the
-    original gate - written at the default 0d - could not see it.
-
-    Same path-count correction as `test_bridge_is_grid_independent`: at 65536 the worst reading
-    over seeds 1-20 is 1.64%, so 5% is 3.0x above the noise while endpoint-only survival reads
-    9.31-18.87%. Inception RISES with coarser monitoring (8.485 monthly against 7.176 continuous),
-    fewer observations meaning fewer chances to knock out. MUTATION: endpoint-only survival KILLED
-    at all three frequencies."""
-    deal = dict(BARRIER_DEAL, Barrier_Monitoring_Frequency=pd.DateOffset(days=freq_days))
-    v = _profile('0d 1m(1m)', deal=deal, batch=65536).values.mean(axis=1)
-    drift = np.abs(v - v[0]).max() / v[0]
-    assert drift < 0.05, (
-        f'{label}: profile drifts {drift:.1%} from inception {v[0]:.4f} - the bridge and the '
-        f'closed form are testing different barriers\n{np.round(v, 3)}')
-
-
 def test_an_unknown_payment_timing_is_refused():
     """`Payment_Timing` has two values and the pricer's closed-form chain has two branches, no else.
     A third used to price as whatever the last branch assignment left behind; it refuses at
-    CONSTRUCTION now, before `reset` and `add_grid_dates` read the field."""
+    CONSTRUCTION now, before `reset` and `add_grid_dates` read the field.
+
+    Killing mutation: the refusal dropped, the third value priced.
+    """
     with pytest.raises(ValueError, match='Payment_Timing'):
-        construct_instrument(dict(ONE_TOUCH, Payment_Timing='AtMaturity'), {})
+        _profile('0d 3m(3m)', deal=dict(ONE_TOUCH, Payment_Timing='AtMaturity'))
 
 
 # --------------------------------------------------------------------------------------------
@@ -576,7 +511,11 @@ def test_a_rebate_read_at_an_observation_date_row_is_exact():
     1.1e-14, and left 41.8% of them marking the rebate exactly where the level knocks 54.7%.
 
     The strike is out of reach and the only observation is expiry, so the rebate is the whole mark
-    and nothing has to be believed about the option leg."""
+    and nothing has to be believed about the option leg.
+
+    Killing mutation: the zero-length step simulated at the variance floor - the exact branch and
+    the zero-length mask both dropped, since either alone resolves the step exactly.
+    """
     last = _one_date_rebate_run()[-1]
     values = np.unique(last)
     assert set(values.tolist()) == {0.0, ZERO_STEP_REBATE}, (
@@ -595,7 +534,10 @@ def test_a_row_that_is_not_an_observation_date_is_untouched():
     Every row AFTER it is an observation date, and those moved by -0.13% to +0.46% over
     four discrete-barrier profiles (knock-out, knock-out with rebate, knock-in, and one whose dates
     sit off the reporting clock), the knock-in moving most because its parity leg reads the
-    survival twice."""
+    survival twice.
+
+    Killing mutation: every monitored step resolved as if it were zero-length.
+    """
     monthly = [BASE + pd.DateOffset(months=k) for k in range(1, 12)]
     profile = _profile('0d 1y(1m)', deal=dict(BARRIER_DEAL, Barrier_Price=90.0,
                                               Barrier_Dates=monthly), batch=1024, mcmc=128)

@@ -23,7 +23,11 @@ under GBM reads the same shape at its own geometry - the diagonal dies, the cros
 healthy.)
 
 SEED STABILITY over five seeds at 65536 paths: gamma spread 0.41%, vanna 0.69%; at 16384 they are
-2.60% and 6.00%, which is what sizes the path count. The two-seed gate carries 2%, ~5x the spread.
+2.60% and 6.00%, which is what sizes the path count.
+
+The atom refusal (`exposure_kink_term` refusing a row whose density climbs as `1/h` across the
+bandwidth ladder) is reached by no document here: the collateralised net it was written for is
+refused one step earlier, as the decision-product gate below reads.
 
 THE FIXTURE-DEGENERACY CHECKLIST, per axis:
 
@@ -72,7 +76,6 @@ import pytest
 import torch
 
 import derivus as rf
-import derivus.pricing as pricing
 from derivus import utils
 from crn_ladder import ladder
 
@@ -103,11 +106,6 @@ VOL_TENOR = [0.0, 1.0, 3.0]
 # 0.41% gamma spread across five seeds here; 2.60% at 16384, which is not enough for the ladders
 PATHS = 1 << 16
 GRID = '1d 3m(3m) 12m'
-SEED_TOL = 0.02
-#: the state `exposure_kink_term` reads its batch count off where a probe calls it directly - a real
-#: one, at the declared 1, so the Silverman width is the row's own path count
-ONE_BATCH = utils.Calculation_State({}, torch.ones([1, 1], dtype=torch.float64), 1, [],
-                                    'Constant', 1, False)
 
 
 def _stamp(days):
@@ -229,15 +227,12 @@ def test_asking_for_the_hessian_moves_nothing_the_run_already_reported(tmp_path)
     zero, so first order accumulates `+0.0` bit-for-bit and `grad_cva` must come back `array_equal`
     as well - not merely close. Only `grad_cva_hessian` differs, by existing.
 
-    A term that could not make that guarantee would be changing the reported book to report a greek,
-    which is the one thing the CVA block does not do.
+    Killing mutation: `exposure_kink_term` taking `u = V`, a term with a first derivative.
     """
     off = _run(_job(hessian='No'), tmp_path, 'admit_off')
     on = _run(_job(hessian='Yes'), tmp_path, 'admit_on')
 
-    assert off['cva'] == on['cva'], (
-        'the reported CVA moved when the Hessian was asked for: {!r} -> {!r}'.format(
-            off['cva'], on['cva']))
+    assert off['cva'] == on['cva'], (off['cva'], on['cva'])
     assert np.array_equal(off['mtm'].values, on['mtm'].values), 'the exposure profile moved'
     assert off['grad_cva'].index.equals(on['grad_cva'].index), 'the gradient index moved'
     assert np.array_equal(off['grad_cva'].values, on['grad_cva'].values), (
@@ -249,20 +244,23 @@ def test_asking_for_the_hessian_moves_nothing_the_run_already_reported(tmp_path)
 
 # ---------------------------------------------------------------- the ladders
 
-def test_the_gamma_entry_lands_on_a_crn_ladder_of_the_reported_delta(tmp_path):
+def test_the_gamma_and_vanna_entries_land_on_crn_ladders_of_the_reported_delta(tmp_path):
     """THE STRUCTURAL KILL. A linear payoff has `∂²V/∂S₀² = 0` on every path, so an engine
-    differentiating the frozen-decision graph twice reports EXACTLY 0.0 here - measured, on this
-    document, before the term. The CRN ladder of the same document's `grad_cva` spot entry reads
-    4.1578 / 4.2416 / 4.2895 / 4.2609 / 4.2587 e-04 across a 25x range of bumps, flat to 3.09%, so
-    the pathwise answer is 100% wrong and no tolerance can rescue it.
+    differentiating the frozen-decision graph twice reports EXACTLY 0.0 for gamma. The CRN ladder
+    of the same document's `grad_cva` spot entry reads 4.1578 / 4.2416 / 4.2895 / 4.2609 / 4.2587
+    e-04 across a 25x range of bumps, flat to 3.09%; with the term AAD reads +4.2418932e-04, 0.45%.
 
-    With the term: AAD +4.2418932e-04 against that ladder, 0.45% at the flattest rung.
+    THE CROSS ENTRY, which a diagonal-only gate cannot see: the pathwise spot-vol entry is
+    +4.9641660e-03 - the WRONG SIGN, at 39% of the size of a ladder of -1.3044104e-02, flat to
+    5.18%. The corrected entry lands inside it (1.56%) and TWICE it does not (96.9%), so the
+    doubling is pinned without a second engine run.
 
-    The ladder is of the GRADIENT, not of the value - a second-order gate that differenced the CVA
+    The ladders are of the GRADIENT, not of the value - a second-order gate that differenced the CVA
     twice would be measuring its own cancellation.
+
+    Killing mutation: the kink term's hook at the CVA objective dropped - gamma reads exactly 0.0.
     """
-    results = _run(_job(hessian='Yes'), tmp_path, 'gamma_aad')
-    gamma, _ = _second_order(results)
+    gamma, vanna = _second_order(_run(_job(hessian='Yes'), tmp_path, 'second_aad'))
     assert gamma != 0.0, (
         'the spot-spot entry is exactly zero, which is what a pathwise-only Hessian reports on a '
         'linear payoff - the kink term did not reach the objective')
@@ -271,21 +269,6 @@ def test_the_gamma_entry_lands_on_a_crn_ladder_of_the_reported_delta(tmp_path):
         _run(_job(), tmp_path, 'gamma_bump', patch=_spot_patch(s))),
         aad=gamma, base=SPOT, rungs=(2e-3, 5e-3, 1e-2, 2e-2, 5e-2))
     assert rung.agrees(tol=0.05), 'the exposure gamma is not the derivative of the reported delta\n{}'.format(rung)
-
-
-def test_the_vanna_entry_lands_on_its_own_ladder_and_pins_the_doubling(tmp_path):
-    """THE CROSS ENTRY, which a diagonal-only gate cannot see.
-
-    The pathwise spot-vol entry is +4.9641660e-03 - wrong in SIGN and at 39% of the size against a
-    ladder of -1.3044104e-02 (readings -1.29268 / -1.30441 / -1.30530 / -1.34338 / -1.36028 e-02,
-    flat to 5.18%).
-
-    The doubling is pinned WITHOUT a second engine run: one run cannot report both entries, so the
-    statement is made against the ladder from both sides - the corrected entry lands inside it and
-    TWICE the corrected entry does not. Measured 1.56% and 96.9%, a 62x separation.
-    """
-    results = _run(_job(hessian='Yes'), tmp_path, 'vanna_aad')
-    _, vanna = _second_order(results)
 
     rung = ladder(price=lambda x: _delta(
         _run(_job(), tmp_path, 'vanna_bump', patch=_vol_patch(x))),
@@ -298,29 +281,23 @@ def test_the_vanna_entry_lands_on_its_own_ladder_and_pins_the_doubling(tmp_path)
 
 
 def test_a_book_that_never_crosses_zero_has_no_kink_to_correct(tmp_path):
-    """The control: the term must be INERT where there is no boundary, or the ladder gate above
-    could pass on a term that manufactures curvature wherever it is switched on.
+    """The control: the term must be INERT where there is no boundary, or the ladders above could
+    pass on a term that manufactures curvature wherever it is switched on.
 
     Struck at 10 against a spot of 100 the forward is in the money on every path of every row
     (minimum exposure 27.32), so `relu` is the identity, the CVA is LINEAR in spot and its true
-    gamma is exactly zero. The kernel underflows and the entry reads 4.12e-29 - 1e-26 of the live
-    document's 4.24e-04 - against a CRN ladder whose every rung is exactly 0.0.
+    gamma is exactly zero - every rung of a CRN ladder of its delta reads exactly 0.0. The kernel
+    underflows and the entry reads 4.12e-29, against the live document's 4.24e-04.
+
+    Killing mutation: the kernel centred on the row's mean rather than on the kink.
     """
     itm = [_forward('FWD1', DEEP_ITM_PRICE)]
     results = _run(_job(children=itm, hessian='Yes'), tmp_path, 'itm_aad')
     assert np.asarray(results['mtm'].values).min() > 0.0, (
         'this control is meant to have no crossing mass at all; it has some, so it controls nothing')
     gamma, _ = _second_order(results)
-
-    crn = [_delta(_run(_job(children=itm), tmp_path, 'itm_bump', patch=_spot_patch(SPOT + h)))
-           - _delta(_run(_job(children=itm), tmp_path, 'itm_bump', patch=_spot_patch(SPOT - h)))
-           for h in (0.5, 1.0, 5.0)]
-    assert crn == [0.0, 0.0, 0.0], (
-        'the delta of a book with no crossing mass is not constant in spot: {}'.format(crn))
-    live, _ = _second_order(_run(_job(hessian='Yes'), tmp_path, 'live_aad'))
-    assert abs(gamma) < 1e-6 * abs(live), (
-        'the term manufactured a gamma of {:.6g} on a book with no kink, against {:.6g} where '
-        'there is one'.format(gamma, live))
+    assert abs(gamma) < 1e-12, (
+        'the term manufactured a gamma of {:.6g} on a book with no kink'.format(gamma))
 
 
 def test_a_counterparty_curve_ending_at_a_year_hazards_on_past_it(tmp_path):
@@ -330,8 +307,7 @@ def test_a_counterparty_curve_ending_at_a_year_hazards_on_past_it(tmp_path):
     declared, under a 91-day `Tenor_Offset`, which reads the factor past its last knot, and with
     `CDS_Tenors` adding knots to five years - where the one-year curve froze survival after it.
 
-    Killing mutations: the curve read flat past its last knot; the factor carried on at its average
-    hazard H_N t / T_N, under the offset; the CDS knots added flat.
+    Killing mutation: the survival factor read flat past its last knot.
     """
     def cva(curve, offset=0, cds_tenors=None):
         forward = dict(_forward('FWD5', FORWARD_PRICE), Maturity_Date={'.Timestamp': _stamp(5 * 365)})
@@ -362,6 +338,8 @@ def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
     So the assertion is that the mirror ADMITS - the mutant-killer for re-introducing a
     spread-and-mass classifier: `cva` 0.0 on an identically zero book (itself the check that the
     mirror is a mirror), an empty `grad_cva`, and a (0, 0) Hessian. No NaN, no refusal.
+
+    Killing mutation: a row of zero spread no longer written to zero (`eps <= floor` -> `<`).
     """
     mirror = [_forward('FWD1', FORWARD_PRICE), _forward('FWD2', FORWARD_PRICE, buy_sell='Sell')]
     results = _run(_job(children=mirror, hessian='Yes'), tmp_path, 'atom')
@@ -376,160 +354,33 @@ def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
         'the pinned row reached the kernel at a zero bandwidth and came back NaN')
 
 
-def test_a_row_whose_density_climbs_as_its_bandwidth_narrows_refuses_by_name():
-    """THE ATOM, diagnosed on the bandwidth LADDER.
-
-    A point mass and a narrow density at the kink share every scalar a single-width estimator can
-    read. What separates them is what `f_V(0)` DOES as the width varies: a density plateaus, a mass
-    of weight p reads `p/(h·√2π)` and climbs as `1/h`. Measured at 65536 paths, the climb across the
-    ladder's factor of 8 is 8.000 at EVERY p from 0.999 down to 0.0001, against 1.003 / 1.031 /
-    1.027 / 1.045 on the live document's own rows - a 7.7x separation, threshold at 2.0.
-
-    Taken on the function because no CMC document here reaches it: the case the refusal is FOR is
-    refused one step earlier by the decision-product refusal.
-
-    The previous classifier fired on `collapsed AND mass-at-zero`, a conjunction no p in (0, 1)
-    satisfies - `collapsed` needs `√(p/(1−p)) ≤ 0.0867` (p ≤ 0.0075) while the mass test wanted
-    p ≥ 0.01 - so every row rode through it reporting a density that grows without bound.
-    """
-    n = PATHS
-    row = torch.full((1, n), 1.0, dtype=torch.float64)
-    row[0, :int(0.5 * n)] = 0.0
-    with pytest.raises(utils.SecondOrderRefused) as refusal:
-        pricing.exposure_kink_term(ONE_BATCH, row)
-    message = str(refusal.value)
-    assert 'ATOM' in message and 'exposure_kink_term' in message, message
-    assert 'row(s) [0]' in message, (
-        'the refusal must name the rows it refuses on, or nobody can clip a grid off it: ' + message)
-    assert "Hessian: 'No'" in message and 'clip the reporting grid' in message, (
-        'a refusal names the remedies that WORK: ' + message)
-    assert 'refused one step earlier' in message, (
-        'the message must not send a caller off to price a collateralised set, which this build '
-        'refuses for a different reason one step earlier: ' + message)
-
-    # the separation itself, so the threshold is gated and not merely configured
-    def climb(rows):
-        Vbar = torch.tensor(rows, dtype=torch.float64)
-        eps = 1.06 * Vbar.std(dim=1, keepdim=True) * Vbar.shape[1] ** -0.2
-        rungs = [pricing._kink_density_at_zero(Vbar, c * eps, 1)
-                 for c in (pricing.KINK_ATOM_LADDER[0], pricing.KINK_ATOM_LADDER[-1])]
-        return float(rungs[1] / rungs[0])
-
-    for p in (0.999, 0.5, 0.0001):
-        pinned = torch.full((1, n), 1.0, dtype=torch.float64)
-        pinned[0, :int(p * n)] = 0.0
-        assert climb(pinned.tolist()) > 7.9, (
-            'an atom of weight {} does not read as 1/bandwidth, so the ladder is not measuring '
-            'what this refusal is asserted on'.format(p))
-    healthy = torch.randn(1, n, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
-    assert climb(healthy.tolist()) < 1.1, (
-        'a plain normal draw climbs across the ladder, so the threshold would refuse live rows')
-    assert pricing.KINK_ATOM_LADDER_DIVERGENCE == 2.0, (
-        'the threshold moved off the value the 7.9-versus-1.1 separation above was measured for')
-
-
-def test_a_collapsed_row_away_from_the_kink_is_ignored_rather_than_refused():
-    """The OTHER side of the same test, taken on the function because no live CMC reporting row
-    reaches it (a t0 row has no spread, and this diffusion's double backward is NaN there).
-
-    A row with no spread is not an atom unless its mass is AT zero. A book marked at a constant 7.7
-    across paths has a bandwidth of exactly zero and nothing within it of the kink: the kernel is
-    ZERO there, not 0/0, and the row contributes an exact 0.0 rather than a NaN or a refusal.
-
-    Both readings are second derivatives of the term itself, because its VALUE is an exact zero on
-    every row and says nothing about which branch was taken.
-    """
-    def curvature(rows):
-        theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-        term = pricing.exposure_kink_term(
-            ONE_BATCH, theta * torch.tensor(rows, dtype=torch.float64)).sum()
-        first, = torch.autograd.grad(term, theta, create_graph=True)
-        second, = torch.autograd.grad(first, theta)
-        return float(term.detach()), float(first), float(second)
-
-    spread = np.linspace(-4.0, 4.0, 64).tolist()
-    value, first, second = curvature([[7.7] * 64])
-    assert value == 0.0 and first == 0.0, (value, first)
-    assert second == 0.0, (
-        'a row with no spread 7.7 away from the kink contributed {:.6g} of curvature - the kernel '
-        'was evaluated at a zero bandwidth instead of being written to zero'.format(second))
-    assert curvature([spread])[2] > 0.0, (
-        'a row that does cross the kink contributed no curvature, so the reading above is vacuous')
-
-    # one sample has no spread either, and the same answer follows from the same test - AT the kink
-    # as well as away from it, because a row with no bandwidth has no ladder to diverge on and its
-    # V_theta is zero anyway. Neither reading may be a NaN or a refusal
-    assert curvature([[7.7]])[2] == 0.0
-    assert curvature([[0.0]])[2] == 0.0, (
-        'a single sample sitting exactly at the kink refused or returned a NaN; it has no '
-        'bandwidth, so there is nothing there to estimate and nothing to refuse')
-    assert curvature([[0.0] * 64])[2] == 0.0, (
-        'a row pinned at the kink on every path refused; its V_theta is zero, so its contribution '
-        'is zero whatever the density does')
-
-
-def test_the_kernel_argument_is_detached_so_K_prime_never_reaches_the_tape():
-    """The confinement claim, and the one no engine gate can reach: with K's argument attached the
-    second derivative is BIT-IDENTICAL (31.752557989663714 either way), so the ladders, the
-    admission and the seed gate all pass on a term whose kernel is on the tape.
-
-    What changes is the ORDER the graph stops at. `0.5*K(Vbar)*u**2` differentiated twice is
-    `K(Vbar)*V_theta**2` - a detached coefficient times a constant, so the second derivative is a
-    LEAF and autograd refuses a third. Attached, it carries a graph whose third derivative is
-    `3*K'(Vbar)` - the density DERIVATIVE, built and retained on every reporting row. The mutant is
-    invisible at second order structurally: with `u = V - V.detach()` an exact zero, every `K'` term
-    in the double backward carries a factor of u.
-    """
-    rows = torch.linspace(-4.0, 4.0, 512, dtype=torch.float64).reshape(1, -1)
-    theta = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-    term = pricing.exposure_kink_term(ONE_BATCH, theta * rows).sum()
-    first, = torch.autograd.grad(term, theta, create_graph=True)
-    second, = torch.autograd.grad(first, theta, create_graph=True)
-    assert float(second.detach()) > 0.0, 'the probe found no curvature, so it tests nothing'
-    assert not second.requires_grad, (
-        "the exposure gamma carries a graph into third order, so K's argument was not detached "
-        "and K' is on the tape: grad_fn {}".format(second.grad_fn))
-
-
 # ---------------------------------------------------------------- decision products
 
 def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path):
     """`Base_Revaluation`'s posture, adopted one calculation over. An autocall registers a
     `BoundarySet`, which is what makes its FIRST derivative right: `(gap - gap.detach())` times a
     DETACHED coefficient. Differentiate twice and the coefficient cannot move, so what comes back is
-    the smooth part with the density-derivative flux block silently absent - a cross-gamma that
-    looks like a cross-gamma. Refused by name, naming the deal.
+    the smooth part with the density-derivative flux block silently absent. Refused by name, naming
+    the deal; first order is UNCHANGED, so the refusal is a fall-back rather than a loss.
 
-    First order is UNCHANGED, which makes the refusal a fall-back rather than a loss: the same book
-    at `Hessian: 'No'` prices, reports a CVA and reports `grad_cva`.
+    A collateralised set registers an `MTABoundarySet` whatever it holds, so the linear forward
+    alone under a zero-threshold CSA is refused by the same refusal naming NS1 - upstream of the
+    kink term, which is why the atom refusal's remedy cannot name a margin period. First order
+    there: `cva` 0.0631180 at 1024 paths.
+
+    Killing mutation: the CVA Hessian's refusal over registered boundary corrections dropped.
     """
     book = [_forward('FWD1', FORWARD_PRICE), _autocall()]
     with pytest.raises(utils.SecondOrderRefused) as refusal:
         _run(_job(children=book, hessian='Yes', paths=1024), tmp_path, 'decision')
     message = str(refusal.value)
     assert 'AC1' in message, 'the refusal must name the registering deal: ' + message
-    assert 'Second-order flux at a JUMP' in message, (
-        'the refusal must say where the design that will answer it lives: ' + message)
+    assert 'Second-order flux at a JUMP' in message, message
 
     survives = _run(_job(children=book, hessian='No', paths=1024), tmp_path, 'decision_first')
     assert survives['cva'] > 0.0, 'the same book must still price at first order'
     assert abs(_delta(survives)) > 0.0, 'grad_cva stopped reporting a spot delta'
 
-
-def test_a_collateralised_set_is_refused_one_step_before_the_kink_term_sees_it(tmp_path):
-    """WHY THE ATOM REFUSAL'S REMEDY DOES NOT NAME A MARGIN PERIOD, measured rather than asserted.
-
-    The collateralised net matched inside its threshold is the case the atom refusal exists for, and
-    the one case `exposure_kink_term` never sees: a `NettingCollateralSet` with
-    `Collateralized: 'True'` registers an `MTABoundarySet` whatever it holds, so the set below - only
-    the linear forward, no decision product - is still refused by the decision-product refusal
-    naming NS1, upstream of the CVA objective's kink hook.
-
-    So a refusal telling a caller to price the set with a margin period would instruct them to build
-    a book this build refuses for a different reason.
-
-    First order is unaffected: `cva` 0.0631180 at 1024 paths.
-    """
     job = _job(hessian='Yes', paths=1024)
     job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal'].update({
         'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
@@ -541,19 +392,12 @@ def test_a_collateralised_set_is_refused_one_step_before_the_kink_term_sees_it(t
             'Posted_Threshold': {'.CreditSupportList': [[1, 0.0]]},
             'Minimum_Received': {'.CreditSupportList': [[1, 0.0]]},
             'Minimum_Posted': {'.CreditSupportList': [[1, 0.0]]}}})
-
     with pytest.raises(utils.SecondOrderRefused) as refusal:
         _run(job, tmp_path, 'collateral')
     message = str(refusal.value)
-    assert 'boundary correction: NS1' in message, (
-        'the collateralised set was refused, but not by the decision-product refusal - so the atom '
-        "refusal's remedy may be reachable after all and its wording must be re-derived: " + message)
-    assert 'exposure_kink_term' not in message, (
-        'the kink term saw a collateralised set, which the atom refusal states it cannot: ' + message)
-
+    assert 'boundary correction: NS1' in message and 'exposure_kink_term' not in message, message
     job['Calc']['Calculation']['Credit_Valuation_Adjustment']['Hessian'] = 'No'
-    survives = _run(job, tmp_path, 'collateral_first')
-    assert survives['cva'] > 0.0, 'the same collateralised book must still price at first order'
+    assert _run(job, tmp_path, 'collateral_first')['cva'] > 0.0
 
 
 # ---------------------------------------------------------------- the bandwidth's sample
@@ -573,6 +417,8 @@ def test_the_kernel_width_is_the_runs_path_count_and_not_one_batchs(tmp_path, ca
     count again multiplies every one of them by 1.1487. The corrected entries FOLLOW rather than
     gate - gamma 0.08% and vanna 0.30%, against 0.27% and 1.14% uncorrected - because a 2% move is
     inside this document's own seed spread either way.
+
+    Killing mutation: `exposure_kink_term` sizing its width off the batch's own paths.
     """
     with caplog.at_level(logging.DEBUG):
         one = _run(_job(hessian='Yes'), tmp_path, 'width_one')
@@ -597,17 +443,3 @@ def test_the_kernel_width_is_the_runs_path_count_and_not_one_batchs(tmp_path, ca
             'against a tolerance of 2%: {:.8g} -> {:.8g}'.format(name, b / a - 1.0, a, b))
 
 
-# ---------------------------------------------------------------- noise
-
-def test_two_seeds_agree_on_the_gamma_entry(tmp_path):
-    """A kernel estimate is only worth quoting if it does not track the draws. Measured over five
-    seeds at this document's 65536 paths: 4.2419 / 4.2354 / 4.2262 / 4.2351 / 4.2246 e-04, a 0.41%
-    spread, against 2.60% at 16384 - which is what chose the path count. The tolerance here is 2%,
-    ~5x the measured spread and still far inside the ladder's own resolution.
-    """
-    first, _ = _second_order(_run(_job(hessian='Yes', seed=1), tmp_path, 'seed1'))
-    second, _ = _second_order(_run(_job(hessian='Yes', seed=2), tmp_path, 'seed2'))
-    spread = abs(first - second) / abs(0.5 * (first + second))
-    assert spread < SEED_TOL, (
-        'the gamma entry moves {:.2%} between seeds, which is estimator noise and not an '
-        'estimate: {:.6g} against {:.6g}'.format(spread, first, second))

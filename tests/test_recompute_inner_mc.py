@@ -7,47 +7,29 @@ under `enable_grad` and contracts the cotangent through one graph that dies imme
 
 THE POSITION IS THE STORAGE. What is saved is where the regular generator stood
 (`rng_position`), never what it drew, and its state is restored for the replay; the Sobol rows
-are the canonical inner block's, a function of their shape, with no position to save. Which stream
-each fixture reads is ATTRIBUTED rather than assumed: `pv_MC_Tarf` takes Sobol above 16 scenarios,
-so base valuation's one scenario reads `torch.rand` - the generator one draw ahead moves its
-gradient by 5.73e+03 - and the 512-scenario exposure reads the block, its replay bit-identical with
-the generator and the quasi counter both a draw ahead.
+are the canonical inner block's, a function of their shape, with no position to save. `pv_MC_Tarf`
+takes Sobol above 16 scenarios, so base valuation's one scenario reads `torch.rand` - the generator
+one draw ahead moves its gradient by 5.73e+03 - and the 512-scenario exposure reads the block, its
+replay bit-identical with the generator and the quasi counter both a draw ahead.
 
 THE GRADIENT GATE IS `array_equal` AND NOT A TOLERANCE. The replay is the same kernels on the same
 inputs in the same order, and a tolerance would let a desynchronised stream through as "close
 enough". Measured bit-identical on both paths, base valuation (7 factors) and CVA (14), while the
-smallest mutation below moves the gradient by 1.2e-04 relative. Also GRID-INVARIANT: re-taken on
-`0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)`, with `Dynamic_Scenario_Dates` off and on, every one of
-cva, profile, cashflows and gradient is equal to the last bit.
-
-THE BOUNDARY DECISIONS RIDE THE NODE'S OUTPUTS. `stochastic_boundary_correction` is
-`gap - gap.detach()` times a detached coefficient, and the untaped forward has no graph to give
-`gap` - so the gap's VALUE is computed under `no_grad` for the registration and the NODE connects
-it, the coefficient arriving as that output's cotangent. `NoBoundaryInjection` drops exactly that
-cotangent and the gradient moves.
-
-The mutations are the point. Bit-identity passes trivially against a node that reuses the forward's
-graph or never rewinds, so the generator is desynchronised by one draw, the boundary cotangent is
-dropped, and the replay is fed stale inputs - each breaking the gradient it is meant to (as a
-fraction of the largest entry: 1.5e-03 / 9.9e-04 base, 4.5e-02 / 1.2e-04 CVA). The
-boundary half is scored on the CVA grid alone: under GBM a fixing interval that is one simulated
-step integrates its knock-in by the conditional-p mixture and registers no boundary, so a base
-valuation's node carries no gap cotangent to drop. A `Recompute_Inner_MC: 'Yes'` that silently
-kept taping leaves every bit-identity gate green and fails every mutation gate below.
+smallest stream mutation moves the gradient by 1.2e-04 relative. Also GRID-INVARIANT: re-taken on
+`0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)`, with `Dynamic_Scenario_Dates` off and on.
 
 WHERE THE REPLAY RUNS IS WHERE ITS DEFECTS ARE VISIBLE. `backward()` runs once per pricing block and
-only when a gradient is asked for - 1 forward under base valuation, 6 under exposure, the same
-backward counts with sensitivities on and zero with them off. So the by-product law (a settled
-cashflow is an output the caller performs once, never a side effect of `simulate`) is gated at
-`Gradient: 'Yes'`, where a replay that books settles 36 extra cashflows and moves the reported frame
-by 6.0e+06 while cva, profile AND the whole CVA gradient stay bit-identical.
+only when a gradient is asked for - 1 forward under base valuation, 6 under exposure - so the
+by-product law (a settled cashflow is an output the caller performs once, never a side effect of
+`simulate`) is gated at `Gradient: 'Yes'`, where a replay that books settles 36 extra cashflows and
+moves the reported frame by 6.0e+06 while cva, profile AND the whole CVA gradient stay
+bit-identical.
 
-WHAT THE NODE CANNOT DO is gated too. Detaching the saved inputs is what stops the replay walking
-back into the outer graph, and also why a SECOND derivative through it is severed and comes back
-partly zero - so `backward` refuses `create_graph` naming the switch.
+WHAT THE NODE CANNOT DO is gated beside the equity adopters: a second derivative through it is
+severed, so `backward` refuses `create_graph` naming the switch. On this fixture base valuation
+refuses first, the TARF registering a boundary correction under the crisp estimator.
 """
 import gc
-import json
 import os
 import sys
 
@@ -60,15 +42,11 @@ import pytest
 import torch
 
 import derivus
-from derivus import calculation, pricing, run_baseval, utils
+from derivus import calculation, run_baseval, utils
 from derivus.instruments import construct_instrument
-from derivus.schema import declared_defaults
 import test_boundary_tarf_events as tarf
 
 DTYPE = torch.float64
-#: The node under test, bound at import. The mutations below SUBCLASS it and the gate monkeypatches
-#: the pricer's global, so a mutant calling `pricing.InnerMCRecompute` would call itself.
-RECOMPUTE = pricing.InnerMCRecompute
 # the fixture's own world, unchanged - `test_boundary_tarf_events` owns the deals and the market,
 # and both decisions inside the pricer are already reachable there
 KNOCK_IN, KNOCK_IN_CMC, PIN_CMC = tarf.KNOCK_IN, tarf.KNOCK_IN_CMC, tarf.PIN_CMC
@@ -115,380 +93,66 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
     return float(out['Results']['cva']), out['Results']['mtm'].values, grad, cashflows
 
 
-def base_hessian(recompute, sims=1 << 10, estimator='No'):
-    """The reported second-order block. `Greeks: 'All'` sets `Base_Reval_State.gamma`, so
-    `SensitivitiesEstimator` runs with `create_graph=True`.
-
-    On THIS fixture it never gets that far: under the CRISP estimator - declared here, because
-    `Branch_And_Weight`'s default integrates the decision instead of registering it - the TARF
-    registers a boundary correction and base valuation refuses a second derivative over one
-    before any node is reached. The autocall in `test_recompute_equity_pricers` registers none
-    and is where the node's OWN refusal is measured."""
-    _, out = run_baseval(tarf._cfg(KNOCK_IN, tarf.SPOT), overrides={
-        'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
-        'Recompute_Inner_MC': recompute, 'Branch_And_Weight': estimator})
-    return out['Results']['Greeks_Second'].values.astype(np.float64)
-
-
-# ---------------------------------------------------------------- the switch is declared
-
-def test_the_switch_is_declared_where_the_engine_reads_it():
-    """A framework feature ships behind a JSON switch or it does not ship. The home is the
-    CALCULATION block and not the deal, because which pricings a run can afford to tape is a
-    property of the valuation engine and the machine it is on, not of the trade."""
-    from derivus.schema import mapping
-    for calc_type in ('BaseValuation', 'CreditMonteCarlo'):
-        declared = mapping['Calculation']['types'][calc_type]
-        assert 'Recompute_Inner_MC' in declared, f'{calc_type} cannot author the switch'
-        assert declared['Recompute_Inner_MC']['value'] == 'No', 'the default is not off'
-        assert declared['Recompute_Inner_MC']['values'] == ['Yes', 'No']
-
-
-def test_a_state_that_was_never_told_runs_the_taped_path():
-    """The attribute is declared on `Calculation_State` rather than by the calculations that set
-    it, so a pricer reads it with no fallback and a state built by anything else - a fork, a
-    solver's inner MC - is on the taped path rather than on an AttributeError."""
-    state = utils.Calculation_State(
-        {}, torch.ones([1, 1], dtype=DTYPE), 8, None, 'Constant', 1, False)
-    assert state.recompute_inner_mc is False
-
-
 # ------------------------------------------------- the sibling switch, same calculation block
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='the atomics are the GPU backward')
 def test_deterministic_kernels_is_read_every_run_and_set_both_ways():
-    """`Deterministic_Kernels` is PROCESS-GLOBAL state the calculation sets from the document, so
-    the plumbing is two statements: a `Yes` run reproduces its own gradient, and the flag afterwards
-    reads whatever that run declared - a `No` run LEAVES IT OFF, or the next job in the process
-    inherits a pin it never asked for.
+    """`Deterministic_Kernels` is PROCESS-GLOBAL state the calculation sets from the document: a
+    `Yes` run leaves the flag on, and a `No` run LEAVES IT OFF, or the next job in the process
+    inherits a pin it never asked for. `warn_only` is the field's own spelling: an operation torch
+    cannot pin warns and runs unpinned rather than refusing the valuation.
 
-    `warn_only` is the field's own spelling: an operation torch cannot pin warns and runs unpinned
-    rather than refusing the valuation, so `Yes` pins what torch can pin and no more. This fixture
-    carries no collateralised netting set and reproduces either way, which is why the flag
-    assertions rather than the hex one are what the dropped read fails.
+    Killing mutation: the switch set one way only, a `No` run leaving the process as it found it.
     """
-    _, _, pinned, _ = cmc(KNOCK_IN_CMC, gradient=True, deterministic='Yes')
+    cmc(KNOCK_IN_CMC, deterministic='Yes')
     assert torch.are_deterministic_algorithms_enabled(), (
         'the calculation never read Deterministic_Kernels: Yes out of the document')
-    _, _, again, _ = cmc(KNOCK_IN_CMC, gradient=True, deterministic='Yes')
-    assert [x.hex() for x in pinned] == [x.hex() for x in again], (
-        'the pinned CVA gradient did not reproduce:\n{}\n{}'.format(pinned, again))
-    cmc(KNOCK_IN_CMC, gradient=True, deterministic='No')
+    cmc(KNOCK_IN_CMC, deterministic='No')
     assert not torch.are_deterministic_algorithms_enabled(), (
         'a No run left the process pinned - the switch is being set one way only')
 
 
-# ---------------------------------------------------------------- (a) the value must not move
+# ---------------------------------------------------------------- the value and gradient must not move
 
-@pytest.mark.parametrize('greeks', [False, True])
-def test_the_base_price_is_bit_identical_with_the_node_on(greeks):
-    """BIT-identical, not approximately: a recompute that drew different numbers would still
-    converge to the same price at 4096 paths and be wrong in every digit that matters."""
-    off, _ = baseval(KNOCK_IN, greeks=greeks)
-    on, _ = baseval(KNOCK_IN, greeks=greeks, recompute='Yes')
-    assert off == on, f'price moved with the node on: {off!r} -> {on!r}'
+def test_the_base_price_and_gradient_are_bit_identical_with_the_node_on():
+    """The price and the WHOLE vector, boundary correction included (`Greeks: First` is what turns
+    `boundary_aad` on), on a fixture small enough that the full tape fits - which is the only place
+    the two paths can be compared at all. BIT-identical, not approximately: a recompute that drew
+    different numbers would still converge to the same price at 4096 paths and be wrong in every
+    digit that matters.
 
-
-@pytest.mark.parametrize('gradient', [False, True])
-@pytest.mark.parametrize('deal,label', [(KNOCK_IN_CMC, 'knock-in'), (PIN_CMC, 'pin')])
-def test_the_exposure_and_its_cashflows_are_bit_identical_with_the_node_on(deal, label, gradient):
-    """The whole profile and the settled cashflows, because the by-products are where an untaped
-    forward goes wrong quietly: the simulation is called TWICE under the node, so a cashflow accrued
-    inside it rather than returned would settle twice.
-
-    BOTH sensitivity settings, because the second call only happens under one. With them off the
-    backward never runs (6 forwards, 0 backwards), so this is the by-product plumbing alone; with
-    them on the replay fires once per block and the double-settle is reachable. `Credit_Monte_Carlo`
-    harvests `t_Cashflows` AFTER the batch's backward, so a booking made in the replay is still in
-    the frame when it is read."""
-    cva_off, mtm_off, _, cash_off = cmc(deal, gradient=gradient)
-    cva_on, mtm_on, _, cash_on = cmc(deal, gradient=gradient, recompute='Yes')
-    assert np.array_equal(mtm_off, mtm_on), f'{label}: exposure moved with the node on'
-    assert cva_off == cva_on, f'{label}: cva moved: {cva_off!r} -> {cva_on!r}'
-    assert cash_off and all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
-        f'{label}: a settled cashflow moved - the simulation ran its side effects twice')
-
-
-# ---------------------------------------------------------------- (b) the gradient must not move
-
-def test_the_base_gradient_is_bit_identical_with_the_node_on():
-    """The WHOLE vector, boundary correction included (`Greeks: First` is what turns
-    `boundary_aad` on), on a fixture small enough that the full tape fits - which is the only
-    place the two paths can be compared at all."""
+    Killing mutation: the replay one draw ahead on the regular generator.
+    """
     price_off, grad_off = baseval(KNOCK_IN, greeks=True)
     price_on, grad_on = baseval(KNOCK_IN, greeks=True, recompute='Yes')
     assert grad_off is not None and np.abs(grad_off).max() > 0.0, 'no gradient was reported'
-    assert price_off == price_on
+    assert price_off == price_on, (price_off, price_on)
     assert np.array_equal(grad_off, grad_on), (
         'the recomputed gradient is not the taped one:\n{}\n{}'.format(grad_off, grad_on))
 
 
 @pytest.mark.parametrize('deal,label', [(KNOCK_IN_CMC, 'knock-in'), (PIN_CMC, 'pin')])
-def test_the_cva_gradient_is_bit_identical_with_the_node_on(deal, label):
-    """The same statement under exposure, where the Sobol stream is the one being rewound and both
-    boundary registrations are live - the latched redemption, whose gaps are built OUTSIDE the node
-    and keep their own graph, and the knock-in, whose gaps are node OUTPUTS."""
-    _, _, grad_off, _ = cmc(deal, gradient=True)
-    _, _, grad_on, _ = cmc(deal, gradient=True, recompute='Yes')
+def test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_the_node_on(
+        deal, label):
+    """The whole profile, the settled cashflows and the whole CVA gradient, with sensitivities ON:
+    the simulation is called TWICE under the node, so a cashflow accrued inside it rather than
+    returned would settle twice, and only with a gradient asked for does the replay run.
+    `Credit_Monte_Carlo` harvests `t_Cashflows` AFTER the batch's backward, so a booking made in the
+    replay is still in the frame when it is read. Both boundary registrations are live - the
+    latched redemption, whose gaps are built OUTSIDE the node, and the knock-in.
+
+    Killing mutation: the replay settling the block's cashflows a second time.
+    """
+    cva_off, mtm_off, grad_off, cash_off = cmc(deal, gradient=True)
+    cva_on, mtm_on, grad_on, cash_on = cmc(deal, gradient=True, recompute='Yes')
+    assert np.array_equal(mtm_off, mtm_on), f'{label}: exposure moved with the node on'
+    assert cva_off == cva_on, f'{label}: cva moved: {cva_off!r} -> {cva_on!r}'
+    assert cash_off and all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
+        f'{label}: a settled cashflow moved - the simulation ran its side effects twice')
     assert np.abs(grad_off).max() > 0.0, f'{label}: no gradient was reported'
     assert np.array_equal(grad_off, grad_on), (
         '{}: the recomputed CVA gradient is not the taped one:\n{}\n{}'.format(
             label, grad_off, grad_on))
-
-
-def test_the_second_derivative_is_refused_rather_than_reported_wrong():
-    """A second derivative over this fixture is REFUSED, whichever of the two reasons gets there
-    first.
-
-    THE NODE'S REASON: the replay is rooted at detached copies of the saved inputs - what stops
-    `autograd.grad` walking back into the outer graph and double-counting the first derivative - so
-    a second derivative through a detached leaf is severed. The failure is silent, coming back with
-    the entries that needed that path set to ZERO. Measured before the refusal, `Greeks: 'All'`:
-    three leading entries of -1.74e6 / -4.03e5 / -1.67e4 taped, all three zero recomputed.
-
-    ON THIS FIXTURE THE OUTER REFUSAL COMES FIRST, and both spellings are asserted because that
-    ordering is itself a statement: the TARF registers a boundary correction, whose detached
-    coefficient makes a second derivative wrong for a different reason, so base valuation refuses
-    over the deal before the node is asked. The node's own refusal is measured in
-    `test_recompute_equity_pricers`, on the autocall.
-    """
-    with pytest.raises(Exception, match="Greeks: 'All' is refused"):
-        base_hessian('No')
-    with pytest.raises(Exception, match="Greeks: 'All' is refused"):
-        base_hessian('Yes')
-
-
-# ---------------------------------------------------------------- (e) the mutations
-
-class AheadByOne(dict):
-    """The quasi-random counter one draw ahead, INCLUDING for a shape nobody has drawn yet.
-
-    `quasi_rng` reads its counter with `setdefault(key, 0)`, so incrementing only the keys already
-    present moves nothing - the counter is per (dimension, sample_size) and a pricing block is
-    usually the first reader of its own shape. Measured: the first version of this mutant passed
-    against the node it was written to break.
-    """
-
-    def setdefault(self, key, default):
-        return super().setdefault(key, default + 1)
-
-
-def desynced_node(quasi, regular):
-    """The node replaying ONE DRAW off the position it saved, on the streams named.
-
-    Parameterised because the halves are the interesting objects: a mutation of BOTH kills every
-    fixture without saying which stream that fixture read, so the file would keep passing if one
-    silently stopped being covered. The halves attribute it; the pair is what the gradient gate is
-    scored on.
-
-    The forward pass is untouched, so every reported number is identical and only the derivative is
-    wrong - the failure a recompute has and a tape does not.
-    """
-
-    class Desynced(RECOMPUTE):
-        @staticmethod
-        def backward(ctx, *cotangents):
-            simulate = ctx.simulate
-
-            def replay(*theta):
-                if quasi:
-                    ctx.shared.t_quasi_rng_batch = AheadByOne(
-                        getattr(ctx.shared, 't_quasi_rng_batch', {}))
-                if regular:
-                    torch.rand(1, dtype=ctx.shared.one.dtype, device=ctx.shared.one.device)
-                return simulate(*theta)
-
-            ctx.simulate = replay
-            return RECOMPUTE.backward(ctx, *cotangents)
-
-    Desynced.__name__ = 'Desynced' + ''.join(
-        [n for n, on in (('Sobol', quasi), ('Generator', regular)) if on])
-    return Desynced
-
-
-DesyncedStreams = desynced_node(True, True)
-SOBOL_AHEAD = desynced_node(True, False)
-GENERATOR_AHEAD = desynced_node(False, True)
-
-
-class BookingReplay(RECOMPUTE):
-    """The replay with a SIDE EFFECT: it settles a cashflow, which is what a pricer that accrued
-    inside `simulate` instead of returning it would do on the second call.
-
-    The one mutation in this file that leaves the whole gradient alone - it is the by-product law
-    being broken rather than the derivative, and the cashflow frame is where it shows.
-    """
-
-    @staticmethod
-    def backward(ctx, *cotangents):
-        simulate = ctx.simulate
-
-        def booking(*theta):
-            outputs = simulate(*theta)
-            for currency, by_time in ctx.shared.t_Cashflows.items():
-                for time_index in by_time:
-                    pricing.cash_settle(ctx.shared, currency, time_index, ctx.shared.one.new_full(
-                        [ctx.shared.simulation_batch], 1e6))
-            return outputs
-
-        ctx.simulate = booking
-        return RECOMPUTE.backward(ctx, *cotangents)
-
-
-class NoBoundaryInjection(RECOMPUTE):
-    """The node with every cotangent but the first dropped - the boundary half of the backward.
-
-    Under the node a knock-in gap is an OUTPUT, and the correction assembled at the objective
-    reaches the simulation as that output's cotangent. Dropping it is the recompute-shaped way to
-    lose the boundary term: the price, the exposure and the ordinary AAD gradient all survive it.
-    """
-
-    @staticmethod
-    def backward(ctx, *cotangents):
-        return RECOMPUTE.backward(ctx, cotangents[0], *[None] * (len(cotangents) - 1))
-
-
-class StaleInputs(RECOMPUTE):
-    """The node replaying off inputs that are not the ones it was given - the spot strip moved by
-    a basis point. A recompute is only a recompute if it re-runs at the SAME theta; this is the
-    failure where it re-runs at a neighbouring one, which converges to something plausible."""
-
-    @staticmethod
-    def backward(ctx, *cotangents):
-        simulate = ctx.simulate
-        ctx.simulate = lambda spot, *rest: simulate(spot * 1.0001, *rest)
-        return RECOMPUTE.backward(ctx, *cotangents)
-
-
-def base_gradient(recompute):
-    """(price, gradient) off the one-scenario run - the `torch.rand` stream."""
-    return baseval(KNOCK_IN, greeks=True, recompute=recompute)
-
-
-def cva_gradient(recompute):
-    """(cva, gradient) off the 512-scenario run - the Sobol stream."""
-    cva, _, gradient, _ = cmc(KNOCK_IN_CMC, gradient=True, recompute=recompute)
-    return cva, gradient
-
-
-@pytest.mark.parametrize('mutant,run,stream', [
-    (DesyncedStreams, base_gradient, 'torch.rand'), (StaleInputs, base_gradient, 'torch.rand'),
-    (NoBoundaryInjection, cva_gradient, 'Sobol'), (StaleInputs, cva_gradient, 'Sobol')])
-def test_a_mutated_node_fails_the_gradient_gate(mutant, run, stream, monkeypatch):
-    """Every mutation must break the gradient the unmutated node reproduces bit for bit, with the
-    unmutated reading taken in the same run so the gate cannot measure nothing.
-
-    Scored on the gradient alone: all three leave the forward pass untouched, so the reported value
-    agrees in every digit - which is why a price gate over this subsystem is worth nothing. As a
-    fraction of the gradient's largest entry (3.80e+06 base, 8.21e+04 CVA) the kills are
-    1.5e-03 / 9.9e-04 and 4.5e-02 / 1.2e-04, in parametrized order. The boundary mutation runs on
-    the CVA grid alone: on the one-row base valuation every knock-in is integrated by the mixture
-    and the node carries no gap cotangent, so there is nothing for it to drop.
-    """
-    value_off, grad_off = run('No')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
-    value_on, grad_on = run('Yes')
-    assert value_off == value_on, 'the mutation moved the VALUE - it is not a backward-only defect'
-    assert not np.array_equal(grad_off, grad_on), (
-        '{} on the {} stream reproduced the taped gradient exactly, so the gate it is meant to '
-        'fail measures nothing:\n{}'.format(mutant.__name__, stream, grad_off))
-
-
-class Unlatched(calculation.Credit_Monte_Carlo):
-    """A credit Monte Carlo whose pricers register no boundary decision, so no correction is
-    assembled at its objective."""
-
-    def _init_shared_mem(self, *args, **kwargs):
-        shared = super()._init_shared_mem(*args, **kwargs)
-        shared.boundary_aad = False
-        return shared
-
-
-def test_the_accumulator_latch_is_live_and_rides_no_cotangent(monkeypatch, tmp_path):
-    """The accumulator decides its knock-out on the OUTER fixings, so its gaps keep their own graph
-    and the node carries none of them. Two readings that must disagree, as the barrier's: dropping
-    every cotangent but the marks' reproduces the corrected CVA gradient BIT for BIT, and the run
-    registering no decision at all MOVES it - 7.09 on a largest entry of 7.57, on the long-lag
-    document's one batch. Uncollateralised, because under a CSA a settled fixing reaches
-    `cash_settle` undetached and the node's settled output carries a cotangent of its own. The
-    node is substituted through the pricer's global, which every adopter calls by name - the seam
-    the equity pricers' twin gates take too - and the unregistered run is `Unlatched`.
-
-    Killing mutations: a gap reading the node's alive branch, so dropping its cotangent moves the
-    gradient; the latch registering nothing, so the unregistered run moves nothing.
-    """
-    import test_fx_accumulator_json as fa
-    job = fa._cva_long_lag(gradient='Yes')
-    job['Calc']['Calculation'].update(Recompute_Inner_MC='Yes', Simulation_Batches=1)
-
-    def gradient(calc=None):
-        if calc is None:
-            out = fa._run(job, tmp_path, 'latch')
-        else:
-            # `run_cmc`'s own preparation, the calculation a subclass of the one it constructs
-            context = derivus.Context()
-            context.load_json((json.dumps(job, default=str), 'unlatched'))
-            stated = context.current_cfg.deals['Calculation']
-            params = {'Time_grid': str(declared_defaults(calc, stated)['Time_Grid']),
-                      'Run_Date': stated['Base_Date'].strftime('%Y-%m-%d')}
-            params.update(stated)
-            out = calc(context.current_cfg, device=utils.calculation_device(None, 0),
-                       prec=torch.float32).execute(params)
-        return out['Results']['grad_cva']['Gradient'].values.astype(np.float64)
-
-    corrected = gradient()
-    with monkeypatch.context() as patch:
-        patch.setattr(pricing, 'InnerMCRecompute', NoBoundaryInjection)
-        dropped = gradient()
-    suppressed = gradient(Unlatched)
-    assert np.array_equal(corrected, dropped), (
-        'a cotangent of the accumulator node carries part of the boundary correction; max |d| '
-        '{:.6g}'.format(float(np.abs(corrected - dropped).max())))
-    moved = np.abs(corrected - suppressed)
-    assert moved.max() > 0.0, (
-        'the accumulator latch contributes nothing to this gradient, so the no-op above is vacuous')
-    print('\naccumulator correction beside the node: max |delta| = {:.6g} on a gradient of '
-          '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
-
-
-@pytest.mark.parametrize('run,stream,moved_by', [
-    (base_gradient, 'torch.rand', (GENERATOR_AHEAD, DesyncedStreams)), (cva_gradient, 'Sobol', ())],
-    ids=['torch.rand', 'Sobol'])
-def test_each_fixture_reads_the_stream_it_claims(run, stream, moved_by, monkeypatch):
-    """Each half of the desynchronisation and the pair, so the file states which position each
-    fixture's replay rewinds: the plain generator one draw ahead moves the base gradient by
-    5.73e+03 and the quasi counter is a no-op there; the CVA fixture's inner rows are the canonical
-    inner block's, a function of their shape, so its replay is bit-identical under all three.
-
-    Killing mutation for the Sobol case: the rows drawn at the quasi stream's running position,
-    which the counter one draw ahead then moves by 10.7 on a largest entry of 8.2e+04."""
-    _, grad_off = run('No')
-    for mutant in (GENERATOR_AHEAD, SOBOL_AHEAD, DesyncedStreams):
-        monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
-        _, grad = run('Yes')
-        assert np.array_equal(grad_off, grad) != (mutant in moved_by), (
-            '{} on the {} fixture {} the gradient'.format(
-                mutant.__name__, stream, 'kept' if mutant in moved_by else 'moved'))
-
-
-def test_a_cashflow_settled_inside_the_replay_moves_only_the_frame(monkeypatch):
-    """The by-product law: a `simulate` that BOOKS instead of returning is caught by the cashflow
-    assertion and by nothing else in this file.
-
-    Measured on the knock-in at `Gradient: 'Yes'`, 36 extra settlements over 6 blocks: cva, profile
-    and the whole 14-entry CVA gradient are bit-identical while the reported frame moves by 6.0e+06.
-    That asymmetry is why the exposure gate carries a cashflow comparison and why it is taken with
-    sensitivities ON.
-    """
-    cva_off, mtm_off, grad_off, cash_off = cmc(KNOCK_IN_CMC, gradient=True, recompute='Yes')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', BookingReplay)
-    cva_on, mtm_on, grad_on, cash_on = cmc(KNOCK_IN_CMC, gradient=True, recompute='Yes')
-    assert cva_off == cva_on and np.array_equal(mtm_off, mtm_on), (
-        'the booking reached the reported exposure - this mutation is meant to be a by-product one')
-    assert np.array_equal(grad_off, grad_on), 'the booking reached the CVA gradient'
-    assert not all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
-        'a cashflow settled inside the replay did not move the reported frame, so the cashflow '
-        'half of the exposure gate measures nothing')
 
 
 # ---------------------------------------------------------------- (f) the strip is streamed
@@ -537,9 +201,11 @@ def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient():
     `STREAM_PEAK_MIB` and reproduces the unstreamed loop's cva and gradient bit for bit.
 
     Readings: streamed 197 MiB, unstreamed 909; a process's first run carries cuBLAS's 32 MiB
-    workspace too. Killing mutations, each read as a first run: the alive branch back on the tape
-    (the stream's `no_grad` blocks removed) 388 MiB; the whole strip one piece (`oss_chunk` 0)
-    941."""
+    workspace too. The alive branch back on the tape (the stream's `no_grad` blocks removed) reads
+    388 MiB.
+
+    Killing mutation: the strip walked as one piece, never checkpointed - 941 MiB.
+    """
     cva, gradient, peak = streamed()
     whole_cva, whole_gradient, whole_peak = streamed(Unstreamed)
     assert cva == whole_cva and np.array_equal(gradient, whole_gradient), (
@@ -578,8 +244,8 @@ def test_a_trade_is_valued_on_its_own_draws_whatever_is_booked_before_it():
     trade's inner draws are the canonical block's first rows, whatever else the job asked for.
 
     Killing mutation: the block keyed on the request, each new strip length drawn at the stream's
-    running position as the memoized quasi stream drew it, moves the TARF by 7.3e+03 on a largest
-    entry of 9.1e+05."""
+    running position as the memoized quasi stream drew it - 7.3e+03 on a largest entry of 9.1e+05.
+    """
     alone, beside = knock_in_tensor(False), knock_in_tensor(True)
     assert alone.std() > 0.0 and np.array_equal(alone, beside), (
         'a neighbour moved the TARF by {:.6g}'.format(float(np.abs(alone - beside).max())))

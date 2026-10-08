@@ -146,39 +146,29 @@ def _mtm(out, ref='T1'):
 
 
 def test_an_unreachable_target_is_a_strip_of_europeans(tmp_path):
-    out, _ = _run(_job(), tmp_path)
+    """The value AND the FX delta of the strip a never-reached target degenerates to, each against
+    Black - a value that is right with a delta that is wrong is the failure a price-only gate cannot
+    see - and the pre-registered DEBUG line, which says the pricer classified the document's two
+    fixings as live and walked them as one block: a value can be right while the fixings were
+    counted wrongly, and on this fixture that is invisible in the number.
+
+    Killing mutation: each fixing interval carrying its own tenor's zero rate, not the difference
+    of cumulative integrals.
+    """
+    out, log = _run(_job(greeks='First'), tmp_path, debug=True)
     v = _mtm(out)
     assert abs(v - EXPECTED_VALUE) / abs(EXPECTED_VALUE) < TOL, (v, EXPECTED_VALUE)
-
-
-def test_the_tarf_reports_the_expected_fx_delta(tmp_path):
-    """The greek as its own statement: a value that is right with a delta that is wrong is the
-    failure a price-only gate cannot see."""
-    out, _ = _run(_job(greeks='First'), tmp_path)
     frame = out['Results']['Greeks_First']
     column = [c for c in frame.columns if c != 'Value'][0]
     index, = [i for i in frame.index if str(i[0]) == 'FxRate.EUR']
     delta = float(frame.loc[index, column])
     assert abs(delta - EXPECTED_DELTA) / abs(EXPECTED_DELTA) < 2e-2, (delta, EXPECTED_DELTA)
-
-
-def test_the_pricer_logs_what_it_decided(tmp_path):
-    """The pre-registered log line, diffed against what the run emits.
-
-    A value can be right while the pricer classified its fixings wrongly - counted one as already
-    observed, or split the book into the wrong blocks - and on this fixture those mistakes are
-    invisible in the number. The log is where they are not.
-    """
-    _, log = _run(_job(), tmp_path, 'tarflog', debug=True)
-    lines = [ln for ln in log.splitlines() if 'TARF ' in ln and 'fixings=' in ln]
-    assert lines, 'the TARF logged nothing at DEBUG'
-    organ = lines[-1]
-    assert 'fixings=2' in organ, organ
-    assert 'resolved=0' in organ, organ          # nothing is observed on this document
-    assert 'blocks=1' in organ, organ            # one date, so one block
+    organ = [ln for ln in log.splitlines() if 'TARF ' in ln and 'fixings=' in ln][-1]
+    assert 'fixings=2' in organ and 'resolved=0' in organ and 'blocks=1' in organ, organ
 
 
 def test_buy_sell_mirrors_exactly(tmp_path):
+    """Killing mutation: the block's mark left unsigned by `Buy_Sell`."""
     buy, _ = _run(_job(), tmp_path, 'buy')
     sell, _ = _run(_job(Buy_Sell='Sell'), tmp_path, 'sell')
     assert abs(_mtm(buy) + _mtm(sell)) <= 1e-9 * abs(_mtm(buy))
@@ -186,7 +176,10 @@ def test_buy_sell_mirrors_exactly(tmp_path):
 
 def test_a_reachable_target_is_worth_less_than_an_unreachable_one(tmp_path):
     """The target is what makes a TARF a TARF: knocking out early can only remove cashflows the
-    holder was accruing, so a small target must move the value toward zero from the strip."""
+    holder was accruing, so a small target must move the value toward zero from the strip.
+
+    Killing mutation: the remaining target never decremented by what a fixing accrues.
+    """
     strip, _ = _run(_job(), tmp_path, 'strip')
     knocked, _ = _run(_job(TargetLevel=0.02), tmp_path, 'knocked')
     assert abs(_mtm(knocked)) < abs(_mtm(strip)), (_mtm(knocked), _mtm(strip))
@@ -212,10 +205,11 @@ def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):
     remaining target the mask takes out of the arithmetic, and both land on the closed-form strip -
     `Underlying_Amount` puts against the leveraged calls - at 0.066%.
 
-    MUTATION: drop the mask and the first assertion reads NaN. Substitute the OTHER infinity and
-    the step knocks out with certainty, paying the remaining target - ten times apart on the two
-    arms, which the bit-equality catches. The banked call is the third arm: a live cap is masked by
-    nothing and must not move.
+    Substituting the OTHER infinity knocks the step out with certainty, paying the remaining
+    target - ten times apart on the two arms, which the bit-equality catches. The banked call is the
+    third arm: a live cap is masked by nothing and must not move.
+
+    Killing mutation: the mask dropped (`fillable` always true) - the first assertion reads NaN.
     """
     fifty = _mtm(_run(_job(Option_Type='Put', TargetLevel=50.0 * STRIKE), tmp_path, 'put50')[0])
     five = _mtm(_run(_job(Option_Type='Put', TargetLevel=5.0 * STRIKE), tmp_path, 'put5')[0])
@@ -308,9 +302,10 @@ def test_two_observed_fixings_in_one_settlement_lag_bank_their_own_accruals(tmp_
     BOTH ESTIMATORS, because both reach it: an OBSERVED fixing builds no kink term, so the smooth
     arm's decrement is the crisp one's and the two agree to the bit.
 
-    Killing mutations: the walk going on from the last print, 1.3, which reads 497.19; every
-    declared reset in the pot, settled or not, which reads 99.99 - the first fixing banking 0.1,
+    Every declared reset in the pot, settled or not, reads 99.99 - the first fixing banking 0.1,
     the remainder netting had already left, rather than the 0.2 it is worth.
+
+    Killing mutation: the walk going on from the last print, 1.3, which reads 497.19.
     """
     accrual = LAGGED_SCHEDULE[0][2] - STRIKE
     oracle = (_leg(LAGGED_SCHEDULE[0], accrual) + _leg(LAGGED_SCHEDULE[1], accrual) +
@@ -344,8 +339,9 @@ def test_an_observed_fixing_pays_its_print_and_the_strip_walks_on_from_the_spot(
     paths the inner draw's standard deviation is 1.4e-5 of the call and 1.4e-4 of the put (at most
     2.5e-4), and the gate is 1e-3.
 
-    Killing mutations: the walk going on from the print, which reads 912.84 for the call; the
-    knock-in decided on the row's spot, 1.1 below the barrier, which reads 82.11 for the put.
+    The knock-in decided on the row's spot, 1.1 below the barrier, reads 82.11 for the put.
+
+    Killing mutation: the walk going on from the print, which reads 912.84 for the call.
     """
     terms, accrual, live = ONE_SIDED[case]
     t, ts = (_offset(day['.Timestamp']) / DAYS for day in LAGGED_SCHEDULE[2][:2])
@@ -368,6 +364,8 @@ def test_a_redeemed_deal_pays_nothing_after_the_crossing_fixing(tmp_path):
 
     Its LEVEL is deliberately left alone: it is the level the crossing is measured against, so
     moving it moves the shape this gate is about rather than the discounting.
+
+    Killing mutation: an observed fixing's survival held at one, so the crossing does not redeem.
     """
     later = [LAGGED_SCHEDULE[0],
              [LAGGED_SCHEDULE[1][0], {'.Timestamp': '2024-08-05'}, LAGGED_SCHEDULE[1][2]],
@@ -391,6 +389,8 @@ def test_the_second_observed_fixing_in_a_block_reads_its_own_level(tmp_path):
     never binds, and nothing live behind them. The mark is then both intrinsics at their own
     settlements and no model at all - an equality. Reading the first level twice reads 0.2 where
     0.15 is due on the second leg.
+
+    Killing mutation: the observed fixing indexed without `j`.
     """
     schedule = [LAGGED_SCHEDULE[0],
                 [LAGGED_SCHEDULE[1][0], LAGGED_SCHEDULE[1][1], LAGGED_SCHEDULE[1][2] - 0.05]]
@@ -474,6 +474,8 @@ def test_a_settled_fixing_opens_the_pot_rather_than_vanishing(
     Equal to the BIT, not approximately: the substituted deal walks the same two fixings and draws
     the same Sobol numbers, and the only quantity that differs is the remaining target - the same
     double on both sides, since the oracle reduces it by the pricer's own accrual expression.
+
+    Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
     """
     side = dict(Option_Type=option_type, Buy_Sell=buy_sell)
     rows = [SETTLED_DATES + [settled]] + LIVE_ROWS
@@ -504,6 +506,8 @@ def test_a_fixing_observed_but_not_settled_banks_its_own_settlement(
     settlement in cash instead, and that one is the estimator's own: the shorter strip draws one
     fewer Sobol dimension, which is 1.1e-4 of the mark for the call and 1.9e-4 for the put at the
     262,144 inner paths used here, and 4.5e-3 at 65,536.
+
+    Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
     """
     side = dict(Option_Type=option_type, Buy_Sell=buy_sell, sims=1 << 18)
     sign = 1.0 if buy_sell == 'Buy' else -1.0
@@ -528,6 +532,8 @@ def test_settled_fixings_that_reach_the_target_redeem_the_deal(tmp_path):
 
     Said by name in the log, because a row marking flat is otherwise indistinguishable from one
     nobody priced. On main the same document read 10.1089 - a deal still carrying its whole target.
+
+    Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
     """
     option_type, spot, settled, _observed = SEASONED_WORLDS[0]
     rows = [SETTLED_DATES + [settled]] + LIVE_ROWS
@@ -540,7 +546,10 @@ def test_settled_fixings_that_reach_the_target_redeem_the_deal(tmp_path):
 def test_a_fixing_whose_date_has_passed_must_carry_the_rate_it_fixed_at(tmp_path):
     """A blank row behind the base date records nothing, and reading it as a zero rate accrues
     nothing where the deal accrued - the same mis-mark as dropping the row. Refused by name at
-    the compile, where the remedy is the observation."""
+    the compile, where the remedy is the observation.
+
+    Killing mutation: the refusal of a blank row behind the base date dropped.
+    """
     rows = [SETTLED_DATES + [0.0]] + LIVE_ROWS
     with pytest.raises(rf.utils.UnpriceableSchedule):
         _run(_seasoned(rows, SEASONED_TARGET, 1.14), tmp_path, 'blank')
@@ -551,7 +560,10 @@ def test_a_fixing_whose_date_has_passed_must_carry_the_rate_it_fixed_at(tmp_path
 def test_the_seasoned_pot_is_one_number_on_every_arm(tmp_path, model, smooth):
     """The crisp estimator and the default, GBM and the LogVar2FJ kit: four estimators, one
     spelling of what the settled fixings left, and the substituted identity is to the bit on all
-    of them. Measured: 46.5710 on GBM and 40.3114 on the walk, each unmoved by the switch."""
+    of them. Measured: 46.5710 on GBM and 40.3114 on the walk, each unmoved by the switch.
+
+    Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
+    """
     option_type, spot, settled, observed = SEASONED_WORLDS[0]
     arm = dict(Option_Type=option_type, model=model, smooth=smooth)
     rows = [SETTLED_DATES + [settled], OBSERVED_DATES + [observed]] + LIVE_ROWS

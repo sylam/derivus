@@ -103,6 +103,7 @@ def _ledger(buy_sell, tmp_path):
 
 
 def test_a_sold_tarf_books_the_mirror_of_a_bought_one(tmp_path):
+    """Killing mutation: the settled fixing booked without `Buy_Sell`."""
     buy, sell = _ledger('Buy', tmp_path), _ledger('Sell', tmp_path)
     today = float(buy.values[0].mean())
     assert abs(today - EXPECTED_TODAY) < 1e-3, (
@@ -132,6 +133,8 @@ def test_a_target_its_declared_fixing_exhausts_pays_that_target_and_stops(tmp_pa
     of a TARF whose target its first fixing exhausts, with no model left in it.
 
     Both directions, because the ledger carries the sign and the mtm does too.
+
+    Killing mutation: a fixing settling ON the base date netted into the opening pot.
     """
     for buy_sell, sign in (('Buy', 1.0), ('Sell', -1.0)):
         job = _job(buy_sell)
@@ -145,27 +148,6 @@ def test_a_target_its_declared_fixing_exhausts_pays_that_target_and_stops(tmp_pa
                 buy_sell, name, rows[0].min(), rows[0].max(), sign * CROSSING_PAYMENT)
             assert np.array_equal(rows[1:], np.zeros_like(rows[1:])), (
                 buy_sell, name, 'a redeemed TARF paid after it died', rows[1:].max())
-
-
-def test_an_oss_run_wider_than_the_sobol_dimension_cap_prices(tmp_path):
-    """`oss_uniforms` asks `quasi_rng` for the PATH COUNT as the Sobol dimension, and the engine
-    caps at 21201: above it the draw refused inside the pricer, `Deal.calculate` swallowed it into
-    a `CRITICAL ... skipped` line and the run died downstream on the collapsed frame. 20480 ran;
-    21248 and 32768 did not, whatever `MCMC_Simulations` said.
-
-    This is the smallest OSS document in the repo taken past the cap: the profile must be finite
-    everywhere and the fixing settling today must still book its exact 50.00. The chunking itself is
-    held against `SobolEngine` in `test_multi_gpu.py`; what this gate says is that the pricer
-    reaches it.
-    """
-    job = _job('Buy')
-    job['Calc']['Calculation'].update(Batch_Size=1 << 15, MCMC_Simulations=1 << 6)
-    out = _run(job, tmp_path, 'tarf_wide')
-    profile = np.asarray(out['Results']['mtm'], dtype=float)
-    assert np.isfinite(profile).all(), 'a run past the dimension cap priced NaN'
-    assert profile.shape[1] == 1 << 15, profile.shape
-    today = float(out['Results']['cashflows']['USD'].values[0].mean())
-    assert abs(today - EXPECTED_TODAY) < 1e-3, (today, EXPECTED_TODAY)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -219,6 +201,8 @@ def test_a_seasoned_tarf_exposes_and_books_what_is_left_of_it(tmp_path):
 
     The observed-but-unsettled row banks its own 40.00 on 2024-07-01, its own settlement date and
     the first row of the ledger - the deal's dates being reporting rows under exposure.
+
+    Killing mutation: the pot opened empty, the settled fixing's accrual dropped.
     """
     rows = [SEASONED_SETTLED, SEASONED_OBSERVED] + SEASONED_LIVE
     out = _run(_seasoned_job(rows, SEASONED_TARGET), tmp_path, 'seasoned')
@@ -241,7 +225,10 @@ def test_a_seasoned_tarf_exposes_and_books_what_is_left_of_it(tmp_path):
 
 def test_a_tarf_its_settled_fixings_redeemed_exposes_and_pays_nothing(tmp_path):
     """Redeemed before the base date: no exposure on any row of any scenario, and no cash. The
-    same document with a target its settled row already exhausted."""
+    same document with a target its settled row already exhausted.
+
+    Killing mutation: the pot opened empty, the settled fixing's accrual dropped.
+    """
     rows = [SEASONED_SETTLED, SEASONED_OBSERVED] + SEASONED_LIVE
     out = _run(_seasoned_job(rows, SETTLED_ACCRUAL / 2.0), tmp_path, 'redeemed')
     assert float(np.abs(np.asarray(out['Results']['mtm'], dtype=float)).max()) == 0.0

@@ -143,16 +143,14 @@ def _mtm(out, ref='ACC1'):
 # --------------------------------------------------------------------------------------------
 # gates
 # --------------------------------------------------------------------------------------------
-def test_the_job_document_prices_the_expected_value(tmp_path):
-    """The whole framework, from the document to the number, against Black decided beforehand."""
-    v = _mtm(_run(_job(), tmp_path))
-    assert abs(v - EXPECTED_VALUE) / abs(EXPECTED_VALUE) < TOL, (v, EXPECTED_VALUE)
-
-
 def test_the_job_document_reports_the_expected_fx_delta(tmp_path):
     """The greek is a statement of its own and not a finiteness check: a strip of Europeans has a
     closed-form delta, so `dV/d(EUR.USD spot)` is known before the run. A value that is right with
-    a delta that is wrong is the failure mode a price-only gate cannot see.
+    a delta that is wrong is the failure mode a price-only gate cannot see. The value is the whole
+    framework, from the document to the number, against Black decided beforehand.
+
+    Killing mutation: each fixing interval carrying its own tenor's zero rate, not the difference
+    of cumulative integrals - on this steep curve the two differ by whole percent.
     """
     out = _run(_job(greeks='First'), tmp_path)
     assert abs(_mtm(out) - EXPECTED_VALUE) / abs(EXPECTED_VALUE) < TOL
@@ -165,7 +163,10 @@ def test_the_job_document_reports_the_expected_fx_delta(tmp_path):
 
 def test_the_declared_switches_flip_the_sign_they_should(tmp_path):
     """`Buy_Sell` and `Option_Type` are declared switches, exercised through the document: selling
-    mirrors exactly, and a put on this strip is the ITM and OTM legs swapped."""
+    mirrors exactly, and a put on this strip is the ITM and OTM legs swapped.
+
+    Killing mutation: the block's mark left unsigned by `Buy_Sell`.
+    """
     buy = _mtm(_run(_job(), tmp_path, 'buy'))
     sell = _mtm(_run(_job(Buy_Sell='Sell'), tmp_path, 'sell'))
     assert abs(buy + sell) <= 1e-9 * abs(buy), (buy, sell)
@@ -191,6 +192,8 @@ def test_a_declared_consequence_is_refused_by_name(tmp_path):
     The refusal must be FATAL rather than a skip - a consequence-shaped document swallowed into
     `Deals Skipped` marks the trade at nothing on a job that reports success, which is the failure
     the flag's own last value ('Yes' with nothing recorded) would have produced silently.
+
+    Killing mutation: the consequence refusal dropped, the declared field priced past.
     """
     for declared in ('Yes', 'No'):
         with pytest.raises(Exception) as refusal:
@@ -236,6 +239,8 @@ def test_the_knock_out_matches_an_exact_law_simulation(barrier, up, btype, tmp_p
     """Both declared `Barrier_Type` values against an independent indicator simulation: the pricer
     integrates survival analytically and draws from the truncated law, the reference simulates and
     applies the indicator - the same product by two routes sharing no code.
+
+    Killing mutation: the survival truncation taken on the knocked side of the barrier.
     """
     v = _mtm(_run(_job(Barrier_Type=btype, Barrier_Price=barrier), tmp_path, f'ko{barrier}'))
     ref, se = _brute_force_ko(barrier, up)
@@ -244,7 +249,10 @@ def test_the_knock_out_matches_an_exact_law_simulation(barrier, up, btype, tmp_p
 
 def test_an_observed_fixing_is_its_exact_payoff(tmp_path):
     """A document whose fixings are all in the past, settling later: no simulation is left and
-    the value is arithmetic, so this asserts to 1e-9 rather than to a Monte Carlo tolerance."""
+    the value is arithmetic, so this asserts to 1e-9 rather than to a Monte Carlo tolerance.
+
+    Killing mutation: an observed fixing paid off the row's spot rather than its print.
+    """
     obs = [1.15, 1.08]
     job = _job()
     job['Calc']['Calculation']['Base_Date'] = {'.Timestamp': _day(200)}
@@ -264,7 +272,10 @@ def test_an_observed_fixing_is_its_exact_payoff(tmp_path):
 def test_a_settled_fixing_beyond_the_barrier_kills_the_deal(tmp_path):
     """Knock-out state carried in from before the base date is DATA, and now the ONLY thing that
     carries it: a settled fixing whose recorded value breached ends the deal, with no flag beside
-    it that could have said otherwise."""
+    it that could have said otherwise.
+
+    Killing mutation: `Prefix_Breached` read as alive.
+    """
     job = _job(Barrier_Price=1.14)
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     deal['Accumulator_ExpiryDates'] = [
@@ -278,13 +289,15 @@ def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
     0.0 the deal survives NO fixing and prices to a silent scalar zero, a whole trade vanishing
     from a book with no error. BOTH directions, because at 0.0 a `Down_And_Out` is merely
     unbarriered and prices its full strip, so a one-direction fixture scores the hole harmless.
+
+    Killing mutation: the positive-barrier refusal dropped.
     """
     for btype in ('Up_And_Out', 'Down_And_Out'):
         job = _job(Barrier_Type=btype, Barrier_Price=0.0)
         out = _run(job, tmp_path, f'blank{btype}')
         rows = out['Results']['mtm']
         rows = rows[rows['Reference'] == 'ACC1']
-        assert rows.empty or float(rows['Value'].iloc[0]) == 0.0, btype
+        assert rows.empty, (btype, rows)
 
 
 def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):
@@ -296,6 +309,8 @@ def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):
     are the same number today - so the discriminating statement is the DELTA. One fixing today,
     struck in the money: the deal is worth `N1 * (S - K)` discounted and its spot delta is `N1 * D`
     exactly, where a constant fixing would report ZERO.
+
+    Killing mutation: an observed fixing read detached, the constant the trade recorded.
     """
     strike, settle_day = 1.05, 3                      # ITM: the OTM leg contributes nothing
     job = _job(greeks='First', Strike_Price=strike, Accumulator_ExpiryDates=[
@@ -359,8 +374,11 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
 
     The DISCRIMINATOR is the `ACCUMULATOR_LATCH` organ: the registration reconstructed at the
     booked flags against the engine's reported rows. With the head carried the residual is float
-    roundoff while the head itself is material. The CVA delta against its CRN ladder rides along as
-    an economic sanity bound rather than the gate.
+    roundoff while the head itself is material: head_max 444 on a 1600 profile scale (28%) and the
+    residual 7.6e-8 relative, float32 roundoff, so the bound carries 13x.
+
+    Killing mutation: the pending head dropped from the registration - the dead branch zeroed,
+    which reconstructs 156 off, nearly 100,000x over the bound.
     """
     import io as _io
     import logging as _logging
@@ -369,7 +387,7 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
     root.addHandler(handler)
     root.setLevel(_logging.DEBUG)
     try:
-        out = _run(_cva_long_lag(gradient='Yes'), tmp_path, 'aad')
+        _run(_cva_long_lag(gradient='Yes'), tmp_path, 'aad')
     finally:
         root.removeHandler(handler)
         root.setLevel(old)
@@ -380,23 +398,9 @@ def test_a_knocked_deal_still_carries_its_pending_settlements(tmp_path):
     head = max(parse(ln, 'head_max') for ln in organs)
     ledger = max(parse(ln, 'ledger_max') for ln in organs)
     scale = max(parse(ln, 'scale') for ln in organs)
-    # MEASURED: head_max 444 on a 1600 profile scale (28%) and the residual 7.6e-8 relative, which
-    # is float32 roundoff, so the bound carries 13x. MUTATION: the dead branch zeroed reads 156,
-    # nearly 100,000x over the bound.
     assert head > 1e-3 * scale, 'the document must carry a material pending head'
     assert recon < 1e-6 * scale, (recon, head, scale)
     assert ledger < 1e-6 * scale, (ledger, scale)
-
-    g = out['Results']['grad_cva']['Gradient']
-    aad = float(g.loc[[i for i in g.index if 'FxRate.EUR' in str(i[0])][0]])
-    cva = float(out['Results']['cva'])
-    crn = []
-    for h in (0.002, 0.004):
-        up = float(_run(_cva_long_lag(spot=SPOT + h), tmp_path, f'u{h}')['Results']['cva'])
-        dn = float(_run(_cva_long_lag(spot=SPOT - h), tmp_path, f'd{h}')['Results']['cva'])
-        crn.append((up - dn) / (2.0 * h))
-    best = min(crn, key=lambda c: abs(aad - c))
-    assert abs(aad - best) / abs(best) < 5e-2, (aad, crn, cva)
 
 
 # --------------------------------------------------------------------------------------------

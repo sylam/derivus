@@ -1,29 +1,25 @@
 """`Recompute_Inner_MC` on the two equity MC pricers, against the shape `pv_MC_Tarf` proved.
 
-`tests/test_recompute_inner_mc.py` is the template and states the contract; this file makes the same
+`tests/test_recompute_inner_mc.py` states the contract on the TARF; this file makes the same
 statements about `pv_MC_AutoCallSwap` and `pv_discrete_barrier_option`, which reach the node through
 `pricing.InnerMCRecompute.run`. One file because the two share a world, a market and every
-bit-identity statement; where they genuinely DIFFER they get their own gate.
+bit-identity statement.
 
-THE GAP IS A NODE OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT - the rule the ports settle, not
-symmetry.
+THE GAP IS A NODE OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT. The autocall's coupon trigger is
+read off `Sj` inside the fixing loop, so its gap is an OUTPUT and the correction's coefficient
+arrives as its cotangent: dropping every cotangent but the marks' is bit-identical to removing the
+correction outright, max |delta| 5.512191e-06 on a gradient of 2.147838e-03. The barrier's latch is
+decided on an OUTER scenario spot, so its registration stays outside and the same drop is a no-op,
+while removing the correction moves it by 2.194252e-03 on 7.259363e-01.
 
-  AUTOCALL   the coupon trigger is read off `Sj` inside the fixing loop, so the untaped forward has
-             no graph to give it: the gap is an OUTPUT and the correction's coefficient arrives as
-             its cotangent. Dropping that cotangent is BIT-IDENTICAL to suppressing the correction.
-  BARRIER    the latch is decided on `spot_block[-1]`, an OUTER scenario spot, whose graph is the
-             scenario generation's - so the registration stays outside and needs nothing from the
-             replay. The injection mutant is a NO-OP here and suppressing the correction still moves
-             the gradient, so the correction is live and simply does not ride the node.
+A CASHFLOW GATE ON THE REPORTED CASHFLOWS IS A PLACEBO for the settle-outside rule: the replay runs
+in `backward()` while `save_cashflows` runs in the forward pass, so a double settlement lands after
+the snapshot. What IS observable is the cashflow's GRAPH - settled inside, it reaches `t_Cashflows`
+carrying nothing, so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of
+the CVA gradient.
 
-A CASHFLOW GATE ON THE REPORTED CASHFLOWS IS A PLACEBO, measured rather than reasoned about: the
-replay runs in `backward()` while `save_cashflows` runs in the forward pass, so a double settlement
-lands after the snapshot and every reported cashflow is bit-identical with the defect in place. What
-IS observable is the cashflow's GRAPH - settled inside, it reaches `t_Cashflows` carrying nothing,
-so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of the CVA gradient.
-
-The AVERAGING branch is gated in section (f), on a fixture authored around three defects the branch
-has at HEAD (see `_averaging_autocall`).
+The AVERAGING branch is the autocall with two fixings per coupon (`_averaging_autocall`), its
+settlement a returned output placed by `settle_rows`, on a fixture authored around three defects.
 
 UNGATED: `past_fixings` (the averaging branch is handed an empty one) and the floating leg, reached
 only by `QEDI_CustomAutoCallSwap_V2`, which does not price at HEAD. Both are hoisted into theta on
@@ -40,11 +36,10 @@ import pandas as pd
 import pytest
 
 import derivus
-from derivus import pricing, run_baseval, utils
+from derivus import run_baseval, utils
 from derivus.instruments import construct_instrument
 import test_barrier_bridge as bb
 import test_boundary_pricer_events as bp
-import test_recompute_inner_mc as rc
 
 DTYPE = bb.DTYPE
 #: The two adopters, in the fixtures that already gate their boundary registrations -
@@ -161,45 +156,7 @@ def base_hessian(pricer, recompute, sims=1 << 10, estimator='Yes'):
     return out['Results']['Greeks_Second'].values.astype(np.float64)
 
 
-def suppressed_correction(run, monkeypatch):
-    """`run()` with the boundary correction assembled at the objective removed entirely - the
-    difference is what the correction is worth, whatever route it takes to the tape."""
-    monkeypatch.setattr(pricing, 'boundary_correction', lambda *args, **kwargs: None)
-    return run()
-
-
-# ---------------------------------------------------------------- (a) the value must not move
-
-@pytest.mark.parametrize('pricer', PRICERS)
-@pytest.mark.parametrize('greeks', [False, True])
-def test_the_base_price_is_bit_identical_with_the_node_on(pricer, greeks):
-    """BIT-identical, not approximately: a recompute that drew different numbers would still
-    converge to the same price at 4096 inner paths and be wrong in every digit that matters."""
-    off, _ = baseval(pricer, greeks=greeks)
-    on, _ = baseval(pricer, greeks=greeks, recompute='Yes')
-    assert off != 0.0, f'{pricer}: the fixture prices at zero and gates nothing'
-    assert off == on, f'{pricer}: price moved with the node on: {off!r} -> {on!r}'
-
-
-@pytest.mark.parametrize('pricer', PRICERS)
-def test_the_exposure_and_its_cashflows_are_bit_identical_with_the_node_on(pricer):
-    """The whole profile and the settled cashflows, on both switch settings.
-
-    WHAT THIS GATE DOES NOT SEE, stated because the obvious reading of it is wrong. A cashflow
-    settled INSIDE the simulation would be settled a second time by the replay - but the replay
-    runs in `backward()`, and `save_cashflows` is called by `resolve_structure`, inside the forward
-    pass. Measured: with `cash_settle` put back inside `sim_spot`, every reported cashflow here is
-    bit-identical, gradient on or off. So this reads the forward pass and nothing else, and the
-    settle-outside rule is gated one test down, where it is actually observable."""
-    cva_off, mtm_off, _, cash_off = cmc(pricer)
-    cva_on, mtm_on, _, cash_on = cmc(pricer, recompute='Yes')
-    assert np.array_equal(mtm_off, mtm_on), f'{pricer}: exposure moved with the node on'
-    assert cva_off == cva_on, f'{pricer}: cva moved: {cva_off!r} -> {cva_on!r}'
-    assert any(np.abs(x).max() > 0.0 for x in cash_off), (
-        f'{pricer}: every settled cashflow is zero - this gate is reading nothing')
-    assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
-        f'{pricer}: a settled cashflow moved with the node on')
-
+# ---------------------------------------------------------------- the collateralised gradient
 
 @pytest.mark.parametrize('pricer', PRICERS)
 def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(pricer):
@@ -219,7 +176,10 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
       barrier   0 steps on every one of the 35 readings, all three comparisons.
 
     So the step IS the node's replayed backward disagreeing with itself, the opposite of what the
-    averaging branch does. A defect at 8.7% and a reduction at 2 ulps are not confusable."""
+    averaging branch does. A defect at 8.7% and a reduction at 2 ulps are not confusable.
+
+    Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
+    """
     cva_off, mtm_off, grad_off, cash_off = cmc(pricer, gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc(pricer, gradient=True, recompute='Yes',
                                            collateralised=True)
@@ -237,28 +197,46 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
             float(np.abs(grad_off).max()), grad_off, grad_on))
 
 
-# ---------------------------------------------------------------- (b) the gradient must not move
+# ---------------------------------------------------------------- the value and gradient must not move
 
 @pytest.mark.parametrize('pricer', PRICERS)
-def test_the_base_gradient_is_bit_identical_with_the_node_on(pricer):
-    """The WHOLE vector (`Greeks: First` is what turns `boundary_aad` on), on a fixture small
-    enough that the full tape fits - which is the only place the two paths can be compared."""
+def test_the_base_price_and_gradient_are_bit_identical_with_the_node_on(pricer):
+    """The price and the WHOLE vector (`Greeks: First` is what turns `boundary_aad` on), on a fixture
+    small enough that the full tape fits - which is the only place the two paths can be compared.
+    One scenario, so `quasi_rng` is not reached: this is the `torch.rand` half of the stream
+    contract, the generator one draw ahead moving it.
+
+    Killing mutation: the replay one draw ahead on the regular generator.
+    """
     price_off, grad_off = baseval(pricer, greeks=True)
     price_on, grad_on = baseval(pricer, greeks=True, recompute='Yes')
+    assert price_off != 0.0, f'{pricer}: the fixture prices at zero and gates nothing'
     assert np.abs(grad_off).max() > 0.0, f'{pricer}: no gradient was reported'
-    assert price_off == price_on
+    assert price_off == price_on, (price_off, price_on)
     assert np.array_equal(grad_off, grad_on), (
         '{}: the recomputed gradient is not the taped one:\n{}\n{}'.format(
             pricer, grad_off, grad_on))
 
 
 @pytest.mark.parametrize('pricer', PRICERS)
-def test_the_cva_gradient_is_bit_identical_with_the_node_on(pricer):
-    """The same statement under exposure, where the Sobol stream is the one being rewound and each
-    pricer's boundary registration is live - the autocall's through the node's own outputs, the
-    barrier's alongside it on the outer graph."""
-    _, _, grad_off, _ = cmc(pricer, gradient=True)
-    _, _, grad_on, _ = cmc(pricer, gradient=True, recompute='Yes')
+def test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_the_node_on(pricer):
+    """The whole profile, the settled cashflows and the whole CVA gradient, under exposure, where
+    the Sobol stream is the one being rewound and each pricer's boundary registration is live - the
+    autocall's through the node's own outputs, the barrier's alongside it on the outer graph.
+
+    Dropping every cotangent but the marks' fails the autocall's half - its coupon-trigger
+    correction rides the gap output - and leaves the barrier's alone.
+
+    Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
+    """
+    cva_off, mtm_off, grad_off, cash_off = cmc(pricer, gradient=True)
+    cva_on, mtm_on, grad_on, cash_on = cmc(pricer, gradient=True, recompute='Yes')
+    assert np.array_equal(mtm_off, mtm_on), f'{pricer}: exposure moved with the node on'
+    assert cva_off == cva_on, f'{pricer}: cva moved: {cva_off!r} -> {cva_on!r}'
+    assert any(np.abs(x).max() > 0.0 for x in cash_off), (
+        f'{pricer}: every settled cashflow is zero - this gate is reading nothing')
+    assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
+        f'{pricer}: a settled cashflow moved with the node on')
     assert np.abs(grad_off).max() > 0.0, f'{pricer}: no gradient was reported'
     assert np.array_equal(grad_off, grad_on), (
         '{}: the recomputed CVA gradient is not the taped one:\n{}\n{}'.format(
@@ -274,8 +252,9 @@ def test_the_second_derivative_is_refused_rather_than_reported_wrong():
     it. Base valuation gives it one reporting row, so no coupon is OBSERVED and it registers no
     boundary correction - which leaves the node as the only thing standing between `Greeks: 'All'`
     and a second derivative. Every other adopter registers one and is refused a step earlier (see
-    `test_a_registered_boundary_correction_is_refused_first`), which is a different finding, not
-    this one.
+    `test_base_valuation_gamma`), which is a different finding, not this one.
+
+    Killing mutation: the node's refusal of `create_graph` dropped, the severed derivative reported.
     """
     taped = base_hessian('autocall', 'No')
     assert np.abs(taped).max() > 0.0, 'no second derivative even with the node off'
@@ -283,23 +262,7 @@ def test_the_second_derivative_is_refused_rather_than_reported_wrong():
         base_hessian('autocall', 'Yes')
 
 
-def test_a_registered_boundary_correction_is_refused_first():
-    """The barrier's half of the statement above, and why the gate could not stay parametrized.
-
-    `pv_discrete_barrier_option` registers its latch on the OUTER scenario spot, at base valuation
-    as much as under exposure, and a second derivative taken through that correction silently
-    drops the density-derivative term. So the refusal that fires is the outer one, whichever way
-    `Recompute_Inner_MC` is set - the node is never asked. It names the deal.
-
-    The CRISP estimator is declared because it is the one that registers: under the default the
-    decision is integrated instead and there is nothing left to refuse.
-    """
-    for recompute in ('No', 'Yes'):
-        with pytest.raises(Exception, match=r"Greeks: 'All' is refused.*BARR1"):
-            base_hessian('barrier', recompute, estimator='No')
-
-
-# ---------------------------------------------------------------- (e) the mutations
+# ---------------------------------- the AVERAGING branch, which nothing above reaches at all
 
 def base_gradient(pricer, recompute):
     """(price, gradient) off the one-scenario run - the `torch.rand` stream."""
@@ -312,192 +275,19 @@ def cva_gradient(pricer, recompute):
     return cva, gradient
 
 
-#: The mutations each stream's fixture must fail: the generator a draw ahead and stale inputs on
-#: `torch.rand`, stale inputs on the inner block, which has no position to lose.
-MUTATIONS = [(rc.DesyncedStreams, base_gradient, 'torch.rand'),
-             (rc.StaleInputs, base_gradient, 'torch.rand'), (rc.StaleInputs, cva_gradient, 'Sobol')]
-
-
-@pytest.mark.parametrize('pricer', PRICERS)
-@pytest.mark.parametrize('mutant,run,stream', MUTATIONS)
-def test_a_mutated_node_fails_the_gradient_gate(pricer, mutant, run, stream, monkeypatch):
-    """Bit-identity passes trivially against a node that quietly reuses the forward's own graph or
-    never rewinds anything, so the generator is desynchronised by one draw and the replay is fed
-    inputs a basis point off, and each must break the gradient it is supposed to break, on BOTH
-    pricers. The mutations are imported rather than restated - one definition of each defect,
-    whichever adopter is under it.
-
-    `StaleInputs` perturbs theta[0], which is why every adopter puts its spot strip there.
-
-    Scored on the gradient alone: both leave the forward pass untouched, so the reported value
-    agrees in every digit under each - which is the point, and the reason a price gate over this
-    subsystem is worth nothing."""
-    value_off, grad_off = run(pricer, 'No')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
-    value_on, grad_on = run(pricer, 'Yes')
-    assert value_off == value_on, 'the mutation moved the VALUE - it is not a backward-only defect'
-    assert not np.array_equal(grad_off, grad_on), (
-        '{} on {} over the {} stream reproduced the taped gradient exactly, so the gate it is '
-        'meant to fail measures nothing:\n{}'.format(mutant.__name__, pricer, stream, grad_off))
-
-
-@pytest.mark.parametrize('pricer', PRICERS + ['averaging'])
-def test_the_inner_replay_has_no_position_to_lose(pricer, monkeypatch):
-    """Each adopter's Sobol rows - the averaging branch's whole paths included - are the canonical
-    inner block's, a function of their shape, so its replay is bit-identical with the quasi
-    counter and the generator both a draw ahead.
-
-    Killing mutation: the rows drawn at the quasi stream's running position, which the counter
-    ahead then moves by 2.0e-07 / 8.0e-04 / 2.3e-04 on largest entries of 1.1e-03 / 0.70 / 2.3e-03,
-    in parametrized order."""
-    _, grad_off = cva_gradient(pricer, 'No')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', rc.DesyncedStreams)
-    _, grad_on = cva_gradient(pricer, 'Yes')
-    assert np.array_equal(grad_off, grad_on), (
-        'the {} replay moved with its streams a draw ahead:\n{}\n{}'.format(
-            pricer, grad_off, grad_on))
-
-
-# ------------------------------------------- where the gap lives, which is where the two differ
-
-def test_the_autocall_correction_is_exactly_what_the_gap_cotangent_carries(monkeypatch):
-    """The autocall's trigger gap is a node OUTPUT, so the correction reaches the simulation as
-    that output's cotangent and NOTHING ELSE carries it. Both halves are gated, and the second is
-    what makes the mutation attributable rather than merely different: dropping every cotangent but
-    the marks' is BIT-IDENTICAL to removing the correction at the objective. Measured on this
-    fixture, max |delta| 5.512191e-06 on a gradient of 2.147838e-03 - 0.26%.
-
-    That equality also says the settled-cashflow cotangent contributes nothing here, which is true
-    of an UNCOLLATERALISED set: cash reaches an exposure through `C_ts_te`, and there is no
-    collateral chain in this portfolio to read it."""
-    _, _, corrected, _ = cmc('autocall', gradient=True, recompute='Yes')
-    with monkeypatch.context() as patch:
-        patch.setattr(pricing, 'InnerMCRecompute', rc.NoBoundaryInjection)
-        _, _, dropped, _ = cmc('autocall', gradient=True, recompute='Yes')
-    with monkeypatch.context() as patch:
-        _, _, suppressed, _ = suppressed_correction(
-            lambda: cmc('autocall', gradient=True, recompute='Yes'), patch)
-    moved = np.abs(corrected - dropped)
-    assert moved.max() > 0.0, 'the boundary correction reaches nothing through the node'
-    assert np.array_equal(dropped, suppressed), (
-        'dropping the gap cotangent is not the same as removing the correction, so the injection '
-        'mutant moves something else as well and attributes nothing:\nmax |d| {:.6g}'.format(
-            float(np.abs(dropped - suppressed).max())))
-    print('\nautocall correction through the node: max |delta| = {:.6g} on a gradient of '
-          '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
-
-
-def test_the_barrier_correction_is_live_and_rides_no_cotangent(monkeypatch):
-    """The barrier's latch is decided on the OUTER scenario spot, so its registration keeps its own
-    graph and the node has nothing to do with it. Asserting that costs two readings and they have
-    to disagree with each other, or the gate is vacuous in one direction or the other:
-
-      the injection mutant is a NO-OP - dropping every cotangent but the marks' reproduces the
-      corrected gradient BIT for BIT, which is what says no boundary term rides this node;
-      suppressing the correction at the objective MOVES it - measured max |delta| 2.194252e-03 on a
-      gradient of 7.259363e-01, 0.30% - which is what says there is a live correction to have
-      missed.
-
-    Written this way round on purpose. A gate that only checked the no-op would pass just as well
-    against a barrier whose registration had silently stopped firing."""
-    _, _, corrected, _ = cmc('barrier', gradient=True, recompute='Yes')
-    with monkeypatch.context() as patch:
-        patch.setattr(pricing, 'InnerMCRecompute', rc.NoBoundaryInjection)
-        _, _, dropped, _ = cmc('barrier', gradient=True, recompute='Yes')
-    with monkeypatch.context() as patch:
-        _, _, suppressed, _ = suppressed_correction(
-            lambda: cmc('barrier', gradient=True, recompute='Yes'), patch)
-    assert np.array_equal(corrected, dropped), (
-        'a cotangent of the barrier node carries part of the boundary correction, so the latch is '
-        'no longer registered from outer state alone; max |d| {:.6g}'.format(
-            float(np.abs(corrected - dropped).max())))
-    moved = np.abs(corrected - suppressed)
-    assert moved.max() > 0.0, (
-        'the barrier latch contributes nothing to this gradient, so the no-op above is vacuous - '
-        'the registration is not firing on this fixture')
-    print('\nbarrier correction beside the node: max |delta| = {:.6g} on a gradient of '
-          '{:.6g}'.format(moved.max(), np.abs(corrected).max()))
-
-
-# ---------------------------------- (f) the AVERAGING branch, which nothing above reaches at all
-
-def averaging_run(monkeypatch, **kwargs):
-    """`cmc('averaging', ...)` plus what the pricer DID, which is what makes the branch gates below
-    non-vacuous rather than a second spelling of the fixture: the `oss_windows` flag it was
-    dispatched with, each block's `(row count, settle_rows)`, and the mtm-grid DAY every settlement
-    was booked on.
-
-    Three spies and ONE run. `cash_settle` and `pv_MC_AutoCallSwap` are looked up on the `pricing`
-    module at every call, so `monkeypatch` reaches both; the node is subclassed the way the mutants
-    above are and calls the BASE `run`, so what it observes is what would have happened.
-    """
-    flags, blocks, booked, grids = [], [], [], []
-    pricer, settle, node = pricing.pv_MC_AutoCallSwap, pricing.cash_settle, pricing.InnerMCRecompute
-
-    class SettleRowSpy(node):
-        @classmethod
-        def run(cls, shared, simulate, *theta):
-            outputs = node.run(shared, simulate, *theta)
-            blocks.append((int(outputs[0].shape[0]), list(outputs[2])))
-            return outputs
-
-    def spy_pricer(shared, time_grid, deal_data, *args):
-        flags.append(deal_data.Factor_dep['oss_windows'])
-        grids.append(time_grid.mtm_time_grid)
-        return pricer(shared, time_grid, deal_data, *args)
-
-    monkeypatch.setattr(pricing, 'pv_MC_AutoCallSwap', spy_pricer)
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', SettleRowSpy)
-    monkeypatch.setattr(pricing, 'cash_settle', lambda shared, currency, index, value: (
-        booked.append(index), settle(shared, currency, index, value))[1])
-    result = cmc('averaging', **kwargs)
-    return result, flags, blocks, [int(grids[0][i]) for i in booked]
-
-
-def test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows(monkeypatch):
-    """THE GATE ON THE GATES. A bit-identity holds trivially over code neither side runs, so this
-    says the fixture reaches the branch, that the settlement is PLACED by the `settle_rows` the
-    simulation returns, and that the placement is observable at all.
-
-    The third is what a fixture silently loses. `t_Cashflows` is pre-allocated per DECLARED payment
-    date and `cash_settle` drops anything booked elsewhere, so mis-placing a settlement deletes a
-    number rather than moving one - and placement is only observable where a settling row is not its
-    block's first, which the coupons two days off the grid buy: 5 blocks, four of them `(2, [1])`.
-
-    Mutation-verified against `settle_rows.append(i) -> .append(0)`: blocks read `(2, [0])`, the
-    days become the grid's 92/183/273/365 instead of the coupons' 94/185/275/367, and every reported
-    cashflow collapses to zero. Every bit-identity COMPARISON stays green under it, because a source
-    mutation moves both switch settings alike - which is why this is an absolute statement."""
-    (_, _, _, cash), flags, blocks, days = averaging_run(monkeypatch)
-    assert flags and not any(flags), (
-        'the averaging fixture priced through the OSS arm, so section (f) is a slower '
-        'copy of section (a): {}'.format(flags))
-    settling = [b for b in blocks if b[1]]
-    assert settling and all(b == (2, [1]) for b in settling), (
-        'a settlement is on its block-local row 0, where `settle_rows` is indistinguishable from a '
-        'constant and this file cannot see the difference: {}'.format(blocks))
-    assert days == [(d - bb.BASE).days for d in AVERAGING_COUPONS], (
-        'a coupon settled on a day that is not its own: {} against {}'.format(
-            days, [(d - bb.BASE).days for d in AVERAGING_COUPONS]))
-    assert all(np.abs(x).max() > 0.0 for x in cash), (
-        'every settled cashflow is zero - `cash_settle` dropped them, which is what a mis-placed '
-        'settlement looks like from the outside')
-
-
-def test_the_averaging_base_price_is_bit_identical_with_the_node_on():
-    """The `torch.rand` half of the stream contract on this branch, whose draw is a full-path
-    `torch.randn`/`quasi_rng` block rather than the one-step-survival branch's uniforms."""
-    off, _ = baseval('averaging')
-    on, _ = baseval('averaging', recompute='Yes')
-    assert off != 0.0, 'the averaging fixture prices at zero and gates nothing'
-    assert off == on, f'the averaging price moved with the node on: {off!r} -> {on!r}'
-
-
 @pytest.mark.parametrize('collateralised', [False, True])
 def test_the_averaging_exposure_and_cashflows_are_bit_identical_with_the_node_on(collateralised):
     """Value, exposure and every settled cashflow, uncollateralised and collateralised - the
-    branch's settlement is now a returned output indexed after the loop rather than a `cash_settle`
-    performed inside it, and this is what says the two spellings agree."""
+    branch's settlement is a returned output indexed after the loop rather than a `cash_settle`
+    performed inside it, and this is what says the two spellings agree. The fixture reaches the
+    branch (`oss_windows` False) and settles off block-local row 1 - coupons two days off the grid
+    put five blocks, four of them `(2, [1])` - so placement is observable: `t_Cashflows` is
+    pre-allocated per DECLARED payment date and `cash_settle` drops anything booked elsewhere, so a
+    mis-placed settlement deletes the number rather than moving it.
+
+    Killing mutation: `settle_rows.append(i)` -> `.append(0)` - every reported cashflow collapses to
+    zero, the days becoming the grid's 92/183/273/365 instead of the coupons' 94/185/275/367.
+    """
     cva_off, mtm_off, _, cash_off = cmc('averaging', collateralised=collateralised)
     cva_on, mtm_on, _, cash_on = cmc('averaging', recompute='Yes', collateralised=collateralised)
     assert np.array_equal(mtm_off, mtm_on), 'the averaging exposure moved with the node on'
@@ -509,16 +299,19 @@ def test_the_averaging_exposure_and_cashflows_are_bit_identical_with_the_node_on
 
 @pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
 def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
-    """The WHOLE vector, on both streams. This branch has no boundary registration - the trigger is
-    smoothed by `smooth_heaviside_up` inside `sim_autocall` and `event_rows` comes back empty - so
-    the ordinary AAD path is the entire statement.
+    """The price and the WHOLE vector, on both streams. This branch has no boundary registration -
+    the trigger is smoothed by `smooth_heaviside_up` inside `sim_autocall` and `event_rows` comes
+    back empty - so the ordinary AAD path is the entire statement.
 
     Mutation-verified against the row loop reading the closure's `spot_block` instead of the
     `spot_prices` theta: a no-op with the switch off and a stale read under it. Off `torch.rand` it
     is SILENT - the `EquityPrice.EQ` entry, 1.245414e-03, vanishes from the reported vector, 7
     entries down to 6, because autograd has no gradient for a theta the replay never read. Off Sobol
     it is loud: the closure holds the LAST block's strip, the replay's output stops matching the
-    forward's shape, and autograd raises."""
+    forward's shape, and autograd raises.
+
+    Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
+    """
     value_off, grad_off = run('averaging', 'No')
     value_on, grad_on = run('averaging', 'Yes')
     assert np.abs(grad_off).max() > 0.0, f'{stream}: no gradient was reported'
@@ -555,9 +348,11 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
     `mtm`, `cva` and every reported cashflow stay bit-identical - so the entry-count clause fails on
     its own. Sixty-four steps against 7.75e+15 is 14.1 orders of margin.
 
-    THE CONTROL, the limit of the form: detaching on BOTH runs survives green, because a source edit
-    moves both switch settings alike. What places the settlement is therefore gated absolutely by
-    `test_the_averaging_branch_is_reached_and_settles_off_its_returned_rows`."""
+    Detaching on BOTH runs survives green, because a source edit moves both switch settings alike;
+    what places the settlement is gated absolutely by the exposure test above.
+
+    Killing mutation: the settled coupon booked `detach()`ed exactly when the node is on.
+    """
     cva_off, mtm_off, grad_off, cash_off = cmc('averaging', gradient=True, collateralised=True)
     cva_on, mtm_on, grad_on, cash_on = cmc('averaging', gradient=True, recompute='Yes',
                                            collateralised=True)
@@ -574,18 +369,3 @@ def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit(
             len(moved), len(steps), moved.tolist(), int(steps.max()),
             float(np.abs(grad_off - grad_on).max()), float(np.abs(grad_off).max()),
             grad_off, grad_on))
-
-
-@pytest.mark.parametrize('mutant,run,stream', MUTATIONS)
-def test_a_mutated_node_fails_the_averaging_gradient_gate(mutant, run, stream, monkeypatch):
-    """The same two defects as section (e), against the branch that draws a whole path rather than
-    a survival uniform - a bit-identity gate is worth what it can fail, and this branch's draw and
-    theta surface are its own. `StaleInputs` moves theta[0], which here is the spot strip the
-    averaged path is grown from."""
-    value_off, grad_off = run('averaging', 'No')
-    monkeypatch.setattr(pricing, 'InnerMCRecompute', mutant)
-    value_on, grad_on = run('averaging', 'Yes')
-    assert value_off == value_on, 'the mutation moved the VALUE - it is not a backward-only defect'
-    assert not np.array_equal(grad_off, grad_on), (
-        '{} over the {} stream reproduced the taped averaging gradient exactly, so the gate it is '
-        'meant to fail measures nothing:\n{}'.format(mutant.__name__, stream, grad_off))

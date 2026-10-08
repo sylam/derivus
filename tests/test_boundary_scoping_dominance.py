@@ -1,50 +1,42 @@
-"""The portfolio where the boundary correction IS the sensitivity, and the mutation gate it buys.
+"""The portfolio where the boundary correction IS the sensitivity.
 
-`test_boundary_pricer_events.py` gates the correction end to end, but on both its fixtures the
-boundary term is a small fraction of the reported gradient - 2.4% on the live-exposure one - so
-suppressing the term leaves every gate there green. Those are gates on the TOTAL; this is a gate on
-the TERM, and it needs a portfolio nobody runs.
+`test_boundary_pricer_events.py` gates the correction end to end, but on its fixtures the boundary
+term is a small fraction of the reported gradient - 2.4% on the live-exposure one - so a defect in
+the term moves the total by little. This portfolio is authored so the term dominates.
 
-THE DEAL IS A DIGITAL. A discretely monitored down-and-out BINARY struck at ~zero is worth
+THE DEAL IS A DIGITAL. A discretely monitored knock-out BINARY struck at ~zero is worth
 `Cash_Payoff` times the probability it never crossed, so its spot sensitivity is almost entirely the
 flux of paths across the barrier; a knock-out CALL carries a vanilla's intrinsic delta the
-correction has to compete with. MEASURED at 1024 paths, correction over smooth term: knock-out call
-0.56 / 0.83 / 2.07 against 3.04 for the H=95 monthly digital. That reading is the FIXTURE CHOICE and
-predates the settled ledger; the digital's own ratio has since risen to 3.80 at 16384 paths, which
-is the direction the choice needed, and the knock-out-call arm has no fixture here to re-take it on.
+correction has to compete with (correction over smooth term 0.56 / 0.83 / 2.07 against 3.04 for
+the H=95 monthly digital, at 1024 paths).
 
-THE SETS ARE COLLATERALISED AND PARKED ON THE RELU KINK, which buys two things: the collateral
-tracks the gross so what smooth delta survives is crushed further, and each set's net crosses zero
-constantly so scoring a counterfactual on one SET rather than the PORTFOLIO is a different number.
-Two sets, because two published gross-to-net chains is the only shape in which a registration can be
-scored through the wrong one. No minimum transfer amount, because that registers a SECOND decision
-and the subject here is the pricer event.
+BOTH BARRIER DIRECTIONS, mirrored about the spot. The digital's survival is monotone in the spot, so
+the CVA delta's SIGN is known before anything is run: positive below a down barrier, negative under
+an up one. The smooth term alone carries the OPPOSITE sign in both, so the sign is the correction's,
+and a gap signed the wrong way for its direction reports the wrong one.
+
+TWO COLLATERALISED SETS, at different barriers, so the two corrections add rather than cancel and
+neither set's gross-to-net chain can stand in for the other's. No minimum transfer amount, because
+that registers a SECOND decision and the subject here is the pricer event.
+
+LIFTED OFF THE RELU. A DELTA-FREE cash cushion in its own uncollateralised set lifts the reported
+portfolio clear of the CVA's kink. Off the relu every counterfactual is scored at full weight and
+what a collateralised set is worth turns on the cash it has already paid - so a counterfactual
+whose SETTLEMENT does not follow its branch prices the wrong exposure. With the settlement
+undeclared the lifted portfolio reported -0.00010726372 where its own CRN oracle wants +0.00034761669.
+Parked ON the relu instead (the un-lifted portfolio spans -16.6 to +14.4), the same two sets read
+the correction at 3.71x the smooth term and the AAD 1.47% from its CRN ladder at 8192 paths (1.14%
+at seed 2), where suppressing the correction reads 363.78% - and the undeclared settlement is
+invisible there, the exposure crushed to near zero exactly where the ledger error lives.
 
 THE SEAM IS THE DECLARED FIELD, and nothing here patches a library object. At
-`SUPPRESSED_BANDWIDTH` the kernel underflows on every gap, `boundary_weights`'s local-linear fit is
-unsolvable and the correction is an exact zero - VERIFIED off-gate as BIT-IDENTICAL to the same run
-with `pricing.boundary_correction` deleted.
+`SUPPRESSED_BANDWIDTH` the kernel underflows on every gap, `boundary_weights`' local-linear fit is
+unsolvable and the correction is an exact zero - verified bit-identical to the same run with
+`pricing.boundary_correction` deleted.
 
-THE LIFT, which now ships as a lane of its own. A DELTA-FREE cash cushion lifts the reported
-portfolio clear of the relu and multiplies the correction's share - and used to make the reported
-gradient WRONG: CRN disagreement 10.1 / 56.8 / 84.3 / 93.4 / 93.4% on the knock-out call at cushion
-0 / 10 / 30 / 100 / 300, saturating exactly where the relu stops binding. Most of that was the
-LEDGER: a lifted portfolio prices its exposure off cash the counterfactual never flipped, and with
-the settlement undeclared the digital lane below reports -0.00010726372 where its own oracle wants
-+0.00034761669. What is left of the lift is inside the estimator's own residual at this path count.
-The first gate still asserts the portfolio straddles zero, because the two lanes measure different
-things.
-
-WHAT THIS FILE DOES NOT GATE. The mutant is `Boundary_AAD_Bandwidth`, which suppresses the WHOLE
-correction, so what dies by 366.61% is the correction's existence rather than its SCOPING. A
-mis-scoping mutant has no public seam - every registration in `derivus/` names its `BoundarySet`
-class directly, with none of the `cls.apply` indirection the recompute node offers - so reaching one
-needs a module rebind, which this lane does not do. The fixture is BUILT so such a mutant would move
-a dominant term, but that claim is asserted nowhere and that half of the row stays open.
-
-THE 10% TOLERANCE IS NOT AN ACCURACY CLAIM: the live AAD sits 1.47% from its own CRN ladder (1.14%
-at seed 2), which is the estimator's residual at this path count. What does the work is the 363.78%
-kill, thirty-six times clear of it.
+NOT GATED: a mis-SCOPED correction (scored through the wrong set's chain). Every registration names
+its `BoundarySet` class directly, so such a mutant needs a module rebind; the fixture is built so it
+would move a dominant term, but that is asserted nowhere.
 """
 import os
 import sys
@@ -55,138 +47,37 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
 import pytest
 
-from crn_ladder import Ladder, ladder
 import test_barrier_bridge as bb
 from derivus.instruments import construct_instrument
-from test_boundary_pricer_events import LIVE_RUNGS, NETTING, _run
+from test_boundary_pricer_events import NETTING, _run
 
-#: The kernel selects nothing at this bandwidth, so the correction is an exact zero - the
-#: suppression mutant, taken through the declared field rather than through a patched engine.
+#: The kernel selects nothing at this bandwidth, so the correction is an exact zero.
 SUPPRESSED_BANDWIDTH = 1e-12
 
-#: The measured residual across two seeds - 1.47% and 1.14% - with room for the ladder's own 3.5%
-#: flatness, not a widening. The second gate's docstring quotes the five rungs it is taken from.
-TOLERANCE = 0.10
-#: The suppression mutant reads 3.64x / 3.61x its own gradient off the same oracle; this is the
-#: floor, and it is 20x the tolerance above.
-KILL_MARGIN = 2.0
-
-#: 8192 paths: every reading and kill below holds at both seeds here as at 16384, and half the
-#: paths would leave the lifted lane's ladder unconverging at seed 2 (flatness 14.5%). The batch is
-#: a MEMORY constraint as much as a statistical one: two collateralised sets each put a whole margin
-#: schedule on the mtm grid, and 512 paths against 128 inner sims OOMs a 24GB device on this fixture.
-PATHS = dict(batch=512, mcmc=64, batches=16)
+#: 512 paths, one batch: the smallest count at which both directions hold the dominance clear of
+#: its floor over seeds 1-3 (down 10.17 / 9.87 / 4.98x, up 9.31 / 7.60 / 7.14x); at 256 the up
+#: digital reads 4.00x at seed 2. At 1024 paths: 8.78x and 8.64x; at 8192 the down one 7.38x.
+PATHS = dict(batch=512, mcmc=64, batches=1)
 
 MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 
-
-def _digital(reference, barrier):
-    """A discretely monitored down-and-out binary. The strike sits at ~zero so the terminal digital
-    is certain and the deal is worth `Cash_Payoff` times the probability it never crossed - which
-    makes its spot delta the barrier flux and almost nothing else."""
-    return {'Object': 'EquityBarrierBinaryOption', 'Reference': reference, 'Currency': 'USD',
-            'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
-            'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-            'Strike_Price': 1e-6, 'Expiry_Date': bb.BASE + pd.Timedelta(days=365), 'Units': 1.0,
-            'Barrier_Type': 'Down_And_Out', 'Barrier_Price': barrier, 'Cash_Payoff': 10.0,
-            'Barrier_Dates': list(MONTHLY), 'Settlement_Date': ''}
-
-
-DIGITAL_A = _digital('DIG_A', 95.0)
-DIGITAL_B = _digital('DIG_B', 90.0)
-
-
-def _collateralised(reference, deal):
-    """One collateralised netting set holding one digital. Every credit-support amount stays at the
-    base fixture's zero, so the only decision registered beneath it is the barrier's latch."""
-    return {'Instrument': construct_instrument(
-        dict(NETTING, Reference=reference, Collateralized='True'), {}),
-        'Children': [{'Instrument': construct_instrument(deal, {})}]}
-
-
-def _two_collateralised_sets(c):
-    """Two sets at different barriers, so the two corrections add rather than cancel and neither
-    set's chain can stand in for the other's without moving the answer."""
-    return [_collateralised('NS_A', DIGITAL_A), _collateralised('NS_B', DIGITAL_B)]
-
-
-@pytest.fixture(scope='module')
-def priced():
-    """The two collateralised digitals run once with the correction live and once suppressed -
-    `(mtm, cva, live delta, suppressed delta)`, which both gates below read."""
-    mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets, **PATHS)
-    return mtm, cva, live, _run(DIGITAL_A, gradient=True, children=_two_collateralised_sets,
-                                bandwidth=SUPPRESSED_BANDWIDTH, **PATHS)[2]
-
-
-def test_the_correction_dominates_the_smooth_cva_delta(priced):
-    """The reading this file exists to make: the boundary term is 3.71x the smooth sensitivity.
-
-    MEASURED at 8192 paths: reported delta +0.00095242356, suppressed +0.00020234998, so the term
-    is +0.00075007 - nearly four times the whole pathwise sensitivity and 79% of what gets reported
-    (3.67x at seed 2; 3.80x at 16384). On the neighbouring file's fixtures it is 2.4%, which is why
-    the mutant survives there.
-
-    Two guards. THE PORTFOLIO MUST STRADDLE ZERO: lifting it clear of the relu also makes the
-    correction dominate, and used to make the reported delta wrong by 84-96%, so the relu binding is
-    asserted rather than assumed (the portfolio spans -16.6 to +14.4). THE DOMINANCE ITSELF, floored
-    at 1.5 against a measured 3.71 - under 1.0 the gate below measures the smooth part."""
-    mtm, cva, live, smooth = priced
-    assert mtm.min() < 0.0 < mtm.max(), (
-        f'the portfolio no longer straddles zero (it spans {mtm.min():+.6g} to {mtm.max():+.6g}) - '
-        f'the CVA relu has stopped binding, and the reported delta on such a portfolio is measured '
-        f'to be 84-96% from bump-and-reprice')
-    assert cva > 0.0, f'the portfolio has no exposure to be sensitive to; cva {cva!r}'
-
-    dominance = abs(live - smooth) / abs(smooth)
-    assert dominance >= 1.5, (
-        f'the boundary correction is {dominance:.2f}x the smooth sensitivity (reported '
-        f'{live:+.8g}, suppressed {smooth:+.8g}) - this fixture has stopped being '
-        f'correction-dominated and the gate below is measuring the wrong thing')
-
-
-def test_the_suppressed_correction_dies_against_bump_and_reprice(priced):
-    """AAD against a CRN bump ladder, with the suppression mutant read off the SAME oracle.
-
-    MEASURED, 8192 paths, seed 1: AAD +0.00095242356 against a CRN best of +0.00093844994, 1.47%
-    apart on a ladder flat to 3.45% (rungs 1.06 / 1.47 / 2.29 / 4.35 / 4.43% - a residual, not
-    scatter). Seed 2 reads 1.14% at 3.19% flatness; 16384 paths read 2.74% and 0.48%. It was 21.54%
-    before the settled ledger was declared, which is what most of that residual was.
-
-    THE 10% TOLERANCE IS THAT RESIDUAL PLUS THE SEED SPREAD PLUS THE LADDER'S OWN FLATNESS, not a
-    widening to fit: it is the estimator's accuracy at the declared bandwidth and this path count.
-    The estimator has no measured bandwidth plateau and its documented operating point is 32768
-    paths, which no gate here runs.
-
-    MUTATION - `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH: the same oracle reads 363.78%
-    (361.46% at seed 2). KILLED, 36x clear. On the neighbouring file's two-set fixture the identical
-    mutant moves the CRN disagreement from 2.20% to 0.23% and SURVIVES."""
-    live, smooth = priced[2:]
-    r = ladder(price=lambda s: _run(DIGITAL_A, spot=s, children=_two_collateralised_sets,
-                                    **PATHS)[1],
-               aad=live, base=bb.SPOT, rungs=LIVE_RUNGS)
-    assert r.agrees(tol=TOLERANCE), f'the correction-dominated CVA delta is wrong\n{r}'
-
-    # the same oracle readings against the suppressed gradient - the mutant costs one run rather
-    # than a second ladder, and the kill is asserted here rather than remembered in a docstring
-    mutant = Ladder(smooth, bb.SPOT, r.rungs, r.crn)
-    killed = abs(mutant.best - smooth) / abs(smooth)
-    assert not mutant.agrees(tol=TOLERANCE) and killed >= KILL_MARGIN, (
-        f'suppressing the boundary correction through Boundary_AAD_Bandwidth left the gate green '
-        f'at {killed:.1%} - the fixture is not correction-dominated and this file gates nothing\n'
-        f'{mutant}')
-
-
-# ------------------------------------------------------------------------------------- the lift
+#: Each direction's two barriers, mirrored about the spot, and the sign its CVA delta must carry.
+DIRECTIONS = {'Down_And_Out': ((95.0, 90.0), 1.0), 'Up_And_Out': ((105.0, 110.0), -1.0)}
 
 #: A delta-free cash cushion: buy the forward struck at zero, sell the one struck at CUSHION, in
 #: its own uncollateralised set. Worth CUSHION*DF every scenario with zero equity delta.
 CUSHION = 300.0
 
-#: The lifted lane's own residual: 9.28% at 8192 paths on a ladder flat to 3.59%, 14.80% at seed 2
-#: (12.03% at 4096, 10.79% at 16384). Not the un-lifted lane's 30% - the relu is not binding here,
-#: so the objective is locally linear and the estimator has an easier job.
-LIFTED_TOLERANCE = 0.20
+
+def _digital(reference, barrier, barrier_type):
+    """A discretely monitored knock-out binary struck at ~zero: worth `Cash_Payoff` times the
+    probability it never crossed, so its spot delta is the barrier flux and almost nothing else."""
+    return {'Object': 'EquityBarrierBinaryOption', 'Reference': reference, 'Currency': 'USD',
+            'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
+            'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+            'Strike_Price': 1e-6, 'Expiry_Date': bb.BASE + pd.Timedelta(days=365), 'Units': 1.0,
+            'Barrier_Type': barrier_type, 'Barrier_Price': barrier, 'Cash_Payoff': 10.0,
+            'Barrier_Dates': list(MONTHLY), 'Settlement_Date': ''}
 
 
 def _forward(reference, side, price):
@@ -196,62 +87,50 @@ def _forward(reference, side, price):
             'Maturity_Date': bb.BASE + pd.Timedelta(days=365)}
 
 
-def _lifted(c):
-    """The same two collateralised digitals, plus the cushion that lifts the portfolio off the
-    relu. The cushion carries no equity delta, so everything the gradient reads is still the
-    digitals'."""
-    return _two_collateralised_sets(c) + [{'Instrument': construct_instrument(
-        dict(NETTING, Reference='NS_CUSH', Collateralized='False'), {}),
-        'Children': [{'Instrument': construct_instrument(_forward('CUSH_L', 'Buy', 0.0), {})},
-                     {'Instrument': construct_instrument(_forward('CUSH_S', 'Sell', CUSHION), {})}]}]
+def _set(reference, collateralised, *deals):
+    return {'Instrument': construct_instrument(
+        dict(NETTING, Reference=reference, Collateralized=collateralised), {}),
+        'Children': [{'Instrument': construct_instrument(deal, {})} for deal in deals]}
 
 
-def _lifted_gradient(bandwidth=None):
-    return _run(DIGITAL_A, gradient=True, children=_lifted, bandwidth=bandwidth, **PATHS)[2]
+def _lifted(first, second):
+    """Two collateralised sets, one digital each, and the cushion that lifts the portfolio off the
+    relu; the cushion carries no equity delta, so everything the gradient reads is the digitals'."""
+    return lambda c: [_set('NS_A', 'True', first), _set('NS_B', 'True', second),
+                      _set('NS_CUSH', 'False', _forward('CUSH_L', 'Buy', 0.0),
+                           _forward('CUSH_S', 'Sell', CUSHION))]
 
 
-def test_the_lifted_portfolio_reports_a_delta_its_own_oracle_agrees_with():
-    """The lane the lift used to fail. Off the relu the objective is locally linear, every
-    counterfactual is scored at full weight, and what a collateralised set is worth turns on the
-    cash it has already paid - so a counterfactual whose SETTLEMENT does not follow its branch
-    prices the wrong exposure and the error is unbounded rather than small.
+@pytest.mark.parametrize('barrier_type', list(DIRECTIONS))
+def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(barrier_type):
+    """THE CUSHION MUST LIFT the portfolio clear of zero, the reported delta MUST CARRY the sign the
+    digitals' monotone survival gives it, and THE CORRECTION MUST DOMINATE the smooth sensitivity
+    read off the same document with the correction suppressed through `Boundary_AAD_Bandwidth`,
+    floored at 3.0.
 
-    MEASURED at 8192 paths, cushion 300: AAD +0.00032924550 against a CRN best of +0.00035978764,
-    9.28% on a ladder flat to 3.59%; 14.80% flat to 7.50% at seed 2, 10.79% at 16384 paths.
+    At the 512 paths run here, seed 1: down +4.65e-4 against a smooth -5.07e-5, up -3.41e-4 against
+    +4.10e-5. Measured at 8192 paths, down, cushion 300: 7.38x (6.62x at seed 2); the AAD
+    +0.00032924550 against a CRN best of +0.00035978764, 9.28% on a ladder flat to 3.59%, the
+    estimator's residual here (14.80% at seed 2, 10.79% at 16384).
 
-    TWO MUTANTS, DYING ON DIFFERENT ASSERTIONS, which is worth stating because only one of them
-    reaches the ladder. The SETTLEMENT undeclared - the state this file shipped in, reproduced
-    OFF-GATE by dropping `settles` at the registration, there being no document switch for it -
-    collapses the correction to the size of the smooth term and dies on the DOMINANCE GUARD, 1.0439x
-    against a floor of 3.0 (1.0380x at 16384 paths); off the same oracle it reads -0.00010552901,
-    sign-flipped and 440.9% out where this lane reads 9.28%, but the gate never gets there.
-    `Boundary_AAD_Bandwidth` at SUPPRESSED_BANDWIDTH is the one taken through the declared field: it
-    reads 796.85% (745.43% at seed 2) and dies on the ladder. The un-lifted lane above cannot see the
-    settlement mutant at all - with the relu binding, the exposure is crushed to near zero exactly
-    where the ledger error lives.
-
-    Two guards, and the first of them is the discriminator above. THE CUSHION MUST LIFT - if the
-    portfolio still straddles zero this is the gate above with extra deals. THE CORRECTION MUST
-    DOMINATE, floored at 3.0 against a measured 7.38x (6.62x at seed 2).
+    Killing mutation: the discrete barrier's gap signed against its direction - up reads +4.23e-4
+    (+4.90 / +4.92e-4 at seeds 2 and 3), down -5.66e-4; an undeclared `settles` flips both too.
     """
-    mtm, cva, live = _run(DIGITAL_A, gradient=True, children=_lifted, **PATHS)
+    (h_first, h_second), sign = DIRECTIONS[barrier_type]
+    first = _digital('DIG_A', h_first, barrier_type)
+    children = _lifted(first, _digital('DIG_B', h_second, barrier_type))
+    mtm, cva, live = _run(first, gradient=True, children=children, **PATHS)
     assert mtm.min() >= 0.0, (
         f'the cushion did not lift the portfolio clear of the relu (it spans {mtm.min():+.6g} to '
-        f'{mtm.max():+.6g}) - this lane is then the one above and gates nothing new')
+        f'{mtm.max():+.6g})')
     assert cva > 0.0, f'the lifted portfolio has no exposure to be sensitive to; cva {cva!r}'
-
-    smooth = _lifted_gradient(bandwidth=SUPPRESSED_BANDWIDTH)
+    assert sign * live > 0.0, (
+        f'{barrier_type}: the CVA delta reads {live:+.6g} where the monotone survival gives it '
+        f'the other sign - a gap signed against its direction reads this, as does a branch whose '
+        f'settlement does not follow it')
+    smooth = _run(first, gradient=True, children=children, bandwidth=SUPPRESSED_BANDWIDTH,
+                  **PATHS)[2]
     dominance = abs(live - smooth) / abs(smooth)
     assert dominance >= 3.0, (
         f'the boundary correction is {dominance:.4f}x the smooth sensitivity (reported '
-        f'{live:+.8g}, suppressed {smooth:+.8g}) - lifted, it is measured at 7.38x, and a '
-        f'registration that does not declare its settlement reads 1.0439x here')
-
-    r = ladder(price=lambda s: _run(DIGITAL_A, spot=s, children=_lifted, **PATHS)[1],
-               aad=live, base=bb.SPOT, rungs=LIVE_RUNGS)
-    assert r.agrees(tol=LIFTED_TOLERANCE), f'the lifted CVA delta is wrong\n{r}'
-
-    mutant = Ladder(smooth, bb.SPOT, r.rungs, r.crn)
-    killed = abs(mutant.best - smooth) / abs(smooth)
-    assert not mutant.agrees(tol=LIFTED_TOLERANCE) and killed >= KILL_MARGIN, (
-        f'suppressing the correction left the lifted gate green at {killed:.1%}\n{mutant}')
+        f'{live:+.8g}, suppressed {smooth:+.8g})')

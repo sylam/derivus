@@ -1,9 +1,8 @@
 """`Greeks: 'All'` - the second-order block, its oracles, and the two things it refuses.
 
-THE BLOCK WAS UNREACHABLE, WHICH IS WHY IT HAD NO COVERAGE: `__init_shared_mem` tests
-`params['Greeks'] == 'All'` and the field declared `values=['First', 'No']`, so no panel or
-schema-authored job could ask for it. `test_schema_emission.py` now holds the menu against the
-engine; this file is the block itself.
+THE BLOCK WAS UNREACHABLE, WHICH IS WHY IT HAD NO COVERAGE: the field declared
+`values=['First', 'No']`. `test_schema_emission.py` holds the menu against the engine; this file is
+the block itself.
 
 WHAT THE ORACLES ARE - closed forms, identities and convergent differences, none of them derivus
 asked twice:
@@ -32,7 +31,8 @@ TWO REFUSALS, both because the alternative is a number that looks right.
   it twice silently drops the density-derivative term the correction exists to supply while
   keeping the smooth part. The refusal names the deals and points at bumping the ADJOINT under
   common random numbers; it is `utils.SecondOrderRefused` so a caller can fall back to `'First'`.
-  `Recompute_Inner_MC` is refused for its own reason and gated in `test_recompute_equity_pricers`.
+  `Recompute_Inner_MC` is refused for its own reason and gated in `test_recompute_equity_pricers`;
+  over a registered correction it is never asked, the outer refusal firing whichever way it is set.
 """
 import os
 import sys
@@ -49,7 +49,6 @@ from scipy.stats import norm
 from derivus import run_baseval, utils
 from derivus.config import Config
 from derivus.instruments import construct_instrument
-from derivus.schema import mapping
 import rates_world as rw
 import test_recompute_equity_pricers as re_
 
@@ -211,16 +210,7 @@ EQUITY = ('EquityPrice.EQ', 0.0, 0.0, 0.0)
 FX = ('FxRate.EUR', 0.0, 0.0, 0.0)
 
 
-# ---------------------------------------------------------------- the block is reachable at all
-
-def test_the_second_order_block_is_reachable_from_the_schema():
-    """The declaration, which is the whole of what was missing: `'All'` on the menu, `'No'` still
-    the default - a second derivative on by omission would multiply every job's cost."""
-    declared = mapping['Calculation']['types']['BaseValuation']['Greeks']
-    assert declared['values'] == ['All', 'First', 'No'], (
-        'the second-order block is not on the menu the engine acts on')
-    assert declared['value'] == 'No', 'second derivatives have become the default'
-
+# ---------------------------------------------------------------- the block as reported
 
 def test_the_second_order_block_is_reported_under_a_stable_key_beside_the_first():
     """The shape, so a consumer can be written against it: `Greeks_Second` appears iff `'All'` was
@@ -231,6 +221,8 @@ def test_the_second_order_block_is_reported_under_a_stable_key_beside_the_first(
     a factor can have no first derivative and a real second one: the moneyness-1.2 vol nodes carry
     zero vega because the interpolation gives them no weight at the money, while d2V/dS dsigma
     there is 0.98 because a spot move is what gives them weight. Joining on the index drops those.
+
+    Killing mutation: the upper triangle reported unmirrored.
     """
     for greeks in ('No', 'First'):
         _, _, absent = valued(equity_cfg(), greeks=greeks)
@@ -261,6 +253,8 @@ def test_black_scholes_gamma_is_exact_in_the_zero_carry_world():
     this fixture lands on 0 steps for all three readings, while the same oracle at
     S=87.5, K=95, vol=0.31, T=2y lands on 4, 2 and 1. Price and delta are asserted beside gamma,
     because a gamma matching off a value that did not would mean the two agreed by accident.
+
+    Killing mutation: the mirror adding the diagonal a second time (`triu(k=1)` -> `triu(k=0)`).
     """
     value, first, second = valued(equity_cfg(r=0.0, q=0.0))
     price, delta, gamma, _ = black_scholes_call(SPOT, STRIKE, 1.0, 0.0, 0.0, VOL)
@@ -284,6 +278,8 @@ def test_black_scholes_gamma_survives_carry_at_a_measured_tolerance():
     So the difference scales with the CARRY and the bound is chosen against that rather than this
     one point: gamma reads 2.9e-5 here against 1.2e-4 at (5%, 0%) and 1.4e-4 at (0%, 2%), so 3e-4
     clears its neighbours where the 1e-4 it replaces fitted this point with no headroom.
+
+    Killing mutation: the mirror adding the diagonal a second time (`triu(k=1)` -> `triu(k=0)`).
     """
     value, first, second = valued(equity_cfg(r=0.03, q=0.01))
     price, delta, gamma, _ = black_scholes_call(SPOT, STRIKE, 1.0, 0.03, 0.01, VOL)
@@ -303,6 +299,8 @@ def test_the_spot_vol_cross_terms_sum_to_the_closed_form_vanna():
     all - but it is a real second derivative, and the two halves are large and opposite: -1.7812
     and +1.9792, summing to the closed-form vanna 0.19795. A Hessian that dropped or double-counted
     the weight derivative fails here while every diagonal entry stays right.
+
+    Killing mutation: the surface read on a detached moneyness, dropping the weight derivative.
     """
     _, first, second = valued(equity_cfg(r=0.0, q=0.0))
     _, _, _, vanna = black_scholes_call(SPOT, STRIKE, 1.0, 0.0, 0.0, VOL)
@@ -326,6 +324,8 @@ def test_an_fx_forward_has_exactly_zero_gamma():
     `Buy * FX * D_buy - Sell * D_sell` with the spot appearing once. The placebo it has to survive
     is the empty matrix, so the same reading must carry real curve convexity: an engine reporting
     nothing at all would pass the zero and fail the second half.
+
+    Killing mutation: a factor with no second-order path filled with ones where it takes zeros.
     """
     _, _, second = valued(fx_forward_cfg())
     assert entry(second, FX) == 0.0, (
@@ -348,6 +348,9 @@ def test_the_swap_curve_convexity_is_the_derivative_of_the_reported_delta(h, tol
     the difference's own cancellation.
 
     The WHOLE matrix is compared: the off-diagonal is where a mis-assembled upper triangle shows.
+
+    Killing mutation: the strict lower triangle kept before the mirror, double-counting the
+    diagonal blocks' sub-diagonal.
     """
     _, _, second = valued(swap_cfg())
     columns = []
@@ -374,14 +377,19 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
     the density-derivative term, so what comes back is a plausible gamma with a term missing. The
     message names the deals - a portfolio's author cannot otherwise tell which to take out - and
     points at bumping the adjoint under common random numbers. The CRISP estimator is declared
-    because it is the one that registers: the default integrates the decision instead.
+    because it is the one that registers: the default integrates the decision instead. The
+    refusal is the outer one whichever way `Recompute_Inner_MC` is set - the node is never asked.
+
+    Killing mutation: the base valuation's refusal over a registered boundary correction dropped.
     """
-    with pytest.raises(Exception) as raised:
-        valued(re_._cfg('barrier'), estimator='No')
-    message = str(raised.value)
-    assert 'BARR1' in message, f'the refusal does not name the deal: {message}'
-    assert 'density-derivative' in message and 'common random numbers' in message, (
-        f'the refusal does not say why, or what to do instead: {message}')
+    for recompute in ('No', 'Yes'):
+        with pytest.raises(Exception) as raised:
+            run_baseval(re_._cfg('barrier'), prec=DTYPE, overrides={
+                'Greeks': 'All', 'Random_Seed': 1, 'MCMC_Simulations': 1,
+                'Branch_And_Weight': 'No', 'Recompute_Inner_MC': recompute})
+        message = str(raised.value)
+        assert "Greeks: 'All' is refused" in message and 'BARR1' in message, message
+        assert 'density-derivative' in message and 'common random numbers' in message, message
 
     # the same portfolio is fine at first order, so the refusal is about the SECOND derivative and
     # not about the deal being unpriceable
@@ -397,6 +405,8 @@ def test_hedge_monte_carlo_refuses_the_second_order_block():
     ASKED THE WAY A JOB ASKS IT: the key rides in the file's `Calculation` block, which
     `run_hedgemontecarlo` folds into its parameters, so the finding is that the STORE can carry
     `'All'` to a calculation that cannot honour it. Set in memory; the template file is untouched.
+
+    Killing mutation: the HedgeMonteCarlo refusal of `Greeks: 'All'` dropped.
     """
     import derivus as dv
     context = dv.Context()
@@ -433,6 +443,8 @@ def test_a_monte_carlo_gamma_is_the_derivative_of_its_own_reported_delta(fixture
     THE FIXTURE RUNS AT `test_recompute_equity_pricers`' OWN 4096 PATHS, which is a requirement: a
     count nothing else uses caches a shape nothing else has, after which that file's last-bit gates
     move.
+
+    Killing mutation: the mirror adding the diagonal a second time (`triu(k=1)` -> `triu(k=0)`).
     """
     build, simulations, ladder = MONTE_CARLO_LADDER[fixture]
     try:

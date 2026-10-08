@@ -120,7 +120,10 @@ def mtm(price_factors):
 
 
 def test_a_skew_surface_under_sticky_strike_prices_a_monitoring_strip():
-    """The row this file exists for: the barrier prices, and prices to its measured mark."""
+    """The row this file exists for: the barrier prices, and prices to its measured mark.
+
+    Killing mutation: the strip's moneyness left unbroadcast onto its fixing axis.
+    """
     assert mtm(factors('Sticky_Strike', curve(SPOT))) == pytest.approx(10.088311, rel=1e-6)
 
 
@@ -129,15 +132,15 @@ def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forwa
     documents read the same vol at every fixing and mark to the BIT. This is what places the
     broadcast coordinate on the surface: a strip read at the wrong tenor, or at the spot where it
     wants the forward, breaks this identity while still producing a number.
+
+    THE CONTROL: with no slope and no wings every coordinate reads `ATM_Vol`, so the reference
+    cannot matter and all three spellings agree - the difference between that and the identity
+    above is what sizes the convention.
+
+    Killing mutation: `Sticky_Moneyness` read against the spot where it wants the forward.
     """
     assert mtm(factors('Sticky_Strike', FORWARD_REF)) == mtm(
         factors('Sticky_Moneyness', curve(SPOT)))
-
-
-def test_without_a_smile_the_rule_cannot_be_read_differently():
-    """No slope and no wings: every coordinate reads `ATM_Vol`, so the reference cannot matter.
-    It is the difference between THIS and the identity above that sizes the convention.
-    """
     flat = mtm(factors('Sticky_Strike', curve(SPOT), smile=False))
     assert flat == mtm(factors('Sticky_Moneyness', curve(SPOT), smile=False))
     assert flat == mtm(factors('Sticky_Strike', FORWARD_REF, smile=False))
@@ -162,7 +165,7 @@ def test_a_skew_fx_surface_mints_its_parameters_and_prices_at_its_own_read():
     it at its strike - `0.15 + 0.5 log(1.30 / 1.25)` under `Sticky_Strike` about an `ATM_Ref` of
     1.25 - and prices to the bit as on an explicit grid flat at that vol; an accumulator prices.
 
-    KILLING MUTATION: the FX getter answering the bare surface name for a parametric surface.
+    Killing mutation: the vol getter answering the bare surface name for a parametric surface.
     """
     import test_declared_defaults as book
     deals = [book.fx_leg('FXOptionDeal', kind, Expiry_Date=book.WORLD_EXPIRY, Strike_Price=1.30,
@@ -181,7 +184,8 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
     fixing; on a Malz smile, 10% at the money and 30% from |x| = 0.5, the double Asian reads
     `0.1 + 0.4 log(F / S)`, the 2% carry - each within an ulp of the deal on a grid flat there.
 
-    KILLING MUTATION: either read back to its own ratio, which lands on the Malz wing's 30%.
+    Killing mutation: the double Asian's read back to its own ratio, which lands on the Malz
+    wing's 30%.
     """
     import test_declared_defaults as book
     import trial_fx
@@ -202,6 +206,8 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
 def test_the_strip_is_read_the_same_way_at_every_reporting_row():
     """A profile asks for the strip once per reporting date, where a valuation asks once. The
     second shape is the one that came back with a row per date and was reshaped to one number.
+
+    Killing mutation: the strip's moneyness left unbroadcast onto its fixing axis.
     """
     profile = run(factors('Sticky_Strike', curve(SPOT)), CMC)
     assert len(profile) > 1 and np.isfinite(profile.values).all()
