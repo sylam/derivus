@@ -31,7 +31,9 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 
 - `mtm` — theoretical prices per scenario per time point
 - `exposure_profile` — percentiles of the mtm calculation (EE and PFE)
-- `scenarios` — the simulated factor paths themselves (`Calc_Scenarios`), one table per factor
+- `scenarios` — the simulated factor paths themselves (`Calc_Scenarios`), one table per factor;
+  under `At_Percentile` each factor along the path nearest each `Percentile` of the profile at
+  every report date, with that path's `mtm` beside them
 - `cashflows` — simulated cashflow ledgers per currency (`Generate_Cashflows`)
 - `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities
 - `fva` / `grad_fva` — the funding valuation adjustment and its sensitivities

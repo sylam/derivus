@@ -60,13 +60,17 @@ def job(base, fx_model=False):
                      'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
 
 
-def run(doc, tmp_path, name):
+def priced(doc, tmp_path, name):
     path = os.path.join(str(tmp_path), name + '.json')
     with open(path, 'w') as f:
         f.write(json.dumps(doc, cls=CustomJsonEncoder))
     cx = derivus.Context()
     cx.load_json(path)
-    _, out = cx.run_job()
+    return (cx,) + cx.run_job()
+
+
+def run(doc, tmp_path, name):
+    cx, _, out = priced(doc, tmp_path, name)
     profile = out['Results']['mtm'].values
     logging.debug('%s: profile %s, spread across scenarios per row %s', name, profile.shape,
                   [round(float(x), 4) for x in profile.std(axis=1)])
@@ -207,3 +211,52 @@ def test_a_deal_settled_before_the_base_date_is_skipped_by_name_under_a_scenario
     records = [r for r in caplog.records if 'SETTLED' in r.getMessage()]
     assert records and all(r.levelno == logging.WARNING and 'expired' in r.getMessage() for r in records), [
         (r.levelname, r.getMessage()[:80]) for r in records]
+
+
+def test_at_percentile_reports_each_factor_and_the_mtm_along_the_path_nearest_the_percentile(tmp_path, caplog):
+    """`Calc_Scenarios: At_Percentile` is for backtesting: at every REPORT date, the path whose mtm
+    sits nearest each `Percentile` of the profile, its factors and its mtm. Every report date is
+    therefore simulated - the switch turns `Dynamic_Scenario_Dates` on, named at INFO, the swap's
+    reset days joining a five-month grid - and each factor is read at the report date's own scenario
+    row: under a collateralised set with a liquidation period the grid carries each date's
+    liquidation day too, which reports nothing, so the report rows are a strict subset of the
+    scenario rows. Read against the same seed's `All` run: the mtm frames are one, and at each date
+    and percentile the reported curve is the `All` run's at the chosen path, whose mtm no other
+    path's is nearer the percentile than.
+
+    Killing mutations: the switch not forced (the grids part, the draws with them); a row read by
+    its position rather than at its date, the old reading, which the liquidation days expose.
+    """
+    csa = {'.CreditSupportList': [[0.0, 0.0]]}
+    netting = {'Object': 'NettingCollateralSet', 'Reference': 'NS1', 'Netted': 'True', 'Collateralized': 'True',
+               'Agreement_Currency': 'USD', 'Funding_Rate': 'USD', 'Balance_Currency': 'USD',
+               'Liquidation_Period': 10.0, 'Settlement_Period': 0.0,
+               'Credit_Support_Amounts': {name: csa for name in (
+                   'Received_Threshold', 'Posted_Threshold', 'Independent_Amount', 'Minimum_Received', 'Minimum_Posted')}}
+    docs = [job('USD') for _ in range(2)]
+    for doc, scenarios in zip(docs, ('At_Percentile', 'All')):
+        deals = doc['Calc']['Deals']['Deals']
+        deals['Children'] = [{'Instrument': {'.Deal': netting}, 'Children': deals['Children']}]
+        doc['Calc']['Calculation'].update(Time_grid='0d 2y(5m)', Percentile='5, 95', Calc_Scenarios=scenarios,
+                                          Dynamic_Scenario_Dates='No' if scenarios == 'At_Percentile' else 'Yes')
+    with caplog.at_level(logging.INFO):
+        _, calc, out = priced(docs[0], tmp_path, 'at_percentile')
+    _, _, every = priced(docs[1], tmp_path, 'all_paths')
+    grid = calc.time_grid
+    assert sorted(grid.scenario_dates) == sorted(grid.mtm_dates) and set(grid.scenario_dates) > set(grid.base_MTM_dates)
+    assert len(grid.report_index) < len(grid.mtm_dates)
+    assert any(r.levelno == logging.INFO and 'Dynamic_Scenario_Dates is Yes' in r.getMessage() for r in caplog.records)
+    mtm, scen, whole = out['Results']['mtm'], out['Results']['scenarios'], every['Results']['scenarios']
+    assert np.array_equal(mtm.values, every['Results']['mtm'].values)
+    assert set(scen) == {'mtm', 'InterestRate.USD'} and all(f.columns.equals(mtm.index) for f in scen.values())
+    chosen = {}
+    for q in ('5', '95'):
+        level = np.percentile(mtm.values, float(q), axis=1)[:, np.newaxis]
+        chosen[q] = path = np.argmin(np.abs(mtm.values - level), axis=1)
+        picked = mtm.values[np.arange(len(mtm)), path]
+        assert np.array_equal(scen['mtm'].loc[(0.0, q)].values, picked)
+        assert (np.abs(picked[:, np.newaxis] - level) <= np.abs(mtm.values - level)).all()
+        curve = scen['InterestRate.USD'].xs(q, level='scenario')
+        for i, date in enumerate(mtm.index):
+            assert np.array_equal(curve[date].values, whole['InterestRate.USD'].xs(path[i], level='scenario')[date].values)
+    assert (chosen['5'] != chosen['95']).any()

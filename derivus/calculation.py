@@ -923,10 +923,12 @@ class Credit_Monte_Carlo(Calculation):
         '**Batch Size**. Note that **Batch Size** is usually a power of 2.',
         ' - **Antithetic** - Use antithethic variables - we run twice the number of simulations using the negative of ',
         '  the random sample for the second run',
-        ' - **Calc Scenarios** - return the simulated price factors used in the calculation ',
+        ' - **Calc Scenarios** - return the simulated price factors: every path, or under **At_Percentile** each ',
+        'factor and the netting set\'s mtm along the path nearest each **Percentile** of the profile at every report ',
+        'date, for backtesting',
         ' - **Dynamic Scenario Dates** - Generate scenarios not just on the **Time Grid**, but also on all potential '
         'cashflow settlement dates. Needed to accurately calculate liquidity and settlement dynamics on collateralized ',
-        'portfolios.',
+        'portfolios; **At_Percentile** turns it on, every report date being a scenario date',
         ' - **Generate Cashflows** - returns the simulated cashflows during the simulation period'
     ])
 
@@ -945,8 +947,13 @@ class Credit_Monte_Carlo(Calculation):
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
-        F('Calc_Scenarios', 'Text', default='No', values=['At_Percentile', 'All', 'No']),
-        F('Dynamic_Scenario_Dates', 'Text', default='Yes', values=['Yes', 'No']),
+        F('Calc_Scenarios', 'Text', default='No', values=['At_Percentile', 'All', 'No'],
+          description='Report the simulated factors on every path, or each factor and the netting '
+                      "set's mtm along the path nearest each Percentile of the profile at every "
+                      'report date'),
+        F('Dynamic_Scenario_Dates', 'Text', default='Yes', values=['Yes', 'No'],
+          description='Simulate on every reset and settlement date beside the Time_Grid; Yes under '
+                      'Calc_Scenarios At_Percentile'),
         F('Generate_Cashflows', 'Text', default='Yes', values=['Yes', 'No']),
         F('Keep_Tensor', 'Text', default='No', values=['Yes', 'No'],
           description='Keep the simulated mtm tensor on the device after the run'),
@@ -1041,8 +1048,13 @@ class Credit_Monte_Carlo(Calculation):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
             self.config.calculate_dependencies(params, base_date, self.input_time_grid)
 
+        # a percentile's path is picked off the profile at every report date, so its state is wanted
+        # on every one of them: the scenario grid is the mtm grid
+        percentile = params['Calc_Scenarios'] == 'At_Percentile'
+        if percentile and params['Dynamic_Scenario_Dates'] != 'Yes':
+            logging.info('Calc_Scenarios At_Percentile simulates every report date: Dynamic_Scenario_Dates is Yes')
         self.update_time_grid(base_date, reset_dates, settlement_currencies,
-                              dynamic_scenario_dates=params['Dynamic_Scenario_Dates'] == 'Yes')
+                              dynamic_scenario_dates=percentile or params['Dynamic_Scenario_Dates'] == 'Yes')
 
         shared_mem = self._build_factor_state(
             dependent_factors, stochastic_factors, implied_factors, params, base_date, job_id, num_jobs)
@@ -1377,49 +1389,32 @@ class Credit_Monte_Carlo(Calculation):
                                               for x in self.unpriced))))
         for result, data in output.items():
             if result == 'scenarios':
-                scen = {}
-                scenario_date_index = pd.DatetimeIndex(sorted(self.time_grid.scenario_dates))
-                if self.params['Calc_Scenarios'] == 'At_Percentile':
-                    dates = np.array(sorted(self.time_grid.mtm_dates))[self.time_grid.report_index]
-                    mtms = pd.DataFrame(np.concatenate(output['mtm'], axis=-1).astype(np.float64), index=dates)
-                    percentiles = self.params.get('Percentile', '95').replace(' ', '').split(',')
-                    profiles = {x: np.percentile(mtms.values, float(x), axis=1) for x in percentiles}
-                    index = {x: np.argmin(np.abs(mtms.values - profiles[x][:, np.newaxis]), axis=1) for x in percentiles}
+                def frame(values, index, scenarios, key=None):
+                    # rows by (tenor, scenario) over dates; a spot or an mtm has the one tenor
+                    tenors = self.all_tenors[key][0].tenor if values.ndim == 3 else [0.0]
+                    columns = pd.MultiIndex.from_product([tenors, scenarios], names=['tenor', 'scenario'])
+                    return pd.DataFrame(values.reshape(len(index), -1), index=index, columns=columns).T
 
-                    for factor_key, factor_values in data.items():
-                        factor_name = utils.check_tuple_name(factor_key)
-                        values = np.concatenate(factor_values, axis=-1)  # Shape: (num_rows, num_scenarios)
-                        value_len = values.shape[0]
-                        if len(values.shape) == 2:
-                            columns = pd.MultiIndex.from_product(
-                                [[0.0], percentiles], names=['tenor', 'scenario'])
-                            vals = np.dstack([values[np.arange(value_len), i[:value_len]] for i in index.values()])
-                            scen[factor_name] = pd.DataFrame(
-                                vals.reshape(value_len, -1), index=scenario_date_index[:value_len], columns=columns).T
-                        else:
-                            tenors = self.all_tenors[factor_key][0].tenor
-                            columns = pd.MultiIndex.from_product(
-                                [tenors, percentiles], names=['tenor', 'scenario'])
-                            vals = np.dstack([values[np.arange(value_len), :, i[:value_len]] for i in index.values()])
-                            scen[factor_name] = pd.DataFrame(
-                                vals.reshape(value_len, -1),
-                                index=scenario_date_index[:value_len], columns=columns).T
+                scen = {}
+                scenario_dates = pd.DatetimeIndex(sorted(self.time_grid.scenario_dates))
+                if self.params['Calc_Scenarios'] == 'At_Percentile':
+                    # the scenario grid is the mtm grid under this switch, so a report row is its
+                    # scenario row; per report date, the path whose mtm sits nearest each percentile
+                    rows = self.time_grid.report_index
+                    mtms = np.concatenate(output['mtm'], axis=-1).astype(np.float64)
+                    percentiles = self.params['Percentile'].replace(' ', '').split(',')
+                    paths = [np.argmin(np.abs(mtms - np.percentile(mtms, float(x), axis=1)[:, np.newaxis]), axis=1)
+                             for x in percentiles]
+                    along = lambda values, at: np.stack([values[at, ..., path] for path in paths], axis=-1)
+                    scen['mtm'] = frame(along(mtms, np.arange(len(rows))), scenario_dates[rows], percentiles)
+                    for key, batches in data.items():
+                        scen[utils.check_tuple_name(key)] = frame(
+                            along(np.concatenate(batches, axis=-1), rows), scenario_dates[rows], percentiles, key)
                 else:
-                    for k, v in data.items():
-                        factor_name = utils.check_tuple_name(k)
-                        values = np.concatenate(v, axis=-1)
-                        if len(values.shape) == 2:
-                            columns = pd.MultiIndex.from_product(
-                                [[0.0], np.arange(values.shape[-1])], names=['tenor', 'scenario'])
-                            scen[factor_name] = pd.DataFrame(
-                                values, index=scenario_date_index[:values.shape[0]], columns=columns).T
-                        else:
-                            tenors = self.all_tenors[k][0].tenor
-                            columns = pd.MultiIndex.from_product(
-                                [tenors, np.arange(values.shape[-1])], names=['tenor', 'scenario'])
-                            scen[factor_name] = pd.DataFrame(
-                                values.reshape(values.shape[0], -1),
-                                index=scenario_date_index[:values.shape[0]], columns=columns).T
+                    for key, batches in data.items():
+                        values = np.concatenate(batches, axis=-1)
+                        scen[utils.check_tuple_name(key)] = frame(
+                            values, scenario_dates[:values.shape[0]], np.arange(values.shape[-1]), key)
                 self.output.setdefault('scenarios', scen)
             elif result == 'cashflows':
                 self.output.setdefault('cashflows', {k: pd.concat(v, axis=1) for k, v in data.items()})

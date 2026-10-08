@@ -523,7 +523,7 @@ def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_divi
     - an ended leg awaiting payment is its realised move Units (S1 - S0) D(pay), 19,991.23: the
       model's dividends reach no interval already ended.
 
-    Killing mutations: the payoff currency read raw; the FX slot left None; the refusal dropped;
+    Killing mutations: the payoff currency read raw; the FX slot left None; the unpriced leg priced rather than kept at zero under `No`;
     either dividend site dropped; the dividend carried at the discount rate, 75.19 short; the ended
     interval read reversed, 53.12 short.
     """
@@ -553,10 +553,8 @@ def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_divi
                                                                     rel=1e-12)
     assert value['ENDED'] == pytest.approx(1e4 * (99.0 - 97.0) * math.exp(-0.04 * paid), rel=1e-12)
     assert marks([leg, unpriced])[1].get('Deals Skipped') == 1
-    with pytest.raises(utils.UnpriceableSchedule, match=(
-            r"EquitySwapLeg UNPRICED \('Equity_Known_Prices states no price on or before the "
-            r"Effective_Date \d{4}-\d\d-\d\d, before the base date',\)")):
-        marks([leg, unpriced], system={'Exclude_Deals_With_Missing_Market_Data': 'No'})
+    kept, stats = marks([leg, unpriced], system={'Exclude_Deals_With_Missing_Market_Data': 'No'})
+    assert stats.get('Deals Skipped') == 1 and float.fromhex(kept['UNPRICED']) == 0.0 and kept['EQL'] == valued['EQL']
 
 
 def test_an_omitted_floating_margin_completes_to_the_basis_its_reader_takes():
