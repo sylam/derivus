@@ -1788,25 +1788,12 @@ class TimeGrid(object):
         return new_grid
 
     def calc_deal_grid(self, dates):
-        try:
-            dynamic_dates = self.base_time_grid.union([self.date_lookup[x] for x in dates])
-        except KeyError as e:
-            # if there is at least one reset date in the set of dates, then return it, else the deal has expired
-            r = [self.date_lookup.get(x, max(self.date_lookup.values())) for x in dates]
-            if r:
-                dynamic_dates = self.base_time_grid.union(r)
-            else:
-                if max(dates) < min(self.date_lookup.keys()):
-                    raise InstrumentExpired(e)
-
-                # include this instrument but don't bother pricing it through time
-                return DealTimeDependencies(self.mtm_time_grid, np.array([0]))
-
-        # now construct the full deal grid
+        """The deal's grid: the base points and its own dates, a date past the grid read as the
+        grid's last, cut at the deal's last date."""
+        last = max(self.date_lookup.values())
+        dynamic_dates = self.base_time_grid.union(self.date_lookup.get(x, last) for x in dates)
+        expiry = self.date_lookup.get(max(dates), last)
         deal_time_grid = np.array(sorted(dynamic_dates))
-        # find the last dynamic date - should be the expiry date or the end of the grid
-        expiry = self.date_lookup.get(max(dates), max(self.date_lookup.values()))
-        # calculate the interpolation points etc.
         return DealTimeDependencies(self.mtm_time_grid, deal_time_grid[deal_time_grid <= expiry])
 
 

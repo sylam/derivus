@@ -183,3 +183,27 @@ def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
     assert root.index.isin(netted.index).all() and len(netted) > len(root)
     assert root.index[-1] == book.WORLD_EXPIRY + pd.DateOffset(years=5)
     assert np.array_equal(root.values, netted.loc[root.index].values)
+
+
+def test_a_deal_settled_before_the_base_date_is_skipped_by_name_under_a_scenario_grid(tmp_path, caplog):
+    """A forward whose settlement date is behind the base date has expired, and a credit Monte Carlo
+    skips it by name as a base valuation does: the profile is the book without it to the bit and
+    the log carries the expiry, never a pricing failure. Before the fix the scenario grid priced
+    it at a negative maturity - an index past the curve's rows, which on the card is a device
+    assertion that takes the whole run down.
+
+    Killing mutation: the expiry rule read on the single-date grid alone.
+    """
+    doc = job('EUR')
+    settled = {'Object': 'FXForwardDeal', 'Reference': 'SETTLED', 'Buy_Currency': 'USD',
+               'Buy_Amount': 1_000_000.0, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'EUR',
+               'Sell_Amount': 900_000.0, 'Sell_Discount_Rate': 'EUR',
+               'Settlement_Date': pd.Timestamp(BASE) - pd.DateOffset(days=7)}
+    doc['Calc']['Deals']['Deals']['Children'].append({'Instrument': {'.Deal': settled}})
+    with caplog.at_level(logging.WARNING):
+        _, with_settled = run(doc, tmp_path, 'eur_base_settled')
+    _, alone = run(job('EUR'), tmp_path, 'eur_base_alone')
+    assert np.array_equal(with_settled, alone)
+    records = [r for r in caplog.records if 'SETTLED' in r.getMessage()]
+    assert records and all(r.levelno == logging.WARNING and 'expired' in r.getMessage() for r in records), [
+        (r.levelname, r.getMessage()[:80]) for r in records]

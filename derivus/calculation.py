@@ -72,20 +72,15 @@ class DealStructure(object):
 
     @staticmethod
     def calc_time_dependency(base_date, deal, time_grid):
-        """Return the deal's time dependency on `time_grid`, or None if it has expired."""
-        deal_time_dep = None
-        try:
-            reval_dates = deal.get_reval_dates(clip_expiry=True)
-            if len(time_grid.scenario_dates) == 1:
-                if len(reval_dates) > 0 and max(reval_dates) < base_date:
-                    raise utils.InstrumentExpired(deal.field.get('Reference', 'Unknown Instrument Reference'))
-                deal_time_dep = time_grid.calc_deal_grid({base_date})
-            else:
-                deal_time_dep = time_grid.calc_deal_grid(reval_dates)
-        except utils.InstrumentExpired as e:
-            logging.warning('skipping expired deal {0}'.format(e.args))
-
-        return deal_time_dep
+        """The deal's time dependency on `time_grid`, or None where its last date is behind the
+        base date - expired under a scenario grid exactly as under a single date."""
+        reval_dates = deal.get_reval_dates(clip_expiry=True)
+        if reval_dates and max(reval_dates) < base_date:
+            logging.warning('skipping expired deal {0}'.format(
+                deal.field.get('Reference', 'Unknown Instrument Reference')))
+            return None
+        return time_grid.calc_deal_grid(
+            {base_date} if len(time_grid.scenario_dates) == 1 else reval_dates)
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
                               all_factors, all_tenors, time_grid, calendars, stats, unit,
