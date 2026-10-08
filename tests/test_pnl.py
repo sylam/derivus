@@ -753,9 +753,10 @@ def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk
     """A READING NEVER 500s. A digital marked with its book whose surface then leaves the market:
     the live window's own valuation cannot price it. With `Exclude_Deals_With_Missing_Market_Data`
     left out or `Yes` the P&L answers with the digital named under `unknown`, no mark at the end;
-    `No` refuses that valuation, and the read answers 422 in the engine's own sentence, naming it.
+    under `No` the valuation keeps it at zero, so the window reads a mark of nothing and names
+    nothing unknown.
 
-    Killing mutation: the refusal left unmapped, which is a 500 on the live P&L.
+    Killing mutation: the switch read by nothing, which names the digital under `No` too.
     """
     body = json.loads(desk.read_text())
     if switch is not None:
@@ -772,13 +773,9 @@ def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk
 
     answer = CLIENT.get('/book/pnl', params={'start': START.strftime('%Y-%m-%d')})
     digital = instrument_of('EQ-BIN')
-    if switch == 'No':
-        assert answer.status_code == 422, answer.text
-        assert 'is No' in answer.json()['detail'] and digital in answer.json()['detail'], answer.text
-    else:
-        assert answer.status_code == 200, answer.text
-        assert answer.json()['unknown'] == [
-            {'instrument': digital, 'what': 'no mark at the end - the run could not price it'}]
+    assert answer.status_code == 200, answer.text
+    assert answer.json()['unknown'] == ([] if switch == 'No' else [
+        {'instrument': digital, 'what': 'no mark at the end - the run could not price it'}])
 
 
 def structure(reference, legs):

@@ -430,7 +430,7 @@ def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
     assert all(np.array_equal(empty, zero) for empty, zero in zip(*runs))
 
 
-def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it():
+def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
     """`Amount` weighs an asset in the collateral the balance is counted in, and with one asset the
     weight cancels - the balance is held in units of it - so a sole cash row stating none, as the
     paper of an agreement states none, is one unit: the collateralised run marks and holds bit for
@@ -442,10 +442,8 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it():
     KILLING MUTATIONS: the amount read as stated, a row without one failing the set's compile; a
     row among several read as a unit; a row beside a bond or an equity read as a unit.
     """
-    def run(assets, switch='Yes'):
+    def run(assets):
         job = engine_job(dict(TERMS, Collateral_Assets=assets))
-        job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
-            'Exclude_Deals_With_Missing_Market_Data'] = switch
         context = derivus.Context()
         context.load_json((json.dumps(job), 'cash amount'))
         return derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]
@@ -465,9 +463,10 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it():
     for assets in ({'Cash_Collateral': [dict(cash, Amount=1.0), dict(cash, Currency='EUR')]},
                    {'Cash_Collateral': [cash], 'Bond_Collateral': [bond]},
                    {'Cash_Collateral': [cash], 'Equity_Collateral': [equity]}):
-        with pytest.raises(utils.UnpriceableSchedule, match='CSA-1: a Cash_Collateral row states '
-                                                            'no Amount, its weight among several'):
-            run(assets, 'No')
+        caplog.clear()
+        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
+            run(assets)
+        assert 'CSA-1: a Cash_Collateral row states no Amount, its weight among several' in caplog.text
 
 
 def test_a_batch_s_cashflows_are_saved_as_one_frame_of_its_rows():

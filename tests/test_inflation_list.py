@@ -228,9 +228,9 @@ def test_a_constant_index_prices_only_where_its_curves_read_forward(caplog):
     there grown along the curve's t0 forward from the row, by hand off the publication calendar, on
     a grid opening on the base date and on one opening a month later; beside the trial's flat curve
     under a Hull-White at zero vol it prices the same way. Under the default `Constant`, beside a
-    fixed list, it is skipped by name and counted, the modelled curve or not, and refused by name
-    under `Exclude_Deals_With_Missing_Market_Data: No`; alone, the run valued nothing and says so,
-    naming it and why.
+    fixed list, it is skipped by name and counted, the modelled curve or not and under
+    `Exclude_Deals_With_Missing_Market_Data: No` too, the switch being the compile's; alone, the run
+    valued nothing and says so, naming it and why.
 
     The profile is NOT the base valuation rolled forward: the growth from the base date to a row is
     never realised on a constant print - on the trial linker two years on, 4.69% under it.
@@ -260,8 +260,7 @@ def test_a_constant_index_prices_only_where_its_curves_read_forward(caplog):
         assert 'Deal LINKER skipped' in caplog.text and 'NoModel is Constant' in caplog.text
     pair['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
         'Exclude_Deals_With_Missing_Market_Data'] = 'No'
-    with pytest.raises(utils.UnpriceableSchedule, match='Deal LINKER could not be priced'):
-        still(pair, None)
+    assert still(pair, None)['Stats']['Deals Skipped'] == 1
     with pytest.raises(utils.UnpriceableSchedule, match=r'Nothing in the book was valued \(1 Deals '
                                                         r'Skipped\).*LINKER - the price index of INFL'):
         still(copy.deepcopy(job), None)

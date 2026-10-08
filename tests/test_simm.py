@@ -331,21 +331,20 @@ def test_a_curve_riding_its_calibration_is_refused_by_name():
 def test_a_worker_that_raises_surfaces_in_the_parent():
     """A sharded run raises what its serial run raises, within a bound and never hanging: a worker's
     error crosses the queue as its answer and the parent re-raises it, the other worker stopped.
-    The error is the engine's own - a spot moved to nothing values the option at NaN, which a book
-    excluding no deal refuses by name.
+    The error is the margin's own - a spot moved to nothing values the option at NaN, off which it
+    refuses by name to read a sensitivity.
 
     Killing mutation: the worker's error not put on the queue - the parent names a worker dead
     without answering, never the error the worker raised.
     """
     broken = {'Spot_Shift': -100.0}
-    strict = {'Exclude_Deals_With_Missing_Market_Data': 'No'}
-    with pytest.raises(utils.UnpriceableSchedule) as alone:
-        world(broken, system=strict).run_job()
+    with pytest.raises(ValueError, match='values the trade to nan') as alone:
+        world(broken).run_job()
     found = {}
 
     def sharded():
         try:
-            world(dict(broken, Workers=2), system=strict).run_job()
+            world(dict(broken, Workers=2)).run_job()
         except Exception as error:
             found['error'] = error
 

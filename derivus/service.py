@@ -2094,9 +2094,9 @@ def unreadable_record(request, refusal):
 
 @app.exception_handler(utils.UnpriceableSchedule)
 def refused_document(request, refusal):
-    """A valuation run on the request thread that the engine refuses BY NAME - the live P&L's, on a
-    book saying `Exclude_Deals_With_Missing_Market_Data: No` over a deal it cannot price - answers
-    the engine's own sentence as a 422, the document being what needs fixing, never a 500."""
+    """A valuation run on the request thread that the engine refuses BY NAME - a schedule it will
+    not read - answers the engine's own sentence as a 422, the document being what needs fixing,
+    never a 500."""
     return JSONResponse(status_code=422, content={'detail': str(refusal)})
 
 

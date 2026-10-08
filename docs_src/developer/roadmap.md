@@ -160,8 +160,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   feeds re-solved, revalue - and each worker repeats the solves its trades need, so four workers
   give 1.3x over one on a 19-trade set (431 s against 576 s); solving the moves once in a first
   round is estimated at 2.5x. The dependency walk hands each trade its FX chains too, so 1,924
-  repricings write 274 rows. A move that values a trade to NaN writes a NaN row unless
-  `Exclude_Deals_With_Missing_Market_Data` is No. M.
+  repricings write 274 rows. M.
 - **A vega vertex on a skew surface moves its base** (2026-10-07). A vertex bump is a one-point
   tent at the vertex's expiry, so a surface gains a pillar at each vertex it lacks, read off its
   own interpolation; Explicit and Malz surfaces then price the same to the bit, but the engine

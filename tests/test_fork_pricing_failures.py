@@ -178,9 +178,9 @@ def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
     contract, but on a hedge book a skipped tradable shrinks the solver's menu and a skipped
     liability halves the target, so the solve reports a confident answer to a different problem.
     Measured before the guard: an APS leg whose basis law could not state its projection dropped n*
-    from -44.8 to -22.1 with nothing but an ERROR log. Both roles raise, naming the leg - under a
-    document skipping such a deal, by the hedge's own check, and under the fixture's own
-    `Exclude_Deals_With_Missing_Market_Data: No`, by the document's refusal first."""
+    from -44.8 to -22.1 with nothing but an ERROR log. Both roles raise, naming the leg, under a
+    document dropping such a deal and under the fixture's own `No`, which keeps it at zero - a leg
+    kept at zero is a leg that did not compile."""
     for role, block, patch in (
             ('liability', 'Liabilities', {'Currency': 'XXX'}),
             ('tradable', 'Tradable_Instruments', {'Sampling_Type': 'NOPE', 'Currency': 'XXX'})):
@@ -191,10 +191,9 @@ def test_a_hedge_book_leg_that_fails_to_compile_kills_the_run():
                             ['FloatingEnergyDeal']['PLAT_JUL29'])
         leg.update(patch)
         src['BROKEN_LEG'] = leg
-        with pytest.raises(utils.UnpriceableSchedule, match='is No.*BROKEN_LEG'):
-            _run(copy.deepcopy(cfg), f'broken_{role}_refused')
-        with pytest.raises(Exception, match=f'{role} legs failed to compile.*BROKEN_LEG'):
-            _run(_skipping(cfg), f'broken_{role}')
+        for document in (copy.deepcopy(cfg), _skipping(cfg)):
+            with pytest.raises(Exception, match=f'{role} legs failed to compile.*BROKEN_LEG'):
+                _run(document, f'broken_{role}')
 
 
 def test_an_averaging_tradable_is_priced_not_retired():
@@ -491,7 +490,7 @@ def test_the_named_refusal_is_fatal_at_the_compile_guard_too():
 
 
 # --------------------------------------------------------------------------------------------
-# The document's own switch: a deal that cannot be read or priced skips, or refuses the run
+# The document's own switch: a deal the compile cannot read is dropped, or kept at zero
 # --------------------------------------------------------------------------------------------
 GOOD = book.fx_leg('FXOptionDeal', 'FXO', Expiry_Date=book.WORLD_EXPIRY)
 NO_STRIKE = {key: value for key, value in book.fx_leg(
@@ -514,71 +513,62 @@ def _switched(switch, deals):
     return result['Stats'], dict(zip(table['Reference'], table['Value']))
 
 
-def test_a_document_saying_no_refuses_every_deal_its_compile_could_not_read():
+def test_a_document_saying_no_keeps_every_deal_its_compile_could_not_read_at_zero():
     """An FX option beside one missing its strike and one on a surface the market lacks. Under
-    `Yes`, and with the switch left out, the two are skipped and counted and the option marks as it
-    marks alone; under `No` the run refuses naming both in the engine's own sentence, the one held
-    inside a structure included, the whole tree read before the refusal.
+    `Yes`, and with the switch left out, the two are dropped and counted and the option marks as it
+    marks alone; under `No` the run completes with both kept and marked at zero, the one held
+    inside a structure included, the option marking exactly as before.
 
-    Killing mutations: the switch read by nothing, so the `No` document completes with two deals
-    skipped; the refusal raised at the first such deal, naming one; the refusals not handed down a
-    structure, so the nested deal is refused alone.
+    Killing mutations: the switch read by nothing, so the `No` run drops the two and reports no
+    row for them; the switch not handed down a structure, so the nested one is dropped.
     """
     alone = _switched(None, [GOOD])[1]['FXO']
     for switch in (None, 'Yes'):
         stats, marks = _switched(switch, [GOOD, NO_STRIKE, NO_SURFACE])
         assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (1, 2), stats
-        assert marks['FXO'] == alone != 0.0
+        assert marks['FXO'] == alone != 0.0 and 'FXO_NO_STRIKE' not in marks
     held = {'Object': 'StructuredDeal', 'Reference': 'HELD', 'Currency': 'USD',
             'Children': [NO_SURFACE]}
     for deals in ([GOOD, NO_STRIKE, NO_SURFACE], [GOOD, NO_STRIKE, held]):
-        with pytest.raises(utils.UnpriceableSchedule) as refused:
-            _switched('No', deals)
-        assert "FXOptionDeal FXO_NO_STRIKE ('Strike_Price',)" in str(refused.value)
-        assert "FXOptionDeal FXO_NO_SURFACE ('Cannot find FXVol.EUR.JPY',)" in str(refused.value)
+        stats, marks = _switched('No', deals)
+        assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (1, 2), stats
+        assert marks['FXO'] == alone and marks['FXO_NO_STRIKE'] == marks['FXO_NO_SURFACE'] == 0.0, marks
 
 
-def test_a_document_saying_no_refuses_a_deal_its_pricer_could_not_value():
-    """A swaption stated by its terms alone compiles and refuses in its pricer, its legs being what
-    value it. Beside a priced option it is skipped under `Yes`, its row carrying no value, and
-    counted under `Deals Skipped` as the compile guard counts its own - once, though a credit Monte
-    Carlo prices it batch by batch, settled in cash or physically - while the option alone counts
-    nothing; under `No` the run refuses naming it in the engine's own sentence, simulated too.
+def test_a_deal_its_pricer_could_not_value_marks_nothing_under_either_switch():
+    """A swaption stated by its terms alone compiles and fails in its pricer, its legs being what
+    value it. Beside a priced option it is skipped under `Yes` and under `No` alike - the switch is
+    the compile's - its row carrying no value, counted under `Deals Skipped` once though a credit
+    Monte Carlo prices it batch by batch, settled in cash or physically; the option alone counts
+    nothing.
 
-    Killing mutations: the pricing guard reading no switch, which marks the swaption at nothing on a
-    `No` run that completes; its skip counted nowhere; counted per batch, twice over two; and the
-    physical one's dates reading legs it has none of, which stops the credit Monte Carlo unnamed.
+    Killing mutations: the skip counted nowhere; counted per batch, twice over two; the physical
+    one's dates reading legs it has none of, which stops the credit Monte Carlo unnamed.
     """
     terms = {key: value for key, value in next(
         deal for deal in book.BOOK if deal['Reference'] == 'SWPT').items() if key != 'Children'}
-    stats, marks = _switched('Yes', [GOOD, terms])
-    assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (2, 1), stats
-    assert math.isnan(marks['SWPT']) and marks['FXO'] != 0.0, marks
+    for switch in ('Yes', 'No'):
+        stats, marks = _switched(switch, [GOOD, terms])
+        assert (stats.get('Deals loaded'), stats.get('Deals Skipped')) == (2, 1), stats
+        assert math.isnan(marks['SWPT']) and marks['FXO'] != 0.0, marks
     assert 'Deals Skipped' not in _switched('Yes', [GOOD])[0]
     for style in ('Cash', 'Physical'):
         _, simulated = book.simulated([GOOD, dict(terms, Settlement_Style=style)], ('USD',),
                                       Simulation_Batches=2)
         assert simulated['Stats'].get('Deals Skipped') == 1, (style, simulated['Stats'])
-    refusal = r"Deal SWPT could not be priced - \('generate in SwaptionDeal - Not implemented yet',\)"
-    with pytest.raises(utils.UnpriceableSchedule, match=refusal):
-        _switched('No', [GOOD, terms])
-    with pytest.raises(utils.UnpriceableSchedule, match=refusal):
-        book.simulated([GOOD, terms], ('USD',),
-                       system={'Exclude_Deals_With_Missing_Market_Data': 'No'})
 
 
 def _structure_guards(container):
-    """`container` beside the option, valued and simulated under `Yes`: the option's mark, both
-    runs' `Structs Skipped`, and the refusal each run meets under `No`."""
-    stats, marks = _switched('Yes', [GOOD, container])
-    _, simulated = book.simulated([GOOD, container], ('USD',), Simulation_Batches=2)
-    refusals = []
-    for run in (lambda: _switched('No', [GOOD, container]), lambda: book.simulated(
-            [GOOD, container], ('USD',), system={'Exclude_Deals_With_Missing_Market_Data': 'No'})):
-        with pytest.raises(utils.UnpriceableSchedule) as refused:
-            run()
-        refusals.append(str(refused.value))
-    return marks['FXO'], (stats.get('Structs Skipped'), simulated['Stats'].get('Structs Skipped')), refusals
+    """`container` beside the option, valued and simulated under each switch: the option's mark
+    and both runs' `Structs Skipped`, per switch."""
+    out = {}
+    for switch in ('Yes', 'No'):
+        stats, marks = _switched(switch, [GOOD, container])
+        _, simulated = book.simulated([GOOD, container], ('USD',), Simulation_Batches=2, system={
+            'Exclude_Deals_With_Missing_Market_Data': switch})
+        out[switch] = (marks['FXO'], (stats.get('Structs Skipped'),
+                                      simulated['Stats'].get('Structs Skipped')))
+    return out
 
 
 #: a netting set whose one deal states a NaN amount, so its value holds NaN
@@ -586,31 +576,27 @@ NAN_SET = {'Object': 'NettingCollateralSet', 'Reference': 'NAN_SET', 'Netted': '
            'Collateralized': 'False', 'Children': [dict(GOOD, Reference='FXO_NAN', Underlying_Amount=math.nan)]}
 
 
-@pytest.mark.parametrize('container,refusal', [
-    ({'Object': 'StructuredDeal', 'Reference': 'HELD_JPY', 'Currency': 'JPY',
-      'Children': [dict(GOOD, Reference='FXO_HELD')]},
-     "StructuredDeal HELD_JPY ('Cannot find FxRate.JPY',)"),
-    (dict(next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT'), Children=[
+@pytest.mark.parametrize('container', [
+    {'Object': 'StructuredDeal', 'Reference': 'HELD_JPY', 'Currency': 'JPY',
+     'Children': [dict(GOOD, Reference='FXO_HELD')]},
+    dict(next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT'), Children=[
         leg for leg in next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')['Children']
         if leg['Object'] == 'CFFixedInterestListDeal']),
-     "Structure SwaptionDeal SWPT could not be priced - ('CFFloatingInterestListDeal',)"),
-    (NAN_SET, 'Structure NettingCollateralSet NAN_SET could not be priced - its value holds NaN'),
+    NAN_SET,
 ], ids=['compile', 'post_process', 'nan'])
-def test_a_document_saying_no_refuses_a_structure_it_could_not_value(container, refusal):
-    """The three structure guards read the switch as the deal guards do: a structure on a currency
-    the market lacks fails its compile, a swaption holding its fixed leg alone fails the
-    `post_process` pricing it, and a netting set whose value holds NaN is dropped. Under `Yes` each
-    is counted once under `Structs Skipped`, valued and over two simulated batches, the option
-    marking as it marks alone; under `No` both runs refuse naming the structure.
+def test_a_structure_the_run_could_not_value_is_counted_once_under_either_switch(container):
+    """The three structure guards: a structure on a currency the market lacks fails its compile, a
+    swaption holding its fixed leg alone fails the `post_process` pricing it, and a netting set
+    whose value holds NaN is dropped. Under `Yes` and under `No` each is counted once under
+    `Structs Skipped`, valued and over two simulated batches, the option marking as it marks alone.
 
-    Killing mutations: the compile guard handed no `refused`, the `post_process` guard or the NaN
-    drop reading no switch, so a `No` run completes; structures left unstamped; the count per batch.
+    Killing mutations: the `post_process` guard or the NaN drop refusing the run; the count per
+    batch.
     """
     alone = _switched(None, [GOOD])[1]['FXO']
-    mark, skipped, refusals = _structure_guards(container)
-    assert mark == alone != 0.0
-    assert skipped == (1, 1), skipped
-    assert all(refusal in message for message in refusals), refusals
+    for mark, skipped in _structure_guards(container).values():
+        assert mark == alone != 0.0
+        assert skipped == (1, 1), skipped
 
 
 def test_a_set_skipped_under_yes_is_left_out_of_what_the_run_reports():

@@ -1208,15 +1208,15 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
 
 
-def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_refuses(recorded, tmp_path):
-    """THE SWITCH IS THE VALUATION'S. `Exclude_Deals_With_Missing_Market_Data: No` refuses a run
-    that values a deal nobody can read; the diary READS the book, and its answer to such a deal is
-    the `unreadable` row a close waits on. So that book answers the diary and the close check
-    exactly as the same book saying `Yes` - the row filed, `legal: false` - while valuing it still
-    refuses, naming the deal.
+def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_deal(recorded, tmp_path):
+    """THE SWITCH IS THE VALUATION'S. `Exclude_Deals_With_Missing_Market_Data: No` keeps a deal
+    nobody can read in the valuation at zero; the diary READS the book, and its answer to such a
+    deal is the `unreadable` row a close waits on. So that book answers the diary and the close
+    check exactly as the same book saying `Yes` - the row filed, `legal: false` - while valuing it
+    marks the deal at zero and counts it.
 
-    Killing mutation: the diary's compile reading the switch, which answers the read 422 where it
-    filed the row.
+    Killing mutation: the diary's compile reading the switch, which files a zero row where it
+    filed the unreadable one.
     """
     answers = {}
     for seed, switch in ((2, 'Yes'), (3, 'No')):
@@ -1240,8 +1240,10 @@ def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_refuses(reco
 
     context = derivus.Context()
     context.load_json((path.read_text(), 'valued'))
-    with pytest.raises(utils.UnpriceableSchedule, match=r"is No.*FXOptionDeal NOVOL \('Cannot find"):
-        context.run_job()
+    _, valued = context.run_job()
+    table = valued['Results']['mtm']
+    assert valued['Stats'].get('Deals Skipped') == 1
+    assert dict(zip(table['Reference'], table['Value']))['NOVOL'] == 0.0
 
 
 def test_the_diary_never_runs_on_the_poll_path(unrecorded, tmp_path):

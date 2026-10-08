@@ -7,9 +7,10 @@ of the JSON, alongside `Price Factors`, `Price Models`, etc.
   (usually `USD`). Any FX rates loaded are interpreted against this currency.
 - **Base_Date** — Default valuation date (i.e. the calculation `Run_Date` if no override is
   supplied). If `null`, the current system date is used at run time.
-- **Exclude_Deals_With_Missing_Market_Data** — `Yes` (default) or `No`. When `Yes`, deals that
-  reference price factors not in the market data are silently skipped from the calculation. When
-  `No`, the calculation will raise rather than continue with an incomplete portfolio.
+- **Exclude_Deals_With_Missing_Market_Data** — `Yes` (default) or `No`. When `Yes`, a deal that
+  references price factors not in the market data is dropped from the calculation and counted
+  under `Deals Skipped`. When `No`, it is kept and valued at zero on every date, and counted the
+  same way; the run never refuses for it.
 - **Correlations_Healing_Method** — How non-positive-definite correlation matrices are repaired:
     - `Eigenvalue_Raising` (default) — small negative eigenvalues are floored to a tiny positive
       value, then the matrix is rescaled to keep ones on the diagonal.

@@ -662,10 +662,6 @@ class Deal(object):
     #: against is known. The one seam by which base-vs-foreign reaches a deal's compile surface.
     base_currency = None
 
-    #: `System Parameters.Exclude_Deals_With_Missing_Market_Data` read `Yes`, as the compile guard
-    #: stamps it: a deal that cannot be priced is skipped, where `No` refuses the run naming it.
-    exclude_unpriceable = True
-
     #: The field a market quote of this type lands in, in that field's own unit - a benchmark's
     #: declaration of itself, None for a type no quote set authors. `quote` writes it; a type
     #: whose quote reaches more than one place says how.
@@ -751,14 +747,14 @@ class Deal(object):
         return (cf.total_abs_nominal(), cf.last_pay_day()) if cf is not None else (0.0, None)
 
     def calculate(self, shared, time_grid, deal_data):
-        """Generate the theo price and interpolate it onto the report grid.
-
-        A pricing failure is logged and swallowed into a scalar-0 mark, counted once under the
-        run's `Deals Skipped` however many batches price it, or refuses the run naming the deal
-        where the document says `Exclude_Deals_With_Missing_Market_Data: No`. Running out of memory
-        is not a pricing failure: swallowing it drops the deal from `DealStructure.tensor_marks`,
-        which an inner-MC fork reads as an expired contract, so `utils.is_fatal_pricing_error`
-        re-raises that class of error."""
+        """Generate the theo price and interpolate it onto the report grid. A deal the compile
+        kept unread, its `Factor_dep` None, marks zero on every date; a pricing failure is swallowed into a scalar-0 mark,
+        counted once under `Deals Skipped`, unless `utils.is_fatal_pricing_error` names it a
+        framework fault, which an inner-MC fork would read as an expired contract."""
+        if deal_data.Factor_dep is None:
+            return pricing.interpolate(shared.one.new_zeros(
+                (deal_data.Time_dep.deal_time_grid.size, shared.simulation_batch)),
+                shared, time_grid, deal_data)
         try:
             mtm = self.generate(shared, time_grid, deal_data)
             return pricing.interpolate(mtm, shared, time_grid, deal_data)
@@ -767,11 +763,6 @@ class Deal(object):
                 deal_data.Instrument.field.get("Reference"), e.args))
             if utils.is_fatal_pricing_error(e):
                 raise
-            if not self.exclude_unpriceable:
-                raise utils.UnpriceableSchedule(
-                    'Deal {} could not be priced - {}. The run refuses it rather than mark it at '
-                    'nothing: System Parameters.Exclude_Deals_With_Missing_Market_Data is No'.format(
-                        deal_data.Instrument.field.get('Reference'), e.args)) from e
             unpriced = getattr(shared, 'unpriced', None)
             if unpriced is not None and self not in unpriced:
                 unpriced.add(self)
@@ -2999,7 +2990,7 @@ class YieldInflationCashflowListDeal(Deal):
     def generate(self, shared, time_grid, deal_data):
         if not deal_data.Factor_dep['PriceIndex'][0][utils.FACTOR_INDEX_Stoch] and len(
                 deal_data.Time_dep.deal_time_grid) > 1 and not shared.riskneutral:
-            # skipped and counted, or refused, as any deal its pricer cannot value
+            # skipped and counted as any deal its pricer cannot value
             raise ValueError('the price index of {} has no model and NoModel is Constant: give the '
                              'index a model, or set NoModel to RiskNeutral, which reads the inflation '
                              'curve forward from each row, or off its own model where it has '
@@ -4524,7 +4515,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         moneyness = pricing.calc_moneyness(strike * shared.one, spot, forward, deal_data)
 
         if spot.shape[0] != deal_time.shape[0]:
-            # skipped and counted, or refused, as any deal its pricer cannot value
+            # skipped and counted as any deal its pricer cannot value
             raise ValueError('the equity {} is static and the autocall walks a simulated one - '
                              'give it a model'.format(self.field['Equity']))
         return pricing.pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep) * fx_rep

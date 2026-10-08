@@ -391,13 +391,12 @@ def test_an_autocalled_path_pays_once_and_is_worth_nothing_after(tmp_path):
 
 def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_carlo(tmp_path):
     """The autocall walks a simulated equity, so a credit Monte Carlo holding its equity static
-    cannot value it: beside a cash flow the run values, it is counted under `Deals Skipped`, and
-    under `No` the run refuses naming it - where it was marked at nothing and counted nowhere.
+    cannot value it: beside a cash flow the run values, it is counted under `Deals Skipped`, under
+    `No` as under `Yes`, the switch being the compile's - where it was marked at nothing and
+    counted nowhere.
 
     Killing mutation: the static equity marked at zero again.
     """
-    import pytest
-    from derivus import utils
     job = _cmc_job(threshold=0.01)
     market = job['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Models'] = {'HullWhite1FactorInterestRateModel.USD': {
@@ -420,9 +419,7 @@ def test_an_autocall_on_a_static_equity_is_skipped_by_name_under_a_credit_monte_
 
     assert run('static')['Stats'].get('Deals Skipped') == 1
     market['System Parameters']['Exclude_Deals_With_Missing_Market_Data'] = 'No'
-    with pytest.raises(utils.UnpriceableSchedule, match=r"Deal AC1 could not be priced - \('the "
-                                                        r"equity EQ is static"):
-        run('static_refused')
+    assert run('static_kept')['Stats'].get('Deals Skipped') == 1
 
 
 def _cva_job(threshold=1.02, spot=None, gradient='No', report='USD'):

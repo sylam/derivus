@@ -13,6 +13,7 @@
 
 
 import contextlib
+import math
 import time
 import json
 import logging
@@ -84,70 +85,41 @@ class DealStructure(object):
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
                               all_factors, all_tenors, time_grid, calendars, stats, unit,
-                              valuation_options=None, refused=None):
-        """Compile `deal` into this structure. A structure's deals are netted off before
-        the structure's own rules are applied.
-
-        The HISTORY FOLD runs first and inside the same guard: a deal its observations leave no
-        decisions is replaced by the deal it became, and a refusal reading those observations is a
-        compile refusal like any other.
-
-        A compile failure is logged and the deal is SKIPPED, which lets a portfolio of thousands
-        survive one deal it cannot bind - or, where `refused` is a list, the engine's sentence joins
-        it for the run to refuse, and the deal compiled is stamped to refuse in its pricer too.
-        `utils.is_fatal_pricing_error` is the exception, and the same predicate `Deal.calculate`
-        reads one layer down: a framework fault, or a schedule refused by name, must not become a
-        deal that marks at nothing on a job reporting success.
-        """
+                              valuation_options=None, exclude=True):
+        """Compile `deal` into this structure, the history fold first. A deal the compile cannot
+        read is skipped and counted, or kept and marked at zero on every date where `exclude` is
+        False; a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`)
+        is never swallowed."""
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
+            deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
+            if deal_time_dep is None:
+                return
+            factor_dep = utils.bind_schedules(deal.calc_dependencies(
+                base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                calendars), unit)
+            stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
         except Exception as e:
-            logging.error('{0} {1} {2} - Skipped'.format(
-                deal.field['Object'], deal.field.get('Reference'), e.args))
+            logging.error('{0} {1} {2} - {3}'.format(
+                deal.field['Object'], deal.field.get('Reference'), e.args,
+                'Skipped' if exclude else 'kept at zero'))
             if utils.is_fatal_pricing_error(e):
                 raise
-            self.skip(deal, e, stats, refused)
-            return
-        deal.exclude_unpriceable = refused is None
-
-        deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
-        if deal_time_dep is not None:
-            try:
-                self.dependencies.append(
-                    utils.DealDataType(Instrument=deal,
-                                       Factor_dep=utils.bind_schedules(deal.calc_dependencies(
-                                           base_date, static_offsets, stochastic_offsets,
-                                           all_factors, all_tenors, time_grid, calendars), unit),
-                                       Time_dep=deal_time_dep,
-                                       Calc_res={} if self.store_results else None))
-                stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
-            except Exception as e:
-                logging.error('{0} {1} {2} - Skipped'.format(
-                    deal.field['Object'], deal.field.get('Reference'), e.args))
-                if utils.is_fatal_pricing_error(e):
-                    raise
-                self.skip(deal, e, stats, refused)
-
-    @staticmethod
-    def skip(deal, error, stats, refused, counted='Deals Skipped'):
-        """A deal the compile could not read: counted under `counted`, or its sentence kept in
-        `refused` where the run refuses such a deal."""
-        if refused is None:
-            stats[counted] = stats.setdefault(counted, 0) + 1
-        else:
-            refused.append('{0} {1} {2}'.format(deal.field['Object'], deal.field.get('Reference'),
-                                                error.args))
+            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            if exclude:
+                return
+            deal.unpriced_because = e
+            deal_time_dep, factor_dep = utils.DealTimeDependencies(
+                time_grid.mtm_time_grid, np.arange(time_grid.mtm_time_grid.size)), None
+        self.dependencies.append(utils.DealDataType(
+            Instrument=deal, Factor_dep=factor_dep, Time_dep=deal_time_dep,
+            Calc_res={} if self.store_results else None))
 
     @staticmethod
     def unpriced(shared, structure, error):
-        """A structure the run could not value: refused by name where the document says `No`,
-        else counted once under `Structs Skipped` however many batches meet it."""
+        """A structure the run could not value, counted once under `Structs Skipped` however many
+        batches meet it."""
         instrument = structure.obj.Instrument
-        if not getattr(instrument, 'exclude_unpriceable', True):
-            raise utils.UnpriceableSchedule(
-                'Structure {} {} could not be priced - {}. The run refuses it rather than mark it at '
-                'what its children sum to: System Parameters.Exclude_Deals_With_Missing_Market_Data '
-                'is No'.format(instrument.field['Object'], instrument.field.get('Reference'), error))
         unpriced = getattr(shared, 'unpriced', None)
         if unpriced is not None and instrument not in unpriced:
             unpriced.add(instrument)
@@ -163,8 +135,7 @@ class DealStructure(object):
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,
-                                   all_factors, all_tenors, time_grid, calendars, stats, unit,
-                                   refused=None):
+                                   all_factors, all_tenors, time_grid, calendars, stats, unit):
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
@@ -183,7 +154,7 @@ class DealStructure(object):
                 # set's deals out of the report with it
                 if utils.is_fatal_pricing_error(e):
                     raise
-                self.skip(struct.obj.Instrument, e, stats, refused, 'Structs Skipped')
+                stats['Structs Skipped'] = stats.setdefault('Structs Skipped', 0) + 1
 
     def deals(self):
         """Every deal beneath this structure, sub-structures first - the order `report` lists
@@ -334,9 +305,8 @@ class ScenarioTimeGrid(object):
 
 class Calculation(object):
 
-    #: Whether this calculation VALUES its book - the act a document's
-    #: `Exclude_Deals_With_Missing_Market_Data: No` refuses an unreadable or unpriceable deal for; a
-    #: compile that only reads the book skips one whatever the document says.
+    #: Whether this calculation VALUES its book: a compile that only reads it drops an unreadable
+    #: deal whatever `Exclude_Deals_With_Missing_Market_Data` says.
     valuation = True
 
     #: `Deterministic_Kernels`, declared once for the calculations that take a seed.
@@ -482,32 +452,20 @@ class Calculation(object):
 
         return df
 
-    def set_deal_structures(self, deals, output, unit, deal_level_mtm=False, refused=None):
-        """Compile the deal tree. `unit` is the calculation's dtype/device anchor: a deal's
-        schedules are BOUND to it as they compile, so the tensor half's birthday is this walk.
-
-        The BASE CURRENCY is stamped here and only here: a deal is constructed before the book it
-        prices against is known, and base-vs-foreign decides which leg of an FX pair carries a spot
-        model's law (`utils.spot_model_currency`). The document's
-        `Exclude_Deals_With_Missing_Market_Data` is read here too, by a `valuation` alone: `Yes`,
-        the default, skips a deal that cannot be read or priced; `No` hands the compile guard
-        `refused` and refuses the run once the whole tree is read, naming every deal it holds.
-
-        The job's whole `Valuation Configuration` is handed down for the same reason: a deal whose
-        observations leave it no decisions compiles as ANOTHER type (`Deal.resolve_history`), and
-        that type's own block is what the substitute must read. The substitute is local to the
-        compile - the loaded book is never rewritten - and its reval dates are a SUBSET of the ones
-        this grid was built from, so the fold cannot move the grid under itself.
-
-        A node that never became a `Deal` REFUSES here rather than failing to take the stamp: one
-        misspelt `Object` in an imported book would otherwise make the whole book unpriceable
-        without naming which deal, so every such node is named at once."""
+    def set_deal_structures(self, deals, output, unit, deal_level_mtm=False, exclude=None):
+        """Compile the deal tree, binding each deal's schedules to `unit`, the calculation's dtype
+        and device. The base currency is stamped here, a deal being constructed before the book it
+        prices against is known; `Exclude_Deals_With_Missing_Market_Data` is read once, at the
+        top: `Yes`, the default, drops a deal that cannot be read, `No` keeps it marked at zero,
+        and a compile that only reads the book drops one whatever the document says. The job's
+        `Valuation Configuration` is handed down for the history fold's substitute type. A node
+        that never became a `Deal` refuses here, naming every such node at once."""
         system = self.config.params['System Parameters']
         base_currency = utils.check_rate_name(system['Base_Currency'])
-        exclude = not self.valuation or system.get(
-            'Exclude_Deals_With_Missing_Market_Data', 'Yes') != 'No'
+        if exclude is None:
+            exclude = not self.valuation or system.get(
+                'Exclude_Deals_With_Missing_Market_Data', 'Yes') != 'No'
         valuation_options = self.config.params.get('Valuation Configuration', {})
-        top, refused = refused is None, [] if refused is None and not exclude else refused
         for node in deals:
             instrument = node['Instrument']
             if node.get('Ignore') == 'True':
@@ -519,24 +477,17 @@ class Calculation(object):
             instrument.base_currency = base_currency
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
-                instrument.exclude_unpriceable = refused is None
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
-                self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm, refused)
+                self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm, exclude)
                 output.add_structure_to_structure(
                     struct, self.base_date, self.static_factors, self.stoch_factors, self.all_factors,
-                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
-                    refused)
+                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
                 continue
 
             output.add_deal_to_structure(
                 self.base_date, instrument, self.static_factors, self.stoch_factors, self.all_factors,
                 self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
-                valuation_options, refused)
-        if top and refused:
-            raise utils.UnpriceableSchedule(
-                'System Parameters.Exclude_Deals_With_Missing_Market_Data is No, so the run refuses '
-                'every deal it could not read rather than skip it: {}. Supply what each names, or '
-                'set the switch to Yes to value the book without them'.format('; '.join(refused)))
+                valuation_options, exclude)
 
 
 def batch_seed(random_seed, batch_index):
@@ -2105,7 +2056,7 @@ class Base_Revaluation(Calculation):
             for deal in node.dependencies:
                 wanted.update(named[id(deal.Factor_dep[key])] for key in
                               ('QuantoImpliedCorrelation', 'CompoImpliedCorrelation')
-                              if id(deal.Factor_dep.get(key)) in named)
+                              if id((deal.Factor_dep or {}).get(key)) in named)
         for factor in sorted(wanted, key=utils.check_tuple_name):
             marked = market[utils.check_tuple_name(factor)]
             base, sides, keep = marked['Value'], [], self.netting_sets
@@ -2177,7 +2128,7 @@ class Base_Revaluation(Calculation):
         def check_prices(n, parent):
 
             def format_row(deal, data, val, greeks):
-                data['Deal Currency'] = deal.Factor_dep.get(
+                data['Deal Currency'] = (deal.Factor_dep or {}).get(
                     'Local_Currency', deal.Instrument.field.get('Currency', self.params['Currency']))
                 try:
                     data['Ref_MTM'] = float(deal.Instrument.field.get('MtM', 0.0))
@@ -2995,7 +2946,8 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         The pricing walk's skip-and-continue is the right contract for a reporting book, but here a
         skipped tradable shrinks the solver's menu and a skipped liability shrinks the target it is
         hedging, so the solve reports a confident answer to a different problem."""
-        loaded = ({d.Instrument.field.get('Reference') for d in structure.dependencies} |
+        loaded = ({d.Instrument.field.get('Reference') for d in structure.dependencies
+                   if d.Factor_dep is not None} |
                   {s.obj.Instrument.field.get('Reference') for s in structure.sub_structures})
         missing = [n['Instrument'].field.get('Reference') for n in declared
                    if n['Instrument'].field.get('Reference') not in loaded]
@@ -4141,12 +4093,20 @@ class SIMM(Calculation):
         agreement, node = self.trades[index]
         bumps = self.bumps(index)
         base, skipped = self.value(index, {})
+
+        def valued(move):
+            value = self.value(index, self.move(move))[0]
+            if value is None or not math.isfinite(value):
+                raise ValueError('{}: moving {} values the trade to {}, off which no sensitivity '
+                                 'can be read'.format(node['Instrument'].field.get('Reference'),
+                                                      '/'.join(map(str, move)), value))
+            return value
+
         values, rows = {None: base}, {}
         for bump in bumps if base is not None else []:
             if bump.base not in values:
-                values[bump.base] = self.value(index, self.move(bump.base))[0]
-            delta = (self.value(index, self.move(bump.move))[0] - values[bump.base]) / \
-                self.shifts[bump.move[0]]
+                values[bump.base] = valued(bump.base)
+            delta = (valued(bump.move) - values[bump.base]) / self.shifts[bump.move[0]]
             stated = bump.coordinates
             for label, weight in bump.split:
                 key = (stated['RiskType'], stated['Qualifier'], stated['Bucket'],
