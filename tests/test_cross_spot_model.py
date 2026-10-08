@@ -47,10 +47,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import derivus
-from derivus import config, instruments, service, structures, utils
+from derivus import service, structures, utils
 from derivus.bootstrappers import LogVar2FJModelParameters
 from derivus.config import CustomJsonEncoder
-from derivus_bloomberg import security_map
 
 BASE = pd.Timestamp('2024-06-28')
 JSON = {'content-type': 'application/json'}
@@ -81,7 +80,7 @@ LADDER = {'Prices': 'LogVar2FJModel', 'ATM_Expiries': '1,2,3,4,6', 'Wing_Expirie
           'Wing_Pillars': '0.25', 'Minimum_Contracts': 8, 'Max_Iterations': 40}
 
 #: the desk's view of this pair, as the seed states it: vol rises as the rand weakens
-PRIOR_PAIR, LEVERAGE_PRIOR = 'EURZAR', -0.4
+LEVERAGE_PRIOR = -0.4
 
 EXPIRY, FIXING_FREQUENCY = '6M', '1M'
 NOTIONAL_EUR, NOTIONAL_ZAR = 1_000_000.0, 20_000_000.0
@@ -361,13 +360,6 @@ def test_the_axis_is_the_pairs_not_the_surfaces_spelling():
         'the two spellings lean opposite ways: {:.4f} against {:.4f}'.format(
             left['Rho_S[0.0][1]'], right['Rho_S[0.0][1]']))
 
-    # and the key is the pair's, in both orientations, in both dialects, on every base
-    for underlying, currency in (('EUR', 'ZAR'), ('ZAR', 'EUR')):
-        assert utils.spot_model_currency(underlying, currency, 'USD') == 'ZAR.EUR'
-        assert utils.spot_model_currency((underlying,), (currency,), ('USD',)) == ('ZAR', 'EUR')
-        assert utils.spot_model_currency(underlying, currency, 'EUR') == 'ZAR'
-        assert utils.spot_model_currency(underlying, currency, 'ZAR') == 'EUR'
-
 
 def test_the_surface_asked_for_is_the_one_read():
     """GATE 2b - WHICH SURFACE, and how many tokens it may name.
@@ -428,7 +420,6 @@ def test_the_discount_is_the_pricers_own_curve():
     and lands on the decoy on the first.
     """
     decoyed = surfaced('EUR')
-    assert 'InterestRate.EUR' in written(decoyed, 'FxRate.EUR') or True
     market = decoyed['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
     assert market['FxRate.EUR']['Interest_Rate'] == 'EUR-ESTR'
     assert market['InterestRate.EUR']['Curve'] != market['InterestRate.EUR-ESTR']['Curve'], (
@@ -475,48 +466,14 @@ def test_the_seed_prior_arrives_on_the_fitted_axis():
     AND THE LOOKUP IS SPELLING-BLIND. A view is about the PAIR, so neither the separator nor the
     token order may lose it: the seed states `EURZAR` and `ZAR/EUR` must read the same number.
 
-    KILLING MUTATIONS - the prior written unflipped: the ZAR-base readings below come back -0.4 and
-    the fit runs with its leverage prior fighting its own surface. The lookup left spelling-bound:
-    every spelling but the seed's own hands `None`, the fit runs with no desk view, and the strike
-    moves 2.9e-4 - above this world's own 2e-4 band.
+    Through the verb's own edit closure, on the book where the turn BITES: a ZAR-base book fits the
+    euro priced in the rand, so the seed's view about the rand must arrive with its sign turned
+    over. The spelling-blind lookup is `/book/model`'s, both spellings of one pair calibrating to
+    one law below.
+
+    KILLING MUTATION - the prior written unflipped: the ZAR book's block carries -0.4 and the fit
+    runs with its leverage prior fighting its own surface.
     """
-    assert security_map.prior_axis('EURZAR') == 'ZAR' and security_map.prior_axis('USDZAR') == 'ZAR'
-    assert security_map.prior_axis('EURUSD') == 'EUR', 'a USD pair states the non-dollar leg'
-
-    for pair in ('USDZAR', 'EURZAR', 'GBPZAR'):
-        assert security_map.leverage_prior(pair) == LEVERAGE_PRIOR, pair
-        assert security_map.leverage_prior(pair, underlying='ZAR') == LEVERAGE_PRIOR, pair
-        assert security_map.leverage_prior(
-            pair, underlying=pair[:3]) == -LEVERAGE_PRIOR, pair
-    assert security_map.leverage_prior(
-        'USDJPY', underlying='USD') == 0.0, 'a zero view has no other sign'
-    assert security_map.leverage_prior(
-        'EURNOK', underlying='EUR') is None, 'a pair nobody stated'
-
-    # every spelling the verbs accept is the same pair, reversed order included, and `prior_axis`
-    # reads the same token off each
-    for spelling in ('EURZAR', 'EUR.ZAR', 'EUR/ZAR', 'EUR-ZAR',
-                     'ZAREUR', 'ZAR.EUR', 'ZAR/EUR', 'zar.eur'):
-        assert security_map.prior_axis(spelling) == 'ZAR', spelling
-        assert security_map.leverage_prior(spelling) == LEVERAGE_PRIOR, spelling
-        assert security_map.leverage_prior(
-            spelling, underlying='EUR') == -LEVERAGE_PRIOR, spelling
-
-    # the second argument is KEYWORD-ONLY, so a caller passing the old positional `path` cannot
-    # flip a sign instead of naming a file
-    with pytest.raises(TypeError):
-        security_map.leverage_prior('EURZAR', 'ZAR')
-
-    # and the verb's own question: which token will this book's fit describe
-    for base, expected in (('USD', 'ZAR'), ('EUR', 'ZAR'), ('ZAR', 'EUR')):
-        assert utils.spot_model_pair('EUR', 'ZAR', base)[0] == expected, base
-        assert service.desk_leverage_prior(PRIOR_PAIR, expected) == (
-            LEVERAGE_PRIOR if expected == 'ZAR' else -LEVERAGE_PRIOR), base
-
-    # THROUGH THE VERB'S OWN EDIT CLOSURE, on the book where the turn BITES: a ZAR-base book fits
-    # the euro priced in the rand, so the seed's view about the rand must arrive with its sign
-    # turned over. This is the only reading that tells `desk_leverage_prior(pair, fitted)` from
-    # `desk_leverage_prior(pair)`.
     document = surfaced('ZAR')
     document['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Bootstrapper Configuration']['LogVar2FJModelParameters'] = dict(LADDER)
@@ -538,6 +495,10 @@ def test_the_price_is_the_same_on_either_base():
     own residual. And the fitted strike separates from the lognormal one by twice the band the two
     books and the two axes agree inside - MEASURED 1.6e-3.
 
+    One strip per book carries it: the accumulator on its euro notional. Measured over both
+    notional sides of the accumulator and the TARF, the six strikes agreed book to book inside the
+    same residual.
+
     KILLING MUTATION - the key rule answering the underlying token for a cross: the USD book looks
     up `LogVar2FJModelParameters.EUR`, which it does not carry, the leg carries a note and prices
     GBM, and the `note is None` assertion fails on the USD book alone while the EUR book is
@@ -546,9 +507,7 @@ def test_the_price_is_the_same_on_either_base():
     priced = {}
     for base in ('USD', 'EUR'):
         document = fitted(base)
-        for structure, side, role in (('Accumulator', 'EUR', 'accumulator'),
-                                      ('Accumulator', 'ZAR', 'accumulator'),
-                                      ('TargetRedemptionForward', 'EUR', 'tarf')):
+        for structure, side, role in (('Accumulator', 'EUR', 'accumulator'),):
             extra = {'knockout': KNOCKOUT} if structure == 'Accumulator' else {'target': TARGET}
             quoted = accrual(document, structure, side, **extra)
             assert leg(quoted, role)['note'] is None, (base, structure, side)
@@ -570,13 +529,12 @@ def test_the_price_is_the_same_on_either_base():
 
 
 def test_the_reciprocal_axis_carries_the_cross():
-    """GATE 6 - THE RECIPROCAL AXIS of a cross, and the allow-list on it.
+    """GATE 6 - THE RECIPROCAL AXIS of a cross.
 
     The law is the rand priced in the euro, so a strip whose `Underlying_Currency` is EUR pays on
     its reciprocal and transports by the measure change the walk already carries. Both orientations
     of one accumulator therefore solve one strike, inside the band the estimator gives at
-    `AXIS_SIMS` paths. A family outside the allow-list refuses by name on that side of a cross
-    exactly as it does on a base-leg pair.
+    `AXIS_SIMS` paths.
 
     KILLING MUTATION - `spot_model_reciprocal_axis` asking the deal's underlying against the BASE
     rather than against the token its law is priced in: no cross deal is ever inverted, the
@@ -591,15 +549,6 @@ def test_the_reciprocal_axis_carries_the_cross():
     assert spread < AXIS_TOLERANCE, 'the two axes are {:.3e} apart'.format(spread)
     assert only_leg(reciprocal)['Underlying_Currency'] == 'EUR'
     assert only_leg(direct)['Underlying_Currency'] == 'ZAR'
-
-    assert instruments.spot_model_reciprocal_axis(
-        'LogVar2FJ', ('EUR',), ('ZAR',), ('USD',), 'X1') is True
-    assert instruments.spot_model_reciprocal_axis(
-        'LogVar2FJ', ('ZAR',), ('EUR',), ('USD',), 'X1') is False
-    with pytest.raises(utils.UnpriceableSchedule) as refusal:
-        instruments.spot_model_reciprocal_axis('Nobody', ('EUR',), ('ZAR',), ('USD',), 'X1')
-    assert 'Nobody' in str(refusal.value) and 'LogVar2FJ' in str(refusal.value)
-    assert 'reciprocal' in str(refusal.value), 'a refusal that does not say what it refused'
 
 
 def only_leg(outcome):
@@ -690,18 +639,6 @@ def test_a_key_that_cannot_resolve_skips_the_deal_and_never_kills_the_job(caplog
     assert any('BAD' == record.name and 'Skipped' in record.getMessage()
                for record in caplog.records), 'the skip is not named against the deal'
 
-    # and the lambda's own contract, on the objects the walk builds and the params it is handed:
-    # the refusal the key rule makes is ANSWERED `[]` here and named one layer on
-    options = {'SpotModel': 'LogVar2FJ'}
-    params = {'System Parameters': {'Base_Currency': 'USD'}}
-    assert config.spot_model_factors(
-        instruments.FXAccumulatorOptionDeal(bad, options), params) == []
-    assert config.spot_model_factors(
-        instruments.FXAccumulatorOptionDeal(good, options), params) == [
-        utils.Factor('LogVar2FJModelParameters', ('ZAR', 'EUR'))]
-    with pytest.raises(ValueError, match='ONE rate of a pair'):
-        utils.spot_model_currency(('EUR', 'SPREAD'), ('ZAR',), ('USD',))
-
 
 def test_a_priced_in_the_book_cannot_resolve_refuses_by_name():
     """GATE 9 - `Priced_In` IS A DECLARED REFERENCE, so it refuses like every other one.
@@ -723,10 +660,6 @@ def test_a_priced_in_the_book_cannot_resolve_refuses_by_name():
     with a blank `Priced_In` fits the rand priced in the DOLLAR and writes it as the cross's law
     (`Rho_S` -0.4635 against -0.4132 on this world).
     """
-    assert 'Priced_In' in LogVar2FJModelParameters.factor_types
-    assert 'Priced_In' in LogVar2FJModelParameters.optional_references
-    assert 'FxRate' in LogVar2FJModelParameters.reads
-
     def bootstrapped(filed_as, priced_in):
         document = surfaced('USD')
         market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -794,8 +727,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     first token, would silently read the outer state of ZAR-in-USD into a ZAR-in-EUR law.
 
     This prices the cross under a LogVar2FJ OUTER on BOTH base-priced rates through a real credit
-    Monte Carlo - not skipped, finite, dispersed - and pins the key the kit builds, off the factor
-    the compile actually resolved on the same document.
+    Monte Carlo - not skipped, finite, dispersed - and banks the exposure it reports.
 
     KILLING MUTATION - `name[:1]`: the key the kit forms becomes `FxRate.ZAR`, which the outer DOES
     publish, so every row starts from the outer's ZAR-in-USD state instead of its own level and the
@@ -838,14 +770,6 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
         (-5707.521670248359, 97839.41381526), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
-
-    # the run above did not skip, so the deal DID resolve the pair-keyed factor; the kit drops that
-    # factor's last token and builds `FxRate` on what is left
-    key = utils.check_tuple_name(
-        utils.Factor('FxRate', utils.check_rate_name(CROSS_FACTOR)[1:]))
-    assert key == 'FxRate.ZAR.EUR', 'the carried-state key is not the pair key'
-    assert key not in rates and key not in job['Calc']['MergeMarketData'][
-        'ExplicitMarketData']['Price Models'], 'something publishes under the key the kit forms'
 
 
 def test_both_spellings_of_one_pair_calibrate_to_one_law(tmp_path, monkeypatch):

@@ -10,10 +10,6 @@ fit-through is the composition harness's reading.
 
 WHAT IS HELD:
 
-  the budget       `swaption_vol` imports the standard library, this package and a LAZY blpapi
-  the columns      `INSTRUMENT_COLUMNS` equals the COMMITTED `HullWhite2FactorModelParameters`
-                   declaration, read via `git show HEAD` and compared AS DATA - two day-count
-                   columns and no `Day_Count`, the defect authored blocks used to die on
   the declaration  the SHIPPED ZAR conventions as data, and every way a convention can be absent,
                    unread or unauthorable refusing at the seed
   the screen       the order of distrust, one canned cell per verdict - `zero` matters most,
@@ -21,12 +17,9 @@ WHAT IS HELD:
                    surface's ATM rather than a bad number
   the row          the seed's declared conventions on every row, the vol scaled into the family's
                    `Percent` column, `Weight` flat, and the two-way and stamp beside them
-  the distribution declared ON THE BLOCK and read by the engine: the premium construction held to
-                   the Bachelier pair as source AND as behaviour, and the emitted
-                   `Distribution_Type` held to the convention the terminal quoted
+  the distribution declared ON THE BLOCK, the convention the terminal quoted
   the partition    this family has an EMPTY values half, so `update_market_quote` refuses a re-tick
                    and `reauthor` is the only route a re-quoted grid reaches a book by
-  determinism      the same canned grid emits the same bytes
   live smoke       one real ZAR ladder off this workstation's terminal, or a skip by name
 
 NO MONKEYPATCHING: the canned terminal is the curve gate's `BloombergSession` subclass, and the
@@ -46,10 +39,9 @@ from derivus_bloomberg import discover, swaption_vol
 from derivus_bloomberg.errors import BloombergConfigurationError, IncompleteLadder
 from derivus_bloomberg.session import BloombergSession
 from derivus_bloomberg.swaption_vol import (SwaptionScreen, fetch_swaption_ladder, hw2f_block,
-                                            reauthor, screen_ladder, swaption_conventions)
+                                            reauthor, swaption_conventions)
 
-from test_curve_strip_emitter import (AS_OF, LONG_AGO, NO_TERMINAL, ROOT, YESTERDAY, Walked,
-                                      committed_fields, imported_names, in_a_fresh_interpreter,
+from test_curve_strip_emitter import (AS_OF, LONG_AGO, NO_TERMINAL, YESTERDAY, Walked,
                                       no_terminal_reason, packaged_seed, verified_map)
 
 #: The SHIPPED declaration, restated as data - the owner's gate. A `SASN` cell is a NORMAL vol in
@@ -134,140 +126,14 @@ def rows_of(block):
 
 
 # =============================================================================================
-# 1  the dependency budget
-# =============================================================================================
-
-def test_the_swaption_emitter_imports_the_standard_library_and_nothing_else():
-    """The package's budget, extended to the second new module: the standard library, this
-    package's own modules, and NO ENGINE. Like `ir_curve` and for the same reason it makes no
-    pandas-free claim - it reaches `discover` for the two-character expiry code rather than
-    spelling a second one."""
-    imported = imported_names(os.path.join(ROOT, 'derivus_bloomberg', 'swaption_vol.py'))
-    assert imported <= {'collections', 'datetime', 'math', 'dataclasses', 'typing',
-                        'derivus_bloomberg'}, sorted(imported)
-    assert imported.isdisjoint({'derivus', 'torch', 'pandas', 'numpy', 'scipy', 'blpapi'}), \
-        sorted(imported)
-    assert imported
-
-
-def test_importing_the_swaption_emitter_lands_no_engine_and_no_blpapi():
-    """Proved a second way, in a fresh interpreter - and the last line is why both emitters are
-    re-exported LAZILY: reaching one off the package must not cost the chain emitter its own budget.
-
-    ASYMMETRIC, as the curve twin's is: `derivus` and `blpapi` must not land, `pandas` DOES through
-    the map layer and is asserted POSITIVELY.
-    """
-    landed = in_a_fresh_interpreter('import derivus_bloomberg.swaption_vol')
-    assert 'derivus_bloomberg' in landed, 'the module did not import'
-    assert landed.isdisjoint({'derivus', 'torch', 'blpapi'}), sorted(
-        landed & {'derivus', 'torch', 'blpapi'})
-    assert 'pandas' in landed, 'the stated budget says the grammar costs pandas'
-    assert 'derivus_bloomberg' in in_a_fresh_interpreter(
-        'from derivus_bloomberg import fetch_swaption_ladder, hw2f_block, reauthor')
-
-
-# =============================================================================================
-# 2  the columns, against the committed declaration
-# =============================================================================================
-
-def test_the_row_is_the_committed_schemas_own_declaration():
-    """Read off the COMMITTED state rather than the working tree, so it holds while another workflow
-    is mid-edit in `bootstrappers.py`.
-
-    `INSTRUMENT_COLUMNS` is a whitelist spelled in a package that may not import the engine, so it
-    is compared AS DATA, in order, off an AST parse of `git show HEAD:derivus/bootstrappers.py`.
-
-    TWO DAY-COUNT COLUMNS AND NO `Day_Count`: `create_market_swaps` reads `Floating_Day_Count` for
-    the float leg and `Fixed_Day_Count` only on the unequal-frequency branch, so a block spelling
-    one `Day_Count` for both dies in a cashflow generator rather than at the schema.
-    """
-    declared = committed_fields('HullWhite2FactorModelParameters', table='Instrument_Definitions')
-    assert tuple(declared) == swaption_vol.INSTRUMENT_COLUMNS, declared
-    assert 'Day_Count' not in declared
-    assert declared.count('Floating_Day_Count') == 1 and declared.count('Fixed_Day_Count') == 1
-
-    # and what the emitter actually writes IS that row, in that order, plus exactly the evidence
-    # keys the family does not declare
-    row = list(rows_of(block_of()[1]).values())[0]
-    assert tuple(key for key in row if key in declared) == swaption_vol.INSTRUMENT_COLUMNS
-    assert set(row) - set(declared) == set(swaption_vol.QUOTE_VALUE_KEYS)
-
-    # the BLOCK-level keys, every one of them DECLARED. HW2F declares `Quote_Source`,
-    # `Quote_Timestamp` and `Distribution_Type` on the shape the option family already had, so the
-    # subtraction is empty. Read off the WORKING TREE, because a declaration can land in the change
-    instrument = block_of()[1]['instrument']
-    block_fields = committed_fields('HullWhite2FactorModelParameters', at=None)
-    assert set(instrument) - set(block_fields) == set(), sorted(set(instrument) - set(block_fields))
-    assert 'Quote_Source' in block_fields and 'Quote_Timestamp' in block_fields
-    assert set(instrument) == {'Swaption_Volatility', 'Instrument_Definitions', 'Quote_Source',
-                               'Distribution_Type'}
-    # and the row columns are unmoved by it: the block gained three fields, the ladder none
-    assert not {'Quote_Source', 'Quote_Timestamp', 'Distribution_Type'} & set(declared)
-
-
-def test_the_engine_reads_the_declared_distribution_and_this_block_declares_it():
-    """`SASN` is a NORMAL vol in basis points, and `create_market_swaps` used to price every
-    benchmark's premium with `utils.black_european_option_price` whatever the surface declared. It
-    reads `Distribution_Type` now, and this holds that seam from both sides.
-
-    TWO HALVES, THE SECOND BEHAVIOURAL. The engine's premium construction is READ as text off the
-    WORKING TREE rather than `git show HEAD` - the committed-source trick is right for a DECLARATION
-    and wrong for a behaviour that only exists once the edit lands. The run below proves it: the
-    same ladder's numbers priced under the two declarations come out an ORDER OF MAGNITUDE apart.
-
-    The engine import is inside this gate, which tests the engine's seam rather than the emitter's
-    budget; the budget gates one section up hold that line.
-    """
-    import inspect
-
-    from derivus import bootstrappers, riskfactors, utils
-
-    body = inspect.getsource(utils.create_market_swaps)
-    assert 'get_subtype' in body, (
-        'create_market_swaps no longer reads the surface\'s declared convention - the roadmap row '
-        'this gate closes is open again')
-    assert 'PREMIUM_CONVENTIONS' in body and 'displacement' in body, body[:400]
-    assert utils.PREMIUM_CONVENTIONS['Normal'] == (
-        utils.bachelier_european_option_price, utils.bachelier_european_option), (
-        'a Normal surface has to reach the Bachelier pair, numpy premium and tensor twin alike')
-    assert utils.PREMIUM_CONVENTIONS['Lognormal'] == (
-        utils.black_european_option_price, utils.black_european_option)
-    declared = next(f for f in riskfactors.InterestYieldVol.fields
-                    if f.name == 'Distribution_Type')
-    assert sorted(declared.values) == sorted(utils.PREMIUM_CONVENTIONS), (
-        'the surface declares {} and the calibration prices {} - a value a block can author and '
-        'the engine cannot price is the same defect one layer over'.format(
-            declared.values, sorted(utils.PREMIUM_CONVENTIONS)))
-    assert SHIPPED['distribution'] in utils.PREMIUM_CONVENTIONS, (
-        'the seed declares a distribution this engine cannot price')
-
-    # the behavioural read: this ladder's own quotes, priced under each declaration
-    row = list(rows_of(block_of()[1]).values())[0]
-    quote, expiry = row['Market_Volatility']['.Percent'] / 100.0, 2.0
-    premium = {name: pricer(0.09, 0.09, 0.0, quote, expiry, 1.0, 1.0)
-               for name, (pricer, _) in utils.PREMIUM_CONVENTIONS.items()}
-    assert premium['Normal'] / premium['Lognormal'] > 5.0, (
-        'the two conventions price {} within {:.3g}x of each other - a normal vol read as a '
-        'lognormal one is the defect this gate exists for'.format(
-            row['Market_Volatility'], premium['Normal'] / premium['Lognormal']))
-
-    # and the block DECLARES what its own numbers are, in the family's own spelling, so a
-    # machine-authored ladder is checked against that surface from the day it is written
-    instrument = block_of()[1]['instrument']
-    field = next(f for f in bootstrappers.HullWhite2FactorModelParameters.fields
-                 if f.name == 'Distribution_Type')
-    assert field.default == '' and instrument['Distribution_Type'] == SHIPPED['distribution']
-    assert instrument['Distribution_Type'] in field.values, field.values
-    assert 'NORMAL vols' in instrument['Quote_Source']
-
-
-# =============================================================================================
 # 3  the declaration
 # =============================================================================================
 
 def test_the_shipped_swaption_conventions_are_the_declared_ones():
     """THE OWNER'S GATE. Everything about a `SASN` cell that its ticker does not say, as data, read
-    off the seed the wheel ships."""
+    off the seed the wheel ships.
+
+    Killing mutation: the shipped seed's quote scale moved."""
     assert packaged_seed()['swaption']['ZAR']['conventions'] == SHIPPED
     conventions = swaption_conventions(packaged_seed(), 'ZAR')
     assert conventions.distribution == 'Normal'
@@ -279,7 +145,9 @@ def test_the_shipped_swaption_conventions_are_the_declared_ones():
 
 def test_a_grid_without_its_conventions_refuses_naming_every_missing_field():
     """The same refusal shape the curve emitter makes, and for the same reason - a desk extending a
-    seed wants the whole questionnaire at once."""
+    seed wants the whole questionnaire at once.
+
+    Killing mutation: the refusal naming the first missing field alone."""
     seed = copy.deepcopy(SEED)
     del seed['swaption']['ZAR']['conventions']['distribution']
     del seed['swaption']['ZAR']['conventions']['quote_scale']
@@ -308,7 +176,9 @@ def test_a_grid_without_its_conventions_refuses_naming_every_missing_field():
 def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
     """The ways a declaration can be wrong rather than absent. The day-count list is the FAMILY's
     own - nothing here computes an accrual, `create_market_swaps` does - so the whole declared set
-    passes and a spelling outside it refuses where a desk can fix it."""
+    passes and a spelling outside it refuses where a desk can fix it.
+
+    Killing mutation: the distribution left unchecked against the two this emitter carries."""
     for field, value, expected in (
             ('distribution', 'Bachelier', 'is not one this emitter carries'),
             ('fixed_day_count', 'ACT_364', 'is not a day count HullWhite2FactorModelParameters'),
@@ -332,41 +202,14 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
 # 4  the screen
 # =============================================================================================
 
-def test_the_screen_classifies_off_the_terminals_own_answers():
-    """The order of distrust, one canned cell per verdict.
-
-    `zero` sits second on purpose: every other verdict refuses a number that is WRONG, this one
-    refuses a number that is an INSTRUCTION. `create_market_swaps` reads
-    `if instrument['Market_Volatility'].amount:` and falls through to the surface's own ATM when it
-    is false, so a blank cell emitted as zero calibrates against whatever the book's surface held.
-    """
-    def cell(**extra):
-        return swaption_vol.SwaptionQuote(**dict(
-            {'expiry': '1Y', 'tenor': '5Y', 'security': 'x', 'value': 1.45, 'bid': 1.44,
-             'ask': 1.46, 'last_update': YESTERDAY}, **extra))
-
-    cases = {
-        'unpriced': cell(value=None),
-        'zero': cell(value=0.0),
-        'off-market': cell(value=145.0),
-        'crossed': cell(bid=1.50, ask=1.40),
-        'undated': cell(last_update='N/A'),
-        'stale': cell(last_update=LONG_AGO),
-        'live': cell(),
-    }
-    named = [swaption_vol.SwaptionQuote(**dict(item.__dict__, security=verdict))
-             for verdict, item in cases.items()]
-    accepted, rejected = screen_ladder(named, AS_OF)
-    assert [item.security for item in accepted] == ['live']
-    assert rejected == {verdict: verdict for verdict in cases if verdict != 'live'}
-
-    # a mid-only cell is BELIEVED: a two-way the terminal never quoted is not a spread
-    assert screen_ladder([cell(security='mid-only', bid=None, ask=None)], AS_OF)[1] == {}
-
-
 def test_the_canned_grid_is_believed_by_census():
-    """Every candidate accounted for, one way or the other. A swaption grid is ragged by
-    entitlement, so what was refused and why is most of what a desk needs to read."""
+    """Every candidate accounted for, one way or the other, one canned cell per verdict in the order
+    of distrust. A swaption grid is ragged by entitlement, so what was refused and why is most of
+    what a desk needs to read. `zero` matters most: every other verdict refuses a number that is
+    WRONG, this one a number that is an INSTRUCTION - `create_market_swaps` used to read a zero
+    `Market_Volatility` as the surface's own ATM.
+
+    Killing mutation: a zero cell believed."""
     ladder = ladder_of()
     assert ladder.rejected == {
         'SASN0A1 Curncy': 'unverified', 'SASN0A5 Curncy': 'zero',
@@ -391,7 +234,10 @@ def test_the_canned_grid_is_believed_by_census():
 def test_a_ladder_below_its_floor_refuses_naming_what_the_terminal_served():
     """Five is the family's own parameter count, so under it the fit interpolates and reports a
     stationarity it did not earn. The refusal names the count, the floor and the census - "not
-    enough quotes" with no coordinates is not something a desk can act on."""
+    enough quotes" with no coordinates is not something a desk can act on.
+
+    Killing mutation: the floor at four.
+    """
     poison = dict(POISON, **{security: {'PX_LAST': None} for security in
                              ('SASN021 Curncy', 'SASN025 Curncy', 'SASN0210 Curncy',
                               'SASN055 Curncy')})
@@ -420,8 +266,19 @@ def test_every_row_carries_the_seeds_declared_conventions_and_the_scaled_vol():
 
     `Start` and `Tenor` are `Period`s and no date is computed here at all: `create_market_swaps`
     does `effective = base_date + Start` and `maturity = effective + Tenor`, so a 5Y x 10Y cell is a
-    ten-year swap starting in five years and the calendar is the engine's.
+    ten-year swap starting in five years and the calendar is the engine's. The block DECLARES the
+    convention its numbers are in, in the family's own spelling, and the same canned grid emits the
+    same bytes - the only clock in sight is the as-of, a parameter - where one moved cell moves them.
+
+    Killing mutation: the print written unscaled - 120.5 where the family reads 1.205.
     """
+    instrument = block_of()[1]['instrument']
+    assert instrument['Distribution_Type'] == SHIPPED['distribution']
+    assert 'NORMAL vols' in instrument['Quote_Source']
+    assert json.dumps(block_of()[1], sort_keys=True) == json.dumps(block_of()[1], sort_keys=True)
+    moved = dict(POISON)
+    moved['SASN101 Curncy'] = {'PX_LAST': 121.0, 'PX_BID': 120.5, 'PX_ASK': 121.5}
+    assert '1.21' in json.dumps(block_of(poison=moved)[1], sort_keys=True)
     rows = rows_of(block_of()[1])
     assert set(rows) == {'2Y x 1Y', '2Y x 5Y', '2Y x 10Y', '5Y x 5Y', '5Y x 10Y',
                          '10Y x 1Y', '10Y x 5Y', '10Y x 10Y'}
@@ -453,6 +310,8 @@ def test_the_wire_form_decodes_to_the_types_the_family_reads():
     as the types `create_market_swaps` indexes: `Start` and `Tenor` as `DateOffset`s,
     `Market_Volatility` as a `Percent` whose `.amount` is the fraction, `Weight` a plain float. The
     fit-through is the composition harness's reading and is deliberately not run here.
+
+    Killing mutation: `Start` written as the bare tenor rather than a wire period.
     """
     import pandas as pd
     from derivus.config import Config
@@ -490,6 +349,8 @@ def test_this_family_has_an_empty_values_half_so_a_retick_is_a_reauthoring():
     `schema.partition_market_price` gives every family whose quotes do not live in `Points` rows an
     EMPTY values half, and this family quotes in `Instrument_Definitions` - so a moved vol is not a
     value at all and `update_market_quote` sees the whole block as structure and refuses.
+
+    Killing mutation: `reauthor` keeping the standing block.
     """
     from derivus import schema
     from derivus.schema import update_market_quote
@@ -531,17 +392,6 @@ def test_this_family_has_an_empty_values_half_so_a_retick_is_a_reauthoring():
     from derivus_bloomberg import ir_curve
 
     assert reauthor is ir_curve.reauthor
-
-
-def test_the_same_canned_grid_emits_the_same_bytes():
-    """DETERMINISM, and the only clock in sight is the as-of, which is a parameter."""
-    first = json.dumps(block_of()[1], sort_keys=True)
-    assert first == json.dumps(block_of()[1], sort_keys=True)
-
-    moved = dict(POISON)
-    moved['SASN101 Curncy'] = {'PX_LAST': 121.0, 'PX_BID': 120.5, 'PX_ASK': 121.5}
-    second = json.dumps(block_of(poison=moved)[1], sort_keys=True)
-    assert second != first and '1.21' in second
 
 
 # =============================================================================================

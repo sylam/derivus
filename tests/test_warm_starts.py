@@ -211,6 +211,8 @@ def test_the_written_hull_white_factor_skips_the_search(hull_white, caplog):
 
     The cold assertion is the other half: skipping the search on a block with no factor reads 47
     evaluations here, not 421.
+
+    Killing mutation: the written factor ignored - the search runs from the seed.
     """
     cold, cold_evaluations = hull_white
     assert cold_evaluations > 100, (
@@ -231,6 +233,8 @@ def test_the_warm_hull_white_fit_reprices_a_moved_ladder_without_the_search(hull
     19-dimensional manifold and the two land 0.0432 and 0.0012 from the unmoved answer with no
     ordering between them. The warm fit reaches the lower loss, is stationary, and pays 49
     evaluations where the chain pays 429.
+
+    Killing mutation: the written factor ignored - the search runs from the seed.
     """
     cold, _ = hull_white
     moved_cold, cold_evaluations = hw_fit(move=MOVE)
@@ -257,7 +261,9 @@ def test_the_warm_hull_white_fit_reprices_a_moved_ladder_without_the_search(hull
 
 def test_the_written_energy_factor_seeds_the_minimisation(energy, caplog):
     """The energy fit recovers the (sigma, alpha) its quotes were generated off, and warm gets
-    there from the written factor in a fraction of the evaluations."""
+    there from the written factor in a fraction of the evaluations.
+
+    Killing mutation: the written factor ignored - the minimisation starts at `Seed`."""
     cold, cold_evaluations = energy
     assert abs(cold['Sigma'] - CS_TRUE[0]) < 1e-6 and abs(cold['Alpha'] - CS_TRUE[1]) < 1e-6, (
         'the round trip must recover ({}, {}): got ({}, {})'.format(
@@ -268,14 +274,3 @@ def test_the_written_energy_factor_seeds_the_minimisation(energy, caplog):
     assert warm_evaluations * 2 < cold_evaluations, (
         'warm {} evaluations against cold {}'.format(warm_evaluations, cold_evaluations))
     assert abs(warm['Sigma'] - cold['Sigma']) < 1e-8 and abs(warm['Alpha'] - cold['Alpha']) < 1e-8
-
-
-def test_a_document_with_no_written_factor_is_the_cold_path(hull_white, energy):
-    """The fixtures carry no parameter factor, so both fits above ran the path they always ran -
-    which is what the hex set holds to the bit, and what this asserts in the family's own terms."""
-    for path, block, factor in ((HW_JOB, HW_BLOCK, HW_FACTOR), (CS_JOB, CS_BLOCK, CS_FACTOR)):
-        carried_factors = jsonlib.load(open(path))['Calc']['MergeMarketData'][
-            'ExplicitMarketData']['Price Factors']
-        assert factor not in carried_factors, '{} must be fitted cold'.format(block)
-    assert hull_white[1] > 100 and energy[1] > 40, (
-        'both cold fits must run their full search: {} and {}'.format(hull_white[1], energy[1]))

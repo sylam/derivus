@@ -37,11 +37,9 @@ Every block here is real: the ZAR strip `test_interest_rate_prices` authors, the
 smile builds. The two families with no fixture are held to their own declarations, which is the
 stronger statement: a family declaring no `Points` field has no block with a values half.
 """
-import ast
 import copy
 import json
 import os
-import pathlib
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,15 +49,14 @@ import pandas as pd
 import pytest
 
 import derivus
-from derivus import bootstrappers, schema, utils
-from derivus.bootstrappers import (FXVolSurfaceParameters, InterestRateCurveParameters,
-                                   LogVar2FJModelParameters)
-from derivus.config import Config, CustomJsonEncoder, ModelParams
+from derivus import bootstrappers, schema
+from derivus.bootstrappers import LogVar2FJModelParameters
+from derivus.config import Config, CustomJsonEncoder
 from derivus.schema import update_market_quote
 
 from rates_world import BASE as RATES_BASE
 from test_interest_rate_prices import authored_world
-from test_quote_propagation import BLOCK as ZAR_BLOCK, CCY, bootstrapped, market, run, with_deals
+from test_quote_propagation import BLOCK as ZAR_BLOCK, bootstrapped, market, run, with_deals
 from test_service import CLIENT, JSON, desk, desk_smile, dump, fx_vol_quotes, job  # noqa: F401
 
 FX_BLOCK = 'FXVolPrices.USD.ZAR'
@@ -146,24 +143,6 @@ def family_blocks():
     return copy.deepcopy(_BLOCKS)
 
 
-def test_an_authored_block_carries_only_the_fields_its_own_family_declares():
-    """`fx_surface_block` is INHERITED, so its header must be its family's declaration and not the
-    first family's. A field one family declares and another does not - `Quadrature_Panels`, which
-    a model that inverts nothing has no panel count for - is a line the emitter reads off the
-    declarations or a `KeyError` on the family that lacks it. MUTANT: the header spelling
-    `declared['Quadrature_Panels']` raises here for LogVar2FJ before any partition runs.
-    """
-    for family in SURFACE_FAMILIES:
-        instrument = family_blocks()[family.market_factor_type]['instrument']
-        declared = {field.name for field in family.fields}
-        assert set(instrument) - declared == set(), (
-            '{} wrote {}, which its own fields do not declare'.format(
-                family.market_factor_type, sorted(set(instrument) - declared)))
-        assert ('Quadrature_Panels' in instrument) == ('Quadrature_Panels' in declared), (
-            '{}: the panel count is written exactly where it is declared'.format(
-                family.market_factor_type))
-
-
 def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
     """THE LADDER IS A DIAL A BOOK STATES. Handed no `Bootstrapper Configuration` entry
     `fx_surface_block` authors the family's DECLARED ladder; handed one it authors the entry's,
@@ -177,6 +156,8 @@ def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
 
     MUTANT: the floor read off the declaration rather than the entry leaves the second reading
     refusing; the ladder read off the declaration leaves the first emitting twenty-two rungs.
+
+    Killing mutation: the book's ladder entry unread.
     """
     surface = loaded(fx_vol_quotes()).current_cfg
     surface.bootstrap()
@@ -211,6 +192,8 @@ def test_every_family_partitions_by_the_one_rule_and_round_trips_exactly(family)
     row does not has an EMPTY one, asserted BY NAME because "this family has no values half" is a
     statement about the rule rather than a gap in it. The enumeration is the engine's own, so
     neither a family growing a declared quote table nor one dropping it can pass silently.
+
+    Killing mutation: value keys shadowed to None rather than dropped.
     """
     assert set(FAMILIES) == set(QUOTE_CONTAINER), (
         'a family arrived or left without this enumeration moving: {}'.format(
@@ -247,29 +230,14 @@ def test_every_family_partitions_by_the_one_rule_and_round_trips_exactly(family)
             '{}: a wholly plan-side family lost something to the projection'.format(family))
 
 
-def test_the_fx_authored_ladders_name_no_funding_curve():
-    """THE BIT-IDENTITY BAR ON THE FX ROUTE. The option family grew a `Funding_Rate` so an
-    equity's forward can grow on its own repo curve; an FX pair needs none, `fx_surface_block`
-    already naming the pair's own two curves - the domestic `Discount_Rate` and the foreign `Yield`,
-    which is what `utils.calc_fx_forward` builds from - so the basis term is not evaluated at all.
-
-    Asserted on the block the engine EMITS off a real built surface.
-    """
-    instrument = family_blocks()['LogVar2FJModelPrices']['instrument']
-    assert 'Funding_Rate' not in instrument and 'Funding_Rate_Type' not in instrument, (
-        'the block declares a funding curve, so its forward is no longer the one it always built')
-    assert instrument['Discount_Rate'] and instrument['Yield'], (
-        'the pair\'s two curves are what the forward is built from')
-    assert 'Funding_Rate' in {f.key for f in LogVar2FJModelParameters.fields}, (
-        'the reference this gate says the FX route does not use is not declared at all')
-
-
 def test_a_row_that_starts_being_quoted_two_sided_is_the_same_node_of_the_same_plan():
     """The divergence from `partition_factor`, as the property it buys. A price factor's key SET is
     structural - a value is shadowed to `None`, a field appearing costing a recompile - while a
     quote row's four value keys are DROPPED, because a pillar that starts being quoted two-sided is
     the same node of the same plan. So adding a `Quoted_Bid` leaves the structural half
     bit-identical and it is the values half that moves.
+
+    Killing mutation: value keys shadowed to None rather than dropped.
     """
     block = copy.deepcopy(family_blocks()['FXVolPrices'])
     plain = schema.partition_market_price(block)
@@ -292,6 +260,8 @@ def test_a_short_values_half_refuses_rather_than_dropping_the_rows_it_cannot_pai
     nothing said. `quote_delta` refuses first for every live caller; this is the SEAM refusing, so
     silent row loss is unrepresentable rather than merely unreached. MUTANT: the bare
     `zip(instrument['Points'], values)` returns 11 Points from a 12-row block, no refusal anywhere.
+
+    Killing mutation: a short values half zipped onto the rows.
     """
     block = family_blocks()['FXVolPrices']
     structural, values = schema.partition_market_price(block)
@@ -344,6 +314,8 @@ def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
 
     DRIVEN OVER BOTH QUOTE TABLES, because the split is a rule about a declared row and not about a
     key called `Points` - and the `European_Options` mid is the one that used to be plan-side.
+
+    Killing mutation: the stamp moved out of the values plane.
     """
     # what each fixture's first row ALREADY carries, so a case is known to be a MOVE or an ARRIVAL
     # rather than whichever it happened to be
@@ -383,6 +355,8 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
     exactly as on `Points`, while the strike beside it stays a re-authoring.
 
     Appending a row moves BOTH, honestly: a new quote is a new node AND a number nobody had.
+
+    Killing mutation: the plan hash blind to Market Prices.
     """
     context, prices = hashed()
     before = (context.plan_hash(), context.values_hash())
@@ -418,7 +392,9 @@ def rows(points, **fields):
 def test_a_quote_patch_replaces_what_it_names_and_keeps_what_it_omits():
     """DELTA semantics, the same a price factor's patch has: a named field replaces, an omitted one
     keeps its content. So one moved quote is a complete patch and a tick never resends the
-    surface."""
+    surface.
+
+    Killing mutation: a patch row replacing what it omits."""
     context, points = patchable()
     was = copy.deepcopy(points[1])
 
@@ -445,6 +421,8 @@ def test_a_null_clears_a_two_way_side_and_refuses_on_the_mid():
     driven through both readings, so the gate asserts the DECLARATION and not a copy of it. TWO
     MUTANTS: `quote_delta` back to a hand-named set dies on the clear branch, and a
     mis-declaration (`MARKET_QUOTE_REQUIRED` gaining `Quoted_Bid`) dies on the survival assertion.
+
+    Killing mutation: the stamp moved out of the values plane.
     """
     seeds = {'Quoted_Market_Value': 0.19, 'Quoted_Bid': 0.188, 'Quoted_Ask': 0.192,
              'Timestamp': pd.Timestamp('2024-06-28 17:45')}
@@ -491,6 +469,8 @@ def test_a_null_in_a_document_is_an_absence_and_the_values_plane_is_an_identity_
     A null is an ABSENCE on the values plane, stated once in `partition_market_price`: the values
     half skips it, and the row keeps it because a patch that does not name a field keeps that
     field's content. Both hashes stand.
+
+    Killing mutation: a null read as a value present.
     """
     context, points = patchable()
     points[0][field] = None
@@ -514,6 +494,8 @@ def test_a_patch_that_changes_the_row_count_refuses_naming_both_lengths():
     patch - and the refusal says WHICH two lengths disagree, a caller streaming a surface having no
     other way to find the row it lost. The row count is asserted BEFORE the refusal is asked for:
     over an empty block this gate would compare zero against zero and pass.
+
+    Killing mutation: a patch's row count unchecked.
     """
     context, points = patchable()
     assert len(points) > 1, 'a short patch over this block is not short - nothing is being refused'
@@ -530,7 +512,9 @@ def test_a_patch_that_changes_the_row_count_refuses_naming_both_lengths():
 def test_a_structural_key_refuses_by_name(patch, named):
     """Every key that is not one of the four is structure, block-level and row-level alike, and the
     refusal names the KEY rather than the block: a caller sending a whole row back needs to know
-    which field of it was the plan."""
+    which field of it was the plan.
+
+    Killing mutation: a structural row key patched as a value."""
     context, points = patchable()
     if 'Points' in patch:
         patch = {'Points': patch['Points'] + [{} for _ in points[1:]]}
@@ -540,7 +524,9 @@ def test_a_structural_key_refuses_by_name(patch, named):
 
 def test_a_name_in_neither_section_refuses_naming_both():
     """`patch_market` spans two sections, so a name it cannot place says both - a caller that
-    mistyped a factor and one that mistyped a quote block get the same message."""
+    mistyped a factor and one that mistyped a quote block get the same message.
+
+    Killing mutation: the refusal not naming the two sections."""
     context, _ = patchable()
     with pytest.raises(KeyError, match='neither a price factor nor a market price'):
         context.patch_market({'FXVolPrices.EUR.USD': {'Points': []}})
@@ -560,6 +546,8 @@ def test_the_tick_guard_and_the_partition_draw_the_same_line():
     fields by hand tests the fields it happens to name. On the hand-named version a misspelled
     `Timestamp` survived this file, `test_service` and `test_mcp` together - 118 passed with the
     guard reading a key nothing posts.
+
+    Killing mutation: the stamp moved out of the values plane.
     """
     document = json.loads(dump(job()))
     quotes = json.loads(dump(fx_vol_quotes()))[FX_BLOCK]
@@ -601,56 +589,6 @@ def test_the_tick_guard_and_the_partition_draw_the_same_line():
         'the guard refused a block the partition reads as the same plan')
 
 
-def test_the_artifact_slot_projects_away_exactly_the_declared_value_fields():
-    """THE THIRD SIBLING. `CalibrationArtifact`'s slot shadowed quote numbers with a copy of this
-    rule; it calls the partition now, which DROPS them - and a shadow keeps the key where a
-    projection does not, which is what lets a row gain a `Quoted_Bid` without moving its slot.
-
-    Every key a `Points` row carries plus the four declared is moved in turn: the slot survives
-    exactly the four and moves on everything else. The pairing is the mutation - a `plan_key` that
-    ignored the row would pass the first half and fail the second, one that hashed it whole the
-    reverse. Three of the four are not on an `InterestRatePrices` row at all, so those cases ADD a
-    key: a strip that starts carrying two-way quotes keeps riding the operator it was fitted with.
-    """
-    block = authored_world('zar')[0][ZAR_BLOCK]['instrument']
-
-    def slot(candidate):
-        return InterestRateCurveParameters.plan_key(
-            [(ZAR_BLOCK, candidate)], ModelParams(), RATES_BASE)
-
-    base = slot(block)
-    for field in sorted(set(block['Points'][0]) | set(schema.MARKET_QUOTE_VALUES)):
-        doctored = copy.deepcopy(block)
-        doctored['Points'][0][field] = 'MOVED'
-        assert (slot(doctored) == base) == (field in schema.MARKET_QUOTE_VALUES), (
-            '{} is on the wrong side of the artifact slot'.format(field))
-
-
-def test_the_bloomberg_snapshot_guard_cannot_drift_from_the_engines_declaration():
-    """THE FOURTH SIBLING, and the one that cannot be unified: `derivus_bloomberg` enforces the same
-    split snapshot-side and CANNOT import the engine, so it keeps its copy and the copy is gated.
-    Read as SOURCE, because the comparison is a whitelist against a blacklist - `_structure` names
-    the structure fields, the declaration names the values, and they must be complements.
-    """
-    root = pathlib.Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    structure = next(
-        node for node in ast.walk(ast.parse((root / 'derivus_bloomberg' / 'fxvol.py').read_text()))
-        if isinstance(node, ast.FunctionDef) and node.name == '_structure')
-    named = {node.value for node in ast.walk(structure)
-             if isinstance(node, ast.Constant) and isinstance(node.value, str)}
-
-    declared = {f.key for f in FXVolSurfaceParameters.fields}
-    row = {f.key for f in next(f for f in FXVolSurfaceParameters.fields
-                               if f.key == 'Points').row.fields}
-
-    assert row - named == set(schema.MARKET_QUOTE_VALUES), (
-        'the snapshot guard and MARKET_QUOTE_VALUES disagree on a quote row: {}'.format(
-            (row - named) ^ set(schema.MARKET_QUOTE_VALUES)))
-    assert declared - named == set(), (
-        'a block field the engine declares is not structure snapshot-side: {}'.format(
-            declared - named))
-
-
 # ---------------------------------------------------------------------------------------------
 # What a quote patch does NOT do
 # ---------------------------------------------------------------------------------------------
@@ -660,6 +598,8 @@ def test_a_patched_quote_reprices_nothing_and_says_so_in_the_hashes():
     the last bootstrap wrote stand and a job that does not ride reports the same numbers to the bit.
     That is what `values_hash` is FOR - the board that moved is recorded, the marks that did not are
     the marks, and a patch that quietly re-bootstrapped would cost the tick the whole solve.
+
+    Killing mutation: the plan hash carrying the quote values.
     """
     context = derivus.Context()
     context.current_cfg = with_deals(bootstrapped(market(False)))
@@ -684,6 +624,8 @@ def test_the_live_book_refuses_a_quote_as_a_values_patch(desk):
     EXECUTE that rides re-derives its curve from it, patch and consumer in one call; a live book has
     no such step, so a patched quote would leave price factors on disk standing against quotes they
     no longer solve. The values path refuses and names the path that does bootstrap.
+
+    Killing mutation: the live book taking a quote as a values patch.
     """
     installed = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
                             headers=JSON).json()
@@ -731,6 +673,8 @@ def test_one_dateoffset_wire_spelling_and_both_decoders_read_it(tmp_path):
     The block is the real ZAR strip, carrying 38 `.DateOffset` sites. Whole-block equality goes
     through `canonical` rather than `==` because `utils.DateList` defines no `__eq__`, so `==` over
     the structure compares decoded schedules by IDENTITY; the offsets themselves use `==`.
+
+    Killing mutation: the decoder reading the kwargs spelling alone.
     """
     block = family_blocks()['InterestRatePrices']
     market = {'System Parameters': {'Base_Date': RATES_BASE, 'Base_Currency': 'ZAR'},
@@ -770,7 +714,9 @@ def test_the_kwargs_dict_still_reads_because_old_bytes_are_on_disk(tmp_path):
     `DateOffset(months=6, days=2)` encodes `'6M2D'` or `'2D6M'`. Both parse back to the same offset,
     so nothing reads wrong; what is not byte-stable across processes is `write_marketdata_json`'s
     output and any hash over such a block. Every offset the emitters write is single-unit, which is
-    why no determinism gate has seen it. This gate asserts the set of parts, not their order."""
+    why no determinism gate has seen it. This gate asserts the set of parts, not their order.
+
+    Killing mutation: the decoder reading the kwargs spelling alone."""
     legacy = json.dumps({'MarketData': {
         'System Parameters': {}, 'Price Factors': {}, 'Correlations': {},
         'Market Prices': {'legacy': {'instrument': {

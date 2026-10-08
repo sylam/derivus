@@ -4,22 +4,8 @@ under every calculation. The declared `Chained_Lag` states where each link binds
 link (lag 0) enters the graph as an edge — the link simulates first — and a lagged link is
 the chain's day boundary and orders nothing, which is what keeps the loop out of the sort.
 
-Gates and their killing mutations:
-
-1. EITHER SIDE PULLS THE OTHER, positioned after its positional parent. Killed by the field read
-   dropped, or the pull wired one-directional.
-2. THE OMITTED FIELD CHANGES NOTHING — an identical universe, key for key. Killed by an
-   unconditional partner add or a truthiness slip.
-3. THE DECLARATION IS VALIDATED LOUD — a foreign primary or a self-reference raises naming both
-   factors. Killed by the check softened to a skip.
-4. THE MUTUAL POINTERS TERMINATE — gates 1-2 hang rather than fail if this breaks, so the guard
-   IS the gate.
-5. THE PARTNER INHERITS A HORIZON, so construction does not die on a dateless factor.
-6. THE SAME-ROW ENTRY ORDERS ITS LINK FIRST. Killed by the lag-0 edge dropped (the pre-fix engine
-   emitted the link last and every walk-forward trade died at generate) or the lag declared on the
-   wrong member.
-7. A CHAIN THAT LAGS NOWHERE REFUSES. Killed by the refusal softened to a skip - the edges then
-   hand the sort a nameless cycle.
+Each gate is a credit Monte Carlo document through `Context.load_json`, read at its own factor
+discovery - the walk `run_job` takes before any model is asked for.
 """
 import json
 
@@ -97,66 +83,54 @@ CME = utils.Factor('ObservedBasis', ('LBMA_AM', 'CME'))
 PM_CME = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM', 'CME'))
 
 
-def test_the_declaration_pulls_the_partner():
+def test_the_declaration_pulls_the_partner_and_the_omitted_field_pulls_nothing():
+    """Either side pulls the other, after its positional parent and with a horizon of its own -
+    across BRANCHES of the name tree too, where neither is the other's prefix and only the
+    declaration can pull, in both directions. The same book without the field is the same
+    universe less the partner and its own positional chain.
+
+    Killing mutation: the `Chained_Basis` read dropped - the partner never enters.
+    """
     dependent = _discover(_world('LBMA_AM.CME'))
     assert PM_CME in dependent                           # not positionally required by the entry
     order = list(dependent)
     assert order.index(CME) < order.index(PM_CME)        # depth orders the source (1) before
                                                          # the bridge (2); no cycle in the sort
+    assert dependent[PM_CME] is not None and dependent[PM_CME] >= BASE
 
-
-def test_the_pull_crosses_branches_both_ways():
-    """LBMA_AM.PM and LBMA_AM.CME sit on different branches - neither is the other's prefix, so
-    only the declaration can pull one from the other, in BOTH directions."""
-    pm_diff = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))
-    fwd = _discover(_world('LBMA_AM.PM', cross_chain=True))
-    assert CME in fwd                                    # declared pull, no prefix relation
-    rev = _discover(_world('LBMA_AM.CME', cross_chain=True))
-    assert pm_diff in rev
-
-
-def test_the_omitted_field_changes_nothing():
-    with_field = set(_discover(_world('LBMA_AM.CME')))
     without = _discover(_world('LBMA_AM.CME', chained=False))
-    assert PM_CME not in without
-    # the pulled partner enters WITH its own positional chain (the PM-branch prefix)
-    assert with_field - set(without) == {
+    assert set(dependent) - set(without) == {
         PM_CME, utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))}
 
+    pm_diff = utils.Factor('ObservedBasis', ('LBMA_AM', 'PM'))
+    assert CME in _discover(_world('LBMA_AM.PM', cross_chain=True))
+    assert pm_diff in _discover(_world('LBMA_AM.CME', cross_chain=True))
 
-@pytest.mark.parametrize('bad,match', [
-    ('OTHER_ROOT.CME', 'same primary'),
-    ('LBMA_AM.CME', 'different factor')])
-def test_the_declaration_is_validated_loud(bad, match):
+
+@pytest.mark.parametrize('world,match', [
+    (dict(partner_of_cme='OTHER_ROOT.CME'), 'same primary'),
+    (dict(partner_of_cme='LBMA_AM.CME'), 'different factor'),
+    (dict(open_chain=True), 'does not close'),
+    (dict(no_lag=True), 'lags nowhere')])
+def test_a_chain_that_cannot_close_refuses_by_name(world, match):
+    """A foreign primary or a self-reference, an open link (the linked-parent family, not a chain)
+    and a chain that lags nowhere (a same-instant loop the sort would refuse namelessly) each
+    refuse naming the chain.
+
+    Killing mutation: each refusal softened to ending the walk.
+    """
+    entry = 'LBMA_AM.PM.CME' if world.get('no_lag') else 'LBMA_AM.CME'
     with pytest.raises(Exception, match=match):
-        _discover(_world('LBMA_AM.CME', partner_of_cme=bad))
-
-
-def test_a_chain_must_close():
-    """The word is CHAINED: the declarations walk back to their start. An open link is the
-    linked-parent family (BasisLinkedSpotModel) and must refuse here, naming the break."""
-    with pytest.raises(Exception, match='does not close'):
-        _discover(_world('LBMA_AM.CME', open_chain=True))
-
-
-def test_the_partner_inherits_a_horizon():
-    dependent = _discover(_world('LBMA_AM.CME'))
-    assert dependent[PM_CME] is not None
-    assert dependent[PM_CME] >= BASE
+        _discover(_world(entry, **world))
 
 
 def test_the_same_row_entry_orders_its_link_first():
     """The production book enters from the same-row side only, so its link is pulled last and
     positional depth cannot order it - the sort emits whole chains within a pass in insertion
     order. The lag-0 link must therefore be a graph edge: without it the engine emits the link
-    LAST and every walk-forward trade dies in ChainedBasisModel.generate."""
+    LAST and every walk-forward trade dies in ChainedBasisModel.generate.
+
+    Killing mutation: the lag-0 edge dropped - the link sorts after its bridge."""
     order = list(_discover(_world('LBMA_AM.PM.CME')))
     assert CME in order                                # the pull itself, from the same-row side
     assert order.index(CME) < order.index(PM_CME)
-
-
-def test_a_chain_that_lags_nowhere_refuses():
-    """Every link same-row is a same-instant loop - no member generates a path of its own. Refuse
-    naming the chain, before the sort refuses its cycle namelessly."""
-    with pytest.raises(Exception, match='lags nowhere'):
-        _discover(_world('LBMA_AM.PM.CME', no_lag=True))

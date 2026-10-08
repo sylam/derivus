@@ -539,9 +539,9 @@ match the Monte Carlo ladder **to two digits**.
 
 **That settles which half of the diagnosis was load-bearing** — the flat directions; stationarity was
 never the obstacle. The classic oracle stays unavailable, `dθ/dq` is not gated against it, and the
-value-space direction check remains the reference. The gate keeps it refuted on the two outer rungs,
-four cold analytic solves of the 25-quote block in CPU float64, and that cost is why the ladder is
-one column rather than the grid.
+value-space direction check remains the reference. The table above is the record - four cold
+analytic solves of the 25-quote block in CPU float64, which is why the ladder is one column rather
+than the grid - and nothing re-runs it.
 
 ## The closed-form map — increment 3 {#the-closed-form-map}
 

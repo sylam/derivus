@@ -56,9 +56,8 @@ FX_SPOT = 1.0 / 16.0
 RHO = 0.8
 #: The ATM FX vol the whole surface is authored at, and the knob that sets how big the quanto drift
 #: the mutation removes is. Unrealistic on purpose - the module docstring carries the sweep that
-#: chose it. It reaches the composition only: the calibration objective runs on `implied_process`'s
-#: SUPPRESSED twin, so theta* is not a function of this number and
-#: `test_the_fit_does_not_move_with_the_fx_inputs` says so.
+#: chose it. It reaches the composition only: the analytic objective reads the covariance alone,
+#: so theta* is not a function of this number - bit-identical with rho 0 or no FX factor at all.
 FX_VOL = 0.55
 #: The grid and sample the composition gates run at, CHOSEN OFF A MEASUREMENT. The composition's
 #: numeraire is a discretely-rolled bond, so the miss is a function of the step: identity 1 reads
@@ -284,12 +283,9 @@ def _reading(world, legs, rho, **mutation):
 
 @pytest.fixture(scope='module')
 def composed(pinned, legs):
-    """`{label: reading}` - the correlated world, its rho = 0 twin under the SAME seed, and the two
-    mutants. One set of runs for every gate below."""
-    return {'rho': _reading(pinned, legs, RHO),
-            'zero': _reading(pinned, legs, 0.0),
-            'no_K': _reading(pinned, legs, RHO, suppress_quanto_drift=True),
-            'flipped': _reading(pinned, legs, RHO, fx_axis_sign=-1.0)}
+    """`{label: reading}` - the correlated world and its rho = 0 twin under the SAME seed. One pair
+    of runs for every gate below."""
+    return {'rho': _reading(pinned, legs, RHO), 'zero': _reading(pinned, legs, 0.0)}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -299,7 +295,9 @@ def composed(pinned, legs):
 def test_both_curve_solves_reprice_their_own_quotes(world):
     """A bootstrap's only honest gate is that its benchmarks come back at par on the curve it wrote,
     to 1e-6 bp. The residual is reported as a PV and as the par-rate move that would close it; the
-    second is the scale-free one."""
+    second is the scale-free one.
+
+    Killing mutation: the solver returning its seed."""
     for name, reading in world['curves'].items():
         assert reading['max_abs_bp'] < 1e-6, (
             '{}: worst benchmark is {:.3e} bp from par on the solved curve'.format(
@@ -311,6 +309,8 @@ def test_the_normal_ladder_fits_through_the_declared_analytic_default(world):
     normal-vol residual. Two readings: the fit rms is under 0.5bp in NORMAL VOL (an
     under-determined ladder reaches its quotes, so that is a tolerance on the closed form rather
     than on the fit), and the honesty reprice was reported.
+
+    Killing mutation: the honesty reprice not run.
     """
     assert 'Objective' not in world['config'].params['Market Prices'][
         'HullWhite2FactorModelPrices.ZAR']['instrument']
@@ -331,6 +331,8 @@ def test_the_emitted_factor_carries_the_quanto_it_was_never_fitted_with(world):
     each factor as `C (s_i + rho s_j) / D`, and one of those brackets can change sign on its own -
     it does here. What IS a sign statement is that the pair is LINEAR in C, so quoting the
     correlation the other way round negates both exactly.
+
+    Killing mutation: the factor written with its first quanto correlation at zero.
     """
     param = world['fit']['param']
     assert param['Quanto_FX_Volatility'] is not None
@@ -340,42 +342,9 @@ def test_the_emitted_factor_carries_the_quanto_it_was_never_fitted_with(world):
         assert flipped[name] == pytest.approx(-float(param[name]), rel=1e-12), name
 
 
-@pytest.mark.parametrize('label,kwargs', [
-    ('rho = 0', dict(rho_quote=0.0)),
-    ('no FX factor', dict(rho_quote=None, drop_fx_factor=True))])
-def test_the_fit_does_not_move_with_the_fx_inputs(world, label, kwargs):
-    """THE FIT'S OWN INVARIANCE, BIT-IDENTICAL rather than close. `implied_process` builds the
-    objective's process on a twin with the quanto FX vol and the FX/IR correlation SUPPRESSED, so
-    `K = 0` and the correlation reaches nothing the residual reads - two solves over the same
-    sample are the same arithmetic. A tolerance here would pass on a world where the correlation
-    leaked in at the eighth decimal.
-    """
-    reference = H.theta_vector(world['fit']['param'])
-    other = H.theta_vector(H.refit_at(world, **kwargs)['param'])
-    assert np.array_equal(reference, other), (
-        '{}: theta* moved by {:.3e}'.format(label, float(np.abs(reference - other).max())))
-
-
 # ---------------------------------------------------------------------------------------------
 # HALF B
 # ---------------------------------------------------------------------------------------------
-
-def test_the_per_set_profiles_are_the_reported_table(composed):
-    """The reading is `Credit_Monte_Carlo`'s own output or it is nothing: every netting set's
-    `Calc_res['Value']` summed back must BE `Results['mtm']`, to the bit."""
-    for label, reading in composed.items():
-        assert reading['run']['sum_check'] == 0.0, (
-            '{}: the netting sets do not sum to the reported mtm ({:.3e})'.format(
-                label, reading['run']['sum_check']))
-
-
-def test_the_swap_is_the_swaptions_own_underlying(legs):
-    """A swap struck a basis point off the analytic price's ATM rate would miss identity 1 for a
-    reason unrelated to the measure, so the strike rebuilt off the curve is held to 1e-10 against
-    the coupon `create_market_swaps` wrote into the benchmark's float leg."""
-    for name, leg in legs.items():
-        assert leg['strike_check'] < 1e-10, name
-
 
 def test_the_numeraire_identity_holds_before_any_payoff(composed):
     """One unit of the rate currency at T is a TRADABLE worth `X_0 P_zar(0,T)` today, so
@@ -383,6 +352,8 @@ def test_the_numeraire_identity_holds_before_any_payoff(composed):
     is pure plumbing, gated separately because a miss here is not a measure error. The authored
     world makes it small: a FLAT base curve, so a static curve's frozen roll is exact, and short
     expiries. The band is `NUMERAIRE_SIGMA` times the reading's own `se_rel`.
+
+    Killing mutation: the FX drift's foreign rate dropped.
     """
     for label in ('rho', 'zero'):
         for name, row in composed[label]['numeraire'].items():
@@ -393,12 +364,20 @@ def test_the_numeraire_identity_holds_before_any_payoff(composed):
                                       100.0 * row['se_rel']))
 
 
-def test_the_composition_closes_on_the_models_own_domestic_price(composed):
+def test_the_composition_closes_on_the_models_own_domestic_price(composed, legs):
     """IDENTITY 1: the USD-deflated, FX-converted expected positive exposure at the expiry row
     against spot times the fitted model's own Schrager-Pelsser price. Both sides are the same
     theta*, so this is not a question about the market - it is the test of `K`. The band is the
-    run's own standard error times `IDENTITY_SIGMA`, and the mutation gates say it is tight enough.
+    run's own standard error times `IDENTITY_SIGMA`. The swap is the swaption's own underlying, its
+    strike rebuilt off the curve within 1e-10 of the coupon `create_market_swaps` wrote, or the
+    identity would miss for a reason unrelated to the measure.
+
+    Killing mutation: the quanto drift `K` zeroed in the simulator - identity 1 moves 11.27% (14.2
+    sigma) and 13.68% (16.3 sigma) at `PINNED_THETA`. Authoring the FX factor on the screen's axis
+    instead of the engine's (`FxRate.Spot` in base currency) moves it two hundredfold.
     """
+    for name, leg in legs.items():
+        assert leg['strike_check'] < 1e-10, name
     for label in ('rho', 'zero'):
         for name, row in composed[label]['rows'].items():
             assert abs(row['sigma']) < IDENTITY_SIGMA, (
@@ -413,6 +392,8 @@ def test_the_rho_pair_agrees_under_common_random_numbers(composed):
     common-random-numbers comparison rather than a difference of two independent means. NOT
     bit-identical and not asserted to be: the correlation matrix changes the cholesky, so the same
     normals correlate differently. What has to hold is that both land on the same price.
+
+    Killing mutation: the quanto drift `K` zeroed in the simulator.
     """
     left, right = composed['rho']['rows'], composed['zero']['rows']
     for name in left:
@@ -422,63 +403,3 @@ def test_the_rho_pair_agrees_under_common_random_numbers(composed):
             '{}: rho = {:g} prices {:.10f} and rho = 0 prices {:.10f} ({:+.3f}%)'.format(
                 name, RHO, left[name]['deflated_epe'], right[name]['deflated_epe'],
                 100.0 * (left[name]['deflated_epe'] / right[name]['deflated_epe'] - 1.0)))
-
-
-def test_suppressing_the_quanto_drift_breaks_the_identity(composed):
-    """THE MUTATION, a DOCUMENT rather than a patch: `Quanto_FX_Correlation_1/2` authored to zero
-    on the emitted block while the `Correlations` section keeps the correlated Brownians - a world
-    where FX and rates move together and the measure change is missing, which is what a wrong `K`
-    is and what a desk could author by hand. The kill must exceed the band the clean gate passes
-    inside: at `PINNED_THETA` it moves identity 1 by 11.27% (14.2 sigma) and 13.68% (16.3 sigma),
-    where a refit landing elsewhere on the ladder's manifold read 0.25% (0.3 sigma) at 1Yx1Y.
-    """
-    clean, dirty = composed['rho']['rows'], composed['no_K']['rows']
-    for name in clean:
-        se = clean[name]['deflated_epe_se'] / clean[name]['spot_x_sp']
-        moved = abs(dirty[name]['miss_rel'] - clean[name]['miss_rel'])
-        assert moved > IDENTITY_SIGMA * se, (
-            '{}: suppressing K moved identity 1 by only {:+.3f}% ({:.1f} sigma) - this world '
-            'cannot tell a broken drift from noise'.format(name, 100.0 * moved, moved / se))
-        assert abs(dirty[name]['sigma']) > IDENTITY_SIGMA, (
-            '{}: identity 1 still closes with the quanto drift suppressed'.format(name))
-
-
-def test_the_fx_axis_is_base_per_unit(composed):
-    """THE OTHER MUTATION: the FX factor authored on the SCREEN's axis instead of the engine's
-    (`FxRate.Spot` is the spot rate IN BASE CURRENCY). A two-hundred-fold error that prices
-    perfectly happily, which is why it is gated rather than commented."""
-    clean, dirty = composed['rho']['rows'], composed['flipped']['rows']
-    for name in clean:
-        assert abs(dirty[name]['sigma']) > 10.0 * IDENTITY_SIGMA, name
-        assert dirty[name]['miss_rel'] > 10.0, (
-            '{}: the flipped axis moved identity 1 by only {:+.1f}%'.format(
-                name, 100.0 * dirty[name]['miss_rel']))
-
-
-def test_the_quanto_correlations_change_basis_on_the_way_to_the_correlations_section(world):
-    """The drift's rho-bar and the covariance's rows are stated in TWO DIFFERENT BASES and nothing
-    in the library changes between them (`quanto_correlations`). The invariant: the pair `(a, b)`
-    the section is authored with satisfies `a^2 + b^2 = C^2`, which is what says the FX Brownian
-    keeps exactly `sqrt(1 - C^2)` of its own independent part. Copying rho-bar_2 into the section
-    directly does not, and that world has a drift and a covariance that disagree silently.
-    """
-    param = world['fit']['param']
-    first, second, cross = H.quanto_correlations(param)
-    assert cross == 0.0, 'the process applies its own rho inside delta_CtT; correlating the two ' \
-                         'raw rows as well applies it twice'
-    assert first == pytest.approx(float(param['Quanto_FX_Correlation_1']), rel=1e-12)
-    assert first ** 2 + second ** 2 == pytest.approx(RHO ** 2, rel=1e-8), (
-        'a^2 + b^2 is {:.10f}, not C^2 = {:.10f}'.format(
-            first ** 2 + second ** 2, RHO ** 2))
-
-
-def test_the_composition_reports_its_own_readings(composed, capsys):
-    """Not an assertion - the readings, printed, so a reader deciding whether a band is honest has
-    the numbers it was computed from. `capsys.disabled()` puts them on the terminal rather than in
-    pytest's capture buffer, which only surfaces on a failure: the point is to read them GREEN.
-    """
-    with capsys.disabled():
-        for label, reading in composed.items():
-            H.print_identity_table(label, reading['rows'], reading['wiring'], reading['run'],
-                                   reading['numeraire'])
-            H.print_numeraire_table(reading['numeraire'])

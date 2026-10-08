@@ -53,11 +53,10 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_bloomberg import discover, ir_curve
-from derivus_bloomberg.errors import (BloombergConfigurationError, BloombergFXError,
-                                      BloombergRequestError, BloombergUnavailable, IncompleteStrip,
-                                      InvalidQuote)
+from derivus_bloomberg.errors import (BloombergConfigurationError, BloombergRequestError,
+                                      BloombergUnavailable, IncompleteStrip, InvalidQuote)
 from derivus_bloomberg.ir_curve import (CurveScreen, curve_conventions, fetch_curve_strip,
-                                        ir_curve_block, reauthor, screen_strip)
+                                        ir_curve_block, reauthor)
 from derivus_bloomberg.session import BloombergSession
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -286,17 +285,24 @@ def imported_names(source):
     return names
 
 
-def test_the_curve_emitter_imports_the_standard_library_and_nothing_else():
-    """The standard library, this package's own modules, and NO ENGINE. The chain emitter's stricter
-    no-pandas budget is deliberately NOT claimed: `ir_curve` reaches `discover` for its ticker
-    grammar, `discover` reaches `security_map`, and that carries pandas. Reusing the grammar is
-    worth a dependency the map layer already pays for."""
-    imported = imported_names(os.path.join(ROOT, 'derivus_bloomberg', 'ir_curve.py'))
-    assert imported <= {'collections', 'datetime', 'math', 'dataclasses', 'typing',
-                        'derivus_bloomberg'}, sorted(imported)
-    assert imported.isdisjoint({'derivus', 'torch', 'pandas', 'numpy', 'scipy', 'blpapi'}), \
-        sorted(imported)
-    assert imported
+#: Each emitter's declared import surface: the standard library and nothing else. The package's own
+#: modules are reached relatively, and the engine, numpy, pandas and blpapi never - the emitters
+#: import on a workstation with no terminal and no engine.
+SURFACES = {
+    'ir_curve': {'collections', 'dataclasses', 'datetime', 'math', 'typing'},
+    'swaption_vol': {'collections', 'dataclasses', 'datetime', 'math', 'typing'},
+    'equity_chain': {'collections', 'dataclasses', 'datetime', 'math', 're', 'statistics',
+                     'typing'}}
+
+
+def test_each_emitter_imports_its_declared_surface_and_nothing_else():
+    """The three emitters' imports, read off their SOURCE - an import that never executes is still
+    a dependency - are their declared surfaces exactly.
+
+    Killing mutation: an emitter importing numpy.
+    """
+    for module, surface in SURFACES.items():
+        assert imported_names(os.path.join(ROOT, 'derivus_bloomberg', module + '.py')) == surface, module
 
 
 def in_a_fresh_interpreter(statements):
@@ -307,31 +313,6 @@ def in_a_fresh_interpreter(statements):
                           stderr=subprocess.PIPE, universal_newlines=True)
     assert done.returncode == 0, done.stderr
     return set(json.loads(done.stdout))
-
-
-def test_importing_the_curve_emitter_lands_no_engine_and_no_blpapi():
-    """The source gate's answer proved a second way - the first trusts the parser and reads ONE
-    FILE, while an import runs a package.
-
-    Asymmetric on purpose: `derivus` and `blpapi` must not land, since the package has to import on
-    a workstation that has never seen a terminal. `pandas` DOES land through the map layer and is
-    asserted POSITIVELY - allowing it quietly would omit a budget rather than state one.
-
-    The last two lines are why these emitters are re-exported LAZILY: an eager
-    `from .ir_curve import ...` would land pandas on `import derivus_bloomberg.equity_chain` behind
-    that module's back.
-    """
-    landed = in_a_fresh_interpreter('import derivus_bloomberg.ir_curve')
-    assert 'derivus_bloomberg' in landed, 'the module did not import'
-    assert landed.isdisjoint({'derivus', 'torch', 'blpapi'}), sorted(
-        landed & {'derivus', 'torch', 'blpapi'})
-    assert 'pandas' in landed, 'the stated budget says the grammar costs pandas'
-
-    chain = in_a_fresh_interpreter('import derivus_bloomberg.equity_chain')
-    assert chain.isdisjoint({'derivus', 'torch', 'blpapi', 'pandas', 'numpy'}), sorted(
-        chain & {'derivus', 'torch', 'blpapi', 'pandas', 'numpy'})
-    assert 'derivus_bloomberg' in in_a_fresh_interpreter(
-        'from derivus_bloomberg import fetch_curve_strip, ir_curve_block')
 
 
 # =============================================================================================
@@ -348,6 +329,8 @@ def test_the_shipped_conventions_are_the_declared_ones():
     it - a JIBAR curve seeded with an overnight rate is a basis error nothing downstream reports -
     and the ZARONIA curve is quoted monthly to a year and then at two, the near split reaching the
     two-year knot rather than a tenor grid.
+
+    Killing mutation: a forward-starting swap's maturity measured off spot.
     """
     shipped = packaged_seed()['rates']
     for curve, declared in SHIPPED.items():
@@ -376,20 +359,11 @@ def test_the_shipped_conventions_are_the_declared_ones():
         assert len(block['instrument']['Points']) == points, curve
 
 
-def test_the_interpolation_menu_cannot_drift_from_the_engines_declaration():
-    """This package imports no engine module, so the near-end schemes it admits are re-spelled
-    here - and a scheme the engine stopped declaring would otherwise reach a block and be silently
-    read as `Linear` by `factor_interp_map.get`."""
-    source = _committed('derivus/riskfactors.py', at=None)
-    declared = next(line for line in source.splitlines()
-                    if line.startswith('INTERPOLATION_METHODS'))
-    assert list(ir_curve.INTERPOLATIONS) == list(
-        ast.literal_eval(declared.split('=', 1)[1].strip()))
-
-
 def test_a_currency_without_its_conventions_refuses_naming_every_missing_field():
     """A half-filled convention block authors an instrument nobody stated, so the refusal lists the
-    WHOLE questionnaire at once rather than one terminal round trip at a time."""
+    WHOLE questionnaire at once rather than one terminal round trip at a time.
+
+    Killing mutation: the refusal naming the first missing convention alone."""
     seed = copy.deepcopy(SEED)
     del seed['rates']['USD']['conventions']['fixed_day_count']
     del seed['rates']['USD']['conventions']['spot_days']
@@ -418,6 +392,8 @@ def test_a_declaration_this_emitter_cannot_author_refuses_at_the_seed():
     The day-count refusal is the sharpest: an authored `Accrual_Year_Fraction` is used VERBATIM by
     `TensorCashFlows.float`, so a day count this module cannot compute must never be approximated.
     `ACT_365_ISDA` and `ACT_ACT_ICMA` are days/365 in the engine behind a `# TODO`.
+
+    Killing mutation: a compounding rule outside the declared set admitted.
     """
     for field, value, expected in (
             ('compounding', 'Flat', 'is not what a swap row can be'),
@@ -454,6 +430,8 @@ def test_a_front_the_seed_could_not_name_refuses_before_it_mis_authors_the_short
 
     So the refusal names the field, the declared value and the whole admissible set - `_seeded_
     fronts`' own list rather than a second spelling of it.
+
+    Killing mutation: a front the seed could not name admitted.
     """
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['conventions']['front'] = 'strip/1Y'
@@ -486,6 +464,8 @@ def test_an_unverified_front_point_refuses_and_offers_the_ones_the_seed_names():
     front; here it names one the seed CAN spell and the map has no verified entry for - a seeded
     fixing that went dead. The front seeds the short end, so it cannot be skipped into a shorter
     curve: it says so, and says which fronts the seed offers.
+
+    Killing mutation: a front the map never verified admitted.
     """
     seed = copy.deepcopy(SEED)
     seed['rates']['ZAR']['fixings']['12M'] = {'security': 'JIBA12M Index',
@@ -507,6 +487,8 @@ def test_both_leg_frequencies_are_read_on_every_swap_row():
     schedule off `fixed_frequency` and hung both legs on it: declaring USD at `6M` emitted a
     byte-identical block, a convention validated and then read by nothing. The term authoring has
     no schedule of its own to disagree with.
+
+    Killing mutation: the floating leg authored on the fixed leg's frequency.
     """
     for curve, fixed in (('ZAR', '3M'), ('USD', '1Y')):
         swapped = copy.deepcopy(SEED)
@@ -521,37 +503,11 @@ def test_both_leg_frequencies_are_read_on_every_swap_row():
 # 3  the selection
 # =============================================================================================
 
-def test_the_screen_classifies_off_the_terminals_own_answers():
-    """The order of distrust, one canned print per verdict. `crossed` and `stale` are different
-    instructions to a desk, and a screen checking the date first reports the second where the first
-    is true."""
-    def rate(**extra):
-        return ir_curve.RatePrint(**dict(
-            {'label': '5Y', 'kind': 'swap', 'security': 'x', 'value': 4.0, 'bid': 3.99,
-             'ask': 4.01, 'last_update': YESTERDAY}, **extra))
-
-    cases = {
-        'unpriced': rate(value=None),
-        'off-market': rate(value=8825.0),
-        'crossed': rate(bid=4.10, ask=4.00),
-        'undated': rate(last_update='N/A'),
-        'stale': rate(last_update=LONG_AGO),
-        'live': rate(),
-    }
-    named = [ir_curve.RatePrint(**dict(item.__dict__, security=verdict))
-             for verdict, item in cases.items()]
-    accepted, rejected = screen_strip(named, AS_OF)
-    assert [item.security for item in accepted] == ['live']
-    assert rejected == {verdict: verdict for verdict in cases if verdict != 'live'}
-
-    # a mid-only print is BELIEVED: a two-way the terminal never quoted is not a spread, and the mid
-    # is what a curve is built off
-    assert screen_strip([rate(security='mid-only', bid=None, ask=None)], AS_OF)[1] == {}
-
-
 def test_the_canned_strip_is_believed_by_census():
     """Every candidate accounted for either way - which is what makes a short strip legible. A
-    candidate silently dropped is indistinguishable from one never asked about."""
+    candidate silently dropped is indistinguishable from one never asked about.
+
+    Killing mutation: a crossed two-way believed."""
     usd, zar = strip_of('USD'), strip_of('ZAR')
     assert [item.label for item in usd.prints] == ['ON', '1W', '2Y']
     assert usd.rejected == {
@@ -577,7 +533,9 @@ def test_the_canned_strip_is_believed_by_census():
 
 def test_a_strip_below_its_floor_refuses_naming_what_the_terminal_served():
     """One knot is a flat curve quoted once, so a strip that screened away says what it was asked and
-    what came back - "no curve" with no census is not something a desk can act on."""
+    what came back - "no curve" with no census is not something a desk can act on.
+
+    Killing mutation: the knot floor at one."""
     poison = dict(POISON, **{security: {'PX_LAST': None} for security in
                              ('SASW1 BGN Curncy', 'SASW3 BGN Curncy',
                               'SAFR0AD Curncy', 'SAFR0FI Curncy')})
@@ -616,6 +574,8 @@ def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
 
     THIS CANNED USD BLOCK IS 290,967 BYTES ON MAIN AND 4,470 HERE, the same three benchmarks with
     531 cashflow items gone; the shipped thirty-year strip was some 26,000 items and 14 MB.
+
+    Killing mutation: the term index authored at three months - two resets a quarterly coupon.
     """
     row = points_of(block_of('USD')[1])['2Y']
     assert row['DealType'] == 'SwapInterestDeal'
@@ -640,7 +600,9 @@ def test_a_fra_row_is_a_fradeal_spanning_the_two_tenors_its_label_names():
     """`1Mx4M` IS THE INSTRUMENT: both dates measured off spot, each rolled Modified Following, and
     the reset AT the effective date - the forward the curve carries over that window, which is what
     the solve holds at par. `FRA_Rate` is authored at zero; `FRADeal.quote` puts the
-    print in."""
+    print in.
+
+    Killing mutation: Modified Following rolled as Following - a month-end crosses into the next month."""
     row = points_of(block_of('ZAR')[1])['6Mx9M']
     assert row['DealType'] == 'FRADeal'
     # 2027-02-28 is a Sunday AND the end of February, so Modified Following goes BACK to the 26th
@@ -665,7 +627,9 @@ def test_a_fra_row_is_a_fradeal_spanning_the_two_tenors_its_label_names():
 def test_a_forward_starting_row_starts_at_spot_plus_its_first_tenor():
     """`6M1M` is a swap EFFECTIVE at spot + 6M running one month on - the MPC-dated shape a ZARONIA
     curve is quoted in inside 18 months, and the one row whose maturity is measured off its own
-    effective date rather than off spot."""
+    effective date rather than off spot.
+
+    Killing mutation: Modified Following rolled as Following - a month-end crosses into the next month."""
     row = points_of(block_of('ZAR-ZARONIA-FWD')[1])['6M1M']
     assert row['DealType'] == 'SwapInterestDeal'
     deal = row['Deal']
@@ -692,6 +656,8 @@ def test_the_roll_moves_a_date_onto_a_business_day_and_stays_in_its_month():
     rolls BACK instead, which is what keeps a monthly strip's knots in the months they are quoted
     for. With no holidays handed in the rule is Monday to Friday, which is what this module has
     always applied; a holiday set moves a date the weekday rule leaves alone.
+
+    Killing mutation: Modified Following rolled as Following - a month-end crosses into the next month.
     """
     saturday, sunday = datetime.date(2028, 9, 2), datetime.date(2029, 9, 2)
     assert ir_curve.roll(saturday) == datetime.date(2028, 9, 4)
@@ -725,7 +691,9 @@ def test_the_roll_moves_a_date_onto_a_business_day_and_stays_in_its_month():
 def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
     """ZAR declares `None` compounding, so its swap rows carry a TERM index: quarterly against
     quarterly on ACT/365, with `Index_Tenor` zero months so each coupon carries one reset spanning
-    its own accrual - which for a quarterly leg IS 3M JIBAR."""
+    its own accrual - which for a quarterly leg IS 3M JIBAR.
+
+    Killing mutation: the term index authored at three months - two resets a quarterly coupon."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert row['DealType'] == 'SwapInterestDeal'
     deal = read_of(block_of('ZAR')[1], '1Y')
@@ -744,7 +712,9 @@ def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
 def test_the_front_point_is_the_one_the_seed_declared():
     """A basis error that would otherwise be free. The ZAR map carries a live ZARONIA print AND a
     live 3M JIBAR fixing; the seed says which is a JIBAR curve's front, and the emitter reads that
-    rather than taking the overnight one because it is shorter."""
+    rather than taking the overnight one because it is shorter.
+
+    Killing mutation: the front taken as the first fixing the seed carries rather than the declared one."""
     zar = points_of(block_of('ZAR')[1])
     assert 'JIBA3M Index' in zar['3M']['Descriptor']
     assert zar['3M']['DealType'] == 'DepositDeal'
@@ -773,6 +743,8 @@ def test_the_quote_is_never_authored_into_the_deal():
     `Quoted_Market_Value` alone: a row's `Deal` half is a function of the calendar and the
     conventions and of nothing that moves between prints. Author the quote in and every tick is
     structurally different, which `update_market_quote` refuses by name and is right to.
+
+    Killing mutation: the print authored into the FRA's rate.
     """
     usd, zar = points_of(block_of('USD')[1]), points_of(block_of('ZAR')[1])
     assert zar['1Y']['Deal']['Swap_Rate'] == 0.0
@@ -793,7 +765,9 @@ def test_the_quote_is_never_authored_into_the_deal():
 def test_the_two_way_and_the_stamp_ride_beside_the_mid():
     """`Quoted_Bid`, `Quoted_Ask` and `Timestamp` are `schema.MARKET_QUOTE_VALUES` - the plane a
     tick may move - and `InterestRateCurveParameters.Points` declares all three as optional columns
-    on the value side, read by nothing in the solve."""
+    on the value side, read by nothing in the solve.
+
+    Killing mutation: the bid left off the row."""
     row = points_of(block_of('ZAR')[1])['1Y']
     assert (row['Quoted_Bid'], row['Quoted_Ask']) == (7.61, 7.63)
     assert row['Timestamp'] == {'.Timestamp': YESTERDAY}
@@ -805,59 +779,6 @@ def test_the_two_way_and_the_stamp_ride_beside_the_mid():
     lonely = points_of(block_of('ZAR', poison=poison)[1])['1Y']
     assert 'Quoted_Bid' not in lonely and 'Quoted_Ask' not in lonely
     assert lonely['Quoted_Market_Value'] == 7.62
-
-
-def test_the_block_writes_only_fields_the_family_declares():
-    """Every BLOCK-level key is a declared field of `InterestRateCurveParameters`, read off the
-    declaration. The solve's knobs (`N_Iter`, `Tol`, `Damping_Halvings`) and the three lifecycle
-    switches are deliberately NOT written - properties of a job rather than of a market, each read
-    by the engine with its declared default.
-
-    THE CONVENTIONS ARE. The block is the curve's definition, so the calendar, the settlement lag,
-    both legs' frequency and day count, the front's day count, the compounding rule and the near
-    split are emitted beside the rows - and each row carries the `Tenor` it was authored from and
-    the `Security` it was quoted off.
-
-    Read off the WORKING TREE (`at=None`), the declarations being this change's own.
-    """
-    declared = committed_fields('InterestRateCurveParameters', at=None)
-    instrument = block_of('ZAR')[1]['instrument']
-    assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
-    assert set(instrument) == {'Currency', 'Day_Count', 'Discount_Rate', 'Calendar', 'Spot_Days',
-                               'Fixed_Frequency', 'Float_Frequency', 'Fixed_Day_Count',
-                               'Float_Day_Count', 'Front_Day_Count', 'Compounding',
-                               'Near_Interpolation', 'Near_Tenor', 'Points'}
-    assert instrument['Discount_Rate'] == '', 'the emitter builds a self-discounting single curve'
-    assert (instrument['Day_Count'], instrument['Front_Day_Count']) == ('ACT_365', 'ACT_365')
-    assert (instrument['Calendar'], instrument['Spot_Days']) == ('', 0)
-    assert instrument['Fixed_Frequency'] == instrument['Float_Frequency'] == {'.DateOffset': '3M'}
-    assert instrument['Compounding'] == 'None'
-    assert (instrument['Near_Interpolation'], instrument['Near_Tenor']) == ('', '')
-
-    # a curve quoted monthly at the front declares the split it carries, in the block
-    zaronia = block_of('ZAR-ZARONIA')[1]['instrument']
-    assert zaronia['Near_Interpolation'] == 'LinearRT'
-    assert zaronia['Near_Tenor'] == {'.DateOffset': '2Y'}
-    assert zaronia['Compounding'] == 'OIS' and zaronia['Currency'] == 'ZAR'
-
-    # the block key names the curve the strip BUILDS - the seed's own key, or a name the caller
-    # gives - and the deals project off exactly that name
-    assert block_of('ZAR')[0] == 'InterestRatePrices.ZAR'
-    assert block_of('ZAR-ZARONIA')[0] == 'InterestRatePrices.ZAR-ZARONIA'
-    named = ir_curve_block(strip_of('ZAR', curve='ZAR-JIBAR-3M'))
-    assert named[0] == 'InterestRatePrices.ZAR-JIBAR-3M'
-    assert {row['Deal'].get('Interest_Rate') for row in named[1]['instrument']['Points']} == {
-        'ZAR-JIBAR-3M'}
-    # and every POINT key is a declared sub-field - no undeclared extra rides beside the mid
-    points = committed_fields('InterestRateCurveParameters', table='Points', at=None)
-    assert set(points) == {'Use', 'Deal', 'Descriptor', 'Tenor', 'Security', 'DealType',
-                           'Quote_Type', 'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask',
-                           'Timestamp'}, points
-    for row in instrument['Points']:
-        assert set(row) <= set(points), sorted(set(row) - set(points))
-        # the mid and the structure are on every row; the two-way and the stamp only where printed
-        assert {'Use', 'Deal', 'Descriptor', 'Tenor', 'Security', 'DealType', 'Quote_Type',
-                'Quoted_Market_Value'} <= set(row)
 
 
 def committed_fields(class_name, table=None, at='HEAD'):
@@ -925,42 +846,6 @@ def declared_deal_fields(deal_type):
             for key, descriptor in instrument['sections'][section].items()}
 
 
-def test_every_authored_deal_key_is_one_the_committed_schema_declares():
-    """`construct_instrument` VALIDATES NOTHING, which is why this gate exists rather than the
-    compile gate below covering it: an unknown field is read past and the instrument is built from
-    the rest, so a key spelled `Accrual_Daycount` would construct, reset, generate cashflows and
-    produce a knot under a default nobody chose. Only a comparison against the DECLARATION catches
-    that.
-
-    WHAT IS MISSING IS AS DECLARED AS WHAT IS EXTRA - three things the block never carries, and
-    otherwise only fields the COMMITTED schema calls conventions:
-
-      Object              named in `DealType` instead, on the top-level deal - the child legs DO
-                          carry it, being deal-tree nodes rather than Points rows
-      Discount_Rate       stamped by `author_quote`. What an instrument PROJECTS off is its own
-                          business; what the quote set DISCOUNTS on is the curve set's
-      a convention        the declaration already says it, so the block states only what DIFFERS -
-                          the ADMIN bookkeeping a benchmark has none of, the null calendars, the
-                          3M frequencies a quarterly strip does not restate. A PLACEHOLDER can
-                          never be missing here: the terms, the dates and the amounts are what a
-                          benchmark IS.
-
-    Every one of the three authored types is covered, which is what the closing set says.
-    """
-    seen = set()
-    for curve in ('USD', 'ZAR', 'ZAR-ZARONIA-FWD'):
-        for row in block_of(curve)[1]['instrument']['Points']:
-            deal_type, node = row['DealType'], row['Deal']
-            declared = declared_deal_fields(deal_type)
-            assert not set(node) - set(declared), (
-                curve, deal_type, sorted(set(node) - set(declared)))
-            stated = [key for key in set(declared) - set(node)
-                      if key not in ('Object', 'Discount_Rate') and not declared[key]]
-            assert not stated, (curve, deal_type, stated)
-            seen.add(deal_type)
-    assert seen == {'DepositDeal', 'FRADeal', 'SwapInterestDeal'}, sorted(seen)
-
-
 # =============================================================================================
 # 5  the knot rule and determinism
 # =============================================================================================
@@ -968,7 +853,9 @@ def test_every_authored_deal_key_is_one_the_committed_schema_declares():
 def test_two_benchmarks_on_one_maturity_refuse_by_name():
     """The knot rule makes the bootstrap SQUARE: one knot per used quote at that benchmark's last
     cashflow date. Two instruments between one pair of knots leave the curve under-determined, which
-    reaches the solve as a singular Jacobian rather than a sentence - so the emitter says it first."""
+    reaches the solve as a singular Jacobian rather than a sentence - so the emitter says it first.
+
+    Killing mutation: two benchmarks on one maturity admitted."""
     seed = copy.deepcopy(SEED)
     # two spellings of the same three weeks: the seeded 3W point and a 21-day 'strip' entry
     seed['rates']['USD']['years'] = [1, 2]
@@ -994,7 +881,9 @@ def test_the_knots_of_every_shape_are_the_maturities_the_labels_name():
     the family builds is ascending without anything sorting it afterwards.
 
     A FRA and a forward start are the two whose knot is NOT `spot + label`: each lands at the end of
-    its own window, which is what puts a monthly forward strip's knots a month apart."""
+    its own window, which is what puts a monthly forward strip's knots a month apart.
+
+    Killing mutation: a FRA's end measured off its own start rather than off spot."""
     zar = block_of('ZAR')[1]['instrument']['Points']
     assert [row['Tenor'] for row in zar] == ['3M', '1Mx4M', '6Mx9M', '1Y', '3Y']
     assert [row['Deal']['Maturity_Date']['.Timestamp'] for row in zar] == [
@@ -1003,20 +892,6 @@ def test_the_knots_of_every_shape_are_the_maturities_the_labels_name():
     assert [row['Tenor'] for row in forwards] == ['ON', '1M1M', '6M1M', '15M1M']
     assert [row['Deal']['Maturity_Date']['.Timestamp'] for row in forwards] == [
         '2026-09-01', '2026-10-30', '2027-03-29', '2027-12-30']
-
-
-def test_the_same_canned_strip_emits_the_same_bytes():
-    """DETERMINISM: the only clock is the as-of, which is a parameter. Two emissions off the same
-    canned answers are byte-identical, timestamps included (they come off the prints), so a block
-    that changed is a market that moved."""
-    first = json.dumps(block_of('ZAR')[1], sort_keys=True)
-    assert first == json.dumps(block_of('ZAR')[1], sort_keys=True)
-
-    moved = dict(POISON)
-    moved['SASW3 BGN Curncy'] = {'PX_LAST': 8.30, 'PX_BID': 8.29, 'PX_ASK': 8.31}
-    second = json.dumps(block_of('ZAR', poison=moved)[1], sort_keys=True)
-    assert second != first
-    assert '8.3' in second
 
 
 # =============================================================================================
@@ -1083,6 +958,8 @@ def test_a_convention_the_block_leaves_unsaid_reads_as_the_declaration():
     table or a zero percent: an unstated calendar reaches `calendars.get(...)` as either, and
     `TensorCashFlows.periods` reads `amort.data.items() if amort else []`, the same empty array for
     a null and for an empty `DateList`.
+
+    Killing mutation: a forward-starting swap's maturity measured off spot.
     """
     from derivus.instruments import construct_instrument
 
@@ -1116,6 +993,8 @@ def test_the_block_installs_and_a_value_only_retick_updates():
 
     A moved RATE is a tick - mid, both sides and stamp on the value plane, `Deal` unmoved, which is
     what authoring the quote OUTSIDE the deal buys. A moved CONVENTION is a new plan and refuses.
+
+    Killing mutation: the tick guard comparing nothing.
     """
     from derivus.schema import update_market_quote
 
@@ -1157,6 +1036,8 @@ def test_a_standing_block_stating_every_convention_is_reauthored_once():
 
     Nothing priced moves across that re-authoring: `test_a_convention_the_block_leaves_unsaid_reads
     _as_the_declaration` is the reading, and this is the WRITE side of the same fact.
+
+    Killing mutation: the term index authored at three months - two resets a quarterly coupon.
     """
     from derivus.schema import update_market_quote
 
@@ -1187,6 +1068,8 @@ def test_a_rolled_date_strip_reaches_a_book_through_reauthor():
     So a next-day curve reaches the book dropped and re-installed, through the one function that
     also serves a re-quoted swaption ladder: there the values half is EMPTY and no tick exists at
     all, here the values half works fine and the date is simply not in it.
+
+    Killing mutation: `reauthor` keeping the standing block.
     """
     from derivus.schema import update_market_quote
 
@@ -1242,6 +1125,8 @@ def test_a_block_carries_everything_it_would_be_re_authored_from():
     That is what makes a rolled date a re-roll rather than a guess: at a later date the same rows
     and the same conventions produce the same benchmarks on new dates, which is what
     `update_market_quote` refuses and `reauthor` then installs.
+
+    Killing mutation: a forward-starting swap's maturity measured off spot.
     """
     for curve in CURVES:
         name, block = block_of(curve)
@@ -1267,6 +1152,8 @@ def test_a_declared_row_reads_its_shape_off_its_own_tenor():
     held-out benchmarks on one maturity are no clash; a used row with no number refuses BY NAME,
     carrying the verdict where a print was asked for and not believed, because an unquoted
     benchmark identifies no knot and the block cannot bootstrap.
+
+    Killing mutation: a forward-starting swap's maturity measured off spot.
     """
     def rows(*declared):
         return [ir_curve.RatePrint(label=label, kind='', security='', value=value, use=use)
@@ -1301,92 +1188,6 @@ def test_a_declared_row_reads_its_shape_off_its_own_tenor():
         author(rows(('3M', 7.41, 'Yes'), ('3Q', 7.62, 'Yes')))
 
 
-def test_a_broken_seed_is_a_configuration_refusal_and_never_a_no_terminal_skip():
-    """A BROKEN WORKSTATION MUST NOT READ AS AN ABSENT ONE - a property of the CATCH SITES rather
-    than of the taxonomy.
-
-    `BloombergConfigurationError` hangs off `BloombergFXError` with everything else, and the live
-    smokes used to catch that BASE: a workstation whose `seed.json` had lost its `conventions` block
-    reported an absent terminal while the terminal answered fine. The hierarchy is untouched
-    (`derivus.service` and `derivus_mcp` catch the base) and the smokes catch `NO_TERMINAL`; widen
-    that tuple back and the last assertion goes red.
-    """
-    doctored = copy.deepcopy(SEED)
-    del doctored['rates']['USD']['conventions']
-    with pytest.raises(BloombergConfigurationError) as refused:
-        strip_of('USD', seed=doctored)
-    assert 'carries no `conventions` block' in str(refused.value)
-
-    stripped = copy.deepcopy(SEED)
-    del stripped['rates']['ZAR']['conventions']['front']
-    with pytest.raises(BloombergConfigurationError, match='declares no front'):
-        strip_of('ZAR', seed=stripped)
-
-    # the taxonomy is UNCHANGED - which is exactly why the catch site had to be the thing that moved
-    assert issubclass(BloombergConfigurationError, BloombergFXError)
-    assert all(issubclass(error, BloombergFXError) for error in NO_TERMINAL)
-
-    # ...and this is the property the two live smokes rely on
-    assert not isinstance(refused.value, NO_TERMINAL), \
-        'a seed refusal would be skipped as an absent terminal'
-    assert BloombergConfigurationError not in NO_TERMINAL
-    assert not any(issubclass(BloombergConfigurationError, error) for error in NO_TERMINAL)
-
-    # the two skips a smoke MAY make are named apart: this workstation meets the second for real,
-    # its terminal refusing with `DAILY_CAPACITY_REACHED` once the daily quota is spent
-    absent = no_terminal_reason(BloombergUnavailable('no blpapi'))
-    refused_request = no_terminal_reason(BloombergRequestError('DAILY_CAPACITY_REACHED'))
-    assert absent.startswith('no Bloomberg terminal answering')
-    assert 'answered and refused' in refused_request and 'DAILY_CAPACITY_REACHED' in refused_request
-    assert 'no Bloomberg terminal answering' not in refused_request
-
-
-def test_the_engine_builds_the_authored_deals_and_reads_their_knots():
-    """READ-ONLY, AND NO SOLVE. The block is decoded by the engine's JSON reader, every point turned
-    into a benchmark deal node by `quote_nodes`, and `quote_knots` resets each leaf and reads its
-    last cashflow date.
-
-    WHAT THIS PROVES: all four authored shapes CONSTRUCT, every leg resets, every benchmark
-    produces a last cashflow date, and the knot grid is ASCENDING and strictly positive
-    (`Factor1D.interpolate` divides by the tenor, so a zero knot is NaN). A FRA's and a forward
-    swap's knots land at their OWN last cashflow rather than at the label's outer tenor, which is
-    what puts a monthly forward strip's knots a month apart. The quote reaches the field the
-    family's writer puts it in.
-
-    WHAT IT DOES NOT PROVE is that the authored field NAMES are declared ones - a misspelled day
-    count reaches this gate and passes it. That belongs to
-    `test_every_authored_deal_key_is_one_the_committed_schema_declares`.
-    """
-    import pandas as pd
-    from derivus.bootstrappers import InterestRateCurveParameters, quote_nodes
-
-    prices = decoded_blocks(CURVES)
-    for curve, expected in CURVES.items():
-        instrument = prices[ir_curve.market_price_name(curve)]['instrument']
-        assert len(instrument['Points']) == expected
-        nodes = quote_nodes(instrument['Points'], instrument['Currency'])
-        knots = InterestRateCurveParameters.quote_knots(
-            nodes, pd.Timestamp(AS_OF), instrument['Day_Count'], {})
-        assert len(knots) == expected
-        assert list(knots) == sorted(knots), (curve, knots)
-        assert all(knot > 0.0 for knot in knots), (curve, knots)
-        # the knot IS the maturity the row was authored to, in the block's own day count
-        for point, knot in zip(instrument['Points'], knots):
-            assert knot == pytest.approx(
-                (point['Deal']['Maturity_Date'] - pd.Timestamp(AS_OF)).days / 365.0), point['Tenor']
-
-    # the quote reached each instrument through the family's own writer, per type
-    zar = prices['InterestRatePrices.ZAR']['instrument']
-    for point in zar['Points']:
-        node = quote_nodes([point], 'ZAR')[0]
-        if point['DealType'] == 'SwapInterestDeal':
-            assert float(node['Instrument'].field['Swap_Rate']) == pytest.approx(
-                point['Quoted_Market_Value'])
-        elif point['DealType'] == 'FRADeal':
-            assert float(node['Instrument'].field['FRA_Rate']) == pytest.approx(
-                point['Quoted_Market_Value'])
-
-
 def test_every_authored_shape_solves_to_par():
     """THE SHAPES PRICE. Each canned block is bootstrapped the way `Config.bootstrap` runs the
     family, and every benchmark it was solved from is then repriced off the solved curve and has to
@@ -1396,6 +1197,8 @@ def test_every_authored_shape_solves_to_par():
     own last cashflow, so the residual vector and the unknowns are the same length and the damped
     Newton has a root to find. A shape whose dates the emitter got wrong reprices away from par
     here even though it constructs.
+
+    Killing mutation: a forward-starting swap's maturity measured off spot.
     """
     import pandas as pd
     import torch

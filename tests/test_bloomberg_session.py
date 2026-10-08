@@ -20,8 +20,12 @@ The fake scripts `Session.start()`, `openService()` and the `AUTHORIZATION_STATU
 and its Desktop API fallback are two DIFFERENT sessions in one script, exactly as
 `BloombergSession.start` builds them one after the other. `images` scripts what a subscription to
 each topic answers: a dict of mktdata fields, `('fail', category, description)`, or nothing at all.
+
+The fake enters as the `blpapi` module the package imports - an entry in `sys.modules`, which is
+where `blpapi_module()` finds the SDK - so nothing in the package is rebound.
 """
 import datetime
+import sys
 
 import pytest
 
@@ -31,7 +35,6 @@ from derivus_bloomberg.errors import BloombergRequestError, BloombergUnavailable
 APP = 'Investec_SA:TSSPricingTool'
 BPIPE = ('10.0.88.31', 8194)
 DESKTOP = ('localhost', 8194)
-TODAY = datetime.date(2026, 10, 1)
 
 
 @pytest.fixture(autouse=True)
@@ -269,9 +272,11 @@ def make_fake(script):
 def test_desktop_api_session_asks_for_no_identity_and_never_waits_on_auth(monkeypatch):
     """A Terminal session (`application_name=None`) authenticates off the logged-in Desktop and
     must never touch `setSessionIdentityOptions` or the `nextEvent` auth wait - a mutant that
-    always waits for `AUTHORIZATION_STATUS` would hang here with no scripted event to answer it."""
+    always waits for `AUTHORIZATION_STATUS` would hang here with no scripted event to answer it.
+
+    Killing mutation: the identity options built on every session, the Terminal's included."""
     fake = make_fake({DESKTOP: {'start': True, 'open_service': True}})
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
 
     bloomberg = session.BloombergSession(host='localhost', port=8194).start()
 
@@ -281,7 +286,9 @@ def test_desktop_api_session_asks_for_no_identity_and_never_waits_on_auth(monkey
 
 
 def test_leaving_the_bpipe_env_vars_unset_is_the_terminal_and_setting_them_is_bpipe(monkeypatch):
-    """The only switch between the two deployments is whether the env vars are declared."""
+    """The only switch between the two deployments is whether the env vars are declared.
+
+    Killing mutation: `DV_BLOOMBERG_APP_NAME` unread - the declared deployment runs as a Terminal."""
     for name in ('DV_BLOOMBERG_HOST', 'DV_BLOOMBERG_PORT', 'DV_BLOOMBERG_APP_NAME'):
         monkeypatch.delenv(name, raising=False)
     terminal = session.BloombergSession()
@@ -299,11 +306,13 @@ def test_bpipe_session_authorizes_via_session_wide_identity_options(monkeypatch)
     `setSessionIdentityOptions` at construction, and success is confirmed by its OWN
     `AUTHORIZATION_STATUS` event rather than a hand-built `//blp/apiauth` request. Killing a
     mutant that reverts to the request-scoped `sendAuthorizationRequest` flow, which this fake
-    exposes no service for at all."""
+    exposes no service for at all.
+
+    Killing mutation: the identity options built off a fixed name rather than the application's."""
     fake = make_fake({BPIPE: {'start': True, 'open_service': True, 'events': [
         FakeEvent(FakeEvent.AUTHORIZATION_STATUS, [FakeMessage(FakeName('AuthorizationSuccess'))])
     ]}})
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
 
     bloomberg = session.BloombergSession(
         host=BPIPE[0], port=BPIPE[1], application_name=APP).start()
@@ -321,13 +330,15 @@ def test_bpipe_session_authorizes_via_session_wide_identity_options(monkeypatch)
 def test_bpipe_authorization_failure_falls_back_to_desktop_api(monkeypatch, failure):
     """Either way B-PIPE can refuse the session identity, the fallback is the SAME plain Desktop
     API session `start()` always tries with no application name - the failed B-PIPE session is
-    stopped, never reused, and the fallback carries no B-PIPE identity of its own."""
+    stopped, never reused, and the fallback carries no B-PIPE identity of its own.
+
+    Killing mutation: a session refused on authorization left running."""
     fake = make_fake({
         BPIPE: {'start': True, 'open_service': True,
                'events': [FakeEvent(FakeEvent.AUTHORIZATION_STATUS, [FakeMessage(FakeName(failure))])]},
         DESKTOP: {'start': True, 'open_service': True},
     })
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
 
     bloomberg = session.BloombergSession(
         host=BPIPE[0], port=BPIPE[1], application_name=APP).start()
@@ -343,9 +354,11 @@ def test_bpipe_authorization_failure_falls_back_to_desktop_api(monkeypatch, fail
 
 def test_bpipe_and_desktop_api_both_failing_names_both_in_one_refusal(monkeypatch):
     """Neither leg reachable is not a B-PIPE-shaped error alone: the refusal names both attempts,
-    so an operator is not left guessing which of the two is actually down."""
+    so an operator is not left guessing which of the two is actually down.
+
+    Killing mutation: the Terminal's own refusal raised alone."""
     fake = make_fake({BPIPE: {'start': False}, DESKTOP: {'start': False}})
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
 
     with pytest.raises(BloombergUnavailable, match='Desktop API fallback'):
         session.BloombergSession(host=BPIPE[0], port=BPIPE[1], application_name=APP).start()
@@ -355,12 +368,16 @@ PRICES = ['PX_LAST', 'PX_BID', 'PX_ASK', 'LAST_UPDATE_DT']
 AUTHORIZED = FakeEvent(FakeEvent.AUTHORIZATION_STATUS, [FakeMessage(FakeName('AuthorizationSuccess'))])
 
 
+def today():
+    """The UTC date a live quote's time of day is read as."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def bpipe(monkeypatch, images):
     """A started B-PIPE session over the fake, scripted with `images`, and the fake itself. The
     only session the script holds is B-PIPE's: a connect to anywhere else finds nothing."""
     fake = make_fake({BPIPE: {'events': [AUTHORIZED], 'images': images}})
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
-    monkeypatch.setattr(session, '_today_utc', lambda: TODAY)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
     return session.BloombergSession(host=BPIPE[0], port=BPIPE[1], application_name=APP).start(), fake
 
 
@@ -368,7 +385,9 @@ def test_bpipe_prices_are_read_off_a_mktdata_snapshot_under_their_reference_name
     """B-PIPE is entitled to `//blp/mktdata` and not `//blp/refdata`, so `PX_LAST`/`PX_BID`/`PX_ASK`
     come off the first image of a subscription as `LAST_PRICE`/`BID`/`ASK`. Distinct values per
     field kill a mapping that crosses them; the mid-only fixing carries no `PX_BID` rather than an
-    error; a live quote's `LAST_UPDATE_DT` is today and a daily fixing's is the date it printed."""
+    error; a live quote's `LAST_UPDATE_DT` is today and a daily fixing's is the date it printed.
+
+    Killing mutation: `PX_BID` and `PX_ASK` mapped onto each other's mktdata field."""
     bloomberg, fake = bpipe(monkeypatch, {
         'USDZAR BGN Curncy': {'LAST_PRICE': 16.5758, 'BID': 16.573, 'ASK': 16.5786, 'TIME': '13:30:42'},
         'SOFRRATE Index': {'LAST_PRICE': 3.9, 'TIME': '2026-09-30'}})
@@ -376,7 +395,7 @@ def test_bpipe_prices_are_read_off_a_mktdata_snapshot_under_their_reference_name
     report = bloomberg.reference_data_report(['USDZAR BGN Curncy', 'SOFRRATE Index'], PRICES)
 
     assert report['USDZAR BGN Curncy'] == {'ok': True, 'error': None, 'fields': {
-        'PX_LAST': 16.5758, 'PX_BID': 16.573, 'PX_ASK': 16.5786, 'LAST_UPDATE_DT': TODAY}}
+        'PX_LAST': 16.5758, 'PX_BID': 16.573, 'PX_ASK': 16.5786, 'LAST_UPDATE_DT': today()}}
     assert report['SOFRRATE Index'] == {'ok': True, 'error': None, 'fields': {
         'PX_LAST': 3.9, 'LAST_UPDATE_DT': datetime.date(2026, 9, 30)}}
     subscription = fake.sessions[0].subscriptions[0]
@@ -385,11 +404,12 @@ def test_bpipe_prices_are_read_off_a_mktdata_snapshot_under_their_reference_name
 
 
 def test_a_staleness_check_alone_subscribes_to_the_time_and_nothing_else(monkeypatch):
+    """Killing mutation: every snapshot subscribing the three prices beside the time."""
     bloomberg, fake = bpipe(monkeypatch, {'USDZARV3M BGN Curncy': {'TIME': '13:25:39'}})
 
     report = bloomberg.reference_data_report(['USDZARV3M BGN Curncy'], ['LAST_UPDATE_DT'])
 
-    assert report['USDZARV3M BGN Curncy']['fields'] == {'LAST_UPDATE_DT': TODAY}
+    assert report['USDZARV3M BGN Curncy']['fields'] == {'LAST_UPDATE_DT': today()}
     assert fake.sessions[0].subscriptions[0].fields[0] == ['TIME']
 
 
@@ -398,7 +418,9 @@ def test_what_bpipe_cannot_price_is_reported_by_name_and_the_rest_stand(monkeypa
     no price in its image. A B-PIPE session does not reach for a terminal: each is reported with
     Bloomberg's own reason, the quote that WAS answered stands for the tolerant reader, and the
     strict one a production tick uses refuses the whole batch, a partial market being a wrong one.
-    Only the session B-PIPE opened exists - a connect to `localhost` would find nothing."""
+    Only the session B-PIPE opened exists - a connect to `localhost` would find nothing.
+
+    Killing mutation: a `SubscriptionFailure` not read - the refusal reads as a missing image."""
     bloomberg, fake = bpipe(monkeypatch, {
         'USDZAR BGN Curncy': {'LAST_PRICE': 16.5, 'TIME': '13:30:42'},
         'ZARONIA Index': ('fail', 'NOT_ENTITLED', 'Security Entitlement Check Failed! EID(s) needed: 17567'),
@@ -425,7 +447,10 @@ def test_a_request_mktdata_cannot_express_refuses_by_name_on_bpipe(
         monkeypatch, call, fields, overrides, named):
     """A field outside the four prices, an override and a bulk field have no mktdata form, so a
     B-PIPE session refuses them by name rather than quietly asking a terminal - no subscription is
-    made for any of it."""
+    made for any of it.
+
+    Killing mutations: the scalar guard dropped - a subscription is made and nothing refuses; the
+    bulk guard dropped - the request goes to a refdata service B-PIPE does not carry."""
     bloomberg, fake = bpipe(monkeypatch, {})
 
     with pytest.raises(BloombergRequestError, match=named):
@@ -437,9 +462,11 @@ def test_a_request_mktdata_cannot_express_refuses_by_name_on_bpipe(
 def test_a_session_with_no_bpipe_runs_wholly_on_the_terminal(monkeypatch):
     """B-PIPE is checked once, at start. Where it is not running the session is a Desktop API one
     for good - no identity, no mktdata snapshot, every request the plain reference-data one - so a
-    user on the go with only a terminal is exactly as served as before B-PIPE existed."""
+    user on the go with only a terminal is exactly as served as before B-PIPE existed.
+
+    Killing mutation: the fallback connecting with the application's identity."""
     fake = make_fake({BPIPE: {'start': False}, DESKTOP: {'start': True, 'open_service': True}})
-    monkeypatch.setattr(session, 'blpapi_module', lambda: fake)
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
 
     bloomberg = session.BloombergSession(
         host=BPIPE[0], port=BPIPE[1], application_name=APP).start()

@@ -1,7 +1,7 @@
 """Discovery: 'verify every security' as a property rather than an instruction.
 
-Nothing here opens a socket - `verify` and `build_map` are pure over canned terminal answers, and
-the two session readers run off a stubbed event walk. Gated: a candidate is believed only when the
+Nothing here opens a socket: every terminal is a `BloombergSession` whose event walk is canned rows,
+the subclass seam the session declares for its offline gates. Gated: a candidate is believed only when the
 terminal's own NAME says it is what it claims; a dead benchmark is refused on its update date
 however sane its price reads (the SAONIA trap - 8.855, nineteen years after its last print); an
 entry stripped of its evidence refuses to load by name; and the strict and tolerant readers are
@@ -28,11 +28,13 @@ AS_OF = datetime.date(2026, 8, 27)
 
 SEED = {
     'fx_vol': {'pairs': ['USDZAR'], 'expiries': {'1M': 1.0 / 12.0, '1Y': 1.0},
-               'pillars': [0.25]},
+               'pillars': [0.25, 0.1]},
     'fx_spot': {'pairs': ['USDZAR']},
     'rates': {'ZAR': {'prefix': 'SASW', 'expect': 'ZAR SWAP QTR', 'years': [1, 5],
                       'overnight': {'security': 'ZARONIA Index',
-                                    'expect': 'South African Overnight'}}},
+                                    'expect': 'South African Overnight'}},
+              'USD': {'prefix': 'USOSFR', 'expect': 'USD OIS', 'weeks': ['1W'],
+                      'months': ['1M', '11M'], 'years': [10]}},
     'swaption': {'ZAR': {'prefix': 'SASN', 'expect': 'ZAR SWPT NVOL',
                          'expiries': {'1Y': '01'}, 'tenor_years': [1, 10]}},
 }
@@ -44,124 +46,84 @@ def answered(name, px_last=1.0, last_update='2026-08-26'):
 
 
 def full_report():
-    """Every SEED candidate answered as itself, live - the baseline the mutations below break."""
+    """Every SEED candidate answered as itself, live - the baseline the mutations below break. The
+    names are spelled as the terminal spells them: an EURAUD-style double space on the 1M ATM, the
+    10Y spelling's dropped space on the 1Y risk reversals."""
     report = {'USDZAR BGN Curncy': answered('USD-ZAR X-RATE'),
               'ZARONIA Index': answered('South African Overnight Index'),
               'SASW1 BGN Curncy': answered('ZAR SWAP QTR (VS 3M) 1Y'),
               'SASW5 BGN Curncy': answered('ZAR SWAP QTR (VS 3M) 5Y'),
+              'USOSFR1Z BGN Curncy': answered('USD OIS 1WK'),
+              'USOSFRA BGN Curncy': answered('USD OIS 1M'),
+              'USOSFRK BGN Curncy': answered('USD OIS 11M'),
+              'USOSFR10 BGN Curncy': answered('USD OIS 10Y'),
               'SASN011 Curncy': answered('ZAR SWPT NVOL 1Y1Y'),
               'SASN0110 Curncy': answered('ZAR SWPT NVOL 1Y10Y')}
     for tenor in ('1M', '1Y'):
         report['USDZARV{} BGN Curncy'.format(tenor)] = answered(
-            'USD-ZAR OPT VOL {}'.format(tenor))
-        report['USDZAR25R{} BGN Curncy'.format(tenor)] = answered(
-            'USD-ZAR RR 25D {}'.format(tenor))
-        report['USDZAR25B{} BGN Curncy'.format(tenor)] = answered(
-            'USD-ZAR BFY 25D {}'.format(tenor))
+            'USD-ZAR OPT VOL {}{}'.format(' ' if tenor == '1M' else '', tenor))
+        for code in ('25', '10'):
+            report['USDZAR{}R{} BGN Curncy'.format(code, tenor)] = answered(
+                'USD-ZAR RR {}D{}{}'.format(code, '' if tenor == '1Y' else ' ', tenor))
+            report['USDZAR{}B{} BGN Curncy'.format(code, tenor)] = answered(
+                'USD-ZAR BFY {}D {}'.format(code, tenor))
     return report
 
 
-def test_the_fx_grammar_spells_the_verified_shapes():
-    """The spellings this grammar emits are the ones the terminal verified (session 2026-08-27),
-    ticker and expected NAME both - so a reworded candidate turns up here before it turns up as
-    a silent mismatch against the live terminal."""
-    spelled = {candidate.security: candidate
-               for candidate in discover.fx_vol_candidates('USDZAR', {'1M': 1 / 12}, [0.25, 0.1])}
-    assert set(spelled) == {'USDZARV1M BGN Curncy', 'USDZAR25R1M BGN Curncy',
-                            'USDZAR25B1M BGN Curncy', 'USDZAR10R1M BGN Curncy',
-                            'USDZAR10B1M BGN Curncy'}
-    atm = spelled['USDZARV1M BGN Curncy']
-    assert atm.path == ('fx_vol', 'USDZAR', 'quotes', '1M', 'ATM')
-    assert discover._matches('USD-ZAR OPT VOL 1M', atm.expect)
-    assert discover._matches('USD-ZAR OPT VOL  1M', atm.expect)  # EURAUD-style double space
-    assert not discover._matches('USD-ZAR RR 25D 1M', atm.expect)
-    wing = spelled['USDZAR25R1M BGN Curncy']
-    assert wing.path[-1] == 'RR_0.25'
-    assert discover._matches('USD-ZAR RR 25D1M', wing.expect)  # the 10Y spelling drops its space
-
-
-def test_the_strip_and_swaption_grammars_spell_their_suffixes():
-    """The two encodings that cost a night to find: the OIS suffix is 1Z/2Z/3Z for weeks, bare
-    letters A..K for months, plain integers for years; a swaption tenor is NEVER zero-padded -
-    SASN011 is 1Y into 1Y, and the padded spelling resolves nothing."""
-    strip = {candidate.path[-1]: candidate.security for candidate in discover.strip_candidates(
-        'USD', {'prefix': 'USOSFR', 'expect': 'USD OIS', 'weeks': True, 'months': True,
-                'years': [1, 10]})}
-    assert strip['1W'] == 'USOSFR1Z BGN Curncy'
-    assert strip['1M'] == 'USOSFRA BGN Curncy'
-    assert strip['11M'] == 'USOSFRK BGN Curncy'
-    assert strip['10Y'] == 'USOSFR10 BGN Curncy'
-
-    swaption = {candidate.path[-1]: candidate.security for candidate in
-                discover.swaption_candidates('ZAR', SEED['swaption']['ZAR'])}
-    assert swaption == {'1Y x 1Y': 'SASN011 Curncy', '1Y x 10Y': 'SASN0110 Curncy'}
-
-
-def test_verification_classifies_off_the_terminals_own_answers():
-    """The order of distrust, one candidate each: refused by Bloomberg, answering as something
-    else, resolving but priceless, priced but long dead, and live. The dead fixture is the
-    SAONIA shape - a plausible level, an update date nineteen years old - which no price check
-    can see and the date check must."""
-    candidates = [
-        discover.Candidate('GOOD Curncy', ('fx_spot', 'GOOD'), ('GOOD-NAME',)),
-        discover.Candidate('GONE Curncy', ('fx_spot', 'GONE'), ('GONE-NAME',)),
-        discover.Candidate('OTHER Curncy', ('fx_spot', 'OTHER'), ('OTHER-NAME',)),
-        discover.Candidate('BLANK Curncy', ('fx_spot', 'BLANK'), ('BLANK-NAME',)),
-        discover.Candidate('SAONIA Index', ('rates', 'ZAR', 'overnight'), ('South Africa',)),
-    ]
-    report = {
-        'GOOD Curncy': answered('GOOD-NAME'),
-        'GONE Curncy': {'ok': False, 'error': 'Unknown/Invalid Security', 'fields': {}},
-        'OTHER Curncy': answered('SOMETHING ELSE ENTIRELY'),
-        'BLANK Curncy': answered('BLANK-NAME', px_last=None),
-        'SAONIA Index': answered('South Africa Overnight Avg', px_last=8.855,
-                                 last_update='2007-03-26'),
-    }
-    verdicts = {item.candidate.security: item.verdict
-                for item in discover.verify(candidates, report, AS_OF)}
-    assert verdicts == {'GOOD Curncy': 'live', 'GONE Curncy': 'invalid',
-                        'OTHER Curncy': 'mismatch', 'BLANK Curncy': 'unpriced',
-                        'SAONIA Index': 'dead'}
-
-
-def test_only_verified_entries_enter_the_map_and_the_rest_are_ledgered():
-    """A candidate the terminal did not confirm lands on the `rejected` ledger by name, never
-    silently dropped - and a live entry carries all three pieces of evidence."""
-    report = full_report()
-    report['USDZAR25B1Y BGN Curncy'] = {'ok': False, 'error': 'Unknown/Invalid Security',
-                                        'fields': {}}
-    document, verdicts = discover_with(report)
-    entry = document['blocks']['fx_vol']['USDZAR']['quotes']['1M']['ATM']
-    assert entry == {'security': 'USDZARV1M BGN Curncy', 'name': 'USD-ZAR OPT VOL 1M',
-                     'last_update': '2026-08-26', 'verified': AS_OF.isoformat()}
-    assert document['rejected']['USDZAR25B1Y BGN Curncy']['verdict'] == 'invalid'
-    assert 'BF_0.25' not in document['blocks']['fx_vol']['USDZAR']['quotes']['1Y']
-    # the expiries meta only names tenors that actually landed quotes
-    assert set(document['blocks']['fx_vol']['USDZAR']['expiries']) == {'1M', '1Y'}
+def rows(report):
+    """A canned report as the event walk's `(security, error, fields)` rows."""
+    return [(security, None if row['ok'] else row['error'], row['fields'])
+            for security, row in report.items()]
 
 
 def discover_with(report):
-    candidates = list(discover.candidates_from_seed(SEED))
-    verdicts = discover.verify(candidates, report, AS_OF)
-    return discover.build_map(SEED, verdicts, AS_OF.isoformat()), verdicts
+    return discover.discover(SEED, Walked(rows(report)), AS_OF)
 
 
-def test_the_user_data_home_is_one_env_var(tmp_path, monkeypatch):
-    """DV_HOME names where a desk's own files live, the RF_SERVICE_URL pattern: `load()` with no
-    path reads `$DV_HOME/security_map.json`, so every DV_* tool and script agrees on the same
-    file without any of them passing paths around."""
-    document, _ = discover_with(full_report())
-    (tmp_path / 'security_map.json').write_text(json.dumps(document), encoding='utf-8',
-                                               newline='\n')
-    monkeypatch.setenv('DV_HOME', str(tmp_path))
-    assert security_map.home() == str(tmp_path)
-    loaded = security_map.load()
-    assert loaded['blocks']['fx_spot']['USDZAR']['security'] == 'USDZAR BGN Curncy'
+def test_the_terminals_answers_verify_the_grammar_and_ledger_the_rest():
+    """The seed's vocabulary spelled as the terminal verified it, ticker and NAME both - the OIS
+    suffix 1Z for weeks and bare letters for months, an unpadded swaption tenor (SASN011 is 1Y into
+    1Y), the 10-delta wings beside the 25 - and the order of distrust, one candidate each: refused
+    by Bloomberg, answering as something else, resolving but priceless, priced but long dead (the
+    SAONIA shape, a plausible level nineteen years old) and live. Only live candidates enter the
+    map, each carrying its evidence; the rest land on the `rejected` ledger by name.
+
+    Killing mutations: the week suffix spelled `1W`; the update date unread - the dead print enters
+    the map.
+    """
+    report = full_report()
+    report['USDZAR25B1Y BGN Curncy'] = {'ok': False, 'error': 'Unknown/Invalid Security',
+                                        'fields': {}}
+    report['SASW5 BGN Curncy'] = answered('SOMETHING ELSE ENTIRELY')
+    report['SASN0110 Curncy'] = answered('ZAR SWPT NVOL 1Y10Y', px_last=None)
+    report['ZARONIA Index'] = answered('South African Overnight Index', px_last=8.855,
+                                       last_update='2007-03-26')
+    document, _ = discover_with(report)
+    blocks = document['blocks']
+    quotes = blocks['fx_vol']['USDZAR']['quotes']
+    assert quotes['1M']['ATM'] == {'security': 'USDZARV1M BGN Curncy', 'name': 'USD-ZAR OPT VOL  1M',
+                                   'last_update': '2026-08-26', 'verified': AS_OF.isoformat()}
+    assert quotes['1Y']['RR_0.25']['security'] == 'USDZAR25R1Y BGN Curncy'
+    assert quotes['1M']['RR_0.10']['security'] == 'USDZAR10R1M BGN Curncy'
+    assert 'BF_0.25' not in quotes['1Y']
+    # the expiries meta only names tenors that actually landed quotes
+    assert set(blocks['fx_vol']['USDZAR']['expiries']) == {'1M', '1Y'}
+    assert {label: entry['security'] for label, entry in blocks['rates']['USD']['strip'].items()} == {
+        '1W': 'USOSFR1Z BGN Curncy', '1M': 'USOSFRA BGN Curncy', '11M': 'USOSFRK BGN Curncy',
+        '10Y': 'USOSFR10 BGN Curncy'}
+    assert blocks['swaption']['ZAR'] == {'1Y x 1Y': dict(
+        security='SASN011 Curncy', name='ZAR SWPT NVOL 1Y1Y', last_update='2026-08-26',
+        verified=AS_OF.isoformat())}
+    assert {security: row['verdict'] for security, row in document['rejected'].items()} == {
+        'USDZAR25B1Y BGN Curncy': 'invalid', 'SASW5 BGN Curncy': 'mismatch',
+        'SASN0110 Curncy': 'unpriced', 'ZARONIA Index': 'dead'}
 
 
 def test_a_missing_seed_is_an_instruction_not_a_traceback(tmp_path, monkeypatch):
     """The seed is the one file no tool writes, so discovery without one says where the seed goes
-    and where the starting one is, before any session is attempted."""
+    and where the starting one is, before any session is attempted.
+
+    Killing mutation: the seed's presence unchecked - the CLI dies opening it."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     monkeypatch.setattr(sys, 'argv', ['DV_Bloomberg', 'discover'])
     with pytest.raises(SystemExit, match='questionnaire'):
@@ -177,6 +139,8 @@ def test_a_desk_seed_that_declares_no_conventions_reads_the_packaged_entry(
     declaration, said at INFO so the desk knows whose numbers it got, and neither writes the desk's
     own file - a seed is the one file no tool here edits. An entry that does declare its
     conventions wins, packaged spelling included.
+
+    Killing mutation: the desk's seed taken whole whether or not its entry declares conventions.
     """
     import logging
 
@@ -206,7 +170,9 @@ def test_a_desk_seed_that_declares_no_conventions_reads_the_packaged_entry(
 
 def test_a_map_entry_without_evidence_is_refused_by_name(tmp_path):
     """The map is trusted BECAUSE each entry records what the terminal answered - so a hand-edited
-    entry with the evidence stripped refuses to load, naming the entry."""
+    entry with the evidence stripped refuses to load, naming the entry.
+
+    Killing mutation: the evidence check dropped from `load`."""
     document, _ = discover_with(full_report())
     path = tmp_path / 'map.json'
     path.write_text(json.dumps(document, indent=1), encoding='utf-8', newline='\n')
@@ -222,7 +188,9 @@ def test_a_map_entry_without_evidence_is_refused_by_name(tmp_path):
 def test_a_definition_builds_from_the_map_and_a_missing_pillar_refuses_by_name():
     """The map is consumable exactly where the package always started - an `FXVolDefinition` -
     and scope the terminal never verified (the 35-delta grid stops at 5Y) refuses naming the
-    pair, the pillar and the tenor, never a KeyError out of a dict lookup."""
+    pair, the pillar and the tenor, never a KeyError out of a dict lookup.
+
+    Killing mutation: a smile with no verified ATM read as one."""
     document, _ = discover_with(full_report())
     definition = security_map.fx_vol_definition(document, 'USDZAR', expiries=['1M', '1Y'],
                                                 pillars=(0.25,))
@@ -264,7 +232,9 @@ def test_the_two_session_readers_share_one_walk_and_differ_only_in_policy():
     """`reference_data` refuses the whole batch on one bad name - a production tick built from a
     partial answer is a wrong market - while `reference_data_report` records the same walk's rows
     as per-security outcomes, filling in the names the response never answered. An entitlement
-    text still types the strict refusal."""
+    text still types the strict refusal.
+
+    Killing mutation: the strict reader recording a bad name instead of refusing the batch."""
     rows = [('GOOD Curncy', None, {'NAME': 'GOOD-NAME'}),
             ('BAD Curncy', 'securityError = Unknown/Invalid', {})]
     with pytest.raises(BloombergRequestError, match='BAD Curncy: securityError'):
@@ -284,7 +254,9 @@ def test_the_two_session_readers_share_one_walk_and_differ_only_in_policy():
 def test_staleness_reads_the_terminals_date_never_the_wall_clock():
     """`stale` answers off LAST_UPDATE_DT at an explicit as-of: the nineteen-year SAONIA is
     flagged with its own date, a quote that cannot evidence freshness is flagged as exactly
-    that, and yesterday's print passes - no wall clock enters the arithmetic."""
+    that, and yesterday's print passes - no wall clock enters the arithmetic.
+
+    Killing mutation: a missing LAST_UPDATE_DT passed as fresh."""
     source = Walked([('SAONIA Index', None, {'LAST_UPDATE_DT': '2007-03-26'}),
                      ('ZARONIA Index', None, {'LAST_UPDATE_DT': '2026-08-26'}),
                      ('MUTE Index', None, {})])
@@ -315,46 +287,56 @@ class Refusing(Walked):
 
 
 def provisioning_home(tmp_path, monkeypatch):
-    """A DV_HOME that does not exist yet and a packaged seed this gate owns - so provisioning is
-    gated on its own file and never on whether the wheel has been built yet."""
+    """`DV_HOME` on a folder holding the desk's own seed - `SEED`, which `provision` reads in place
+    of the packaged questionnaire it copies only where no seed is laid."""
     home = tmp_path / 'home'
+    home.mkdir()
     monkeypatch.setenv('DV_HOME', str(home))
-    packaged = tmp_path / 'packaged_seed.json'
-    packaged.write_bytes(json.dumps(SEED, indent=1).encode('utf-8'))
-    monkeypatch.setattr(security_map, 'packaged_seed', lambda: str(packaged))
-    return home, packaged
+    (home / 'seed.json').write_bytes(json.dumps(SEED, indent=1).encode('utf-8'))
+    return home
 
 
 def test_first_use_provisions_once_and_the_second_run_probes_nothing(tmp_path, monkeypatch):
-    """First run, no DV_HOME: provisioning creates it, copies the shipped questionnaire byte for
-    byte, and writes the map its probe evidenced. The second run LOADS rather than rebuilds - a
-    session that raises the moment it is walked passes it, and `created` says so."""
-    home, packaged = provisioning_home(tmp_path, monkeypatch)
+    """First run: provisioning writes the map its probe evidenced to `$DV_HOME/security_map.json`,
+    which `load()` with no path then reads - every DV_* tool agrees on the file without passing a
+    path. The second run LOADS rather than rebuilds - a session that raises the moment it is walked
+    passes it, and `created` says so.
+
+    Killing mutation: an existing map ignored - the second run probes and the refusal surfaces."""
+    home = provisioning_home(tmp_path, monkeypatch)
     document, created = discover.provision(Answering(), AS_OF)
     assert created is True
-    assert (home / 'seed.json').read_bytes() == packaged.read_bytes()
     assert document['blocks']['fx_spot']['USDZAR']['security'] == 'USDZAR BGN Curncy'
     assert json.loads((home / 'security_map.json').read_text(encoding='utf-8')) == document
+    assert security_map.home() == str(home) and security_map.load() == document
 
     again, created = discover.provision(Refusing(), AS_OF)
     assert created is False
     assert again == document
 
 
-def test_a_refused_probe_leaves_the_seed_behind_and_no_half_map(tmp_path, monkeypatch):
-    """The folder and the seed are laid down BEFORE the terminal is asked, so a refusal leaves the
-    questionnaire to cut down and NO partial map to distrust."""
-    home, packaged = provisioning_home(tmp_path, monkeypatch)
+def test_a_refused_probe_leaves_the_packaged_seed_behind_and_no_half_map(tmp_path, monkeypatch):
+    """First use with no DV_HOME at all: the folder and a byte-for-byte copy of the shipped
+    questionnaire are laid down BEFORE the terminal is asked, so a refusal leaves the seed to cut
+    down and NO partial map to distrust.
+
+    Killing mutation: the packaged seed not copied in - provision dies reading a seed it never
+    laid."""
+    home = tmp_path / 'home'
+    monkeypatch.setenv('DV_HOME', str(home))
     with pytest.raises(BloombergRequestError):
         discover.provision(Refusing(), AS_OF)
-    assert (home / 'seed.json').read_bytes() == packaged.read_bytes()
+    with open(security_map.packaged_seed(), 'rb') as handle:
+        assert (home / 'seed.json').read_bytes() == handle.read()
     assert not (home / 'security_map.json').exists()
 
 
 def test_progress_counts_answered_names_and_lands_exactly_on_the_total(tmp_path, monkeypatch):
     """`on_batch(done, total)` fires per chunk: the counts only rise, and the last chunk clamps to
     the total instead of overshooting by the batch remainder. Provisioning threads the same
-    callback through."""
+    callback through.
+
+    Killing mutation: the last chunk counted at its full batch width."""
     securities = [candidate.security for candidate in discover.candidates_from_seed(SEED)]
     total = len(securities)
     progress = []
@@ -423,7 +405,9 @@ def test_an_override_rides_the_request_and_its_absence_sends_no_element():
     """`IVOL_MATURITY` and its kind are REQUEST parameters, not fields: without an `overrides`
     array a field whose name carries a tenor answers at the service's default maturity. The
     element is assembled only when one is asked for, so every existing caller sends the request
-    it always sent."""
+    it always sent.
+
+    Killing mutation: the overrides array assembled on every request."""
     plain = Assembling()
     plain.reference_data_report(['NKY Index'], ('3MTH_IMPVOL_100.0%MNY_DF',))
     assert 'overrides' not in plain.sent[0].elements
@@ -463,7 +447,9 @@ class Counting(Answering):
 def test_extending_a_map_probes_only_the_names_it_has_never_heard_of(tmp_path, monkeypatch):
     """A seed that gains a curve costs the terminal that curve's names alone. Every entry the map
     already carries keeps its evidence untouched and is never re-asked; a new name the terminal
-    does not answer lands on the ledger by name; a seed with nothing new probes nothing."""
+    does not answer lands on the ledger by name; a seed with nothing new probes nothing.
+
+    Killing mutation: the known names not subtracted - the whole seed is asked again."""
     provisioning_home(tmp_path, monkeypatch)
     document, _ = discover.provision(Answering(), AS_OF)
     before = json.loads(json.dumps(document))

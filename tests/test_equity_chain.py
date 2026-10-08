@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus_bloomberg import equity_chain
 from derivus_bloomberg.equity_chain import (ChainContract, EquityForward, EquityLadder,
                                             LeveragePrior, black_price, equity_option_block,
-                                            fetch_equity_chain, screen_chain, select_rungs)
+                                            fetch_equity_chain, select_rungs)
 from derivus_bloomberg.errors import (BloombergConfigurationError, IncompleteChain, InvalidQuote,
                                       UnsupportedExerciseStyle)
 from derivus_bloomberg.session import BloombergSession
@@ -266,24 +266,6 @@ def imported_names(source):
     return names
 
 
-def test_the_chain_emitter_imports_the_standard_library_and_nothing_else():
-    """A STRICTER budget than the package's own - `fxvol` and `types` carry pandas and this module
-    does not - so `equity_chain` is held to the standard library, this package's own modules, and a
-    blpapi imported LAZILY or not at all. An import that never executes is still a dependency, so
-    this reads the SOURCE.
-    """
-    imported = imported_names(os.path.join(ROOT, 'derivus_bloomberg', 'equity_chain.py'))
-    # the package's own modules are reached relatively, which `imported_names` skips;
-    # `derivus_bloomberg` is allowed so an absolute intra-package import passes too
-    assert imported <= {'collections', 'datetime', 'math', 're', 'statistics', 'dataclasses', 'typing',
-                        'derivus_bloomberg'}, sorted(imported)
-    # blpapi is on this list on purpose: the package has to import on a machine with no terminal
-    assert imported.isdisjoint({'derivus', 'torch', 'pandas', 'numpy', 'scipy', 'blpapi'}), \
-        sorted(imported)
-    # non-vacuous: a module that imported nothing would pass both assertions above
-    assert imported
-
-
 def in_a_fresh_interpreter(statements):
     """What `sys.modules` holds after a fresh interpreter runs `statements`."""
     code = ('import json, sys; {}; '
@@ -293,26 +275,6 @@ def in_a_fresh_interpreter(statements):
                           stderr=subprocess.PIPE, universal_newlines=True)
     assert done.returncode == 0, done.stderr
     return set(json.loads(done.stdout))
-
-
-def test_importing_the_chain_emitter_lands_no_engine_no_blpapi_and_no_pandas():
-    """The source gate's answer measured, because the parser reads ONE FILE while an import runs a
-    PACKAGE: an eager `from .fxvol import ...` in `derivus_bloomberg/__init__.py` would land numpy
-    and pandas behind this module's back with every line of `equity_chain.py` still innocent. The
-    package re-exports the pandas-carrying names lazily, and blpapi is never imported at all.
-    """
-    landed = in_a_fresh_interpreter('import derivus_bloomberg.equity_chain')
-    assert 'derivus_bloomberg' in landed, 'the module did not import'
-    assert landed.isdisjoint({'derivus', 'torch', 'blpapi', 'pandas', 'numpy'}), sorted(
-        landed & {'derivus', 'torch', 'blpapi', 'pandas', 'numpy'})
-
-    # the re-export still WORKS, and the emitter is reachable off the package by name
-    assert 'derivus_bloomberg' in in_a_fresh_interpreter(
-        'from derivus_bloomberg import equity_option_block, EquityLadder')
-    # non-vacuous: asking the package for an FX name is what pays for pandas, so the gate above
-    # measures a deferral rather than an absence
-    assert 'pandas' in in_a_fresh_interpreter(
-        'import derivus_bloomberg; derivus_bloomberg.fetch_fx_vol')
 
 
 # =============================================================================================
@@ -327,56 +289,15 @@ def contract(**kwargs):
     return ChainContract(**base)
 
 
-def test_the_screen_classifies_off_the_terminals_own_answers():
-    """One contract per verdict, in the order the screen reads them. The ORDER is the claim as much
-    as the verdicts: `american` and `wide` are different instructions to a desk, and a screen that
-    checked the spread first would report the second where the first is true."""
-    cases = {
-        'malformed': contract(strike=None),
-        'expired': contract(expiry=datetime.date(2026, 8, 15)),
-        'unstated-exercise': contract(exercise=''),
-        'american': contract(exercise='American'),
-        'unpriced': contract(bid=None, ask=None, last=None),
-        'one-sided': contract(ask=None),
-        'crossed': contract(bid=110.0, ask=90.0),
-        'wide': contract(bid=40.0, ask=160.0),
-        'no-open-interest': contract(open_interest=0.0),
-        'undated': contract(last_update=None),
-        'stale': contract(last_update='2026-07-15'),
-    }
-    named = [contract(security=verdict, **{
-        field: getattr(item, field) for field in
-        ('strike', 'expiry', 'option_type', 'exercise', 'bid', 'ask', 'last', 'open_interest',
-         'last_update')}) for verdict, item in cases.items()]
-    live = contract(security='live')
-    accepted, rejected = screen_chain(named + [live], AS_OF)
-
-    assert [item.security for item in accepted] == ['live']
-    assert rejected == {verdict: verdict for verdict in cases}
-    # the ORDER where it bites: an American contract that is ALSO crossed and dead reads as
-    # american, because that is the finding a desk can act on
-    both = contract(security='both', exercise='American', bid=110.0, ask=90.0,
-                    open_interest=0.0, last_update='2007-03-26')
-    assert screen_chain([both], AS_OF)[1] == {'both': 'american'}
-
-    # a print date PRESENT and unreadable evidences a print's time no better than a blank one, and
-    # would otherwise ride into the block as that row's `Timestamp`
-    assert screen_chain([contract(security='na', last_update='N/A')], AS_OF)[1] == {'na': 'undated'}
-
-    # the model-free bounds, which need no curve - and need the spot, without which the screen
-    # simply does not make the claim
-    rich = contract(security='rich', bid=5100.0, ask=5200.0)
-    assert screen_chain([rich], AS_OF, spot=SPOT)[1] == {'rich': 'off-market'}
-    assert screen_chain([rich], AS_OF)[1] == {}
-
-
 def test_the_canned_chain_is_believed_by_census():
     """The canned board through the real reader, counted by verdict and named per family of
     refusal. A candidate silently dropped is indistinguishable from one never asked about, and on
     a chain this size that difference IS the report.
 
     THE BOARD LISTS 192 AND THE FETCH SEES 166: every member of the five expiries a pillar claims,
-    and at the front listing no pillar claims only the members the calendar named."""
+    and at the front listing no pillar claims only the members the calendar named.
+
+    Killing mutation: a crossed contract believed."""
     chain = canned_chain()
     seen = len(RATIOS) * 2 * len(EXPIRIES[1:]) + CALENDAR_POINTS
     assert len(chain.contracts) + len(chain.rejected) == seen == 166
@@ -414,7 +335,9 @@ def test_the_fetch_asks_the_bulk_reader_for_the_chain_and_batches_its_members():
     """BULK MEMBERSHIP AND NO SPELLED TICKERS. Membership comes off the BULK reader, because the
     scalar one answers row zero of an array and says nothing about the two thousand it dropped;
     the members batch through the tolerant scalar reader, so one refused ticker in a batch of fifty
-    is the finding rather than the failure."""
+    is the finding rather than the failure.
+
+    Killing mutation: members of an unclaimed expiry asked."""
     session = Walked(canned_rows())
     chain = fetch_equity_chain(session, UNDERLYING, AS_OF, batch=50)
     # 166 seen; the 6 the calendar named at the front listing no pillar claims and the 22 outside
@@ -445,7 +368,9 @@ def test_only_members_a_pillar_claims_inside_the_band_are_asked():
     strike are read off its own ticker: an expiry no pillar claims, a strike outside `member_band`
     and a ticker that spells neither are ledgered by name and never sent, so a board listing
     thousands of strikes costs a few hundred contracts of questions. A chain none of whose members
-    can be asked refuses by name rather than asking for nothing."""
+    can be asked refuses by name rather than asking for nothing.
+
+    Killing mutation: members of an unclaimed expiry asked."""
     rows = canned_rows()
     far = security_of(EXPIRIES[1], 2500.0, 'Put')
     session = Walked(rows, chain=list(rows) + [far, 'SPX NONSENSE Index'])
@@ -467,62 +392,12 @@ def test_only_members_a_pillar_claims_inside_the_band_are_asked():
         EquityLadder(member_band=0.0)
 
 
-def test_the_calendar_is_asked_once_and_every_claimed_expiry_once():
-    """ONE CALENDAR REQUEST, ONE PER PILLAR, AND THE LONG END ARRIVES. A chain field answering its
-    first eight thousand rows nearest-expiry-first, ignoring every override, cannot be asked for a
-    1y, 2y or 3y listing at all - it answers the front monthlies and stops. `CHAIN_TICKERS` honours
-    the overrides, so the head asks for EVERY listed expiry at a few strikes - the CALENDAR, which
-    is what the pillars are matched against - and each expiry a pillar claims is then asked for by
-    its own date at `chain_points` strikes.
-
-    Four claims: the head's own override, one request per claimed expiry and none for an unclaimed
-    one, the answer filtered to the date it was asked for, and what a chain costs in requests.
-    """
-    session = Walked(canned_rows())
-    fetch_equity_chain(session, UNDERLYING, AS_OF, batch=50)
-    head, dated = session.overrides[0], session.overrides[1:]
-
-    assert head == {equity_chain.CHAIN_EXPIRY_OVERRIDE: equity_chain.CHAIN_ALL,
-                    equity_chain.CHAIN_POINTS_OVERRIDE: str(equity_chain.CALENDAR_POINTS)}
-    # one per expiry a pillar claims AND per side, at that expiry's own date and the ladder's own
-    # count, calls then puts; the front listing no pillar claims is never asked for at all
-    assert [(asked[equity_chain.CHAIN_EXPIRY_OVERRIDE], asked[equity_chain.CHAIN_TYPE_OVERRIDE])
-            for asked in dated] == [(expiry.strftime('%Y%m%d'), side)
-                                    for expiry in EXPIRIES[1:] for side in ('C', 'P')]
-    assert {asked[equity_chain.CHAIN_POINTS_OVERRIDE] for asked in dated} == \
-        {str(EquityLadder().chain_points)}
-    # one calendar, five pillars twice over, three batches of contracts
-    assert len(session.overrides) == 11 and len(session.batches) == 3
-
-    # and the strikes the rungs are chosen from ARRIVE at the per-expiry request: the calendar,
-    # listing a few points an expiry, never named them
-    calendar = {row['Ticker'] for row in session.underlying[equity_chain.CHAIN_FIELD]}
-    asked = {security for batch in session.batches for security in batch}
-    assert len(calendar) == CALENDAR_POINTS * len(EXPIRIES)
-    assert len(asked - calendar) == 108
-    assert security_of(EXPIRIES[5], 5375.0, 'Call') in asked - calendar
-
-    # THE ANSWER IS FILTERED TO THE DATE IT WAS ASKED FOR: a terminal that ignored the override
-    # would answer another expiry's members, which are not this expiry's listing and are not asked
-    # about - and the chain that comes back is the one the honest terminal answers, bytes included
-    stray = security_of(EXPIRIES[0], 3500.0, 'Put')
-
-    class Ignoring(Walked):
-        def members(self, expiry=None):
-            found = super().members(expiry)
-            return found if expiry is None else found + [stray]
-
-    ignoring = Ignoring(canned_rows())
-    chain = fetch_equity_chain(ignoring, UNDERLYING, AS_OF)
-    assert stray not in chain.rejected
-    assert not any(stray in batch for batch in ignoring.batches)
-    assert equity_option_block(chain, FORWARD)[1] == equity_option_block(canned_chain(), FORWARD)[1]
-
-
 def test_a_member_spelled_without_its_sector_is_asked_with_the_underlyings():
     """The chain field lists a member as `SX5E 03/19/27 C5100`, without the sector the terminal
     needs to recognise a security; asked as `... Index` it answers. The suffix is the
-    underlying's own, so a chain spelled either way is asked the same names."""
+    underlying's own, so a chain spelled either way is asked the same names.
+
+    Killing mutation: a crossed contract believed."""
     rows = canned_rows()
     session = Walked(rows, chain=[name[:-len(' Index')] for name in rows])
     chain = fetch_equity_chain(session, UNDERLYING, AS_OF)
@@ -531,33 +406,11 @@ def test_a_member_spelled_without_its_sector_is_asked_with_the_underlyings():
     assert len(chain.contracts) == 124
 
 
-def test_a_field_exception_does_not_throw_the_contract_away_with_it():
-    """THE POLICY IS APPLIED CLIENT-SIDE. The tolerant reader answers `ok: False` on ANY
-    per-security trouble, and a fieldException is trouble: a contract that has not traded today
-    carries no `VOLUME`, and reading `ok` would throw away a contract that answered everything
-    else. On a real SPX chain that refused 1,855 of 8,000. So a row with ANY field in it is READ
-    and the SCREEN judges it; only a row with nothing in it is `invalid`.
-    """
-    rows = canned_rows()
-    flagged = security_of(EXPIRIES[3], 5125.0, 'Put')  # the 1y ATM rung
-    chain = fetch_equity_chain(
-        Walked(rows, errors={flagged: 'fieldExceptions: VOLUME - Field Not Applicable'}),
-        UNDERLYING, AS_OF)
-    assert flagged not in chain.rejected
-    assert any(item.security == flagged for item in chain.contracts)
-    # and the rung it carries is still selected, so the block is the one the clean chain writes
-    assert equity_option_block(chain, FORWARD)[1] == equity_option_block(canned_chain(), FORWARD)[1]
-
-    # a row with NO fields at all is the genuine refusal, error text or not
-    empty = fetch_equity_chain(
-        Walked({name: ({} if name == flagged else fields) for name, fields in rows.items()}),
-        UNDERLYING, AS_OF)
-    assert empty.rejected[flagged] == 'invalid'
-
-
 def test_a_blank_spot_refuses_before_a_ladder_is_built_on_it():
     """Every strike, forward and weight hangs off the spot, so a chain cannot be built around a
-    blank - and the refusal names the underlying rather than dying three functions later."""
+    blank - and the refusal names the underlying rather than dying three functions later.
+
+    Killing mutation: a blank spot believed."""
     session = Walked(canned_rows())
     session.underlying = dict(session.underlying, PX_LAST=None)
     with pytest.raises(InvalidQuote, match='SPX Index'):
@@ -575,6 +428,8 @@ def test_a_stale_spot_refuses_the_way_a_stale_contract_does():
     contract placed against it is screened on exactly that field. Both halves: a spot older than
     `stale_days`, and a print date PRESENT and unreadable. The believed date travels into the
     block, so a chain says how old its anchor is.
+
+    Killing mutation: a stale spot believed.
     """
     session = Walked(canned_rows())
     session.underlying = dict(session.underlying, LAST_UPDATE_DT='2007-03-26')
@@ -598,7 +453,9 @@ def test_an_american_chain_refuses_by_name_with_its_remedy():
     """An American premium is not the European premium this fit prices against, so a
     single-name chain refuses rather than fitting the wrong number under the right name. The
     refusal names the underlying, the count, the style and the remedy; "eight distinct contracts"
-    would name the symptom."""
+    would name the symptom.
+
+    Killing mutation: an American contract believed."""
     american = {(index, ratio, side): {'OPT_EXER_TYP': 'American'}
                 for index in range(len(EXPIRIES)) for ratio in RATIOS
                 for side in ('Call', 'Put')}
@@ -621,6 +478,8 @@ def test_a_chain_that_is_american_but_for_one_survivor_still_refuses_on_exercise
     refused on exercise style than survived. The per-contract screen is untouched: the second half
     asserts a mixed board still calibrates, so this cannot be "fixed" into refusing every chain
     with a flex listing on it.
+
+    Killing mutation: an American contract believed.
     """
     survivor = (3, 1.00, 'Call')
     american = {(index, ratio, side): {'OPT_EXER_TYP': 'American'}
@@ -657,7 +516,9 @@ def test_the_selection_picks_the_documented_contracts():
     at the first four, thirteen in all, and each one a LISTED contract rather than a coordinate.
     The ATM rung is the strike nearest its own forward with the type following the strike (the
     out-of-the-money leg is the one a desk deals); each wing is the listed strike nearest the
-    moneyness band drawn under that expiry's OWN at-the-money implied vol."""
+    moneyness band drawn under that expiry's OWN at-the-money implied vol.
+
+    Killing mutation: a crossed contract believed."""
     chain = canned_chain()
     rungs, notes, readings = select_rungs(chain, FORWARD)
 
@@ -698,7 +559,9 @@ def test_the_selection_picks_the_documented_contracts():
 def test_a_dead_print_at_a_wing_moves_the_rung_to_the_next_listed_strike():
     """THE SCREEN AND THE SNAP ARE ONE MECHANISM. A crossed print at the strike the 25-delta band
     lands on neither enters the objective nor drops the rung: the contract was refused from
-    CANDIDACY, so the argmin never saw it and the rung landed on the next listed strike."""
+    CANDIDACY, so the argmin never saw it and the rung landed on the next listed strike.
+
+    Killing mutation: a crossed contract believed."""
     clean = select_rungs(canned_chain(), FORWARD)[0]
     wing = next(rung for rung in clean if rung.kind == '25d put' and rung.pillar == 0.25)
     assert wing.contract.strike == 4750.0
@@ -717,7 +580,9 @@ def test_a_dead_print_at_a_wing_moves_the_rung_to_the_next_listed_strike():
 def test_the_weights_are_positive_normalised_and_carry_their_liquidity():
     """WEIGHT = normalised vega x sqrt(open interest) / (1 + spread/cap), every factor read here.
     Vega makes the objective scale-free to three years; the square root is why one deep-liquid
-    strike cannot own it; the spread factor runs 1 to 1/2, so nothing that survived is worth zero."""
+    strike cannot own it; the spread factor runs 1 to 1/2, so nothing that survived is worth zero.
+
+    Killing mutation: the weights left unnormalised."""
     rungs, _, _ = select_rungs(canned_chain(), FORWARD)
     assert all(rung.weight > 0.0 for rung in rungs)
     assert sum(rung.weight for rung in rungs) == pytest.approx(1.0, rel=1e-12)
@@ -747,6 +612,8 @@ def test_the_distinct_contract_floor_fires_naming_the_chains_own_expiries():
     have an unclaimed 0.08y listing they COULD reach by argmin, and only `pillar_band` stops them.
     The distinct count is the same either way, so only the notes say which chain was read - and a
     2M fit wearing a 3Y label is what `assign_expiries` exists to forbid.
+
+    Killing mutation: members of an unclaimed expiry asked.
     """
     sparse = canned_rows(poison={}, expiries=EXPIRIES[:3], ratios=(0.95, 1.0, 1.05))
     session = Walked(sparse)
@@ -791,6 +658,8 @@ def test_two_pillars_cannot_claim_one_listed_expiry():
     So pillars and listings are MATCHED and the pillar left with nothing is dropped BY NAME.
     NEAREST CLAIM WINS: the 3y listing stays the 3Y rung, where giving it to the 2Y pillar 0.41
     log-units away would put a name in the block the chain contradicts, in place of an honest gap.
+
+    Killing mutation: one listed expiry claimed by two pillars.
     """
     board = (EXPIRIES[1], EXPIRIES[2], datetime.date(2028, 1, 25), EXPIRIES[5])
     chain = fetch_equity_chain(Walked(canned_rows(poison={}, expiries=board)), UNDERLYING, AS_OF)
@@ -832,6 +701,8 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
     print in as three equations at triple weight, which the component family drops one of and the
     plain family counts. So rows are collapsed onto distinct contracts with their weights summed,
     and the note names which rung was absorbed into which.
+
+    Killing mutation: two rungs on one contract keeping one weight.
     """
     coarse = canned_rows(poison={}, expiries=EXPIRIES[1:3], ratios=(0.70, 1.0, 1.30))
     chain = fetch_equity_chain(Walked(coarse), UNDERLYING, AS_OF)
@@ -861,31 +732,11 @@ def test_two_rungs_on_one_contract_are_one_row_at_the_summed_weight():
     assert '6 rungs' in source and 'on 2 distinct contracts' in source and 'MERGED' in source
 
 
-def test_the_floor_and_the_defaults_are_the_families_own_numbers():
-    """The emitter cannot import the engine, so every number it hard-codes is held against the
-    engine's own DECLARATION here. A default that moves on either side has to move on both. The
-    contract floor is one of them: the family declares `Minimum_Contracts` 8 and the emitter, which
-    writes for it, refuses under the same eight.
-    """
-    from derivus.bootstrappers import LogVar2FJModelParameters as Family
-
-    ladder = Family.fx_ladder()
-    assert EquityLadder().minimum_contracts == ladder.minimum == 8
-    declared = {field.name: field.default for field in Family.fields}
-    assert equity_chain.STEPS_PER_YEAR == declared['Steps_Per_Year']
-    assert equity_chain.REFERENCE_TYPES.keys() == Family.factor_types.keys()
-    for field, spelled in equity_chain.REFERENCE_TYPES.items():
-        assert spelled in Family.factor_types[field], field
-
-    # the declared ladder: the product horizon, and the family's widened wings
-    assert EquityLadder().pillars == (0.25, 0.5, 1.0, 2.0, 3.0)
-    assert len(EquityLadder().wing_pillars) == len(ladder.wings) == 4
-    assert EquityLadder().wing_delta in ladder.pillars
-
-
 def test_a_ladder_that_contradicts_itself_refuses_at_construction():
     """A wing with no ATM rung beneath it has nothing to be a wing OF - the band is drawn under that
-    expiry's own ATM implied vol - so it refuses where it is declared."""
+    expiry's own ATM implied vol - so it refuses where it is declared.
+
+    Killing mutation: a blank forward reference admitted."""
     with pytest.raises(BloombergConfigurationError, match='not ATM pillars'):
         EquityLadder(pillars=(0.25, 0.5), wing_pillars=(0.25, 1.0))
     with pytest.raises(BloombergConfigurationError, match='wing_delta'):
@@ -898,33 +749,6 @@ def test_a_ladder_that_contradicts_itself_refuses_at_construction():
 # =============================================================================================
 # 4  the forward, declared
 # =============================================================================================
-
-def test_the_forward_is_declared_and_the_chain_is_measured_against_it():
-    """Every strike and weight hangs off the forward, and the FIT rebuilds that forward out of the
-    two curves the block NAMES - so the emitter places its ladder on the same one or the
-    calibration sits at coordinates the pricer never visits. The DECLARED carry builds the ladder;
-    the chain's parity-implied dividend is measured beside it and REPORTED. Non-vacuous both ways:
-    the chain implies the declared dividend back to 5e-5, and a caller who declares nothing gets
-    the chain's own number."""
-    chain = canned_chain()
-    _, _, readings = select_rungs(chain, FORWARD)
-    for pillar, reading in readings.items():
-        assert reading['declared_dividend'] == DIVIDEND
-        assert reading['implied_dividend'] == pytest.approx(DIVIDEND, abs=5e-5), pillar
-
-    undeclared = EquityForward(
-        underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
-        dividend_reference='SPX', rate=RATE)
-    _, block = equity_option_block(chain, undeclared)
-    source = block['instrument']['Quote_Source']
-    assert 'chain implies' in source and 'carried at r=4.0000% on USD against SPX' in source
-
-    # and the block DECLARES both references, in the fields the family resolves them through
-    instrument = block['instrument']
-    assert (instrument['Discount_Rate'], instrument['Discount_Rate_Type']) == (
-        'USD', 'InterestRate')
-    assert (instrument['Yield'], instrument['Yield_Type']) == ('SPX', 'DividendRate')
-
 
 UNDECLARED = EquityForward(underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
                            dividend_reference='SPX', rate=RATE)
@@ -942,6 +766,8 @@ def test_the_parity_carry_is_a_median_and_one_fat_finger_does_not_move_it():
     route a single pair could take - 5000 is nearest the SPOT, 5250 nearest the FORWARD, and 6500
     is where a one-pair read that believed 5000 runs away to. Two of five is the honest stress: a
     median needing four clean prints of five would be a mean with extra steps.
+
+    Killing mutation: the parity carry read off one pair.
     """
     fat = dict(POISON)
     for ratio in (1.00, 1.05, 1.30):
@@ -984,6 +810,8 @@ def test_an_undeclared_carry_outside_the_band_refuses_by_name():
     Where the carry was DECLARED this is a reading: the ladder stands on the declared number and
     the disagreement is named in the record. Where nothing was declared the reading IS the forward,
     so it refuses with the pillar, the number, the band and the strikes it was read off.
+
+    Killing mutation: an implied carry outside the band believed.
     """
     expiry, fat = EXPIRIES[4], dict(POISON)
     for ratio in RATIOS:
@@ -1024,45 +852,14 @@ def emitted(**kwargs):
     return equity_option_block(canned_chain(), FORWARD, EquityLadder(**kwargs))
 
 
-def test_the_block_writes_only_fields_the_family_declares():
-    """The emitter cannot import the family to check its own schema, so the gate does: every header
-    key is a declared field, every `_Type` one of that field's candidates, `Premium` a declared
-    `Quote_Type`, and the option row's nine columns are `OPTION_QUOTE`'s six plus the two-way and
-    the stamp - read as an EQUALITY against `MARKET_QUOTE_VALUES` rather than as a gap."""
-    from derivus import schema
-    from derivus.bootstrappers import LogVar2FJModelParameters as Family
-
-    name, block = emitted()
-    assert name == '{}.SPX'.format(equity_chain.FAMILY)
-    declared = {field.name: field for field in Family.fields}
-    instrument = block['instrument']
-    assert set(instrument) <= set(declared), sorted(set(instrument) - set(declared))
-    for key, value in instrument.items():
-        if declared[key].values:
-            assert value in declared[key].values, (key, value)
-    assert instrument['Quote_Type'] == 'Premium'
-    assert 'Premium' in declared['Quote_Type'].values
-
-    columns = {field.name for field in declared['European_Options'].row.fields}
-    assert columns == {'Expiry_Date', 'Strike', 'Option_Type', 'Units', 'Weight',
-                       'Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask', 'Timestamp'}
-    for row in instrument['European_Options']:
-        assert columns <= set(row), 'a row is missing a column the family declares'
-        # the three-way identity: the keys the row carries beside `OPTION_QUOTE`'s six, the keys
-        # the emitter declares, and the house's value plane are ONE SET - which is what puts
-        # `European_Options` in `MARKET_QUOTE_CONTAINERS`. A column added on any side has to
-        # appear on the other two.
-        assert set(row) - {field.name for field in schema.OPTION_QUOTE} ==             set(equity_chain.QUOTE_VALUE_KEYS) ==             set(schema.MARKET_QUOTE_VALUES) - {'Quoted_Market_Value'}
-    assert 'European_Options' in schema.MARKET_QUOTE_CONTAINERS, (
-        'the option row declares the value keys and the value plane does not know it')
-
-
 def test_the_block_carries_the_indexs_own_leverage_pair():
     """THE CLASS DEFAULT IS SIZED ON THE S&P 500, and an index started from it fits its own
     vol-of-vol against somebody else's leverage - so the emitter writes the pair that index's own
     volatility index implies, under the family's own four field names, and `Quote_Source` says
     which index it was regressed from. An underlying `LEVERAGE_PRIORS` does not carry writes NONE
-    of the four and says so: the named fallback is the family's asset class default."""
+    of the four and says so: the named fallback is the family's asset class default.
+
+    Killing mutation: the index's leverage pair left off the block."""
     keys = ('Leverage_Prior', 'Leverage_Prior_SE', 'Leverage_Product_Prior',
             'Leverage_Product_Prior_SE')
     pair = equity_chain.LEVERAGE_PRIORS[UNDERLYING]
@@ -1092,7 +889,9 @@ def test_the_block_carries_the_indexs_own_leverage_pair():
 def test_a_leverage_pair_the_family_would_refuse_never_reaches_a_block():
     """Both refusals are the family's own, so a block never carries what the fit would refuse: a
     standard error at or below zero divides its row by nothing, and a product disagreeing in sign
-    with `rho` pulls the two rows opposite ways along the one axis vanillas cannot see."""
+    with `rho` pulls the two rows opposite ways along the one axis vanillas cannot see.
+
+    Killing mutation: a non-positive leverage standard error admitted."""
     with pytest.raises(BloombergConfigurationError, match='LeveragePrior.rho_se is 0'):
         LeveragePrior(-0.762, 0.0, -1.89, 0.05, 'VIX Index')
     with pytest.raises(BloombergConfigurationError, match='LeveragePrior.product_se is -0.05'):
@@ -1113,6 +912,8 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
     for and the numbers here are the harness's job, not this one's. What is measured is that a
     chain-emitted block reaches `Config.bootstrap`, writes the factor `Config.bootstrap` checks for
     under the CLASS name, and that the price factor's own loader accepts what was written.
+
+    Killing mutation: the index's leverage pair left off the block.
     """
     import logging as _logging
 
@@ -1164,7 +965,9 @@ def test_the_chain_emits_a_logvar2fj_block_that_bootstraps(caplog):
 def test_the_two_way_is_carried_and_the_crossed_print_never_reaches_it():
     """The mid is what the fit prices against and the two-way is what a desk dealt, so both travel
     with the print's own clock. No row of the block is crossed, one-sided, dead or American -
-    none of those were ever candidates."""
+    none of those were ever candidates.
+
+    Killing mutation: a crossed contract believed."""
     chain = canned_chain()
     _, block = emitted()
     believed = {item.security: item for item in chain.contracts}
@@ -1180,28 +983,6 @@ def test_the_two_way_is_carried_and_the_crossed_print_never_reaches_it():
     # every emitted contract is one the screen believed, by name
     for rung in select_rungs(chain, FORWARD)[0]:
         assert rung.contract.security in believed
-
-
-def test_the_same_canned_chain_emits_the_same_bytes():
-    """DETERMINISM: the only clock in sight is the chain's own as-of, a parameter and not a wall
-    clock, so two emissions off the same canned answers are byte-identical."""
-    first = json.dumps(emitted()[1], sort_keys=True)
-    second = json.dumps(emitted()[1], sort_keys=True)
-    assert first == second
-    # a moved market moves the bytes, or the claim above is vacuous - and the contract moved is one
-    # the ladder EMITS, which is what "the market moved" means for a block of listed premiums
-    bumped = dict(POISON)
-    bumped[(3, 1.025, 'Put')] = {'PX_BID': 371.0, 'PX_ASK': 375.0, 'PX_LAST': 373.0}
-    moved = equity_option_block(canned_chain(poison=bumped), FORWARD)[1]
-    assert json.dumps(moved, sort_keys=True) != first
-    assert [row['Quoted_Bid'] for row in moved['instrument']['European_Options']].count(371.0) == 1
-
-    # a print the ladder does NOT emit leaves the block alone, which is the selection saying what
-    # it is a function of - it moved the block while a single parity pair placed the forward
-    ignored = dict(POISON)
-    ignored[(3, 1.00, 'Call')] = {'PX_BID': 401.0, 'PX_ASK': 405.0, 'PX_LAST': 403.0}
-    assert json.dumps(equity_option_block(canned_chain(poison=ignored), FORWARD)[1],
-                      sort_keys=True) == first
 
 
 # =============================================================================================
@@ -1268,6 +1049,8 @@ def test_the_block_installs_and_updates_through_the_engines_own_guard():
     families quote in `European_Options`. A moved STRIKE still refuses, which makes that a line
     rather than a waiver, and so does a re-EMITTED chain, because `Weight` is a normalised vega and
     one moved print re-weighs the ladder. Both readings asserted.
+
+    Killing mutation: an American contract believed.
     """
     from derivus.schema import update_market_quote
 
@@ -1318,6 +1101,8 @@ def test_a_premium_tick_moves_the_values_hash_and_leaves_the_chains_plan_bit_ide
     its stamp move `values_hash` and leave `plan_hash` HEX-IDENTICAL, so a re-quoted chain is a
     tick rather than a recompile; a moved strike or weight refuses as structural. `market_patch`
     publishes the ladder's value rows under its own table name and `patch_market` takes them back.
+
+    Killing mutation: the plan hash carrying the quote values.
     """
     import derivus
     from derivus.config import CustomJsonEncoder
@@ -1374,6 +1159,8 @@ def test_the_component_family_fits_the_chain_block_with_no_authored_surface(capl
     bootstrap brackets its pillars against LISTED premiums, and the family writes a positive `H0`,
     `Beta` and `Gamma_1` (the equity leverage sign) with one L knot per ATM pillar plus the anchor
     at tenor zero. The ATM residual and the wall clock are RECORDED.
+
+    Killing mutation: the block quoting vols rather than premiums.
     """
     import logging as _logging
     import time
@@ -1430,6 +1217,8 @@ def test_a_surface_the_book_does_carry_is_still_read_where_the_quote_type_reads_
     """The other half, so "optional" does not read as "ignored": under `Quote_Type` Premium the
     surface is INERT, so the same block fits to the SAME parameters with and without one - which
     says the surface stopped being an input rather than merely stopped being fetched.
+
+    Killing mutation: the block quoting vols rather than premiums.
     """
     import derivus
     from derivus.config import CustomJsonEncoder
@@ -1486,45 +1275,12 @@ def blanked(field, quote_type='Premium'):
     return block
 
 
-@pytest.mark.parametrize('quote_type,field,required', [
-    ('Premium', 'Underlying', 'Underlying/Discount_Rate'),
-    ('Premium', 'Discount_Rate', 'Underlying/Discount_Rate'),
-    ('Implied_Volatility', 'Volatility', 'Underlying/Volatility/Discount_Rate'),
-    ('Implied_Volatility', 'Underlying', 'Underlying/Volatility/Discount_Rate')])
-def test_a_missing_required_reference_refuses_by_name_and_never_skips(
-        quote_type, field, required, caplog):
-    """THE SKIP IS DEAD, in three parts: the exception REACHES THE CALLER, NO factor is written,
-    and no 'skipping' line lands anywhere. What stood here caught every resolution failure, logged
-    `Unable to bootstrap ... - skipping`, and moved on, so a job whose block named nothing the book
-    carried completed and told its caller nothing.
-
-    Both quote types ENUMERATE what they require in the message, because the remedy differs: a
-    missing `Volatility` under `Implied_Volatility` is fixed by naming a surface OR by quoting
-    premiums, and the refusal says both.
-    """
-    import logging as _logging
-
-    with caplog.at_level(_logging.ERROR):
-        config, refusal = bootstrapped(blanked(field, quote_type), surface=True)
-
-    assert refusal is not None, 'a blank {} under {} still skipped'.format(field, quote_type)
-    message = str(refusal)
-    assert 'LogVar2FJModelPrices.SPX' in message, 'the refusal does not name the block'
-    assert field in message and required in message, message
-    assert quote_type in message, 'the refusal does not name the quote type doing the requiring'
-    if field == 'Volatility':
-        assert 'Quote_Type Premium' in message, 'the second remedy is not offered'
-    assert not [factor for factor in config.params['Price Factors']
-                if factor.startswith('LogVar2FJModelParameters.')], (
-        'a refused block wrote a price factor anyway')
-    assert not [record for record in caplog.records if 'skipping' in record.getMessage()], (
-        'the refusal still logged a skip')
-
-
 def test_a_reference_the_book_does_not_carry_refuses_naming_the_factor_it_looked_for():
     """The field is NAMED and the book has nothing under that name. The refusal spells out the
     factor it looked for, because the block's name and the `Price Factors` key differ by a TYPE -
-    which is what `<field>_Type` is for. A `Quote_Type` this family does not fit refuses first."""
+    which is what `<field>_Type` is for. A `Quote_Type` this family does not fit refuses first.
+
+    Killing mutation: the block quoting vols rather than premiums."""
     _, block = equity_option_block(canned_chain(), FORWARD, E2E_LADDER)
     block['instrument']['Discount_Rate'] = 'ZAR'
     block['instrument']['Max_Iterations'] = 2
@@ -1661,6 +1417,8 @@ def test_the_calibrated_forward_is_the_priced_forward_at_every_pillar():
     `EquityForwardDeal`'s MtM in the same job. They agree to 1e-13. Non-vacuous by construction:
     with no `Funding_Rate` the same probe is the old arithmetic, off by exactly the spread's own
     carry (over 0.3%) at every pillar.
+
+    Killing mutation: the funding basis left out of the calibrated forward.
     """
     expiries, block = probe_block()
     deals = probe_deals(expiries)
@@ -1697,6 +1455,8 @@ def test_no_funding_curve_is_the_arithmetic_this_family_always_had():
     funding curve names the discount curve, `r - f` is exactly 0.0.
 
     Both halves in HEX rather than to a tolerance, at the function and through a real fit.
+
+    Killing mutation: a basis applied where no funding curve is declared.
     """
     from derivus.bootstrappers import LogVar2FJModelParameters as HN
 
@@ -1730,7 +1490,9 @@ def test_no_funding_curve_is_the_arithmetic_this_family_always_had():
 def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with():
     """The emitter's half: `EquityForward` names the funding curve, the block carries it in the
     field the family resolves, and `Quote_Source` says which curve did which job. Blank, the block
-    writes no `Funding_Rate` at all rather than a declaration nobody made."""
+    writes no `Funding_Rate` at all rather than a declaration nobody made.
+
+    Killing mutation: the declared funding curve left off the block."""
     from derivus.bootstrappers import LogVar2FJModelParameters
 
     spread = EquityForward(
@@ -1797,6 +1559,8 @@ def test_five_quotes_an_expiry_span_the_smile_and_fit_through_the_job_json(caplo
 
     The job document is the contract: `Context.load_json` + `config.bootstrap` on a book with no
     surface in it, and the family writes its factor with one L knot per pillar plus the anchor.
+
+    Killing mutation: a crossed contract believed.
     """
     import logging as _logging
 

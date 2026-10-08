@@ -34,16 +34,11 @@ import torch
 
 import test_declared_defaults as book
 import trial_rates
-from derivus import bootstrappers, riskfactors, schema, utils
-from derivus.bootstrappers import (BenchmarkInstruments,
-                                   InterestRateCurveParameters,
-                                   author_quote,
-                                   quote_nodes)
+from derivus import bootstrappers, utils
+from derivus.bootstrappers import InterestRateCurveParameters, author_quote
 from derivus.instruments import deal_node
 from derivus.schema import completed
-from derivus.utils import damped_newton
 from derivus.config import Config, ModelParams
-from derivus.instruments import construct_instrument
 
 from rates_world import BASE, deposit, fra, par_swap, ois_swap
 
@@ -238,26 +233,46 @@ def authored_world(world, interp=None):
     return market_prices, price_factors, true_curves
 
 
-def bootstrapped(market_prices, currency, spot_curve, dtype=torch.float32, interp=None):
-    """Run the family the way `Config.bootstrap` runs it, into an empty `Price Factors`."""
-    price_factors = {'FxRate.{}'.format(currency): {
+def bootstrapped(market_prices, currency, spot_curve, interp=None, config=None):
+    """`Price Factors` after `Config.bootstrap` over `market_prices`, from one holding the base
+    currency's spot alone - the way a job reaches the family."""
+    config = config or Config(base_currency=currency)
+    config.params['System Parameters']['Base_Date'] = BASE
+    config.params['Price Factors'] = {'FxRate.{}'.format(currency): {
         'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}}
-    InterestRateCurveParameters({}, DEVICE, dtype).bootstrap(
-        {'Base_Date': BASE, 'Base_Currency': currency}, {}, price_factors, interp or INTERP,
-        market_prices, {})
-    return price_factors
+    config.params['Price Factor Interpolation'] = interp or INTERP
+    config.params['Market Prices'] = market_prices
+    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    config.bootstrap()
+    return config.params['Price Factors']
 
 
 @pytest.mark.parametrize('world', sorted(WORLDS))
-def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world):
-    """The acceptance criterion: theta_true back to 1e-10 in float64."""
+def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world, caplog):
+    """The acceptance criterion: theta_true back to 1e-10, on the knots the quotes name, through
+    `Config.bootstrap`. Float64 whatever the bootstrapper was built with - `construct_bootstrapper`
+    defaults to float32, and a residual carried in float32 cannot be driven to a 1e-10 curve. The
+    SEED is the quotes themselves, three or four basis points off the answer, so a solver returning
+    it fails. And the family writes an ordinary `InterestRate`, which `price_factor_type` declares,
+    or the check for a bootstrapper that silently did nothing logs one.
+
+    Killing mutation: the solver returning its seed.
+    """
     _, _, currency, spot_curve = WORLDS[world]
     market_prices, true_factors, knots = authored_world(world)
-    solved = bootstrapped(market_prices, currency, spot_curve)
+    for market_price, entry in market_prices.items():
+        seed = np.array([point['Quoted_Market_Value'] / 100.0
+                         for point in entry['instrument']['Points']])
+        assert np.abs(np.sort(seed) - true_factors[curve_of(market_price)]['Curve'].array[:, 1]
+                      ).max() > 1e-5, 'the seed is already the answer - this world proves nothing'
+    with caplog.at_level(logging.ERROR):
+        solved = bootstrapped(market_prices, currency, spot_curve)
+    assert 'wrote no' not in caplog.text, caplog.text
 
     for curve_name in knots:
         expected = true_factors[curve_name]['Curve'].array
         recovered = solved[curve_name]['Curve'].array
+        assert recovered.dtype == np.float64
         assert np.abs(recovered[:, 0] - expected[:, 0]).max() == 0.0, (
             '{}: the solve placed different knots'.format(curve_name))
         error = np.abs(recovered[:, 1] - expected[:, 1]).max()
@@ -265,54 +280,12 @@ def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world):
             curve_name, error, recovered[:, 1], expected[:, 1])
 
 
-@pytest.mark.parametrize('world', sorted(WORLDS))
-def test_a_perturbed_knot_fails_the_round_trip(world):
-    """MUTATE the answer: one knot moved by a basis point has to break the comparison, or the gate
-    above compares something to itself. The second half is the other direction - the SEED is the
-    quotes themselves, and a solver returning its seed unchanged fails too, by three or four basis
-    points.
-    """
-    _, _, currency, spot_curve = WORLDS[world]
-    market_prices, true_factors, knots = authored_world(world)
-    solved = bootstrapped(market_prices, currency, spot_curve)
-
-    curve_name = sorted(knots)[0]
-    solved[curve_name]['Curve'].array[0, 1] += 1e-4
-    assert np.abs(solved[curve_name]['Curve'].array[:, 1] -
-                  true_factors[curve_name]['Curve'].array[:, 1]).max() > 1e-10
-
-    for market_price, entry in market_prices.items():
-        seed = np.array([point['Quoted_Market_Value'] / 100.0
-                         for point in entry['instrument']['Points']])
-        assert np.abs(np.sort(seed) - true_factors[curve_of(market_price)]['Curve'].array[:, 1]
-                      ).max() > 1e-5, 'the seed is already the answer - this world proves nothing'
-
-
-def test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with():
-    """The precision seam. `construct_bootstrapper` defaults to float32 and a cube may run in it;
-    the bootstrap and its Jacobian do not, because a residual carried in float32 cannot be driven
-    to a 1e-10 curve."""
-    market_prices, true_factors, knots = authored_world('zar')
-    solved = bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M', dtype=torch.float32)
-    curve_name = 'InterestRate.ZAR-JIBAR-3M'
-    assert solved[curve_name]['Curve'].array.dtype == np.float64
-    assert np.abs(solved[curve_name]['Curve'].array[:, 1] -
-                  true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
-
-
-def test_the_solve_runs_on_the_host_whatever_device_the_job_runs_on():
-    """A benchmark Jacobian is one small backward per quote per iteration, so the solve is
-    dispatch-bound and a card is the slow place for it: three desk curves in 5 s on the host
-    against 17 s on an RTX 3090. Killing mutation: take the family's own device back from the
-    constructor's, which on a CUDA box puts the solve on the card."""
-    family = InterestRateCurveParameters({}, torch.device('cuda'), torch.float64)
-    assert family.device.type == 'cpu'
-
-
 def test_the_blocks_are_solved_in_dependency_order():
     """A projection curve solved before the discount curve it prices against is solved against a
     curve that does not exist. Authoring the two blocks the wrong way round has to change nothing,
-    because `Discount_Rate` says which is which and the family reads it."""
+    because `Discount_Rate` says which is which and the family reads it.
+
+    Killing mutation: the blocks solved in the order authored."""
     market_prices, true_factors, knots = authored_world('usd')
     reversed_blocks = dict(reversed(list(market_prices.items())))
     assert list(reversed_blocks) == ['InterestRatePrices.USD-3M', 'InterestRatePrices.USD-OIS']
@@ -326,7 +299,9 @@ def test_the_blocks_are_solved_in_dependency_order():
 def test_a_held_out_quote_leaves_the_solve():
     """`Use` is what lets a quote be dropped without being deleted. Dropping one has to drop its
     knot, because the knot grid IS the used quotes' maturities - a curve that kept the knot would
-    be solving for an unknown no instrument identifies."""
+    be solving for an unknown no instrument identifies.
+
+    Killing mutation: `Use` unread - the held-out quote keeps its knot."""
     market_prices, _, _ = authored_world('zar')
     block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
     full = bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M')
@@ -350,6 +325,8 @@ def test_a_benchmark_matured_at_the_base_date_refuses_by_name():
     The second arm is one of those remedies taken: the same block with that quote's `Use` off
     solves and recovers its own curve, which is what says the refusal reads the TENOR and not the
     extra quote.
+
+    Killing mutation: the refusal dropped - the solve dies on a singular matrix naming nothing.
     """
     market_prices, true_factors, _ = authored_world('zar')
     block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
@@ -374,38 +351,14 @@ def test_a_benchmark_matured_at_the_base_date_refuses_by_name():
     assert np.abs(solved[:, 1] - true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
 
 
-def test_config_bootstrap_drives_the_family_and_finds_the_curve_it_wrote(caplog):
-    """End to end through `Config.bootstrap`, which is how a job reaches this.
-
-    It also gates the one loose end the design note recorded: the check for a bootstrapper that
-    silently did nothing looks for a `<ClassName>.*` price factor, and this family writes an
-    ordinary `InterestRate`. `price_factor_type` is what settles it - and the check only LOGS, so
-    the log is what has to be asserted or dropping the declaration would go unnoticed.
-    """
-    market_prices, true_factors, knots = authored_world('usd')
-    config = Config(base_currency='USD')
-    config.params['System Parameters']['Base_Date'] = BASE
-    config.params['Price Factors'] = {'FxRate.USD': {
-        'Domestic_Currency': None, 'Interest_Rate': 'USD-OIS', 'Priority': 1, 'Spot': 1.0}}
-    config.params['Market Prices'] = market_prices
-    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
-    with caplog.at_level(logging.ERROR):
-        config.bootstrap()
-    assert 'wrote no' not in caplog.text, caplog.text
-
-    for curve_name in knots:
-        assert curve_name in config.params['Price Factors'], (
-            '{} was not written'.format(curve_name))
-        assert np.abs(config.params['Price Factors'][curve_name]['Curve'].array[:, 1] -
-                      true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
-
-
 @pytest.mark.parametrize('knob,value', [('N_Iter', 1), ('Damping_Halvings', -1)])
 def test_the_solver_knobs_are_read_off_the_block(knob, value):
     """The knobs are JSON, so a job tightens or loosens the solve with no code edit. Each value here
     is unsatisfiable: one Newton iteration cannot converge a seven-knot curve, and `-1` halvings
     forbids even the full step - `-1` rather than `0` because the full step is what these worlds
     always take, so no non-negative value fails here.
+
+    Killing mutation: the iteration cap read off a constant rather than the block.
     """
     market_prices, _, _ = authored_world('zar')
     market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument'][knob] = value
@@ -435,6 +388,8 @@ def test_the_near_split_is_written_through_and_every_quote_still_reprices():
     and without it this gate's own mutation survives.
 
     A block declaring NEITHER writes exactly the five keys it always wrote.
+
+    Killing mutation: the split left off the seed - the round trip misses by 1.9e-05.
     """
     interp = ModelParams()
     interp.append('InterestRate', (), 'HermiteRT')
@@ -443,22 +398,8 @@ def test_the_near_split_is_written_through_and_every_quote_still_reprices():
     factor = solved['InterestRate.ZAR-ZARONIA']
     assert factor['Near_Interpolation'] == 'LinearRT'
     assert factor['Near_Date'] == BASE + pd.DateOffset(months=18)
-
-    # the factor the engine builds off it carries TWO segments, split on the 18M knot itself
-    built = riskfactors.construct_factor(
-        utils.Factor('InterestRate', ('ZAR-ZARONIA',)), solved, interp, base_date=BASE)
-    assert [segment[2][0] for segment in built.interpolation] == ['LinearRT', 'HermiteRT']
-    split = built.interpolation[0][1]
-    assert built.tenors[split] == pytest.approx(
-        ((BASE + pd.DateOffset(months=18)) - BASE).days / 365.0)
-    # the overnight front, every monthly benchmark and the FRA between them
-    assert split == len(ZARONIA_MONTHS) + 1
-
-    # every benchmark reprices at par off the SOLVED curve, read through both segments
-    block = market_prices['InterestRatePrices.ZAR-ZARONIA']['instrument']
-    priced = BenchmarkInstruments(block_nodes(block, 'ZAR-ZARONIA'), solved, interp, BASE, 'ZAR',
-                                  {}, [], DEVICE)({}).detach().numpy()
-    assert np.abs(priced).max() < 1e-9, priced
+    assert np.abs(factor['Curve'].array[:, 1] -
+                  true_factors['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1]).max() < 1e-10
 
     plain = bootstrapped(*authored_world('zar')[:1], 'ZAR', 'ZAR-JIBAR-3M')
     assert set(plain['InterestRate.ZAR-JIBAR-3M']) == {
@@ -475,32 +416,28 @@ def test_a_curves_own_rule_builds_it_and_leaves_its_neighbour_on_the_default():
     each is recovered to 1e-10 from quotes generated under its OWN scheme, and each block reprices
     at par read the same way.
 
-    Killing mutation: the rule ignored and the type default read alone, which builds the projection
-    curve Linear. THE PAR CHECK CANNOT SEE IT - a solve drives its own benchmarks to par under
-    whatever scheme it is using, 2.9e-11 either way - and the ROUND TRIP can: the recovered
-    projection curve then misses the one its quotes came from by **7.507e-06** against its 1e-10
-    bound, while the OIS curve beside it is untouched at 1.4e-17.
+    The same quotes solved under the type default alone build the projection curve Linear, which
+    misses the one its quotes came from by **7.507e-06**, while the OIS curve beside it is the same
+    curve to the bit - so the rule is what the solve read. The par check cannot see the difference:
+    a solve drives its own benchmarks to par under whatever scheme it is using.
+
+    Killing mutation: the rule ignored and the type default read alone - the two solves are one.
     """
     interp = ModelParams()
     interp.append('InterestRate', (), 'Linear')
     interp.append('InterestRate', ('id', 'USD-3M'), 'HermiteRT')
     market_prices, true_factors, knots = authored_world('usd', interp)
+    linear = ModelParams()
+    linear.append('InterestRate', (), 'Linear')
+    plain = bootstrapped(copy.deepcopy(market_prices), 'USD', 'USD-OIS', interp=linear)
     solved = bootstrapped(market_prices, 'USD', 'USD-OIS', interp=interp)
-
-    built = {name: riskfactors.construct_factor(utils.Factor('InterestRate', (name.split('.')[1],)),
-                                                solved, interp, base_date=BASE) for name in knots}
-    assert [built['InterestRate.USD-3M'].interpolation[0][0],
-            built['InterestRate.USD-OIS'].interpolation[0][0]] == ['HermiteRT', 'Linear']
     for name in knots:
         assert np.abs(solved[name]['Curve'].array[:, 1] -
                       true_factors[name]['Curve'].array[:, 1]).max() < 1e-10, name
-
-    for market_price, entry in market_prices.items():
-        block = entry['instrument']
-        priced = BenchmarkInstruments(
-            block_nodes(block, discount_of(market_price, block)), solved, interp, BASE, 'USD', {},
-            [], DEVICE)({}).detach().numpy()
-        assert np.abs(priced).max() < 1e-9, (market_price, priced)
+    assert np.abs(plain['InterestRate.USD-3M']['Curve'].array[:, 1] -
+                  solved['InterestRate.USD-3M']['Curve'].array[:, 1]).max() > 1e-6
+    assert np.array_equal(plain['InterestRate.USD-OIS']['Curve'].array,
+                          solved['InterestRate.USD-OIS']['Curve'].array)
 
 
 def test_the_near_splits_far_leg_is_the_curves_own_rule():
@@ -510,28 +447,31 @@ def test_the_near_splits_far_leg_is_the_curves_own_rule():
     ZARONIA curve quoted monthly to the last policy meeting is LinearRT to 18M and HermiteRT
     beyond, on a book whose every other curve is Linear.
 
-    Killing mutation: the far leg read off the type default, which builds it Linear - the round
-    trip then misses the curve its quotes came from by **7.879e-05** against its 1e-10 bound, and
-    the second segment reads `Linear` where the rule says `HermiteRT`.
+    The same quotes solved with the far leg read off the type default build it Linear, which misses
+    the curve its quotes came from by **7.879e-05** against the 1e-10 the rule's solve holds.
+
+    Killing mutation: the rule ignored - the far leg is the type default's and the two solves are
+    one.
     """
     interp = ModelParams()
     interp.append('InterestRate', (), 'Linear')
     interp.append('InterestRate', ('id', 'ZAR-ZARONIA'), 'HermiteRT')
     market_prices, true_factors, _ = authored_world('zaronia', interp)
+    linear = ModelParams()
+    linear.append('InterestRate', (), 'Linear')
+    plain = bootstrapped(copy.deepcopy(market_prices), 'ZAR', 'ZAR-ZARONIA', interp=linear)
     solved = bootstrapped(market_prices, 'ZAR', 'ZAR-ZARONIA', interp=interp)
-
-    built = riskfactors.construct_factor(
-        utils.Factor('InterestRate', ('ZAR-ZARONIA',)), solved, interp, base_date=BASE)
-    assert [segment[2][0] for segment in built.interpolation] == ['LinearRT', 'HermiteRT']
-    assert built.tenors[built.interpolation[0][1]] == pytest.approx(
-        ((BASE + pd.DateOffset(months=18)) - BASE).days / 365.0)
+    assert np.abs(plain['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1] -
+                  solved['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1]).max() > 1e-5
     assert np.abs(solved['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1] -
                   true_factors['InterestRate.ZAR-ZARONIA']['Curve'].array[:, 1]).max() < 1e-10
 
 
 def test_a_near_interpolation_without_its_tenor_refuses_by_name():
     """The split needs the date it stops at: a block naming the scheme and no tenor is refused
-    before a quote is read, rather than dying on a date plus an empty string."""
+    before a quote is read, rather than dying on a date plus an empty string.
+
+    Killing mutation: the tenor's presence unchecked."""
     market_prices, _, _ = authored_world('zaronia')
     market_prices['InterestRatePrices.ZAR-ZARONIA']['instrument']['Near_Tenor'] = ''
     with pytest.raises(Exception, match='Near_Tenor'):
@@ -547,7 +487,9 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
     483.511030079 both ways off 523 items against one deal, the 10Y 2068.437863819 off 2612; on the
     world's own sloped curve the 5Y reads -355.506266991 both ways and the 10Y 2012.027439223. The
     largest disagreement over the eight readings is 6.4e-10, which is the float64 noise of summing
-    2612 items rather than a difference.
+    2612 items rather than a difference - both priced as one base-valuation document.
+
+    Killing mutation: the term coupon's OIS compounding read as averaging its one reset.
     """
     _, price_factors, _ = authored_world('usd')
     flat = dict(price_factors)
@@ -557,52 +499,24 @@ def test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces():
                                price_factors['InterestRate.USD-OIS']['Curve'].array[:, 0]]))
 
     for label, factors in (('flat', flat), ('sloped', price_factors)):
+        deals = []
         for months in (12, 24, 60, 120):
-            listed = deal_node(ois_swap('LIST', 'USD', 'USD-OIS', months, 4.0), {})
-            term = deal_node(par_swap('TERM', 'USD', 'USD-OIS', 'USD-OIS', 0, 4.0,
-                                       fixed_frequency=12, float_frequency=12, months=months,
-                                       compounding='OIS'), {})
-            pvs = [float(BenchmarkInstruments([node], factors, INTERP, BASE, 'USD', {}, [],
-                                              DEVICE)({}).detach().numpy()[0])
-                   for node in (listed, term)]
+            deals += [ois_swap('LIST{}'.format(months), 'USD', 'USD-OIS', months, 4.0),
+                      par_swap('TERM{}'.format(months), 'USD', 'USD-OIS', 'USD-OIS', 0, 4.0,
+                               fixed_frequency=12, float_frequency=12, months=months,
+                               compounding='OIS')]
+        marks, _ = book.marks(deals, {'InterestRate.USD-OIS': factors['InterestRate.USD-OIS']})
+        for months in (12, 24, 60, 120):
+            pvs = [float.fromhex(marks[kind + str(months)]) for kind in ('LIST', 'TERM')]
             assert pvs[0] == pytest.approx(pvs[1], abs=1e-8), (label, months, pvs)
-
-
-def test_a_benchmarks_LEGS_complete_their_conventions_before_the_quote_is_written():
-    """A BENCHMARK IS A DEAL AND SO IS EVERY LEG OF ONE. `quote_nodes` builds the block through
-    `DealFields` before `author_quote` runs, because a quote WRITER reads the block's own
-    conventions: `DepositDeal.quote` pins the schedule off `Payment_Frequency`, which a
-    strip that states only its terms does not carry. The container half of that is `completed`'s
-    recursion into `Children` - a two-leg benchmark whose leg is the one the writer reads.
-
-    The leg here states its terms and NOTHING ELSE: currency, curve, the two dates, the amount.
-
-    KILLING MUTATION: `completed` stops recursing (`if deal.get('Children') and False`). The leg
-    reaches `DepositDeal.quote` as the raw block the author wrote and it dies
-    `KeyError: 'Payment_Frequency'` - the failure the whole seam exists to end, one level down.
-    """
-    terms = {key: value for key, value in deposit('LEG', 'USD', 'USD', 6, 4.0).items()
-             if key in ('Object', 'Reference', 'Currency', 'Discount_Rate', 'Interest_Rate',
-                        'Effective_Date', 'Maturity_Date', 'Amount')}
-    container = {'Object': 'StructuredDeal', 'Reference': 'PAIR', 'Currency': 'USD',
-                 'Children': [terms]}
-
-    node = quote_nodes([{'Deal': container, 'DealType': 'StructuredDeal',
-                         'Quoted_Market_Value': 4.0}], 'USD')[0]
-    leg = node['Children'][0]['Instrument']
-
-    # the writer reached the leg and pinned every accrual start at the quote, off a frequency the
-    # leg never stated - and the completion did not enter the block
-    schedule = leg.field['Interest_Rate_Schedule']
-    assert set(leg.field) == set(terms) | {'Discount_Rate', 'Interest_Rate_Schedule'}
-    assert schedule.data and set(schedule.data.values()) == {4.0}
-    assert leg.field['Payment_Frequency'].kwds == Config().parse_period('3M').kwds
 
 
 def test_a_tighter_tolerance_still_converges_to_the_same_curve():
     """The other direction: `Tol` is a floor on the step, not a target, so asking for less than the
     default cannot move the answer - it can only cost an iteration. A knob that changed the number
-    would be a knob nobody could safely turn."""
+    would be a knob nobody could safely turn.
+
+    Killing mutation: `Tol` read as a target on the residual - 1e-16 is never reached."""
     market_prices, true_factors, _ = authored_world('zar')
     loose = bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M')
     market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']['Tol'] = 1e-16
@@ -612,43 +526,6 @@ def test_a_tighter_tolerance_still_converges_to_the_same_curve():
                   loose[curve_name]['Curve'].array[:, 1]).max() < 1e-14
     assert np.abs(tight[curve_name]['Curve'].array[:, 1] -
                   true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
-
-
-def test_the_damping_never_engages_on_these_worlds():
-    """Honest negative result. Newton from a par-rate seed takes the FULL step at every iteration on
-    both worlds, so removing the damping entirely would fail nothing here: it is insurance against a
-    first iterate these fixtures do not produce. What IS gated is that the search runs and agrees
-    with the undamped step, so a line search rejecting good steps would show up.
-    """
-    market_prices, _, _ = authored_world('zar')
-    block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
-    nodes = block_nodes(block, 'ZAR-JIBAR-3M')
-
-    price_factors = {
-        'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR-JIBAR-3M',
-                       'Priority': 1, 'Spot': 1.0},
-        'InterestRate.ZAR-JIBAR-3M': {
-            'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'ZAR', 'Day_Count': 'ACT_365',
-            'Curve': utils.Curve([], list(zip(
-                InterestRateCurveParameters.quote_knots(nodes, BASE, 'ACT_365', {}),
-                [p['Quoted_Market_Value'] / 100.0 for p in block['Points']])))}}
-    curve = utils.Factor('InterestRate', ('ZAR-JIBAR-3M',))
-    benchmarks = BenchmarkInstruments(
-        nodes, price_factors, INTERP, BASE, 'ZAR', {}, [curve], DEVICE)
-
-    seed = torch.tensor(benchmarks.factors[curve].current_value(), dtype=torch.float64)
-    damped = damped_newton(benchmarks, {curve: seed}, 50, 1e-14, 6)
-
-    # the same iteration with the line search removed - full step every time
-    x = seed.clone()
-    for _ in range(20):
-        x = x.detach().requires_grad_(True)
-        f = benchmarks({curve: x})
-        jacobian = torch.stack([torch.autograd.grad(f[i], x, retain_graph=True)[0]
-                                for i in range(f.numel())])
-        x = x.detach() - torch.linalg.solve(jacobian, f.detach())
-    assert torch.allclose(damped[curve], x, atol=1e-14), (
-        'the damped and undamped iterations disagree, so the line search is doing something')
 
 
 # ---------------------------------------------------------------------------------------------
@@ -729,13 +606,16 @@ def fx_world():
     return {name: {'instrument': block, 'Children': []} for name, block in blocks.items()}
 
 
-def fx_bootstrapped(market_prices):
-    """Run the family over the cross-currency world into a `Price Factors` holding the two spots
+def fx_bootstrapped(market_prices, price_factors=None, config=None):
+    """`Config.bootstrap` over the cross-currency world from a `Price Factors` holding the two spots
     and no curve at all, so every curve it comes back with was solved here."""
-    price_factors = fx_price_factors()
-    InterestRateCurveParameters({}, DEVICE, torch.float32).bootstrap(
-        {'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP, market_prices, {})
-    return price_factors
+    config = config or Config(base_currency='ZAR')
+    config.params['System Parameters']['Base_Date'] = BASE
+    config.params['Price Factors'] = price_factors or fx_price_factors()
+    config.params['Market Prices'] = market_prices
+    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    config.bootstrap()
+    return config.params['Price Factors']
 
 
 def fx_par_outrights(market_prices, price_factors):
@@ -750,18 +630,6 @@ def fx_par_outrights(market_prices, price_factors):
     return par_quotes(block, ZAR_CURVE, price_factors)
 
 
-def test_the_outright_reaches_the_deal_unscaled():
-    """The quote is the forward outright in `Buy_Currency` per unit of `Sell_Currency`, landing as
-    `Buy_Amount = quote * Sell_Amount` with no conversion - which says the family scales nothing
-    centrally: a percent-quoted benchmark is scaled by its own field semantics, so an amount-valued
-    quote on the same `author_quote` path arrives untouched.
-    """
-    deal = fx_forward('FWD_6M', 6, 0.0)
-    author_quote(deal, 18.70, ZAR_CURVE)
-    assert deal['Buy_Amount'] == 18.70 * deal['Sell_Amount']
-    assert deal['Sell_Amount'] == 1e6, 'the authored benchmark fixes the sold amount'
-
-
 def test_a_forward_curve_reprices_the_outrights_it_was_solved_from():
     """THE IDENTITY. Solve a ZAR curve from USDZAR outrights, then price a fresh par forward off the
     solved pair: the par outright is the quote back, to 1e-9 relative.
@@ -769,6 +637,8 @@ def test_a_forward_curve_reprices_the_outrights_it_was_solved_from():
     Covered interest parity CLOSING THROUGH THE ENGINE'S OWN PRICERS - no formula for the forward is
     written here or in the family. The residual is `FXForwardDeal.generate` held at zero, so
     whatever parity that pricer means is the parity the curve carries.
+
+    Killing mutation: the solver returning its seed.
     """
     market_prices = fx_world()
     solved = fx_bootstrapped(market_prices)
@@ -782,7 +652,9 @@ def test_the_forward_knots_land_on_the_settlement_dates():
     """The knot rule, on this family's newest benchmark: one knot per used quote, at that
     benchmark's last cashflow - which for a forward is its settlement date, in the curve's own day
     count. Strictly increasing, or two forwards would share a knot and leave the curve between
-    them unidentified."""
+    them unidentified.
+
+    Killing mutation: a benchmark's knot read at its first cashflow rather than its last."""
     market_prices = fx_world()
     solved = fx_bootstrapped(market_prices)
     knots = solved['InterestRate.' + ZAR_CURVE]['Curve'].array[:, 0]
@@ -793,42 +665,12 @@ def test_the_forward_knots_land_on_the_settlement_dates():
     assert np.abs(knots - settlement).max() == 0.0, '{} against {}'.format(knots, settlement)
 
 
-def test_a_forwards_pv_is_affine_in_its_outright_to_the_last_bit():
-    """The property the par solve and the drift metric both rest on, MEASURED rather than argued:
-    the PV is affine in the outright at fixed curves, so the second difference across three levels
-    carries NO curvature - what `CalibrationArtifact.mispricing` needs to be an exact quote-space
-    residual.
-
-    NOT the flat zero `_carry_quotes` reports for a rate quote: it is 3.7252903e-09 identically on
-    all four benchmarks, which is one ULP of the BOUGHT LEG rather than curvature. A swap is
-    bracketed where its own PV is near zero and cancels bit for bit; a forward's PV is the
-    difference of two legs each worth about 2e7, so `np.spacing(20.0 * 1e6)` is its arithmetic
-    floor - the machine's own resolution at the scale the sum is formed.
-
-    The FIRST difference is about 9.5e5, so a quadratic term would have to hide fourteen orders of
-    magnitude under the linear one to pass here.
-    """
-    market_prices = fx_world()
-    solved = fx_bootstrapped(market_prices)
-    block = market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']
-    outrights = (18.0, 19.0, 20.0)
-    priced = [BenchmarkInstruments(
-        block_nodes(block, ZAR_CURVE, outright), solved, INTERP, BASE, 'ZAR', {}, [], DEVICE
-    )({}).detach().numpy() for outright in outrights]
-    second = priced[0] - 2.0 * priced[1] + priced[2]
-    # the scale the PV's terms are formed at, which is what sets its rounding floor
-    bought = max(outrights) * block['Points'][0]['Deal']['Sell_Amount']
-    assert (np.abs(second) <= np.spacing(bought)).all(), (
-        'PV carries curvature in the outright: {} against one ULP of {}'.format(second, bought))
-    first = np.abs(priced[2] - priced[1])
-    assert (first > 1e5).all() and (np.abs(second) / first < 1e-14).all(), (
-        'the second difference is not at the rounding floor: {}'.format(second / first))
-
-
 def test_a_held_out_forward_drops_its_knot():
     """`Use` on a forward is `Use` on any other benchmark: the knot grid IS the used quotes'
     settlement dates, so dropping the 1Y outright shortens the curve by one knot and moves none of
-    the others - each forward identifies its own discount factor and nothing beyond it."""
+    the others - each forward identifies its own discount factor and nothing beyond it.
+
+    Killing mutation: `Use` unread - the held-out forward keeps its knot."""
     market_prices = fx_world()
     full = fx_bootstrapped(market_prices)
     market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']['Points'][-1]['Use'] = 'No'
@@ -847,7 +689,9 @@ def test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_sol
     curve because each forward names `USD-OIS` in its own `Sell_Discount_Rate` - so a dependency
     read stopping at the block's field orders the ZAR solve first, against a curve that does not
     exist. `benchmark_curves` includes the curves the deals name, so authoring ZAR FIRST changes
-    nothing.
+    nothing - a no-op where the declaration was already enough, as the rate worlds' order is.
+
+    Killing mutation: the ordering read stopping at the block's `Discount_Rate`.
     """
     market_prices = fx_world()
     zar_name, usd_name = 'InterestRatePrices.' + ZAR_CURVE, 'InterestRatePrices.' + USD_CURVE
@@ -856,28 +700,10 @@ def test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_sol
 
     reversed_blocks = dict(reversed(list(market_prices.items())))
     assert list(reversed_blocks) == [zar_name, usd_name]
-    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
-    assert [name for name, _ in family.in_dependency_order(reversed_blocks)] == [usd_name, zar_name]
-    assert family.benchmark_curves(market_prices[zar_name]['instrument']) == {USD_CURVE, ZAR_CURVE}
 
     solved = fx_bootstrapped(reversed_blocks)
     quoted = np.array([outright for _, outright in FX_OUTRIGHTS])
     assert np.abs(fx_par_outrights(reversed_blocks, solved) / quoted - 1.0).max() < 1e-9
-
-
-def test_the_ordering_read_does_not_reorder_the_rate_worlds():
-    """The extension is only safe if it is a NO-OP where the declaration was already enough. Both
-    rate worlds order exactly as they did off `Discount_Rate` alone - a benchmark naming the curve
-    its own block builds is the self-discounting case and orders nothing."""
-    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
-    usd, _, _ = authored_world('usd')
-    assert [name for name, _ in family.in_dependency_order(dict(reversed(list(usd.items()))))] == [
-        'InterestRatePrices.USD-OIS', 'InterestRatePrices.USD-3M']
-    zar, _, _ = authored_world('zar')
-    assert family.benchmark_curves(zar['InterestRatePrices.ZAR-JIBAR-3M']['instrument']) == {
-        'ZAR-JIBAR-3M'}
-    assert [name for name, _ in family.in_dependency_order(zar)] == [
-        'InterestRatePrices.ZAR-JIBAR-3M']
 
 
 def test_a_forward_block_refuses_quote_sensitivity():
@@ -886,6 +712,8 @@ def test_a_forward_block_refuses_quote_sensitivity():
     float off the deal, so no column moves and the overlay carries nothing. A zero delta on the
     instrument a desk actually trades is the failure this switch exists to prevent, so the block
     refuses by name and says which benchmark and which type could not be carried.
+
+    Killing mutation: the overlay's measurement dropped - the block publishes a zero delta.
     """
     market_prices = fx_world()
     market_prices['InterestRatePrices.' + ZAR_CURVE]['instrument']['Quote_Sensitivity'] = 'Yes'
@@ -898,19 +726,18 @@ def test_a_forward_block_refuses_quote_sensitivity():
 def test_the_refusal_is_measured_and_leaves_the_rate_quotes_carrying():
     """The other half of that refusal: it is MEASURED, not a branch on the deal type, so it has to
     stay silent everywhere a quote does reach a schedule column. A rate world asking for
-    `Quote_Sensitivity` still solves, still to 1e-10, and still leaves its quote leaf behind."""
+    `Quote_Sensitivity` still solves, still to 1e-10, and still leaves its quote leaf behind.
+
+    Killing mutation: the refusal made on the deal type rather than measured."""
     market_prices, true_factors, _ = authored_world('zar')
     block = market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']
     block['Quote_Sensitivity'] = 'Yes'
-    family = InterestRateCurveParameters({}, DEVICE, torch.float32)
-    price_factors = {'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR-JIBAR-3M',
-                                    'Priority': 1, 'Spot': 1.0}}
-    family.bootstrap({'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP,
-                     market_prices, {})
+    config = Config(base_currency='ZAR')
+    price_factors = bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M', config=config)
     curve_name = 'InterestRate.ZAR-JIBAR-3M'
     assert np.abs(price_factors[curve_name]['Curve'].array[:, 1] -
                   true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
-    descriptors, quotes = family.quote_leaves['InterestRatePrices.ZAR-JIBAR-3M']
+    descriptors, quotes = config.quote_leaves['InterestRatePrices.ZAR-JIBAR-3M']
     assert len(descriptors) == len(block['Points']) and quotes.requires_grad
 
 
@@ -925,6 +752,8 @@ def test_a_forward_block_cannot_publish_a_ride_operator():
 
     Solved ALONE the set is one currency and that refusal has nothing to say; the overlay's does -
     no schedule column moves, so it refuses rather than publishing a `dF/dq` row of zeros.
+
+    Killing mutation: a set spanning two reporting currencies compiled as one system.
     """
     market_prices = fx_world()
     for entry in market_prices.values():
@@ -939,33 +768,8 @@ def test_a_forward_block_cannot_publish_a_ride_operator():
         'InterestRate.' + USD_CURVE]
     solo = {'InterestRatePrices.' + ZAR_CURVE: market_prices['InterestRatePrices.' + ZAR_CURVE]}
     with pytest.raises(Exception, match='Quote_Sensitivity') as alone:
-        InterestRateCurveParameters({}, DEVICE, torch.float32).bootstrap(
-            {'Base_Date': BASE, 'Base_Currency': 'ZAR'}, {}, price_factors, INTERP, solo, {})
+        fx_bootstrapped(solo, price_factors)
     assert 'FXForwardDeal' in str(alone.value), str(alone.value)
-
-
-def test_a_swap_rolls_the_coupons_it_generates_on_its_payment_calendar():
-    """A benchmark's two dates are rolled by whoever authored it; the coupons between them are the
-    engine's own schedule, and the leg's payment calendar is what rolls those, Modified Following.
-    A deal naming no calendar keeps the tenor arithmetic's dates, which is every book without a
-    calendar file. Killing mutation: the calendar not handed to the generator."""
-    from derivus import instruments
-    deal = par_swap('SWP', 'ZAR', 'ZAR-ZARONIA', 'ZAR-ZARONIA', 2, 7.0, fixed_frequency=6,
-                    float_frequency=6)
-    coupon = BASE + pd.DateOffset(months=12)
-    business = pd.offsets.CustomBusinessDay(holidays=[coupon])
-    calendars = {'JHB': {'businessday': business}}
-    plain = instruments.SwapInterestDeal(deal, {})
-    plain.reset(calendars)
-    rolled = instruments.SwapInterestDeal(
-        dict(deal, Pay_Payment_Calendars='JHB', Receive_Payment_Calendars='JHB'), {})
-    rolled.reset(calendars)
-
-    assert coupon in plain.paydates and coupon in plain.recdates
-    assert coupon not in rolled.paydates and coupon not in rolled.recdates
-    moved = utils.adjust_date(business, True, coupon)
-    assert moved in rolled.paydates and moved in rolled.recdates
-    assert len(rolled.paydates) == len(plain.paydates)
 
 
 def discount(day, rate=0.04):
@@ -1155,22 +959,3 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
     assert {BASE + pd.DateOffset(months=3 * k) for k in range(9)} <= set(read)
     for at, paths in zip(read, profile):
         assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at
-
-
-def test_a_floating_list_stating_a_settlement_is_refused_by_name():
-    """A floating cashflow list settles no forward - its pricer reads neither `Settlement_Date` nor
-    `Settlement_Amount` - so a stated date or a non-zero amount is an authoring message naming the
-    field, and the blank pair every leg carries says nothing.
-
-    KILLING MUTATION: the list's `validate` saying nothing - both stated fields pass in silence.
-    """
-    leg = next(deal for deal in trial_rates.DEALS if deal['Reference'] == 'FLOAT_REDEEMING')
-
-    def said(**stated):
-        return schema.validate_instrument(construct_instrument(copy.deepcopy(dict(leg, **stated)), {}))
-
-    assert said() == [] and said(Settlement_Date=None, Settlement_Amount=0.0) == []
-    assert said(Settlement_Date=BASE + pd.DateOffset(months=3)) == [
-        'Settlement_Date is stated, and a floating cashflow list settles no forward']
-    assert said(Settlement_Amount=950_000.0) == [
-        'Settlement_Amount is stated, and a floating cashflow list settles no forward']

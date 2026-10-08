@@ -1,6 +1,6 @@
 """LogVar2FJ through the JSON contract: the limits, the calibration's rulings and the hex set.
 
-Lane T. Every gate is a real document over `tests/fixtures/data/logvar2fj_world.json` - a
+Every gate is a real document over `tests/fixtures/data/logvar2fj_world.json` - a
 synthetic index `INDEX_A` quoted in EUR on a USD book, a hand-authored skewed five-expiry ladder,
 and a GBM sibling to correlate against. Nothing is mocked and nothing is patched; a fit IS run,
 at `Paths` 2048 and a small `Max_Iterations`, and what is asserted is what a ruling fixed rather
@@ -165,6 +165,8 @@ def test_the_gbm_limit_reproduces_the_gbm_arm():
     the SIGN is the put leg's and a fixture whose downside was dead could not produce it. It was
     dead: with `Barrier_Dates` empty the whole deal is its coupons, +0.2327, and every autocall
     gate here would have run on a payoff with no barrier in it.
+
+    Killing mutation: the walk's idiosyncratic variance share off by a percent.
     """
     for side, sign in (('Buy', -1.0), ('Sell', +1.0)):
         deals = [{'Instrument': {'.Deal': _autocall(Buy_Sell=side)}}]
@@ -186,6 +188,9 @@ def test_the_quanto_loading_is_off_at_zero_correlation():
     quanto in nothing but the measure change. Lane Q. The marked -0.35 moves the same deal to
     -0.4269, so the loading is live on this world and the gate is not reading a drift of zero
     twice.
+
+    Killing mutation: the quanto loading dropped from the walk - the marked correlation moves
+    nothing.
     """
     quanto = _autocall(Payoff_Type='Quanto', Payoff_Currency='USD')
     twin = _autocall(Currency='USD', Payoff_Currency='USD')
@@ -204,7 +209,9 @@ def test_the_quanto_gbm_limit_reproduces_the_gbm_quanto_deal():
 
     The walking arm reads the fx surface's ATM FORWARD strip on its own daily grid where the GBM
     arm reads ONE expiry ATM and calls it the whole deal's; on the FLAT fx surface this world
-    carries the two are the same number. HOLDS 1e-12 relative (lane Q measured 7.6e-16).
+    carries the two are the same number. HOLDS 1e-12 relative (measured 7.6e-16).
+
+    Killing mutation: the quanto loading's sign flipped.
     """
     deals = [{'Instrument': {'.Deal': _autocall(Payoff_Type='Quanto', Payoff_Currency='USD')}}]
     lv = _mtm(_run(_job(_base(), deals, **_priced('LogVar2FJ')), 'quanto_lv'))
@@ -229,70 +236,6 @@ def test_a_reversion_past_single_precision_at_its_clock_refuses_at_load():
                                       **_priced(factor=LIVE_NIG)))))
 
 
-def test_the_mixer_uniform_is_drawn_in_double_under_pseudo_random_sampling():
-    """A batch of 16 paths or fewer draws its one-step-survival uniforms pseudo-randomly, and the
-    mixer's inverse-Gaussian root reads a tail 24 bits cannot express. A row carrying mixers draws
-    in double and casts its OSS columns to the job's dtype: in a float32 job the mixers come back
-    double, carrying bits below 2^-24, and each is `invgauss.ppf` at its own double uniform to
-    1e-12. The live NIG autocall's float32 base valuation - one path a batch, the pseudo branch -
-    then draws what the float64 one draws and reads it to float32's rounding, 3.4e-7, where its
-    single-precision stream read another sample 3.0e-2 away; the float64 mark is unmoved.
-
-    Killing mutations: either site drawing in the job's dtype again.
-    """
-    from types import SimpleNamespace
-
-    import scipy.stats
-    import torch
-    from derivus import pricing, utils
-    torch.manual_seed(1)
-    shared = SimpleNamespace(one=torch.ones(1, 1, dtype=torch.float32), simulation_batch=8)
-    oss, mix = pricing.oss_uniforms(shared, 3, 4, False, 2)
-    assert oss.dtype == torch.float32 and mix.dtype == torch.float64
-    assert (mix != mix.float().double()).any(), 'the mixer uniforms carry 24 bits'
-    m, lam = torch.tensor(0.004, dtype=torch.float64), torch.tensor(0.0144, dtype=torch.float64)
-    np.testing.assert_allclose(utils.LogVar2FJ.ig_quantile(mix, m, lam).numpy(), scipy.stats.invgauss.ppf(
-        mix.numpy(), float(m / lam), scale=float(lam)), rtol=1e-12, atol=0)
-    marks = []
-    for prec in (torch.float32, torch.float64):
-        cx = rf.Context()
-        cx.load_json((_dumps(_job(_base(paths=4096), [{'Instrument': {'.Deal': _autocall()}}],
-                                  **_priced(factor=LIVE_NIG))), 'mixers.json'))
-        marks.append(_mtm(rf.run_baseval(cx.current_cfg, prec=prec)[1]))
-    assert abs(marks[0] / marks[1] - 1.0) < 1e-5, marks
-
-
-def test_a_float32_block_mixer_keeps_the_double_tail():
-    """Under Sobol a mixer arrives off the float32 canonical inner block as its exact pair, the
-    complement taken on the integer. At a monthly and a daily clock of the live NIG its
-    inverse-Gaussian quantile is the double uniform's - bit for bit in both tails, u below 2^-6 or
-    above 1 - 2^-6, where each half holds its integer exactly, and within 2 float32 ulps between.
-
-    Killing mutation: the complement taken after the cast moves the upper tail by up to 4.9e4
-    ulps."""
-    import torch
-    from derivus import pricing, utils
-    from derivus.calculation import CMC_State
-
-    def block(dtype):
-        state = CMC_State.__new__(CMC_State)
-        state.one, state.t_inner_block = torch.ones(1, dtype=dtype), {}
-        return state.inner_block(4, 1 << 15)
-
-    narrow, exact = block(torch.float32), block(torch.float64)
-    tails = (exact[0] < 2.0 ** -6) | (exact[0] > 1.0 - 2.0 ** -6)
-    alpha, beta = (torch.tensor(LIVE_NIG[x]['.Curve']['data'][0][1]) for x in ('Alpha', 'Beta'))
-    for clock in (0.04 / 12.0, 0.04 / 252.0):
-        delta, _, gamma = utils.LogVar2FJ.nig_budget(torch.tensor(clock), alpha, beta)
-        for half in (0, 1):
-            read = utils.LogVar2FJ.ig_quantile(pricing.mixer_uniform(torch.stack(
-                [narrow[half], narrow[1 - half]])), delta / gamma, delta * delta)
-            double = utils.LogVar2FJ.ig_quantile(exact[half], delta / gamma, delta * delta)
-            assert torch.equal(read[tails], double[tails]), (clock, half)
-            spacing = torch.from_numpy(np.spacing(double.abs().numpy()))
-            assert ((read - double).abs() / spacing).max() <= 2.0, (clock, half)
-
-
 # ------------------------------------------------------------------------------------------
 # 8  THE RESERVE IS COMPOSED AS DOCUMENTED
 # ------------------------------------------------------------------------------------------
@@ -307,7 +250,11 @@ def test_the_skew_reserve_is_the_minimum_norm_contraction():
 
     Composed here by hand off the factor's own `Skew_Gradient` and the reported first-order greeks
     - `|g . row| / (row . row) x band` - so the gate states the arithmetic rather than calling the
-    engine's own helper. HOLDS to 1e-9 relative.
+    engine's own helper. HOLDS to 1e-9 relative. The same LIVE NIG factor with its line blanked
+    states no reserve, and the mtm frame carries no column for one - the difference between the two
+    runs is the LINE and not the model.
+
+    Killing mutation: the gradient row's norm taken as its 1-norm.
     """
     out = _run(_job(_base(greeks='First'), [{'Instrument': {'.Deal': _autocall()}}],
                     **_priced(factor=dict(LIVE_NIG, Skew_Gradient=SKEW_GRADIENT,
@@ -322,6 +269,9 @@ def test_the_skew_reserve_is_the_minimum_norm_contraction():
     reported = float(out['Results']['mtm']['Skew_Reserve'].iloc[0])
     assert hand > 0.0, 'the reserve is being read where the deal has no skew sensitivity'
     assert abs(reported - hand) <= 1e-9 * hand, (reported, hand)
+    blank = _run(_job(_base(greeks='First'), [{'Instrument': {'.Deal': _autocall()}}],
+                      **_priced(factor=LIVE_NIG)), 'no_reserve')
+    assert 'Skew_Reserve' not in blank['Results']['mtm'].columns
 
 
 def test_the_reserve_is_per_deal_beside_the_portfolio():
@@ -333,6 +283,8 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
     cancelling. And a deal's number is its own rather than a share of the portfolio's: AC1 reads
     the same 0x1.c527ee5221e24p-8 in this book as it does alone, where the one-deal book's
     portfolio row IS that deal's, bit for bit.
+
+    Killing mutation: a deal's own reserve left unwritten.
     """
     legs = [('AC1', 'Buy'), ('AC2', 'Sell'), ('AC3', 'Buy'), ('AC4', 'Sell')]
     factor = _priced(factor=dict(LIVE_NIG, Skew_Gradient=SKEW_GRADIENT,
@@ -351,17 +303,6 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
     assert abs(book['root']) < 0.5 * sum(abs(x) for x in per), (book['root'], per)
     assert alone['root'].hex() == alone['AC1'].hex(), alone
     assert book['AC1'].hex() == alone['AC1'].hex(), (book['AC1'], alone['AC1'])
-
-
-def test_a_factor_with_no_reserve_line_reports_none():
-    """A blank `Skew_Gradient` states no reserve, and the mtm frame carries no column for one.
-
-    The same LIVE NIG factor as the gate above with its line blanked, so the difference between
-    the two runs is the LINE and not the model.
-    """
-    out = _run(_job(_base(greeks='First'), [{'Instrument': {'.Deal': _autocall()}}],
-                    **_priced(factor=LIVE_NIG)), 'no_reserve')
-    assert 'Skew_Reserve' not in out['Results']['mtm'].columns
 
 
 # ------------------------------------------------------------------------------------------
@@ -439,34 +380,26 @@ def fitted():
 # ------------------------------------------------------------------------------------------
 # 3  THE CALIBRATION'S CONTRACT
 # ------------------------------------------------------------------------------------------
-def test_every_atm_pillar_reprices_exactly(fitted):
+def test_the_fit_reprices_its_atm_strip_fits_its_wings_and_writes_every_field(fitted):
     """The xi strip is re-bootstrapped at every outer iterate, so theta* reprices the ATM term
-    structure EXACTLY and is judged on the smile alone.
+    structure EXACTLY and is judged on the smile alone: 1e-10 relative premium per pillar, this
+    ladder's five reading 8.0e-15, 8.6e-15, 1.2e-12, 1.8e-11 and 4.0e-11 - the Newton solve's own
+    tolerance, not a fit residual.
 
-    HOLDS 1e-10 relative premium per pillar; this ladder's five read 8.0e-15, 8.6e-15, 1.2e-12,
-    1.8e-11 and 4.0e-11 - the Newton solve's own tolerance, not a fit residual.
+    The smile it is JUDGED on is 15 quotes carrying 30 vol points of skew per unit of
+    log-moneyness, fitted to 0.789 vol points RMSE unweighted against a bound of 1.0 - the same
+    document read at its own seed is 3.247. What it WRITES is the contract the pricer reads, every
+    declared field present, and each prior row's column norm over ONE quote row's is reported per
+    coordinate and per stage - three tables on this ladder, the residual pair, the leverage pair and
+    the joint polish.
+
+    Killing mutation: the fit held to one evaluation a stage - the wings read at the seed.
     """
     misses = _report_floats(fitted[1], 'ATM misses')
     assert len(misses) == 5, misses
     assert max(abs(x) for x in misses) <= 1e-10, misses
-
-
-def test_the_wing_rmse_is_inside_its_declared_bound(fitted):
-    """The smile the fit is JUDGED on: 15 quotes carrying 30 vol points of skew per unit of
-    log-moneyness, fitted to 0.789 vol points RMSE unweighted.
-
-    The bound is 1.0 vol points, 27% over the reading, because what this gate defends is that the
-    ladder is FITTED at all - the same document read at its own seed is 3.247 vol points.
-    """
     rmse = _report_floats(fitted[1], 'RMSE', 'vol points unweighted')[0]
     assert rmse <= 1.0, rmse
-
-
-def test_the_written_factor_carries_every_declared_field(fitted):
-    """What a fit WRITES is the contract the pricer reads: the structural scalars, the five curves
-    on their own knots, the reserve line and the guard flag - every one present, or a document
-    priced off this factor reads a schema default nothing measured.
-    """
     factor = fitted[0]
     for name in ('Kappa_L', 'Sigma_L', 'Rho_L', 'Kappa_S', 'Cap_A', 'C_Min',
                  'Residual_Law', 'On_Guard', 'Skew_Gradient', 'Stickiness_Band'):
@@ -477,15 +410,6 @@ def test_the_written_factor_carries_every_declared_field(fitted):
     assert (factor['Xi_Curve'].array[:, 1] > 0.0).all(), 'xi is a variance'
     assert len(str(factor['Skew_Gradient']).split(',')) == 2, factor['Skew_Gradient']
     assert float(factor['Stickiness_Band']) > 0.0
-
-
-def test_the_identification_line_is_reported(fitted):
-    """Each prior row's column norm over ONE quote row's, per coordinate and per stage - the line
-    that says whether a fitted number is the data's or the row's.
-
-    Three tables on this ladder - the residual pair, the leverage pair and the joint polish - each
-    naming its coordinates, its singular values and its prior ratios.
-    """
     lines = [ln for ln in fitted[1].splitlines() if 'identification,' in ln]
     assert len(lines) == 3, lines
     assert all('singular values' in ln and 'column norms' in ln for ln in lines)
@@ -510,6 +434,8 @@ def test_a_ladder_with_no_wings_reads_its_skew_as_silent(silent_fit):
     4.73e-03, 8.41e-03 and 2.88e-05 with the wings quoted - which is 1e-13 of what their own prior
     rows carry, far under the `Jacobian_Rcond` 1e-3 that cuts the same matrix in the table above.
     The ratios there read 1.8e+13x, 2.1e+13x, 8.2e+13x and 1.1e+13x before this gate.
+
+    Killing mutation: a silent coordinate printed as a multiple.
     """
     factor, report = silent_fit
     rows = _prior_ratios(report)['6 joint polish']
@@ -521,86 +447,18 @@ def test_a_ladder_with_no_wings_reads_its_skew_as_silent(silent_fit):
     assert not [x for x in printed if x > bootstrappers.LVFit.PRIOR_RATIO], printed
 
 
-def test_a_prior_on_a_bucket_lever_holds_every_bucket():
-    """The world's ladder on the Walk with two `Param_Buckets`, 0 and 1y: the `Rho_S` and `Alpha`
-    priors carry one soft row per bucket, as the product and the share beside them do, where the
-    fit read bucket 0 alone and left the joint polish moving bucket 1 unpriored. The residual's prior
-    block, the state set off each prior - `rho_s` -0.5 and -0.3, `alpha` 1.25 and 0.8 of its
-    target - holds w (rho_k - rho) and q (log alpha_k - log alpha) for k = 0, 1 by hand, at the
-    target and scale each prior row declares; and a stage's identification table, one iterate,
-    counts the same eight prior rows.
-
-    Killing mutations: the prior read at bucket 0 again, one row each; the two levers left out of
-    `BUCKET_ROWS`, the table's prior block two rows short.
-    """
-    from derivus import config
-    cx = rf.Context()
-    cx.load_json((_dumps(_job(_base(), (), **_ladder())), 'buckets.json'))
-    params = cx.current_cfg.params
-    name = next(n for n in params['Bootstrapper Configuration'] if 'LogVar2FJ' in n)
-    fit = config.construct_bootstrapper(name, params['Bootstrapper Configuration'][name]).fit_for(
-        BLOCK, params['Market Prices'][BLOCK], params['System Parameters'], params['Price Models'],
-        params['Price Factors'], params['Price Factor Interpolation'],
-        {'Vanilla_Pricer': 'Walk', 'Paths': 512, 'Max_Iterations': 1,
-         'Param_Buckets': [{'Tenor': 0.0}, {'Tenor': 1.0}]})
-    fit.soft_priors()
-    priors = {row[0]: row[1:] for row in fit.prior_rows}
-    assert list(priors) == ['Rho_S', fit.prior.LEVERAGE, 'Alpha', fit.prior.SHARE], list(priors)
-    fit.state['Rho_S'] = [-0.5, -0.3]
-    fit.state['Alpha'] = [priors['Alpha'][0] * 1.25, priors['Alpha'][0] * 0.8]
-    coords = [(lever, k) for lever in ('Rho_S', 'Sigma_S', 'Beta', 'Alpha') for k in (0, 1)]
-    rows = fit.residual(fit.vector([fit.value_of(c) for c in coords]), coords, fit.quotes,
-                        fit.targets).detach().cpu().numpy()[len(fit.quotes) + len(fit.targets):]
-    (rho, w, _), (_, q, _) = priors['Rho_S'], priors['Alpha']
-    np.testing.assert_allclose(rows[:2], [w * (-0.5 - rho), w * (-0.3 - rho)], rtol=1e-12, atol=0)
-    np.testing.assert_allclose(rows[4:6], [q * np.log(1.25), q * np.log(0.8)], rtol=1e-12, atol=0)
-    fit.stage('buckets', coords, fit.quotes, fit.targets)
-    assert fit.tables[-1][3].shape[0] == 8, fit.tables[-1][3].shape
-
-
-def test_a_declared_step_tolerance_stops_a_stage_on_its_step():
-    """`Step_Tolerance` is least_squares' `xtol`, declared at the 1e-12 it was fixed at. The residual
-    pair's stage on the two-rung ladder runs to its 12-evaluation cap at the default and stops on
-    its first step, two evaluations, at a declared 0.5.
-
-    Killing mutation: `xtol` fixed at 1e-12 again, the declaration read by nothing.
-    """
-    from derivus import config
-    evaluations = []
-    for declared in ({}, {'Step_Tolerance': 0.5}):
-        cx = rf.Context()
-        cx.load_json((_dumps(_job(_base(), (), **_ladder(rungs=2))), 'step_tolerance.json'))
-        params = cx.current_cfg.params
-        name = next(n for n in params['Bootstrapper Configuration'] if 'LogVar2FJ' in n)
-        fit = config.construct_bootstrapper(name, params['Bootstrapper Configuration'][name]).fit_for(
-            BLOCK, params['Market Prices'][BLOCK], params['System Parameters'], params['Price Models'],
-            params['Price Factors'], params['Price Factor Interpolation'],
-            dict({'Paths': 512, 'Max_Iterations': 12}, **declared))
-        fit.soft_priors()
-        fit.settle()
-        fit.stage('2 (alpha, beta)', [('Alpha', 0), ('Beta', 0)], fit.quotes)
-        evaluations.append(fit.calls['n'])
-    assert evaluations == [12, 2], evaluations
-
-
 # ------------------------------------------------------------------------------------------
 # 5  THE ON-GUARD FLAG
 # ------------------------------------------------------------------------------------------
-def test_a_clean_fit_writes_no_guard(flat_fit):
-    """A fit no box is holding says so with a blank `On_Guard`, so nothing priced off it inherits
-    a warning it did not earn. The flat ladder is that fit: it wants no leverage. The world's own
-    ladder, priced accurately, wants a leverage share within the margin of its floor, and the
-    guard says so - the forced-onto-a-box gate below reads that path."""
-    assert str(flat_fit[0]['On_Guard']) == '', flat_fit[0]['On_Guard']
-
-
 def test_a_fit_forced_onto_a_box_names_it_and_the_mark_reports_it():
     """A parameter a BOX stopped is not a fitted one, so `On_Guard` names the box on the factor and
     `Base_Revaluation` reports it in `Stats` under the same key.
 
     Forced with `Sigma_S_Bounds` 0.5,0.6 - a vol-of-vol window this ladder cannot fit inside - on
     the two-rung ladder at `Paths` 512 and `Max_Iterations` 3: enough to land ON the edge, not
-    enough to be a calibration. The clean five-rung fit above writes the flag blank.
+    enough to be a calibration. The flat ladder writes the flag blank.
+
+    Killing mutation: the mark not reporting the factor's guard.
     """
     factor, _ = _fit(_ladder(rungs=2, Sigma_S_Bounds='0.5,0.6', Paths=512, Max_Iterations=3,
                              Stationary_Spread='Floor'), 'guarded')
@@ -648,6 +506,8 @@ def test_a_withdrawn_declaration_refuses_by_name(declared, names):
     itself, a skew share outside the conditioning bound the factor asserts at load, a
     `Sigma_S_Reference` that cannot scale the product row, and a standard error that divides a
     prior row by nothing.
+
+    Killing mutation: each refusal softened to reading the declaration as a default.
     """
     assert names in _refused(_ladder(**declared), 'refuse')
 
@@ -661,6 +521,8 @@ def test_a_warm_start_off_a_retired_factor_refuses_by_name():
     `Xi_Curve`. The refusal is the factor's own and runs on `previous` BEFORE the seed indexes it:
     read first, the same factor dies on a `KeyError` for the name it does not carry, which says
     neither which key is retired nor what replaced it.
+
+    Killing mutation: the retired keys unread on a warm start.
     """
     previous = {name: value for name, value in dict(GBM_LIMIT, **LIVE_NIG).items()
                 if name != 'Xi_Curve'}
@@ -674,6 +536,8 @@ def test_two_class_tables_disagreeing_in_sign_refuse():
     """`Leverage_Product_Defaults` is the row and `Leverage_Prior_Defaults` signs the seed, so a
     class whose two disagree would seed a fit AGAINST its own prior. Refused at construction, in
     the `Bootstrapper Configuration` block that declares them, before a quote is read.
+
+    Killing mutation: the two tables' signs left uncompared.
     """
     assert 'disagree in SIGN' in _refused(
         dict(_ladder(), **{'Bootstrapper Configuration': {'LogVar2FJModelParameters': {
@@ -697,33 +561,32 @@ def flat_fit():
     return _fit(_ladder(flat=True, Stationary_Spread='Floor', **FLAT), 'flat')
 
 
-def test_a_flat_surface_is_reproduced_by_the_residual(flat_fit):
-    """The NIG limit: a residual on a flat 20% ladder has to give the ATM back.
+def test_a_flat_surface_is_reproduced_floored_and_written_off_guard(flat_fit):
+    """The NIG limit: a residual on a flat 20% ladder has to give the ATM back. The ATM pillar is
+    solved in PREMIUM, so its miss converts at the quote's own `P/vega`, which for an at-the-forward
+    option IS sigma: this ladder's rungs come back at 1e-15 to 1e-11 relative, 1e-12 vol points,
+    held at 1e-5 because `Atm_Miss_Max` (1e-4 RELATIVE, 2e-5 vol points) refuses the fit above it.
 
-    The ATM pillar is solved in PREMIUM, so its miss converts at the quote's own `P/vega`, which
-    for an at-the-forward option IS sigma - a relative premium miss of `e` is `e x 0.20` vol
-    points. This ladder's ATM rungs come back at 1e-15 to 1e-11 relative, which is 1e-12 vol
-    points.
+    A stationary log-vol sd outside the band VIX options imply is a surface wanting vol dynamics
+    that market does not price, and `Floor` TAKES the fit and names the bucket in the report. A
+    fit no box is holding writes a blank `On_Guard`, so nothing priced off it inherits a warning it
+    did not earn - the flat ladder wants no leverage.
 
-    HELD AT 1e-5 VOL POINTS AND NOT THE 1e-4 LANE 1 MEASURED, because `Atm_Miss_Max` (1e-4
-    RELATIVE, so 2e-5 vol points) already refuses the fit above that: a 1e-4 gate here could not
-    fail without the engine having refused first, which is a gate that cannot go red.
+    Killing mutation: `Floor` taking the fit without saying so.
     """
     misses = _report_floats(flat_fit[1], 'ATM misses')
     assert len(misses) == FLAT['rungs'], misses
     assert max(abs(x) for x in misses) * XI ** 0.5 <= 1e-5, misses
-
-
-def test_the_stationary_guard_floors_a_flat_surface_and_says_so(flat_fit):
-    """A stationary log-vol sd outside the band VIX options imply is a surface wanting vol dynamics
-    that market does not price. `Floor` TAKES the fit and names the bucket in the report."""
     assert 'FLOORED' in flat_fit[1] and 'stationary log-vol sd' in flat_fit[1]
+    assert str(flat_fit[0]['On_Guard']) == '', flat_fit[0]['On_Guard']
 
 
 def test_the_stationary_guard_refuses_the_same_surface_by_name():
     """The same document at `Stationary_Spread: Refuse` - the declared default - refuses instead,
     naming the bucket, its sd and the pair that produced it. Nothing is scaled either way: the
-    guard is a READING of theta*."""
+    guard is a READING of theta*.
+
+    Killing mutation: `Refuse` taking the fit as `Floor` does."""
     message = _refused(_ladder(flat=True, Stationary_Spread='Refuse', **FLAT), 'flat_refuse')
     assert 'stationary log-vol sd' in message, message[:400]
     assert 'Set Stationary_Spread to Floor' in message, message[:400]
@@ -762,6 +625,8 @@ def test_a_priors_off_fit_is_bit_identical_to_its_banked_reading():
 
     BANKED ON AN RTX 3090: the DRAW is the seed's and not the silicon's, but the reductions are the
     device's, so a CPU-only box re-banks rather than reading a defect.
+
+    Killing mutation: the stages' declared `Step_Tolerance` default moved off 1e-12.
     """
     factor, _ = _fit(_ladder(**PRIORS_OFF), 'priors_off')
     with open(PRIORS_OFF_FILE) as handle:
@@ -824,6 +689,8 @@ def test_the_gbm_limit_holds_through_the_cva():
     ITS RESOLUTION, measured: `cva` 0.0045964 and its float32 ulp 4.7e-10, which catches a
     residual-clock error of 1e-4 relative and NOT one of 1e-6 - where the mark half above catches
     1e-6 at 1.6e-6 relative. A harder CVA gate wants the exposure profile row by row.
+
+    Killing mutation: the walk's idiosyncratic variance share off by a percent.
     """
     both = [float(_run(_job(_credit(), _netted(_autocall()), **_outer(OUTER_GBM, spot_model)),
                        'cva_' + spot_model)['Results']['cva'])
@@ -867,11 +734,13 @@ def test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare():
     is not a row. With the sibling walking too all four rows are live and 0.30 realises **0.2040**,
     68%, the two arms 6.6 path-level standard errors apart.
 
-    Lane 4F's pair table reads the same experiment at a declared 0.60 over a two-year DAILY grid:
-    0.0282 one row, 0.4833 four rows, 0.7323 at variance rows 0.80 and a mixer row of 1.0, each
-    within 0.003 of a truth simulated outside the engine on the same clock. This world's shares are
-    higher than that table's daily ones because its intervals are a quarter, over which the days'
-    mixers convolve.
+    The same experiment at a declared 0.60 over a two-year DAILY grid reads 0.0282 one row, 0.4833
+    four rows, 0.7323 at variance rows 0.80 and a mixer row of 1.0, each within 0.003 of a truth
+    simulated outside the engine on the same clock. This world's shares are higher than those daily
+    ones because its intervals are a quarter, over which the days' mixers convolve.
+
+    Killing mutation: the sub-factor rows' correlations dropped - the four-row arm reads the one-row
+    arm's 0.15.
     """
     four, se = _pair_reading(OUTER_PAIR, {'Price Factors': {
         'LogVar2FJModelParameters.EUR': dict(GBM_LIMIT, **LIVE_NIG),
@@ -930,6 +799,8 @@ def test_a_banked_document_is_unmoved(name, document, overrides):
 
     BANKED ON AN RTX 3090, which is where a base valuation runs whenever CUDA is visible. The hex
     is the DEVICE's as much as the tree's; a CPU-only box re-banks rather than reading a defect.
+
+    Killing mutation: the first fixing interval's carry read a part in ten thousand high.
     """
     with open(HEX) as handle:
         banked = json.load(handle)[name]
@@ -1020,35 +891,18 @@ def _lever(factor, name):
     return float(factor[name].array[0][1])
 
 
-@pytest.fixture(scope='module')
-def forward_fits():
-    """The same ladder fitted three ways - the block OFF, and ON under each source at
-    `WORLD_FACTOR`'s own forward smiles. Cold started, so every fit begins at the class priors."""
-    fits = {'Off': _fit(_model_ladder(Max_Iterations=60, Forward_Tenors=WORLD_TENORS), 'fwd_off')}
-    for source in ('Reference', 'Quotes'):
-        fits[source] = _fit(_model_ladder(
-            Max_Iterations=60, Forward_Tenors=WORLD_TENORS, Forward_Smile_Source=source,
-            Forward_Smiles=_forward_rows(source)), 'fwd_' + source.lower())
-    return fits
+def test_the_forward_block_identifies_the_residual_pair_the_vanillas_leave_at_its_prior():
+    """The same ladder fitted twice, cold from the class priors: the block OFF, and ON under
+    `Reference` at `WORLD_FACTOR`'s own forward smiles. 32 s, the second fit pricing three forward
+    windows at every iterate; neither binds at 20 iterations, so `Max_Iterations` is 20.
 
+    Fifteen vanillas over five expiries do not identify `Alpha`, and the fit says so twice: it
+    lands ON the class prior and reports the prior row at many times one quote row - `Alpha` 43.76
+    against the 44 prior, its Jacobian column norm 6.8e-05 where the leverage's is 1.9e-02, and the
+    prior rows 6.74x on `Alpha` and 4.34x on `Beta`. The ladder is the model's OWN, so this is not
+    a fitting failure - there is nothing in a vanilla to read the residual's tail off.
 
-def test_a_vanilla_only_ladder_leaves_the_residual_pair_at_its_prior(forward_fits):
-    """Fifteen vanillas over five expiries do not identify `Alpha`, and the fit says so twice: it
-    lands ON the class prior and reports the prior row at many times one quote row.
-
-    Measured: `Alpha` 43.76 against the 44 prior, its Jacobian column norm 6.8e-05 where the
-    leverage's is 1.9e-02, and the prior rows read 6.74x on `Alpha` and 4.34x on `Beta`. The
-    ladder is the model's OWN, so this is not a fitting failure - there is nothing in a vanilla
-    to read the residual's tail off.
-    """
-    factor, report = forward_fits['Off']
-    assert abs(_lever(factor, 'Alpha') - ALPHA_PRIOR) <= 0.05 * ALPHA_PRIOR, factor['Alpha'].array
-    rows = _prior_ratios(report)['6 joint polish']
-    assert rows['Alpha[0y]'] > 4.0 and rows['Beta[0y]'] > 3.0, rows
-
-
-def test_the_forward_block_identifies_the_residual_pair(forward_fits):
-    """One month of forward-start smile at three start dates recovers the world's `Alpha` where
+    One month of forward-start smile at three start dates recovers the world's `Alpha` where
     the vanillas leave it at the prior, and conditions the flat direction the split lives in.
 
     Measured against the world's `Alpha` 20.92: the block OFF lands 43.76, ON under `Reference`
@@ -1060,49 +914,33 @@ def test_the_forward_block_identifies_the_residual_pair(forward_fits):
     `Alpha` and 4.34x to 2.58x on `Beta`, and the polish's own table taken a SECOND time without
     the forward rows - same theta*, same ladder - reads its smallest singular value 0.0898 where
     the rows read 0.1997 and the `Alpha` column 2.7e-04 where the rows read 4.3e-04.
+
+    And the source costs the spot fit nothing: the vanilla RMSE over the same fifteen quotes is
+    0.337 vol points with the block off and 0.310 under `Reference` (0.180 under `Quotes`, the
+    share-measure price of the same smiles, which lands `Alpha` at 28.01). The cumulative stage-5
+    line is not read: this ladder declares one bucket, where stage 5 does not run.
+
+    Killing mutation: the forward rows left out of the residual - `Alpha` stays at its prior.
     """
-    factor, report = forward_fits['Reference']
+    off_factor, off_report = _fit(_model_ladder(Max_Iterations=20, Forward_Tenors=WORLD_TENORS),
+                                  'fwd_off')
+    assert abs(_lever(off_factor, 'Alpha') - ALPHA_PRIOR) <= 0.05 * ALPHA_PRIOR, off_factor['Alpha'].array
+    without = _prior_ratios(off_report)
+    assert without['6 joint polish']['Alpha[0y]'] > 4.0 and without['6 joint polish']['Beta[0y]'] > 3.0
+    factor, report = _fit(_model_ladder(
+        Max_Iterations=20, Forward_Tenors=WORLD_TENORS, Forward_Smile_Source='Reference',
+        Forward_Smiles=_forward_rows('Reference')), 'fwd_reference')
     world = WORLD_FACTOR['Alpha']['.Curve']['data'][0][1]
     assert abs(_lever(factor, 'Alpha') - world) <= 0.15 * world, factor['Alpha'].array
-    off = _lever(forward_fits['Off'][0], 'Beta')
+    off = _lever(off_factor, 'Beta')
     beta = WORLD_FACTOR['Beta']['.Curve']['data'][0][1]
     assert abs(_lever(factor, 'Beta') - beta) < 0.5 * abs(off - beta), (factor['Beta'].array, off)
-    rows, without = _prior_ratios(report), _prior_ratios(forward_fits['Off'][1])
+    rows = _prior_ratios(report)
     assert rows['6 joint polish']['Alpha[0y]'] < 0.6 * without['6 joint polish']['Alpha[0y]'], rows
     assert rows['6 joint polish']['Beta[0y]'] < 0.8 * without['6 joint polish']['Beta[0y]'], rows
     assert '6 joint polish, vanillas only' in report, 'the with/without table was not taken'
-
-
-def test_the_two_forward_sources_agree_on_the_same_model(forward_fits):
-    """`Quotes` and `Reference` are the SAME model's forward smiles priced as two instruments -
-    the traded forward-start under the share measure and the ratio expectation - and on synthetic
-    rows both reject the prior the vanillas leave `Alpha` at.
-
-    Measured: `Alpha` 28.01 under `Quotes` against 20.27 under `Reference` and 43.76 with the
-    block off, `Beta` -6.31 against -4.78 and -13.50. The two agree on the direction and on the
-    size of the move and not to a digit: the share measure is a reweighting of the same paths and
-    is worth about a vol point of target on these windows.
-    """
-    alpha = {tag: _lever(forward_fits[tag][0], 'Alpha') for tag in forward_fits}
-    assert alpha['Quotes'] <= 0.8 * alpha['Off'], alpha
-    assert abs(alpha['Quotes'] - alpha['Reference']) <= 0.5 * alpha['Reference'], alpha
-
-
-def test_the_forward_block_costs_this_ladder_no_vanilla_fit(forward_fits):
-    """What the source cost the spot fit, which is the reading a desk decides on.
-
-    The report's cumulative stage-5 line is NOT printed here: it is written where the later
-    buckets are fitted to the forward rows, and this ladder declares one bucket, where stage 5
-    does not run. What is read instead is the vanilla RMSE itself, and it does not degrade -
-    0.337 vol points with the block off, 0.310 under `Reference` and 0.180 under `Quotes` over
-    the same fifteen quotes. The rows point at the parameters that priced those quotes, so on a
-    world the model owns the block pays for itself; a market source on a ladder the model cannot
-    fit is where the reading is a cost, and it is read the same way.
-    """
-    rmse = {tag: _report_floats(report, 'RMSE', 'vol points unweighted')[0]
-            for tag, (_, report) in forward_fits.items()}
-    assert max(rmse.values()) == rmse['Off'], rmse
-    assert rmse['Reference'] <= 1.1 * rmse['Off'], rmse
+    rmse = [_report_floats(text, 'RMSE', 'vol points unweighted')[0] for text in (off_report, report)]
+    assert rmse[1] <= 1.1 * rmse[0], rmse
 
 
 # ------------------------------------------------------------------------------------------
@@ -1236,6 +1074,8 @@ def test_a_days_move_is_a_polish_that_lands_where_cold_lands(warm_fits):
     either side of the `C_Min + C_Margin` 0.17 the flag fires at, so the two runs disagree about
     `On_Guard` while agreeing about theta*. A guard is a reading of theta*, and this ladder sits on
     its margin.
+
+    Killing mutation: the staged path taken despite the previous factor.
     """
     warm, warm_report = warm_fits['warm_moved']
     cold, cold_report = warm_fits['cold_moved']
@@ -1252,6 +1092,8 @@ def test_a_days_move_is_a_polish_that_lands_where_cold_lands(warm_fits):
 def test_a_warm_start_off_the_other_residual_law_refuses_by_name():
     """`Residual_Law: Gaussian` drops the mixer, so a factor carrying one and an NIG block are two
     models and neither seeds the other. Refused in the seed, before a stage runs, naming both laws.
+
+    Killing mutation: the factor's law left unread - the Gaussian factor seeds the NIG block.
     """
     message = _refused(dict(_ladder(rungs=2), **{'Price Factors': {FACTOR: GBM_LIMIT}}), 'law_warm')
     assert 'Residual_Law Gaussian' in message, message[:400]

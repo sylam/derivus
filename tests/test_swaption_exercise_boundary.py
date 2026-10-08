@@ -290,6 +290,8 @@ def test_the_exercise_matches_the_moneyness_of_the_row_it_was_decided_on(referen
 
     Against a DECISION taken at the post-expiry row the two disagree on every path whose moneyness
     crossed zero between the rows - the population the correction exists to weight.
+
+    Killing mutation: the decision read off the first post-expiry row.
     """
     _, pre, post, profiles, _ = read()
     profile = profiles[reference]
@@ -315,6 +317,8 @@ def test_a_path_whose_moneyness_flips_after_expiry_still_delivers_the_swap():
 
     Both directions are read, which is what the receiver is in the book for: a receiver exercises
     exactly where a payer does not, so a single deal leaves half the boundary unmeasured.
+
+    Killing mutation: the decision read off the first post-expiry row.
     """
     _, pre, post, profiles, _ = read()
     flips = {}
@@ -344,6 +348,8 @@ def test_the_payer_and_the_receiver_partition_the_paths():
     exercises precisely one of the pair. It is also the non-vacuity check the consistency gate
     needs from outside itself: a build that exercised everything, or nothing, would satisfy
     `exercised == (gap >= 0)` and fail here.
+
+    Killing mutation: the decision taken without the payer/receiver sign.
     """
     _, _, post, profiles, _ = read()
     payer = profiles['PAYER'][post] != 0.0
@@ -367,6 +373,8 @@ def test_the_registered_gap_is_the_decision_it_was_taken_on(caplog):
     9 of 512 at seed 1 (61 of 4096, which is the payer's 33 down-flips plus the receiver's 28).
 
     512 paths rather than 4096 because this gate runs the whole engine at DEBUG.
+
+    Killing mutation: the registration handed the first post-expiry row as its gap.
     """
     with caplog.at_level(logging.DEBUG, logger=''):
         read(paths=512)
@@ -403,6 +411,8 @@ def test_the_registration_moves_the_cva_gradient_and_not_the_cva():
     A full CRN ladder against a bumped adjoint is NOT taken here: this gate says the registration is
     live and correctly sourced. Whether the corrected number is right is `tests/crn_ladder.py`'s
     question.
+
+    Killing mutation: the exercise boundary never registered.
     """
     _, _, _, _, corrected = read(bandwidth=0.01)
     _, _, _, _, suppressed = read(bandwidth=1e-12)

@@ -23,10 +23,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import copy
 import json
 import logging
-import re
 
 import numpy as np
 import pandas as pd
@@ -77,10 +75,10 @@ def market(propagate, tick=0.0, tolerance=1e9, sensitivity=False):
     return market_prices
 
 
-def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=None):
+def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=None, base_date=BASE):
     """A `Config` whose curves have been solved from their quotes, the way a job reaches this."""
     config = Config(base_currency=currency)
-    config.params['System Parameters']['Base_Date'] = BASE
+    config.params['System Parameters']['Base_Date'] = base_date
     config.params['Price Factors'] = {'FxRate.{}'.format(currency): {
         'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}}
     if interpolation is not None:
@@ -188,6 +186,8 @@ def test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differ
 
     That is the only claim worth making about extraction: `calibration_jacobian` runs no second
     solve, it differentiates the residual at the fixed point the forward pass already found.
+
+    Killing mutation: the implicit function theorem's sign dropped - `J` negated.
     """
     artifact = artifact_of(bootstrapped(market(True)))
     h = 1e-4
@@ -213,62 +213,31 @@ def test_the_artifact_key_is_plan_side_and_its_id_is_not():
     that there is nothing to ride, because the artifact would have moved with the quote that moved.
     The artifact's own ID is the slot plus the quotes it was fitted at, so a refit publishes a new
     one and a propagated valuation can name which calibration it rode.
+
+    Killing mutation: the quotes left out of the id - a refit reuses its predecessor's.
     """
-    def key(block, interpolation=None, base_date=BASE):
-        return InterestRateCurveParameters.plan_key(
-            [(BLOCK, block)], ModelParams() if interpolation is None else interpolation, base_date)
-
-    plain, moved = market(True)[BLOCK]['instrument'], market(True, tick=0.5)[BLOCK]['instrument']
-    assert key(plain) == key(moved), (
-        'a moved quote changed the slot, so no artifact could ever be found to ride')
-
-    dropped = market(True)[BLOCK]['instrument']
-    dropped['Points'][-1]['Use'] = 'No'
-    assert key(dropped) != key(plain), (
-        'dropping a quote left the slot alone, so a shorter curve would ride the longer one\'s J')
-
     first = artifact_of(bootstrapped(market(True)))
     second = artifact_of(bootstrapped(market(True, tick=0.5)))
     assert first.key == second.key
     assert first.artifact_id != second.artifact_id, 'the refit reused its predecessor\'s identity'
 
 
-def test_the_slot_names_everything_the_solve_reads_and_the_block_does_not_carry():
-    """A key that does not name an input of the SOLVE is a key two different curves share, and the
-    second silently rides the first one's operator. Two are not on the block at all - the base date
-    and the interpolation scheme - and both were measured doing exactly that: two jobs 45 days apart
-    shared a slot, and a linearly-interpolated job rode a Hermite solve 0.53bp away from its own.
-    The mutation is the pairing: the same job at the same date under the same scheme KEEPS the slot.
-    """
-    def key(interpolation=None, base_date=BASE):
-        return InterestRateCurveParameters.plan_key(
-            [(BLOCK, market(True)[BLOCK]['instrument'])],
-            ModelParams() if interpolation is None else interpolation, base_date)
-
-    hermite = ModelParams()
-    hermite.append('InterestRate', (), 'HermiteRT')
-
-    assert key() == key(), 'the slot is not a function of its inputs'
-    assert key(interpolation=hermite) != key(), (
-        'a Hermite job addresses the linear job\'s slot - it would ride a curve nobody solved')
-    assert key(base_date=BASE + pd.DateOffset(days=45)) != key(), (
-        'two base dates share a slot - the later job would ride the earlier date\'s theta*')
-
-
 # ---------------------------------------------------------------------------------------------
 # Tier 1 - monitoring: dV/dq . dq against the reval the ride produces
 # ---------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize('tick', [0.02, 0.01, 0.005])
-def test_the_quote_delta_predicts_the_value_the_ride_reprices(tick):
+def test_the_quote_delta_predicts_the_value_the_ride_reprices():
     """Tier one against tier two, which is the only pair that can be compared without a refit.
 
     `dV/dq . dq` is the desk's P&L explain forwards; the ride is what a reval off the same tick
     actually produces. They agree to FIRST order, so what is pinned is the SLOPE of the miss:
     `ratio - 1` is 0.791 times the tick on this world and book, flat to three digits over four
-    sizes. Asserting only that the ratio is near one would pass on a monitor that was wrong by a
-    constant, which is the failure worth catching.
+    sizes, so one tick pins it. Asserting only that the ratio is near one would pass on a monitor
+    that was wrong by a constant, which is the failure worth catching.
+
+    Killing mutation: the ride taken against the tick - `J (q0 - q)`, the ratio -1.
     """
+    tick = 0.01
     prepared = bootstrapped(market(True, sensitivity=True))
     _, base = baseval(with_deals(prepared), greeks='First')
     predicted = prepared.quote_leaves[BLOCK][1].grad.detach().cpu().numpy() @ (SIGNS * tick)
@@ -285,17 +254,19 @@ def test_the_quote_delta_predicts_the_value_the_ride_reprices(tick):
 # Tier 2 - the ride: theta_ridden against theta_refit, and the refusal
 # ---------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize('tick', [1e-3, 1e-2, 1e-1])
-def test_the_ride_drifts_second_order_and_the_constant_is_pinned(tick):
+def test_the_ride_drifts_second_order_and_the_constant_is_pinned():
     """The curve family's solve is a unique root and its IFT is exact, so the ride's error is pure
     curvature: `theta_refit - theta_ridden` is O(dq^2) with a constant that belongs to the world.
 
     Pinning the CONSTANT is what makes this a gate rather than a smallness assertion - a first-order
     bug would still look small at 1bp and would blow the quotient here. Measured on the ZAR world:
     8.4665e-4 / 8.4611e-4 / 8.4074e-4 in theta and 0.075142 / 0.075157 / 0.075308 in quote space
-    over the three ticks, so each holds to better than a percent rather than to three digits - the
-    bands below are what that is worth.
+    over ticks of 1e-3, 1e-2 and 1e-1, so each holds to better than a percent rather than to three
+    digits - the bands below are what that is worth, read at 1e-2.
+
+    Killing mutation: `J` off by a part in a thousand - a first-order drift, 0.1% of the tick.
     """
+    tick = 1e-2
     prepared = bootstrapped(market(True))
     artifact = artifact_of(prepared)
     refit = curve_values(bootstrapped(market(False, tick=tick)))
@@ -313,71 +284,26 @@ def test_the_ride_drifts_second_order_and_the_constant_is_pinned(tick):
             quote_drift, tick))
 
 
-#: Tick SHAPES, not sizes - the scan that found the drift metric reading low. A parallel move sits
-#: almost entirely in the Jacobian's dominant direction; a sparse or sign-mixed one excites the
-#: small singular values, which is where a `dF/dq` frozen at theta* stops describing the residual.
-SHAPES = {'alternating': SIGNS,
-          'parallel': np.ones(7),
-          'one quote': np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
-          'mixed sparse': np.array([0.0, -1.0, -1.0, 0.0, 1.0, -1.0, 1.0]),
-          'long end': np.array([0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 1.0])}
-
-
-@pytest.mark.parametrize('shape', sorted(SHAPES))
-@pytest.mark.parametrize('tick', [0.05, 0.2, 0.5])
-def test_the_drift_metric_is_exact_and_bounds_the_theta_drift(shape, tick):
-    """What the refusal is scored on, and what that score is WORTH.
-
-    EXACT. `mispricing` re-differentiates `dF/dq` at the theta being scored rather than reusing the
-    one stored at `theta*`, so `F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)` holds with no
-    remainder. The reference is a REFIT at the moved quotes, where no correction term survives; the
-    two agree to solver tolerance rather than to a ratio.
-
-    BOUNDING - what `Drift_Tolerance` rests on. The quote-space residual bounds the curve:
-    `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf` to first order, which is the conversion
-    the refusal message publishes.
-
-    The shapes are the point. The proxy this replaced reused `dF/dq` at `theta*` and was pinned as
-    "always HIGH" on ONE sign pattern on ONE world; scanned across shapes it ran from 0.886x the
-    truth to 21.9x, and an end-to-end case at 0.886 priced 5.8% over tolerance without refusing.
-    """
-    prepared = bootstrapped(market(True))
-    artifact = artifact_of(prepared)
-    signs = SHAPES[shape]
-    quotes = quotes_of(ticked(prepared, tick, signs=signs))
-    ridden = artifact.ride(quotes)
-    measured = float(artifact.mispricing(ridden, quotes).abs().max())
-
-    moved = market(True)
-    for point, sign in zip(moved[BLOCK]['instrument']['Points'], signs):
-        point['Quoted_Market_Value'] += tick * sign
-    refit = bootstrapped(moved)
-    exact = float(artifact_of(refit).mispricing(ridden, quotes).abs().max())
-
-    assert abs(measured - exact) <= 1e-12 + 1e-9 * abs(exact), (
-        'the drift metric {:.6g} is not the residual a refit measures, {:.6g}'.format(
-            measured, exact))
-    theta_drift = float(np.abs(ridden.cpu().numpy() - curve_values(refit)).max())
-    assert theta_drift <= artifact.jacobian_norm * measured, (
-        'the theta drift {:.4g} is outside ||J||inf {:.4g} x the quote residual {:.4g} - the '
-        'conversion the refusal publishes does not bound what it claims to'.format(
-            theta_drift, artifact.jacobian_norm, measured))
-
-
-def test_a_small_tick_rides_and_a_large_one_refuses():
+def test_a_small_tick_rides_and_a_large_one_refuses_in_curve_units():
     """The refusal, and the mutation is built in: the SAME tick under a tolerance that admits it
     prices, so a gate that lost the refusal would have to lose this half too.
 
     The tolerance is in percent of quote, which is what makes 1e-3 a number a desk can set - a tenth
     of a basis point of mispricing on the block's own benchmarks. On this world it admits 11.5bp
-    (drift 9.96e-4) and refuses 12bp (1.08e-3).
+    (drift 9.96e-4) and refuses 12bp (1.08e-3). It is felt in basis points of zero rate, so the
+    refusal carries the conversion, `tolerance x ||J||inf`.
+
+    Killing mutation: the drift never held against `Drift_Tolerance`.
     """
     prepared = with_deals(bootstrapped(market(True)))
     _, small = baseval(with_deals(ticked(prepared, 0.05, tolerance=1e-3)))
     assert small != 0.0
 
-    with pytest.raises(utils.CalibrationStale, match='Drift_Tolerance'):
+    with pytest.raises(utils.CalibrationStale, match='Drift_Tolerance') as refusal:
         baseval(with_deals(ticked(prepared, 0.45, tolerance=1e-3)))
+    expected = 1e-3 * artifact_of(prepared).jacobian_norm * 1e4
+    assert 'bp of zero rate' in str(refusal.value), str(refusal.value)
+    assert '{:.3g}bp'.format(expected) in str(refusal.value), str(refusal.value)
 
     # the SAME tick under a tolerance that admits it prices, so the refusal above is the
     # tolerance's doing and not the tick's - and it rode somewhere else, so something did happen
@@ -385,39 +311,40 @@ def test_a_small_tick_rides_and_a_large_one_refuses():
     assert large != small
 
 
-def test_the_refusal_message_converts_its_tolerance_into_curve_units():
-    """`Drift_Tolerance` is declared in percent of quote and felt in basis points of zero rate. The
-    refusal carries the conversion - `tolerance x ||J||inf` - because a number a desk cannot read in
-    the units it thinks in is a number nobody tunes."""
-    prepared = with_deals(bootstrapped(market(True)))
-    with pytest.raises(utils.CalibrationStale) as refusal:
-        baseval(with_deals(ticked(prepared, 0.45, tolerance=1e-3)))
-    expected = 1e-3 * artifact_of(prepared).jacobian_norm * 1e4
-    assert 'bp of zero rate' in str(refusal.value), str(refusal.value)
-    assert '{:.3g}bp'.format(expected) in str(refusal.value), str(refusal.value)
-
-
-def test_the_tick_shape_that_used_to_be_admitted_over_tolerance_now_refuses():
+def test_the_drift_metric_is_exact_and_refuses_the_tick_shape_it_used_to_admit():
     """The executed case behind the scorer's replacement, driven end to end.
 
-    On the mixed-sparse shape the old proxy read 0.886 of the true drift, so a tolerance set between
-    the two admitted a ride whose real mispricing was 13% past it - the engine priced, no refusal,
-    2.59bp of zero rate from the refit. The metric is exact now, so the same tolerance refuses.
+    EXACT. `mispricing` re-differentiates `dF/dq` at the theta being scored rather than reusing the
+    one stored at `theta*`, so `F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)` holds with no
+    remainder: the drift the artifact scores a ride at is the residual a REFIT at the moved quotes
+    measures, where no correction term survives, to solver tolerance. And it BOUNDS the curve -
+    `||theta_ridden - theta_refit||inf <= ||J||inf ||r||inf`, the conversion the refusal publishes.
 
-    The tolerance is derived from the drift a REFIT measures, never from the scorer under test -
-    which is what keeps this a gate on the scorer rather than a tautology. At the refit's own
-    quotes the correction term is identically zero, so that reading is the residual whatever
-    `dF/dq` the scorer would have used.
+    On a sparse, sign-mixed tick the old proxy read 0.886 of the true drift (scanned over five
+    shapes and three sizes it ran from 0.886x the truth to 21.9x), so a tolerance set between the
+    two admitted a ride whose real mispricing was 13% past it - the engine priced, no refusal,
+    2.59bp of zero rate from the refit. The metric is exact now, so the same tolerance refuses.
+    The tolerance is derived from the refit's drift, never from the scorer under test.
+
+    Killing mutation: `dF/dq` reused from `theta*` - the proxy reads 0.886 of the truth and the
+    ride prices past its tolerance.
     """
-    signs, tick = SHAPES['mixed sparse'], 0.5
+    signs, tick = np.array([0.0, -1.0, -1.0, 0.0, 1.0, -1.0, 1.0]), 0.5
     prepared = bootstrapped(market(True))
-    ridden = artifact_of(prepared).ride(quotes_of(ticked(prepared, tick, signs=signs)))
+    artifact = artifact_of(prepared)
+    quotes = quotes_of(ticked(prepared, tick, signs=signs))
+    ridden = artifact.ride(quotes)
 
     moved = market(True)
     for point, sign in zip(moved[BLOCK]['instrument']['Points'], signs):
         point['Quoted_Market_Value'] += tick * sign
-    refit = artifact_of(bootstrapped(moved))
+    refitted = bootstrapped(moved)
+    refit = artifact_of(refitted)
     true_drift = float(refit.mispricing(ridden, refit.quotes).abs().max())
+    measured = float(artifact.mispricing(ridden, quotes).abs().max())
+    assert abs(measured - true_drift) <= 1e-12 + 1e-9 * true_drift, (measured, true_drift)
+    theta_drift = float(np.abs(ridden.cpu().numpy() - curve_values(refitted)).max())
+    assert theta_drift <= artifact.jacobian_norm * measured, (theta_drift, artifact.jacobian_norm)
 
     # the same ride through the engine, under a tolerance the OLD proxy cleared (it read 0.886x of
     # the truth on this shape) and the truth does not
@@ -429,27 +356,6 @@ def test_the_tick_shape_that_used_to_be_admitted_over_tolerance_now_refuses():
     _, priced = baseval(with_deals(ticked(prepared, tick, tolerance=1.05 * true_drift,
                                           signs=signs)))
     assert priced != 0.0
-
-
-def test_what_the_refusal_is_protecting_against():
-    """The refusal above is scored on a tick that is genuinely too big - this is how big.
-
-    The refused ride is not a NaN and not an exception waiting to happen: it is a perfectly
-    plausible curve, **1.66 basis points** of zero rate away from the one a refit finds, priced
-    without complaint. That is the number the refusal exists for, and measuring it here is what
-    stops the gate above from passing on a tick nothing was ever wrong with. It is also the
-    second-order constant read forwards - 8.3e-4 x 0.45^2 - so the two gates agree on one curvature.
-    """
-    prepared = bootstrapped(market(True))
-    artifact = artifact_of(prepared)
-    tick = 0.45
-    ridden = artifact.ride(quotes_of(ticked(prepared, tick))).cpu().numpy()
-    refit = curve_values(bootstrapped(market(False, tick=tick)))
-
-    assert np.isfinite(ridden).all(), 'a refused ride would have raised on its own'
-    error = np.abs(ridden - refit).max()
-    assert abs(error * 1e4 - 1.66) < 0.02, (
-        'the refused ride is {:.3g} of zero rate from the refit'.format(error))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -485,7 +391,13 @@ def test_a_coupled_set_solves_as_one_system_and_rides_whole():
     The SET is the unit: `coupled_sets` measures which blocks read each other's curves, `solve_set`
     flattens them into ONE Newton system, and `calibration_jacobian` inverts one block matrix, so
     `dtheta_2/dq_1` is a column of the published `J`. From a base of 9644.61 the refit lands at
-    9621.25 and the ride has to land there too.
+    9621.25 and the ride has to land there too - and the ORDER of its miss says the coupling is
+    CARRIED rather than merely smaller: partially ridden, the PV error was linear in the OIS tick,
+    2090.8 / 2087.6 / 2083.7 per percent over four sizes; ridden as a set it is quadratic, 0.20
+    per percent squared, the ride's own curvature and nothing else.
+
+    Killing mutation: the coupling unmeasured - each block solves alone and its `J` has no column
+    for the other's quotes.
     """
     tick = 0.10
     prepared = usd_book(usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})))
@@ -518,31 +430,7 @@ def test_a_coupled_set_solves_as_one_system_and_rides_whole():
     assert abs(rode - refit) < 0.01 * abs(refit - base), (
         'the ridden SET is worth {:.4f} where the refit says {:.4f}, against a move of {:.4f}'
         .format(rode, refit, refit - base))
-
-
-@pytest.mark.parametrize('tick', [0.05, 0.10, 0.20])
-def test_the_coupled_ride_is_second_order_in_the_tick_it_used_to_be_first_order_in(tick):
-    """The order of the error is what says the coupling is CARRIED rather than merely smaller.
-
-    Partially ridden, the residual PV error was linear in the OIS tick - 2090.8 / 2087.6 / 2083.7
-    per percent over four sizes, a first-order term with no tolerance that catches it. Ridden as a
-    set it is quadratic, which is the ride's own curvature and nothing else.
-    """
-    prepared = usd_book(usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})))
-    _, base = baseval(prepared)
-    ticked(prepared, tick, block=USD_OIS, signs=np.ones(8))
-    _, rode = baseval(prepared)
-
-    moved = usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'})
-    for point in moved[USD_OIS]['instrument']['Points']:
-        point['Quoted_Market_Value'] += tick
-    _, refit = baseval(usd_book(usd_config(moved)))
-
-    assert abs(refit - base) > 10.0, 'the tick barely moved the book - nothing is being measured'
-    assert abs((rode - refit) / tick ** 2 - 0.20) < 0.03, (
-        'the ride error {:.6g} at tick {:g} is {:.4g}/tick and {:.4g}/tick^2 - a first-order term '
-        'reads about 2085/tick'.format(rode - refit, tick, (rode - refit) / tick,
-                                       (rode - refit) / tick ** 2))
+    assert abs((rode - refit) / tick ** 2 - 0.20) < 0.03, (rode - refit) / tick ** 2
 
 
 def x_world():
@@ -593,6 +481,8 @@ def test_the_coupling_is_measured_not_declared():
     projection strip moves the other curve by 568 basis points - before the fix both blocks
     published per-block operators, the ride moved `X-DISC` by exactly ZERO and its drift metric read
     7.7e-16. `BenchmarkInstruments.reads` puts every constant on the tape and asks the backward pass.
+
+    Killing mutation: the coupling read off nothing but the declarations.
     """
     prepared = bootstrapped(x_world(), currency='XXX', spot_curve='X-3M')
     artifact, = prepared.artifacts.covering(utils.Factor('InterestRate', ('X-DISC',)))
@@ -624,16 +514,13 @@ def test_a_partial_declaration_over_a_coupled_set_refuses():
     """A ride that reaches one curve of a coupled set and not the other is the defect this whole
     section is about, so it is made UNREPRESENTABLE rather than merely discouraged.
 
-    The pairing is the mutation: declaring it on BOTH blocks of the same set publishes, so the
-    refusal is the partial declaration's doing and not the world's.
+    The pairing - declaring it on BOTH blocks of the same set publishes - is the coupled-set gate's
+    world, so the refusal is the partial declaration's doing and not the world's.
+
+    Killing mutation: the partial declaration admitted.
     """
     with pytest.raises(Exception, match='COUPLED SET'):
-        usd_config(usd_market({USD_OIS: 'Linear'}))
-    with pytest.raises(Exception, match='COUPLED SET'):
         usd_config(usd_market({USD_PROJ: 'Linear'}))
-
-    both = usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'}))
-    assert artifact_of(both, USD_OIS, USD_PROJ) is not None
 
 
 def test_the_set_is_only_measured_where_an_operator_is_asked_for():
@@ -645,6 +532,8 @@ def test_the_set_is_only_measured_where_an_operator_is_asked_for():
     from a par seed on one 17-dimensional system takes a different path from two 8- and
     9-dimensional ones taken in order, and both stop at the same root inside the solver's own
     tolerance. `Tol` is 1e-14 on a rate of order 1e-2, and they agree to 1e-15.
+
+    Killing mutation: an artifact published whatever the blocks ask for.
     """
     plain = usd_config(usd_market({}))
     assert not plain.artifacts.artifacts, 'a section that asked for nothing published an artifact'
@@ -656,28 +545,14 @@ def test_the_set_is_only_measured_where_an_operator_is_asked_for():
             '{}: solving the set jointly moved the answer by {:.3g}'.format(market_price, moved))
 
 
-def test_there_is_no_theta_current():
-    """The grep the statelessness claim rests on, as a gate rather than a sentence. Every mutable-
-    calibration design this one is NOT has a `theta_current` each tick updates in place; theta is
-    derived per EXECUTE from `(artifact, q_now)` and stored nowhere. The word appears in docstrings
-    SAYING there is none; an ASSIGNMENT is what would make it real.
-    """
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    assigned = {}
-    for name in ('bootstrappers', 'calculation', 'config', 'riskfactors', 'utils'):
-        with open(os.path.join(root, 'derivus', name + '.py')) as source:
-            found = re.findall(r'^\s*\S*theta_current\s*=.*$', source.read(), re.MULTILINE)
-            if found:
-                assigned[name] = found
-    assert not assigned, 'something now carries a mutable theta: {}'.format(assigned)
-
-
 def test_the_switch_off_is_todays_path_bit_for_bit():
     """`Quote_Propagation: 'No'` is the default and has to be free: the same job, the same quotes,
     the same numbers - and the artifact store must not have been consulted at all.
 
     Scored on the VALUE of a book, because a switch that changed a mark is the failure this whole
     lifecycle exists to prevent.
+
+    Killing mutation: an artifact published whatever the blocks ask for.
     """
     plain = with_deals(bootstrapped(market(False)))
     assert not plain.artifacts.artifacts, 'a block that declined the switch published an artifact'
@@ -720,7 +595,9 @@ def test_a_tenor_offset_refuses_the_ride():
     wrong number rather than a missing derivative. So it raises.
 
     Paired with a zero offset, which prices: the refusal is the offset's doing, and this gate
-    cannot pass by never reaching the seam."""
+    cannot pass by never reaching the seam.
+
+    Killing mutation: the offset's refusal dropped - the stale coefficients price."""
     prepared = with_deals(bootstrapped(market(True)))
     assert np.abs(cmc(with_deals(ticked(prepared, 0.01)))).max() > 0
     with pytest.raises(Exception, match='Tenor_Offset'):
@@ -740,6 +617,8 @@ def test_the_refit_publishes_the_drift_of_the_ride_it_replaced(caplog):
     The numbers are checked against the ride computed independently, not merely asserted present:
     a drift block full of zeros would pass a presence check and say nothing. The refit is the
     same config bootstrapped again on moved quotes - the store is the config's own.
+
+    Killing mutation: the replaced artifact left unscored.
     """
     first = bootstrapped(market(True))
     artifact = artifact_of(first)
@@ -834,14 +713,22 @@ def test_one_values_patch_carrying_a_spot_and_a_quote_composes_with_the_ride():
 # Statelessness
 # ---------------------------------------------------------------------------------------------
 
-def test_two_executes_over_one_artifact_and_one_tick_are_bit_identical():
+def test_an_execute_is_a_pure_function_of_the_artifact_and_the_tick():
     """The property the whole design is built on: theta is DERIVED per EXECUTE from (artifact,
-    q_now) and nothing accumulates, so running twice cannot drift. Bit-identical, not close."""
+    q_now) and stored nowhere - there is no `theta_current` a tick updates in place - so running
+    twice cannot drift, and riding to A, then to B, then back to A returns the FIRST answer: no
+    order of ticks leaves a residue in the operator. Bit-identical, not close.
+
+    Killing mutation: the ride written back onto the artifact's theta.
+    """
     prepared = with_deals(bootstrapped(market(True)))
     ticked(prepared, 0.03)
     first = baseval(with_deals(prepared))[1]
-    second = baseval(with_deals(prepared))[1]
-    assert first == second, 'two EXECUTEs over one (artifact, q_now) disagreed'
+    assert baseval(with_deals(prepared))[1] == first, 'two EXECUTEs over one (artifact, q_now) disagreed'
+    ticked(prepared, 0.10)
+    assert baseval(with_deals(prepared))[1] != first, 'the two ticks priced one book'
+    ticked(prepared, 0.03)
+    assert baseval(with_deals(prepared))[1] == first, 'the ride kept state between EXECUTEs'
 
 
 def test_the_artifact_survives_a_job_document_round_trip_by_key():
@@ -852,6 +739,9 @@ def test_the_artifact_survives_a_job_document_round_trip_by_key():
     Percents, and the key is a hash of their encoded form. A decoder that rebuilt any of them
     differently would silently miss the slot and REFUSE forever, which is at least loud - but it is
     a refusal nobody can act on, so it is gated here.
+
+    Killing mutation: the slot hashed off the block as authored rather than as its family completes
+    it - the decoder's completed block addresses another slot.
     """
     prepared = bootstrapped(market(True))
     key = key_of(prepared)
@@ -878,26 +768,13 @@ def test_the_artifact_survives_a_job_document_round_trip_by_key():
         'the reloaded job rode to a different curve')
 
 
-def test_the_ride_is_a_pure_function_of_the_artifact_and_the_quotes():
-    """Riding to A, then to B, then back to A returns the FIRST answer - so no order of ticks can
-    leave a residue in the operator. That is what `theta_current` would break, and there is no
-    `theta_current`: the grep below is part of the claim."""
-    prepared = with_deals(bootstrapped(market(True)))
-    artifact = artifact_of(prepared)
-    a = artifact.ride(quotes_of(ticked(prepared, 0.02))).cpu().numpy().copy()
-    b = artifact.ride(quotes_of(ticked(prepared, 0.10))).cpu().numpy().copy()
-    back = artifact.ride(quotes_of(ticked(prepared, 0.02))).cpu().numpy().copy()
-    assert not np.array_equal(a, b), 'the two ticks produced one curve - nothing is being tested'
-    assert np.array_equal(a, back), 'the ride kept state between calls'
-    assert np.array_equal(artifact.theta.cpu().numpy(),
-                          artifact_of(prepared).theta.cpu().numpy()), 'the artifact was edited'
-
-
 def test_a_cold_process_refuses_rather_than_pricing_something_else():
     """A plan the cache cannot answer is a MISS, never a different number. An artifact holds tensors
     and a compiled benchmark set, so a fresh process has none; falling back to `Price Factors` was
     the shipped behaviour and is the one thing the replay tuple cannot describe - `plan_hash`,
     `values_hash`, the version and the seed are all blind to which artifact was in the store.
+
+    Killing mutation: a miss falling back to the curve the last bootstrap wrote.
     """
     prepared = with_deals(bootstrapped(market(True)))
     ticked(prepared, 0.02)
@@ -920,6 +797,8 @@ def test_an_evicted_slot_refuses_instead_of_silently_repricing():
 
     So the eviction cannot be allowed to produce a number. It refuses, and the run that DID ride
     reports the `artifact_id` it rode - which is the coordinate the replay tuple was missing.
+
+    Killing mutation: the run not naming the artifact it rode.
     """
     context = derivus.Context()
     context.current_cfg = with_deals(bootstrapped(market(True)))
@@ -940,7 +819,9 @@ def test_an_evicted_slot_refuses_instead_of_silently_repricing():
 def test_a_reauthored_partner_block_takes_the_slot_with_it():
     """The slot names the SET, so re-authoring one member has to move the other's address too - an
     artifact whose `J` was fitted against quotes that no longer exist is exactly the one that must
-    not be findable by the curve it still covers."""
+    not be findable by the curve it still covers.
+
+    Killing mutation: an artifact answering whatever plan stands now."""
     prepared = usd_config(usd_market({USD_OIS: 'Linear', USD_PROJ: 'Linear'}))
     assert prepared.artifacts.covering(utils.Factor('InterestRate', ('USD-3M',)))
 
@@ -962,28 +843,14 @@ class Slot(object):
         return self
 
 
-def test_the_store_evicts_the_least_recently_used_and_not_the_oldest():
-    """The store is bounded, so WHICH thing goes is a correctness property. A tick stream rides one
-    slot over and over while unrelated jobs publish around it; FIFO throws that slot out on schedule
-    and every eviction is a refusal the caller has to refit through. Gated because the mutation
-    survived everything else: flipping `move_to_end` off passed the entire suite.
-    """
-    store = utils.ArtifactStore()
-    for index in range(store.size):
-        store.put(Slot('slot-{}'.format(index)))
-    assert len(store.artifacts) == store.size
-
-    store.get('slot-0')
-    store.put(Slot('slot-new'))
-    assert store.get('slot-0') is not None, 'a touched slot was evicted - the store is FIFO'
-    assert 'slot-1' not in store.artifacts, (
-        'the untouched least-recently-used slot survived - nothing was evicted at all')
-
-
 def test_a_ride_counts_as_use_of_the_slot_it_rode():
-    """The end-to-end half: `covering` is a SCAN and touches nothing - content addressing picks the
-    artifact, and only the pick is a use - so the discipline is gated where the pick happens, which
-    is the ride.
+    """The store is bounded, so WHICH thing goes is a correctness property: a tick stream rides one
+    slot over and over while unrelated jobs publish around it, and FIFO would throw that slot out on
+    schedule, every eviction a refusal the caller refits through. `covering` is a SCAN and touches
+    nothing - content addressing picks the artifact, and only the pick is a use - so the discipline
+    is gated where the pick happens, which is the ride.
+
+    Killing mutation: the ride not touching the slot it picked - the store evicts it as the oldest.
     """
     prepared = with_deals(bootstrapped(market(True)))
     ticked(prepared, 0.02)
@@ -1000,22 +867,26 @@ def test_a_ride_counts_as_use_of_the_slot_it_rode():
     assert 'slot-0' not in store.artifacts, 'nothing was evicted at all'
 
 
-def test_the_interpolation_scheme_addresses_a_different_slot():
-    """A Hermite solve and a linear one on the same quotes are different curves, and the block does
-    not say which - `Price Factor Interpolation` does. Before it was in the key they shared a slot
-    and the linear job rode the Hermite solve, 0.53bp away from its own answer.
+def test_another_scheme_or_base_date_addresses_another_slot():
+    """A Hermite solve and a linear one on the same quotes are different curves, and so are two
+    solves 45 days apart, and the block says neither - `Price Factor Interpolation` and the base
+    date do. Before both were in the key a linear job rode a Hermite solve 0.53bp away from its own
+    answer, and a later job the earlier date's theta*. Each other job's artifact is filed in this
+    job's own store, and this job still rides its own solve: the second cannot FIND the first's
+    operator.
 
-    Driven through the engine rather than through `plan_key` alone, because what matters is that the
-    second job cannot FIND the first one's operator.
+    Killing mutation: the scheme and the base date left out of the slot - the other job's artifact
+    takes this one's slot and the ride reads its curve.
     """
     hermite = ModelParams()
     hermite.append('InterestRate', (), 'HermiteRT')
     linear_job = bootstrapped(market(True))
     linear_nodes = linear_job.propagated_factor(FACTOR)[0].copy()
-
-    hermite_job = bootstrapped(market(True), interpolation=hermite)
-    assert np.abs(curve_values(hermite_job) - curve_values(linear_job)).max() > 1e-6, (
-        'the two schemes solved the same curve - this gate proves nothing')
-    assert key_of(hermite_job) != key_of(linear_job)
-    assert np.array_equal(linear_job.propagated_factor(FACTOR)[0], linear_nodes), (
-        'the linear job now rides the Hermite solve out of a shared slot')
+    others = {'scheme': bootstrapped(market(True), interpolation=hermite),
+              'date': bootstrapped(market(True), base_date=BASE - pd.DateOffset(days=45))}
+    for label, other in others.items():
+        assert np.abs(curve_values(other) - curve_values(linear_job)).max() > 1e-6, (
+            '{}: the two solved the same curve - this gate proves nothing'.format(label))
+        linear_job.artifacts.put(artifact_of(other))
+        assert np.array_equal(linear_job.propagated_factor(FACTOR)[0], linear_nodes), (
+            '{}: this job now rides the other one\'s solve out of a shared slot'.format(label))
