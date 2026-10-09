@@ -275,6 +275,55 @@ def test_a_commodity_digital_spread_reads_the_commodity_smile():
     assert abs(_mtm(closed, 'CDG') - anchor) / anchor < 1e-9, (_mtm(closed, 'CDG'), anchor)
 
 
+def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
+    """A digital on a USD reference price paid in EUR. Under `Payoff_Type` Compo, what omission
+    means, the underlying is S*X on the EUR per USD forward, the strike a EUR level the local smile
+    is read at translated, and the vol composed with the pair's; under Quanto the local forward is
+    carried by `-rho sigma_S sigma_X` and the EUR payoff is paid at one. The correlation is read
+    under the name the energy family declares, `Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD`,
+    oriented local to payoff, so +0.35 is +0.35. The commodity smile is the collinear skew and the
+    FX surface flat, so every read is exact: the compo's local vol at the translated strike's
+    moneyness, which is the composed forward over the EUR strike, the quanto's at the local
+    forward's with the ATM vol in its carry, and under the spread each leg composed at its own.
+
+    Killing mutations: the correlation read with the equity's sorted-pair sign - the compo reads
+    514.30 against 504.08; the strike untranslated under the compo, the local smile read at a EUR
+    level's moneyness - 486.92 against 504.08.
+    """
+    oil = 90.0
+    factors = dict(RATES, **{
+        'ReferencePrice.OIL': {'ForwardPrice': 'OIL',
+                               'Fixing_Curve': utils.Curve([], [[40000.0, 40000.0], [60000.0, 60000.0]])},
+        'ForwardPrice.OIL': {'Currency': 'USD', 'Curve': utils.Curve([], [[40000.0, oil], [60000.0, oil]])},
+        'ReferenceVol.OIL': {'ForwardPriceVol': 'OIL', 'ReferencePrice': 'OIL'},
+        'CommodityPriceVol.OIL': _surface(VOL_ATM, SKEW),
+        'FXVol.EUR.USD': _surface(FX_SIGMA, 0.0),
+        'Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD': {'Value': CORR}})
+    fx_fwd = math.exp((R_EUR - R_USD) * T) / FX_SPOT
+    strike_eur, strike_usd = 72.0, 95.0
+    deal = {'Object': 'CommodityDigitalOption', 'Reference': 'CDG', 'Currency': 'EUR',
+            'Discount_Rate': 'EUR', 'Reference_Type': 'OIL', 'Reference_Volatility': 'OIL',
+            'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Payoff': CASH, 'Expiry_Date': EXPIRY}
+
+    def local_vol(moneyness):
+        return VOL_ATM + SKEW * (moneyness - 1.0)
+
+    def composed(strike):
+        sigma = local_vol(oil * fx_fwd / strike)
+        return math.sqrt(sigma ** 2 + 2.0 * CORR * sigma * FX_SIGMA + FX_SIGMA ** 2)
+
+    compo = _digital_closed(oil * fx_fwd, strike_eur, composed(strike_eur), R_EUR) * FX_SPOT
+    quanto = _digital_closed(oil * math.exp(-CORR * VOL_ATM * FX_SIGMA * T), strike_usd,
+                             local_vol(oil / strike_usd), R_EUR) * FX_SPOT
+    spread = _spread_closed(oil * fx_fwd, strike_eur, composed, R_EUR) * FX_SPOT
+    for terms, valuation, expected in (
+            ({'Strike_Price': strike_eur}, None, compo),
+            ({'Strike_Price': strike_usd, 'Payoff_Type': 'Quanto'}, None, quanto),
+            ({'Strike_Price': strike_eur}, {'CommodityDigitalOption': {'Relative_Digital_Spread': EPS}}, spread)):
+        out, _ = _run(_job([dict(deal, **terms)], factors, valuation=valuation))
+        assert abs(_mtm(out, 'CDG') - expected) / expected < 1e-9, (terms, _mtm(out, 'CDG'), expected)
+
+
 def test_a_compo_binary_spread_composes_each_leg():
     """A compo digital under the spread: the underlying is S*X, the strike a payoff-currency
     quantity, and each leg's vol is the COMPO composition of its own strike's read. Flat surfaces

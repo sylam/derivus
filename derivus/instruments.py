@@ -5116,6 +5116,7 @@ class CommodityDigitalOption(Deal):
         F('Strike_Price', 'Float', default=0.0),
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
+        F('Payoff_Type', 'Text', default='Compo', convention=True, values=['Compo', 'Quanto']),
         F('Reference_Type', 'Text', default='', obj='Tuple'),
         F('Reference_Volatility', 'Text', default='', obj='Tuple')
     ])]
@@ -5123,7 +5124,7 @@ class CommodityDigitalOption(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
                      'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['CommodityPriceVol']}
+                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol']}
 
     documentation = ('Energy', [
         'A European digital on a commodity reference price, described',
@@ -5134,8 +5135,14 @@ class CommodityDigitalOption(Deal):
         'The underlying is the forward of the **Reference_Type** for the delivery date its fixing',
         'curve maps **Expiry_Date** to, read off the ForwardPrice curve on every scenario date, and',
         'its vol is the **Reference_Volatility** surface at the forward\'s moneyness over the expiry;',
-        'the payoff is discounted to **Settlement_Date**. **Currency** is the forward curve\'s own: a',
-        'payoff in another currency is refused by name.',
+        'the payoff is discounted to **Settlement_Date**.',
+        '',
+        'Paid in a **Currency** other than the forward curve\'s own, the digital is a compo on the',
+        'product $S\\cdot X$ under **Payoff_Type** `Compo` - the strike a payoff-currency level, the',
+        'local smile read at the translated strike $K/F_X(T)$ and the vol composed with the pair\'s -',
+        'or a quanto under `Quanto`, the forward carried by $-\\rho\\sigma_S\\sigma_X$. The pair\'s',
+        '`FXVol` and the correlation `Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>`',
+        'are the ones the energy family declares.',
         '',
         'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
         'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
@@ -5161,12 +5168,6 @@ class CommodityDigitalOption(Deal):
             field['Currency']
 
         reference_factor, forward_factor = get_reference_factor_objects(field['Reference_Type'], all_factors)
-        if field['Currency'] != forward_factor.get_currency():
-            raise ValueError('{}: CommodityDigitalOption pays {} on a reference price quoted in {} - a compo or '
-                             'quanto digital is not built, so Currency is the forward curve\'s own'.format(
-                                 self.field.get('Reference'), utils.check_tuple_name(field['Currency']),
-                                 utils.check_tuple_name(forward_factor.get_currency())))
-
         expiry, settlement, _ = option_date_info(self.field, base_date, calendars)
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
@@ -5179,11 +5180,23 @@ class CommodityDigitalOption(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Expiry': expiry,
             'Settlement': settlement,
+            'Check_Payoff_Type': False,
             # the forward curve's coordinate of the fixing: the delivery date the reference maps the expiry to
             'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))}
-        field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
+        field_index['ForwardPrice'], field_index['Local'], field_index['Other'] = get_forwardprice_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor, base_date)
+
+        local = forward_factor.get_currency()
+        if field['Currency'] != local:
+            # paid off the forward curve's currency: the pair's vol and the correlation as the energy family
+            # declares them (config.conditional_fields) - the pair named in the deal's own direction, so no sign
+            field_index['Check_Payoff_Type'] = True
+            field_index['Correlation_Sign'] = 1.0
+            field_index['FXVol'] = get_vol_factor('FXVol', tuple(sorted([local[0], field['Currency'][0]])),
+                                                  static_offsets, stochastic_offsets, all_tenors)
+            field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = get_implied_correlation(
+                ('FxRate',) + local + field['Currency'], ('ReferencePrice',) + field['Reference_Type'], all_factors)
 
         return field_index
 
@@ -5194,7 +5207,7 @@ class CommodityDigitalOption(Deal):
         forward = torch.squeeze(utils.calc_time_grid_curve_rate(
             factor_dep['ForwardPrice'], deal_time, shared).gather_weighted_curve(
             shared, np.full((deal_time.shape[0], 1), factor_dep['Delivery']), multiply_by_time=False), dim=1)
-        strike = factor_dep['Strike_Price']
+        strike = pricing.compo_strike(factor_dep, deal_time, shared, factor_dep['Strike_Price'] * shared.one)
         moneyness = pricing.calc_moneyness(strike, forward, forward, deal_data, use_forward=True)
 
         # spread legs at the deal's own moneyness convention (see EquityBinaryOption.generate)
