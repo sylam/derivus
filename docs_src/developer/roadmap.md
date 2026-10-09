@@ -47,8 +47,13 @@ unmeasured — a limitation without a number is absolution, not documentation
   zero-threshold credit-support annex the boundary correction supplies two and a half times the
   pathwise term and scatters with the path count: 51% short at 256 outer paths, 18% over at 1,024,
   10% at 2,048; a lognormal autocall under the same annex reads 12% short at 2,048. The path
-  count, not the deal, is what the number depends on. Beside it, the autocall's floating leg and
-  its terminal put register no settled cash, so the reported cashflows carry the coupons alone.
+  count, not the deal, is what the number depends on.
+- **The autocall's two arms read different floating legs** (2026-10-09). The one-step-survival
+  arm pays `Autocall_Floating`'s stated value on each of its dates, while the full-path arm pays
+  the forecast leg the swap version builds off `Forecast_Rate` - which the survival arm builds
+  too and never reads. A swap version authored with blank values pays nothing on the survival
+  arm; one authored with its forecast amounts pays them as fixed. UNMEASURED beyond that; the
+  survival arm reading the leg it already builds is the fix, S.
 - **The target redemption forward's target pin is a kink the crisp estimator is blind to.** The
   pin fires on 41% to 60% of paths. Under the default (`Branch_And_Weight`) a common-random-number
   ladder of the switch's own value surface is flat to 0.05% and lands on the reported delta to

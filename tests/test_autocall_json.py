@@ -35,6 +35,8 @@ import numpy as np
 import pandas as pd
 
 import derivus as rf
+from derivus import utils
+from derivus.config import CustomJsonEncoder
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'fixtures', 'autocall_job.json')
@@ -329,13 +331,53 @@ def _stamp(offset):
 def _cmc(job, tmp_path, name):
     path = os.path.join(str(tmp_path), f'{name}.json')
     with open(path, 'w') as f:
-        json.dump(job, f, default=str)
+        json.dump(job, f, cls=CustomJsonEncoder)
     cx = rf.Context()
     cx.load_json(path)
     _, out = cx.run_job()
     # under a credit Monte Carlo `mtm` is the exposure PROFILE (dates x scenarios), not the
     # per-deal frame a base valuation returns
     return out['Results']['cashflows']['USD'], out['Results']['mtm']
+
+
+FLOAT = 0.0125
+
+
+def _swap_job(threshold=100.0):
+    """The swap version under the credit Monte Carlo: a floating payment of `FLOAT` per unit on
+    each coupon date, a put barrier at 70 observed on the last, and a threshold no path reaches,
+    so every path survives to the expiry and pays the leg and the put alone."""
+    job = _cmc_job(threshold)
+    deal = _deal_of(job)
+    dates = [row[0] for row in deal['Autocall_Coupons']]
+    deal.update({
+        'Object': 'QEDI_CustomAutoCallSwap_V2', 'Barrier': 70.0, 'Barrier_Dates': dates[-1:],
+        'Forecast_Rate': 'USD', 'Floating_Margin': utils.Basis(50.0),
+        'Reset_Frequency': pd.DateOffset(months=3), 'Autocall_Floating': [[d, FLOAT] for d in dates]
+        })
+    return job
+
+
+def test_the_floating_leg_and_the_put_settle_their_cash_on_their_own_rows(tmp_path):
+    """The ledger carried the coupons alone: the floating leg's payments and the terminal put were
+    in the mark and reached no row of `t_Cashflows`. On the swap version, with a threshold no path
+    reaches, every path survives: each coupon date books the leg's payment, `-Units * FLOAT`
+    exactly, and the expiry row books that beside the put - so on the expiry row, where everything
+    the deal still owes is paid, the ledger IS the mark, scenario by scenario.
+
+    The run is the calculation's float32, so the readings are held to 1e-6.
+
+    Killing mutations: the leg's cash unbooked, every row reading 0 against -0.125; the put's
+    unbooked, the expiry row reading the leg alone against the mark.
+    """
+    ledger, mtm = _cmc(_swap_job(), tmp_path, 'swap')
+    dates = [pd.Timestamp(_stamp(d)) for d in (91, 182, 273)]
+    for date in dates[:-1]:
+        cash = np.asarray(ledger.loc[date].values, dtype=float)
+        assert np.all(np.abs(cash + UNITS * FLOAT) < 1e-6), (date, cash[:4])
+    paid, marked = (np.asarray(frame.loc[dates[-1]].values, dtype=float) for frame in (ledger, mtm))
+    assert np.all(np.abs(paid - marked) <= 1e-6 * np.maximum(np.abs(marked), 1.0)), (paid[:4], marked[:4])
+    assert paid.mean() < -UNITS * FLOAT, 'the put pays on some path'
 
 
 def test_an_autocalled_path_pays_its_coupon_once_and_is_worth_nothing_after(tmp_path):

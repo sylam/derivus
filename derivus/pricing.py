@@ -4420,6 +4420,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
 
                 coupon_index = coupon_count = 0
 
+                def booked(settle, cash):
+                    """`cash` paid on THIS row, per scenario, beside what the row already books."""
+                    paid = torch.where(dead, 0.0, cash.mean(axis=1))
+                    return paid if settle is None else settle + paid
+
                 def fixing(j, Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
                            coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t, host_dt=host_dt,
                            carry_rate=carry_rate, v=v, row_at=row_at, ledger=ledger):
@@ -4436,11 +4441,15 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     decided = Sj
 
                     if FloatingDate > 0:
-                        P = P + L * fx * -FloatingDate * D[j]
+                        float_cash = L * fx * -FloatingDate * D[j]
+                        P = P + float_cash
                         if P_cf is not None:
                             # the counterfactual is read detached, so it is built off the tape
                             with torch.no_grad():
                                 P_cf = P_cf + L_cf * fx * -FloatingDate * D[j]
+                        if row_at[j] == 0.0:
+                            # the leg pays on this row
+                            settle = booked(settle, float_cash)
 
                     if coup > 0:
                         K = thresh * strike
@@ -4551,7 +4560,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # SETTLE HERE, not at the bottom of the loop: a test down there holds
                             # for every coupon and would book the running `P` - the accumulated
                             # VALUE, not the payment - once per coupon
-                            settle = torch.where(dead, 0.0, coupon_cash.mean(axis=1))
+                            settle = booked(settle, coupon_cash)
                             if logging.getLogger().isEnabledFor(logging.DEBUG):
                                 logging.debug(
                                     'AUTOCALL_SETTLE row=%d j=%d coup=%.6g cash=%.6g P=%.6g',
@@ -4611,6 +4620,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             breach = torch.where(at <= putBarrier, 1.0, 0.0)
                             put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
                             P = P + breach * put_leg
+                            if row_at[j] == 0.0:
+                                # the put pays on its own date, which this row is
+                                settle = booked(settle, breach * put_leg)
                             if P_cf is not None:
                                 with torch.no_grad():
                                     P_cf = P_cf + L_cf * D[j] * fx * breach * (
