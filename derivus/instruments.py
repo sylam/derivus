@@ -27,9 +27,7 @@ import torch
 import torch.nn.functional as Fn
 
 
-
 def get_business_day_offsets(calendar_names, calendars, business_days=2):
-
     def calendar_business_day(calendar_name, calendars):
         """The business-day offset for a named calendar, Monday-Friday when it is unknown."""
         return calendars.get(
@@ -60,7 +58,7 @@ def get_business_day_offsets(calendar_names, calendars, business_days=2):
 def forward_settlement_date(date_to_roll, calendar_names, calendars, business_days=2):
     """Return expiry plus settlement lag, rolled using the configured calendars."""
     bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days=business_days)
-    if len(bus_day_offsets)>1:
+    if len(bus_day_offsets) > 1:
         return utils.adjust_date(bus_day_offsets[0], False, date_to_roll + bus_day_offsets[1])
     else:
         return date_to_roll + bus_day_offsets[0]
@@ -111,7 +109,7 @@ def refuse_unpaired_schedule(field, rows, deal_type):
             any(a[0] >= b[0] or a[1] > b[1] for a, b in zip(rows, rows[1:])):
         raise ValueError('{}: {} fixings must be strictly increasing with non-decreasing '
                          'settlements on or after their fixing'.format(
-                             field.get('Reference', deal_type), deal_type))
+            field.get('Reference', deal_type), deal_type))
 
 
 def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
@@ -628,6 +626,7 @@ def get_forward_price_vol_factor(fieldname, static_offsets, stochastic_offsets, 
     return [calc_factor_index(utils.Factor('ForwardPriceVol', fieldname), static_offsets,
                               stochastic_offsets, all_tenors)]
 
+
 def get_commodity_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the commodity vol price factor - this getter OWNS `CommodityPriceVol`."""
     return [calc_factor_index(utils.Factor('CommodityPriceVol', fieldname), static_offsets, stochastic_offsets,
@@ -860,11 +859,43 @@ class NettingCollateralSet(Deal):
         F('Opening_Balance', 'Float', default=0.0, convention=True),
         F('Base_Collateral_Call_Date', 'Date', default='', convention=True),
         F('Calendars', 'Text', default='', convention=True),
-        F('Collateral_Assets', 'Container', default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []}, convention=True, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row([F('Currency', 'Text'), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row([F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'), F('Issuer', 'Text'), F('Currency', 'Text'), F('Discount_Rate', 'Text'), F('Maturity', 'Period'), F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])), F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral', row=Row([F('Equity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])), F('Commodity_Collateral', 'Table', default='null', row=Row([F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')]))]),
+        F('Collateral_Assets', 'Container',
+          default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []},
+          convention=True, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row(
+                [F('Currency', 'Text'), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
+                 F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
+                 F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row(
+                [F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'),
+                 F('Issuer', 'Text'), F('Currency', 'Text'), F('Discount_Rate', 'Text'), F('Maturity', 'Period'),
+                 F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'),
+                 F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])),
+                                       F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral',
+                                         row=Row(
+                                             [F('Equity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
+                                              F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
+                                              F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])),
+                                       F('Commodity_Collateral', 'Table', default='null', row=Row(
+                                           [F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
+                                            F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
+                                            F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')]))]),
         F('Collateral_Call_Frequency', 'Text', default='1D', convention=True, obj='Period'),
         F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
-        F('Credit_Support_Amounts', 'Container', default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [], 'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True, sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''), F('Independent_Amount', 'Table', default='[[0,1]]', row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Posted_Threshold', 'Table', default='[[0,1]]', row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'), F('Minimum_Posted', 'Table', default='[[0,1]]', row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList')]),
+        F('Credit_Support_Amounts', 'Container',
+          default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [],
+                   'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True,
+          sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''),
+                      F('Independent_Amount', 'Table', default='[[0,1]]',
+                        row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                        tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row(
+                  [F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+                      F('Posted_Threshold', 'Table', default='[[0,1]]',
+                        row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                        tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row(
+                  [F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+                      F('Minimum_Posted', 'Table', default='[[0,1]]',
+                        row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]),
+                        tag='CreditSupportList')]),
         F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
         F('Settlement_Period', 'Integer', default=0, convention=True),
@@ -875,7 +906,7 @@ class NettingCollateralSet(Deal):
         F('Collect_Regulations', 'Text', default='', convention=True,
           description='The regimes initial margin is COLLECTED under this agreement by, as the '
                       'CRIF carries them; a term of the agreement, blank where none is declared')
-])]
+    ])]
 
     factor_fields = {'Agreement_Currency': ['FxRate'],
                      'Funding_Rate': ['InterestRate'],
@@ -890,188 +921,188 @@ class NettingCollateralSet(Deal):
                      }
 
     documentation = ('Container', [
-                      'Collateral agreements (CSA\'s) are represented using a container instrument called a netting ',
-                      'collateral set. The idea is to first model the effect of an uncollateralized net portfolio ',
-                      '$V(t)$ and then, per scenario, transform this to a collateralized portfolio $\\hat V(t)$.',
-                      '',
-                      'In addition to posting and recieving collateral there are still two residual risks viz.',
-                      '',
-                      '### Settlement Risk',
-                      '',
-                      'This arises when counterparty default occurs unexpectantly. Potentially, a party may make ',
-                      'payment (or post collateral) to the counterparty without receiving the corresponding collateral',
-                      '(or payment) in return.',
-                      '',
-                      '### Liquidity risk',
-                      '',
-                      'This refers to the basis risk between the market cost of closing out or replacing the counterparty',
-                      'portfolio against the realized market value of the collateral held.',
-                      '',
-                      'The general approach to simulating collateral is as follows:',
-                      '',
-                      'Define:',
-                      '',
-                      '- $t$ the simulation time',
-                      '- $V(t)$ a realization of the uncollateralized portfolio for a scenario',
-                      '- $\\hat V(t)$ a realization of collateralized portfolio for a scenario',
-                      '- $B(t)$ the number of units of the collateral portfolio that should be held if the collateral '
-                      'agreement was honoured by both parties. This includes minimum transfer amounts and is piecewise '
-                      'constant between collateral call dates',
-                      '- $S(t)$ is the value of one unit of the collateral portfolio in base currency for a scenario',
-                      '- $\\delta_s$ the length of the settlement period',
-                      '- $\\delta_l$ the length of the liquidation period',
-                      '- $t_s$ the start of the settlement period',
-                      '- $t_l$ the start of the liquidation period',
-                      '- $t_e$ the end of the liquidation period',
-                      '- $C(t_1,t_2)$ the value in base currency of cash in all currencies accumulated by the portfolio'
-                      ' over the interval $[t_1,t_2]$',
-                      '',
-                      'The closeout period (when the counterparty becomes insolvent) starts at $t_s$ and ends at $t_e$',
-                      '(when the position and collateral have been liquidated). This period is further divided into a',
-                      'settlement period $\\delta_s$ followed by a liquidation period $\\delta_l$ such that the',
-                      'liquidation begins at $t_l$ when the settlement period ends. After the settlement period,',
-                      'neither party pays cashflows or transfers collateral but the market risk on the portfolio and',
-                      'collateral continue until the end of liquidation period.',
-                      '',
-                      'The collateralized portfolio at time $t$ is the difference between the sum of the liquidated',
-                      'portfolio value and the cash accumulated during the closeout period $C(t_s,t_e)$ and the',
-                      'liquidated value of the $B$ units of the collateral portfolio $S(t_e)$ held:'
-                      '',
-                      '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\min\\{B(u):t_s\\le u\\le t_l\\}S(t_e)$$',
-                      '',
-                      'The calculation of $C(t_s,t_e), B(t)$ and $S(t)$ is described below.',
-                      ''
-                      '### Standard and Forward looking closeout',
-                      '',
-                      'Usually exposure is reported at the end of the closeout period i.e. :',
-                      '',
-                      '- $t_s=t-\\delta_l-\\delta_s$',
-                      '- $t_l=t-\\delta_l$',
-                      '- $t_e=t$',
-                      '',
-                      'However, it is also possible to model the settlement and liquidation periods to come after $t$.',
-                      'This forward looking closeout implies:',
-                      '',
-                      '- $t_s=t$',
-                      '- $t_l=t+\\delta_s$',
-                      '- $t_e=t+\\delta_s+\\delta_l$',
-                      '',
-                      'Note that Standard closeout causes exposure to be reported one closeout period after portfolio',
-                      'maturity (as the mechanics of default are still present).',
-                      '',
-                      '### Cashflow Accounting',
-                      '',
-                      'Define (for time $t$):',
-                      '',
-                      '- $C_r(t)$ the unsigned cumulative base currency amount of cash received per scenario',
-                      '- $C_p(t)$ the unsigned cumulative base currency amount of cash paid per scenario',
-                      '- $C_i(t)$ the signed net cash amount paid per scenario per currency $i$ (positive if received,'
-                      ' negative if paid)',
-                      '- $X_i(t)$ the exchange rate from currency $i$ to base currency',
-                      '',
-                      'Interest over the closeout period is assumed negligible and hence not calculated. If **Exclude'
-                      ' Paid Today** is **No**,',
-                      'then the portfolio value at $t$ includes cash paid on $t$ and hence:',
-                      '',
-                      '$$C_r(t)=\\sum_{t_j<t}\\sum_i X_i(t_j)\\max(0,C^i(t_j))$$',
-                      '',
-                      '$$C_p(t)=\\sum_{t_j<t}\\sum_i X_i(t_j)\\max(0,-C^i(t_j))$$',
-                      '',
-                      'Otherwise (when **Exclude Paid Today** is **Yes**):',
-                      '',
-                      '$$C_r(t)=\\sum_{t_j\\le t}\\sum_i X_i(t_j)\\max(0,C^i(t_j))$$',
-                      '',
-                      '$$C_p(t)=\\sum_{t_j\\le t}\\sum_i X_i(t_j)\\max(0,-C^i(t_j))$$',
-                      '',
-                      '#### Settlement risk mechanics',
-                      '',
-                      'The **Cash Settlement Risk** mechanics are determined depending on the order of cash payments'
-                      ' verses collateral.',
-                      '',
-                      '- **Received Only** assumes that collateral is transfered before cash. All cash is retained'
-                      ' during the settlement period.',
-                      '',
-                      '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_s)+C_p(t_s)$$',
-                      '',
-                      '- **Paid Only** assumes that cash is transferred before collateral. Cash is paid by both sides',
-                      'and no cash is retained during the settlement period.',
-                      '',
-                      '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_l)+C_p(t_l)$$',
-                      '',
-                      '- **All** assumes that the ordering of cash and collateral is not fixed (i.e. paid and received'
-                      ' cash are at risk). Only received cash is retained during the settlement period.',
-                      '',
-                      '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_s)+C_p(t_l)$$',
-                      '',
-                      '### Collateral Accounting',
-                      '',
-                      'Define:',
-                      '',
-                      '- $A(t_i)$ the agreed value in base currency of collateral that should be held per scenario if',
-                      ' the CSA was honoured by both parties *ignoring minimum transfer amounts*. Collateral is not',
-                      'held simultaneously by both parties. Received collateral is positive and posted is negative.',
-                      '- $A(0)$ the initial value of collateral in base currency specified by the **Opening Balance**.',
-                      '- $X(t)$ the exchange from the CSA currency to the base currency. All amounts on the CSA',
-                      '(Thresholds, minimum transfers etc.) are expressed in the **Agreement Currency**.',
-                      '- $I$ the independent amount of collateral in agreement currency that is either posted (negative)'
-                      ' or received (positive).',
-                      '- $H(t)$ the received threshold of collateral: if the portfolio value is above this, the agreed '
-                      'collateral value must be increased by the difference.',
-                      '- $G(t)$ the posted threshold of collateral: if the portfolio value is below this, the agreed '
-                      'collateral value must be decreased by the difference.',
-                      '- $M_r(t)$ the minimum received transfer amount. The collateral held will not increase unless '
-                      'the increase is more than this amount.',
-                      '- $M_p(t)$ the minimum posted transfer amount. The collateral posted will not increase unless '
-                      'the increase is more than this amount.',
-                      '- $S_h(t)$ is the value in base currency of one unit of the collateral portfolio after haircuts.',
-                      '- $t_i, i>0$ are collateral call dates. Note that $t_0=0$ and that in general, $t_0$ need not be'
-                      ' a collateral call date.',
-                      '',
-                      'We then have the following relationships:',
-                      '',
-                      '$$A(t_i)=X(t_i)I+\\begin{cases} V(t_i)-X(t_i)H(t_i), '
-                      '&\\text{if } V(t_i)>X(t_i)H(t_i)\\\\ V(t_i)-X(t_i)G(t_i), '
-                      '&\\text{if } V(t_i)<X(t_i)G(t_i) \\end{cases}$$',
-                      '',
-                      'In general, the presence of minimum transfer amounts introduce a path dependency on $B(t)$ and,',
-                      'as such, is not a simple function of $A(t_i)$. Instead, it can be expressed via the following',
-                      'recurrence:',
-                      '',
-                      '$$B(t_i)=\\begin{cases} \\frac{A(0)}{S_h(0)}, &\\text{if } i=0\\\\',
-                      '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
-                      '\\text{ and } i>0,\\\\',
-                      '&\\text{or if } S(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
-                      'B(t_{i-1}), &\\text{otherwise}\\end{cases}$$',
-                      '',
-                      'Since $B(t_i)$ is constant between call dates, $B(t)=B(t_{i^*})$, where $t_{i^*}$ is the closest',
-                      'call date on or before $t$. Since $B(t)$ is path dependent, it requires calculation on all',
-                      'collateral call dates. Due to this being fairly prohibitive, the recurrence is only evaluated',
-                      'at collateral call dates associated with a particular simulation time grid. This approximation',
-                      'can be improved by using a finer simulation grid (also note that the path dependency dissipates',
-                      'as the minimum transfer amounts reduce to zero).',
-                      '',
-                      '### Collateral Portfolio',
-                      '',
-                      'Define:',
-                      '',
-                      '- $a_i$ the number of units of the $i^{th}$ asset in the collateral portfolio.',
-                      '- $S_i(t)$ the base currency value per unit of the $i^{th}$ asset.',
-                      '',
-                      'Currently, the collateral portfolio may only consist of equities and cash and therefore will be',
-                      'sensitive to interest rates, FX and equity prices over the closeout period. The relative',
-                      'amounts of each collateral asset in the collateral portfolio is held constant. The percent of',
-                      'the collateral portfolio represented by a given asset may change as its price relative to other',
-                      'assets change. The value of the portfolio is therefore:',
-                      '',
-                      '$$S(t)=\\sum_i a_i S_i(t)$$',
-                      '',
-                      'Haircuts may be defined for each asset class, including cash. The value of each asset allowing',
-                      'for haircuts is as follows:',
-                      '',
-                      '$$S_{h,i}=(1-h)S_i(t)$$',
-                      '',
-                      'Haircuts must be strictly less than one.',
-                      ])
+        'Collateral agreements (CSA\'s) are represented using a container instrument called a netting ',
+        'collateral set. The idea is to first model the effect of an uncollateralized net portfolio ',
+        '$V(t)$ and then, per scenario, transform this to a collateralized portfolio $\\hat V(t)$.',
+        '',
+        'In addition to posting and recieving collateral there are still two residual risks viz.',
+        '',
+        '### Settlement Risk',
+        '',
+        'This arises when counterparty default occurs unexpectantly. Potentially, a party may make ',
+        'payment (or post collateral) to the counterparty without receiving the corresponding collateral',
+        '(or payment) in return.',
+        '',
+        '### Liquidity risk',
+        '',
+        'This refers to the basis risk between the market cost of closing out or replacing the counterparty',
+        'portfolio against the realized market value of the collateral held.',
+        '',
+        'The general approach to simulating collateral is as follows:',
+        '',
+        'Define:',
+        '',
+        '- $t$ the simulation time',
+        '- $V(t)$ a realization of the uncollateralized portfolio for a scenario',
+        '- $\\hat V(t)$ a realization of collateralized portfolio for a scenario',
+        '- $B(t)$ the number of units of the collateral portfolio that should be held if the collateral '
+        'agreement was honoured by both parties. This includes minimum transfer amounts and is piecewise '
+        'constant between collateral call dates',
+        '- $S(t)$ is the value of one unit of the collateral portfolio in base currency for a scenario',
+        '- $\\delta_s$ the length of the settlement period',
+        '- $\\delta_l$ the length of the liquidation period',
+        '- $t_s$ the start of the settlement period',
+        '- $t_l$ the start of the liquidation period',
+        '- $t_e$ the end of the liquidation period',
+        '- $C(t_1,t_2)$ the value in base currency of cash in all currencies accumulated by the portfolio'
+        ' over the interval $[t_1,t_2]$',
+        '',
+        'The closeout period (when the counterparty becomes insolvent) starts at $t_s$ and ends at $t_e$',
+        '(when the position and collateral have been liquidated). This period is further divided into a',
+        'settlement period $\\delta_s$ followed by a liquidation period $\\delta_l$ such that the',
+        'liquidation begins at $t_l$ when the settlement period ends. After the settlement period,',
+        'neither party pays cashflows or transfers collateral but the market risk on the portfolio and',
+        'collateral continue until the end of liquidation period.',
+        '',
+        'The collateralized portfolio at time $t$ is the difference between the sum of the liquidated',
+        'portfolio value and the cash accumulated during the closeout period $C(t_s,t_e)$ and the',
+        'liquidated value of the $B$ units of the collateral portfolio $S(t_e)$ held:'
+        '',
+        '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\min\\{B(u):t_s\\le u\\le t_l\\}S(t_e)$$',
+        '',
+        'The calculation of $C(t_s,t_e), B(t)$ and $S(t)$ is described below.',
+        ''
+        '### Standard and Forward looking closeout',
+        '',
+        'Usually exposure is reported at the end of the closeout period i.e. :',
+        '',
+        '- $t_s=t-\\delta_l-\\delta_s$',
+        '- $t_l=t-\\delta_l$',
+        '- $t_e=t$',
+        '',
+        'However, it is also possible to model the settlement and liquidation periods to come after $t$.',
+        'This forward looking closeout implies:',
+        '',
+        '- $t_s=t$',
+        '- $t_l=t+\\delta_s$',
+        '- $t_e=t+\\delta_s+\\delta_l$',
+        '',
+        'Note that Standard closeout causes exposure to be reported one closeout period after portfolio',
+        'maturity (as the mechanics of default are still present).',
+        '',
+        '### Cashflow Accounting',
+        '',
+        'Define (for time $t$):',
+        '',
+        '- $C_r(t)$ the unsigned cumulative base currency amount of cash received per scenario',
+        '- $C_p(t)$ the unsigned cumulative base currency amount of cash paid per scenario',
+        '- $C_i(t)$ the signed net cash amount paid per scenario per currency $i$ (positive if received,'
+        ' negative if paid)',
+        '- $X_i(t)$ the exchange rate from currency $i$ to base currency',
+        '',
+        'Interest over the closeout period is assumed negligible and hence not calculated. If **Exclude'
+        ' Paid Today** is **No**,',
+        'then the portfolio value at $t$ includes cash paid on $t$ and hence:',
+        '',
+        '$$C_r(t)=\\sum_{t_j<t}\\sum_i X_i(t_j)\\max(0,C^i(t_j))$$',
+        '',
+        '$$C_p(t)=\\sum_{t_j<t}\\sum_i X_i(t_j)\\max(0,-C^i(t_j))$$',
+        '',
+        'Otherwise (when **Exclude Paid Today** is **Yes**):',
+        '',
+        '$$C_r(t)=\\sum_{t_j\\le t}\\sum_i X_i(t_j)\\max(0,C^i(t_j))$$',
+        '',
+        '$$C_p(t)=\\sum_{t_j\\le t}\\sum_i X_i(t_j)\\max(0,-C^i(t_j))$$',
+        '',
+        '#### Settlement risk mechanics',
+        '',
+        'The **Cash Settlement Risk** mechanics are determined depending on the order of cash payments'
+        ' verses collateral.',
+        '',
+        '- **Received Only** assumes that collateral is transfered before cash. All cash is retained'
+        ' during the settlement period.',
+        '',
+        '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_s)+C_p(t_s)$$',
+        '',
+        '- **Paid Only** assumes that cash is transferred before collateral. Cash is paid by both sides',
+        'and no cash is retained during the settlement period.',
+        '',
+        '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_l)+C_p(t_l)$$',
+        '',
+        '- **All** assumes that the ordering of cash and collateral is not fixed (i.e. paid and received'
+        ' cash are at risk). Only received cash is retained during the settlement period.',
+        '',
+        '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_s)+C_p(t_l)$$',
+        '',
+        '### Collateral Accounting',
+        '',
+        'Define:',
+        '',
+        '- $A(t_i)$ the agreed value in base currency of collateral that should be held per scenario if',
+        ' the CSA was honoured by both parties *ignoring minimum transfer amounts*. Collateral is not',
+        'held simultaneously by both parties. Received collateral is positive and posted is negative.',
+        '- $A(0)$ the initial value of collateral in base currency specified by the **Opening Balance**.',
+        '- $X(t)$ the exchange from the CSA currency to the base currency. All amounts on the CSA',
+        '(Thresholds, minimum transfers etc.) are expressed in the **Agreement Currency**.',
+        '- $I$ the independent amount of collateral in agreement currency that is either posted (negative)'
+        ' or received (positive).',
+        '- $H(t)$ the received threshold of collateral: if the portfolio value is above this, the agreed '
+        'collateral value must be increased by the difference.',
+        '- $G(t)$ the posted threshold of collateral: if the portfolio value is below this, the agreed '
+        'collateral value must be decreased by the difference.',
+        '- $M_r(t)$ the minimum received transfer amount. The collateral held will not increase unless '
+        'the increase is more than this amount.',
+        '- $M_p(t)$ the minimum posted transfer amount. The collateral posted will not increase unless '
+        'the increase is more than this amount.',
+        '- $S_h(t)$ is the value in base currency of one unit of the collateral portfolio after haircuts.',
+        '- $t_i, i>0$ are collateral call dates. Note that $t_0=0$ and that in general, $t_0$ need not be'
+        ' a collateral call date.',
+        '',
+        'We then have the following relationships:',
+        '',
+        '$$A(t_i)=X(t_i)I+\\begin{cases} V(t_i)-X(t_i)H(t_i), '
+        '&\\text{if } V(t_i)>X(t_i)H(t_i)\\\\ V(t_i)-X(t_i)G(t_i), '
+        '&\\text{if } V(t_i)<X(t_i)G(t_i) \\end{cases}$$',
+        '',
+        'In general, the presence of minimum transfer amounts introduce a path dependency on $B(t)$ and,',
+        'as such, is not a simple function of $A(t_i)$. Instead, it can be expressed via the following',
+        'recurrence:',
+        '',
+        '$$B(t_i)=\\begin{cases} \\frac{A(0)}{S_h(0)}, &\\text{if } i=0\\\\',
+        '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
+        '\\text{ and } i>0,\\\\',
+        '&\\text{or if } S(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
+        'B(t_{i-1}), &\\text{otherwise}\\end{cases}$$',
+        '',
+        'Since $B(t_i)$ is constant between call dates, $B(t)=B(t_{i^*})$, where $t_{i^*}$ is the closest',
+        'call date on or before $t$. Since $B(t)$ is path dependent, it requires calculation on all',
+        'collateral call dates. Due to this being fairly prohibitive, the recurrence is only evaluated',
+        'at collateral call dates associated with a particular simulation time grid. This approximation',
+        'can be improved by using a finer simulation grid (also note that the path dependency dissipates',
+        'as the minimum transfer amounts reduce to zero).',
+        '',
+        '### Collateral Portfolio',
+        '',
+        'Define:',
+        '',
+        '- $a_i$ the number of units of the $i^{th}$ asset in the collateral portfolio.',
+        '- $S_i(t)$ the base currency value per unit of the $i^{th}$ asset.',
+        '',
+        'Currently, the collateral portfolio may only consist of equities and cash and therefore will be',
+        'sensitive to interest rates, FX and equity prices over the closeout period. The relative',
+        'amounts of each collateral asset in the collateral portfolio is held constant. The percent of',
+        'the collateral portfolio represented by a given asset may change as its price relative to other',
+        'assets change. The value of the portfolio is therefore:',
+        '',
+        '$$S(t)=\\sum_i a_i S_i(t)$$',
+        '',
+        'Haircuts may be defined for each asset class, including cash. The value of each asset allowing',
+        'for haircuts is as follows:',
+        '',
+        '$$S_{h,i}=(1-h)S_i(t)$$',
+        '',
+        'Haircuts must be strictly less than one.',
+    ])
 
     def __init__(self, params, valuation_options):
         super(NettingCollateralSet, self).__init__(params, valuation_options)
@@ -1288,7 +1319,7 @@ class NettingCollateralSet(Deal):
                         if col_cash.get('Amount') is None and not sole:
                             raise ValueError('{}: a Cash_Collateral row states no Amount, its weight '
                                              'among several collateral assets'.format(
-                                                 self.field.get('Reference')))
+                                self.field.get('Reference')))
                         field_index['Cash_Collateral'].append(
                             utils.Collateral(Haircut=float(col_cash['Haircut_Posted']),
                                              Amount=1.0 if col_cash.get('Amount') is None
@@ -1505,7 +1536,7 @@ class NettingCollateralSet(Deal):
                 mtm_today_adj = (Cf_Rec[factor_dep['Te']] -
                                  Fn.pad(Cf_Rec[factor_dep['Te'][1:] - 1], [0, 0, 1, 0])) - (
                                         Cf_Pay[factor_dep['Te']] - Fn.pad(Cf_Pay[factor_dep['Te'][1:] - 1],
-                                                                         [0, 0, 1, 0]))
+                                                                          [0, 0, 1, 0]))
 
                 Vte -= mtm_today_adj
 
@@ -1607,16 +1638,18 @@ class NettingCollateralSet(Deal):
                 g_fx, g_fx_local = fx_base.detach(), fx_base_local.detach()
                 g_St, g_fxSt = St.detach(), (fx_agreement / St).detach()
                 g_H, g_G, g_IA = H.detach(), G.detach(), (
-                    factor_dep['Independent_Amount'] * fx_agreement).detach()
+                        factor_dep['Independent_Amount'] * fx_agreement).detach()
                 g_Vt, g_B0, g_Te = Vt.detach(), Bt[0].detach(), factor_dep['Te']
                 g_mask = factor_dep['call_mask'].astype(bool)
                 # the C_ts_te window edges per the declared settlement-risk convention;
                 # Exclude_Paid_Today shifts the cumsum from strict-before to inclusive
                 g_ept = self.options['Exclude_Paid_Today']
                 g_rec_lo = factor_dep['Tl'] if self.options[
-                    'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Paid_Only else factor_dep['Ts']
+                                                   'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Paid_Only else \
+                factor_dep['Ts']
                 g_pay_lo = factor_dep['Ts'] if self.options[
-                    'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Received_Only else factor_dep['Tl']
+                                                   'Cash_Settlement_Risk'] == utils.CASH_SETTLEMENT_Received_Only else \
+                factor_dep['Tl']
 
                 def cash_to_C(t, branch, booked):
                     """A flipped payment at mtm row `t` as its C_ts_te delta (and Vte delta).
@@ -1711,7 +1744,7 @@ class MtMCrossCurrencySwapDeal(Deal):
         F('Pay_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Receive_Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Receive_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Pay_Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
                      'Pay_Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
@@ -1873,7 +1906,7 @@ class FXNonDeliverableForward(Deal):
         F('Buy_Amount', 'Float', default=0.0, sized=True),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Buy_Currency', 'Text', default='')
-])]
+    ])]
 
     factor_fields = {'Buy_Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -1980,7 +2013,7 @@ class FXSwapDeal(Deal):
         F('Near_Sell_Amount', 'Float', default=0.0, sized=True),
         F('Far_Buy_Amount', 'Float', default=0.0, sized=True),
         F('Far_Sell_Amount', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Near_Buy_Far_Sell_Ccy': ['FxRate'],
                      'Near_Buy_Far_Sell_Discount_Rate': ['InterestRate'],
@@ -2105,7 +2138,7 @@ class FXForwardDeal(Deal):
         F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
         F('Buy_Currency', 'Text', default=''),
         F('Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Buy_Currency': ['FxRate'],
                      'Buy_Discount_Rate': ['InterestRate'],
@@ -2195,7 +2228,7 @@ class StructuredDeal(Deal):
     fields = [ADMIN, own('StructuredDeal', [
         F('Currency', 'Text', default=''),
         F('Net_Cashflows', 'Text', default='No', convention=True, values=['Yes', 'No'])
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate']}
 
@@ -2296,7 +2329,8 @@ class DepositDeal(Deal):
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Frequency', 'Text', default='3M', convention=True, obj='Period'),
@@ -2305,12 +2339,13 @@ class DepositDeal(Deal):
         F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('FX_Reset_Offset', 'Integer', default=0, convention=True),
-        F('Known_FX_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Known_FX_Rates', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Amount', 'Float', default=0.0, sized=True),
         F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Interest_Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList')
-])]
-
+        F('Interest_Rate_Schedule', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList')
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -2417,7 +2452,8 @@ class SwapInterestDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
-        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
+          tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
@@ -2426,14 +2462,16 @@ class SwapInterestDeal(Deal):
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Fixed_Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Rate_Constant', 'Float', default=0.0, convention=True, obj='Percent'),
-        F('Compounding_Method', 'Text', default='None', convention=True, values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
+        F('Compounding_Method', 'Text', default='None', convention=True,
+          values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Swap_Rate', 'Float', default=0.0),
         F('Principal', 'Float', default=0.0, sized=True)
-]), own('SwapInterestDeal', [
+    ]), own('SwapInterestDeal', [
         F('Pay_Rate_Type', 'Text', default='Fixed', values=['Fixed', 'Floating']),
         F('Pay_First_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
@@ -2444,7 +2482,7 @@ class SwapInterestDeal(Deal):
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Pay_Payment_Calendars', 'Text', default='', convention=True),
         F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS)
-], 'Pay'), own('SwapInterestDeal', [
+    ], 'Pay'), own('SwapInterestDeal', [
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
         F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_Accrual_Calendars', 'Text', default='', convention=True),
@@ -2454,7 +2492,7 @@ class SwapInterestDeal(Deal):
         F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Receive_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
-], 'Receive')]
+    ], 'Receive')]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -2553,10 +2591,21 @@ class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
     quoted = 'Cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
-        F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']), F('FixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Fixed_Amount', 'Float', sized=True), F('Discounted', 'Text', values=['Yes', 'No']), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows',
+          json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']),
+                                             F('FixedItems', 'Table', default='null', description='Items',
+                                               json_name='Items', row=Row(
+                                                     [F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True),
+                                                      F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'),
+                                                      F('Accrual_End_Date', 'Date'),
+                                                      F('Accrual_Day_Count', 'Text', values=DAY_COUNTS),
+                                                      F('Accrual_Year_Fraction', 'Float'),
+                                                      F('Fixed_Amount', 'Float', sized=True),
+                                                      F('Discounted', 'Text', values=['Yes', 'No']),
+                                                      F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Settlement_Amount', 'Float', default=0.0, sized=True),
         F('Calendars', 'Text', default='', convention=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Repo_Rate': ['InterestRate'],
@@ -2639,8 +2688,10 @@ class CFFixedListDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
-        F('Fixed_Simple_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('FixedSimpleItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
-])]
+        F('Fixed_Simple_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
+          sub_fields=[F('FixedSimpleItems', 'Table', default='null', description='Items', json_name='Items',
+                        row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate']}
@@ -2693,7 +2744,7 @@ class FixedCashflowDeal(Deal):
         F('Calendars', 'Text', default='', convention=True),
         F('Amount', 'Float', default=0.0, sized=True),
         F('Payment_Date', 'Date', default='', settles=Cash('Currency', 'Amount'))
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate']}
@@ -2750,10 +2801,36 @@ class CFFloatingInterestListDeal(Deal):
     observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Rate_Adjustment_Method', 'Text', default='None', convention=True, values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
+        F('Rate_Adjustment_Method', 'Text', default='None', convention=True,
+          values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
         F('Forecast_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Settlement_Amount', 'Float', default=0.0),
-        F('Float_Cashflows', 'Container', default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row([F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'), F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])), F('Compounding_Method', 'Text', default='None', values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']), F('Averaging_Method', 'Text', default='Average_Rate', values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']), F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'), F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+        F('Float_Cashflows', 'Container',
+          default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []},
+          description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row(
+                [F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'),
+                 F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])),
+                                                                      F('Compounding_Method', 'Text', default='None',
+                                                                        values=['None', 'OIS', 'Include_Margin', 'Flat',
+                                                                                'Exclude_Margin']),
+                                                                      F('Averaging_Method', 'Text',
+                                                                        default='Average_Rate',
+                                                                        values=['Average_Interest', 'Average_Rate',
+                                                                                'Pre_Aggregation', 'Post_Aggregation']),
+                                                                      F('FloatItems', 'Table', default='null',
+                                                                        description='Items', json_name='Items', row=Row(
+                                                                              [F('Payment_Date', 'Date'),
+                                                                               F('Notional', 'Float', sized=True),
+                                                                               F('Accrual_Start_Date', 'Date'),
+                                                                               F('Accrual_End_Date', 'Date'),
+                                                                               F('Accrual_Day_Count', 'Text',
+                                                                                 values=DAY_COUNTS),
+                                                                               F('Accrual_Year_Fraction', 'Float'),
+                                                                               F('Resets', 'Table'),
+                                                                               F('Margin', 'Basis'),
+                                                                               F('Fixed_Amount', 'Float', sized=True),
+                                                                               F('FX_Reset_Date', 'Date'),
+                                                                               F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Rate_Calendars', 'Text', default='', convention=True),
@@ -2761,7 +2838,7 @@ class CFFloatingInterestListDeal(Deal):
         F('Rate_Sticky_Month_End', 'Text', default='Yes', convention=True, values=['Yes', 'No']),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Rate_Offset', 'Integer', default=0, convention=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -2879,11 +2956,25 @@ class YieldInflationCashflowListDeal(Deal):
     vernacular = 'inflation-linked bond, linker, inflation cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default=''),
-        F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1, 'Days_In_Period': 0}, sub_fields=[F('Months_Lag', 'Integer', default=1), F('Quarters_Lag', 'Integer', default=0), F('Quarter_Reference_Month', 'Integer', default=1), F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type', values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'), F('Reference_Day', 'Integer', default=1), F('Days_In_Period', 'Integer', default=0)]),
-        F('Real_Yield_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'), F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'), F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'), F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'), F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
+        F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1,
+                                                   'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1,
+                                                   'Days_In_Period': 0},
+          sub_fields=[F('Months_Lag', 'Integer', default=1), F('Quarters_Lag', 'Integer', default=0),
+                      F('Quarter_Reference_Month', 'Integer', default=1),
+                      F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type',
+                        values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'),
+                      F('Reference_Day', 'Integer', default=1), F('Days_In_Period', 'Integer', default=0)]),
+        F('Real_Yield_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
+          sub_fields=[F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
+              [F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'),
+               F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'),
+               F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'),
+               F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'),
+               F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'),
+               F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
         F('Calendars', 'Text', default='', convention=True),
         F('Is_Forward_Deal', 'Text', default='No', convention=True, values=['Yes', 'No'])
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -3013,12 +3104,14 @@ class CapDeal(Deal):
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
-        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
+          tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', convention=True, values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
+        F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
+          values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -3026,13 +3119,14 @@ class CapDeal(Deal):
         F('Cap_Rate', 'Float', default=0.0),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -3134,26 +3228,29 @@ class FloorDeal(Deal):
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
-        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
+          tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Floor_Rate', 'Float', default=0.0),
         F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', convention=True, values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
+        F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
+          values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -3247,7 +3344,8 @@ class SwaptionDeal(Deal):
     vernacular = 'swaption, payer swaption, receiver swaption'
     fields = [ADMIN, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0, convention=True),
-        F('Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
+          tag='DateList'),
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -3256,7 +3354,8 @@ class SwaptionDeal(Deal):
         F('Option_Expiry_Date', 'Date', default=''),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
         F('Settlement_Date', 'Date', default=''),
-        F('Margin_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
+        F('Margin_Schedule', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Principal', 'Float', default=0.0, sized=True),
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Swap_Maturity_Date', 'Date', default=''),
@@ -3268,8 +3367,9 @@ class SwaptionDeal(Deal):
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Index_Calendars', 'Text', default='', convention=True)
-]), own('SwaptionDeal', [
-        F('Pay_Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+    ]), own('SwaptionDeal', [
+        F('Pay_Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Pay_First_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Pay_Payment_Offset', 'Integer', default=0, convention=True),
@@ -3278,17 +3378,18 @@ class SwaptionDeal(Deal):
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Pay_Calendars', 'Text', default='', convention=True)
-], 'Pay'), own('SwaptionDeal', [
+    ], 'Pay'), own('SwaptionDeal', [
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
-        F('Receive_Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Receive_Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
         F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Receive_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Receive_Calendars', 'Text', default='', convention=True),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
-], 'Receive')]
+    ], 'Receive')]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -3353,10 +3454,12 @@ class SwaptionDeal(Deal):
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
         self.add_reval_dates({self.field['Option_Expiry_Date']}, self.field['Currency'])
-        self.paydates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
-                                                self.field['Pay_Frequency'])
-        self.recdates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'], self.field['Swap_Effective_Date'],
-                                                self.field['Receive_Frequency'])
+        self.paydates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'],
+                                                      self.field['Swap_Effective_Date'],
+                                                      self.field['Pay_Frequency'])
+        self.recdates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'],
+                                                      self.field['Swap_Effective_Date'],
+                                                      self.field['Receive_Frequency'])
 
         if self.field['Settlement_Style'] == 'Physical':
             self.add_reval_dates(self.paydates, self.field['Currency'])
@@ -3582,8 +3685,9 @@ class FXDiscreteExplicitAsianOption(Deal):
           description=FX_AXIS.format('Strike price')),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
-])]
+        F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -3616,7 +3720,7 @@ class FXDiscreteExplicitAsianOption(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
@@ -3668,11 +3772,13 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
         F('Strike_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Strike price')),
         F('Strike_Multiplier', 'Float', default=1.0, convention=True),
-        F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
+        F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1',
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Sampling_Multiplier_1', 'Float', default=1.0, convention=True),
-        F('Sampling_Data_2', 'Table', default='null', description='Sampling_Data_2', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
+        F('Sampling_Data_2', 'Table', default='null', description='Sampling_Data_2',
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Sampling_Multiplier_2', 'Float', default=1.0, convention=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -3705,7 +3811,7 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
             'Alpha_0': self.field.get('Strike_Multiplier', 1.0),
@@ -3750,9 +3856,10 @@ class EquityDiscreteExplicitAsianOption(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Sampling_Data', 'Table', default='null', description='Sampling_Data', row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
+        F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -3804,7 +3911,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
             'Volatility': get_vol_factor('EquityPriceVol',
-                field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Samples': utils.TensorResets.from_observations(
                 base_date, time_grid, self.field['Sampling_Data'], weighted=True),
             'Strike': self.field['Strike_Price'],
@@ -3845,11 +3952,12 @@ class EquityBarrierBinaryOption(Deal):
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
         F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-        F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
+        F('Barrier_Type', 'Text', default='Down_And_In',
+          values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
         F('Settlement_Date', 'Date', default='',
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
-])]
+    ])]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -3861,15 +3969,15 @@ class EquityBarrierBinaryOption(Deal):
                      'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
-                     'A discrete barrier binary (digital) option priced using the same One-Step Survival (OSS)',
-                     'Monte Carlo approach as `EquityBarrierOption`, with `isdigital=True` so the terminal payoff',
-                     'is a fixed cash amount rather than a vanilla call/put payoff.',
-                     'See `EquityBarrierOption` for the full OSS methodology, the `Barrier_Dates` `Observed`',
-                     'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
-                     'deals - `LogVar2FJ`, which walks its own internal step and is exact where the',
-                     'observation dates lie on that grid. A knocked-in binary compiles as the plain',
-                     '`EquityBinaryOption` it now is.'
-                     ])
+        'A discrete barrier binary (digital) option priced using the same One-Step Survival (OSS)',
+        'Monte Carlo approach as `EquityBarrierOption`, with `isdigital=True` so the terminal payoff',
+        'is a fixed cash amount rather than a vanilla call/put payoff.',
+        'See `EquityBarrierOption` for the full OSS methodology, the `Barrier_Dates` `Observed`',
+        'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
+        'deals - `LogVar2FJ`, which walks its own internal step and is exact where the',
+        'observation dates lie on that grid. A knocked-in binary compiles as the plain',
+        '`EquityBinaryOption` it now is.'
+    ])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierBinaryOption, self).__init__(params, valuation_options)
@@ -3916,7 +4024,7 @@ class EquityBarrierBinaryOption(Deal):
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_vol_factor('EquityPriceVol',
-                field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Observation_Dates': utils.TensorResets.from_observations(
                 base_date, time_grid, [[x, 0] for x in all_dates]),
             'Barrier_Dates': [1 if x in ab else -1 for x in all_dates],
@@ -3974,7 +4082,7 @@ class EquityOptionDeal(Deal):
         F('Units', 'Float', default=0.0, sized=True),
         F('Forward_Price_Date', 'Date', default='', convention=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4040,8 +4148,8 @@ class EquityOptionDeal(Deal):
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_vol_factor('EquityPriceVol',
-                field['Equity_Volatility'], static_offsets,
-                stochastic_offsets, all_tenors) if field['Equity_Volatility'] else None,
+                                         field['Equity_Volatility'], static_offsets,
+                                         stochastic_offsets, all_tenors) if field['Equity_Volatility'] else None,
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field.get('Buy_Sell', 'Buy') == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field.get('Option_Type', 'Call') == 'Call' else -1.0,
@@ -4079,7 +4187,6 @@ class EquityOptionDeal(Deal):
 
 
 class EquityBinaryOption(EquityOptionDeal):
-
     vernacular = 'equity digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes('Equity', 'EquityPrice', expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
@@ -4087,7 +4194,7 @@ class EquityBinaryOption(EquityOptionDeal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
-])]
+    ])]
 
     documentation = ('Fx And Equity', [
         'A vanilla option described [here](definitions.md#european-options)',
@@ -4366,7 +4473,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         all_dates = reduce(set.union, [
             set(coupon_dates), ab, set([x[0] for x in self.field.get('Autocall_Floating', [])])])
         oss_windows = barriers_on_coupons and ends is not None and (
-            one_each or spot_model != 'None')
+                one_each or spot_model != 'None')
 
         if self.field['Barrier_Observation'] == 'Average':
             # AN `Average` BARRIER READS ITS COUPON'S WINDOW, which opens after that coupon's
@@ -4396,7 +4503,7 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_vol_factor('EquityPriceVol',
-                field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Barrier': self.field.get('Barrier', 0.0) * self.field['Strike_Price'],
@@ -4432,14 +4539,17 @@ class QEDI_CustomAutoCallSwap(Deal):
                 logging.error('AutoCall has past fixing set to 0 - please map the correct fixing')
 
             if min(tl.values()) <= 0.0:
-                logging.error('AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
-                tl = {k:v if v else 1.0 for k,v in tl.items()}
+                logging.error(
+                    'AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
+                tl = {k: v if v else 1.0 for k, v in tl.items()}
 
             field_index.update({
                 'Fixings': utils.TensorResets.from_observations(
                     base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
-                'Price_Fixing': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
-                'Coupon_Fixing': utils.TensorResets.from_observations(base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
+                'Price_Fixing': utils.TensorResets.from_observations(
+                    base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
+                'Coupon_Fixing': utils.TensorResets.from_observations(
+                    base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
                 'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
                 'Coupon_Windows': ends,
                 # every fixing carries the trigger level of the coupon whose window it is in, which
@@ -4585,14 +4695,11 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
         return field_index
 
 
-
-
-
 class EquityOneTouchOption(Deal):
     vernacular = 'equity one-touch, one touch, touch option'
     fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-], role='Timing')]
+    ], role='Timing')]
 
     #: paid where the barrier WAS touched - a no-touch pays where it never was
     no_touch = False
@@ -4682,8 +4789,8 @@ class EquityOneTouchOption(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors),
-            'Volatility': get_vol_factor('EquityPriceVol',
-                field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Volatility': get_vol_factor(
+                'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
             'Expiry': (self.field['Expiry_Date'] - base_date).days}
 
@@ -4755,10 +4862,11 @@ class EquityBarrierOption(Deal):
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
+        F('Barrier_Type', 'Text', default='Down_And_In',
+          values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
-])]
+    ])]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -4770,89 +4878,89 @@ class EquityBarrierOption(Deal):
                      'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
-                     'A path dependent barrier option priced using the One-Step Survival (OSS) Monte Carlo',
-                     'technique. See [One-Step Survival Methodology](../theory/mc_simulation.md) for the',
-                     'general OSS theory.',
-                     '',
-                     'The barrier is observed at a scheduled set of fixing dates. Between observation dates the',
-                     'spot evolves freely; only at barrier dates does OSS truncation apply.',
-                     '',
-                     '**Observed history**',
-                     '',
-                     'A `Barrier_Dates` row is `[date, Observed]`, the close that date fixed at, blank until it',
-                     'is known. A row on or before the base date with a blank `Observed` is REFUSED: the absence',
-                     'of a fixing is not the absence of a hit. Any observed close crossing the level resolves the',
-                     'deal at compile - a knocked-in option compiles as the plain `EquityOptionDeal` it now is,',
-                     'and a knocked-out one as the `FixedCashflowDeal` paying its rebate on the crossing date.',
-                     'There is no hit flag to declare; the state is derived from the rows.',
-                     '',
-                     '**Knock-Out**',
-                     '',
-                     'At each barrier observation date $t_j$, the weight $(1-p_j)L_{j-1}$ crosses the barrier',
-                     'and pays the cash rebate $R$ discounted to $t_j$. Surviving paths contribute the vanilla',
-                     'payoff at expiry:',
-                     '',
-                     '$$V_{\\text{KO}} = \\sum_{j \\in \\mathcal{B}} (1-p_j)\\,L_{j-1}\\,R\\,D_j + L_T\\,g(S_T)\\,D_T$$',
-                     '',
-                     '**Knock-In** (via in-out parity)',
-                     '',
-                     'The exact identity $V_{\\text{KI}} = V_{\\text{vanilla}} - V_{\\text{KO,pure}} + R\\,E[L_T D_T]$',
-                     'is used. $V_{\\text{vanilla}}$ is the declared model\'s closed form, evaluated at the start',
-                     'of each MTM block and constant across inner paths; $V_{\\text{KO,pure}}$ is the',
-                     'survival-weighted MC estimate. The per-path estimator is therefore:',
-                     '',
-                     '$$P = V_{\\text{vanilla}} - L_T\\,D_T\\bigl(g(S_T) - R\\bigr)$$',
-                     '',
-                     'The sample mean is clamped to $\\geq 0$ to enforce no-arbitrage.',
-                     '',
-                     '**CVA / XVA Path-State Tracking**',
-                     '',
-                     'In the outer CVA simulation, each outer scenario spot is compared against the barrier at',
-                     'every past observation date to build a per-row, per-scenario hit mask. Once a scenario has',
-                     'hit the barrier, subsequent MTM values are replaced analytically:',
-                     '',
-                     '| Barrier Type | Hit MTM |',
-                     '|---|---|',
-                     '| Knock-Out | 0 |',
-                     '| Knock-In | vanilla at the current outer spot, in the declared model |',
-                     '',
-                     'That leg and the in-out-parity leg above value the *same* European on the *same* state, so',
-                     'they take the same model and the same forward — one `total_log_forward` over the remaining',
-                     'fixing strip. Two spellings of that forward shipped once and marked the option at **+1432%**',
-                     'of its value on every already-hit row; the leg is now unable to disagree with its sibling',
-                     'rather than merely tested against it.',
-                     '',
-                     'When *all* outer scenarios have resolved, the inner OSS simulation is skipped entirely and',
-                     'that closed form is the whole reported PV.',
-                     '',
-                     '**Valuation options** (set in the Valuation Configuration section, per deal type)',
-                     '',
-                     '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
-                     'or `LogVar2FJ`, which drives the OSS simulation and walks its own INTERNAL step,',
-                     'giving each observation interval one Gaussian block law - exact where the dates lie on',
-                     'that grid, as a daily-monitored barrier does - and prices the barrier-hit and',
-                     'in-out-parity legs as its conditional Black over that walk rather than Black-Scholes.',
-                     'Parameters are resolved by naming convention from the',
-                     '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-                     '`LogVar2FJModelParameters.SPX`). Switching the model on without that factor in the',
-                     'market data is a loud skip, never a silent lognormal fallback. Requires a',
-                     'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
-                     'one alongside a non-`None` SpotModel is the same loud skip.',
-                     '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not',
-                     'to the deal - a Valuation Configuration declaring one that differs from the',
-                     'fitted block is refused by name.',
-                     '',
-                     '**Payoff_Type Compo**',
-                     '',
-                     'A composite payoff is written on $S\\cdot X$, so that product is what is priced AND',
-                     'monitored on both arms: spot at the fx cross, forward at the outright fx forward, carry',
-                     'the local one plus the fx forward\'s own, vol the composition of the two legs, and',
-                     'strike and barrier the payoff-currency levels on $S\\cdot X$ they are declared as. On the',
-                     'continuously monitored arm the crossing test, the Brownian bridge and the',
-                     'Broadie-Glasserman-Kou shift all read that composite spot and the local smile is read',
-                     'at the translated strike $K/F_X(T)$, the local strike a payoff-currency strike on',
-                     '$S\\cdot X$ is worth; the bridge composes the two factors\' published variance rates',
-                     'with the implied correlation and observes endpoints where either publishes none.'])
+        'A path dependent barrier option priced using the One-Step Survival (OSS) Monte Carlo',
+        'technique. See [One-Step Survival Methodology](../theory/mc_simulation.md) for the',
+        'general OSS theory.',
+        '',
+        'The barrier is observed at a scheduled set of fixing dates. Between observation dates the',
+        'spot evolves freely; only at barrier dates does OSS truncation apply.',
+        '',
+        '**Observed history**',
+        '',
+        'A `Barrier_Dates` row is `[date, Observed]`, the close that date fixed at, blank until it',
+        'is known. A row on or before the base date with a blank `Observed` is REFUSED: the absence',
+        'of a fixing is not the absence of a hit. Any observed close crossing the level resolves the',
+        'deal at compile - a knocked-in option compiles as the plain `EquityOptionDeal` it now is,',
+        'and a knocked-out one as the `FixedCashflowDeal` paying its rebate on the crossing date.',
+        'There is no hit flag to declare; the state is derived from the rows.',
+        '',
+        '**Knock-Out**',
+        '',
+        'At each barrier observation date $t_j$, the weight $(1-p_j)L_{j-1}$ crosses the barrier',
+        'and pays the cash rebate $R$ discounted to $t_j$. Surviving paths contribute the vanilla',
+        'payoff at expiry:',
+        '',
+        '$$V_{\\text{KO}} = \\sum_{j \\in \\mathcal{B}} (1-p_j)\\,L_{j-1}\\,R\\,D_j + L_T\\,g(S_T)\\,D_T$$',
+        '',
+        '**Knock-In** (via in-out parity)',
+        '',
+        'The exact identity $V_{\\text{KI}} = V_{\\text{vanilla}} - V_{\\text{KO,pure}} + R\\,E[L_T D_T]$',
+        'is used. $V_{\\text{vanilla}}$ is the declared model\'s closed form, evaluated at the start',
+        'of each MTM block and constant across inner paths; $V_{\\text{KO,pure}}$ is the',
+        'survival-weighted MC estimate. The per-path estimator is therefore:',
+        '',
+        '$$P = V_{\\text{vanilla}} - L_T\\,D_T\\bigl(g(S_T) - R\\bigr)$$',
+        '',
+        'The sample mean is clamped to $\\geq 0$ to enforce no-arbitrage.',
+        '',
+        '**CVA / XVA Path-State Tracking**',
+        '',
+        'In the outer CVA simulation, each outer scenario spot is compared against the barrier at',
+        'every past observation date to build a per-row, per-scenario hit mask. Once a scenario has',
+        'hit the barrier, subsequent MTM values are replaced analytically:',
+        '',
+        '| Barrier Type | Hit MTM |',
+        '|---|---|',
+        '| Knock-Out | 0 |',
+        '| Knock-In | vanilla at the current outer spot, in the declared model |',
+        '',
+        'That leg and the in-out-parity leg above value the *same* European on the *same* state, so',
+        'they take the same model and the same forward — one `total_log_forward` over the remaining',
+        'fixing strip. Two spellings of that forward shipped once and marked the option at **+1432%**',
+        'of its value on every already-hit row; the leg is now unable to disagree with its sibling',
+        'rather than merely tested against it.',
+        '',
+        'When *all* outer scenarios have resolved, the inner OSS simulation is skipped entirely and',
+        'that closed form is the whole reported PV.',
+        '',
+        '**Valuation options** (set in the Valuation Configuration section, per deal type)',
+        '',
+        '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
+        'or `LogVar2FJ`, which drives the OSS simulation and walks its own INTERNAL step,',
+        'giving each observation interval one Gaussian block law - exact where the dates lie on',
+        'that grid, as a daily-monitored barrier does - and prices the barrier-hit and',
+        'in-out-parity legs as its conditional Black over that walk rather than Black-Scholes.',
+        'Parameters are resolved by naming convention from the',
+        '`<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
+        '`LogVar2FJModelParameters.SPX`). Switching the model on without that factor in the',
+        'market data is a loud skip, never a silent lognormal fallback. Requires a',
+        'single-currency payoff: a Quanto/Compo carry is a lognormal quantity, so declaring',
+        'one alongside a non-`None` SpotModel is the same loud skip.',
+        '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not',
+        'to the deal - a Valuation Configuration declaring one that differs from the',
+        'fitted block is refused by name.',
+        '',
+        '**Payoff_Type Compo**',
+        '',
+        'A composite payoff is written on $S\\cdot X$, so that product is what is priced AND',
+        'monitored on both arms: spot at the fx cross, forward at the outright fx forward, carry',
+        'the local one plus the fx forward\'s own, vol the composition of the two legs, and',
+        'strike and barrier the payoff-currency levels on $S\\cdot X$ they are declared as. On the',
+        'continuously monitored arm the crossing test, the Brownian bridge and the',
+        'Broadie-Glasserman-Kou shift all read that composite spot and the local smile is read',
+        'at the translated strike $K/F_X(T)$, the local strike a payoff-currency strike on',
+        '$S\\cdot X$ is worth; the bridge composes the two factors\' published variance rates',
+        'with the implied correlation and observes endpoints where either publishes none.'])
 
     def __init__(self, params, valuation_options):
         super(EquityBarrierOption, self).__init__(params, valuation_options)
@@ -4923,7 +5031,8 @@ class EquityBarrierOption(Deal):
                        'Dividend_Yield': get_dividend_rate_factor(
                            field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
                        'Volatility': get_vol_factor('EquityPriceVol',
-                           field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                                    field['Equity_Volatility'], static_offsets, stochastic_offsets,
+                                                    all_tenors),
                        'Expiry': (self.field['Expiry_Date'] - base_date).days,
                        'Strike_Price': self.field['Strike_Price'],
                        'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
@@ -4993,6 +5102,95 @@ class EquityBarrierOption(Deal):
         return mtm
 
 
+class CommodityDigitalOption(Deal):
+    vernacular = 'commodity digital, metal digital'
+    fields = [ADMIN, own('CommodityForwardDeal', [
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+        F('Forward_Date', 'Date', default='', convention=True),
+        F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
+        F('Commodity', 'Text', default='', obj='Tuple'),
+        F('Units', 'Float', default=0.0, sized=True),
+        F('Currency', 'Text', default=''),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Reference_Type', 'Text', default='', obj='Tuple')
+    ])]
+
+    factor_fields = {'Currency': ['FxRate'],
+                     'Discount_Rate': ['InterestRate'],
+                     'Sampling_Type': ['ForwardPriceSample'],
+                     'FX_Sampling_Type': ['ForwardPriceSample'],
+                     'Reference_Type': ['ReferencePrice'],
+                     'Reference_Volatility': ['CommodityPriceVol'],
+                     'Payoff_Currency': ['FxRate']}
+
+    documentation = ('Energy',
+                     [
+                        'This deal represents a digital option on a commodity forward. ',
+                        'The payoff depends on whether the underlying commodity forward price ',
+                        'exceeds a certain strike price at maturity.'
+                      ])
+
+    def __init__(self, params, valuation_options):
+        super(CommodityDigitalOption, self).__init__(params, valuation_options)
+
+    def reset(self, calendars):
+        super(CommodityDigitalOption, self).reset()
+        self.add_reval_dates({self.field['Maturity_Date']}, self.field['Currency'])
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        field = {
+                    'Currency': utils.check_rate_name(self.field['Currency']),
+                    'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
+                    'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])
+                }
+        
+        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
+            field['Currency']
+        field['Payoff_Currency'] = utils.check_rate_name(self.field['Payoff_Currency']) if self.field[
+            'Payoff_Currency'] else field['Currency']
+
+        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
+            field['Currency']
+
+        field_index = {'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
+                       'Discount': get_interest_factor(
+                           field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+                       'Expiry': (self.field['Maturity_Date'] - base_date).days}
+
+        reference_factor, forward_factor = get_reference_factor_objects(field['Reference_Type'], all_factors)
+        field_index['base_index'] = (base_date - utils.excel_offset).days
+        field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
+            field['Currency'], static_offsets, stochastic_offsets, all_tenors,
+            all_factors, reference_factor, forward_factor, base_date)
+
+        return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        factor_dep = deal_data.Factor_dep
+        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+        discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+        forward_curve = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], deal_time, shared)
+        remaining_tenor = np.array([max(x[utils.TIME_GRID_MTM], factor_dep['Forward_Date']) for x in deal_time])
+        spot_date_index = (factor_dep['base_index'] + remaining_tenor).reshape(-1, 1)
+        energy_spot = forward_curve.gather_weighted_curve(shared, spot_date_index, multiply_by_time=False)
+        T_t = factor_dep['Expiry'] - remaining_tenor.reshape(-1, 1)
+        curve_grid = utils.calc_time_grid_curve_rate(factor_dep['Commodity_Zero'], deal_time, shared)
+        forward = torch.squeeze(energy_spot * torch.exp(curve_grid.gather_weighted_curve(shared, T_t)), dim=1)
+        fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
+        nominal = (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * self.field['Units']
+
+        discount_rates = torch.squeeze(utils.calc_discount_rate(
+            discount, (factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1), shared),
+            dim=1)
+
+        cash = nominal * forward
+
+        pricing.cash_settle(shared, self.field['Currency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
+
+        return cash * discount_rates * fx_rep
+    
+
 class CommodityForwardDeal(Deal):
     vernacular = 'commodity forward, metal forward'
     fields = [ADMIN, own('CommodityForwardDeal', [
@@ -5004,7 +5202,7 @@ class CommodityForwardDeal(Deal):
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Reference_Type', 'Text', default='', obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Commodity': ['CommodityPrice'],
@@ -5102,7 +5300,7 @@ class CommodityFutureDeal(Deal):
         F('Currency', 'Text', default=''),
         F('Units', 'Float', default=1.0, convention=True, sized=True,
           description='The number of contracts, one when omitted')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Commodity': ['CommodityPrice'],
@@ -5187,7 +5385,7 @@ class CommodityAveragePriceSwapDeal(Deal):
         F('Settlement_Date', 'Date', default=REQUIRED, settles=Cash('Currency')),
         F('Sampling_Data', 'Table', default=REQUIRED, description='Sampling_Data',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Commodity': ['CommodityPrice'],
@@ -5312,7 +5510,7 @@ class EquityForwardDeal(Deal):
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Payoff_Currency', 'Text', default='', convention=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Equity': ['EquityPrice', 'DividendRate'],
@@ -5376,7 +5574,7 @@ class CashAccountDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Investment_Horizon', 'Date', default=''),
         F('Units', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate']}
@@ -5425,7 +5623,7 @@ class EquityDeal(Deal):
         F('Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Units', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Equity': ['EquityPrice']}
@@ -5473,10 +5671,16 @@ class EquitySwapletListDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
-        F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type', values=['Principal', 'Shares']),
-        F('Equity_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows', sub_fields=[F('EquityItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'), F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'), F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'), F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
+        F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type',
+          values=['Principal', 'Shares']),
+        F('Equity_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
+          sub_fields=[F('EquityItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
+              [F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'),
+               F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
+               F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
+               F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
         F('Equity_Volatility', 'Text', default='', obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Equity_Currency': ['FxRate'],
@@ -5524,7 +5728,7 @@ class EquitySwapletListDeal(Deal):
             field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors)
         field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
-            self.field['Cashflows'], current_spot, self.field.get('Settlement_Days',0) * bus_day_offset)
+            self.field['Cashflows'], current_spot, self.field.get('Settlement_Days', 0) * bus_day_offset)
 
         if self.isQuanto:
             logging.warning("Quanto deal. TODO!!!!!!!")
@@ -5539,14 +5743,18 @@ class EquitySwapLeg(Deal):
     vernacular = 'equity swap leg, total return leg'
     fields = [ADMIN, own('EquitySwapLeg', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Adjustment_Method', 'Text', default='None', convention=True, description='Rate Adjustment Method', values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding'], json_name='Rate_Adjustment_Method'),
+        F('Adjustment_Method', 'Text', default='None', convention=True, description='Rate Adjustment Method',
+          values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding'],
+          json_name='Rate_Adjustment_Method'),
         F('Dividend_Timing', 'Text', default='Terminal', convention=True, values=['Continuous', 'Terminal']),
         F('Equity', 'Text', default='', obj='Tuple'),
         F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-        F('Equity_Known_Prices', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Asset Price', 'Float'), F('FX Rate', 'Float')]), tag='DateEqualList'),
+        F('Equity_Known_Prices', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Asset Price', 'Float'), F('FX Rate', 'Float')]), tag='DateEqualList'),
         F('Effective_Date', 'Date', default=''),
         F('First_Coupon_Date', 'Date', default='', convention=True),
-        F('Known_Dividends', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
+        F('Known_Dividends', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateEqualList'),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Calendars', 'Text', default='', convention=True,
           description='The calendar the payment offset is rolled on; blank is the leg\'s own '
@@ -5567,7 +5775,7 @@ class EquitySwapLeg(Deal):
         F('Reset_Calendars', 'Text', default='', convention=True),
         F('Reset_Offset', 'Integer', default=0, convention=True),
         F('Equity_Currency', 'Text', default='')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -5672,7 +5880,7 @@ class EquitySwapLeg(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors)
             field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
                 base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
-                field['cashflow'], current_price, self.field.get('Settlement_Days',0) * bus_day)
+                field['cashflow'], current_price, self.field.get('Settlement_Days', 0) * bus_day)
 
         return field_index
 
@@ -5680,14 +5888,11 @@ class EquitySwapLeg(Deal):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)
 
 
-
-
-
 class FXOneTouchOption(Deal):
     vernacular = 'FX one-touch, one touch, touch option'
     fields = [ADMIN, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-], role='Timing')]
+    ], role='Timing')]
 
     #: paid where the barrier WAS touched - a no-touch pays where it never was
     no_touch = False
@@ -5765,7 +5970,7 @@ class FXOneTouchOption(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Underlying': get_fx_barrier_underlying(field, stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
@@ -5834,12 +6039,13 @@ class FXBarrierOption(Deal):
         F('Underlying_Currency', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
+        F('Barrier_Type', 'Text', default='Down_And_In',
+          values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Expiry_Date', 'Date', default=''),
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default='')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -5894,7 +6100,7 @@ class FXBarrierOption(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Underlying': get_fx_barrier_underlying(field, stochastic_offsets),
             'Barrier_Monitoring': 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
@@ -5958,12 +6164,13 @@ class FXPartialTimeBarrierOption(Deal):
           description=FX_AXIS.format('Strike price')),
         F('Barrier_Price', 'Float', default=0,
           description=FX_AXIS.format('Barrier price')),
-        F('Barrier_Type', 'Text', default='Down_And_In', values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
+        F('Barrier_Type', 'Text', default='Down_And_In',
+          values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_At_Start', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Barrier_Limit_Date', 'Date', default=''),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -6015,7 +6222,7 @@ class FXPartialTimeBarrierOption(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Monitoring': 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
             'Barrier_Underlying': get_fx_barrier_underlying(field, stochastic_offsets),
@@ -6090,9 +6297,10 @@ class FXTARFOptionDeal(Deal):
         # NO `tag`: a tag names the container the WIRE form uses, and this table is read by
         # iterating rows. Tagged `DateEqualList`, the decoder hands over a `utils.DateEqualList`,
         # which is not iterable.
-        F('TARF_ExpiryDates', 'Table', default='null', row=Row([F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
+        F('TARF_ExpiryDates', 'Table', default='null', row=Row(
+            [F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
         F('Barrier', 'Float', default=0)
-])]
+    ])]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -6153,7 +6361,7 @@ class FXTARFOptionDeal(Deal):
         super(FXTARFOptionDeal, self).reset()
         # TARF dates are Fixing, then settlement
         self.add_reval_dates(
-           set([x[1] for x in self.field['TARF_ExpiryDates']]), self.field['Currency'])
+            set([x[1] for x in self.field['TARF_ExpiryDates']]), self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -6201,14 +6409,15 @@ class FXTARFOptionDeal(Deal):
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Volatility': get_vol_factor(
+                'FXVol', field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
-            'Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf.get(x,-1)] for x in all_dates]),
+            'Fixings': utils.TensorResets.from_observations(
+                base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
             'Price_Fixings': utils.TensorResets.from_observations(base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
-            'Settlement': np.array([(x-base_date).days for x in sd_dates]),
+            'Settlement': np.array([(x - base_date).days for x in sd_dates]),
             'Settled_Fixings': [x[-1] for x in schedule if x[1] < base_date],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
@@ -6271,7 +6480,7 @@ class FXAccumulatorOptionDeal(Deal):
         # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')]))
-])]
+    ])]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -6368,7 +6577,7 @@ class FXAccumulatorOptionDeal(Deal):
         if barrier <= 0.0:
             raise ValueError('{}: Barrier_Price must be positive (got {}); an accumulator with no '
                              'knock-out is authored with the barrier far out of the money'.format(
-                                 self.field.get('Reference', 'FXAccumulatorOptionDeal'), barrier))
+                self.field.get('Reference', 'FXAccumulatorOptionDeal'), barrier))
         settled_breach = any(
             (x[-1] >= barrier if barrier_up else x[-1] <= barrier)
             for x in schedule if x[1] < base_date and x[-1] is not None)
@@ -6385,7 +6594,7 @@ class FXAccumulatorOptionDeal(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': (settlement_dates[-1] - base_date).days,
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
@@ -6461,7 +6670,7 @@ class FXExtendableForwardDeal(Deal):
         F('Extendable_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float'),
             F('Extended', 'Text')]))
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -6613,7 +6822,7 @@ class FXExtendableForwardDeal(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': (settlement_dates[-1] - base_date).days,
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': float(self.field['Strike_Price']),
@@ -6667,7 +6876,7 @@ class FXOptionDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Currency', 'Text', default='')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Underlying_Currency': ['FxRate'],
@@ -6688,7 +6897,6 @@ class FXOptionDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
                  'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
@@ -6707,7 +6915,7 @@ class FXOptionDeal(Deal):
             'Underlying_Currency': get_fx_and_zero_rate_factor(
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
-                field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': expiry,
             'Settlement': settlement,
             'Forward_Settlement': forward_settlement,
@@ -6759,7 +6967,7 @@ class FXBinaryOption(FXOptionDeal):
         F('FX_Volatility', 'Text', default='', obj='Tuple'),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Currency', 'Text', default='')
-])]
+    ])]
 
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX binary (digital) option described'
@@ -6826,15 +7034,17 @@ class CreditNthToDefault(Deal):
         F('Defaults_So_Far', 'Integer', default=0, convention=True),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Principal', 'Float', default=0.0, sized=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', 'ACT_ACT_ICMA'],
+        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True,
+          values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', 'ACT_ACT_ICMA'],
           description='Accrual day count, ACT family only'),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('CDS_Index', 'Text', default='', obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
-                     'CDS_Index':['SurvivalProb'],
+                     'CDS_Index': ['SurvivalProb'],
                      'Names': ['SurvivalProb']}
 
     documentation = (
@@ -6921,7 +7131,6 @@ class CreditNthToDefault(Deal):
         return pricing.pv_credit_step_down_leg(shared, time_grid, deal_data)
 
 
-
 class DealDefaultSwap(Deal):
     vernacular = 'credit default swap, CDS, single-name CDS'
     fields = [ADMIN, own('DealDefaultSwap', [
@@ -6932,7 +7141,8 @@ class DealDefaultSwap(Deal):
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Name', 'Text', default=''),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Amortisation', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+        F('Amortisation', 'Table', default='null', convention=True,
+          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Currency', 'Text', default=''),
@@ -6943,7 +7153,7 @@ class DealDefaultSwap(Deal):
         F('Digital_Recovery', 'Float', default=0.0, convention=True, obj='Percent'),
         F('Accrue_Fee', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Principal', 'Float', default=0.0, sized=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -7093,7 +7303,7 @@ class FRADeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Borrower_Lender', 'Text', default='Borrower', values=['Borrower', 'Lender'], side=True),
         F('FRA_Rate', 'Float', default=0.0)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -7186,12 +7396,17 @@ class FloatingEnergyDeal(Deal):
         F('FX_Sampling_Type', 'Text', default='', obj='Tuple'),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
-        F('Energy_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments', sub_fields=[F('EnergyItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Period_Start', 'Date'), F('Period_End', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Basis', 'Float'), F('Price_Multiplier', 'Float'), F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'), F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
+        F('Energy_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
+          sub_fields=[F('EnergyItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
+              [F('Payment_Date', 'Date'), F('Period_Start', 'Date'), F('Period_End', 'Date'),
+               F('Volume', 'Float', sized=True), F('Fixed_Basis', 'Float'), F('Price_Multiplier', 'Float'),
+               F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'),
+               F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
         F('Reference_Type', 'Text', default='', obj='Tuple'),
         F('Reference_Volatility', 'Text', default='', obj='Tuple'),
         F('Payoff_Currency', 'Text', default='', convention=True),
         F('Commodity', 'Text', default='', obj='Tuple')
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -7248,7 +7463,7 @@ class FloatingEnergyDeal(Deal):
             self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
         field['Payoff_Currency'] = utils.check_rate_name(payoff_currency)
 
-        field_index = {}        
+        field_index = {}
 
         if self.options.get('ForwardCurve', 'Full') == 'Components':
             # forwardcurve from the already-simulated components; Commodity may be composed - see docstring
@@ -7297,8 +7512,10 @@ class FixedEnergyDeal(Deal):
         F('Payoff_Currency', 'Text', default='', convention=True),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
-        F('Energy_Fixed_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments', sub_fields=[F('EnergyFixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])
-])]
+        F('Energy_Fixed_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
+          sub_fields=[F('EnergyFixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
+              [F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -7328,7 +7545,7 @@ class FixedEnergyDeal(Deal):
         field['Payoff_Currency'] = utils.check_rate_name(self.field['Payoff_Currency']) if self.field.get(
             'Payoff_Currency') else field['Currency']
 
-        field_index = {'SettleCurrency': self.field.get('Payoff_Currency') or self.field['Currency'],                       
+        field_index = {'SettleCurrency': self.field.get('Payoff_Currency') or self.field['Currency'],
                        'Discount': get_interest_factor(
                            field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
                        'Currency': get_fx_and_zero_rate_factor(
@@ -7370,7 +7587,7 @@ class EnergySingleOption(Deal):
         F('Reference_Type', 'Text', default='', obj='Tuple'),
         F('Reference_Volatility', 'Text', default='', obj='Tuple'),
         F('Payoff_Currency', 'Text', default='', convention=True)
-])]
+    ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
@@ -7437,7 +7654,8 @@ class EnergySingleOption(Deal):
 
         if field['Currency'] != forward_factor.get_currency():
             fx_lookup = tuple(sorted([field['Currency'][0], forward_factor.get_currency()[0]]))
-            field_index['FXCompoVol'] = get_vol_factor('FXVol', fx_lookup, static_offsets, stochastic_offsets, all_tenors)
+            field_index['FXCompoVol'] = get_vol_factor('FXVol', fx_lookup, static_offsets, stochastic_offsets,
+                                                       all_tenors)
             field_index['ImpliedCorrelation'] = get_implied_correlation(
                 ('FxRate',) + fx_lookup, ('ReferencePrice',) + forward_price_vol, all_factors)
 
