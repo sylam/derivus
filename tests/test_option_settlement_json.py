@@ -31,11 +31,18 @@ EXPIRY = pd.Timestamp('2025-06-27')                  # a Friday
 SETTLE = EXPIRY + pd.offsets.BDay(2)                 # the Tuesday after
 SPOT, STRIKE, UNITS, CASH, PRINT = 100.0, 100.0, 10.0, 1000.0, 112.0
 R_USD, Q_EQ, SIGMA = 0.04, 0.01, 0.25
+FX_SPOT, R_EUR, FX_SIGMA = 1.25, 0.02, 0.15
 
 FACTORS = {
     'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
+    'FxRate.EUR': {'Domestic_Currency': None, 'Interest_Rate': 'EUR', 'Spot': FX_SPOT},
     'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                          'Curve': utils.Curve([], [[0.0, R_USD], [5.0, R_USD]])},
+    'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                         'Curve': utils.Curve([], [[0.0, R_EUR], [5.0, R_EUR]])},
+    'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+                      'Surface': utils.Curve([], [[m, t, FX_SIGMA] for m in (0.6, 1.0, 1.4)
+                                                  for t in (0.02, 2.0)])},
     'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                        'Respect_Default': 'No', 'Jump_Level': 0.0},
     'DividendRate.EQ': {'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, Q_EQ], [5.0, Q_EQ]])},
@@ -49,6 +56,9 @@ VANILLA = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': 'USD',
            'Strike_Price': STRIKE, 'Units': UNITS, 'Expiry_Date': EXPIRY, 'Settlement_Date': SETTLE}
 BINARY = dict({k: v for k, v in VANILLA.items() if k != 'Units'},
               Object='EquityBinaryOption', Reference='EQB', Payoff=CASH)
+FX = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
+      'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+      'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY}
 CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256,
        'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes'}
 
@@ -156,3 +166,22 @@ def test_on_the_expiry_the_engine_fixes_the_level_and_before_it_the_lag_only_mov
     d1 = math.log(forward / STRIKE) / sd + 0.5 * sd
     black = forward * ndtr(d1) - STRIKE * ndtr(d1 - sd)
     assert marks([VANILLA])['EQO'] == pytest.approx(UNITS * black * math.exp(-R_USD * t_settle), rel=1e-9)
+
+
+def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
+    """The FX option settles on `Delivery_Date`, the field its family declares it settles on, the
+    expiry where blank: Black on the forward to the expiry's own settlement, discounted to the
+    delivery, exact. A `Settlement_Date` written on it declares nothing and is not read.
+
+    Killing mutation: the settlement read off a `Settlement_Date` the type does not declare.
+    """
+    delivery = EXPIRY + pd.DateOffset(days=10)
+    marked = marks([FX, dict(FX, Reference='UNDECLARED', Settlement_Date=delivery),
+                    dict(FX, Reference='DELIVERED', Delivery_Date=delivery)])
+    t, t_fwd = (EXPIRY - BASE).days / 365.0, (SETTLE - BASE).days / 365.0
+    forward, sd = FX_SPOT * math.exp((R_USD - R_EUR) * t_fwd), FX_SIGMA * math.sqrt(t)
+    d1 = math.log(forward / FX_SPOT) / sd + 0.5 * sd
+    black = UNITS * (forward * ndtr(d1) - FX_SPOT * ndtr(d1 - sd))
+    assert marked['FXO'] == pytest.approx(black * df((EXPIRY - BASE).days), rel=1e-9)
+    assert marked['UNDECLARED'] == marked['FXO']
+    assert marked['DELIVERED'] == pytest.approx(black * df((delivery - BASE).days), rel=1e-9)

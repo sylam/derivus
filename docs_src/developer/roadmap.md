@@ -94,12 +94,10 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The engine
 
-- **The FX option settles on a date it does not declare** (2026-10-09). The FX option and binary
-  hold their forward past the expiry and pay on the settlement as the equity options do, through
-  one pricer, but declare no `Price_Fixing` table - their family's settlement is `Delivery_Date`
-  where the reset reads an undeclared `Settlement_Date` - so one expired before the base date
-  refuses by name for want of a print. The table, its observes and the reset on the family's own
-  date: S.
+- **The FX option declares no expiry print** (2026-10-09). The FX option and binary pay on
+  `Delivery_Date` and hold their forward past the expiry as the equity options do, through one
+  pricer, but declare no `Price_Fixing` table, so one expired before the base date refuses by name
+  for want of a print. The table and its observes: S.
 - **A rate leg stated by its terms reads eight of its conventions not at all** (2026-09-30).
   `Reset_Type` in `Arrears` or `Advance`, `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`,
   `Index_Offset`, the calendars and `First_Coupon_Date` are declared on the swap, the cap, the

@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields,
+    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_settlements,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT, FX_TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
@@ -64,21 +64,20 @@ def forward_settlement_date(date_to_roll, calendar_names, calendars, business_da
         return date_to_roll + bus_day_offsets[0]
 
 
-def option_date_info(field, base_date, calendars, business_days=2):
+def option_date_info(deal, base_date, calendars, business_days=2):
     """The expiry, settlement and forward-settlement day offsets of an option-style deal.
 
     Forward_Settlement is expiry plus the settlement lag rolled on the configured calendars, used as
-    T in forward calculations; Settlement is the explicit cash/payment date, else Expiry_Date.
+    T in forward calculations; Settlement is the day the deal's own declaration settles on.
     """
-    expiry_date = field['Expiry_Date']
-    calendar_names = field.get('Calendars')
+    expiry_date = deal.field['Expiry_Date']
+    calendar_names = deal.field.get('Calendars')
 
     adjusted_forward_settlement_date = forward_settlement_date(
         expiry_date, calendar_names, calendars, business_days=business_days)
 
-    settlement_date = field.get('Settlement_Date') or expiry_date
     expiry = (expiry_date - base_date).days
-    settlement = (settlement_date - base_date).days
+    settlement = (deal.settlement_day() - base_date).days
     forward_settlement = (adjusted_forward_settlement_date - base_date).days
 
     return expiry, settlement, forward_settlement
@@ -747,6 +746,12 @@ class Deal(object):
         self.reval_dates.update(dates)
         if currency:
             self.settlement_currencies.setdefault(currency, set()).update(dates)
+
+    def settlement_day(self):
+        """The day the deal's one declared settlement field states, else the day that field's
+        `settles` marker names in its place."""
+        (key, _, cash), = declared_settlements(type(self))
+        return self.field[key] or self.field[cash.otherwise]
 
     def get_reval_dates(self, clip_expiry=False):
         if clip_expiry and bool(self.settlement_currencies):
@@ -4153,7 +4158,7 @@ class EquityOptionDeal(Deal):
         super(EquityOptionDeal, self).reset()
         self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.field['Settlement_Date'] or self.field['Expiry_Date']}, self.payoff_ccy)
+        self.add_reval_dates({self.settlement_day()}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
         # we need to monitor the option for potential early exercise
@@ -4178,7 +4183,7 @@ class EquityOptionDeal(Deal):
                  'Equity_Volatility': utils.check_rate_name(
                      self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') is not None else None}
 
-        expiry, settlement, forward_settlement = option_date_info(self.field, base_date, calendars)
+        expiry, settlement, forward_settlement = option_date_info(self, base_date, calendars)
         if self.path_dependent and self.field['Settlement_Date']:
             raise utils.UnpriceableSchedule(
                 '{}: an American option settles on the day it is exercised, so Settlement_Date is not '
@@ -5223,7 +5228,7 @@ class CommodityDigitalOption(Deal):
     def reset(self, calendars):
         super(CommodityDigitalOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.field['Settlement_Date'] or self.field['Expiry_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.settlement_day()}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5240,7 +5245,7 @@ class CommodityDigitalOption(Deal):
         field['Discount_Rate'] = utils.check_rate_name(
             self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Payoff_Currency']
 
-        expiry, settlement, _ = option_date_info(self.field, base_date, calendars)
+        expiry, settlement, _ = option_date_info(self, base_date, calendars)
         field_index = {
             'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
@@ -7038,7 +7043,10 @@ class FXOptionDeal(Deal):
                      'FX_Volatility': ['FXVol']}
 
     documentation = (
-        'Fx And Equity', ['A path independent vanilla FX Option described [here](./definitions.md#european-options)'])
+        'Fx And Equity', ['A path independent vanilla FX Option described [here](./definitions.md#european-options)',
+                          '',
+                          'The payoff is paid on **Delivery_Date**, the expiry where blank; past the expiry the',
+                          'forward is held at what the expiry fixed.'])
 
     def __init__(self, params, valuation_options):
         super(FXOptionDeal, self).__init__(params, valuation_options)
@@ -7046,7 +7054,7 @@ class FXOptionDeal(Deal):
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.field.get('Settlement_Date') or self.field['Expiry_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.settlement_day()}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -7057,7 +7065,7 @@ class FXOptionDeal(Deal):
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
             field['Currency']
 
-        expiry, settlement, forward_settlement = option_date_info(self.field, base_date, calendars)
+        expiry, settlement, forward_settlement = option_date_info(self, base_date, calendars)
 
         field_index = {
             'Currency': get_fx_and_zero_rate_factor(
