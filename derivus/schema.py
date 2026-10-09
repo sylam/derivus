@@ -926,6 +926,11 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
     F('Dividends', 'Text', default='', convention=True, obj='Tuple')
 ])
 
+#: The print an option's expiry fixed at, `[[Expiry_Date, print]]` - stated where the expiry is
+#: behind the base date, since a payoff settling after it is on that print and not on today's spot.
+EXPIRY_PRINT = F('Price_Fixing', 'Table', default='null', convention=True,
+                 row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
+
 #: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
 #: quote - said on every FX field that carries one, since the declarations are what a model reads
 #: before it books.

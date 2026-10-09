@@ -2714,6 +2714,13 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
         vols = adj['vol']
         forward = adj['s_adj'] * forward * torch.exp(adj['b_adj'] * shared.one.new(expiry.reshape(-1, 1)))
 
+    # past the expiry the payoff is on what the expiry fixed, paid on the settlement
+    if tenor_in_days[0] < 0 and 'Compo_Underlying' in factor_dep:
+        raise utils.UnpriceableSchedule(
+            '{}: a compo expired before the base date pays on the product S*X at its expiry, which the '
+            'equity print alone does not fix'.format(deal_data.Instrument.field.get('Reference')))
+    forward = utils.held_past_expiry(forward, tenor_in_days, factor_dep['Expiry_Fixing'])
+
     if binary:
         w = factor_dep['Option_Type']
         strike = factor_dep['Strike_Price']

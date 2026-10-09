@@ -18,7 +18,7 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields,
-    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, EQUITY_TOUCH, FX_TOUCH,
+    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT, FX_TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -82,6 +82,19 @@ def option_date_info(field, base_date, calendars, business_days=2):
     forward_settlement = (adjusted_forward_settlement_date - base_date).days
 
     return expiry, settlement, forward_settlement
+
+
+def expiry_fixing(field, base_date, time_grid, deal_type):
+    """The expiry's print as a one-row reset, which a deal expired before the base date states in
+    its `Price_Fixing` table: a payoff settling after the expiry is on that print, not on today's spot."""
+    expiry = field['Expiry_Date']
+    stated = dict(field.get('Price_Fixing') or []).get(expiry)
+    if expiry < base_date and not stated:
+        raise utils.UnpriceableSchedule(
+            '{}: Expiry_Date {:%Y-%m-%d} is behind the base date and Price_Fixing states no print for '
+            'it, so the payoff it settles has no level. Add the row [Expiry_Date, print]'.format(
+                field.get('Reference', deal_type), expiry))
+    return utils.TensorResets.from_observations(base_date, time_grid, [[expiry, stated or 0.0]])
 
 
 def refuse_consequence_field(field, name, deal_type, remedy):
@@ -4101,14 +4114,18 @@ class EquityBarrierBinaryOption(Deal):
 
 class EquityOptionDeal(Deal):
     vernacular = 'equity option, stock option, vanilla call or put'
-    observes = Observes('Equity', 'EquityPrice', elects='Settlement_Style', expires='Expiry_Date')
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, elects='Settlement_Style',
+                        expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityOptionDeal', [
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
         F('Units', 'Float', default=0.0, sized=True),
         F('Forward_Price_Date', 'Date', default='', convention=True),
-        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
+        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+        F('Settlement_Date', 'Date', default='', convention=True,
+          settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+        EXPIRY_PRINT
     ])]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -4121,6 +4138,10 @@ class EquityOptionDeal(Deal):
     documentation = ('Fx And Equity', [
         'A vanilla option described [here](./definitions.md#european-options)',
         '',
+        'The payoff is paid on **Settlement_Date**, the expiry where blank. Past the expiry the',
+        'underlying is what the expiry fixed: the path\'s own level on the expiry row or, where the',
+        'expiry is behind the base date, the print **Price_Fixing** states for it, which it must.',
+        '',
         'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
         'is read at the translated strike $K/F_X(T)$.'])
 
@@ -4131,7 +4152,8 @@ class EquityOptionDeal(Deal):
     def reset(self, calendars):
         super(EquityOptionDeal, self).reset()
         self.payoff_ccy = utils.payoff_currency(self.field)
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+        self.add_reval_dates({self.field['Expiry_Date']})
+        self.add_reval_dates({self.field['Settlement_Date'] or self.field['Expiry_Date']}, self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
         # we need to monitor the option for potential early exercise
@@ -4157,6 +4179,10 @@ class EquityOptionDeal(Deal):
                      self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') is not None else None}
 
         expiry, settlement, forward_settlement = option_date_info(self.field, base_date, calendars)
+        if self.path_dependent and self.field['Settlement_Date']:
+            raise utils.UnpriceableSchedule(
+                '{}: an American option settles on the day it is exercised, so Settlement_Date is not '
+                'its to state'.format(self.field.get('Reference', 'EquityOptionDeal')))
 
         field['Dividends'] = utils.check_rate_name(self.field['Dividends']) if self.field.get(
             'Dividends') else field['Equity']
@@ -4183,8 +4209,9 @@ class EquityOptionDeal(Deal):
             'Option_Style': self.field.get('Option_Style', 'European'),
             'Expiry': expiry,
             'Settlement': settlement,
-            'Forward_Settlement': forward_settlement
-        }
+            'Forward_Settlement': forward_settlement,
+            'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'EquityOptionDeal')
+            }
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
                                equity_fx_correlation)
@@ -4216,19 +4243,22 @@ class EquityOptionDeal(Deal):
 
 class EquityBinaryOption(EquityOptionDeal):
     vernacular = 'equity digital, binary option, cash-or-nothing, asset-or-nothing'
-    observes = Observes('Equity', 'EquityPrice', expires='Expiry_Date')
+    observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, expires='Expiry_Date')
     fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='', convention=True,
-          settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
+          settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+        EXPIRY_PRINT
     ])]
 
     documentation = ('Fx And Equity', [
         'A vanilla option described [here](definitions.md#european-options)',
         '',
         'In the money at expiry it pays **Payoff**: that amount of cash under **Payoff_Style**',
-        '`Cash` (cash-or-nothing), that many units of the equity under `Asset` (asset-or-nothing).',
+        '`Cash` (cash-or-nothing), that many units of the equity under `Asset` (asset-or-nothing),',
+        'on **Settlement_Date** - the expiry where blank - off the level the expiry fixed, which',
+        'an expiry behind the base date states in **Price_Fixing**.',
         '',
         'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
         'is read at the translated strike $K/F_X(T)$, each spread leg at its own.',
@@ -5135,7 +5165,7 @@ class EquityBarrierOption(Deal):
 
 class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
-    observes = Observes('Reference_Type', 'ReferencePrice', expires='Expiry_Date')
+    observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
     fields = [ADMIN, own('CommodityDigitalOption', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
@@ -5149,7 +5179,8 @@ class CommodityDigitalOption(Deal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Reference_Type', 'Text', default='', obj='Tuple'),
-        F('Reference_Volatility', 'Text', default='', obj='Tuple')
+        F('Reference_Volatility', 'Text', default='', obj='Tuple'),
+        EXPIRY_PRINT
     ])]
 
     factor_fields = {'Currency': ['FxRate'],
@@ -5165,8 +5196,10 @@ class CommodityDigitalOption(Deal):
         '',
         'The underlying is the forward of the **Reference_Type** for the delivery date its fixing',
         'curve maps **Expiry_Date** to, read off the ForwardPrice curve on every scenario date, and',
-        'its vol is the **Reference_Volatility** surface at the forward\'s moneyness over the expiry;',
-        'the payoff is discounted to **Settlement_Date**.',
+        'its vol is the **Reference_Volatility** surface at the forward\'s moneyness over the expiry.',
+        'The payoff is paid on **Settlement_Date**, the expiry where blank. Past the expiry the',
+        'underlying is what the expiry fixed: the path\'s own forward on the expiry row or, where the',
+        'expiry is behind the base date, the print **Price_Fixing** states for it, which it must.',
         '',
         'Paid in a **Currency** other than the forward curve\'s own, **Payoff_Type** says how, as it',
         'does for an equity: `Compo` prices the product $S\\cdot X$ - the strike a payoff-currency',
@@ -5189,7 +5222,8 @@ class CommodityDigitalOption(Deal):
 
     def reset(self, calendars):
         super(CommodityDigitalOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.field['Expiry_Date']})
+        self.add_reval_dates({self.field['Settlement_Date'] or self.field['Expiry_Date']}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5219,6 +5253,7 @@ class CommodityDigitalOption(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Expiry': expiry,
             'Settlement': settlement,
+            'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'CommodityDigitalOption'),
             # the forward curve's coordinate of the fixing: the delivery date the reference maps the expiry to
             'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))
             }
@@ -7010,9 +7045,8 @@ class FXOptionDeal(Deal):
 
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()
-        self.add_reval_dates(
-            {self.field['Settlement_Date' if 'Settlement_Date' in self.field else 'Expiry_Date']},
-            self.field['Currency'])
+        self.add_reval_dates({self.field['Expiry_Date']})
+        self.add_reval_dates({self.field.get('Settlement_Date') or self.field['Expiry_Date']}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -7038,6 +7072,7 @@ class FXOptionDeal(Deal):
             'Expiry': expiry,
             'Settlement': settlement,
             'Forward_Settlement': forward_settlement,
+            'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'FXOptionDeal'),
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,

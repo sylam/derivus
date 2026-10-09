@@ -3166,6 +3166,16 @@ def spot_on_deal_grid(spot, deal_time, shared):
         len(deal_time), shared.simulation_batch)
 
 
+def held_past_expiry(level, tenor_in_days, fixing):
+    """`level` per deal-grid row with the rows past the expiry holding what the expiry fixed: the
+    expiry row's own level where that row is on the grid, else the print `fixing` states."""
+    live = int((tenor_in_days >= 0).sum())
+    if live == tenor_in_days.size:
+        return level
+    fixed = level[live - 1:live] if live else fixing.known_resets(level.shape[1])[0]
+    return torch.cat([level[:live], fixed.expand(tenor_in_days.size - live, -1)])
+
+
 def bridge_interval_variance(shared, factor_dep, deal_time, compo_rho=None):
     """Per-row SIMULATION log-variance spanning each step of a deal's own time axis, for the bridge.
 

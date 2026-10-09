@@ -228,6 +228,28 @@ def test_a_commodity_digital_is_black_s_digital_on_the_reference_s_forward():
     assert abs(marked['call'] + marked['put'] - parity) <= 1e-12 * parity
 
 
+def test_a_commodity_digital_expired_before_the_base_date_pays_on_its_print():
+    """FUEL_DIG a week past its expiry and settling three days on, with its reference's print
+    stated: the payoff discounted over the three days, exact, in or out of the money by the print
+    alone.
+
+    Killing mutation: the print unread, the base date's forward - above the strike - fixing instead.
+    """
+    deal = next(d for d in trial_commodity.DEALS if d['Reference'] == 'FUEL_DIG')
+    expiry, payoff, strike = deal['Expiry_Date'], deal['Payoff'], deal['Strike_Price']
+    base, later = expiry + pd.DateOffset(days=7), expiry + pd.DateOffset(days=10)
+    marked = {}
+    for name, printed in (('in', strike + 1.0), ('out', strike - 1.0)):
+        job = trial('FUEL_DIG', Settlement_Date=later, Price_Fixing=[[expiry, printed]])
+        job['Calc']['Calculation']['Base_Date'] = {'.Timestamp': base.strftime('%Y-%m-%d')}
+        job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']['Base_Date'] = \
+            job['Calc']['Calculation']['Base_Date']
+        marked[name] = float.fromhex(marks(job)['FUEL_DIG'])
+    reference = payoff * math.exp(-book.DISCOUNT[0] * 3 / 365.0)
+    assert abs(marked['in'] - reference) <= 1e-12 * reference, (marked['in'], reference)
+    assert marked['out'] == 0.0
+
+
 def test_an_energy_leg_paying_two_periods_on_one_day_beside_a_third_is_its_hand_sum():
     """`trial_commodity`'s floating fuel leg over three delivery months, the first two paid on the
     second's day and the third on its own - beside its controls, every period on its own day (the
