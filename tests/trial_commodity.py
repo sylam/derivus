@@ -50,6 +50,10 @@ DEALS = [
     dict(FUEL, Object='EnergySingleOption', Reference='FUEL_OPT', Buy_Sell='Buy',
          Option_Type='Call', Settlement_Date=paid(4), Strike=82.0, Realized_Average=0.0,
          FX_Realized_Average=0.0, Volume=1000.0, Reference_Volatility='FUEL', **period(4)),
+    {'Object': 'CommodityDigitalOption', 'Reference': 'FUEL_DIG', 'Currency': 'USD',
+     'Discount_Rate': 'USD', 'Reference_Type': 'FUEL', 'Reference_Volatility': 'FUEL',
+     'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Expiry_Date': E, 'Strike_Price': 82.0,
+     'Payoff': 25_000.0},
 ]
 
 FACTORS = {

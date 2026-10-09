@@ -5103,64 +5103,85 @@ class EquityBarrierOption(Deal):
 
 
 class CommodityDigitalOption(Deal):
-    vernacular = 'commodity digital, metal digital'
-    fields = [ADMIN, own('CommodityForwardDeal', [
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Forward_Date', 'Date', default='', convention=True),
-        F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
-        F('Commodity', 'Text', default='', obj='Tuple'),
-        F('Units', 'Float', default=0.0, sized=True),
+    vernacular = 'commodity digital, energy digital, binary option on a reference price'
+    observes = Observes('Reference_Type', 'ReferencePrice', expires='Expiry_Date')
+    fields = [ADMIN, own('CommodityDigitalOption', [
         F('Currency', 'Text', default=''),
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Reference_Type', 'Text', default='', obj='Tuple')
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
+        F('Expiry_Date', 'Date', default=''),
+        F('Settlement_Date', 'Date', default='', convention=True,
+          settles=Cash('Currency', otherwise='Expiry_Date')),
+        F('Strike_Price', 'Float', default=0.0),
+        F('Payoff', 'Float', default=REQUIRED, sized=True),
+        F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
+        F('Reference_Type', 'Text', default='', obj='Tuple'),
+        F('Reference_Volatility', 'Text', default='', obj='Tuple')
     ])]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
-                     'Sampling_Type': ['ForwardPriceSample'],
-                     'FX_Sampling_Type': ['ForwardPriceSample'],
                      'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['CommodityPriceVol'],
-                     'Payoff_Currency': ['FxRate']}
+                     'Reference_Volatility': ['CommodityPriceVol']}
 
-    documentation = ('Energy',
-                     [
-                        'This deal represents a digital option on a commodity forward. ',
-                        'The payoff depends on whether the underlying commodity forward price ',
-                        'exceeds a certain strike price at maturity.'
-                      ])
+    documentation = ('Energy', [
+        'A European digital on a commodity reference price, described',
+        '[here](./definitions.md#european-options). In the money at expiry it pays **Payoff**: that',
+        'amount in **Currency** under **Payoff_Style** `Cash` (cash-or-nothing), that many units of',
+        'the reference under `Asset` (asset-or-nothing).',
+        '',
+        'The underlying is the forward of the **Reference_Type** for the delivery date its fixing',
+        'curve maps **Expiry_Date** to, read off the ForwardPrice curve on every scenario date, and',
+        'its vol is the **Reference_Volatility** surface at the forward\'s moneyness over the expiry;',
+        'the payoff is discounted to **Settlement_Date**. **Currency** is the forward curve\'s own: a',
+        'payoff in another currency is refused by name.',
+        '',
+        'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
+        'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
+        'either side of the strike, rather than the single-vol closed form, so the vol surface',
+        'smile is picked up automatically.'])
 
     def __init__(self, params, valuation_options):
         super(CommodityDigitalOption, self).__init__(params, valuation_options)
+        self.options = {'Relative_Digital_Spread': 0.0}
+        self.options.update(valuation_options)
 
     def reset(self, calendars):
         super(CommodityDigitalOption, self).reset()
-        self.add_reval_dates({self.field['Maturity_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        field = {
-                    'Currency': utils.check_rate_name(self.field['Currency']),
-                    'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
-                    'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])
-                }
-        
+        refuse_zero_payoff(self.field, 'CommodityDigitalOption', fieldname='Payoff')
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
+                 'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])}
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
             field['Currency']
-        field['Payoff_Currency'] = utils.check_rate_name(self.field['Payoff_Currency']) if self.field[
-            'Payoff_Currency'] else field['Currency']
-
-        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
-            field['Currency']
-
-        field_index = {'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
-                       'Discount': get_interest_factor(
-                           field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-                       'Expiry': (self.field['Maturity_Date'] - base_date).days}
 
         reference_factor, forward_factor = get_reference_factor_objects(field['Reference_Type'], all_factors)
-        field_index['base_index'] = (base_date - utils.excel_offset).days
-        field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
+        if field['Currency'] != forward_factor.get_currency():
+            raise ValueError('{}: CommodityDigitalOption pays {} on a reference price quoted in {} - a compo or '
+                             'quanto digital is not built, so Currency is the forward curve\'s own'.format(
+                                 self.field.get('Reference'), utils.check_tuple_name(field['Currency']),
+                                 utils.check_tuple_name(forward_factor.get_currency())))
+
+        expiry, settlement, _ = option_date_info(self.field, base_date, calendars)
+        field_index = {
+            'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
+            'SettleCurrency': self.field['Currency'],
+            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Volatility': get_commodity_vol_factor(
+                field['Reference_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Strike_Price': self.field['Strike_Price'],
+            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
+            'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
+            'Expiry': expiry,
+            'Settlement': settlement,
+            # the forward curve's coordinate of the fixing: the delivery date the reference maps the expiry to
+            'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))}
+        field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor, base_date)
 
@@ -5169,27 +5190,24 @@ class CommodityDigitalOption(Deal):
     def generate(self, shared, time_grid, deal_data):
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
-        discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
-        forward_curve = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], deal_time, shared)
-        remaining_tenor = np.array([max(x[utils.TIME_GRID_MTM], factor_dep['Forward_Date']) for x in deal_time])
-        spot_date_index = (factor_dep['base_index'] + remaining_tenor).reshape(-1, 1)
-        energy_spot = forward_curve.gather_weighted_curve(shared, spot_date_index, multiply_by_time=False)
-        T_t = factor_dep['Expiry'] - remaining_tenor.reshape(-1, 1)
-        curve_grid = utils.calc_time_grid_curve_rate(factor_dep['Commodity_Zero'], deal_time, shared)
-        forward = torch.squeeze(energy_spot * torch.exp(curve_grid.gather_weighted_curve(shared, T_t)), dim=1)
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
-        nominal = (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * self.field['Units']
+        forward = torch.squeeze(utils.calc_time_grid_curve_rate(
+            factor_dep['ForwardPrice'], deal_time, shared).gather_weighted_curve(
+            shared, np.full((deal_time.shape[0], 1), factor_dep['Delivery']), multiply_by_time=False), dim=1)
+        strike = factor_dep['Strike_Price']
+        moneyness = pricing.calc_moneyness(strike, forward, forward, deal_data, use_forward=True)
 
-        discount_rates = torch.squeeze(utils.calc_discount_rate(
-            discount, (factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1), shared),
-            dim=1)
+        # spread legs at the deal's own moneyness convention (see EquityBinaryOption.generate)
+        eps = self.options['Relative_Digital_Spread']
+        spread = (eps,
+                  pricing.calc_moneyness(strike * (1.0 - eps), forward, forward, deal_data, use_forward=True),
+                  pricing.calc_moneyness(strike * (1.0 + eps), forward, forward, deal_data, use_forward=True)
+                  ) if eps else None
 
-        cash = nominal * forward
+        return pricing.pv_european_option(
+            shared, time_grid, deal_data, self.field['Payoff'], moneyness, forward, binary=True,
+            digital_spread=spread, payoff_style=self.field['Payoff_Style'].lower()) * fx_rep
 
-        pricing.cash_settle(shared, self.field['Currency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
-
-        return cash * discount_rates * fx_rep
-    
 
 class CommodityForwardDeal(Deal):
     vernacular = 'commodity forward, metal forward'

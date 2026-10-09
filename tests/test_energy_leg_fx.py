@@ -161,6 +161,38 @@ def test_an_energy_option_accrues_each_sample_s_variance_from_the_base_date():
         assert abs(mark - reference) <= 1e-12 * reference, (mark, reference)
 
 
+def test_a_commodity_digital_is_black_s_digital_on_the_reference_s_forward():
+    """`trial_commodity`'s FUEL_DIG - 25,000 USD if the fuel reference price fixes above 82 a year
+    out, 30% flat - marks under a base valuation as `Payoff DF N(w d2)` on the fuel forward at the
+    delivery date the reference maps the expiry to, 84 where the base date's own is 80. The put
+    beside it sums with the call to the discounted payoff, `Asset` pays `Payoff F N(w d1)`, and a
+    settlement ten days after the expiry discounts there with the vol tenor left at the expiry.
+
+    Killing mutations: the delivery date read for the base date rather than the expiry, the curve's
+    front - 9,803.63 against 11,342.75 on the call; the payoff discounted to the expiry under the
+    later settlement - 11,342.75 against 11,330.33.
+    """
+    deal = next(d for d in trial_commodity.DEALS if d['Reference'] == 'FUEL_DIG')
+    expiry, payoff, strike = deal['Expiry_Date'], deal['Payoff'], deal['Strike_Price']
+    forward = float(fuel_forward([expiry])[0])
+    sd = trial_commodity.FACTORS['CommodityPriceVol.FUEL']['Surface'].array[0, 2] * math.sqrt(
+        (expiry - trial_commodity.B).days / 365.0)
+    d1 = (math.log(forward / strike) + 0.5 * sd * sd) / sd
+    later = expiry + pd.DateOffset(days=10)
+    marked = {}
+    for name, terms, reference in (
+            ('call', {}, payoff * discount(book.DISCOUNT[0], expiry) * norm.cdf(d1 - sd)),
+            ('put', {'Option_Type': 'Put'}, payoff * discount(book.DISCOUNT[0], expiry) * norm.cdf(sd - d1)),
+            ('asset', {'Payoff_Style': 'Asset'},
+             payoff * discount(book.DISCOUNT[0], expiry) * forward * norm.cdf(d1)),
+            ('later', {'Settlement_Date': later},
+             payoff * discount(book.DISCOUNT[0], later) * norm.cdf(d1 - sd))):
+        marked[name] = float.fromhex(marks(trial('FUEL_DIG', **terms))['FUEL_DIG'])
+        assert abs(marked[name] - reference) <= 1e-12 * reference, (name, marked[name], reference)
+    parity = payoff * discount(book.DISCOUNT[0], expiry)
+    assert abs(marked['call'] + marked['put'] - parity) <= 1e-12 * parity
+
+
 def test_an_energy_leg_paying_two_periods_on_one_day_beside_a_third_is_its_hand_sum():
     """`trial_commodity`'s floating fuel leg over three delivery months, the first two paid on the
     second's day and the third on its own - beside its controls, every period on its own day (the

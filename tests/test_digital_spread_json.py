@@ -247,6 +247,34 @@ def test_an_fx_binary_spread_reads_the_fx_smile():
     assert abs(_mtm(out, 'FXB') - expected) / expected < 1e-9, (_mtm(out, 'FXB'), expected)
 
 
+def test_a_commodity_digital_spread_reads_the_commodity_smile():
+    """The commodity twin: a digital on a reference price, its forward read off a flat ForwardPrice
+    curve at the delivery date the reference maps the expiry to, through the same moneyness
+    convention as the FX one (forward / strike, `use_forward`) on the collinear commodity smile -
+    the exact two-leg oracle under the spread, the closed form with the option absent.
+
+    Killing mutation: both legs read at the deal's own moneyness - 347.72 against 518.11.
+    """
+    oil, strike = 90.0, 95.0
+    deal = {'Object': 'CommodityDigitalOption', 'Reference': 'CDG', 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Reference_Type': 'OIL', 'Reference_Volatility': 'OIL',
+            'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': strike, 'Payoff': CASH,
+            'Expiry_Date': EXPIRY}
+    factors = dict(RATES, **{
+        'ReferencePrice.OIL': {'ForwardPrice': 'OIL',
+                               'Fixing_Curve': utils.Curve([], [[40000.0, 40000.0], [60000.0, 60000.0]])},
+        'ForwardPrice.OIL': {'Currency': 'USD', 'Curve': utils.Curve([], [[40000.0, oil], [60000.0, oil]])},
+        'CommodityPriceVol.OIL': _surface(VOL_ATM, SKEW)})
+    sigma_of = lambda k: VOL_ATM + SKEW * (oil / k - 1.0)
+    out, _ = _run(_job([deal], factors,
+                       valuation={'CommodityDigitalOption': {'Relative_Digital_Spread': EPS}}))
+    expected = _spread_closed(oil, strike, sigma_of, R_USD)
+    assert abs(_mtm(out, 'CDG') - expected) / expected < 1e-9, (_mtm(out, 'CDG'), expected)
+    closed, _ = _run(_job([deal], factors))
+    anchor = _digital_closed(oil, strike, sigma_of(strike), R_USD)
+    assert abs(_mtm(closed, 'CDG') - anchor) / anchor < 1e-9, (_mtm(closed, 'CDG'), anchor)
+
+
 def test_a_compo_binary_spread_composes_each_leg():
     """A compo digital under the spread: the underlying is S*X, the strike a payoff-currency
     quantity, and each leg's vol is the COMPO composition of its own strike's read. Flat surfaces
