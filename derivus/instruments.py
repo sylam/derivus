@@ -5196,20 +5196,22 @@ class CommodityDigitalOption(Deal):
         refuse_zero_payoff(self.field, 'CommodityDigitalOption', fieldname='Payoff')
         reference_factor, forward_factor = get_reference_factor_objects(
             utils.check_rate_name(self.field['Reference_Type']), all_factors)
-        # the option seam's two roles: `Currency` the underlying's, which is the forward curve's own, and
-        # the deal's own currency the payoff's
-        field = {'Currency': forward_factor.get_currency(),
-                 'Payoff_Currency': utils.check_rate_name(self.field['Currency']),
-                 'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
-                 'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])}
-        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
-            field['Payoff_Currency']
+        # the option seam's roles: `Currency` the forward curve's own, `Payoff_Currency` the deal's
+        field = {
+            'Currency': forward_factor.get_currency(),
+            'Payoff_Currency': utils.check_rate_name(self.field['Currency']),
+            'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
+            'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])
+            }
+        field['Discount_Rate'] = utils.check_rate_name(
+            self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Payoff_Currency']
 
         expiry, settlement, _ = option_date_info(self.field, base_date, calendars)
         field_index = {
             'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
-            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_commodity_vol_factor(
                 field['Reference_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Strike_Price': self.field['Strike_Price'],
@@ -5218,12 +5220,13 @@ class CommodityDigitalOption(Deal):
             'Expiry': expiry,
             'Settlement': settlement,
             # the forward curve's coordinate of the fixing: the delivery date the reference maps the expiry to
-            'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))}
+            'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))
+            }
         field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor, base_date)
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-                               reference_fx_correlation)
+        self.check_option_data(
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
 
         return field_index
 
@@ -5231,9 +5234,9 @@ class CommodityDigitalOption(Deal):
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
-        forward = torch.squeeze(utils.calc_time_grid_curve_rate(
-            factor_dep['ForwardPrice'], deal_time, shared).gather_weighted_curve(
-            shared, np.full((deal_time.shape[0], 1), factor_dep['Delivery']), multiply_by_time=False), dim=1)
+        forward_curve = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], deal_time, shared)
+        delivery = np.full((deal_time.shape[0], 1), factor_dep['Delivery'])
+        forward = torch.squeeze(forward_curve.gather_weighted_curve(shared, delivery, multiply_by_time=False), dim=1)
         strike = pricing.compo_strike(factor_dep, deal_time, shared, factor_dep['Strike_Price'] * shared.one)
         moneyness = pricing.calc_moneyness(strike, forward, forward, deal_data, use_forward=True)
 
@@ -5598,22 +5601,24 @@ class EquityForwardDeal(Deal):
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Equity_Volatility': utils.check_rate_name(
                      self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') else None}
-        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
-            field['Currency']
+        field['Discount_Rate'] = utils.check_rate_name(
+            self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
 
-        field_index = {'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
-                       'Payoff_Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
-                       'Discount': get_interest_factor(
-                           field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-                       'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
-                       'Equity_Zero': get_equity_zero_rate_factor(
-                           field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-                       'Dividend_Yield': get_dividend_rate_factor(
-                           field['Equity'], static_offsets, stochastic_offsets, all_tenors),
-                       'Expiry': (self.field['Maturity_Date'] - base_date).days}
+        field_index = {
+            'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
+            'Payoff_Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
+            'Equity_Zero': get_equity_zero_rate_factor(
+                field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Dividend_Yield': get_dividend_rate_factor(
+                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+            'Expiry': (self.field['Maturity_Date'] - base_date).days
+            }
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-                               equity_fx_correlation)
+        self.check_option_data(
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
         if field_index['Check_Payoff_Type']:
             # the quanto's carry reads the equity's at-the-money vol
             field_index['Volatility'] = get_vol_factor(
@@ -5633,7 +5638,8 @@ class EquityForwardDeal(Deal):
             # the compo's forward at the outright fx forward, the quanto's carried
             expiry = discount.code[0][utils.FACTOR_INDEX_Daycount](
                 factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-            adj = pricing.calc_vol_adjustment(factor_dep, deal_time, expiry, None, shared)
+            atm_vol = utils.VolSurface.rate(factor_dep['Volatility'], None, expiry, shared)
+            adj = pricing.calc_vol_adjustment(factor_dep, deal_time, expiry, atm_vol, shared)
             forward = adj['s_adj'] * forward * torch.exp(adj['b_adj'] * shared.one.new(expiry.reshape(-1, 1)))
 
         fx_rep = utils.calc_fx_cross(
@@ -5808,21 +5814,25 @@ class EquitySwapletListDeal(Deal):
             'PrincipleNotShares': 1 if self.field.get('Amount_Type', 'Principal') == 'Principal' else 0,
             'SettleCurrency': self.field['Currency'],
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
-            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
-            'Dividend_Yield': get_dividend_rate_factor(field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+            'Dividend_Yield': get_dividend_rate_factor(
+                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Expiry': max((x['Payment_Date'] - base_date).days for x in self.field['Cashflows']['Items'])}
+            'Expiry': max((x['Payment_Date'] - base_date).days for x in self.field['Cashflows']['Items'])
+            }
         field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
             self.field['Cashflows'], current_spot, self.field.get('Settlement_Days', 0) * bus_day_offset)
 
         # the option seam's roles: `Currency` the equity's own, `Payoff_Currency` the swap's
+        pair = dict(
+            field, Currency=get_equity_component(field['Equity'], all_factors).get_currency(),
+            Payoff_Currency=field['Currency'])
         self.check_option_data(
-            dict(field, Currency=get_equity_component(field['Equity'], all_factors).get_currency(),
-                 Payoff_Currency=field['Currency']),
-            field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
+            pair, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
         if field_index['Check_Payoff_Type']:
             # the quanto's carry reads the equity's at-the-money vol
             field_index['Volatility'] = get_vol_factor(
@@ -5969,23 +5979,27 @@ class EquitySwapLeg(Deal):
             'PrincipleNotShares': 1 if self.field['Principal_Fixed_Variable'] == 'Principal' else 0,
             'SettleCurrency': utils.payoff_currency(self.field),
             'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
-            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
-            'Dividend_Yield': get_dividend_rate_factor(field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+            'Dividend_Yield': get_dividend_rate_factor(
+                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Expiry': (field['cashflow']['Items'][0]['Payment_Date'] - base_date).days}
+            'Expiry': (field['cashflow']['Items'][0]['Payment_Date'] - base_date).days
+            }
         field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
             field['cashflow'], current_price, self.field.get('Settlement_Days', 0) * bus_day)
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-                               equity_fx_correlation)
+        self.check_option_data(
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
         if field_index['Check_Payoff_Type']:
             # the quanto's carry reads the equity's at-the-money vol
             field_index['Volatility'] = get_vol_factor(
                 'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors)
-        refuse_reinvested_dividends(field['cashflow']['Items'], field_index, self.field.get('Reference'), 'EquitySwapLeg')
+        refuse_reinvested_dividends(
+            field['cashflow']['Items'], field_index, self.field.get('Reference'), 'EquitySwapLeg')
 
         return field_index
 
@@ -7785,10 +7799,13 @@ class EnergySingleOption(Deal):
         field_index['Strike'] = self.field['Strike']
 
         # the option seam's roles: `Currency` the forward curve's own, `Payoff_Currency` the deal's
+        pair = {
+            'Currency': forward_factor.get_currency(),
+            'Payoff_Currency': field['Currency'],
+            'Reference_Type': field['Reference_Type']
+            }
         self.check_option_data(
-            {'Currency': forward_factor.get_currency(), 'Payoff_Currency': field['Currency'],
-             'Reference_Type': field['Reference_Type']},
-            field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
+            pair, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
 
         return field_index
 

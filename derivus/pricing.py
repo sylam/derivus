@@ -1675,8 +1675,7 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
 
     `walking` is a non-GBM spot model: the quanto carry here is `-rho sigma_S sigma_FX` off an
     implied ATM vol the walk never reads, so it is handed back as ZERO and the caller takes `rho`
-    to the walk instead (`quanto_step_loading`), where the day's sd is the state's own. `vols`
-    None is a linear payoff, which takes the geometry and the carry and composes no vol.
+    to the walk instead (`quanto_step_loading`), where the day's sd is the state's own.
     """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.VolSurface.rate(factor_dep['FXVol'], None, expiry, shared)
@@ -1693,7 +1692,7 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
         rho = utils.implied_correlation(
             factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         b_adj = torch.zeros_like(fx_vols)
-        vol, fx_vol = (compo_vol(vols, fx_vols, rho) if vols is not None else None), fx_vols
+        vol, fx_vol = compo_vol(vols, fx_vols, rho), fx_vols
 
     return dict(geo, vol=vol, b_adj=b_adj, fx_vol=fx_vol, rho=rho,
                 carry_adj=b_adj.unsqueeze(1) + geo['fx_carry'] if fixings is not None else None)
@@ -5367,8 +5366,9 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
                 - t_block[:, utils.TIME_GRID_MTM, np.newaxis])
 
             if quanto:
-                carry = calc_vol_adjustment(
-                    factor_dep, t_block, daycount_fn(tenor_block).reshape(-1), None, shared)['b_adj']
+                tenor = daycount_fn(tenor_block).reshape(-1)
+                atm_vol = utils.VolSurface.rate(factor_dep['Volatility'], None, tenor, shared)
+                carry = calc_vol_adjustment(factor_dep, t_block, tenor, atm_vol, shared)['b_adj']
                 forwardfx = torch.exp(carry.reshape(-1, 1) * carry.new(sample_block)).unsqueeze(2)
             else:
                 forwardfx = utils.calc_fx_forward(
@@ -6582,9 +6582,12 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
             past_samples = past_samples.expand(sim_samples.shape[0], shared.simulation_batch)
 
         if compo:
-            # an observed level at the fx rate stated beside it, a simulated one at the cross
-            known_fx = [x[utils.RESET_INDEX_FXValue] for x in samples.schedule
-                        if x[utils.RESET_INDEX_Reset_Day] <= 0.0 and x[utils.RESET_INDEX_Value] > 0]
+            # an observed level at the fx rate stated beside it - the rows `known_resets` keeps, at
+            # their fx column - and a simulated one at the cross
+            known_fx = [
+                x[utils.RESET_INDEX_FXValue] for x in samples.schedule
+                if x[utils.RESET_INDEX_Reset_Day] <= 0.0 and x[utils.RESET_INDEX_Value] > 0
+                ]
             if not all(known_fx):
                 raise ValueError('a compo equity swap states the fx rate beside every known price '
                                  '(Known_Start_FX_Rate, Known_End_FX_Rate)')
@@ -6620,10 +6623,14 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         def carried(days):
-            """Each forward's extra carry over `days` from its row, and the scale on the spot."""
-            adj = calc_vol_adjustment(factor_dep, discount_block.time_grid,
-                                      daycount_fn(factor_dep['Expiry'] - time_block), None, shared, fixings=days)
-            return adj['carry_adj'] * adj['carry_adj'].new(daycount_fn(days)).unsqueeze(2), adj['spot_scale']
+            """Each forward's extra carry over `days` from its row - the fx forward's own under a
+            compo, the quanto's under a quanto - and the scale on the spot the forwards grow from."""
+            expiry = daycount_fn(factor_dep['Expiry'] - time_block)
+            atm_vol = utils.VolSurface.rate(factor_dep['Volatility'], None, expiry, shared)
+            adj = calc_vol_adjustment(
+                factor_dep, discount_block.time_grid, expiry, atm_vol, shared, fixings=days)
+            years = adj['carry_adj'].new(daycount_fn(days)).unsqueeze(2)
+            return adj['carry_adj'] * years, adj['spot_scale']
 
         # both ends fixed: the period is valued off its own observed samples
         if pay_idx < end_idx:
