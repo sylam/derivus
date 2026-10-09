@@ -146,6 +146,43 @@ def _asian(ref, option_type='Call', payoff='EUR', strike=STRIKE):
         'Sampling_Data': [[d, 0.0, 1.0] for d in SAMPLES]}, **_ccy(payoff))
 
 
+SEASONED, KNOWN_FX = BASE - pd.DateOffset(months=1), 0.8
+
+
+def _forward(ref, payoff='EUR', strike=STRIKE):
+    return dict({
+        'Object': 'EquityForwardDeal', 'Reference': ref, 'Currency': 'USD', 'Equity': 'EQ',
+        'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Forward_Price': strike, 'Units': UNITS,
+        'Maturity_Date': EXPIRY}, **_ccy(payoff))
+
+
+def _swaplet(start, end, known_start=0.0, known_fx=0.0):
+    """One price-return swaplet on `UNITS` shares paid at its end; a seasoned one states its
+    start's level and the fx rate beside it."""
+    return {'Start_Date': start, 'End_Date': end, 'Payment_Date': end, 'Amount': UNITS,
+            'Start_Multiplier': 1.0, 'End_Multiplier': 1.0, 'Dividend_Multiplier': 0.0,
+            'Known_Start_Price': known_start, 'Known_End_Price': 0.0,
+            'Known_Start_FX_Rate': known_fx, 'Known_End_FX_Rate': 0.0, 'Quanto_FX_Rate': 0.0}
+
+
+def _swap(ref, items, payoff='EUR'):
+    """The swaplet list's `Currency` is the swap's own, the equity's being its factor's."""
+    deal = dict({'Object': 'EquitySwapletListDeal', 'Reference': ref, 'Equity_Currency': 'USD',
+                 'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
+                 'Amount_Type': 'Shares', 'Cashflows': {'Items': items}}, **_ccy(payoff))
+    deal['Currency'] = deal.pop('Payoff_Currency')
+    return deal
+
+
+def _leg(ref, payoff='EUR'):
+    return dict({
+        'Object': 'EquitySwapLeg', 'Reference': ref, 'Currency': 'USD', 'Equity_Currency': 'USD',
+        'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Effective_Date': SEASONED,
+        'Maturity_Date': EXPIRY, 'Principal_Fixed_Variable': 'Variable', 'Units': UNITS,
+        'Include_Dividends': 'No', 'Known_Dividends': None,
+        'Equity_Known_Prices': utils.DateEqualList([[SEASONED, 97.0, KNOWN_FX]])}, **_ccy(payoff))
+
+
 # --------------------------------------------------------------------------------------------
 # the harness
 # --------------------------------------------------------------------------------------------
@@ -402,7 +439,8 @@ STRIKE_L, UP_L, DOWN_L = 100.0, 115.0, 85.0
 LIMIT = [('barrier-up', _barrier('C', 'Up_And_Out', UP_L, strike=STRIKE_L)),
          ('barrier-down', _barrier('C', 'Down_And_In', DOWN_L, 'Put', strike=STRIKE_L)),
          ('one-touch', _one_touch('C', 'Up', UP_L)),
-         ('asian', _asian('C', strike=STRIKE_L))]
+         ('asian', _asian('C', strike=STRIKE_L)),
+         ('forward', _forward('C', strike=STRIKE_L))]
 
 
 @pytest.mark.parametrize('name,deal', LIMIT, ids=[n for n, _ in LIMIT])
@@ -444,6 +482,67 @@ def test_the_composite_asian_moment_matches_on_the_composite(option_type, fx_ske
     forward, sd = _moment_matched([0.25] * 4, taus, R_EUR - Q_EQ, _compo_sigma(STRIKE), CMP_SPOT)
     ref = UNITS * _black(forward, STRIKE, sd, option_type == 'Call') * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'AS') - ref) / abs(ref) < 1e-9, (_mtm(out, 'AS'), ref)
+
+
+# --------------------------------------------------------------------------------------------
+# 5. the linear payoffs: a forward and a price-return swap are the forward calculation on S*X,
+#    or on the carried forward
+# --------------------------------------------------------------------------------------------
+QUANTO_CARRY = -VOL_ATM * FX_SIGMA * RHO        # the quanto's carry, minus rho sigma_S sigma_X
+
+
+def _eq_fwd(t):
+    return SPOT * math.exp((R_USD - Q_EQ) * t)
+
+
+def _fx_fwd(t):
+    return math.exp((R_EUR - R_USD) * t) / FX_SPOT
+
+
+def test_a_compo_and_a_quanto_forward_are_the_carried_forward_less_the_strike():
+    """A forward paid in EUR through the option seam every equity option wires its payoff type on:
+    under Compo it is `Units (F X_fwd - K)` on the EUR curve, the strike a EUR level on S*X; under
+    Quanto `Units (F exp(-rho sigma_S sigma_X T) - K)`, the strike a USD level paid at one. Flat
+    surfaces, so both are exact.
+
+    Killing mutations: the fx forward left off the compo's forward (`s_adj`) - 22,589.12 against
+    788.09; the quanto's carry dropped - 2,985.15 against 4,319.58.
+    """
+    deals = [_forward('CMP'), dict(_forward('QTO', strike=100.0), Payoff_Type='Quanto')]
+    out = _run(_job(deals, _factors(skew=0.0)))
+    compo = UNITS * (_eq_fwd(T) * _fx_fwd(T) - STRIKE) * math.exp(-R_EUR * T)
+    quanto = UNITS * (_eq_fwd(T) * math.exp(QUANTO_CARRY * T) - 100.0) * math.exp(-R_EUR * T)
+    assert abs(_mtm(out, 'CMP') - compo) / abs(compo) < 1e-12, (_mtm(out, 'CMP'), compo)
+    assert abs(_mtm(out, 'QTO') - quanto) / abs(quanto) < 1e-12, (_mtm(out, 'QTO'), quanto)
+
+
+def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end():
+    """The swaplet list and the swap leg through the same seam, on `UNITS` shares: a swaplet with
+    both ends ahead pays the difference of its two ends' forwards - each at its own fx forward
+    under Compo, each carried over its own tenor under Quanto - a seasoned one its end's forward
+    less the start's observed level at the fx rate stated beside it, and the leg is that seasoned
+    swaplet to the expiry, paid on the business day it rolls to. On the EUR curve, flat surfaces,
+    exact.
+
+    Killing mutations: the cross left off the spot the forwards grow from (`spot_scale`) - 247.76
+    against 198.21 on the both-ahead swaplet; the observed start's fx rate dropped - -16,432.29
+    against 2,774.15 on the seasoned one; the carry left off the forwards, the fx forward's own
+    under Compo and the quanto's under Quanto - 599.12 against 198.21 on the both-ahead one.
+    """
+    t1, t2 = [(d - BASE).days / 365.0 for d in SAMPLES[:2]]
+    ahead, seasoned = _swaplet(SAMPLES[0], SAMPLES[1]), _swaplet(SEASONED, SAMPLES[1], 97.0, KNOWN_FX)
+    out = _run(_job([_swap('AHEAD', [ahead]), _swap('SEASONED', [seasoned]),
+                     dict(_swap('QTO', [ahead]), Payoff_Type='Quanto'), _leg('LEG')], _factors(skew=0.0)))
+    df2 = math.exp(-R_EUR * t2)
+    df = math.exp(-R_EUR * ((EXPIRY + pd.offsets.BDay(0)) - BASE).days / 365.0)
+    expected = {
+        'AHEAD': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - _eq_fwd(t1) * _fx_fwd(t1)) * df2,
+        'SEASONED': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - 97.0 * KNOWN_FX) * df2,
+        'QTO': UNITS * (_eq_fwd(t2) * math.exp(QUANTO_CARRY * t2)
+                        - _eq_fwd(t1) * math.exp(QUANTO_CARRY * t1)) * df2,
+        'LEG': UNITS * (_eq_fwd(T) * _fx_fwd(T) - 97.0 * KNOWN_FX) * df}
+    for ref, value in expected.items():
+        assert abs(_mtm(out, ref) - value) / abs(value) < 1e-12, (ref, _mtm(out, ref), value)
 
 
 def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain():

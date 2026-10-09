@@ -155,13 +155,6 @@ unmeasured — a limitation without a number is absolution, not documentation
   data file carries: on a kept context a later set funding off the file's curve read a fifth of
   what a fresh context does. The XVA tab drops its context after such a run, a parse per set; the
   write belongs on the run's own copy. S.
-- **The energy option reads its compo correlation under a name discovery does not pull**
-  (2026-10-09). A `ForwardPrice` paid in another currency has its pair's `FXVol` and the correlation
-  `Correlation.FxRate.<forward currency>.<deal currency>/ReferencePrice.<reference>.<forward
-  currency>` discovered off the deal, and `pv_energy_option` reads the correlation under the pair
-  SORTED and the reference named by its `ReferenceVol`'s vol factor: the two names agree only where
-  the forward currency sorts first and the vol is named as the reference, and elsewhere the declared
-  number is read as zero, silently. The commodity digital reads the declared name. S.
 - **A SIMM run re-solves each benchmark move in every worker** (2026-10-07). The `SIMM`
   calculation prices a booked trade at a time - base, one market move, the curve or surface it
   feeds re-solved, revalue - and each worker repeats the solves its trades need, so four workers

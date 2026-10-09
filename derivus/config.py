@@ -403,12 +403,12 @@ conditional_fields = {
      and instrument.field.get('Equity') is not None else []) +
     ([utils.Factor('Correlation', tuple('EquityPrice.{0}/FxRate.{1}'.format(
         instrument.field['Equity_Volatility'],
-        '.'.join(sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)]))
+        '.'.join(sorted([factor_fields['Currency'], utils.payoff_currency(instrument.field)]))
     ).split('.'))),
       utils.Factor('FXVol', tuple(
-          sorted([instrument.field['Currency'], utils.payoff_currency(instrument.field)])))]
+          sorted([factor_fields['Currency'], utils.payoff_currency(instrument.field)])))]
      if instrument.field.get('Equity_Volatility') is not None
-     and instrument.field['Currency'] != utils.payoff_currency(instrument.field) else []),
+     and factor_fields['Currency'] != utils.payoff_currency(instrument.field) else []),
     # FX analogue, keyed on the pair by the same `utils.spot_model_currency` rule the deal's own
     # lookup takes, or discovery loads a block the compile will not ask for
     'FxRate': lambda instrument, factor_fields, params: spot_model_factors(instrument, params),

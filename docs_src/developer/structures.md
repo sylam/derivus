@@ -162,8 +162,9 @@ form round-trips for nothing — is refused BY NAME at booking (`"Swap_Rate is n
 `POST /book/deals` and `book_deal` alike) while a stated `0.0` is a rate a benchmark means; and if a
 placeholder ever reaches a pricer anyway it keeps its `KeyError` and the loader's named skip. A completion answers a READ and
 never enters the block: `in`, iteration, `len`, the JSON round trip, `plan_hash` and the factor
-universe see exactly what the author wrote, which is why seven equity types can still decide the
-quanto wiring on `'Payoff_Type' in self.field`. The rule is one rule for every deal: an emitter
+universe see exactly what the author wrote; a type's own reading of `Payoff_Type` is its stated
+value, else the convention the type declares, which is how an energy option paid in another
+currency is a compo by omission where an equity option is `Standard`. The rule is one rule for every deal: an emitter
 authoring a benchmark — `derivus_bloomberg.ir_curve`'s deposit, FRA and swap — writes the terms and
 the REQUIRED fields always and a convention only where its value differs from the declaration, wire
 form against wire form, so a curve strip states what it IS and nothing the schema already says.

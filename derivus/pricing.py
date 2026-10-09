@@ -1675,7 +1675,8 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
 
     `walking` is a non-GBM spot model: the quanto carry here is `-rho sigma_S sigma_FX` off an
     implied ATM vol the walk never reads, so it is handed back as ZERO and the caller takes `rho`
-    to the walk instead (`quanto_step_loading`), where the day's sd is the state's own.
+    to the walk instead (`quanto_step_loading`), where the day's sd is the state's own. `vols`
+    None is a linear payoff, which takes the geometry and the carry and composes no vol.
     """
     # None means get the ATM vol for this expiry (can change depending on the vol surface type)
     fx_vols = utils.VolSurface.rate(factor_dep['FXVol'], None, expiry, shared)
@@ -1692,7 +1693,7 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
         rho = utils.implied_correlation(
             factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
         b_adj = torch.zeros_like(fx_vols)
-        vol, fx_vol = compo_vol(vols, fx_vols, rho), fx_vols
+        vol, fx_vol = (compo_vol(vols, fx_vols, rho) if vols is not None else None), fx_vols
 
     return dict(geo, vol=vol, b_adj=b_adj, fx_vol=fx_vol, rho=rho,
                 carry_adj=b_adj.unsqueeze(1) + geo['fx_carry'] if fixings is not None else None)
@@ -4751,7 +4752,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     Coupon = factor_dep['Autocall_Coupons']
     putBarrier = factor_dep['Barrier']
     observe = BARRIER_OBSERVATION[factor_dep['Barrier_Observation']]
-    isQuanto = 1.0 * (deal_data.Instrument.field.get('Payoff_Type') == 'Quanto')
+    isQuanto = 1.0 * ('QuantoImpliedCorrelation' in factor_dep)
     fixFXRate = deal_data.Instrument.field.get('FixFXRate', 1.0)
     rebate = deal_data.Instrument.field.get('Rebate', 0.0)
     barrierIsHit = 1.0 * (deal_data.Instrument.field.get('BarrierIsHit') is not None)
@@ -5310,6 +5311,9 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+    # a quanto pays the local average at one: nothing converts a sample, and each forward one is
+    # carried by -rho sigma_S sigma_X over its own tenor
+    quanto = 'QuantoImpliedCorrelation' in factor_dep
 
     samples = factor_dep['Cashflow'].Resets
     known_samples = samples.known_resets(shared.simulation_batch)
@@ -5325,7 +5329,7 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
 
     sample_values = all_samples.gather_weighted_curve(
         shared, sim_samples[:, utils.RESET_INDEX_End_Day, np.newaxis] if sim_samples.size else np.zeros((1, 1)),
-        multiply_by_time=False) * torch.unsqueeze(fx_spot, dim=1)
+        multiply_by_time=False) * (1.0 if quanto else torch.unsqueeze(fx_spot, dim=1))
 
     past_samples = torch.squeeze(
         torch.cat([torch.stack(known_samples), sample_values], dim=0)
@@ -5357,16 +5361,21 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
             future_resets = forward_block.gather_weighted_curve(
                 shared, sample_ts, multiply_by_time=False)
 
-            forwardfx = utils.calc_fx_forward(
-                factor_dep['ForwardFX'], factor_dep['CashFX'],
-                sample_t.np[:, utils.RESET_INDEX_Reset_Day], t_block, shared)
-
-            sample_ft = weight_t * future_resets * forwardfx
-
             # the tenor each sample's vol is read at: from the row's own time to the sample's day
             sample_block = daycount_fn(
                 sample_t.np[:, utils.RESET_INDEX_Reset_Day].reshape(1, -1)
                 - t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+
+            if quanto:
+                carry = calc_vol_adjustment(
+                    factor_dep, t_block, daycount_fn(tenor_block).reshape(-1), None, shared)['b_adj']
+                forwardfx = torch.exp(carry.reshape(-1, 1) * carry.new(sample_block)).unsqueeze(2)
+            else:
+                forwardfx = utils.calc_fx_forward(
+                    factor_dep['ForwardFX'], factor_dep['CashFX'],
+                    sample_t.np[:, utils.RESET_INDEX_Reset_Day], t_block, shared)
+
+            sample_ft = weight_t * future_resets * forwardfx
 
             M1 = torch.sum(sample_ft, dim=1)
             strike_bar = factor_dep['Strike'] - average
@@ -5382,12 +5391,11 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
             vol2 = vols * vols
 
             # a compo deal prices the product, so each sample's variance is the PRODUCT's
-            if 'FXCompoVol' in factor_dep:
+            if 'CompoImpliedCorrelation' in factor_dep:
                 fx_vols = torch.stack(
-                    [utils.VolSurface.rate(factor_dep['FXCompoVol'], None, sb, shared)
-                     for sb in sample_block])
+                    [utils.VolSurface.rate(factor_dep['FXVol'], None, sb, shared) for sb in sample_block])
                 vol2 += fx_vols * fx_vols + 2.0 * fx_vols * vols * utils.implied_correlation(
-                    factor_dep['ImpliedCorrelation'])
+                    factor_dep['CompoImpliedCorrelation'], factor_dep['Correlation_Sign'])
 
             product_t = sample_ft * torch.exp(
                 sample_ft.new(np.expand_dims(sample_block, axis=2)) * vol2)
@@ -6541,6 +6549,11 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     forward_settle_days = factor_dep['Bus_Ofs'][deal_data.Time_dep.deal_time_grid]
     eq_spot = utils.calc_time_grid_spot_rate(factor_dep['Equity'], deal_time, shared)
     cash = factor_dep['Flows']
+    # a compo's levels are S*X, each forward carrying the fx forward's own; a quanto's forwards
+    # carry -rho sigma_S sigma_X and pay at one - the forward calculation on the price return
+    adjusted = factor_dep.get('Check_Payoff_Type', False)
+    compo = 'CompoImpliedCorrelation' in factor_dep
+    daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     # the three indices a block is grouped on: start fixed, end fixed, and paid
     cash_start_idx = np.searchsorted(
@@ -6568,6 +6581,18 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
         if past_samples.shape[1] != shared.simulation_batch:
             past_samples = past_samples.expand(sim_samples.shape[0], shared.simulation_batch)
 
+        if compo:
+            # an observed level at the fx rate stated beside it, a simulated one at the cross
+            known_fx = [x[utils.RESET_INDEX_FXValue] for x in samples.schedule
+                        if x[utils.RESET_INDEX_Reset_Day] <= 0.0 and x[utils.RESET_INDEX_Value] > 0]
+            if not all(known_fx):
+                raise ValueError('a compo equity swap states the fx rate beside every known price '
+                                 '(Known_Start_FX_Rate, Known_End_FX_Rate)')
+            known_sample = [level * fx for level, fx in zip(known_sample, known_fx)]
+            past_samples = past_samples * utils.calc_fx_cross(
+                factor_dep['Local'][0], factor_dep['Other'][0],
+                sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+
         all_samples.append(torch.cat(
             [torch.cat(known_sample, dim=0), past_samples], dim=0) if known_sample else past_samples)
 
@@ -6593,6 +6618,12 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
         future_pmts = cashflow_pay - time_block.reshape(-1, 1)
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
+
+        def carried(days):
+            """Each forward's extra carry over `days` from its row, and the scale on the spot."""
+            adj = calc_vol_adjustment(factor_dep, discount_block.time_grid,
+                                      daycount_fn(factor_dep['Expiry'] - time_block), None, shared, fixings=days)
+            return adj['carry_adj'] * adj['carry_adj'].new(daycount_fn(days)).unsqueeze(2), adj['spot_scale']
 
         # both ends fixed: the period is valued off its own observed samples
         if pay_idx < end_idx:
@@ -6629,7 +6660,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
             cf_settle = forward_settle_days[time_block_index:time_block_index+all_counts[index]].reshape(-1,1)
             repo_carry = repo_block.gather_weighted_curve(shared, cf_end, cf_settle)
             divi_carry = divi_block.gather_weighted_curve(shared, cf_end, cf_settle)
-            forward_end = eq_block.unsqueeze(1) * torch.exp(repo_carry - divi_carry)
+            carry_end, scale = carried(cf_end) if adjusted else (0.0, 1.0)
+            forward_end = (eq_block * scale).unsqueeze(1) * torch.exp(repo_carry - divi_carry + carry_end)
 
             St0 = torch.unsqueeze(all_samples[0][end_idx:start_idx], dim=0)
             Ht0_t = utils.calc_realized_dividends(
@@ -6661,8 +6693,13 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
             divi_start = divi_block.gather_weighted_curve(shared, cf_start, cf_settle)
             divi_end = divi_block.gather_weighted_curve(shared, cf_end, cf_settle)
 
-            forward_start = eq_block.unsqueeze(1) * torch.exp(repo_start - divi_start)
-            forward_end = eq_block.unsqueeze(1) * torch.exp(repo_end - divi_end)
+            if adjusted:
+                carry, scale = carried(np.concatenate([cf_start, cf_end], axis=1))
+                carry_start, carry_end = carry[:, :cf_start.shape[1]], carry[:, cf_start.shape[1]:]
+            else:
+                carry_start, carry_end, scale = 0.0, 0.0, 1.0
+            forward_start = (eq_block * scale).unsqueeze(1) * torch.exp(repo_start - divi_start + carry_start)
+            forward_end = (eq_block * scale).unsqueeze(1) * torch.exp(repo_end - divi_end + carry_end)
 
             if factor_dep['PrincipleNotShares']:
                 factor1 = forward_end / forward_start

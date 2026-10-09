@@ -121,6 +121,16 @@ def discount(rate, day):
     return math.exp(-rate * (day - trial_commodity.B).days / 365.0)
 
 
+def average_black(g, t, variance, strike):
+    """Black on the two moments of the average of `g`, each sample's variance accrued over its own
+    `t` from the base date: `M1 = mean G`, `M2 = sum_ij G_i G_j exp(s2 min(t_i, t_j)) / n^2`."""
+    m1 = g.mean()
+    m2 = (np.outer(g, g) * np.exp(variance * np.minimum.outer(t, t))).sum() / g.size ** 2
+    total = math.sqrt(math.log(m2 / m1 ** 2))
+    d1 = (math.log(m1 / strike) + 0.5 * total ** 2) / total
+    return m1 * norm.cdf(d1) - strike * norm.cdf(d1 - total)
+
+
 def test_an_energy_option_accrues_each_sample_s_variance_from_the_base_date():
     """`trial_commodity`'s FUEL_OPT - a call struck at 82 on the daily average of the fuel forward
     over one delivery month, 30% flat - marks as Black on that average's two moments under a base
@@ -143,22 +153,47 @@ def test_an_energy_option_accrues_each_sample_s_variance_from_the_base_date():
     fuel_vol = trial_commodity.FACTORS['CommodityPriceVol.FUEL']['Surface'].array[0, 2]
     r_usd = book.DISCOUNT[0]
 
-    def black_on_the_average(g, variance, strike):
-        m1 = g.mean()
-        m2 = (np.outer(g, g) * np.exp(variance * np.minimum.outer(t, t))).sum() / g.size ** 2
-        total = math.sqrt(math.log(m2 / m1 ** 2))
-        d1 = (math.log(m1 / strike) + 0.5 * total ** 2) / total
-        return deal['Volume'] * (m1 * norm.cdf(d1) - strike * norm.cdf(d1 - total))
-
-    usd = discount(r_usd, deal['Settlement_Date']) * black_on_the_average(
-        forwards, fuel_vol ** 2, deal['Strike'])
-    eur = book.X0 * discount(book.R_EUR, deal['Settlement_Date']) * black_on_the_average(
-        forwards * np.exp((book.R_EUR - r_usd) * t) / book.X0, fuel_vol ** 2 + book.SIGMA ** 2,
+    usd = deal['Volume'] * discount(r_usd, deal['Settlement_Date']) * average_black(
+        forwards, t, fuel_vol ** 2, deal['Strike'])
+    eur = deal['Volume'] * book.X0 * discount(book.R_EUR, deal['Settlement_Date']) * average_black(
+        forwards * np.exp((book.R_EUR - r_usd) * t) / book.X0, t, fuel_vol ** 2 + book.SIGMA ** 2,
         65.0)
     for job, reference in ((trial('FUEL_OPT'), usd),
                            (trial('FUEL_OPT', Currency='EUR', Discount_Rate='EUR', Strike=65.0), eur)):
         mark = float.fromhex(marks(job)['FUEL_OPT'])
         assert abs(mark - reference) <= 1e-12 * reference, (mark, reference)
+
+
+#: the pair's correlation under the name the energy family declares, oriented USD to EUR
+CORRELATED = {'Correlation.FxRate.USD.EUR/ReferencePrice.FUEL.USD': {'Value': 0.3}}
+
+
+def test_an_energy_option_paid_in_another_currency_is_a_compo_or_a_quanto():
+    """FUEL_OPT paid in EUR with the pair's correlation declared, read unsigned under the energy
+    family's own name: the compo, what omission means, averages S*X with each sample's variance
+    composed with the pair's, `2 rho sigma sigma_fx` in it; the quanto averages the local samples,
+    each forward one carried by `-rho sigma sigma_fx` over its own days, and pays the EUR at one.
+
+    Killing mutations: the correlation read with the equity's sorted-pair sign - the compo reads
+    5,454.29 against 7,009.53; the quanto's carry dropped - 6,975.91 against 6,711.86.
+    """
+    deal = next(d for d in trial_commodity.DEALS if d['Reference'] == 'FUEL_OPT')
+    samples = pd.bdate_range(deal['Period_Start'], deal['Period_End'])
+    t = (samples - trial_commodity.B).days.to_numpy() / 365.0
+    forwards, r_usd = fuel_forward(samples), book.DISCOUNT[0]
+    fuel_vol = trial_commodity.FACTORS['CommodityPriceVol.FUEL']['Surface'].array[0, 2]
+    paid = deal['Volume'] * book.X0 * discount(book.R_EUR, deal['Settlement_Date'])
+    compo = paid * average_black(
+        forwards * np.exp((book.R_EUR - r_usd) * t) / book.X0, t,
+        fuel_vol ** 2 + book.SIGMA ** 2 + 2.0 * 0.3 * fuel_vol * book.SIGMA, 65.0)
+    quanto = paid * average_black(
+        forwards * np.exp(-0.3 * fuel_vol * book.SIGMA * t), t, fuel_vol ** 2, deal['Strike'])
+    for terms, reference in (({'Strike': 65.0}, compo), ({'Payoff_Type': 'Quanto'}, quanto)):
+        job = document(SimpleNamespace(
+            DEALS=[dict(deal, Currency='EUR', Discount_Rate='EUR', **terms)],
+            FACTORS=dict(trial_commodity.FACTORS, **CORRELATED), CONFIGURATION={}))
+        mark = float.fromhex(marks(job)['FUEL_OPT'])
+        assert abs(mark - reference) <= 1e-12 * reference, (terms, mark, reference)
 
 
 def test_a_commodity_digital_is_black_s_digital_on_the_reference_s_forward():
