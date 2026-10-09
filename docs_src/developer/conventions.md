@@ -142,7 +142,7 @@ Neither half can tell you a gate's *assertion* is weak — only that its fixture
 
 **Every test names its killing mutation**, and a slow one is made as cheap as that mutation allows: a world priced once per module where several tests read it, fewer paths, rungs or rows only where the mutation still dies with margin, the readings before and after restated in the docstring beside it. A test goes only where every mutation it names is shown red under the tests that remain - never on coverage alone.
 
-Measured on the Windows box at ae21a42: the suite 75 minutes instrumented, about 62 after the cuts that wrote this section; `tests/test_hw2f_analytic.py` 5.4 minutes; the record set (`test_spine_*`, P&L, collateral, position scaling, schema emission) 11.9 minutes and the service set (service, binding, diary, declared defaults) 3.5, both bound by `fsync` - 52 ms a sync, 36 ms an append, up to a second a minted home; the census 26 minutes where it traced the suite in 80 to 120, emitting the same 48 arcs.
+Measured on the Windows box at e65488a, after the suite was cut to tests that drive a JSON contract, have a defined outcome, cover a named area and run or fail quickly: 1,150 tests, 29.5 minutes instrumented where 1,590 took 75; the engine's modules 12.8 minutes, the record and service sets 16.7, those bound by `fsync` - 52 ms a sync, 36 ms an append, up to a second a minted home, and a home minted per test; the census 26 minutes where it traced the suite in 80 to 120, emitting the same 48 arcs.
 
 ## No overengineering
 
