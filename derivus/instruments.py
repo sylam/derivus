@@ -404,6 +404,22 @@ def get_implied_correlation(rate1, rate2, all_factors):
     return all_factors.get(utils.Factor('Correlation', correlation_name))
 
 
+def equity_fx_correlation(field, all_factors):
+    """An equity's compo or quanto correlation, `Correlation.EquityPrice.<vol>/FxRate.<sorted pair>`,
+    and the sign the deal's own direction reads it with, the pair being named sorted."""
+    corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
+    return get_implied_correlation(
+        ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors), corr_sign
+
+
+def reference_fx_correlation(field, all_factors):
+    """A reference price's, as the energy family declares it (`config.conditional_fields`):
+    `Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>`, named local to payoff
+    and so read unsigned."""
+    return get_implied_correlation(('FxRate',) + field['Currency'] + field['Payoff_Currency'],
+                                   ('ReferencePrice',) + field['Reference_Type'], all_factors), 1.0
+
+
 def get_commodity_rate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the commodity spot price factor"""
     return calc_factor_code_chain('CommodityPrice', 'ObservedBasis', fieldname, static_offsets, stochastic_offsets)
@@ -794,20 +810,18 @@ class Deal(object):
         return {'mtm': self.calculate(shared, time_grid, deal_data)}
 
     def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-                          correlation=None):
+                          correlation):
         """Set the FX vol and implied-correlation dependencies of a compo or quanto payoff, paid in
         `field['Payoff_Currency']` on an underlying quoted in `field['Currency']`.
 
-        The correlation is an equity's by default, named on the sorted pair with the deal's own
-        direction as a sign; a family naming its own another way hands in `(factor, sign)`.
+        `correlation(field, all_factors)` names the family's own pair and the sign it is read with -
+        `equity_fx_correlation`, `reference_fx_correlation`.
         """
         if 'Payoff_Type' in self.field and field['Payoff_Currency'] != field['Currency']:
             field_index['Check_Payoff_Type'] = True
-            corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
+            _, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
             field_index['FXVol'] = get_vol_factor('FXVol', fx_lookup, static_offsets, stochastic_offsets, all_tenors)
-            # the pair is named sorted, so the deal's own direction is a sign the compile resolves
-            factor, sign = correlation or (get_implied_correlation(
-                ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors), corr_sign)
+            factor, sign = correlation(field, all_factors)
             field_index['Correlation_Sign'] = sign
             field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = factor
 
@@ -3928,7 +3942,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
             logging.error('Past fixings not defined - please specify fixings for {}'.format(
                 ', '.join([str(x[0]) for x in missing_fixings])))
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         return field_index
 
@@ -4038,7 +4053,8 @@ class EquityBarrierBinaryOption(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days
         }
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         # non-GBM spot model, by naming convention off the equity underlying and with no deal
         # field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM)
@@ -4163,7 +4179,8 @@ class EquityOptionDeal(Deal):
             'Forward_Settlement': forward_settlement
         }
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         return field_index
 
@@ -4578,7 +4595,8 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Autocall_Coupons': [ac.get(x, -1) for x in all_dates]
         })
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         # non-GBM spot model, by naming convention off the equity - see docstring
         if spot_model != 'None' and not field_index['oss_windows']:
@@ -4810,7 +4828,8 @@ class EquityOneTouchOption(Deal):
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0)
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         return field_index
 
@@ -5053,7 +5072,8 @@ class EquityBarrierOption(Deal):
             field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0)
 
-        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation)
 
         # non-GBM spot model, by naming convention off the equity - see docstring
         spot_model = self.options.get('SpotModel', 'None')
@@ -5195,12 +5215,8 @@ class CommodityDigitalOption(Deal):
         field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor, base_date)
-        # the pair's correlation as the energy family declares it (config.conditional_fields), named local to
-        # payoff and so read unsigned
-        self.check_option_data(
-            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-            correlation=(get_implied_correlation(('FxRate',) + field['Currency'] + field['Payoff_Currency'],
-                                                 ('ReferencePrice',) + field['Reference_Type'], all_factors), 1.0))
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               reference_fx_correlation)
 
         return field_index
 
