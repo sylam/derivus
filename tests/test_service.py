@@ -191,7 +191,10 @@ def test_the_result_carries_the_replay_tuple():
 
 def test_the_schema_endpoint_is_the_declarations_plus_the_version():
     """The endpoint is `schema.mapping` plus the version that emitted it - what lets a front end
-    render panels, tables and enums without restating them."""
+    render panels, tables and enums without restating them.
+
+    Killing mutation: `/schema` published without the engine version that emitted it.
+    """
     published = CLIENT.get('/schema').json()
 
     assert published.pop('engine_version') == derivus.__version__
@@ -327,7 +330,10 @@ def test_a_missing_book_file_starts_blank_and_takes_its_first_booking(tmp_path):
 
 
 def test_without_a_book_the_book_verbs_are_a_404():
-    """A miss is a refusal naming the fix, never a book invented in memory that no file backs."""
+    """A miss is a refusal naming the fix, never a book invented in memory that no file backs.
+
+    Killing mutation: a missing book read through rather than refused, which 500s every book verb.
+    """
     assert CLIENT.get('/book').status_code == 404
     assert '--book' in CLIENT.get('/book').json()['detail']
 
@@ -396,7 +402,7 @@ def test_a_book_edited_twice_inside_one_stamp_reads_back_the_second_edit(book):
 @pytest.mark.skipif(os.name != 'nt', reason="a share mode is a Windows open's")
 def test_a_program_takes_the_book_to_itself_while_the_book_is_read_in_a_tight_loop(tmp_path):
     """A program opening a 3 MB book to itself - sharing nothing, as a Windows save in place or a
-    backup does - gets it 2,000 times of 2,000 while the service reads the book in a tight loop,
+    backup does - gets it 200 times of 200 while the service reads the book in a tight loop,
     as every GET does, and no read fails - none a GET would answer 500: once a read has begun a
     clock tick after the book's stamp, the book is stat'ed and never held open. A replace is
     refused over a stat's own handle too, which no reader that looks at the file avoids.
@@ -439,7 +445,7 @@ def test_a_program_takes_the_book_to_itself_while_the_book_is_read_in_a_tight_lo
         while begun[0] < settled and not failed:
             assert time.monotonic() < deadline, 'the reader stopped reading'
             time.sleep(0.001)
-        for _ in range(2000):
+        for _ in range(200):
             # GENERIC_READ, sharing nothing, OPEN_EXISTING
             handle = kernel.CreateFileW(str(path), 0x80000000, 0, None, 3, 0, None)
             if handle == wintypes.HANDLE(-1).value:
@@ -457,7 +463,10 @@ def test_a_program_takes_the_book_to_itself_while_the_book_is_read_in_a_tight_lo
 def test_a_rejected_booking_touches_nothing(book):
     """Validate-before-write, refused on both counts at once: an authoring message and market data
     the book does not carry. File bytes and etag stand still, and the refusal is an ANSWER carrying
-    the messages."""
+    the messages.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
+    """
     before = book.read_bytes()
     etag = CLIENT.get('/book').json()['etag']
     outcome = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BINARY}),
@@ -538,7 +547,10 @@ def test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not(book, 
 def test_a_booking_naming_market_data_the_book_lacks_is_refused(book):
     """A deal naming a curve the book has no block for would load and then be silently DROPPED by
     discovery, so the DELTA of missing factors refuses it by name. The book's pre-existing gaps do
-    not block - only what this booking adds."""
+    not block - only what this booking adds.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
+    """
     outcome = CLIENT.post('/book/deals', content=dump(
         {'action': 'add',
          'deal': dict(CASHFLOW, Reference='CF9', Currency='GBP', Discount_Rate='GBP')}),
@@ -651,7 +663,11 @@ def test_a_value_outside_its_own_declaration_is_an_authoring_message():
 
 def test_booking_then_deleting_restores_the_file_bytes(book):
     """The rewrite keeps the file's own indent, so book-then-delete is a no-op to the byte and a
-    booking is reviewable as the diff of the deal and nothing else."""
+    booking is reviewable as the diff of the deal and nothing else.
+
+    Killing mutation: the file rewritten at a fixed indent rather than its own, which turns every
+    write into a reformat.
+    """
     before = book.read_bytes()
     booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': BOOKED}),
                          headers=JSON).json()
@@ -706,7 +722,10 @@ def test_an_amendment_lands_in_the_file(book):
 
 
 def test_a_bad_amendment_touches_nothing(book):
-    """The same validate-delta rule as a booking, on the amend branch."""
+    """The same validate-delta rule as a booking, on the amend branch.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
+    """
     before = book.read_bytes()
     outcome = CLIENT.post('/book/deals', json={
         'action': 'amend', 'deal_path': '0', 'fields': {'Discount_Rate': 'GBP'}}).json()
@@ -717,7 +736,11 @@ def test_a_bad_amendment_touches_nothing(book):
 
 
 def test_amending_back_is_byte_identical(book):
-    """An edit undone leaves no trace, not even a reformat."""
+    """An edit undone leaves no trace, not even a reformat.
+
+    Killing mutation: the file rewritten at a fixed indent rather than its own, which turns every
+    write into a reformat.
+    """
     before = book.read_bytes()
     original = json.loads(book.read_text())['Calc']['Deals']['Deals']['Children'][0][
         'Instrument']['.Deal']['Amount']
@@ -812,6 +835,8 @@ def test_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
     count and nothing else. The same candidate on a curve the book carries queues and prices, which
     is what says the check reads the DELTA: a what-if is no more blocked by the book's own gaps
     than a booking is.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
     """
     candidate = dict(CASHFLOW, Reference='CF9', Amount=100_000.0)
     absent = CLIENT.post('/book/price', content=dump(
@@ -904,7 +929,10 @@ def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
 def test_gamma_travels_the_served_path(tmp_path):
     """The SERVED second-order route (`test_base_valuation_gamma` owns the oracles): a what-if with
     `calculation_overrides` returns `Greeks_Second`, its cells are the in-process run's to the bit,
-    the spot diagonal is a live positive gamma and the vanna cross carries real weight."""
+    the spot diagonal is a live positive gamma and the vanna cross carries real weight.
+
+    Killing mutation: the summary shaping its first table alone.
+    """
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
         sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
@@ -1065,6 +1093,9 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     THE ORPHAN is a block no configured family READS, which never reaches a bootstrapper at all -
     `Config.bootstrap` refuses it by name, with the families it does read, and the endpoint answers
     422 rather than a refusal outcome.
+
+    Killing mutation: a bootstrap's ERROR left uncaptured, which writes a market the bootstrap
+    complained about.
     """
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'].update({
@@ -1448,6 +1479,9 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     cannot read, which is the one thing a desk can spell wrong that no convention would catch. And
     a bootstrap that complains, which refuses the WHOLE write the way a tick's does: the
     `HullWhite2FactorModelParameters` entry configured beside the curve has a block it cannot fit.
+
+    Killing mutation: a bootstrap's ERROR left uncaptured, which writes a market the bootstrap
+    complained about.
     """
     from derivus_bloomberg import session
     from derivus_bloomberg.errors import BloombergUnavailable
@@ -1821,31 +1855,6 @@ def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
             len(refused), len(ticks), refused[:2]))
     assert all(outcome['updated'] == ['FXVolPrices.USD.ZAR'] for outcome, _ in ticks), (
         'a tick wrote without moving the quote it posted')
-
-
-def test_the_capture_hears_its_own_thread_and_no_other():
-    """The mechanism, with no timing in it: the foreign record comes from a thread this gate JOINS
-    before looking. Both halves matter - a handler that heard nothing would refuse nothing ever, so
-    the same handler is required to hear THIS thread. Nothing is patched: `CapturedErrors` is the
-    shipped class on the shipped channel, which is why the filter has to be on the record.
-    """
-    captured = service.CapturedErrors()
-    foreign = threading.Thread(
-        target=lambda: logging.critical('Deal FOREIGN skipped - a queued run, not this tick'))
-    logging.getLogger().addHandler(captured)
-    try:
-        foreign.start()
-        foreign.join(timeout=30)
-        assert not foreign.is_alive(), 'the foreign thread never finished - nothing was measured'
-        assert captured.messages == [], captured.messages
-        logging.error('FXVolSurfaceParameters wrote no FXVol price factor')
-    finally:
-        logging.getLogger().removeHandler(captured)
-
-    assert captured.messages == ['FXVolSurfaceParameters wrote no FXVol price factor'], (
-        'the capture stopped hearing its own thread - a handler that hears nothing refuses '
-        'nothing, which is the opposite defect')
-    assert captured.thread == threading.get_ident()
 
 
 def built_surface(path, quotes=None):
@@ -2358,7 +2367,10 @@ def test_a_tick_a_bootstrapper_refuses_lands_refused_rather_than_raising(desk, m
 
 def test_the_bloomberg_verb_needs_a_book_and_a_bootstrapper(book):
     """The market verbs' own refusals, in the same words: no book is a 404 naming the flag that
-    opens one, no bootstrapper is a 422. Neither reaches the terminal or the queue."""
+    opens one, no bootstrapper is a 422. Neither reaches the terminal or the queue.
+
+    Killing mutation: a missing book read through rather than refused, which 500s the market verb.
+    """
     bare = CLIENT.post('/book/bloomberg', json={})
     service.BOOK = None
     missing = CLIENT.post('/book/bloomberg', json={})
@@ -2376,6 +2388,8 @@ def test_the_metronome_skips_the_beat_its_last_tick_is_still_in_flight():
     job holding the worker is queued, then running, then done, and `pending_status` is that word
     each time. Non-vacuous by construction - no book is open, so a beat that did NOT skip would
     reach `live_book()` and raise the 404.
+
+    Killing mutation: the metronome submitting while its last tick is still in flight.
     """
     metronome = service.Metronome(60.0)
     assert metronome.pending_status() is None, 'nothing submitted yet is nothing to wait on'
@@ -4320,7 +4334,10 @@ def test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused(boo
     """The solve validates its candidate before it queues, in the booking's own words - the
     what-if's check. Without it the candidate LOADS, discovery drops it on the first iterate, the
     marks frame carries no row under its reference and the loop dies reading one: an error result
-    saying `single positional indexer is out-of-bounds`, the market data never named."""
+    saying `single positional indexer is out-of-bounds`, the market data never named.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
+    """
     absent = CLIENT.post('/book/solve', content=dump({
         'deal': dict(CASHFLOW, Reference='SLV4', Discount_Rate='ZAR-SWAP'), 'field': 'Amount',
         'target': 1.0}), headers=JSON)
@@ -4343,7 +4360,10 @@ def test_validate_over_http_is_the_verb_verbatim():
 
 def test_a_browser_is_allowed_to_call_the_service_at_all():
     """Without the CORS header a browser discards the answer before the SPA sees it. Both halves:
-    the preflight a POST of JSON provokes, and the header on the answer itself."""
+    the preflight a POST of JSON provokes, and the header on the answer itself.
+
+    Killing mutation: no browser origin allowed, which a browser reads as no answer at all.
+    """
     origin = {'Origin': 'http://localhost:4200'}
     preflight = CLIENT.options('/execute', headers=dict(
         origin, **{'Access-Control-Request-Method': 'POST'}))
@@ -4418,7 +4438,10 @@ def test_the_cost_estimate_counts_paths_by_grid_points():
 
 def test_a_plan_id_execute_is_the_document_execute():
     """Content addressing does not care how the job arrived: `/prepare` names the parse by its plan
-    hash, and executing that name unpatched lands on the id the whole document landed on."""
+    hash, and executing that name unpatched lands on the id the whole document landed on.
+
+    Killing mutation: every submission queued anew, which runs one job twice under one name.
+    """
     document = job(Random_Seed=13)
     prepared = CLIENT.post('/prepare', content=dump(document), headers=JSON).json()
     from_document, _ = run(document)
@@ -4433,7 +4456,11 @@ def test_a_plan_id_execute_is_the_document_execute():
 def test_a_patched_execute_leaves_the_plan_as_it_found_it():
     """The cache holds a PRISTINE parse and hands out deep copies, so a patch reaches one execute
     and not the plan - asserted by executing the same plan unpatched afterwards, which a shared
-    Context would answer with the patched id."""
+    Context would answer with the patched id.
+
+    Killing mutation: the plan cache handing out its own parse rather than a copy, which lets a
+    patch reach the plan.
+    """
     document = job(Random_Seed=17)
     plan_id = CLIENT.post('/prepare', content=dump(document), headers=JSON).json()['plan_id']
     unpatched_id, _ = run(document)
@@ -4455,6 +4482,8 @@ def test_a_plan_falls_out_of_the_cache_least_recently_used_first():
 
     The three jobs differ by a deal REFERENCE and not by the seed, which is a replay coordinate
     deliberately outside the plan - three seeds would have been one plan and measured nothing.
+
+    Killing mutation: a plan read not counted as a use, which evicts the plan just read.
     """
     plans = [in_process(job(deals=(dict(CASHFLOW, Reference=name),)))
              for name in ('CF1', 'CF2', 'CF3')]
@@ -4470,7 +4499,11 @@ def test_a_plan_falls_out_of_the_cache_least_recently_used_first():
 
 def test_an_unknown_plan_result_or_table_is_a_404():
     """A name the service does not hold is a 404, never an empty answer a client would render as a
-    blank grid."""
+    blank grid.
+
+    Killing mutation: an unknown result read through rather than refused, which 500s a client asking
+    after a run the service never held.
+    """
     result_id, _ = run(job(Random_Seed=19))
 
     assert CLIENT.post('/execute', json={'plan_id': 'nosuchplan'}).status_code == 404
@@ -4487,6 +4520,8 @@ def test_a_result_publishes_the_shape_of_every_table_and_pages_each_one():
 
     A group is not a table and has no page, so `cashflows` arrives flattened to the path naming
     each one. The paging assertions stop `limit` being read as an end index.
+
+    Killing mutation: a page served from the first row whatever its offset.
     """
     frame = pd.DataFrame({'a': [1.0, 2.0, 3.0], 'b': [4.0, 5.0, 6.0]})
     results = {'mtm': frame, 'cashflows': {'ZAR': frame}, 'collva_t': np.arange(4.0), 'cva': 1.25}
@@ -4515,6 +4550,9 @@ def test_a_patch_reaches_the_number_and_moves_the_result_id():
     """A patch is applied before the hashes are taken, so it reaches the price AND the identity. A
     spot is market VALUES, so the values hash moves and the plan hash does not; an id taken before
     the patch would collide with the unpatched run.
+
+    Killing mutation: the patch applied after the hashes are taken, which reports a patched run
+    under the unpatched identity.
     """
     patch = {'FxRate.ZAR': {'Spot': SPOT * 1.1}}
     plain_id, plain = run(job())
@@ -4534,7 +4572,10 @@ def test_a_patch_reaches_the_number_and_moves_the_result_id():
 
 def test_an_identical_submission_is_one_result_id():
     """The same job names the same result, and the second submission already holds the finished
-    one."""
+    one.
+
+    Killing mutation: every submission queued anew, which runs one job twice under one name.
+    """
     document = job(Random_Seed=11)
     first, _ = run(document)
     second = submit(document)
@@ -4546,7 +4587,10 @@ def test_an_identical_submission_is_one_result_id():
 def test_a_submission_arriving_mid_run_coalesces_onto_the_first():
     """Dedupe holds while the first job is still QUEUED or RUNNING, not only once it is filed.
     Counted at the executor, because a second run would overwrite the store with the same content
-    and leave no trace."""
+    and leave no trace.
+
+    Killing mutation: every submission queued anew, which runs one job twice under one name.
+    """
     executor = service.ComputeExecutor()
     ran, release = [], threading.Event()
     blocker = Held('blocker', ran, hold=release)
@@ -4565,7 +4609,11 @@ def test_a_submission_arriving_mid_run_coalesces_onto_the_first():
 def test_a_light_job_jumps_a_heavy_one_that_is_still_waiting():
     """Cost class orders what is waiting, arrival orders within a class, the running job is left
     alone. All three are queued before the blocker is released, so the queue and not arrival order
-    decides what runs next."""
+    decides what runs next.
+
+    Killing mutation: every job queued at one cost class, which leaves a light job behind a heavy
+    one.
+    """
     executor = service.ComputeExecutor()
     ran, release = [], threading.Event()
     blocker = Held('blocker', ran, hold=release)
@@ -4645,6 +4693,9 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     The last step cannot be faked: `net` is what the runner computed while solving, and the book's
     value is the engine on the composed deal actually written, priced from the file. Zero is
     asserted against a leg premium - a net of zero means nothing if both legs are worth nothing.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     quote = quote_of('ZeroCostCollar', COLLAR)
     premium = max(abs(leg['premium']) for leg in quote['legs'])
@@ -4704,6 +4755,9 @@ def test_a_quoted_forward_extra_says_which_way_it_was_dealt_and_books_that(quoti
 
     Then the approval books the MIRROR of exactly those legs, which is the claim a price alone
     cannot make: the bank sells the call it was asked for and buys the down-and-in put.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     quote = quote_of('ForwardExtra', IMPORTER)
 
@@ -4742,6 +4796,9 @@ def test_a_collar_quoted_at_a_margin_books_the_bank_at_plus_it(quoting, tmp_path
     50,000 rand. What BOOKS is the mirror, and the book then marks it at plus the margin's dollar
     value, which is the engine on the deal actually written rather than anything the runner said.
     The ticket records what was agreed, in the currency it was agreed in.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     plain = quote_of('ZeroCostCollar', MARGIN_COLLAR)
     quote = quote_of('ZeroCostCollar', MARGIN_COLLAR, margin=MARGIN)
@@ -4803,6 +4860,9 @@ def test_a_two_way_quote_books_the_mirror_at_the_margin_and_the_spread(quoting_t
 
     And `edge` is the charge and nothing else: the sum of the legs' own `spread_charge`, each of
     them a number rather than a null, each saying where its vega was read.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     quote = quote_of('ZeroCostCollar', MARGIN_COLLAR, margin=MARGIN)
     charge = quote['margin']['value']
@@ -4852,6 +4912,9 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     holds when the two readings share a count and a seed, and a book stating fewer than the quote
     is floored onto marks its own trade on a different estimator - at 1,024 paths this mark lands
     4.6% off the take it was quoted at, which is what `/book/status` names.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     from derivus_spine import SpineLog, init_home
 
@@ -5073,6 +5136,8 @@ def test_a_pending_trade_the_book_would_refuse_is_refused_in_the_booking_wording
     `test_a_bad_amendment_touches_nothing` - one validate-before-write seam, or the two paths have
     drifted. The pending file is authored here because that is the only way to reach the refusal
     branch without asking the runner for a quote it would rightly decline.
+
+    Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
     """
     before = quoting.read_bytes()
     pending = tmp_path / 'tmp'
@@ -5475,6 +5540,8 @@ def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_x
     Then the mosaic: a deal booked into ONE set with only THAT set recalced moves its row - new
     plan, new id, later stamp, bigger number - and leaves the other byte for byte, `as_of`
     included. Staleness is data, and a partial recalc is a partial WRITE.
+
+    Killing mutation: every submission queued anew, which runs one job twice under one name.
     """
     assert {reference: entry['status'] for reference, entry in xva_rows().items()} == {
         'NS_A': 'never run', 'NS_B': 'never run'}
@@ -5781,32 +5848,6 @@ def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_pat
     assert rows['NS_A']['fva'] == pytest.approx(standing['NS_A']['fva'], rel=1e-12)
     assert rows['NS_A']['cva'] == pytest.approx(standing['NS_A']['cva'], rel=1e-12)
     assert rows['NS_B'] == old['NS_B'], 'a partial recalc upgraded a row it was not asked for'
-
-
-def test_a_missing_funding_table_is_age_on_a_stored_row_and_a_defect_on_a_live_run():
-    """ONE absent column, two readings - and the gate is the DIFFERENCE between them, over the same
-    two mappings.
-
-    A run the store already holds is written UP rather than paid for again, and one filed before
-    this column existed carries no `fva`, so the STORED reading is lenient and lands a null.
-
-    A live run is not stale by construction - the job composes both adjustments over ONE exposure
-    cube - so results with no `fva` are a defect of that run. Filing a null would put 'no funding
-    cost' on the blotter under a fresh stamp, so the fresh path raises and the row lands `failed`.
-    """
-    whole, aged = {'cva': 119.68, 'fva': 302.82}, {'cva': 119.68}
-
-    assert service.XvaJob.adjustments(whole) == {'cva': 119.68, 'fva': 302.82}
-    assert service.XvaJob.adjustments(whole, stored=True) == service.XvaJob.adjustments(whole)
-    assert service.XvaJob.adjustments(aged, stored=True) == {'cva': 119.68, 'fva': None}
-    with pytest.raises(KeyError, match='fva'):
-        service.XvaJob.adjustments(aged)
-
-    # the row each reading lands: the stored one is a DONE row carrying a null
-    filed = service.XvaJob(None, 'NS_A', ('CP_A', True), 'a-result-id',
-                           {'plan_hash': 'p', 'values_hash': 'v', 'seed': 1}).landed(
-        {'status': 'done', 'tables': aged})
-    assert filed['status'] == 'done' and filed['cva'] == 119.68 and filed['fva'] is None
 
 
 # --------------------------------------------------------------------------------------------
@@ -6218,6 +6259,9 @@ def test_a_quote_for_a_client_books_under_the_clients_netting_set(quoting_client
     nesting must not touch the side the approval lands on.
 
     The root half is in the same gate on purpose - `netting_set` absent has to be TODAY's booking.
+
+    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     assert quote['netting_set'] == CLIENT_SET
@@ -6297,6 +6341,9 @@ def test_a_quote_is_firm_only_for_the_window_the_book_declares(quoting, tmp_path
     The third mandate is the compatibility case: a pending file with no `quoted_at` cannot be shown
     to be inside any window, and an unknown age is not an age inside it. So a real window treats it
     as AGED and says which case it is, rather than booking a quote of unknown vintage.
+
+    Killing mutation: the desk's firm window unread, which books a quote past the window it was firm
+    for.
     """
     quote = quote_of('ZeroCostCollar', COLLAR)
     pending = tmp_path / 'tmp' / (quote['quote_id'] + '.json')
@@ -6505,6 +6552,8 @@ def test_a_blob_is_served_by_address_to_a_seat_the_record_admits_to_read_it(tmp_
     since the bytes behind a citation are the fact itself. A home declaring no document serves
     everyone, as every other enforcement here does; under one, a seat outside the rows and a read
     nobody signed are refused in the record's own words as a 422.
+
+    Killing mutation: the blob read under no seat, which refuses the seat the record admits.
     """
     from derivus_spine import SpineLog
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document

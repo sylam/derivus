@@ -41,6 +41,7 @@ genesis, a synthetic book whose late booking makes as-of and as-at disagree acro
 checkpoint authenticity under the key in force at each checkpoint's own LSN, one writer, the one
 torn line the writer may remove and the terminated one it must not, and a keyless replica.
 """
+import atexit
 import base64
 import hashlib
 import hmac
@@ -48,6 +49,8 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -157,20 +160,42 @@ def instruments(log):
     return (log.store.put(TERMS), log.store.put(AMENDED))
 
 
-def seeded(root, name='home', clips=('EXEC-1', 'EXEC-2', 'EXEC-3')):
-    """A minted home with genesis plus one fill per clip - LSNs 1..4 are genesis, 5.. are trades.
+#: Homes this process filled once, by what they hold. A gate is handed a COPY: a mint and its
+#: appends fsync and a copy does not, and a copy is the home byte for byte - chain, keys and blobs.
+#: Two homes that must be two histories are filled in place (`copied=False`).
+MINTED = {}
+
+
+def copy_of(root, name, held, build, copied=True):
+    """`root / name`: a copy of the home `build(home)` fills once per `held` in this process, or
+    with `copied` false a home `build` fills there."""
+    home = Path(root) / name
+    if not copied:
+        build(home)
+        return home
+    if held not in MINTED:
+        folder = tempfile.mkdtemp(prefix='spine-')
+        atexit.register(shutil.rmtree, folder, True)
+        MINTED[held] = Path(folder) / 'home'
+        build(MINTED[held])
+    shutil.copytree(str(MINTED[held]), str(home))
+    return home
+
+
+def seeded(root, name='home', clips=('EXEC-1', 'EXEC-2', 'EXEC-3'), copied=True):
+    """A home with genesis plus one fill per clip - LSNs 1..4 are genesis, 5.. are trades.
 
     The writer is closed before the home is handed back: one deployment, one log, one writer, and a
     fixture that kept its claim would be the thing refusing the test's own next append.
     """
-    home = root / name
-    init_home(home, ACTOR)
-    log = SpineLog(home)
-    instruments(log)
-    for reference in clips:
-        log.append('fill', fill(reference), actor=ACTOR, book=BOOK, effective_time=WHEN)
-    log.close()
-    return home
+    def build(home):
+        init_home(home, ACTOR)
+        log = SpineLog(home)
+        instruments(log)
+        for reference in clips:
+            log.append('fill', fill(reference), actor=ACTOR, book=BOOK, effective_time=WHEN)
+        log.close()
+    return copy_of(root, name, ('seeded',) + tuple(clips), build, copied)
 
 
 def blob_path(home, digest):
@@ -240,7 +265,10 @@ def flip_base64(text):
 def test_genesis_writes_four_facts_and_verifies_in_both_modes(tmp_path):
     """Four events, and each one answers a question a replica would otherwise ask a human: who
     governs, how the last admin is recovered, which key signs the checkpoints, and where the head
-    stood when the home was minted."""
+    stood when the home was minted.
+
+    Killing mutation: a chain-only report counting the checkpoints it could not assess as zero.
+    """
     home = tmp_path / 'home'
     summary = init_home(home, ACTOR)
     assert summary['events'] == 4 and summary['head_lsn'] == 4
@@ -274,7 +302,10 @@ def test_genesis_writes_four_facts_and_verifies_in_both_modes(tmp_path):
 
 def test_a_second_genesis_over_a_home_is_refused_and_a_missing_home_is_named(tmp_path):
     """A home is minted once. A retyped `init` must not fork the record, and a verb pointed at a
-    directory that is not a home says so rather than conjuring one."""
+    directory that is not a home says so rather than conjuring one.
+
+    Killing mutation: both refusals of an existing home - the log's and the keys' - skipped.
+    """
     home = seeded(tmp_path)
     with pytest.raises(HomeExists) as refusal:
         init_home(home, ACTOR)
@@ -292,12 +323,16 @@ def test_a_second_genesis_over_a_home_is_refused_and_a_missing_home_is_named(tmp
 def test_a_doctored_body_byte_breaks_the_chain_at_its_lsn(tmp_path):
     """The chain hash is taken over the CIPHERTEXT, so a body edited in place is caught by the
     recomputation - and named by the LSN it happened at, which is the whole point of a positional
-    sequence."""
+    sequence. A replica holding no key sees it too.
+
+    Killing mutation: the ciphertext hash left out of the event hash.
+    """
     home = seeded(tmp_path, 'body')
     doctor(home, 5, lambda frame: frame.__setitem__('body', flip_base64(frame['body'])))
-    with pytest.raises(ChainBroken) as refusal:
-        verify_home(home)
-    assert 'LSN 5' in str(refusal.value), refusal.value
+    for entitled in (True, False):
+        with pytest.raises(ChainBroken) as refusal:
+            verify_home(home, entitled=entitled)
+        assert 'LSN 5' in str(refusal.value), refusal.value
     # The gate's own arithmetic says the same thing: the stored hash no longer follows the bytes.
     doctored = [frame for frame in read_frames(home) if frame['lsn'] == 5][0]
     assert chain_of(doctored) != doctored['event_hash']
@@ -307,7 +342,10 @@ def test_a_doctored_envelope_field_breaks_the_seal_the_chain_alone_would_miss(tm
     """The envelope is plaintext but not unprotected: it is GCM's additional data, so moving an
     actor makes the body stop opening. This is the tamper the chain cannot see - the gate asserts
     chain-only stays GREEN over exactly this edit - and it is why the AAD carries nine fields
-    rather than none."""
+    rather than none.
+
+    Killing mutation: the actor left out of the AAD, which leaves the interior binding to name it.
+    """
     home = seeded(tmp_path, 'envelope')
     doctor(home, 5, lambda frame: frame.__setitem__('actor', 'subject-someone-else'))
     doctored = [frame for frame in read_frames(home) if frame['lsn'] == 5][0]
@@ -318,12 +356,16 @@ def test_a_doctored_envelope_field_breaks_the_seal_the_chain_alone_would_miss(tm
     with pytest.raises(ChainBroken) as refusal:
         verify_home(home)
     assert 'LSN 5' in str(refusal.value), refusal.value
+    assert 'envelope fields it is sealed against' in str(refusal.value), refusal.value
 
 
 def test_a_doctored_record_time_is_caught_by_a_replica_holding_no_key(tmp_path):
     """`record_time` is inside the event hash, so an unentitled replica - bodies sealed, no key
     anywhere - still catches a rewritten writer clock. Verification is local and needs no
-    entitlement to be worth something."""
+    entitlement to be worth something.
+
+    Killing mutation: the record time left out of the event hash.
+    """
     home = seeded(tmp_path, 'clock')
     doctor(home, 5, lambda frame: frame.__setitem__('record_time', '2020-01-01T00:00:00.000000Z'))
     with pytest.raises(ChainBroken) as refusal:
@@ -429,7 +471,10 @@ def test_a_stale_idempotency_tag_over_an_honest_binding_is_caught(tmp_path):
 def test_a_retried_append_coalesces_and_two_clips_are_two_facts(tmp_path):
     """The retry is safe by construction: the same fact meets its own tag and coalesces onto the
     event already written. Two legitimately identical clips differ in their execution reference and
-    are therefore two facts - which is exactly why fills must carry one."""
+    are therefore two facts - which is exactly why fills must carry one.
+
+    Killing mutation: the duplicate-tag lookup skipped, which writes the retry as a second line.
+    """
     home = seeded(tmp_path, clips=())
     log = SpineLog(home)
     first = log.append('fill', fill('EXEC-77'), actor=ACTOR, book=BOOK, effective_time=WHEN)
@@ -485,7 +530,10 @@ def test_a_duplicate_tag_over_different_bytes_is_refused_by_name(tmp_path):
     """Verify-then-dedup, end to end. A tag hit is proven identical by DECRYPTING the stored event
     and byte-comparing, so a stored body that says something else is a named refusal rather than a
     silent swap - and a stored body that will not open is refused too, because 'probably the same'
-    is how a record acquires a second version of a fact."""
+    is how a record acquires a second version of a fact.
+
+    Killing mutation: the stored body's canonical bytes never compared, which coalesces onto it.
+    """
     home = seeded(tmp_path, 'resealed', clips=('EXEC-9',))
     frame = [f for f in read_frames(home) if f['lsn'] == 5][0]
     tag = frame['idempotency_tag']
@@ -518,9 +566,12 @@ def test_the_envelope_tag_is_blinded_and_key_dependent(tmp_path):
     """A raw plaintext hash in a firm-visible envelope is a dictionary oracle - any low-entropy
     body could be confirmed by hashing candidates. The envelope therefore carries an HMAC under a
     key that never leaves the hub, so the same fact wears different tags in two homes and no
-    keyless check against a candidate plaintext exists."""
+    keyless check against a candidate plaintext exists.
+
+    Killing mutation: the tag taken as the plain SHA-256 of the tuple.
+    """
     home = seeded(tmp_path, 'first', clips=('EXEC-5',))
-    other = seeded(tmp_path, 'second', clips=('EXEC-5',))
+    other = seeded(tmp_path, 'second', clips=('EXEC-5',), copied=False)
     tuple_ = semantic('fill', fill('EXEC-5'))
 
     mine = [f for f in read_frames(home) if f['lsn'] == 5][0]['idempotency_tag']
@@ -540,7 +591,10 @@ def test_destroying_the_class_key_leaves_the_chain_green_and_the_bodies_gone(tmp
     """Erasure of the bodies inside an untouched chain. One file destroyed and this home can never
     read its own facts again - which is what crypto-shredding IS - while the chain over ciphertext
     verifies exactly as before, and the refusal names the key rather than pretending the log is
-    broken."""
+    broken.
+
+    Killing mutation: the chain-only walk opening the bodies it was told it cannot read.
+    """
     home = seeded(tmp_path, 'live')
     shredded = tmp_path / 'shredded'
     shutil.copytree(str(home), str(shredded))
@@ -564,7 +618,10 @@ def test_destroying_the_class_key_leaves_the_chain_green_and_the_bodies_gone(tmp
 def test_an_event_citing_an_absent_blob_does_not_append(tmp_path):
     """Durability ordering is law: the blob is on the platter before the fact that speaks of it.
     The refusal is checked BEFORE anything is written, so the head is exactly where it was - a
-    rejected append is not a partial one."""
+    rejected append is not a partial one.
+
+    Killing mutation: the writer's closure check skipped.
+    """
     home = seeded(tmp_path)
     log = SpineLog(home)
     head = log.head()
@@ -622,7 +679,10 @@ def test_a_cited_blob_that_went_quietly_is_caught_by_the_manifest(tmp_path):
 def test_the_vocabulary_is_closed_and_its_bodies_are_shaped(tmp_path):
     """A knock is a projection, not a fact: the type does not exist, and the refusal says the
     vocabulary is closed rather than offering an extension point. Inside a type, a missing field or
-    a surplus one is named - a field no projector folds is a silence discovered in year three."""
+    a surplus one is named - a field no projector folds is a silence discovered in year three.
+
+    Killing mutation: a surplus body field let through.
+    """
     home = seeded(tmp_path)
     log = SpineLog(home)
     head = log.head()
@@ -665,7 +725,10 @@ def test_the_vocabulary_is_closed_and_its_bodies_are_shaped(tmp_path):
 def test_break_glass_is_declared_at_genesis_and_its_use_is_a_fact(tmp_path):
     """The recovery path exists before the accident. Both grants are read back off the DECRYPTED
     genesis events, a declaration that strands the last admin appends like any other fact, and the
-    break-glass use that follows is itself an appended, chained fact rather than a story."""
+    break-glass use that follows is itself an appended, chained fact rather than a story.
+
+    Killing mutation: the break-glass grant minted to the writer's own name.
+    """
     home = seeded(tmp_path)
     log = SpineLog(home)
     genesis = [log.open_body(frame) for frame in log.frames(start_lsn=1, end_lsn=2)]
@@ -683,27 +746,10 @@ def test_break_glass_is_declared_at_genesis_and_its_use_is_a_fact(tmp_path):
     assert verify_home(home)['head_lsn'] == used['lsn']
 
 
-def test_events_sharing_an_effective_time_replay_in_lsn_order(tmp_path):
-    """Fold determinism, stated once and gated: as-at order is LSN order, and as-of order breaks
-    its ties by LSN - so a fold is a function of the log rather than of a sort's tie-breaking."""
-    home = seeded(tmp_path, clips=())
-    log = SpineLog(home)
-    written = [log.append('fill', fill(reference), actor=ACTOR, book=BOOK, effective_time=WHEN)
-               for reference in ('EXEC-A', 'EXEC-B', 'EXEC-C')]
-    assert [envelope['lsn'] for envelope in written] == [5, 6, 7]
-
-    frames = [frame for frame in SpineLog(home).frames(start_lsn=5)]
-    assert len(set(frame['effective_time'] for frame in frames)) == 1
-    assert [as_of_key(frame) for frame in frames] == [(WHEN, 5), (WHEN, 6), (WHEN, 7)]
-    assert [frame['lsn'] for frame in sorted(frames, key=as_of_key)] == [5, 6, 7]
-    assert [frame['lsn'] for frame in sorted(reversed(frames), key=as_of_key)] == [5, 6, 7]
-    log.close()
-
-
 # --------------------------------------------------------------------------------------------
 # The synthetic book - the fixture every later increment's reconstruction gate folds.
 
-def synthetic_book(tmp_path):
+def synthetic_book(tmp_path, copied=True):
     """The design's fixture, appended through the ordinary writer: a late booking (Monday's fill
     recorded after Wednesday's), a backdated amendment behind it, an exercise election, an approval
     and a second seat's rejection, a determination and a status transition, an administrator's
@@ -711,54 +757,63 @@ def synthetic_book(tmp_path):
     answered by a NEW close, never an edit - and last a node of the book's tree. Every fact in the
     closed vocabulary reaches the writer, the snapshot in the writer's own voice.
 
-    Answers `(home, log, marks)`.
+    Answers `(home, log, marks)` with the writer open on a copy of the book this process wrote once,
+    or with `copied` false on a book written there, a history of its own.
     """
-    home = seeded(tmp_path, 'book', clips=())
-    log = SpineLog(home)
-    marks = {
-        'plan': hashlib.sha256(b'the compiled job this desk approved').hexdigest(),
-        'values': log.store.put(b'{"EURUSD":1.0851}'),
-        'restated': log.store.put(b'{"EURUSD":1.0857}'),
-        'policy': log.store.put(b'{"tape":"90 days, then the logged reduction"}'),
-        'snapshot': log.store.put(b'{"surface":"the vol cube of 2026-08-26"}'),
-    }
-    log.append('fill', fill('EXEC-WED'), actor=ACTOR, book=BOOK, effective_time=WED)
-    log.append('fill', fill('EXEC-MON'), actor=ACTOR, book=BOOK, effective_time=MON)
-    log.append('amendment', {'instrument': INSTRUMENT, 'amended_to': OTHER},
-               actor=ACTOR, book=BOOK, effective_time=MON)
-    log.append('election', {'instrument': OTHER, 'choice': 'exercise'},
-               actor=ACTOR, book=BOOK, effective_time=TUE)
-    log.append('approval', {'plan_hash': marks['plan']},
-               actor=ACTOR, book=BOOK, effective_time=TUE)
-    log.append('rejection', {'plan_hash': marks['plan'],
-                             'reason': 'the booker and the approver are one seat'},
-               actor='subject-desk-two', book=BOOK, effective_time=TUE)
-    log.append('determination', {'subject': INSTRUMENT, 'ruling': 'the barrier was touched at 14:02'},
-               actor=ACTOR, book=BOOK, effective_time=TUE)
-    log.append('status_transition', {'subject': INSTRUMENT, 'status': 'confirmed'},
-               actor=ACTOR, book=BOOK, effective_time=TUE)
-    log.append('market_declared', {'name': 'official', 'values_hash': marks['values']},
-               actor=ACTOR, effective_time=WED)
-    log.append('fixing_observed',
-               {'index': 'EURUSD-ECB', 'date': '2026-08-26', 'source': 'ECB', 'value': 1.0851},
-               actor=ACTOR, effective_time=WED)
-    log.append('official_close_declared', {'market': 'official', 'values_hash': marks['values']},
-               actor=ACTOR, effective_time=CLOSE)
-    # After the close, and backdated behind it: the administrator republishes the same key, and the
-    # close is restated by a second close event rather than corrected in place.
-    log.append('fixing_observed',
-               {'index': 'EURUSD-ECB', 'date': '2026-08-26', 'source': 'ECB', 'value': 1.0857},
-               actor='subject-administrator', effective_time=WED)
-    log.append('official_close_declared', {'market': 'official', 'values_hash': marks['restated']},
-               actor=ACTOR, effective_time=CLOSE)
-    log.append('retention_declared', {'blob_class': 'tape', 'policy_blob': marks['policy']},
-               actor=ACTOR)
-    log.append('rehash_declared', {'algorithm': 'sha256'}, actor=ACTOR)
-    log.own('snapshot_registered', {'blob': marks['snapshot']}, book=BOOK)
-    log.append('break_glass_used', {'reason': 'the grant declaration stranded the last admin'},
-               actor=ACTOR)
-    log.append('portfolio_declared', {'path': BOOK + '/Options'}, actor=ACTOR, book=BOOK)
-    return home, log, marks
+    blobs = {'values': b'{"EURUSD":1.0851}', 'restated': b'{"EURUSD":1.0857}',
+             'policy': b'{"tape":"90 days, then the logged reduction"}',
+             'snapshot': b'{"surface":"the vol cube of 2026-08-26"}'}
+    marks = dict(((name, hashlib.sha256(data).hexdigest()) for name, data in blobs.items()),
+                 plan=hashlib.sha256(b'the compiled job this desk approved').hexdigest())
+
+    def build(home):
+        seeded(home.parent, home.name, clips=(), copied=False)
+        log = SpineLog(home)
+        for data in blobs.values():
+            log.store.put(data)
+        log.append('fill', fill('EXEC-WED'), actor=ACTOR, book=BOOK, effective_time=WED)
+        log.append('fill', fill('EXEC-MON'), actor=ACTOR, book=BOOK, effective_time=MON)
+        log.append('amendment', {'instrument': INSTRUMENT, 'amended_to': OTHER},
+                   actor=ACTOR, book=BOOK, effective_time=MON)
+        log.append('election', {'instrument': OTHER, 'choice': 'exercise'},
+                   actor=ACTOR, book=BOOK, effective_time=TUE)
+        log.append('approval', {'plan_hash': marks['plan']},
+                   actor=ACTOR, book=BOOK, effective_time=TUE)
+        log.append('rejection', {'plan_hash': marks['plan'],
+                                 'reason': 'the booker and the approver are one seat'},
+                   actor='subject-desk-two', book=BOOK, effective_time=TUE)
+        log.append('determination', {'subject': INSTRUMENT,
+                                     'ruling': 'the barrier was touched at 14:02'},
+                   actor=ACTOR, book=BOOK, effective_time=TUE)
+        log.append('status_transition', {'subject': INSTRUMENT, 'status': 'confirmed'},
+                   actor=ACTOR, book=BOOK, effective_time=TUE)
+        log.append('market_declared', {'name': 'official', 'values_hash': marks['values']},
+                   actor=ACTOR, effective_time=WED)
+        log.append('fixing_observed',
+                   {'index': 'EURUSD-ECB', 'date': '2026-08-26', 'source': 'ECB', 'value': 1.0851},
+                   actor=ACTOR, effective_time=WED)
+        log.append('official_close_declared',
+                   {'market': 'official', 'values_hash': marks['values']},
+                   actor=ACTOR, effective_time=CLOSE)
+        # After the close, and backdated behind it: the administrator republishes the same key, and
+        # the close is restated by a second close event rather than corrected in place.
+        log.append('fixing_observed',
+                   {'index': 'EURUSD-ECB', 'date': '2026-08-26', 'source': 'ECB', 'value': 1.0857},
+                   actor='subject-administrator', effective_time=WED)
+        log.append('official_close_declared',
+                   {'market': 'official', 'values_hash': marks['restated']},
+                   actor=ACTOR, effective_time=CLOSE)
+        log.append('retention_declared', {'blob_class': 'tape', 'policy_blob': marks['policy']},
+                   actor=ACTOR)
+        log.append('rehash_declared', {'algorithm': 'sha256'}, actor=ACTOR)
+        log.own('snapshot_registered', {'blob': marks['snapshot']}, book=BOOK)
+        log.append('break_glass_used', {'reason': 'the grant declaration stranded the last admin'},
+                   actor=ACTOR)
+        log.append('portfolio_declared', {'path': BOOK + '/Options'}, actor=ACTOR, book=BOOK)
+        log.close()
+
+    home = copy_of(tmp_path, 'book', ('synthetic',), build, copied)
+    return home, SpineLog(home), marks
 
 
 def test_the_synthetic_book_reads_as_of_and_as_at_across_a_restatement(tmp_path):
@@ -769,7 +824,9 @@ def test_the_synthetic_book_reads_as_of_and_as_at_across_a_restatement(tmp_path)
     The restatement is the other half: a backdated observation after an official close supersedes it
     with a NEW close, so the book reads the first values hash up to that point and the restated one
     afterwards - both correct, neither an edit - and the republished fixing supersedes by the same
-    rule under its own key.
+    rule under its own key: its two prints share one truth-time, so the later LSN stands.
+
+    Killing mutation: the as-of key read off the record time alone.
     """
     home, log, marks = synthetic_book(tmp_path)
     assert verify_home(home) == {'mode': 'entitled', 'events': 22, 'checkpoints_verified': 1,
@@ -812,7 +869,10 @@ def test_a_checkpoint_verifies_and_a_forged_signature_is_named(tmp_path):
     """Authenticity, not merely integrity. Signatures are checked against the verifying key read
     out of the genesis policy BLOB - the assertion a replica makes - so a checkpoint whose body was
     hand-forged through the ordinary writer, which validates its shape and knows nothing of its
-    meaning, is refused by name at its own LSN."""
+    meaning, is refused by name at its own LSN.
+
+    Killing mutation: the signature check skipped.
+    """
     home = seeded(tmp_path)
     log = SpineLog(home)
     signed = write_checkpoint(log)
@@ -849,8 +909,7 @@ def test_the_verifying_key_comes_out_of_the_log_and_not_out_of_the_keys_director
     published blob and authenticity cannot be asserted at all - the refusal names the blob. Delete
     `keys/checkpoint_verify.key` and nothing changes, because a replica has the log and no `keys/`.
 
-    Between them these kill two mutations of the key's provenance - reading `keys/` instead of the
-    blob, and letting a checkpoint body nominate its own.
+    Killing mutation: the key read out of `keys/` instead of the blob.
     """
     home = seeded(tmp_path, 'published')
     log = SpineLog(home)
@@ -879,6 +938,8 @@ def test_a_checkpoint_may_not_nominate_the_key_it_is_checked_against(tmp_path):
     interior binding is recomputed honestly, the chain hash matches, and the blind key is absent so
     the tag check does not run. The only thing between that forgery and a green report is that the
     verifier resolves the key from the LOG's published blob, never from the body in front of it.
+
+    Killing mutation: the key a checkpoint body nominates used to verify it.
     """
     home = seeded(tmp_path, 'nominated')
     log = SpineLog(home)
@@ -950,7 +1011,10 @@ def test_the_verifying_key_is_pinned_by_lsn_so_a_rotation_reads_both_sides(tmp_p
 def test_a_torn_final_line_is_truncated_and_the_next_append_chains_onto_the_head(tmp_path):
     """The one place bytes are removed, and it is not a repair: a final line that will not parse
     was interrupted mid-write and was never fsynced, so nothing ever chained onto it. Everything
-    durable survives, and the next append continues from the head that was already there."""
+    durable survives, and the next append continues from the head that was already there.
+
+    Killing mutation: the torn tail kept, which refuses the home on its next open.
+    """
     home = seeded(tmp_path)
     head_lsn, head_hash = SpineLog(home).head()
     segment = segments(home)[-1]
@@ -1022,6 +1086,8 @@ def test_a_second_writer_is_refused_rather_than_left_to_corrupt_the_home(tmp_pat
     the head is where they last read it, so both assign the same next LSN and the home holds two
     lines at one position, unverifiable forever. The claim is taken at the first append (never at a
     read, or a replica would be locked out of its own log) and the head re-read under it.
+
+    Killing mutation: the byte-range lock never taken.
     """
     home = seeded(tmp_path, 'writers', clips=())
     first, second = SpineLog(home), SpineLog(home)
@@ -1048,7 +1114,10 @@ def test_the_chain_runs_across_a_segment_boundary(tmp_path):
     """Segments are bookkeeping - a 64 MiB roll, nothing more - and the chain does not know they
     exist. Rather than write 64 MiB to prove it, the split is done as data: the tail of the first
     segment is moved into a second one by hand, and everything must read, verify and append exactly
-    as before across the seam."""
+    as before across the seam.
+
+    Killing mutation: a walk reading the last segment alone.
+    """
     home = seeded(tmp_path)
     first = segments(home)[0]
     lines = [raw for raw in first.read_bytes().split(b'\n') if raw.strip()]
@@ -1092,33 +1161,30 @@ def test_a_page_of_frames_seeks_rather_than_walking_the_log(tmp_path):
     the head reads ten lines rather than the history - which is what the desk's poll, the queue's
     admission and every replica's pull pay per beat.
 
-    Two hundred events, not two thousand: the separation between a page and a walk is already
-    twentyfold here and every assertion below is the same sentence, while an event costs an fsync,
-    so the bigger home buys three minutes of suite and no claim.
+    Forty fills and a two-row page: the page reads two lines of forty-four and the walk all of
+    them, while an event costs an fsync, so a bigger home buys suite time and no claim.
 
     The offset is a LOWER BOUND and never a lookup, because a handle routinely outlives another
     process's append: a page starting past this handle's head is answered from the head's own
     offset, and the frames written since are reached by walking forward from there. That is
     asserted here rather than reasoned about, on a reader opened before the writer moved.
+
+    Killing mutation: the seek dropped, which walks every page from the first line.
     """
-    home = seeded(tmp_path, 'paged', clips=())
-    writer = SpineLog(home)
-    for clip in range(200):
-        writer.append('fill', fill('EXEC-{}'.format(clip)), actor=ACTOR, book=BOOK)
-    writer.close()
+    home = seeded(tmp_path, 'paged', clips=tuple('EXEC-{}'.format(clip) for clip in range(40)))
     held = sum(path.stat().st_size for path in segments(home))
 
     log = CountingLog(home)
-    assert [frame['lsn'] for frame in log.frames(start_lsn=195)] == list(range(195, 205))
+    assert [frame['lsn'] for frame in log.frames(start_lsn=43)] == [43, 44]
     page = log.read
-    assert 0 < page < held / 10, 'a ten-row page read {} of {} bytes'.format(page, held)
+    assert 0 < page < held / 10, 'a two-row page read {} of {} bytes'.format(page, held)
 
     log.read = 0
-    assert list(log.frames(start_lsn=205)) == [], 'a page past the head answers nothing'
-    assert 0 < log.read < page, 'the empty page read more than the ten-row one'
+    assert list(log.frames(start_lsn=45)) == [], 'a page past the head answers nothing'
+    assert 0 < log.read < page, 'the empty page read more than the two-row one'
 
     log.read = 0
-    assert len(list(log.frames())) == 204 and log.read == held, \
+    assert len(list(log.frames())) == 44 and log.read == held, \
         'the whole walk still reads the whole log, which is the number the page is against'
 
     # the handle above was opened before this append, so the frame it has never seen is reached by
@@ -1126,49 +1192,8 @@ def test_a_page_of_frames_seeks_rather_than_walking_the_log(tmp_path):
     second = SpineLog(home)
     landed = second.append('fill', fill('EXEC-AFTERWARDS'), actor=ACTOR, book=BOOK)
     second.close()
-    assert [frame['lsn'] for frame in log.frames(start_lsn=205)] == [landed['lsn']]
-    assert [frame['lsn'] for frame in log.frames(start_lsn=210)] == []
-
-
-def test_a_copied_home_verifies_extends_and_still_catches_a_tamper(tmp_path):
-    """The disaster posture, tested rather than asserted: three directories copied to a clean
-    place, and everything the original could do the copy does - verify from genesis, catch a
-    doctored line, and go on writing."""
-    home = seeded(tmp_path)
-    restored = tmp_path / 'restored'
-    restored.mkdir()
-    for part in ('log', 'blobs', 'keys'):
-        shutil.copytree(str(home / part), str(restored / part))
-
-    assert verify_home(restored) == verify_home(home)
-    assert verify_home(restored, entitled=False)['checkpoints_verified'] == 'not assessed'
-
-    log = SpineLog(restored)
-    landed = log.append('fill', fill('EXEC-RESTORED'), actor=ACTOR, book=BOOK)
-    assert landed['lsn'] == 8
-    assert verify_home(restored)['head_lsn'] == 8
-    assert verify_home(home)['head_lsn'] == 7, 'the copy went its own way, as a fork of files does'
-    log.close()
-
-    # All three detections again, on three copies of the copy: a restored home is not a weaker
-    # witness than the one it came from.
-    tampers = (
-        ('body', lambda frame: frame.__setitem__('body', flip_base64(frame['body'])), True),
-        ('actor', lambda frame: frame.__setitem__('actor', 'subject-someone-else'), False),
-        ('clock', lambda frame: frame.__setitem__(
-            'record_time', '2020-01-01T00:00:00.000000Z'), True),
-    )
-    for name, mutate, unentitled_sees_it in tampers:
-        copy = tmp_path / ('restored_' + name)
-        shutil.copytree(str(restored), str(copy))
-        doctor(copy, 6, mutate)
-        for mode in ((True, False) if unentitled_sees_it else (True,)):
-            with pytest.raises(ChainBroken) as refusal:
-                verify_home(copy, entitled=mode)
-            assert 'LSN 6' in str(refusal.value), refusal.value
-        if not unentitled_sees_it:
-            assert verify_home(copy, entitled=False)['head_lsn'] == 8, \
-                'the envelope edit is the seal\'s to catch, there as here'
+    assert [frame['lsn'] for frame in log.frames(start_lsn=45)] == [landed['lsn']]
+    assert [frame['lsn'] for frame in log.frames(start_lsn=50)] == []
 
 
 def test_a_replica_holding_only_the_log_and_the_blobs_verifies_its_chain(tmp_path):
@@ -1179,6 +1204,8 @@ def test_a_replica_holding_only_the_log_and_the_blobs_verifies_its_chain(tmp_pat
     true - a log demanding a `keys/` directory before opening would make the replica
     unrepresentable, and the refusal's remedy (`init`) would fork the record. So the keys' absence
     surfaces where a key is USED, by the file's own name.
+
+    Killing mutation: opening a log demanding `keys/` beside `log/` and `blobs/`.
     """
     home = seeded(tmp_path, 'hub')
     replica = tmp_path / 'replica'

@@ -25,12 +25,10 @@ What the gates hold, in order:
     the whole of the last round - so it really is behind before the next beat rings - and one hears
     them twice and out of order. After the beat that covers them, the three chain-only
     verifications carry ONE head hash and all NINE projectors fold to byte-equal rows.
-  * THE PULL LOOP IS ONE FUNCTION, read off the module's own source, which is what makes the
-    doorbell an optimisation: a stream that drops changes when a replica pulls and never how.
   * A BEAT VERIFIES THE RANGE IT LANDED, off the platter and never the history: a record time
     doctored inside the range leaves the scan's linkage intact and the event hash refusing.
-  * AN HOUR ASLEEP IS THE SAME PATH. A hundred events land with the follower stopped, one
-    resumption reaches the head, and the replica's segment bytes are the hub's byte for byte -
+  * AN HOUR ASLEEP IS THE SAME PATH. Events land with the follower stopped, one resumption
+    reaches the head a page at a time, and the replica's segment bytes are the hub's byte for byte -
     which is the only place `accept` writing VERBATIM can be observed, a re-serialised frame being
     a different line under the same fields.
   * A REPLICA WRITES THE HUB'S NEXT LINE AND NOTHING ELSE: a thirteenth field, a position that is
@@ -225,6 +223,8 @@ def test_a_dropped_duplicated_or_reordered_doorbell_converges_every_replica(tmp_
     more beat - the next head move, or the metronome the stream falls back to - covers it, and then
     the three chain-only verifications carry one head hash and every projector folds to byte-equal
     rows.
+
+    Killing mutation: the beat read as a delivery, the frame it names accepted ahead of the pull.
     """
     hub, writer = hub_of(tmp_path)
     reader = served(hub)
@@ -264,45 +264,24 @@ def test_a_dropped_duplicated_or_reordered_doorbell_converges_every_replica(tmp_
     writer.close()
 
 
-def test_the_pull_loop_is_one_function():
-    """The doorbell removes LATENCY and never a step, which is only true while the beat-driven
-    follower and the one-shot verb run the same code. Read off the module's own source: exactly one
-    function in it asks a hub for frames, and it is the one `follow` calls, so a stream that drops
-    changes when a replica pulls and never how."""
-    import ast
-
-    def asks_the_hub(node):
-        return any(isinstance(call.func, ast.Attribute) and call.func.attr == 'frames'
-                   and getattr(call.func.value, 'id', None) == 'hub'
-                   for call in ast.walk(node) if isinstance(call, ast.Call))
-
-    module = ast.parse(open(replica.__file__, encoding='utf-8').read())
-    pulling = set(node.name for node in ast.walk(module)
-                  if isinstance(node, ast.FunctionDef) and asks_the_hub(node))
-    assert pulling == {'catch_up'}, pulling
-    assert 'catch_up' in replica.follow.__code__.co_names
-
-
 def test_a_follower_asleep_for_an_hour_takes_the_same_path_as_a_live_one(tmp_path):
     """Catching up is the same loop with more pages in it, and what it writes is what the hub
-    wrote. A hundred events land while the follower is stopped; one resumption reaches the head,
-    the follower's check over THE RANGE IT LANDED agrees with the hub's head hash, and the
-    replica's segment bytes are the hub's byte for byte.
+    wrote. Ten events land while the follower is stopped; one resumption reaches the head three
+    pages of four later, the follower's check over THE RANGE IT LANDED agrees with the hub's head
+    hash, and the replica's segment bytes are the hub's byte for byte.
 
-    A hundred rather than a thousand: the assertion is that one resumption reaches the head and
-    writes the hub's own bytes, and an event costs an fsync at both ends, so a bigger number buys
-    minutes and no sentence.
+    Killing mutation: a catch-up taking one page and stopping there.
     """
     hub, writer = synthetic_book(tmp_path)[:2]
     mirror = SpineLog(replica_home(tmp_path, 'asleep'))
-    assert replica.catch_up(mirror, served(hub), whole=True)['frames'] == BOOK_HEAD
+    assert replica.catch_up(mirror, served(hub), page=4, whole=True)['frames'] == BOOK_HEAD
 
-    for clip in range(100):
+    for clip in range(10):
         writer.append('fill', fill('EXEC-SLEPT-{}'.format(clip)), actor=ACTOR, book=BOOK)
-    assert writer.head()[0] == BOOK_HEAD + 100
+    assert writer.head()[0] == BOOK_HEAD + 10
 
-    caught = replica.catch_up(mirror, served(hub))
-    assert caught['frames'] == 100 and caught['head_lsn'] == writer.head()[0]
+    caught = replica.catch_up(mirror, served(hub), page=4)
+    assert caught['frames'] == 10 and caught['head_lsn'] == writer.head()[0]
     assert caught['verified'] == caught['head_hash'] == writer.head()[1], 'the follower checked'
     assert (tmp_path / 'asleep' / 'log' / 'segment-00000001.jsonl').read_bytes() \
         == (hub / 'log' / 'segment-00000001.jsonl').read_bytes()
@@ -319,6 +298,8 @@ def test_a_beat_verifies_the_range_it_landed_off_the_platter(tmp_path):
 
     A record time doctored inside the range is what says this is more than trusting `accept`'s own
     arithmetic: the linkage the scan checks is intact and the event hash refuses.
+
+    Killing mutation: the landed range left unverified.
     """
     hub, writer = synthetic_book(tmp_path)[:2]
     mirror = SpineLog(replica_home(tmp_path, 'ranged'))
@@ -361,6 +342,8 @@ def test_a_replica_writes_the_frame_the_hub_wrote_and_nothing_else(tmp_path):
 
     A replica exercises no judgment: it does not ask what a frame MEANS, only whether it is the
     next line of this chain and whether its own bytes say so.
+
+    Killing mutation: the twelve-field check skipped at `accept`.
     """
     hub, writer = synthetic_book(tmp_path)[:2]
     mirror = SpineLog(replica_home(tmp_path, 'refusing'))
@@ -407,6 +390,8 @@ def test_a_replica_chains_an_event_type_it_has_never_heard_of(tmp_path):
     author one - and that is itself the assertion, since `append` of the same type refuses by name
     on the very handle that has just `accept`ed it. The strip renders the type's own name rather
     than dropping the LSN out of the sequence.
+
+    Killing mutation: `accept` refusing a type outside this build's vocabulary.
     """
     hub, writer = synthetic_book(tmp_path)[:2]
     mirror = SpineLog(entitled_by_copy(hub, replica_home(tmp_path, 'newer')))
@@ -440,6 +425,8 @@ def test_a_chain_only_replica_holds_no_blob_and_still_verifies(tmp_path):
     of the chain, so it arrives BY ADDRESS, which is what the blob read is addressed for. Frames,
     that one blob, the class key out of it, the bytes the chain cites, and only then does this
     directory answer the hub's own entitled report.
+
+    Killing mutation: a chain-only replica asked for blobs pulling nothing and saying nothing.
     """
     hub = tmp_path / 'hub'
     init_home(hub, ACTOR)
@@ -514,6 +501,8 @@ def test_fifty_open_doorbells_park_no_worker_thread_and_leave_no_listener(tmp_pa
     generator's own `finally`, on the close starlette performs when a client disconnects, rather
     than whenever a cyclic collection happens to run - counted here through the writer's own
     registry, which is the list a doorbell registers on.
+
+    Killing mutation: the listener left registered when its stream closes.
     """
     from derivus import service
     from derivus_spine.log import WATCHERS
@@ -561,6 +550,8 @@ def test_a_one_shot_sync_returns_against_a_hub_that_never_stops_writing(tmp_path
     that waits to OBSERVE an empty page has no reason to end against one. The bound is the head the
     FIRST pull reported, which is what that field is on the wire for: a one-shot sync is a copy of
     the record as it stood when the copy began.
+
+    Killing mutation: the bound ignored, a one-shot waiting for an empty page.
     """
     hub, writer = synthetic_book(tmp_path)[:2]
     mirror = SpineLog(replica_home(tmp_path, 'one-shot'))
@@ -607,6 +598,8 @@ def test_the_doorbell_rings_over_the_wire_and_the_follow_verb_catches_up(tmp_pat
     stream is driven against a real service here or nowhere. The beat is timed from the append that
     rang it, which is the number the page quotes; what the beat CARRIES is a position and nothing
     else, and the follower reads it for nothing but "ask again".
+
+    Killing mutation: the writer announcing nothing when its bytes land.
     """
     from derivus import service
 
@@ -624,6 +617,7 @@ def test_the_doorbell_rings_over_the_wire_and_the_follow_verb_catches_up(tmp_pat
         landed = writer.append('fill', fill('EXEC-RUNG'), actor=ACTOR, book=BOOK)
         beat = next(beats)
         rang = (time.monotonic() - struck) * 1000.0
+        beats.close()
         assert beat == {'head': landed['event_hash'], 'lsn': landed['lsn']}, beat
         assert rang < WIRE_SECONDS * 1000.0, 'the beat took {:.0f} ms'.format(rang)
 

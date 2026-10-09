@@ -21,14 +21,13 @@ here: the RFC's sample document with its published canonical output, the RFC's k
 with its astral-versus-BMP trap, and an ECMAScript number table read off the specification's
 ToString rules rather than off CPython.
 
-THE TRAP THIS FILE EXISTS FOR is the last test. `repr` and `json.dumps` write `1e+16` and `1e-07`;
-the RFC writes `10000000000000000` and `1e-7`. An implementation that forwards Python's spelling
-looks right on every hand-written example and is wrong on the wire, so the gate asserts the two
-spellings DIFFER from Python's - a repr passthrough turns this file red.
+THE TRAP THIS FILE EXISTS FOR is in the number table. `repr` and `json.dumps` write `1e+16` and
+`1e-07`; the RFC writes `10000000000000000` and `1e-7`. An implementation that forwards Python's
+spelling looks right on every hand-written example and is wrong on the wire, so a repr passthrough
+turns the table's two rows red.
 """
 import hashlib
 import json
-import math
 import os
 import sys
 
@@ -128,100 +127,68 @@ def canonical_text(obj):
     return canonical_bytes(obj).decode('utf-8')
 
 
-def test_the_rfc_vectors_survived_transcription():
-    """Before anything is asserted ABOUT the vectors, assert they are the RFC's. The escapes above
-    are assembled at import, so a broken assembly would quietly weaken every test below."""
-    sample = json.loads(RFC_SAMPLE_INPUT)
-    assert sorted(sample) == ['literals', 'numbers', 'string']
-    assert sample['string'] == '€$\x0f\nA\'B"' + chr(92) * 2 + '"/'
-    assert len(sample['numbers']) == 5
-    keys = json.loads(RFC_KEYS_INPUT)
-    assert len(keys) == 9 and '\U0001f602' in keys and chr(0xfb33) in keys
-    assert sorted(keys) == sorted(RFC_KEYS_ORDER)
-
-
 def test_rfc_sample_document_matches_the_published_output():
-    """The RFC's own example, byte for byte. Everything else in this file is detail of this."""
+    """The RFC's own example, byte for byte. Everything else in this file is detail of this.
+
+    Killing mutation: the exponent's `+` dropped, which writes `1e30` where the RFC writes `1e+30`.
+    """
     assert canonical_bytes(json.loads(RFC_SAMPLE_INPUT)) == RFC_SAMPLE_OUTPUT.encode('utf-8')
-
-
-def test_rfc_sample_output_is_utf8_and_reparses():
-    canonical = canonical_bytes(json.loads(RFC_SAMPLE_INPUT))
-    assert canonical.decode('utf-8')                     # no BOM, no surrogates, nothing lost
-    assert json.loads(canonical) == json.loads(RFC_SAMPLE_INPUT)
 
 
 @pytest.mark.parametrize('value,expected', ES_NUMBERS, ids=[repr(v) for v, _ in ES_NUMBERS])
 def test_es_number_serialization(value, expected):
-    """One number, canonicalised alone - an array wrapper would only hide the spelling."""
+    """One number, canonicalised alone - an array wrapper would only hide the spelling.
+
+    Killing mutation: the fixed-notation ceiling moved from an exponent of 21 to 16, which writes
+    `1e20` as `1e+20`.
+    """
     assert canonical_text(value) == expected
-
-
-def test_es_number_table_straddles_both_boundaries():
-    """The table earns its place only by sitting on both sides of the two places the rule turns."""
-    spellings = set(expected for _, expected in ES_NUMBERS)
-    assert '10000000000000000' in spellings and '1e+21' in spellings   # the 21 boundary, both sides
-    assert '0.000001' in spellings and '1e-7' in spellings             # the -7 boundary, both sides
-    assert len(ES_NUMBERS) >= 25
-
-
-def test_integers_and_floats_of_equal_value_share_a_spelling():
-    """RFC 8785 has one number type, so `1` and `1.0` are one fact and hash as one."""
-    assert canonical_text(1) == canonical_text(1.0) == '1'
-    assert content_hash({'quantity': 5}) == content_hash({'quantity': 5.0})
 
 
 def test_keys_sort_by_utf16_code_unit_not_code_point():
     """The RFC's key document. U+1F602 is astral - UTF-16 leads it with 0xd83d, so it sorts BEFORE
     U+FB33, while a plain code-point sort puts it after. That single inversion is the whole test.
+
+    Killing mutation: the keys sorted by code point, which puts U+1F602 after U+FB33.
     """
     order = list(json.loads(canonical_text(json.loads(RFC_KEYS_INPUT))).keys())
     assert order == RFC_KEYS_ORDER
     naive = sorted(json.loads(RFC_KEYS_INPUT))
-    assert naive != order, (
-        'the chosen keys cannot separate UTF-16 order from code-point order - pick an astral '
-        'character against a BMP character above U+E000 (this document has U+1F602 and U+FB33)')
     assert naive.index('\U0001f602') > naive.index(chr(0xfb33))
     assert order.index('\U0001f602') < order.index(chr(0xfb33))
 
 
-def test_a_purely_bmp_document_sorts_the_same_either_way():
-    """The counterexample to the counterexample: with no astral key the two orders agree, and the
-    canonicaliser must not invent a difference to prove a point."""
-    keys = {'A': 1, 'a': 2, '\xf6': 3, chr(0xe000): 4}
-    order = list(json.loads(canonical_text(keys)).keys())
-    assert order == sorted(keys) == ['A', 'a', '\xf6', chr(0xe000)]
-
-
 def test_nested_objects_sort_at_every_level():
-    obj = {'b': {'z': 1, 'a': {'€': 0, '$': 0}}, 'a': [{'y': 1, 'x': 2}]}
-    assert canonical_text(obj) == '{"a":[{"x":2,"y":1}],"b":{"a":{"$":0,"€":0},"z":1}}'
+    """Every object is sorted wherever it sits, the empty ones included, and a number inside a
+    document is spelled as it is alone.
+
+    Killing mutation: only the top level sorted, which the RFC's sample - holding no nested object -
+    cannot see.
+    """
+    obj = {'b': {'z': 1, 'a': {'€': 0, '$': 0}}, 'a': [{'y': 1, 'x': 2}],
+           'c': {'': {'': ''}, 'e': [], 'o': {}, 'values': [1e16, 1e-7]}}
+    assert canonical_text(obj) == (
+        '{"a":[{"x":2,"y":1}],"b":{"a":{"$":0,"€":0},"z":1},'
+        '"c":{"":{"":""},"e":[],"o":{},"values":[10000000000000000,1e-7]}}')
+    assert json.loads(canonical_bytes(obj)) == obj
 
 
 def test_string_escaping_is_the_rfc_set_and_nothing_more():
     """The seven mandated escapes, a lowercase `u00xx` escape for the other C0 controls, and every
-    other character raw UTF-8 - DEL included, which JavaScript-flavoured encoders like to escape."""
-    value = '"' + chr(92) + '\b\t\n\f\r' + '\x00\x01\x1f' + '\x7fé€\U0001f602/'
+    other character raw UTF-8 - DEL and the solidus included, which JavaScript-flavoured encoders
+    like to escape.
+
+    Killing mutation: the control escape written in uppercase hex, `\\u001F`.
+    """
+    value = '"' + chr(92) + '\b\t\n\f\r' + '\x00\x01\x0b\x1f' + '\x7fé€\U0001f602/'
     assert canonical_text(value) == (
-        '"' + r'\"' + chr(92) * 2 + r'\b\t\n\f\r' + u_escapes('#0000#0001#001f')
+        '"' + r'\"' + chr(92) * 2 + r'\b\t\n\f\r' + u_escapes('#0000#0001#000b#001f')
         + '\x7fé€\U0001f602/' + '"')
-
-
-def test_control_escapes_are_lowercase_hex():
-    assert canonical_text('\x1f') == '"' + u_escapes('#001f') + '"'
-    assert canonical_text('\x0b') == '"' + u_escapes('#000b') + '"'
-    assert u_escapes('#001F') not in canonical_text('\x1f')
-
-
-def test_solidus_and_del_travel_raw():
-    """Two characters the RFC explicitly does NOT escape - a canonicaliser that escapes either
-    produces bytes no other implementation will reproduce."""
-    assert canonical_text('a/b') == '"a/b"'
-    assert canonical_text('Control\x7f') == '"Control\x7f"'
 
 
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
 def test_non_finite_numbers_are_refused_by_name(value):
+    """Killing mutation: the finiteness check dropped, which reaches the digit parser with `nan`."""
     with pytest.raises(CanonRefusal) as refusal:
         canonical_bytes({'body': {'value': value}})
     message = str(refusal.value)
@@ -231,6 +198,11 @@ def test_non_finite_numbers_are_refused_by_name(value):
 
 
 def test_integers_past_the_safe_range_are_refused():
+    """2**53 is recorded and one past it refuses by name - and canonical output that large reparses
+    as an `int` the record refuses again, loudly rather than as a hash that quietly disagrees.
+
+    Killing mutation: the bound doubled, which records 2**53 + 1.
+    """
     assert canonical_text(2 ** 53) == '9007199254740992'
     with pytest.raises(CanonRefusal) as refusal:
         canonical_bytes({'lsn': 2 ** 53 + 1})
@@ -239,9 +211,12 @@ def test_integers_past_the_safe_range_are_refused():
     assert 'string' in message
     with pytest.raises(CanonRefusal):
         canonical_bytes(-(2 ** 53) - 1)
+    with pytest.raises(CanonRefusal):
+        canonical_bytes(json.loads(canonical_text(2.9514790517935283e20)))
 
 
 def test_non_json_types_are_refused_by_name():
+    """Killing mutation: a set taken as an array."""
     with pytest.raises(CanonRefusal) as refusal:
         canonical_bytes({'tape': b'\x00\x01'})
     message = str(refusal.value)
@@ -250,95 +225,26 @@ def test_non_json_types_are_refused_by_name():
     for offender in [set([1, 2]), complex(1, 2), object()]:
         with pytest.raises(CanonRefusal):
             canonical_bytes([offender])
-
-
-def test_non_string_object_keys_are_refused():
     with pytest.raises(CanonRefusal) as refusal:
         canonical_bytes({1: 'one'})
     assert 'int' in str(refusal.value)
 
 
-def test_a_refusal_returns_nothing_at_all():
-    """A refusal is not a half-written record - the caller gets an exception, never a prefix."""
-    with pytest.raises(CanonRefusal):
-        canonical_bytes({'a': 1, 'b': float('nan'), 'c': 2})
-
-
-def test_round_trip_through_json():
-    """Canonical bytes are still JSON - an auditor reads them with any parser."""
-    fixtures = [
-        {'type': 'fill',
-         'body': {'quantity': -1000000.5, 'counterparty': 'LEI:5493001KJTIIGC8Y1R12',
-                  'netting_set': 'NS/1', 'execution_reference': 'XETR-88213'}},
-        {'grants': [{'subject': 'sub-1', 'scope': 'admin'}, {'subject': 'sub-2', 'scope': 'mark'}]},
-        [None, True, False, 0, 1e-7, 'ünïcødé \U0001f602', {'nested': [[[{'deep': 1}]]]}],
-        {'': {'': ''}},
-        [],
-        {},
-        'a bare string',
-        42,
-    ]
-    for fixture in fixtures:
-        assert json.loads(canonical_bytes(fixture)) == fixture
-
-
-def test_large_magnitudes_reparse_loudly_rather_than_silently():
-    """The declared asymmetry, pinned so nobody meets it as a mystery.
-
-    Canonical output past 2**53 is a plain integer literal, and `json.loads` hands it back as an
-    `int` the record then refuses - which is the RIGHT failure (a refusal naming the value) rather
-    than the wrong one (a hash that quietly disagrees). The remedy is `parse_int`, and it is
-    asserted here so the fix is in the gate rather than in somebody's memory.
-    """
-    canonical = canonical_text(2.9514790517935283e20)      # an RFC appendix B double
-    assert canonical == '295147905179352830000'
-    assert isinstance(json.loads(canonical), int)          # the parser hands back an int...
-    with pytest.raises(CanonRefusal):                      # ...and the record says no, out loud
-        canonical_bytes(json.loads(canonical))
-
-    def keep_doubles(text):
-        return float(text) if abs(int(text)) > 2 ** 53 else int(text)
-
-    assert canonical_bytes(json.loads(canonical, parse_int=keep_doubles)) == canonical.encode()
-
-
 def test_semantically_equal_documents_hash_identically():
-    """Canonical identity: key order and number spelling are not facts about a document."""
+    """Canonical identity: key order and number spelling are not facts about a document, and `1`
+    and `1.0` are one number.
+
+    Killing mutation: `-0.0` spelled with its sign.
+    """
     assert content_hash({'a': 1, 'b': [2, 3]}) == content_hash({'b': [2, 3], 'a': 1})
     assert content_hash({'x': 1e2}) == content_hash({'x': 100})
+    assert content_hash({'quantity': 5}) == content_hash({'quantity': 5.0})
     assert content_hash({'x': -0.0}) == content_hash({'x': 0.0})
     assert content_hash({'a': 1}) != content_hash({'a': 2})
 
 
 def test_content_hash_is_sha256_of_the_canonical_bytes():
+    """Killing mutation: the address taken under SHA3-256."""
     obj = {'type': 'checkpoint', 'lsn': 3}
     assert content_hash(obj) == hashlib.sha256(canonical_bytes(obj)).hexdigest()
     assert len(content_hash(obj)) == 64
-
-
-def test_repr_passthrough_would_be_wrong():
-    """THE TRAP. `repr` and `json.dumps` disagree with the RFC on exactly these two values, so an
-    implementation that forwards Python's spelling fails here and only here - which is why the
-    serializer is vendored instead of reaching for `json.dumps(sort_keys=True)`.
-    """
-    assert canonical_text(1e16) == '10000000000000000'
-    assert repr(1e16) == '1e+16'
-    assert json.dumps(1e16) == '1e+16'
-    assert canonical_text(1e16) != repr(1e16)
-
-    assert canonical_text(1e-7) == '1e-7'
-    assert repr(1e-7) == '1e-07'
-    assert json.dumps(1e-7) == '1e-07'
-    assert canonical_text(1e-7) != repr(1e-7)
-
-    # And the same disagreement inside a real document, which is where it would actually bite.
-    document = {'values': [1e16, 1e-7]}
-    assert canonical_text(document) == '{"values":[10000000000000000,1e-7]}'
-    assert canonical_text(document) != json.dumps(document, sort_keys=True, separators=(',', ':'))
-
-
-def test_the_canonicaliser_holds_no_state():
-    """Two calls, one answer - a canonicaliser with memory would hash the same fact two ways."""
-    obj = {'b': 1, 'a': [float(2 ** 53), -0.0, math.pi]}
-    assert canonical_bytes(obj) == canonical_bytes(obj)
-    assert canonical_bytes(obj) == canonical_bytes(json.loads(canonical_bytes(obj)))

@@ -52,11 +52,13 @@ from derivus_spine import (
 from derivus_spine import cli
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.custody import (
-    ALGORITHM, CLASS_KEY_FILE, ESCROW_POLICY, ESCROW_SUBJECT, SEAT_ALGORITHM, WRAP_FIELDS,
+    ALGORITHM, ESCROW_POLICY, ESCROW_SUBJECT, SEAT_ALGORITHM, WRAP_FIELDS,
     X25519_BYTES, declare_escrow, enroll, materialize, read_class_key, recover_escrow, rewrap,
     seat_key_path, unwrap_key, wrap_drift, wrap_key)
 from derivus_spine.seal import FIRM, KEY_BYTES, NONCE_BYTES
 from derivus_spine.vocabulary import ADMIN, BOOK, FIRM_CLASS
+
+from test_spine import copy_of
 
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
@@ -90,12 +92,12 @@ def declare(log, actor, doc):
 
 
 def minted(tmp_path, name='hub'):
-    """A home mid-genesis with the writer open on it."""
-    home = tmp_path / name
-    init_home(home, MINT)
-    log = SpineLog(home)
-    log.store.put(TERMS)
-    return home, log
+    """A home mid-genesis with the writer open on it, copied from the one this process minted."""
+    def build(home):
+        init_home(home, MINT)
+        SpineLog(home).store.put(TERMS)
+    home = copy_of(tmp_path, name, ('custody',), build)
+    return home, SpineLog(home)
 
 
 def fill(reference):
@@ -122,19 +124,27 @@ def facts(log, event_type):
             if frame['event_type'] == event_type]
 
 
-def seated(tmp_path, name='hub', read=(DESK,), enrolled=(DESK,)):
-    """A hub with seats enrolled, a document in force and one fill on the book. Enrollment happens
-    BEFORE the declaration, so the seats are minted while the home is still the single-user
-    instrument it starts as - the order a deployment runs in.
+def seated(tmp_path, name='hub', read=(DESK,), enrolled=(DESK,), wrapped=False):
+    """A hub with seats enrolled, a document in force, one fill on the book and, where `wrapped`,
+    the class key wrapped to every seat it admits - copied from the one this process filled.
+    Enrollment happens BEFORE the declaration, so the seats are minted while the home is still the
+    single-user instrument it starts as - the order a deployment runs in.
     """
-    home, log = minted(tmp_path, name)
-    for subject in enrolled:
-        enroll(log, subject, actor=MINT)
-    declare(log, MINT, document(
-        grants=((MINT, ADMIN, ANY), (DESK, BOOK, BOOK_ONE)),
-        read=tuple((subject, FIRM_CLASS) for subject in read)))
-    log.append('fill', fill('EXEC-1'), actor=DESK, book=BOOK_ONE)
-    return home, log
+    def build(home):
+        init_home(home, MINT)
+        log = SpineLog(home)
+        log.store.put(TERMS)
+        for subject in enrolled:
+            enroll(log, subject, actor=MINT)
+        declare(log, MINT, document(
+            grants=((MINT, ADMIN, ANY), (DESK, BOOK, BOOK_ONE)),
+            read=tuple((subject, FIRM_CLASS) for subject in read)))
+        log.append('fill', fill('EXEC-1'), actor=DESK, book=BOOK_ONE)
+        if wrapped:
+            rewrap(log, actor=MINT)
+        log.close()
+    home = copy_of(tmp_path, name, ('custody-seated', read, enrolled, wrapped), build)
+    return home, SpineLog(home)
 
 
 def replica_of(home, into):
@@ -154,6 +164,9 @@ def test_a_seat_is_enrolled_wrapped_and_opened_back_to_the_class_key_bit_for_bit
     that made it: a seat exists because `seat_enrolled` says its public key is at a hash, and the
     key reached the subject because `key_wrapped` says the wrap is at a hash. What comes out of the
     round trip over those blobs is the home's own class key bit for bit - not a key that works.
+    A key file another class would name refuses by that name.
+
+    Killing mutation: rewrap wrapping a key other than the home's own.
     """
     home, log = minted(tmp_path)
     minting = enroll(log, DESK, actor=MINT)
@@ -178,6 +191,9 @@ def test_a_seat_is_enrolled_wrapped_and_opened_back_to_the_class_key_bit_for_bit
     opened = unwrap_key(log.store.get(wrapped['wrap']), seat_private(home, DESK), DESK)
     assert opened == read_class_key(home) == (home / 'keys' / FIRM).read_bytes()
     assert len(opened) == KEY_BYTES
+    with pytest.raises(CustodyRefusal) as refusal:
+        read_class_key(home, 'desk-two')
+    assert 'class_desk-two.key' in str(refusal.value), refusal.value
 
     log.close()
     assert verify_home(home)['head_lsn'] == 7, 'custody events are ordinary chained facts'
@@ -186,7 +202,10 @@ def test_a_seat_is_enrolled_wrapped_and_opened_back_to_the_class_key_bit_for_bit
 def test_the_seat_key_file_names_the_subject_by_hash_and_never_in_the_clear(tmp_path):
     """A path is data too: the record is pseudonymous by rule, so a directory listing must not be a
     membership roster. The filename is sixteen hex characters of the subject's SHA-256 - stable,
-    unique at desk scale, and saying nothing."""
+    unique at desk scale, and saying nothing.
+
+    Killing mutation: the seat key filed under the subject's own name.
+    """
     home, log = minted(tmp_path)
     enroll(log, DESK, actor=MINT)
     enroll(log, MARKER, actor=MINT)
@@ -206,6 +225,8 @@ def test_a_key_file_is_written_as_bytes_and_never_translated(tmp_path):
     then a byte longer than a key and every wrap made from it opens onto nothing, which fails one
     run in eight and looks like bad luck. Seats are minted until one carries the byte, so what is
     asserted is the case that breaks and not the average one.
+
+    Killing mutation: the key file written through a text handle.
     """
     home, log = minted(tmp_path)
     carried = None
@@ -226,6 +247,8 @@ def test_the_wrap_blob_is_the_four_field_object_and_a_fresh_one_every_time(tmp_p
     public key, the nonce and the ciphertext - four fields and no fifth, a fifth being bytes in the
     recovery path the AAD does not cover. The freshness half is why the ephemeral is there at all:
     two wraps of one key are two different blobs that both open, so neither testifies to the other.
+
+    Killing mutation: a fifth field written into the wrap.
     """
     key = os.urandom(KEY_BYTES)
     private = X25519PrivateKey.generate()
@@ -250,9 +273,11 @@ def test_the_wrap_blob_is_the_four_field_object_and_a_fresh_one_every_time(tmp_p
 
 def test_another_seats_private_key_does_not_open_this_seats_wrap(tmp_path):
     """The obvious half of the binding: a wrap is encrypted to one public key, so the seat next to
-    it cannot open it however entitled that seat is in the document."""
-    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER))
-    rewrap(log, actor=MINT)
+    it cannot open it however entitled that seat is in the document.
+
+    Killing mutation: the wrap key derived from nothing the recipient holds.
+    """
+    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER), wrapped=True)
     wraps = dict((body['subject'], body['wrap']) for _, body in facts(log, 'key_wrapped'))
 
     with pytest.raises(CustodyRefusal) as refusal:
@@ -271,9 +296,10 @@ def test_a_wrap_read_as_another_subject_refuses_even_under_the_right_private_key
     for THIS class. Swap two subjects' blobs onto each other's rows and the ciphertext and the
     record stop agreeing about the recipient, so the seat's own private key is not enough - which
     makes a mis-filed wrap a refusal rather than a quiet mis-delivery.
+
+    Killing mutation: the subject left out of the wrap's AAD.
     """
-    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER))
-    rewrap(log, actor=MINT)
+    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER), wrapped=True)
     wraps = dict((body['subject'], body['wrap']) for _, body in facts(log, 'key_wrapped'))
 
     # the swap: each blob is offered on the other's row, with that row's own private key
@@ -292,7 +318,10 @@ def test_a_wrap_read_as_another_subject_refuses_even_under_the_right_private_key
 def test_a_doctored_wrap_blob_refuses_and_names_what_is_wrong_with_it(tmp_path):
     """A wrap blob is ordinary bytes on disk, and every way one can be edited lands on
     `CustodyRefusal` naming the field - the alternative being a caller that believes it recovered
-    something."""
+    something.
+
+    Killing mutation: a wrap carrying a fifth field read as one.
+    """
     key = os.urandom(KEY_BYTES)
     private = X25519PrivateKey.generate()
     public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
@@ -336,10 +365,10 @@ def test_a_replica_goes_from_chain_only_to_entitled_green_off_one_wrap(tmp_path)
 
     Which wrap is this subject's is answered by the AAD, and has to be: the `key_wrapped` row
     naming it has a body sealed under the very key being recovered.
+
+    Killing mutation: the recovered key never written into the replica.
     """
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    home, log = seated(tmp_path, wrapped=True)
     replica = replica_of(home, tmp_path / 'replica')
     assert not any((replica / 'keys').iterdir()), 'the replica arrived holding a key'
 
@@ -369,10 +398,11 @@ def test_a_replica_goes_from_chain_only_to_entitled_green_off_one_wrap(tmp_path)
 def test_materialize_refuses_to_write_over_a_class_key_that_is_already_there(tmp_path):
     """Overwriting would be crypto-shredding by accident - every body sealed under the key that is
     there becomes unreadable, in the one move that looks like granting access - so the second call
-    refuses, names the file, and leaves the first recovery as it was."""
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    refuses, names the file, and leaves the first recovery as it was.
+
+    Killing mutation: the existing key file left unchecked, which meets the exclusive create.
+    """
+    home, log = seated(tmp_path, wrapped=True)
     replica = replica_of(home, tmp_path / 'replica')
     materialize(replica, DESK, seat_private(home, DESK))
     before = (replica / 'keys' / FIRM).read_bytes()
@@ -390,10 +420,11 @@ def test_materialize_refuses_to_write_over_a_class_key_that_is_already_there(tmp
 
 def test_a_replica_with_no_wrap_of_its_own_refuses_and_stays_unentitled(tmp_path):
     """A subject the document never admitted has no wrap, so nothing is written: the refusal names
-    the remedy rather than leaving a half-recovered home behind."""
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    the remedy rather than leaving a half-recovered home behind.
+
+    Killing mutation: no wrap opening read as a key of nothing.
+    """
+    home, log = seated(tmp_path, wrapped=True)
     replica = replica_of(home, tmp_path / 'replica')
 
     with pytest.raises(CustodyRefusal) as refusal:
@@ -410,10 +441,10 @@ def test_a_wrap_from_another_history_is_refused_rather_than_materialized(tmp_pat
     the key inside does not seal this log, so materializing it would leave a home holding a key
     that opens nothing. The guard is the record's own law: never trust what you can re-derive. Two
     such wraps that disagree is a guess this verb does not make either.
+
+    Killing mutation: the recovered key never tried against the log's own bodies.
     """
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    home, log = seated(tmp_path, wrapped=True)
     replica = replica_of(home, tmp_path / 'replica')
 
     ghost = X25519PrivateKey.generate()
@@ -442,7 +473,10 @@ def test_a_wrap_from_another_history_is_refused_rather_than_materialized(tmp_pat
 def test_rewrap_is_idempotent_and_a_second_call_appends_nothing(tmp_path):
     """Safe to leave in a runbook after every grant, which is why the report and the fold agree on
     what MISSING means: a wrap is current when it was appended AFTER the enrollment it addresses.
-    So the second call finds every wrap younger than its seat and writes not one byte."""
+    So the second call finds every wrap younger than its seat and writes not one byte.
+
+    Killing mutation: no wrap counted current.
+    """
     home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER))
     first = rewrap(log, actor=MINT)
     assert first['events'] == 2 and sorted(first['current']) == []
@@ -461,7 +495,10 @@ def test_rewrap_is_idempotent_and_a_second_call_appends_nothing(tmp_path):
 def test_a_subject_with_read_and_no_seat_gets_no_wrap_and_the_report_names_it(tmp_path):
     """The document may describe somebody who has not sat down yet, so this is not an error - but a
     silent omission is how an entitlement becomes a rumour, so the report says it out loud.
-    Enrolling afterwards and rewrapping issues exactly the wrap that was missing."""
+    Enrolling afterwards and rewrapping issues exactly the wrap that was missing.
+
+    Killing mutation: a subject with no seat dropped from the report.
+    """
     home, log = seated(tmp_path, read=(DESK, STRANGER), enrolled=(DESK,))
 
     report = rewrap(log, actor=MINT)
@@ -487,6 +524,8 @@ def test_a_key_wrapped_row_citing_something_that_is_not_a_wrap_is_not_a_wrap(tmp
 
     So the fold OPENS what the row cites: the row does not count, the subject is `unresolved`, and
     the next rewrap issues a real wrap that opens to the class key.
+
+    Killing mutation: the cited blob not opened, the row counted as a wrap.
     """
     home, log = seated(tmp_path)
     not_a_wrap = log.store.put(b'not a wrap at all - a note, a public key, an operator\'s mistake')
@@ -518,6 +557,8 @@ def test_a_grant_names_the_wrap_drift_it_creates_rather_than_leaving_it_to_a_run
     operator forgets the second command the failure is SILENT - entitled, holding no key, finding
     out when a body will not open. So `grant` computes the drift against the document it just put
     in force and says what is owed while the operator is still at the keyboard.
+
+    Killing mutation: the grant reporting no rewrap owed.
     """
     home = tmp_path / 'hub'
     init_home(home, MINT)
@@ -560,6 +601,8 @@ def test_a_seat_may_bring_its_own_public_key_and_the_hub_then_holds_no_private_h
     The way out: the seat generates its keypair on its own machine and hands over the PUBLIC half,
     so the private one never existed here. The enrollment fact is byte-identical either way - the
     record cannot tell and should not be able to - and the wrap opens for the seat holding the key.
+
+    Killing mutation: the hub minting a keypair of its own beside the public key handed in.
     """
     home, log = minted(tmp_path)
     private = X25519PrivateKey.generate()
@@ -603,10 +646,10 @@ def test_rewrap_on_a_held_handle_reads_the_document_that_is_in_force_now(tmp_pat
     document and wrap the class key to a subject the record no longer admits. The writer would not
     stop it (the stale input is the document, not the actor), the wrap would land verify-green, and
     revocation being forward-only there would be no taking it back.
+
+    Killing mutation: the capability fold stopped at the head the handle opened at.
     """
-    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER))
-    rewrap(log, actor=MINT)
-    log.close()
+    home, log = seated(tmp_path, read=(DESK, MARKER), enrolled=(DESK, MARKER), wrapped=True)
 
     stale = SpineLog(home)
     assert wrap_drift(stale)['current'] == [DESK, MARKER]
@@ -632,9 +675,10 @@ def test_a_re_enrolled_seat_is_rewrapped_and_revocation_stays_forward_only(tmp_p
     wrap and `rewrap` issues a new one without anybody having to ask. And the declared residual,
     GATED rather than written down: the OLD wrap still opens under the OLD private key. Nothing
     un-wraps because nothing can, and the honest remedy is a class-key rotation.
+
+    Killing mutation: the first enrollment of a subject standing over a later one.
     """
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
+    home, log = seated(tmp_path, wrapped=True)
     (_, first), = facts(log, 'key_wrapped')
     lost = seat_private(home, DESK)
 
@@ -657,10 +701,11 @@ def test_a_re_enrolled_seat_is_rewrapped_and_revocation_stays_forward_only(tmp_p
 
 def test_rewrap_on_a_home_that_cannot_read_its_own_bodies_refuses_by_the_keys_name(tmp_path):
     """A crypto-shredded home has nothing to hand out, and the refusal says which file and which
-    remedy - the escrow key - rather than reporting a fold it could not run."""
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    remedy - the escrow key - rather than reporting a fold it could not run.
+
+    Killing mutation: the drift folded before the key is read, which raises the unreadable body.
+    """
+    home, log = seated(tmp_path, wrapped=True)
     shredded = tmp_path / 'shredded'
     shutil.copytree(str(home), str(shredded))
     os.unlink(str(shredded / 'keys' / FIRM))
@@ -683,6 +728,8 @@ def test_escrow_recovers_the_class_key_after_a_shred_on_a_copy_of_the_home(tmp_p
     materializes it into the copy, which verifies entitled again.
 
     Escrow is not a back door: it rides an ordinary `key_wrapped` row under a reserved subject.
+
+    Killing mutation: rewrap passing over the declared escrow key.
     """
     home, log = seated(tmp_path)
     escrow_private, escrow_public = custodian()
@@ -718,10 +765,11 @@ def test_escrow_recovers_the_class_key_after_a_shred_on_a_copy_of_the_home(tmp_p
 def test_escrow_recovery_without_a_declaration_or_with_the_wrong_key_refuses_by_name(tmp_path):
     """Two causes, one refusal, and that is honest: from a home that cannot read its own bodies, "no
     escrow was declared" and "this is not the custodian's key" are the same observable fact - no
-    wrap opens for escrow. The sentence names both and points at the declaration."""
-    home, log = seated(tmp_path)
-    rewrap(log, actor=MINT)
-    log.close()
+    wrap opens for escrow. The sentence names both and points at the declaration.
+
+    Killing mutation: no wrap opening read as a key of nothing.
+    """
+    home, log = seated(tmp_path, wrapped=True)
     escrow_private, escrow_public = custodian()
 
     with pytest.raises(CustodyRefusal) as refusal:
@@ -741,7 +789,10 @@ def test_escrow_recovery_without_a_declaration_or_with_the_wrong_key_refuses_by_
 def test_no_seat_may_be_enrolled_as_escrow_and_the_refusal_writes_nothing(tmp_path):
     """A seat wearing the reserved name would receive the custodian's wrap, so the name is refused
     where it could be taken - and the refusal is a refusal: no key file, no blob, and the head
-    exactly where it was."""
+    exactly where it was.
+
+    Killing mutation: the reserved name enrolled.
+    """
     home, log = minted(tmp_path)
     head = log.head()
 
@@ -756,25 +807,15 @@ def test_no_seat_may_be_enrolled_as_escrow_and_the_refusal_writes_nothing(tmp_pa
     assert log.head() == head
 
 
-def test_the_class_key_file_this_module_names_is_the_one_genesis_mints(tmp_path):
-    """Two modules, one file: `seal.py` mints `class_firm.key` and custody reads
-    `class_<class>.key`, so the identity is pinned here rather than discovered the day a recovery
-    writes a key nothing opens."""
-    assert CLASS_KEY_FILE.format(FIRM_CLASS) == FIRM == 'class_firm.key'
-
-    home, _ = minted(tmp_path)
-    assert read_class_key(home) == (home / 'keys' / FIRM).read_bytes()
-    with pytest.raises(CustodyRefusal) as refusal:
-        read_class_key(home, 'desk-two')
-    assert 'class_desk-two.key' in str(refusal.value), refusal.value
-
-
 # --------------------------------------------------------------------------------------------
 # The mouth.
 
 def test_the_cli_enrolls_and_rewraps_and_reports_what_it_did(tmp_path, capsys):
     """The runbook as an operator types it: enroll, declare, rewrap. Every answer is JSON on stdout
-    because a script is the caller, and the second rewrap reports zero events."""
+    because a script is the caller, and the second rewrap reports zero events.
+
+    Killing mutation: the enrollment reporting no seat key file.
+    """
     home = tmp_path / 'hub'
     init_home(home, MINT)
     named = ['--home', str(home)]
@@ -804,7 +845,10 @@ def test_the_cli_enrolls_and_rewraps_and_reports_what_it_did(tmp_path, capsys):
 
 def test_the_cli_turns_a_custody_refusal_into_the_librarys_own_sentence(tmp_path, capsys):
     """A refusal reaches the terminal as the library's own wording and exit 1, never a traceback: a
-    CLI that reworded one would be a second source of truth about what went wrong."""
+    CLI that reworded one would be a second source of truth about what went wrong.
+
+    Killing mutation: the CLI catching nothing, which reaches the terminal as a traceback.
+    """
     home = tmp_path / 'hub'
     init_home(home, MINT)
     os.unlink(str(home / 'keys' / FIRM))

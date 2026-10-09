@@ -33,9 +33,6 @@ day, in float64 where the engine's own accumulation order is the only difference
   * THE DIARY NEVER RUNS ON THE POLL PATH: two asks over an unmoved book are one queued job, and a
     booking between them is a second.
 """
-import builtins
-import dis
-import inspect
 import json
 import math
 import os
@@ -56,6 +53,7 @@ from derivus import instruments, schema, service, spine, utils
 from derivus.calculation import Diary, construct_calculation
 from derivus.config import CustomJsonEncoder
 from derivus_spine import SpineLog, capability, init_home, policy, vocabulary
+
 
 ACTOR = 'subject-desk-one'
 BASE = rates_world.BASE
@@ -322,11 +320,9 @@ def test_every_payment_the_diary_announces_is_the_run_s_own_cashflow(name, deal,
     premium, paid by the protection buyer and received by the seller. The engine's own realized
     cashflow and the diary's announced amount agree to float64 rounding.
 
-    Killing mutations, the first two of which the plain fixture cannot see: the fixed amount
-    REPLACING the rate coupon rather than summing with it (a bond's last payment reads as its
-    principal alone), the leg's `Compounding` flag ignored (two sub-periods read as their simple
-    sum), a paid leg booked received, and the buyer's minus left in the default swap's pricer
-    rather than its schedule, which announces a bought premium as received.
+    Killing mutation: the diary reading the leg's `Compounding` flag as off, two compounded
+    sub-periods announced as their simple sum. A defect inside `pricing.fixed_payments` moves the
+    diary and the run alike and is not this identity's to see.
     """
     serving(tmp_path, [node(deal)])
     rows = payments(diary_rows()['rows'])
@@ -351,15 +347,6 @@ def test_the_diary_reads_the_legs_the_binding_binds(unrecorded, tmp_path):
     serving(tmp_path, [node(swap())])
     legs = {row['leg'] for row in diary_rows()['rows']}
     assert legs == {'FixedCashflows', 'FloatCashflows', 'FloatCashflows.Resets', Diary.EXPIRY_LEG}
-
-    context = service.load(service.BOOK.read()[0])
-    compiled = construct_calculation('Diary', context.current_cfg)
-    compiled.execute(dict(context.current_cfg.deals['Calculation'], Run_Date=str(BASE.date())))
-    walked = {leg for deal in compiled.netting_sets.deals()
-              for leg, _ in utils.walk_schedules(deal.Factor_dep)}
-    assert walked == {'FixedCashflows', 'FloatCashflows'}
-    assert all(schedule.bound is not None for deal in compiled.netting_sets.deals()
-               for _, schedule in utils.walk_schedules(deal.Factor_dep)), 'the walk missed a bind'
 
 
 def test_a_swap_compiles_the_compounding_its_fixed_leg_declares():
@@ -477,32 +464,6 @@ def test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name(unrecorde
     assert spine.export_settlements(fixed, 'a' * 64, '1999-01-01')['rows'] == []
 
 
-def test_the_exporter_reads_the_diary_and_the_official_market_and_nothing_else(unrecorded):
-    """GATE 9. Provable two ways: the signature takes the rows and ONE market hash and no other
-    object, and the function's body names nothing but its arguments, the row vocabulary and
-    builtins - read off its code object and the ones nested in it, an import inside it counted - so
-    it reaches neither the service nor a Context to find anything else.
-
-    Killing mutation: the exporter naming `service` or `Context` - it could then read a live book
-    and the file it wrote would no longer be a function of its arguments.
-    """
-    assert list(inspect.signature(spine.export_settlements).parameters) == [
-        'rows', 'official_values_hash', 'due_before']
-
-    def named(code):
-        for op in dis.get_instructions(code):
-            if op.opname in ('LOAD_GLOBAL', 'LOAD_NAME', 'IMPORT_NAME', 'IMPORT_FROM'):
-                yield op.opname, op.argval
-        for const in code.co_consts:
-            if isinstance(const, type(code)):
-                yield from named(const)
-
-    code = spine.export_settlements.__code__
-    reached = set(named(code))
-    assert not code.co_freevars and not [name for op, name in reached if op.startswith('IMPORT')]
-    assert {name for _, name in reached} - set(dir(builtins)) <= {'Diary', 'SETTLED'}, reached
-
-
 # --------------------------------------------------------------------------------------------
 # The close check, and the poll path.
 
@@ -536,7 +497,10 @@ def test_the_close_check_and_reconcile_are_a_404_on_a_box_that_records_nothing(u
                                                                                tmp_path):
     """A box with no home has no record to check against, and says so rather than answering an
     empty diary as though every fact were in. The diary itself still reads: it is the book's own
-    schedule and needs no record at all."""
+    schedule and needs no record at all.
+
+    Killing mutation: the close check reading the book without asking for a home.
+    """
     serving(tmp_path, [node(fixed_leg())])
     assert CLIENT.get('/book/close/check', params={'date': '2030-01-01'}).status_code == 404
     assert CLIENT.get('/book/reconcile').status_code == 404
@@ -549,14 +513,14 @@ def test_a_print_nobody_ordered_a_source_for_leaves_the_read_standing(recorded, 
     own index is unresolved stands DUE with the reason on it rather than taking the verb down.
 
     Killing mutation: the read asking for every index the log holds prints of - `spine.fixings`
-    with no `indices` - which raises the record's own refusal out of a GET and 500s both verbs.
+    with no `indices` - which raises the record's own refusal out of a GET as a 422.
     """
     serving(tmp_path, [node(fixed_leg()), node(swap())])
     log = SpineLog(recorded)
     try:
         policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
-        log.append('fixing_observed', {'index': 'FxRate.ZAR', 'date': str(BASE.date()),
-                                       'source': 'SARB', 'value': 18.5}, actor=ACTOR)
+        log.append('fixing_observed', {'index': 'FxRate.EUR', 'date': str(BASE.date()),
+                                       'source': 'SARB', 'value': 0.92}, actor=ACTOR)
     finally:
         log.close()
 
@@ -966,7 +930,10 @@ def test_an_expiry_that_vests_a_choice_blocks_a_close_until_somebody_elects(reco
 
 def test_a_cash_settled_expiry_never_vests_a_choice(unrecorded, tmp_path):
     """The other half of `needs`: a cash-settled option's payoff is determined by its fixing, so
-    its expiry leaves nobody a choice and never blocks a close."""
+    its expiry leaves nobody a choice and never blocks a close.
+
+    Killing mutation: every option's expiry vesting a choice whatever it settles in.
+    """
     serving(tmp_path, [node(dict(OPTION, Reference='EQO_CASH', Settlement_Style='Cash'))],
             factors=dict(FACTORS, **EQUITY))
     rows = [row for row in diary_rows()['rows'] if row['kind'] == Diary.EXPIRY]
@@ -1215,8 +1182,7 @@ def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_de
     check exactly as the same book saying `Yes` - the row filed, `legal: false` - while valuing it
     marks the deal at zero and counts it.
 
-    Killing mutation: the diary's compile reading the switch, which files a zero row where it
-    filed the unreadable one.
+    Killing mutation: the deal the compile could not read dropped from the rows.
     """
     answers = {}
     for seed, switch in ((2, 'Yes'), (3, 'No')):

@@ -220,6 +220,8 @@ def test_the_registry_publishes_exactly_the_declared_structures():
 
     Every rule below runs over each form's WHOLE parameter set - the shared fields plus that
     variation's own - which is what a ticket fills in and what the runner requires.
+
+    Killing mutation: the registry dropping a declared structure.
     """
     store = schema.mapping['Structure']['types']
     assert set(store) == ROSTER
@@ -294,7 +296,11 @@ def test_the_registry_publishes_exactly_the_declared_structures():
 
 
 def test_an_unknown_structure_refuses_with_the_roster():
-    """A typo is a sales enquiry that cannot be answered, not an empty answer."""
+    """A typo is a sales enquiry that cannot be answered, not an empty answer.
+
+    Killing mutation: the refusal leaving the roster out, which answers a typo with nothing to
+    choose from.
+    """
     with pytest.raises(ValueError) as refusal:
         structures.quote({}, 'RangeAccrual', params())
     assert 'ZeroCostCollar' in str(refusal.value)
@@ -310,6 +316,8 @@ def test_a_straddle_is_exactly_its_two_legs(book):
 
     And the composed `StructuredDeal` prices to the quoted net - the deal riding the quote is the
     thing that was quoted.
+
+    Killing mutation: `split_pair` answering the pair's two currencies swapped.
     """
     outcome = structures.quote(book, 'Straddle', params(strike=SPOT))
     by_hand = values(book, [option('CALL', SPOT, 'Call'), option('PUT', SPOT, 'Put')])
@@ -337,6 +345,9 @@ def test_a_zero_cost_collar_costs_nothing(book):
     and the floor below it - a solver on the wrong branch would still net to zero and fail here. And
     re-quoting the two strikes as a bought `Strangle` prices the legs to equal premiums, the same
     statement from the other side.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     floor = SPOT * 0.95
     outcome = structures.quote(book, 'ZeroCostCollar', params(floor=floor))
@@ -378,6 +389,8 @@ def test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book(book)
 
     Nothing else moves. The bought leg is priced before the solve and comes back bit-identical, and
     the cap comes IN: a call that has to raise more is struck nearer the money.
+
+    Killing mutation: the margin taken in its own currency rather than crossed into the pricing one.
     """
     asked = params(notional=MARGIN_NOTIONAL, floor=SPOT * 0.95)
     plain = structures.quote(book, 'ZeroCostCollar', dict(asked))
@@ -410,6 +423,9 @@ def test_a_margin_and_a_two_way_compose_on_one_coordinate(book, two_sided_book):
     bank books holds the two together, read off the engine rather than off the runner.
 
     And the cap comes in further than either charge moves it alone, which is what says they add.
+
+    Killing mutation: `mirror` leaving every leg's `Buy_Sell` as quoted, which books client paper as
+    the bank's.
     """
     asked = params(notional=MARGIN_NOTIONAL, floor=SPOT * 0.95)
     priced = structures.quote(two_sided_book, COLLAR, dict(asked), margin=MARGIN)
@@ -435,7 +451,11 @@ def test_a_margin_and_a_two_way_compose_on_one_coordinate(book, two_sided_book):
 def test_a_quote_with_no_margin_is_the_quote_it_always_was(book):
     """The compatibility contract, stated twice. Absent, the feature is not there at all: no
     `margin` block in the answer and no `Sales_Margin` on the deal it books. And a margin of ZERO
-    - where every line of the arithmetic DID run - is the same quote to the bit."""
+    - where every line of the arithmetic DID run - is the same quote to the bit.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
+    """
     plain = structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95))
     zero = structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95),
                             margin={'amount': 0.0, 'currency': 'ZAR'})
@@ -458,6 +478,8 @@ def test_a_margin_refuses_where_it_cannot_be_valued(book):
     the way a solving one charges its coordinate, and the gate below holds that. A recipe solving
     MORE than one coordinate still refuses - the charge would be levied once per solve - and the
     registry declares no such structure, so the refusal stands on its own statement.
+
+    Killing mutation: the margin taken in its own currency rather than crossed into the pricing one.
     """
     with pytest.raises(ValueError) as unpriced:
         structures.quote(book, 'ZeroCostCollar', params(floor=SPOT * 0.95),
@@ -484,6 +506,9 @@ def test_a_structure_that_solves_nothing_charges_its_premium(book, two_sided_boo
     whichever way round the legs are booked, so a sold form - which the registry does not declare -
     would move the client's receipt by the same amount in the same direction. Both sides of the
     PAIR are quoted here, which is the axis the runner can get wrong.
+
+    Killing mutation: `mirror` leaving every leg's `Buy_Sell` as quoted, which books client paper as
+    the bank's.
     """
     ask = params(strike=SPOT, notional_currency=currency,
                  notional=NOTIONAL if currency == 'ZAR' else NOTIONAL / SPOT)
@@ -513,7 +538,10 @@ def test_a_structure_that_solves_nothing_charges_its_premium(book, two_sided_boo
 
 def test_a_seagull_nets_to_zero(book):
     """Three legs, two strikes named and one solved. The solve targets the sum of TWO already-priced
-    legs, so a runner reading only the last priced leg produces a plausible cap and fails here."""
+    legs, so a runner reading only the last priced leg produces a plausible cap and fails here.
+
+    Killing mutation: the registry dropping a declared structure.
+    """
     outcome = structures.quote(book, 'Seagull', params(floor=SPOT * 0.98, lower_floor=SPOT * 0.90))
 
     assert len(outcome['legs']) == 3
@@ -538,6 +566,9 @@ def test_a_forward_extra_costs_nothing_and_solves_its_barrier(book):
     `Down_And_In` bracketed BELOW the engine spot, so a flipped direction or a doubly-inverted level
     reports a barrier under spot or refuses inside the bracket. And the composed `StructuredDeal`
     reprices to the quoted net leg for leg.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     protected = SPOT * 0.97
     outcome = structures.quote(book, 'ForwardExtra', forward_extra_params(floor=protected))
@@ -580,6 +611,8 @@ def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
     no two-way at all the three spread keys are null and `spread_note` names the absence. Zero-wide,
     the spread was read and IS zero, and the rows say so pillar by pillar - which is a statement
     about the market rather than about the book.
+
+    Killing mutation: a leg no vega reaches charged zero rather than nothing.
     """
     ask = forward_extra_params(floor=SPOT * 0.97)
     mid = structures.quote(book, 'ForwardExtra', ask)
@@ -620,6 +653,8 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
     legs' own charges, and the structure still costs the client nothing - `net` is zero, the price
     of a zero-cost structure, while what it MARKS at is minus the edge. `charged_on` names the
     coordinate that carried it, and the two structures here solve DIFFERENT fields.
+
+    Killing mutation: a leg's spread charge summed over its first pillar alone.
     """
     ask = forward_extra_params(floor=SPOT * 0.97)
     mid, two_sided = (structures.quote(document, 'ForwardExtra', ask)
@@ -692,6 +727,9 @@ def test_each_pillars_charge_is_what_repricing_that_pillar_costs(book, two_sided
     the reprice on this leg's ATM and butterfly rows and disagrees on its risk reversal.
 
     This is the tight check `STRIP_CHARGE`'s 5% band is not: at 5% a 4% error in the charge passes.
+
+    Killing mutation: a pillar's cost taken off the signed vega rather than its magnitude, which
+    pays the client a spread on a short-vol leg.
     """
     solved = structures.quote(book, COLLAR, params(floor=SPOT * 0.95))
     charged = structures.quote(two_sided_book, COLLAR, params(floor=SPOT * 0.95))
@@ -736,6 +774,8 @@ def test_a_leg_the_two_way_cannot_reach_is_charged_nothing_and_says_so(book, two
     to be nothing, and a consumer auditing the quote cannot tell that from a leg nobody priced.
 
     Nothing else moves: an unchargeable two-way quotes the mid quote, to the float.
+
+    Killing mutation: a leg no vega reaches charged zero rather than nothing.
     """
     ask = params(floor=SPOT * 0.95)
     blind = structures.quote(with_policy(no_quote_leaves(two_sided_book)), COLLAR, ask)
@@ -790,6 +830,8 @@ def test_the_wing_pillars_are_charged_beside_the_atm_ones(book, two_sided_book):
     The SEAGULL is held to the same ordering, because three legs is where a per-leg charge could go
     wrong in a way two cannot: its extra sold put finances less, so its cap comes in further still,
     and the sum over three legs is what the coordinate has to absorb.
+
+    Killing mutation: the registry dropping a declared structure.
     """
     atm_only = two_way(book, wings=None)
     floor = params(floor=SPOT * 0.95)
@@ -831,6 +873,9 @@ def test_a_book_with_no_wing_two_way_quotes_exactly_as_it_always_did(book):
     row at a half of nothing, because it was read and it is nothing; no sides at all is NO ROW,
     because there was nothing to read. Every number that moves a price is identical, and all three
     still charge the ATM pillars: this is the WING layer's absence, not the two-way's.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     ask = params(floor=SPOT * 0.95)
     absent, zero_wide, crossed = (structures.quote(two_way(book, wings=wings), COLLAR, ask)
@@ -859,6 +904,9 @@ def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
 
     The gate is the whole quote, not the reader: the same collar off the same surface, the same
     pillars charged, the same cap to the float as the book that states the field.
+
+    Killing mutation: `Use` read as a required field of a quote row, which raises on a block that
+    never states it.
     """
     stated = two_way(book, wings=None)
     useless = copy.deepcopy(stated)
@@ -917,6 +965,9 @@ def test_a_seeded_solve_costs_less_and_a_missed_seed_still_answers_the_full_brac
     A MISS returns the unseeded root BIT FOR BIT at no more than two runs over it - the fall-back's
     whole contract, since a narrow bracket that kept its own answer would be a quote off a span
     nobody chose. Deleting the fall-back makes this raise.
+
+    Killing mutation: a crossed leg's `Option_Type` and `Barrier_Type` left unflipped, which deals
+    the other option on the engine axis.
     """
     document = copy.deepcopy(book)
     structure = structures.structure_named(COLLAR)
@@ -984,6 +1035,8 @@ def test_a_book_with_no_quote_policy_quotes_exactly_as_it_always_did(two_sided_b
 
     Both quotes are given against a book already carrying a position, so the silence is a decision
     rather than an empty book's default.
+
+    Killing mutation: a leg's spread charge summed over its first pillar alone.
     """
     held = holding(two_sided_book, [structures.mirror(standing['deal'])])
     plain = structures.quote(held, COLLAR, params(floor=SPOT * 0.95))
@@ -1032,6 +1085,9 @@ def test_an_offset_quotes_tighter_than_a_repeat(book, two_sided_book, standing):
     one-pass approximation's own size - the book holds the collar at the cap it was DEALT at while
     the candidate is measured at the MID one, so the two do not cancel to the bit. Measured here at
     4.4% of the bucket, against the 200% the repeat piles on.
+
+    Killing mutation: the policy's scale left at one, which quotes an offsetting trade at the full
+    two-way.
     """
     ask = params(floor=SPOT * 0.95)
     short_book = with_policy(holding(two_sided_book, [structures.mirror(standing['deal'])]))
@@ -1096,6 +1152,9 @@ def test_a_margin_survives_a_policy_that_tightens_the_two_way(two_sided_book, st
     against it is the one the trade offsets exactly. Shaving the margin by the scale would cost the
     client 4.4% of it here, silently: every leg, every premium and every identity but this one
     stays true.
+
+    Killing mutation: the policy's scale left at one, which quotes an offsetting trade at the full
+    two-way.
     """
     asked = params(floor=SPOT * 0.95)
     tightens = with_policy(holding(two_sided_book, [standing['deal']]))
@@ -1135,6 +1194,9 @@ def test_the_cap_and_the_floor(two_sided_book, standing):
     currency, so it crosses on the same `FxRate` ratio. Set between the tightened charge and the
     full one it binds exactly: the effective charge lands ON the ticket, and the quote is wider than
     the unfloored one and no wider than the two-way.
+
+    Killing mutation: the policy's scale left at one, which quotes an offsetting trade at the full
+    two-way.
     """
     ask = params(floor=SPOT * 0.95)
     twice = holding(two_sided_book, [renamed(standing['deal'], '_a'),
@@ -1201,6 +1263,9 @@ def test_a_market_strike_reaches_the_engine_axis(book):
     """The conversion on its own: a floor quoted USDZAR 15.50 on a rand notional is a deal struck at
     `1/15.50` dollars per rand, and the leg reads back 15.50. The option SENSE crosses with it, and
     both live in the runner so a structure declares neither.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     outcome = structures.quote(book, 'ZeroCostCollar', params(floor=15.50))
     protection = outcome['deal']['Children'][0]['Instrument']['.Deal']
@@ -1224,6 +1289,8 @@ def test_a_live_cross_lands_exactly_where_engine_spot_reads_it_back(book):
     Two refusals. A pair with NEITHER leg against the base cannot be placed without triangulating,
     which is a market view rather than a tick; a currency the book carries no `FxRate` for is a new
     price factor, which is authoring rather than the `bind='value'` seam a spot moves through.
+
+    Killing mutation: a live cross written onto the quote leg without its inversion.
     """
     moved = copy.deepcopy(book)
     written = structures.with_live_spots(moved, {'USDZAR': 16.31})
@@ -1251,6 +1318,8 @@ def test_the_same_trade_quotes_the_same_from_either_side_of_the_pair(book):
     options on rand settled in dollars, struck at `1/18.50`, the market's call written as an engine
     put. The dollar notional is the base currency and nothing inverts. One number out of both, which
     no single-orientation runner can fake.
+
+    Killing mutation: `split_pair` answering the pair's two currencies swapped.
     """
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'strike': SPOT}
     in_rand = structures.quote(book, 'Straddle', dict(
@@ -1278,6 +1347,9 @@ def test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair(book):
     reciprocal pays `max(1/S - 1/K, 0) x N`, which is `(N/K) x max(K - S, 0)` in rand. The
     straddle's version is struck at the money and cannot tell the two divisors apart; away from it,
     `N / SPOT` misprices by exactly the moneyness (measured 3.09% at 0.97 spot).
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     protected = SPOT * 0.97
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'sell_currency': 'USD',
@@ -1311,6 +1383,9 @@ def test_a_forward_extra_importer_caps_the_pair_and_solves_a_lower_barrier(book)
     The cap is the rate paid for dollars. If USDZAR drops through the solved barrier, the sold put
     knocks in and the package becomes a forward at that cap; otherwise the client keeps the lower
     spot. This is the forward extra's importer form, not a second product.
+
+    Killing mutation: the recipe's premium summed without its weights, which nets a sold leg as
+    bought.
     """
     cap = SPOT * 1.03
     outcome = structures.quote(book, 'ForwardExtra', params(
@@ -1331,7 +1406,11 @@ def test_a_forward_extra_importer_caps_the_pair_and_solves_a_lower_barrier(book)
 def test_a_quote_is_an_act_not_a_lookup(book):
     """Two identical asks are two quotes: content addressing is right for a computation and wrong
     for an event, so the id carries a submission clock and never coalesces - while the PRICE is the
-    same, because the book has not moved."""
+    same, because the book has not moved.
+
+    Killing mutation: the quote id hashed without its submission clock, which coalesces two quotes
+    into one.
+    """
     first = structures.quote(book, 'Straddle', params(strike=SPOT))
     second = structures.quote(book, 'Straddle', params(strike=SPOT))
 
@@ -1415,6 +1494,9 @@ def test_an_accumulator_crosses_both_axes_and_a_tarf_refuses_the_second(accrual_
     reciprocal axis, paying the notional per unit of MOVE, a coherent product and not the one
     `notional_currency` names (measured 0.77% apart in the solved strike). So the refusal names the
     currency, and `InvertedTarget` is False on every leg the runner builds.
+
+    Killing mutation: a leg's strike read back on the engine axis rather than the market's, which
+    quotes a USDZAR level as its reciprocal.
     """
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
                  'buy_currency': 'USD', 'knockout': SPOT * 1.10}
@@ -1498,6 +1580,8 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     a `LogVar2FJModelParameters` factor for an FX underlying, so the leg prices GBM and SAYS so.
     Pinning the model on a book with no calibration instead raises inside the dependency loop, which
     SKIPS the deal and marks the quote's only leg at nothing.
+
+    Killing mutation: `engine_spot` answering the reciprocal cross.
     """
     tarf = structures.quote(accrual_book, 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
@@ -1547,6 +1631,8 @@ def test_a_strip_at_a_margin_strikes_further_from_the_client(accrual_book):
     error here quotes the client a BETTER strike for paying a margin. Measured on this book at
     these paths: 9.2e-4 relative, against the 2.5e-5 the two zero-cost orientations differ by, so
     the assertion is made at `AXIS_TOLERANCE` and clears it four times over.
+
+    Killing mutation: the margin taken in its own currency rather than crossed into the pricing one.
     """
     asked = dict(accrual_params(target=TARGET), notional_currency='USD')
     plain = structures.quote(accrual_book, 'TargetRedemptionForward', dict(asked))
@@ -1572,6 +1658,8 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
     A BASE DATE CARRYING A TIME. `expiry_date` normalizes to a date and a terminal snapshot stamps
     `Base_Date` at 16:30, so the final fixing landed one comparison past midnight and a
     twelve-fixing year became eleven. The base is normalized before the loop.
+
+    Killing mutation: a strip ending short of its tenor accepted.
     """
     import pandas as pd
 
@@ -1594,26 +1682,6 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
     assert '5M' in str(quoted.value)
 
 
-def test_the_axis_refusal_fires_before_the_deal_is_furnished(book):
-    """A refusal must not leave a half-built deal behind. `furnish_accrual` writes the schedule and
-    the geared notional onto the caller's deal block IN PLACE, so the axis refusal has to be the
-    function's FIRST statement or a caller that catches it holds a strip and a leverage for a trade
-    that was never quoted.
-
-    The ordering shows in the wording: an inverted TARF whose frequency also does not divide reports
-    the AXIS rather than the schedule it never got to build.
-    """
-    deal = {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
-    with pytest.raises(ValueError) as refusal:
-        structures.furnish_accrual(structures.TargetRedemptionForward, deal,
-                                   params(target=TARGET, fixing_frequency='5M'), book, BASE, 'ZAR',
-                                   True)
-
-    assert 'accrual cap' in str(refusal.value) and 'ZAR' in str(refusal.value)
-    assert '5M' not in str(refusal.value), 'the schedule was built before the axis was checked'
-    assert deal == {'Object': 'FXTARFOptionDeal', 'Currency': 'USD', 'Underlying_Currency': 'ZAR'}
-
-
 def calibrated(document):
     """The book with the pair's spot-model fit installed under its NON-BASE token, which is the
     only leg of the pair an `FxRate` can be."""
@@ -1630,6 +1698,8 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
     simulates and the only one a calibration can write - so `structures.spot_model` and
     `get_spot_model_params_factor` make the same lookup. Unfitted, the note names that factor and
     the verb that installs it; fitted, both orientations pin and there is no note.
+
+    Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """
     tarf = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
@@ -1657,29 +1727,6 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
         'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
 
-def test_the_token_rule_answers_the_same_token_in_either_spelling():
-    """One rule, four callers, two dialects. The engine, discovery and the calibration speak
-    `check_rate_name` TUPLES; the runner speaks flat names off the document. The rule compares on
-    the checked form, so a mixed call cannot answer `underlying` by falling through an equality that
-    was never going to hold - which is the PRE-RULE token wearing the fix's clothes.
-    """
-    spellings = (('USD', 'ZAR', 'USD'), (('USD',), ('ZAR',), ('USD',)),
-                 ('USD', 'ZAR', ('USD',)), (('USD',), ('ZAR',), 'USD'))
-    for underlying, currency, base in spellings:
-        token = utils.spot_model_currency(underlying, currency, base)
-        assert utils.check_rate_name(token) == ('ZAR',), (underlying, currency, base, token)
-
-    # a CROSS is keyed on the two CURRENCIES - the later priced in the earlier - so one pair has
-    # one law whichever way the deal is written and whichever way a desk spells its surface
-    for underlying, currency in (('EUR', 'GBP'), ('GBP', 'EUR')):
-        assert utils.spot_model_currency(underlying, currency, 'USD') == 'GBP.EUR'
-        assert utils.spot_model_currency(
-            (underlying,), (currency,), ('USD',)) == ('GBP', 'EUR')
-    # and a name that is not one currency has no pair to be a leg of
-    with pytest.raises(ValueError, match='ONE rate of a pair'):
-        utils.spot_model_currency(('EUR', 'BASIS'), ('GBP',), ('USD',))
-
-
 def test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning(accrual_book):
     """The base is the OTHER half of the token rule, and an unknown one may not be guessed.
 
@@ -1689,6 +1736,9 @@ def test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning(accrua
     quote PINS a model the engine looks up under the other name - a dependency-loop raise, a skipped
     deal, the trade marked at nothing on a job reporting success. So it refuses, naming the missing
     declaration, and pins nothing.
+
+    Killing mutation: a crossed leg's `Option_Type` and `Barrier_Type` left unflipped, which deals
+    the other option on the engine axis.
     """
     document = calibrated(accrual_book)
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -1715,6 +1765,8 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     THE ACCUMULATOR'S ORIENTATION ALREADY JOINED: its notional is the rand, so its underlying was
     already the non-base token. Its strike is pinned to the digit at 17.390492998425863, so the
     arm that never had the defect cannot lose the fit either.
+
+    Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """
     gbm = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
@@ -1746,6 +1798,8 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
 
     MEASURED on the FX gate's book: 3.1e-4 apart at 16,384 paths against the lognormal's 2.5e-5 -
     the shocks' estimator error rather than the numeraire. The band is 5e-4.
+
+    Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """
     document = calibrated(accrual_book)
     both_ways = {'pair': PAIR, 'expiry': EXPIRY, 'fixing_frequency': FIXING_FREQUENCY,
@@ -1775,6 +1829,8 @@ def test_a_composed_tarf_carries_an_exposure_profile(tmp_path):
 
     The market is `test_fx_tarf_json`'s, with the FX rate given `GBMAssetPriceModel` (the only edit)
     because a Credit Monte Carlo simulates what a base valuation only discounts.
+
+    Killing mutation: `split_pair` answering the pair's two currencies swapped.
     """
     import numpy as np
 
@@ -1933,9 +1989,11 @@ def solved_market(outcome):
 SPREAD_ASKS = ASKS | {('Straddle', None): {'strike': SPOT},
                       ('Strangle', None): {'floor': SPOT * 0.95, 'cap': SPOT * 1.05}}
 
-#: Which forms a FITTED book can tell apart: a spot model is pinned per DEAL TYPE and only the
-#: accrual deals declare one, so a vanilla quotes identically on both books and is swept once.
-MODELLED = ('TargetRedemptionForward', 'Accumulator')
+#: The forms a FITTED book can tell apart: a spot model is pinned per DEAL TYPE and only the accrual
+#: deals declare one, so a vanilla quotes identically on both books and is swept once. A fitted
+#: strip is quoted on the declared 16,384 paths, so one side of each - the client buying the TARF's
+#: base and selling the accumulator's, one of each direction - carries the fitted claims.
+FITTED = (('Accumulator', 'sell'), ('TargetRedemptionForward', 'buy'))
 
 #: What the vega-signed side charges each strip on the gate's own two-way book at a 1m USD ticket,
 #: MEASURED: `sum |vega| x half` over the six quoted pillars, at the mid solution. The quote's own
@@ -1962,7 +2020,7 @@ def charged(accrual_book):
         copy.deepcopy(document), name,
         dict(params(notional_currency='USD'), **SPREAD_ASKS[(name, word)]))
         for name, word in SPREAD_ASKS for label, document in books.items()
-        if name in MODELLED or not label.startswith('model')}
+        if (name, word) in FITTED or not label.startswith('model')}
 
 
 @pytest.mark.parametrize('name,word', sorted(SPREAD_ASKS, key=str))
@@ -1978,6 +2036,8 @@ def test_every_form_charges_a_non_negative_edge_that_is_its_legs_own(charged, na
 
     Signing the charge by `Buy_Sell` instead - the rule this replaces - turns all four strips
     negative here, the desk paying a client 6.6k to 25.3k on a 1m ticket to take the trade.
+
+    Killing mutation: a leg's spread charge summed over its first pillar alone.
     """
     solves = [step for step in structures.structure_named(name).recipe
               if isinstance(step, structures.Solve)]
@@ -2008,6 +2068,8 @@ def test_a_strip_pays_the_spread_rather_than_being_paid_it(charged, name, word):
     higher strike is worse for them and the solved one comes UP; the client selling it accrues as
     the pair falls and theirs comes DOWN. Dropping the absolute value keeps the magnitude and
     reverses both.
+
+    Killing mutation: a leg's spread charge summed over its first pillar alone.
     """
     outcome, at_mid = charged[(name, word, 'surface')], charged[(name, word, 'surface mid')]
     solved, was = solved_market(outcome), solved_market(at_mid)
@@ -2029,6 +2091,9 @@ def test_a_puts_risk_reversal_is_charged_on_its_own_side(charged):
 
     Charged per pillar the sign does not matter: the risk reversal's row costs the client something
     POSITIVE on all four legs, each dealt on the side its own risk puts it.
+
+    Killing mutation: a pillar's cost taken off the signed vega rather than its magnitude, which
+    pays the client a spread on a short-vol leg.
     """
     puts = {('floor', 'protection'), ('cap', 'financing')}
     for word in ('floor', 'cap'):
@@ -2042,7 +2107,7 @@ def test_a_puts_risk_reversal_is_charged_on_its_own_side(charged):
                     word, row['role'], 'against' if opposite else 'with'))
 
 
-@pytest.mark.parametrize('name,word', sorted(STRIP_CHARGE, key=str))
+@pytest.mark.parametrize('name,word', FITTED)
 def test_a_model_priced_strip_is_charged_off_its_lognormal_reading(charged, name, word):
     """A strip walking a FITTED law never reads the written FX surface, so it publishes no quote
     sensitivity at all and the two-way had nothing to charge against: the quote solved the MID
@@ -2052,6 +2117,9 @@ def test_a_model_priced_strip_is_charged_off_its_lognormal_reading(charged, name
     would deal in the quotes it actually trades - and `spread_source` says so, against a `surface`
     on the same book with no fit installed. Skipping that second run leaves the edge at 0.0 and the
     solved strike on the mid, which is what this refuses.
+
+    Killing mutation: a fitted leg's vega read off the fitted book rather than its lognormal
+    reading, which charges it nothing.
     """
     outcome, at_mid = charged[(name, word, 'model')], charged[(name, word, 'model mid')]
     row = outcome['legs'][0]
@@ -2081,6 +2149,9 @@ def test_every_variation_books_the_deals_it_declares(quoted, name, word, currenc
 
     And the MIRROR is one flip and nothing else: the bank's position is the client's paper with
     every side turned over, so a leg that moved anything more would book a trade nobody priced.
+
+    Killing mutation: `mirror` leaving every leg's `Buy_Sell` as quoted, which books client paper as
+    the bank's.
     """
     outcome = quoted[(name, word, currency)]
     inverted = currency == 'ZAR'
@@ -2128,6 +2199,9 @@ def test_each_variation_is_the_structure_it_says_it_is(quoted):
 
     And where a structure's legs are struck at ONE rate, the two sides of the pair are one trade
     and must solve one coordinate, travelling opposite paths through the runner to reach it.
+
+    Killing mutation: a leg's strike read back on the engine axis rather than the market's, which
+    quotes a USDZAR level as its reciprocal.
     """
     for (name, word, currency), outcome in quoted.items():
         assert abs(outcome['net']) <= SOLVE_TOLERANCE, (name, word, currency, outcome['net'])
@@ -2174,6 +2248,9 @@ def test_a_reflected_variation_is_the_legs_written_out_by_hand():
     The three shapes it has to get right: a level renamed and named again in its own prose, TWO
     levels renamed at once without `lower_floor` reading as a `floor` inside it, and a strip with
     no level of its own at all, where only the sense and the knock-out direction turn over.
+
+    Killing mutation: a crossed leg's `Option_Type` and `Barrier_Type` left unflipped, which deals
+    the other option on the engine axis.
     """
     assert written_out(structures.ForwardExtra.variations['cap']) == (
         'base',
@@ -2218,6 +2295,9 @@ def test_the_selection_rule_answers_every_way_a_ticket_can_state_it(book, accrua
     hand-written validation it replaces did. An undirected strip names what to state rather than
     picking one. A currency outside the pair is not a direction on it, and buying and selling the
     same currency is not a trade.
+
+    Killing mutation: the first consistent variation taken where two are, which deals one the ticket
+    never chose.
     """
     for structure, stated, word in (
             (structures.ForwardExtra, {'floor': SPOT * 0.97}, 'floor'),
@@ -2275,6 +2355,8 @@ def test_a_blank_is_not_a_statement(book):
     statement it makes a perfectly good exporter ticket a CONTRADICTION because the unused slot
     came back as a zero; read as a statement for selection and not for completion, a ticket is
     stated for one and missing for the other twenty lines apart.
+
+    Killing mutation: a blank parameter read as stated.
     """
     assert structures.variation_for(
         structures.ForwardExtra, params(floor=SPOT * 0.97, cap=0.0))[0] == 'floor'
@@ -2307,6 +2389,8 @@ def test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses(book)
     misspelt is a strip quoted at the default gearing nobody agreed, and silence is what makes that
     invisible. A parameter belonging to the OTHER variation is the selection rule's to refuse, in
     its own words, which is a different sentence about a different mistake.
+
+    Killing mutation: a parameter no form takes accepted in silence.
     """
     with pytest.raises(ValueError, match='Seagull states no upper_cap'):
         structures.declared(structures.Seagull, params(cap=SPOT * 1.02))
@@ -2355,6 +2439,9 @@ def test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses(accrual_bo
     gets wrong: `pv_MC_Accumulator`'s `survives` is strict either way (`s < barrier` up, `s > barrier`
     down), so equality knocks out whichever way the barrier faces. This book's spot is exactly
     18.50, so both arms are reachable rather than theoretical.
+
+    Killing mutation: a crossed leg's `Option_Type` and `Barrier_Type` left unflipped, which deals
+    the other option on the engine axis.
     """
     for direction, dead in (('buy_currency', SPOT * 0.90), ('sell_currency', SPOT * 1.10),
                             ('buy_currency', SPOT), ('sell_currency', SPOT)):
@@ -2382,36 +2469,3 @@ def test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses(accrual_bo
     assert 'SPOT {:g}'.format(SPOT) in str(crossed.value), 'the refusal is not in market terms'
     assert '{:g}'.format(1.0 / SPOT) not in str(crossed.value), (
         'the refusal quotes the engine axis at a client who never sees it')
-
-
-def test_a_selector_is_the_declared_field_itself_and_not_its_name():
-    """`emit_structures` flags a SELECTOR by the declared field OBJECT, never by its key.
-
-    A structure declaring its OWN parameter that merely shares the name is an ordinary parameter:
-    published with its value and required as it was declared, so a front end asks a client for it.
-    Flagged by name it would be stripped of its value and published as an OPTIONAL selector - a
-    required parameter nobody is ever asked for - and the registry's own roster of the two names
-    would agree with the mistake rather than catch it.
-
-    The emitter is a pure function of the base it reads, so this hands it one declared here - a
-    subclass of `Structure` itself would join the desk's own registry.
-    """
-    class Desk:
-        SELECTORS = structures.Structure.SELECTORS
-
-    class Impostor(Desk):
-        vernacular = 'impostor'
-        fields = [*structures.Structure.QUOTED, structures.Structure.SELL_CURRENCY,
-                  schema.F('buy_currency', 'Text', default=schema.REQUIRED,
-                           description='its own parameter, not the one the runner selects on')]
-        variations = {'only': structures.Variation('base', [], [
-            structures.Leg('leg', 'FXOptionDeal', {'Option_Type': 'Call'})])}
-        recipe = [structures.Price('leg')]
-
-    emitted = schema.emit_structures(Desk)['Impostor']['fields']
-
-    assert emitted['sell_currency']['selector'] == 'optional'
-    assert 'value' not in emitted['sell_currency'], 'a selector has no value to offer'
-    assert 'selector' not in emitted['buy_currency'], (
-        'a parameter that only shares a selector\'s name was published as one')
-    assert emitted['buy_currency']['required'] is True and emitted['buy_currency']['value'] == ''

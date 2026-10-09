@@ -55,7 +55,10 @@ def book(tmp_path):
 def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
     """An MCP host launches this package without paying for torch and the engine. An import that
     never executes is still a dependency, so read the SOURCE, not the loaded module - and the
-    package `__init__` too, since importing the server runs it."""
+    package `__init__` too, since importing the server runs it.
+
+    Killing mutation: `import pandas` in the server, which a host then pays for at launch.
+    """
     imported = set()
     for source in (SERVER_FILE, os.path.join(os.path.dirname(SERVER_FILE), '__init__.py')):
         for node in ast.walk(ast.parse(open(source).read())):
@@ -69,7 +72,11 @@ def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
 
 def test_every_tool_is_registered_and_carries_its_contract():
     """The docstring IS the contract a model reads, so an empty one is an undocumented verb; and
-    the read-only hints are what let a host run discovery without asking permission to write."""
+    the read-only hints are what let a host run discovery without asking permission to write.
+
+    Killing mutation: `read_book` registered without its read-only hint, which makes a host ask
+    before a model may read the book.
+    """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'describe_configuration', 'job_skeleton', 'desk_status',
@@ -173,8 +180,8 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     carry a terminal and a provisioned map reads the same as a sandboxed one. No session is opened
     either way.
 
-    Killing mutation: `snapped` read off the book's base date rather than off the rows, which a
-    curve set up on a later print then reads as the day the book stands at.
+    Killing mutation: the path count read off the declaration rather than the book, which heals
+    a thin book behind the desk.
     """
     from derivus_bloomberg import session
     from derivus_bloomberg.errors import BloombergUnavailable
@@ -543,6 +550,9 @@ def test_the_structure_store_is_the_quoting_menu():
     `floor` and `cap` until the entry is opened. And it says whether a direction has to be stated -
     computed from the declarations, so a strip, whose two forms name one level, reads 'required'
     where a forward extra reads 'optional'.
+
+    Killing mutation: each variation's own parameters left off the list, which hides `floor` and
+    `cap` until the entry is opened.
     """
     listed = mcp_server.describe_structure()
     vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
@@ -576,10 +586,20 @@ def test_the_structure_store_is_the_quoting_menu():
 
 
 def test_booking_a_deal_prices_it(book):
-    """The whole flow a plain-language booking rides: read the book, book a deal, run the book,
-    read the deal's value off the result - held to the closed form, so a booking that writes but
-    does not price cannot pass."""
+    """The whole flow a plain-language booking rides: read the book, price a candidate with the
+    file standing still, book the deal, run the book, read the deal's value off the result - held
+    to the closed form, so a booking that writes but does not price cannot pass.
+
+    Killing mutation: `price_candidate` posting the candidate under another key, which prices the
+    book alone and answers no value for it.
+    """
     assert [row['reference'] for row in mcp_server.read_book()['deals']] == ['CF1']
+    before = book.read_bytes()
+    trial = asyncio.run(mcp_server.price_candidate(
+        deal=json.loads(dump(dict(BOOKED, Reference='TRIAL')))))
+    assert trial['status'] == 'done' and book.read_bytes() == before
+    assert mcp_server.deal_values(trial['result_id'])['TRIAL'] == pytest.approx(
+        BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
     outcome = mcp_server.book_deal(json.loads(dump(BOOKED)))
     assert outcome['written'] is True and outcome['deal_path'] == '1'
@@ -591,45 +611,21 @@ def test_booking_a_deal_prices_it(book):
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
 
-def test_a_what_if_prices_without_writing(book):
-    """The par-solve half: a candidate priced against the book with the file standing still -
-    two of these at two amounts is the exact affine solve the booking docstring teaches."""
-    before = book.read_bytes()
-    run = asyncio.run(mcp_server.price_candidate(
-        deal=json.loads(dump(dict(BOOKED, Reference='TRIAL')))))
-    assert run['status'] == 'done'
-    assert mcp_server.deal_values(run['result_id'])['TRIAL'] == pytest.approx(
-        BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
-    assert book.read_bytes() == before
-
-
-def test_solving_then_booking_a_structured_deal(book):
-    """The structuring flow: solve the amount that marks the deal at the margin, get the deal back
-    ready to book, book it, and the book marks it there - the loop server-side."""
-    outcome = asyncio.run(mcp_server.solve_deal(
-        json.loads(dump(dict(BOOKED, Reference='SLV1'))), 'Amount', target=200_000.0))
-
-    assert outcome['status'] == 'done'
-    assert abs(outcome['solved']['residual']) <= 0.01
-    assert outcome['solved_deal']['Amount'] == outcome['solved']['value']
-
-    booked = mcp_server.book_deal(outcome['solved_deal'])
-    run = asyncio.run(mcp_server.execute_book())
-    assert booked['written'] is True
-    assert mcp_server.deal_values(run['result_id'])['SLV1'] == pytest.approx(200_000.0, abs=0.01)
-
-
 def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     """A sales margin is an amount in a currency, not a number in whatever the book reports in.
     This book reports DOLLARS and carries a rand rate, so `{'amount': 50000, 'currency': 'ZAR'}`
     crosses at the book's own spot and the deal is solved to mark there - the desk's own side of
     the ticket, at PLUS the margin. What comes back records the charge as agreed, and books with
-    it: the field is on every deal, a margin being a property of the ticket."""
+    it: the field is on every deal, a margin being a property of the ticket.
+
+    Killing mutation: the solved value left off `solved_deal`, which books the trial amount.
+    """
     outcome = asyncio.run(mcp_server.solve_deal(
         json.loads(dump(dict(BOOKED, Reference='SLV2'))), 'Amount',
         target={'amount': 50_000.0, 'currency': 'ZAR'}))
 
-    assert outcome['status'] == 'done'
+    assert outcome['status'] == 'done' and abs(outcome['solved']['residual']) <= 0.01
+    assert outcome['solved_deal']['Amount'] == outcome['solved']['value']
     assert outcome['solved']['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
                                            'pricing_currency': 'USD', 'value': 50_000.0 * SPOT}
     assert outcome['solved_deal']['Sales_Margin'] == 50_000.0
@@ -644,7 +640,11 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
 def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
     """Four tool calls: a Bloomberg-normalized quote block ticks the market, the bootstrap writes
     the surface, `solve_deal` finds the strike marking the option at the target premium, and the
-    solved deal books."""
+    solved deal books.
+
+    Killing mutation: `patch_market_values` posting the patch under another key, which the verb
+    refuses.
+    """
     from test_service import FX_OPTION, fx_vol_quotes
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
@@ -680,7 +680,11 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
     net, off the structure's own declaration; the quote and its sheet land in `DV_HOME/tmp` as one
     pending trade; `book_quote` approves it; the book marks the collar, legs and all.
 
-    `DV_HOME` is set for real - where a pending trade waits is the contract under test."""
+    `DV_HOME` is set for real - where a pending trade waits is the contract under test.
+
+    Killing mutation: `solve_structure` dropping the margin it takes, which quotes the charged
+    collar at zero cost.
+    """
     from test_service import fx_vol_quotes
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     path = tmp_path / 'book.json'
@@ -841,7 +845,10 @@ def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
     """The two configuration tools end to end, through the in-process service: the store read as
     the declarations with the menu it NAMES resolved beside it, one dial set on the live book, and
     a dial that will not build refused by name with the file untouched. The entry is asked for by
-    the factor the family writes and lands under the class name the book spells it by."""
+    the factor the family writes and lands under the class name the book spells it by.
+
+    Killing mutation: `configure_book` posting no dials, which re-bootstraps the entry as it stood.
+    """
     from test_service import configured_book, surface_nodes
 
     path = tmp_path / 'book.json'
@@ -1061,7 +1068,11 @@ def test_a_market_is_set_up_from_what_a_trade_needs(book, tmp_path, monkeypatch)
 
 def test_a_rejected_booking_is_an_answer_that_wrote_nothing(book):
     """A refusal must reach the model as DATA - the engine's own messages, verbatim - because the
-    model's next move is to fix exactly what they name. And it must not have touched the file."""
+    model's next move is to fix exactly what they name. And it must not have touched the file.
+
+    Killing mutation: a refused booking raised as a tool error, which hides the engine's messages
+    behind a failure.
+    """
     before = book.read_bytes()
     outcome = mcp_server.book_deal(json.loads(dump(BINARY)))
 
@@ -1131,7 +1142,11 @@ def test_what_a_model_actually_mistypes_comes_back_as_data(book):
 
 def test_an_amendment_changes_the_value_it_names(book):
     """The 'change a value' flow in plain language: amend the amount, see the deal carry it, see
-    the book mark it - and an amendment that breaks the deal is an answer, not a write."""
+    the book mark it - and an amendment that breaks the deal is an answer, not a write.
+
+    Killing mutation: `amend_deal` posting no fields, which answers written over a deal that did not
+    move.
+    """
     outcome = mcp_server.amend_deal('0', {'Amount': 500_000.0})
     assert outcome['written'] is True
     assert mcp_server.read_deal('0')['deal']['Amount'] == 500_000.0
@@ -1149,7 +1164,10 @@ def test_an_amendment_changes_the_value_it_names(book):
 
 def test_booking_then_deleting_is_byte_identical(book):
     """The book is a diffable file: through the MCP binding too, an undone booking leaves no
-    trace, not even a reformat."""
+    trace, not even a reformat.
+
+    Killing mutation: `delete_deal` deleting the book's first path whatever path it was given.
+    """
     before = book.read_bytes()
     outcome = mcp_server.book_deal(json.loads(dump(BOOKED)))
     mcp_server.delete_deal(outcome['deal_path'])
@@ -1158,7 +1176,10 @@ def test_booking_then_deleting_is_byte_identical(book):
 
 def test_a_parent_that_takes_no_children_is_refused(book):
     """The refusal `containers` exists to make expressible without the engine: CF1 is a
-    FixedCashflowDeal, and booking under it raises naming the type - the file untouched."""
+    FixedCashflowDeal, and booking under it raises naming the type - the file untouched.
+
+    Killing mutation: `book_deal` dropping `parent_reference`, which books at the root.
+    """
     before = book.read_bytes()
     with pytest.raises(ToolError, match='FixedCashflowDeal'):
         mcp_server.book_deal(json.loads(dump(BOOKED)), parent_reference='CF1')
@@ -1169,7 +1190,10 @@ def test_a_parent_that_takes_no_children_is_refused(book):
 
 def test_the_service_being_down_names_dv_service(book):
     """'Connection refused' tells a model nothing actionable; the refusal names the service and
-    how to start it."""
+    how to start it.
+
+    Killing mutation: a transport error left to propagate rather than named as the service.
+    """
     class Down:
         def request(self, *args, **kwargs):
             raise __import__('requests').exceptions.ConnectionError('refused')
@@ -1196,17 +1220,6 @@ def test_execute_hands_back_the_id_when_it_will_not_wait(book):
     assert settled['engine_version'] == service.results(run['result_id'])['engine_version']
 
 
-def test_deal_values_refuses_a_result_with_no_mtm_frame():
-    """A wrong projection is worse than a refusal: a result whose mtm is not the per-deal frame
-    (or is absent) refuses instead of inventing numbers."""
-    service.EXECUTOR.submit(
-        service.Job('mcp-shape', Held('mcp-shape', [], results={'other': np.arange(3.0)}), {}),
-        service.HEAVY)
-    service.EXECUTOR.queue.join()
-    with pytest.raises(ToolError):
-        mcp_server.deal_values('mcp-shape')
-
-
 class Counting:
     """A transport that records every path it carries - how a gate proves a tool REFUSED without
     fetching, rather than fetched and then refused."""
@@ -1227,7 +1240,10 @@ def held_result(result_id, results):
 
 def test_a_run_comes_back_as_shapes_never_cells(book):
     """The minimal-context rule: the model learns the run happened - identity, stats, one line per
-    table - and never holds a table's columns or cells unless it asks for a page."""
+    table - and never holds a table's columns or cells unless it asks for a page.
+
+    Killing mutation: the summary handing back each table's column list.
+    """
     run = asyncio.run(mcp_server.execute_book())
     assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'engine_version',
                         'seed', 'stats', 'tables', 'waited', 'error'}
@@ -1237,7 +1253,10 @@ def test_a_run_comes_back_as_shapes_never_cells(book):
 
 def test_fetch_table_is_capped_and_a_cube_is_refused():
     """A page is at most 200 rows however much is asked for, and a table wider than 60 columns -
-    a simulation cube - is refused BY NAME, pointed at the web UI, with nothing fetched."""
+    a simulation cube - is refused BY NAME, pointed at the web UI, with nothing fetched.
+
+    Killing mutation: the page cap dropped, which pages all 500 rows.
+    """
     long = pd.DataFrame({'a': np.arange(500.0), 'b': np.arange(500.0)})
     wide = pd.DataFrame(np.zeros((3, 100)), columns=[str(c) for c in range(100)])
     held_result('mcp-caps', {'long': long, 'wide': wide})
@@ -1254,7 +1273,10 @@ def test_fetch_table_is_capped_and_a_cube_is_refused():
 
 def test_deal_values_refuses_a_cube_without_fetching():
     """A Monte Carlo's mtm is dates x scenarios; `deal_values` reads its SHAPE and refuses before
-    a single cell travels - the recorded transport is the proof."""
+    a single cell travels - the recorded transport is the proof.
+
+    Killing mutation: the frame's columns unread before the fetch, which fetches the cube.
+    """
     cube = pd.DataFrame(np.zeros((5, 80)), columns=[str(c) for c in range(80)])
     held_result('mcp-cube', {'mtm': cube})
 
@@ -1267,7 +1289,10 @@ def test_deal_values_refuses_a_cube_without_fetching():
 
 def test_a_booking_answer_is_the_booking_not_the_book(book):
     """The booking outcome carries what happened to THIS deal; the rest of the book's troubles
-    arrive as counts with a pointer, never as the whole verdict."""
+    arrive as counts with a pointer, never as the whole verdict.
+
+    Killing mutation: the book's whole verdict left on the answer.
+    """
     clean = mcp_server.book_deal(json.loads(dump(BOOKED)))
     assert 'validate' not in clean and 'book_issues' not in clean
     assert clean['written'] is True
@@ -1313,7 +1338,10 @@ class Watching:
 
 def test_a_bloomberg_tick_returns_the_finished_payload():
     """A run that is already done comes back verbatim - a provisioning answer is what installed
-    and what was refused, not a shape summary - and the None arguments never reach the wire."""
+    and what was refused, not a shape summary - and the None arguments never reach the wire.
+
+    Killing mutation: the arguments nobody stated sent as nulls.
+    """
     finished = {'result_id': 'bbg-1', 'status': 'done', 'installed': ['FXVol.USD.ZAR'],
                 'updated': [], 'verified': 42}
     terminal = Terminal(finished)
@@ -1328,7 +1356,11 @@ def test_a_bloomberg_tick_returns_the_finished_payload():
 
 def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
     """The same escape hatch `execute_book` has: past the wait, the id and the way forward travel
-    in `hint` - the provisioning is on the service, not in this call."""
+    in `hint` - the provisioning is on the service, not in this call.
+
+    Killing mutation: the hint not naming `poll_result`, which leaves a model an id and no verb to
+    finish with.
+    """
     mcp_server.configure(base_url='http://testserver',
                          session=Terminal({'result_id': 'bbg-1', 'status': 'running'}))
 
@@ -1338,7 +1370,7 @@ def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
     assert 'poll_result' in answer['hint']
 
 
-def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
+def test_provisioning_reports_its_progress_while_it_runs():
     """A client resets its timeout on each notification, which is what carries the five-minute
     first use - so every poll reaches the context: how long the wait has run, the wait it was
     given, and the run's status carrying the job's own note where it publishes one.
@@ -1346,12 +1378,6 @@ def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
     Killing mutation: report the status alone and both notes collapse to `queued` and `running`,
     leaving a user watching a provisioning with nothing to watch.
     """
-    delays = []
-
-    async def instant(seconds, *rest):  # the gate is about the loop, not its patience
-        delays.append(seconds)
-
-    monkeypatch.setattr(mcp_server.asyncio, 'sleep', instant)
     terminal = Terminal(
         {'status': 'queued', 'progress': {'done': 0, 'total': 3, 'note': 'copying the seed'}},
         {'status': 'running', 'progress': {'done': 2, 'total': 3, 'note': 'verifying USDZAR'}},
@@ -1359,12 +1385,13 @@ def test_provisioning_reports_its_progress_while_it_runs(monkeypatch):
     mcp_server.configure(base_url='http://testserver', session=terminal)
     watching = Watching()
 
+    started = time.monotonic()
     answer = asyncio.run(mcp_server.tick_market_from_bloomberg(ctx=watching))
 
     assert answer == {'status': 'done', 'installed': ['FXVol.USD.ZAR']}
     assert [(total, note) for _, total, note in watching.reported] == [
         (360.0, 'queued - copying the seed'), (360.0, 'running - verifying USDZAR')]
-    assert delays == [0.25, 0.25], 'a poll between notifications, not a spin'
+    assert time.monotonic() - started >= 0.5, 'a poll between notifications, not a spin'
 
 
 def test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits(book):

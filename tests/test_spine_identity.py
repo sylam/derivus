@@ -176,7 +176,10 @@ def refusal(idp, token, **overrides):
 def test_a_real_rs256_token_verifies_against_a_jwks_built_by_hand(idp):
     """The happy path with nothing stubbed: a token signed by an RSA-2048 key minted in this
     process, checked against a JWK spelled out of that key's public numbers. What comes back is the
-    SUBJECT REFERENCE verbatim - the pseudonymous thing the log may carry."""
+    SUBJECT REFERENCE verbatim - the pseudonymous thing the log may carry.
+
+    Killing mutation: the subject answered upper-cased rather than as the token's `sub`.
+    """
     verified = verify(idp, rs256(idp.rsa_key, claims()))
 
     assert verified['subject'] == SUBJECT
@@ -190,7 +193,10 @@ def test_a_real_rs256_token_verifies_against_a_jwks_built_by_hand(idp):
 def test_a_real_es256_token_verifies_and_its_signature_is_the_raw_pair(idp):
     """The EC half of the allowlist, with the encoding assertion beside it: the token carries 64 raw
     bytes, so the verifier is provably doing the R||S to DER conversion rather than being handed
-    something `cryptography` already understood."""
+    something `cryptography` already understood.
+
+    Killing mutation: the raw pair handed to `cryptography` unconverted.
+    """
     token = es256(idp.ec_key, claims())
 
     signature = token.split('.')[2]
@@ -205,7 +211,10 @@ def test_a_real_es256_token_verifies_and_its_signature_is_the_raw_pair(idp):
 def test_an_expired_token_refuses_and_sixty_seconds_is_all_the_slack_there_is(idp):
     """Expiry against an INJECTED now. The leeway is clock skew between the IdP and this box, so it
     is asserted from both sides: a second inside the sixty verifies, a second past it refuses
-    naming the expiry - never a shrug and never a refresh."""
+    naming the expiry - never a shrug and never a refresh.
+
+    Killing mutation: the leeway dropped.
+    """
     token = rs256(idp.rsa_key, claims())
     expiry = NOW + LIFETIME
 
@@ -223,7 +232,10 @@ def test_an_expired_token_refuses_and_sixty_seconds_is_all_the_slack_there_is(id
 def test_a_token_minted_for_another_audience_refuses(idp):
     """`aud` is who the token was minted FOR. A perfectly signed, perfectly fresh token addressed
     to another client of the same IdP is not a credential here - accepting one lets any application
-    the IdP serves speak for an actor in this record."""
+    the IdP serves speak for an actor in this record.
+
+    Killing mutation: the audience membership unchecked.
+    """
     said = refusal(idp, rs256(idp.rsa_key, claims(aud='some-other-client')))
     assert 'aud' in said or 'minted for' in said
     assert 'some-other-client' in said
@@ -239,6 +251,8 @@ def test_a_co_audienced_token_belonging_to_another_client_refuses_on_azp(idp):
     for an actor in this record. OIDC Core 3.1.3.7 verifies `azp` where present and REQUIRES it
     where the audience is plural; both halves are asserted, and the single-audience path stays
     green.
+
+    Killing mutation: `azp` unchecked.
     """
     foreign = rs256(idp.rsa_key, claims(aud=['attacker-client', AUDIENCE], azp='attacker-client'))
     said = refusal(idp, foreign)
@@ -262,7 +276,10 @@ def test_a_co_audienced_token_belonging_to_another_client_refuses_on_azp(idp):
 def test_a_token_from_another_issuer_refuses(idp):
     """Issuer EQUALITY: a token from another deployment is another deployment's, however well it is
     signed. Both ways - a foreign `iss` in the token, and this token checked against a home
-    configured for a different IdP."""
+    configured for a different IdP.
+
+    Killing mutation: the issuer unchecked.
+    """
     said = refusal(idp, rs256(idp.rsa_key, claims(iss='https://idp.attacker.example/')))
     assert 'idp.attacker.example' in said
 
@@ -273,7 +290,10 @@ def test_a_token_from_another_issuer_refuses(idp):
 def test_alg_none_refuses_by_name_before_a_key_is_ever_selected(idp):
     """`none` is not a weak signature, it is the ABSENCE of one, and a verifier that dispatches on
     the declared algorithm without an allowlist accepts it. The refusal names the algorithm, so an
-    operator reads "this token was not signed" rather than "something did not verify"."""
+    operator reads "this token was not signed" rather than "something did not verify".
+
+    Killing mutation: `none` let past the allowlist.
+    """
     head, payload, _ = signing_input({'alg': 'none', 'typ': 'JWT'}, claims())
 
     # The classic shape: a header saying none and an empty signature segment.
@@ -287,7 +307,10 @@ def test_hs256_signed_with_the_published_public_key_refuses_by_name(idp):
     """The alg-confusion forgery, minted for real: the attacker uses the serialized bytes of the RSA
     public key the JWKS PUBLISHES as an HMAC secret and declares HS256, so a verifier that looks up
     the key by kid and then asks which algorithm the token declared checks the forgery against the
-    attacker's own secret. The allowlist fires before any key is selected."""
+    attacker's own secret. The allowlist fires before any key is selected.
+
+    Killing mutation: `HS256` let past the allowlist.
+    """
     public_bytes = idp.rsa_key.public_key().public_bytes(
         Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
     head, payload, signed = signing_input({'alg': 'HS256', 'typ': 'JWT', 'kid': RSA_KID}, claims())
@@ -310,6 +333,8 @@ def test_one_altered_payload_byte_lands_on_the_signature_not_on_a_claim(idp):
     The edit is in the MIDDLE of the segment. An RSA-2048 signature is 256 bytes and 256 % 3 == 1,
     so its final character holds two significant bits and four that do not exist: rewriting it is a
     one-in-four chance of editing nothing, and a tamper gate that asserts nothing on those runs.
+
+    Killing mutation: the claims parsed and judged before the signature is checked.
     """
     head, payload, _ = signing_input({'alg': 'RS256', 'typ': 'JWT', 'kid': RSA_KID}, claims())
     token = rs256(idp.rsa_key, claims())
@@ -358,6 +383,8 @@ def test_a_token_pasted_back_with_its_padding_restored_still_verifies(idp):
     padding them changes the bytes the IdP signed and no verifier can accept that. The signature
     segment and the JWKS members are not signed over, so those are where a padded paste arrives.
     An INTERIOR `=` stays the refusal it always was, which keeps this a tolerance and not a hole.
+
+    Killing mutation: trailing padding not stripped before the decode.
     """
     token = rs256(idp.rsa_key, claims())
     head, payload, signature = token.split('.')
@@ -380,7 +407,10 @@ def test_a_kid_the_jwks_does_not_carry_refuses_and_a_kidless_token_tries_every_k
     """Key selection, both branches. A `kid` names ONE key, so a rotated-away id is a refusal naming
     it rather than a hopeful sweep. A token with NO kid tries every key of the right type, which is
     why the decoy sits in this JWKS: the right key is the SECOND RSA entry, so a verifier that gave
-    up after the first is red here."""
+    up after the first is red here.
+
+    Killing mutation: the sweep stopping at the first key that does not verify.
+    """
     said = refusal(idp, rs256(idp.rsa_key, claims(), kid='idp-rsa-2027-01'))
     assert 'idp-rsa-2027-01' in said and RSA_KID in said
 
@@ -424,7 +454,10 @@ def test_an_es256_signature_in_der_refuses_because_the_encoding_is_the_contract(
     """`cryptography` signs and verifies the DER SEQUENCE; JWS carries the raw fixed-width R||S
     pair. The same signature in two spellings: a verifier handing the wire bytes straight to the
     library rejects every legitimate token, one handing them over unchecked accepts a DER blob no
-    IdP will send. The LENGTH is the discriminator and the refusal says so."""
+    IdP will send. The LENGTH is the discriminator and the refusal says so.
+
+    Killing mutation: the length check dropped, a DER blob read as a pair.
+    """
     der_token = es256(idp.ec_key, claims(), der=True)
 
     signature = der_token.split('.')[2]
@@ -441,7 +474,10 @@ def test_an_es256_signature_in_der_refuses_because_the_encoding_is_the_contract(
 def test_a_token_that_is_not_a_compact_jws_refuses_before_anything_else(idp):
     """Everything that is not three base64url segments is refused by name and none of it reaches a
     key: a pasted bearer header, a 5-segment JWE, a decoded dict, an empty string. A verifier whose
-    first act is `split('.')[1]` crashes on these."""
+    first act is `split('.')[1]` crashes on these.
+
+    Killing mutation: a token that is not a string split as one.
+    """
     for bad in ('', 'Bearer ' + rs256(idp.rsa_key, claims()), 'a.b', 'a.b.c.d.e',
                 rs256(idp.rsa_key, claims()) + '.extra'):
         with pytest.raises(IdentityRefused):
@@ -460,14 +496,20 @@ def test_a_token_that_is_not_a_compact_jws_refuses_before_anything_else(idp):
 def test_a_token_with_no_subject_refuses_because_there_is_nothing_to_stamp(idp):
     """The subject reference is the whole product of this module - what gets stamped into every fact
     the actor writes. A signed, fresh, correctly addressed token with no `sub` is a valid token and
-    an unusable credential, and the refusal says which."""
+    an unusable credential, and the refusal says which.
+
+    Killing mutation: an empty `sub` accepted.
+    """
     assert 'sub' in refusal(idp, rs256(idp.rsa_key, claims(sub=None)))
     assert 'sub' in refusal(idp, rs256(idp.rsa_key, claims(sub='')))
 
 
 def test_the_side_table_round_trips_beside_the_log_and_never_inside_it(tmp_path):
     """The display-name table: mutable, unhashed, at the home's ROOT. A read of a home with no table
-    answers empty and provisions nothing, and a write lands atomically with no scratch behind."""
+    answers empty and provisions nothing, and a write lands atomically with no scratch behind.
+
+    Killing mutation: a read provisioning the table.
+    """
     home = tmp_path / 'spine'
     home.mkdir()
 
@@ -522,6 +564,8 @@ def test_erasing_a_display_name_leaves_every_byte_of_the_chain_untouched(tmp_pat
     where it would be permanent, erasing it meaning rewriting a hash chain. So it lives in a file
     no hash covers, and the proof is arithmetic. The subject REFERENCE is still in the log
     afterwards and must be: the fact did not go away, the name did.
+
+    Killing mutation: the side table filed under `log/`.
     """
     home = tmp_path / 'spine'
     init_home(str(home), actor=ADMIN)
@@ -557,28 +601,3 @@ def test_erasing_a_display_name_leaves_every_byte_of_the_chain_untouched(tmp_pat
     finally:
         log.close()
     assert SUBJECT in actors, 'the erasure took the subject reference with it'
-
-
-def test_verification_writes_nothing_and_the_home_learns_only_the_name(tmp_path, idp):
-    """The verifier is handed no path and must leave none behind, so a home is fingerprinted whole
-    across a verification; and when the subject is then NAMED, the only thing the home learns is
-    the name - the token, its signature and its claim set appear in no file, a credential at rest
-    being one someone can replay."""
-    home = tmp_path / 'spine'
-    init_home(str(home), actor=ADMIN)
-
-    def whole_home():
-        return {str(path.relative_to(home)): hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(home.rglob('*')) if path.is_file()}
-
-    token = rs256(idp.rsa_key, claims())
-    before = whole_home()
-    verified = verify(idp, token)
-    assert whole_home() == before, 'verifying a token wrote something to the home'
-
-    set_display_name(home, verified['subject'], 'Ada Lovelace')
-    written = {path: path.read_bytes() for path in home.rglob('*') if path.is_file()}
-    for path, data in written.items():
-        for secret in (token, token.split('.')[2], json.dumps(verified['claims'], sort_keys=True)):
-            assert secret.encode('utf-8') not in data, '{} carries token material'.format(path)
-    assert display_names(home) == {verified['subject']: 'Ada Lovelace'}

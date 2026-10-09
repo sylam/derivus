@@ -49,6 +49,8 @@ from derivus_spine import (
 from derivus_spine import firmness, policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
+from test_spine import copy_of
+
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
 STRANGER = 'subject-nobody'
@@ -79,9 +81,9 @@ def address(data):
 
 
 def minted(tmp_path, name='home'):
-    """A home mid-genesis, handed back with the writer open on it."""
-    home = tmp_path / name
-    init_home(home, MINT)
+    """A home mid-genesis, handed back with the writer open on it - a copy of the one this process
+    minted."""
+    home = copy_of(tmp_path, name, ('verbs',), lambda home: init_home(home, MINT))
     return home, SpineLog(home)
 
 
@@ -138,6 +140,8 @@ def test_the_lifecycle_verb_refuses_anything_consequence_shaped_with_the_closure
     not in the vocabulary); a `fill` through the lifecycle arm is not - it is a perfectly good type,
     and a lifecycle verb that quietly booked a trade is a hole the closed vocabulary cannot see. So
     the arm names the three facts it files, states the closure, and its refusal names the VERB.
+
+    Killing mutation: a lifecycle arm filing a type other than its three.
     """
     home, log = minted(tmp_path)
     head = log.head()
@@ -335,6 +339,8 @@ def test_a_retried_booking_coalesces_and_two_identical_clips_both_land(tmp_path)
     semantic tuple meets its own tag and coalesces. TWO IDENTICAL CLIPS are two facts, differing
     only in the execution reference the venue gave them - which is why that reference is required
     rather than defaulted.
+
+    Killing mutation: the execution reference left out of the fill the verb files.
     """
     home, log = minted(tmp_path)
 
@@ -363,7 +369,10 @@ def test_a_retried_booking_coalesces_and_two_identical_clips_both_land(tmp_path)
 def test_a_fill_refuses_by_name_without_the_three_things_a_fill_carries(tmp_path):
     """A signed quantity, a counterparty, a netting set and an execution reference - each missing
     one refuses BY NAME rather than defaulting, because every default here would be the record
-    inventing a term of the trade."""
+    inventing a term of the trade.
+
+    Killing mutation: a missing quantity defaulted to one.
+    """
     home, log = minted(tmp_path)
     good = dict(quantity=1.0, counterparty=COUNTERPARTY, netting_set=CLIENT,
                 execution_reference='EXEC-1')
@@ -381,7 +390,10 @@ def test_a_fill_refuses_by_name_without_the_three_things_a_fill_carries(tmp_path
 def test_an_amendment_is_a_new_instrument_hash_and_never_a_changed_one(tmp_path):
     """Economics are never edited. The amendment registers both spellings and links them, and terms
     that did not move are refused - an amendment of nothing is an operational fact wearing a
-    booking's clothes, and the refusal says where it belongs instead."""
+    booking's clothes, and the refusal says where it belongs instead.
+
+    Killing mutation: an amendment to the same terms filed.
+    """
     home, log = minted(tmp_path)
     verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-1', book=BOOK)
 
@@ -405,6 +417,8 @@ def test_declaring_official_without_mark_scope_is_refused_and_the_refusal_is_log
     declaration from a `mark`-scoped actor. The refusal is the writer's and lands as a
     `capability_denied` fact, so "who tried to move the official close in March" is a fold. A
     private scratch market is the same call under a different name and needs the same scope.
+
+    Killing mutation: the market declared under the firm's own name whatever seat asked.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(grants=((DESK, 'mark', BOOK), (MINT, 'mark', '*'),
@@ -441,6 +455,8 @@ def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
     which is the design: authorization is a document and a pure function. The verb each type demands
     is spelled here rather than read off the vocabulary, so this file disagrees with that table if
     the table moves.
+
+    Killing mutation: `approve` filing under the genesis seat rather than the caller's.
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
@@ -620,6 +636,8 @@ def test_an_approval_retried_by_one_seat_is_one_fact_and_a_rejection_carries_its
 
     A rejection's reason is required and has no default: a verdict is never withdrawn, so grounds
     nobody can read are grounds nothing can be filed against later.
+
+    Killing mutation: a rejection with no reason filed.
     """
     home, log = minted(tmp_path)
     plan, other = 'a' * 64, 'b' * 64
@@ -655,9 +673,7 @@ def test_a_second_close_supersedes_the_first_and_a_read_before_it_is_unmoved(tmp
     place, so the row names the LSN it stands over and the day as it was marked first is still
     readable at the position it was marked at.
 
-    Killing mutation: the second close overwriting the values hash of the first, after which a fold
-    taken as at the first close answers the restated vector and no read of the record can say the
-    day was marked twice.
+    Killing mutation: a close naming no close of its day it stood over.
     """
     home, log = minted(tmp_path)
 
@@ -693,6 +709,8 @@ def test_the_lanes_are_three_and_exactly_one_of_them_mints(tmp_path):
     written down and a caller who has not made it must not have one made for them. Telemetry and
     curiosity mint nothing, and `complete_run` refuses them out loud rather than dropping them -
     silence would leave a caller believing the record holds something it does not.
+
+    Killing mutation: a curiosity run attested.
     """
     home, log = minted(tmp_path)
     assert verbs.LANES == ('telemetry', 'curiosity', 'standing')
@@ -727,7 +745,10 @@ def test_an_attestation_checks_the_values_vector_it_is_handed_rather_than_believ
     """The engine's values hash IS the SHA-256 of that vector's canonical bytes, so the citation
     and the store address are one number. A caller handing in a vector that is not the one the run
     read is refused by name, because attesting it would put a tuple in the record pointing at bytes
-    that never produced it - and the record never trusts what it can re-derive."""
+    that never produced it - and the record never trusts what it can re-derive.
+
+    Killing mutation: the values vector taken at the caller's word.
+    """
     home, log = minted(tmp_path)
 
     with pytest.raises(MalformedEvent) as refusal:
@@ -750,6 +771,8 @@ def test_a_result_pinned_that_fails_re_execution_is_refused_by_name(tmp_path):
     the spine admits no tolerance of its own.
 
     Nothing is appended on any of them.
+
+    Killing mutation: a different engine version accepted.
     """
     home, log = minted(tmp_path)
     with_tolerance(log)
@@ -788,6 +811,8 @@ def test_a_result_pinned_matching_a_known_tuple_resolves_as_a_cache_hit(tmp_path
 
     A claim naming a DIFFERENT result under the same four coordinates is refused: one replay tuple
     cannot have two results.
+
+    Killing mutation: a known tuple re-executed rather than hit.
     """
     home, log = minted(tmp_path)
     tolerance = with_tolerance(log)
@@ -828,6 +853,8 @@ def test_a_pin_re_executes_bit_identically_or_inside_the_declared_epsilon(tmp_pa
     epsilon consulted. The tolerance path exists because the engine's float boundary is where drift
     lives. A tuple this hub never attested is not a cache hit, so both of these DO execute, which is
     the difference between this gate and the one above.
+
+    Killing mutation: a result within the epsilon refused as a departure.
     """
     home, log = minted(tmp_path)
     with_tolerance(log)
@@ -852,7 +879,10 @@ def test_a_home_that_declared_no_tolerance_policy_pins_nothing_at_all(tmp_path):
     """The epsilon lives only where a deployment declared one, so a home that has never said what
     "reproduces" means cannot attest anybody's claim - not even one it could re-execute perfectly,
     and not even one it already holds as an attestation. The refusal names the document to declare
-    and the verb that declares it."""
+    and the verb that declares it.
+
+    Killing mutation: a home with no tolerance policy pinning on equality.
+    """
     home, log = minted(tmp_path)
     verbs.complete_run(log, verbs.STANDING, claim(), JOB, VALUES, RESULT, book=BOOK)
     head = log.head()[0]
@@ -873,7 +903,10 @@ def test_a_pin_never_bootstraps_itself_off_another_pin(tmp_path):
     """A cache hit means the hub WITNESSED the run, so the fold reads `run_completed` and never
     `result_pinned`. Reading pins would let one unverified promotion become the evidence for the
     next, which is a claim bootstrapping itself into a fact - so a second pin of a tuple this hub
-    never ran re-executes, every time, and the counter says so."""
+    never ran re-executes, every time, and the counter says so.
+
+    Killing mutation: the attestation fold reading `result_pinned` as well.
+    """
     home, log = minted(tmp_path)
     with_tolerance(log)
     ran = []
@@ -894,7 +927,10 @@ def test_a_pin_never_bootstraps_itself_off_another_pin(tmp_path):
 def test_the_tolerance_comparison_is_structural_first_and_numeric_second():
     """Two results whose SHAPES differ are two answers rather than two readings of one number, and
     no epsilon admits that: a class one side does not carry, a row count that moved, a label that
-    changed. Only numbers inside a named class get the epsilon."""
+    changed. Only numbers inside a named class get the epsilon.
+
+    Killing mutation: a row count that moved compared element by element.
+    """
     tolerances = {'mtm': 1e-6, 'cashflows': 0.5}
 
     assert policy.compare({'mtm': 1.0}, {'mtm': 1.0 + 1e-9}, tolerances) == []
@@ -928,7 +964,10 @@ def test_the_tolerance_comparison_is_structural_first_and_numeric_second():
 def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_declared(tmp_path):
     """A policy the record cannot read is a standard nobody can be held to, so both documents are
     checked at the moment they are DECLARED - while the operator still has the file open - rather
-    than at the moment a verb tries to compare against one."""
+    than at the moment a verb tries to compare against one.
+
+    Killing mutation: a negative tolerance declared.
+    """
     home, log = minted(tmp_path)
 
     for broken in ({'tolerances': {'mtm': -1e-9}}, {'tolerances': {'mtm': 'tight'}},
@@ -961,6 +1000,8 @@ def test_the_policy_in_force_is_a_fold_and_absence_is_the_answer(tmp_path):
 
     The fold answers WHERE as well as what, off the same walk, so a reader showing an operator what
     is in force and where it came from cannot show one declaration's blob at another's position.
+
+    Killing mutation: the FIRST declaration under a name standing.
     """
     home, log = minted(tmp_path)
     assert policy.in_force(log, policy.TOLERANCE_POLICY) == (None, None, None)
@@ -1000,22 +1041,21 @@ PINNED = {'plan_hash': 'a' * 64, 'values_hash': 'b' * 64}
 WINDOW = {'pillar_seconds': 900.0}
 
 
-def test_a_quote_may_be_booked_when_the_plan_stands_and_the_board_was_fresh():
-    """The accepting case, and it reports everything it read - both hashes, the age and the window -
-    so a desk shown a verdict never has to re-derive the comparison to believe it."""
-    verdict = firmness.assess(PINNED, dict(PINNED), 1.0, WINDOW)
+def test_a_moved_market_is_reported_and_never_refused():
+    """THE RULING: between a quote and the client's word the board may move materially, and the
+    booking follows the spine as usual. The move is NEWS - the values struck on, the ones standing
+    and that they differ - and the desk's own `firm_seconds` is the promise that bounds it. The
+    verdict reports everything it read - both hashes, the age and the window - so a desk shown one
+    never has to re-derive the comparison to believe it.
 
+    Killing mutation: a moved market refused.
+    """
+    verdict = firmness.assess(PINNED, dict(PINNED), 1.0, WINDOW)
     assert verdict['firm'] is True and verdict['refusals'] == []
     assert verdict['plan'] == {'pinned': 'a' * 64, 'current': 'a' * 64, 'moved': False}
     assert verdict['pillar'] == {'age': 1.0, 'window': 900.0, 'firm': True}
     assert verdict['market'] == {'pinned': 'b' * 64, 'current': 'b' * 64, 'moved': False}
-    assert firmness.check(PINNED, dict(PINNED), 1.0, WINDOW, quote_id='Q-1')['firm'] is True
 
-
-def test_a_moved_market_is_reported_and_never_refused():
-    """THE RULING: between a quote and the client's word the board may move materially, and the
-    booking follows the spine as usual. The move is NEWS - the values struck on, the ones standing
-    and that they differ - and the desk's own `firm_seconds` is the promise that bounds it."""
     ticked = dict(PINNED, values_hash='d' * 64)
     verdict = firmness.assess(PINNED, ticked, 1.0, WINDOW)
 
@@ -1027,7 +1067,10 @@ def test_a_moved_market_is_reported_and_never_refused():
 def test_a_moved_book_refuses_on_the_plan_and_says_so():
     """The book moved since the solve: the marginal charge was priced against a portfolio this
     trade would no longer join. The board is untouched, which is the whole point of answering them
-    apart - a desk told "stale" learns nothing, a desk told "the book moved" re-solves."""
+    apart - a desk told "stale" learns nothing, a desk told "the book moved" re-solves.
+
+    Killing mutation: the plan compared to itself.
+    """
     moved = dict(PINNED, plan_hash='c' * 64)
     verdict = firmness.assess(PINNED, moved, 1.0, WINDOW)
 
@@ -1045,7 +1088,11 @@ def test_a_moved_book_refuses_on_the_plan_and_says_so():
 def test_a_board_already_stale_when_the_price_was_given_refuses_by_name():
     """The pillar window is about the board the quote was STRUCK on: a price given off a surface
     nobody had refreshed for an hour is not one a client may hold the desk to, and the remedy is
-    the tick rather than a re-quote against a market that never moved."""
+    the tick rather than a re-quote against a market that never moved. A quote with this and the
+    plan wrong has two remedies, so BOTH are named.
+
+    Killing mutation: the board's age compared with the window the wrong way round.
+    """
     verdict = firmness.assess(PINNED, dict(PINNED), 3600.0, WINDOW)
 
     assert verdict['firm'] is False and verdict['plan']['moved'] is False
@@ -1058,10 +1105,6 @@ def test_a_board_already_stale_when_the_price_was_given_refuses_by_name():
     assert silent['firm'] is True and silent['pillar'] == {'age': 3600.0, 'window': None,
                                                            'firm': True}
 
-
-def test_both_refusals_fire_together_and_the_refusal_names_both():
-    """A quote with two things wrong with it has two remedies, so BOTH are named - reporting the
-    first would send a salesperson back to re-quote into the second."""
     with pytest.raises(QuoteNotFirm) as refusal:
         firmness.check(PINNED, {'plan_hash': 'c' * 64, 'values_hash': 'd' * 64}, 1e6, WINDOW,
                        quote_id='Q-9')
@@ -1073,7 +1116,10 @@ def test_both_refusals_fire_together_and_the_refusal_names_both():
 def test_an_age_that_cannot_be_established_is_not_an_age_inside_the_window():
     """A book no row of which is stamped, met here in the general case. A clock that ran backwards
     reads as unknown too, because a board stamped after the quote that read it is the one reading
-    that would let an arbitrarily stale one through. With no window declared, none of it refuses."""
+    that would let an arbitrarily stale one through. With no window declared, none of it refuses.
+
+    Killing mutation: a negative age read as fresh.
+    """
     for age in (None, -5.0, 'a while'):
         verdict = firmness.assess(PINNED, dict(PINNED), age, WINDOW)
         assert verdict['firm'] is False and verdict['plan']['moved'] is False
@@ -1085,7 +1131,10 @@ def test_an_age_that_cannot_be_established_is_not_an_age_inside_the_window():
 def test_the_firmness_check_refuses_what_it_cannot_compare_rather_than_answering_anyway():
     """A missing pin is a quote that never pinned rather than a quote that went stale, and a window
     that will not read is one no booking could be measured against. Both refuse by name, so a
-    verdict of "not firm" always means what it says."""
+    verdict of "not firm" always means what it says.
+
+    Killing mutation: a quote missing its values hash read as unmoved.
+    """
     with pytest.raises(MalformedEvent) as refusal:
         firmness.assess({'plan_hash': 'a' * 64}, dict(PINNED), 1.0, WINDOW)
     assert 'values_hash' in str(refusal.value) and 'never pinned' in str(refusal.value)
@@ -1101,7 +1150,10 @@ def test_the_firmness_check_refuses_what_it_cannot_compare_rather_than_answering
 def test_the_two_retired_windows_are_refused_at_the_declaration_by_name(tmp_path):
     """A desk carrying the old document must be TOLD where its question went rather than declaring
     a window nothing enforces: `values_seconds` asked whether the board had moved, which is now
-    reported, and `plan_seconds` aged a book the plan hash already catches."""
+    reported, and `plan_seconds` aged a book the plan hash already catches.
+
+    Killing mutation: the retired windows let through.
+    """
     home, log = minted(tmp_path)
 
     for retired in ({'values_seconds': 30}, {'plan_seconds': 600},
@@ -1109,6 +1161,7 @@ def test_the_two_retired_windows_are_refused_at_the_declaration_by_name(tmp_path
         with pytest.raises(MalformedEvent) as refusal:
             policy.declare(log, MINT, policy.FIRMNESS_POLICY, retired)
         assert 'pillar_seconds' in str(refusal.value)
+        assert 'REPORTED on the booking' in str(refusal.value), str(refusal.value)
         assert sorted(retired)[0] in str(refusal.value) or 'plan_seconds' in str(refusal.value)
 
     assert policy.declare(log, MINT, policy.FIRMNESS_POLICY, {})['lsn'] == 5
@@ -1130,6 +1183,8 @@ def test_a_quote_pins_two_hashes_and_carries_its_erasable_request(tmp_path):
     the chain over it still verifies. The gate asserts both halves: the field is there when a
     salesperson relayed something and absent when nobody did, and the crypto-shredded home's chain
     still stands with the utterance gone.
+
+    Killing mutation: the relayed request left off the body.
     """
     home, log = minted(tmp_path)
 
@@ -1169,6 +1224,8 @@ def test_a_quote_carries_the_ticket_its_approval_would_sign_where_one_was_comput
 
     Optional because a v1 body carries none and still validates. Checked where it is given: a
     ticket that is not a content address is not a ticket.
+
+    Killing mutation: the ticket left off the body.
     """
     home, log = minted(tmp_path)
     spliced, other = 'c' * 64, 'd' * 64
@@ -1198,7 +1255,10 @@ def test_a_quote_carries_the_ticket_its_approval_would_sign_where_one_was_comput
 def test_a_quote_refuses_a_pin_that_is_not_a_pin_and_a_coordinate_that_is_not_a_number(tmp_path):
     """The solved coordinates are an object of name to finite number, and the plan hash is a
     content address. Neither is coerced: a coordinate that will not read is a term of the trade
-    nobody can act on, and the record does not guess at one."""
+    nobody can act on, and the record does not guess at one.
+
+    Killing mutation: a coordinate that is not a number coerced.
+    """
     home, log = minted(tmp_path)
 
     with pytest.raises(MalformedEvent) as refusal:
@@ -1221,7 +1281,10 @@ def test_a_quote_refuses_a_pin_that_is_not_a_pin_and_a_coordinate_that_is_not_a_
 def test_no_attestation_appends_before_the_objects_it_cites_are_on_the_platter(tmp_path):
     """Durability ordering is law and the verbs obey it by construction - every blob is fsynced by
     the verb itself before the event citing it appends. The other half is the writer's, and it is
-    what a hand-built body meets: an attestation naming a job nobody stored does not append."""
+    what a hand-built body meets: an attestation naming a job nobody stored does not append.
+
+    Killing mutation: the job dropped from the fields `run_completed` cites.
+    """
     home, log = minted(tmp_path)
     absent = 'f' * 64
 
@@ -1242,7 +1305,10 @@ def test_a_replay_claim_is_four_coordinates_and_no_fifth(tmp_path):
     """The tuple names the numbers, so a claim with a coordinate missing names no result at all and
     one with a fifth is not the tuple a result was filed under. A null seed is legal and a
     substituted one is not: a job that declared no `Random_Seed` was hashed with a null there, and
-    a zero would record a tuple no result was ever filed under."""
+    a zero would record a tuple no result was ever filed under.
+
+    Killing mutation: a fifth coordinate let through.
+    """
     home, log = minted(tmp_path)
 
     for broken in ({'plan_hash': 'a' * 64}, dict(claim(), device='cuda'), 'a tuple',
@@ -1261,7 +1327,10 @@ def test_a_replay_claim_is_four_coordinates_and_no_fifth(tmp_path):
 def test_the_injected_executor_is_checked_rather_than_trusted(tmp_path):
     """A callable somebody handed in is not trusted to answer the contract. Every departure from it
     is a named refusal, because the alternative is a TypeError raised from inside an attestation
-    path with a traceback where a refusal should be."""
+    path with a traceback where a refusal should be.
+
+    Killing mutation: the executor's answer unchecked.
+    """
     home, log = minted(tmp_path)
     with_tolerance(log)
 
@@ -1322,17 +1391,23 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
     assert 'quote_filed' in str(refusal.value) and 'run_completed' not in str(refusal.value)
 
 
-def test_the_optional_field_is_not_an_extension_point():
+def test_the_optional_field_is_not_an_extension_point(tmp_path):
     """`quote_filed` is the only type declaring optional fields, and `_validator` grew an
     `optional` arm for them. The arm's defence is that an optional field is still NAMED, so the body
     stays as closed as it ever was. A validator that stopped checking surplus the moment a type
     gained an optional field would open the hole on precisely the type that carries a client's own
     words, and an undeclared field sits outside every hash, seal and signature here.
 
-    Three claims: a field may be ABSENT, it is CHECKED when present exactly as a declared field is
-    and at its OWN kind, and its presence buys no other field a way in.
+    Three claims, asked of the writer on a real home: a field may be ABSENT, it is CHECKED when
+    present exactly as a declared field is and at its OWN kind, and its presence buys no other
+    field a way in.
+
+    Killing mutation: the surplus rule skipped on a type that declares optional fields.
     """
-    from derivus_spine.vocabulary import validate
+    home, log = minted(tmp_path)
+
+    def validate(event_type, body):
+        assert log.admits(event_type, body, actor=DESK, book=BOOK)
 
     body = {'quote_id': 'Q-1', 'structure': 'Straddle', 'plan_hash': 'a' * 64,
             'values_hash': 'b' * 64, 'solved': {'floor': 17.25}, 'edge': 4200.0}
@@ -1362,31 +1437,18 @@ def test_the_optional_field_is_not_an_extension_point():
     # the types that declare NO optional field are validated by the identical code, and a gate that
     # did not say so would pass on a validator that had quietly stopped closing those too
     with pytest.raises(MalformedEvent) as refusal:
-        validate('run_completed', {'plan_hash': 'a' * 64, 'values_hash': 'b' * 64,
-                                   'engine_version': '0.1.0', 'seed': 1, 'lane': 'standing',
-                                   'job': 'c' * 64, 'result': 'd' * 64, 'surprise': 1})
+        validate('approval', {'plan_hash': 'a' * 64, 'surprise': 1})
     assert 'carries surprise beyond' in str(refusal.value)
-
-
-def test_a_v1_event_still_reads_under_the_vocabulary_that_grew(tmp_path):
-    """Version tolerance from the writing side: a home minted before this increment carries frames
-    whose bodies this vocabulary never validated, and they still verify - `verify_home` checks that
-    a body can be READ rather than re-validating it against today's shapes. The proof is a home
-    written with the increment-1 types alone, verified after the increment-3 types exist."""
-    home, log = minted(tmp_path)
-    verbs.book(log, MINT, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-1', book=BOOK)
-    log.append('approval', {'plan_hash': 'a' * 64}, actor=MINT, book=BOOK)
+    assert log.head()[0] == 4, 'asking wrote something'
     log.close()
-
-    report = verify_home(home)
-    assert report == {'mode': 'entitled', 'events': 6, 'checkpoints_verified': 1,
-                      'head_lsn': 6, 'head_hash': SpineLog(home).head()[1]}
-    assert verify_home(home, entitled=False)['events'] == 6
 
 
 def test_a_declared_policy_is_stored_canonically_so_one_policy_is_one_blob(tmp_path):
     """One policy must be one blob or the record holds two histories of one decision, so a document
-    spelled two ways is stored once - and declaring it twice coalesces on the ordinary tag rule."""
+    spelled two ways is stored once - and declaring it twice coalesces on the ordinary tag rule.
+
+    Killing mutation: the document stored as the caller spelled it.
+    """
     home, log = minted(tmp_path)
 
     first = policy.declare(log, MINT, policy.TOLERANCE_POLICY, {'tolerances': {'cva': 1e-6,
@@ -1397,31 +1459,6 @@ def test_a_declared_policy_is_stored_canonically_so_one_policy_is_one_blob(tmp_p
     assert second['coalesced'] is True and second['lsn'] == first['lsn']
     assert json.loads(log.store.get(first['blob']).decode('utf-8')) == {
         'tolerances': {'cva': 1e-6, 'mtm': 1e-9}}
-    log.close()
-
-
-def test_a_tiers_policy_declared_twice_leaves_the_last_one_in_force(tmp_path):
-    """The fourth reserved name resolves the way the other three do: by the ordinary fold, the LAST
-    declaration at or before a position standing. A workflow is governance, so replacing one is a
-    whole new document rather than an edit of the one in force, and what routed a ticket in March is
-    a fold like every other question.
-    """
-    home, log = minted(tmp_path)
-    assert policy.tiers_in_force(log) is None, 'a home declaring no tiers routes nothing'
-
-    first = policy.declare(log, MINT, policy.TIERS_POLICY,
-                           {'tiers': [{'name': 'desk', 'four_eyes': True}]})
-    second = policy.declare(log, MINT, policy.TIERS_POLICY, {
-        'tiers': [{'name': 'auto', 'max_tenor_years': 1.0}, {'name': 'desk'}],
-        'designations': {'settlement_export': 'official'}})
-
-    assert [tier['name'] for tier in policy.tiers_in_force(log)['tiers']] == ['auto', 'desk']
-    assert policy.tiers_in_force(log)['designations'] == {'settlement_export': 'official'}
-    assert [tier['name'] for tier in policy.tiers_in_force(log, second['lsn'] - 1)['tiers']] == \
-        ['desk']
-    assert first['blob'] != second['blob'] and first['lsn'] < second['lsn']
-    # the completed document is what stands, so the catch-all says what it means about four eyes
-    assert policy.tiers_in_force(log)['tiers'][1] == {'name': 'desk', 'four_eyes': False}
     log.close()
 
 

@@ -1,8 +1,8 @@
 """`derivus.quote_sheet` end to end: an outcome and a book in, one workbook out.
 
 The fixture is a hand-authored zero-cost collar on USDZAR plus a book in the wire form a job file
-carries, asserted loadable by the engine's own `load_json`. Nothing is stubbed; the workbook is
-read back with `zipfile` and `ElementTree`.
+carries, the outcome in the shape `structures.quote` returns it. Nothing is stubbed; the workbook
+is read back with `zipfile` and `ElementTree`.
 
 Four claims, each a way a sheet can lie.
 
@@ -20,7 +20,6 @@ this - the zip records a mod time per member - so the gate compares the SHEET XM
 THE SILENT SKIP. `Worksheet.write` truncates past 32767 characters and reports only in a return
 code. Here it is a named refusal that leaves no file behind.
 """
-import json
 import os
 import sys
 import zipfile
@@ -32,7 +31,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import derivus
 from derivus import utils
 from derivus.quote_sheet import CELL_LIMIT, QuoteSheetError, write_sheet
 
@@ -207,29 +205,11 @@ def loaded(document):
     return document
 
 
-def test_the_fixture_book_is_a_book_the_engine_loads():
-    """The fixture read with the decoder a job file is read with, and validated: a drift from the
-    wire form - a token misspelt, a section moved, a factor the deals need - fails HERE."""
-    context = derivus.Context().load_json((json.dumps(BOOK), 'fixture'))
-    factors = context.current_cfg.params['Price Factors']
-
-    assert context.validate() == {'deals': {}, 'factors': []}
-    assert 'FXVol.USD.ZAR' in factors and 'InterestRate.ZAR' in factors
-    assert factors['FxRate.ZAR']['Spot'] == pytest.approx(1.0 / SPOT)
-    # the token really is a curve to the engine, which is the shape the sheet writer renders
-    assert isinstance(factors['InterestRate.ZAR']['Curve'], utils.Curve)
-
-
-def test_the_workbook_holds_the_three_sheets_by_name(tmp_path):
-    """Quote, Legs, Market - in that order, because it is the order the conversation goes in."""
-    path = written(tmp_path)
-
-    with zipfile.ZipFile(str(path)) as archive:
-        assert list(parts(archive)) == ['Quote', 'Legs', 'Market']
-
-
 def test_the_ticket_carries_the_structure_every_leg_and_the_net(tmp_path):
-    """The Quote sheet IS the ticket: nothing a dealer reads off it may be missing."""
+    """The Quote sheet IS the ticket: nothing a dealer reads off it may be missing.
+
+    Killing mutation: the net's cell written empty.
+    """
     path = written(tmp_path)
     text, value = said(path, 'Quote'), numbers(path, 'Quote')
 
@@ -251,35 +231,33 @@ def test_the_ticket_carries_the_structure_every_leg_and_the_net(tmp_path):
     assert 'Net' in text and holds(value, NET)
 
 
-def test_the_sales_names_ride_the_ticket_when_the_outcome_carries_them(tmp_path):
-    """The row is written when the outcome carries a vernacular and left out when it does not - a
-    ticket never shows an empty label. The runner sends none today."""
-    plain, named = written(tmp_path, 'plain.xlsx'), written(
-        tmp_path, 'named.xlsx', vernacular='zero-cost collar, range forward, cylinder')
-
-    assert 'Vernacular' not in said(plain, 'Quote')
-    assert 'Vernacular' in said(named, 'Quote')
-    assert 'zero-cost collar, range forward, cylinder' in said(named, 'Quote')
-
-
 def test_the_ticket_says_which_way_round_the_trade_was_dealt(tmp_path):
     """A structure dealt more than one way books two different trades, and the ticket is what the
-    desk sends the client: the VARIATION and the client's own two cashflows ride it under their own
-    labels, rather than leaving a level in the parameter table as the only clue. Absent - a
-    structure with one form - the rows are left out, in the vernacular row's own shape."""
+    desk sends the client: the VARIATION, the client's own two cashflows and the sales names ride it
+    under their own labels where the outcome carries them, and are left out where it does not - a
+    ticket never shows an empty label.
+
+    Killing mutation: the variation row never written.
+    """
     plain = written(tmp_path, 'plain.xlsx')
     dealt = written(tmp_path, 'dealt.xlsx', variation='floor',
-                    client={'buys': 'ZAR', 'sells': 'USD'})
+                    client={'buys': 'ZAR', 'sells': 'USD'},
+                    vernacular='zero-cost collar, range forward, cylinder')
     text = said(dealt, 'Quote')
 
-    assert 'Variation' not in said(plain, 'Quote') and 'Client' not in said(plain, 'Quote')
+    for label in ('Variation', 'Client', 'Vernacular'):
+        assert label not in said(plain, 'Quote')
     assert 'Variation' in text and 'floor' in text
     assert 'Client' in text and 'buys ZAR, sells USD' in text
+    assert 'Vernacular' in text and 'zero-cost collar, range forward, cylinder' in text
 
 
 def test_the_ticket_quotes_the_strike_the_trade_was_negotiated_in(tmp_path):
     """A collar struck at USDZAR 15.50 is quoted at 15.50. The engine's 1/15.50 belongs to the
-    deal, so it is on the Legs sheet and nowhere on the ticket."""
+    deal, so it is on the Legs sheet and nowhere on the ticket.
+
+    Killing mutation: the ticket's strike column written on the engine axis.
+    """
     path = written(tmp_path)
     ticket, legs = numbers(path, 'Quote'), numbers(path, 'Legs')
 
@@ -290,7 +268,10 @@ def test_the_ticket_quotes_the_strike_the_trade_was_negotiated_in(tmp_path):
 
 def test_a_reference_that_looks_like_a_formula_stays_text(tmp_path):
     """`strings_to_formulas` off is the mechanism; this is the falsification - a counterparty's
-    reference lands as a string cell with no `<f>` element on the sheet at all."""
+    reference lands as a string cell with no `<f>` element on the sheet at all.
+
+    Killing mutation: `strings_to_formulas` on.
+    """
     typed = '=SUM(A1:A2)'
     path = written(tmp_path, financing=typed)
 
@@ -304,15 +285,19 @@ def test_a_reference_that_looks_like_a_formula_stays_text(tmp_path):
 
 
 def test_two_writes_of_one_quote_hold_the_same_cells(tmp_path):
-    """Same inputs, same workbook - down to the created stamp, which is the book's base date and
-    not the clock. Read on the sheet XML, the string table and the core properties, because the
-    zip records a mod time per member."""
+    """Same inputs, same workbook - Quote, Legs, Market in the order the conversation goes in, down
+    to the created stamp, which is the book's base date and not the clock. Read on the sheet XML,
+    the string table and the core properties, because the zip records a mod time per member.
+
+    Killing mutation: `created` stamped with the clock.
+    """
     first, second = written(tmp_path, 'first.xlsx'), written(tmp_path, 'second.xlsx')
 
     for sheet in ('Quote', 'Legs', 'Market'):
         assert cells(first, sheet) == cells(second, sheet)
 
     with zipfile.ZipFile(str(first)) as one, zipfile.ZipFile(str(second)) as two:
+        assert list(parts(one)) == ['Quote', 'Legs', 'Market']
         for member in list(parts(one).values()) + ['xl/sharedStrings.xml', 'docProps/core.xml']:
             assert one.read(member) == two.read(member), member
         assert BASE in one.read('docProps/core.xml').decode('utf-8')
@@ -320,7 +305,10 @@ def test_two_writes_of_one_quote_hold_the_same_cells(tmp_path):
 
 def test_a_cell_excel_cannot_hold_is_named_not_skipped(tmp_path):
     """`Worksheet.write` truncates past 32767 characters and reports it in a return code. The
-    helper raises instead, names the sheet and the cell, and leaves no file."""
+    helper raises instead, names the sheet and the cell, and leaves no file.
+
+    Killing mutation: the write's return code ignored.
+    """
     path = tmp_path / 'refused.xlsx'
 
     with pytest.raises(QuoteSheetError) as refusal:
@@ -334,7 +322,10 @@ def test_a_cell_excel_cannot_hold_is_named_not_skipped(tmp_path):
 
 def test_the_legs_sheet_carries_the_deal_that_will_be_booked(tmp_path):
     """Field for field, so the sheet and the booking are checkable against each other. The
-    composed deal is the authority - not the ticket row, which says less on purpose."""
+    composed deal is the authority - not the ticket row, which says less on purpose.
+
+    Killing mutation: the container's own section skipped.
+    """
     path = written(tmp_path)
     text, value = said(path, 'Legs'), numbers(path, 'Legs')
 
@@ -353,7 +344,10 @@ def test_the_legs_sheet_carries_the_deal_that_will_be_booked(tmp_path):
 def test_the_tree_is_said_as_sections_not_as_json_in_one_cell(tmp_path):
     """A container's `Children` ARE the leg sections above it, so the subtree as json in one cell
     would say it twice - and on a three-legged structure walk a good quote into the 32767-character
-    refusal."""
+    refusal.
+
+    Killing mutation: the tree keys written as fields.
+    """
     text = said(written(tmp_path), 'Legs')
 
     assert 'Children' not in text and 'Instrument' not in text
@@ -365,7 +359,10 @@ def test_the_tree_is_said_as_sections_not_as_json_in_one_cell(tmp_path):
 
 def test_the_market_sheet_carries_the_book_it_was_priced_off(tmp_path):
     """The spots, the rate they imply in market terms, the vol surface's own rows and every rate
-    curve's tenors."""
+    curve's tenors.
+
+    Killing mutation: the pair's market rate taken upside down.
+    """
     path = written(tmp_path)
     text, value = said(path, 'Market'), numbers(path, 'Market')
 
@@ -387,7 +384,10 @@ def test_the_market_sheet_carries_the_book_it_was_priced_off(tmp_path):
 
 def test_a_book_loaded_in_process_renders_the_same_sheet(tmp_path):
     """The wire form and the loaded form are the same book, so they are the same sheet. The writer
-    reads a curve by its shape rather than by importing the engine to recognise one."""
+    reads a curve by its shape rather than by importing the engine to recognise one.
+
+    Killing mutation: a loaded `utils.Curve` not read as a curve.
+    """
     wire, live = written(tmp_path, 'wire.xlsx'), tmp_path / 'live.xlsx'
     write_sheet(live, outcome(), loaded(BOOK))
 

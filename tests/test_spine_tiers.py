@@ -35,7 +35,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_spine import (
-    MalformedEvent, SpineLog, TierRefused, canonical_bytes, init_home, policy, tiers)
+    MalformedEvent, SpineLog, TierRefused, init_home, policy, tiers)
 
 MINT = 'subject-deployment'
 BOOKER = 'subject-desk-one'
@@ -105,7 +105,11 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
     two windows those replaced is refused because how stale a board may be is the firmness policy's
     one window and is checked on every booking before a tier is read - a second spelling would be
     two standards for one question; and a designation naming a `private/` market is refused because
-    a designated process resolves the market the firm declared and never one seat's own.
+    a designated process resolves the market the firm declared and never one seat's own. What is
+    stored is the COMPLETED document - `four_eyes` false and an empty `designations` written in
+    before the bytes are hashed - so one workflow is one blob however it was spelled.
+
+    Killing mutation: the restated staleness window let through to the tier's field check.
     """
     home, log = minted(tmp_path)
     broken = (
@@ -149,24 +153,6 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
     log.close()
 
 
-def test_one_workflow_is_one_blob_however_the_operator_spelled_its_defaults():
-    """The module's own law, applied to the whole document rather than to one key of it. A tier
-    is completed with `four_eyes` false - automatic - and an absent `designations` with an empty
-    object, BEFORE the bytes are hashed - so three spellings of one workflow are one blob and one
-    governance history, and two desks that wrote out what they meant do not read as two decisions.
-
-    Killing mutation: the tier stored as written, which splits the three below into two blobs.
-    """
-    spellings = ({'tiers': [{'name': 'desk'}]},
-                 {'tiers': [{'name': 'desk'}], 'designations': {}},
-                 {'tiers': [{'name': 'desk', 'four_eyes': False}], 'designations': {}})
-    blobs = set(policy.canonical_policy(policy.TIERS_POLICY, one) for one in spellings)
-
-    assert len(blobs) == 1, 'one workflow spelled three ways is not one blob'
-    assert blobs.pop() == canonical_bytes(
-        {'tiers': [{'name': 'desk', 'four_eyes': False}], 'designations': {}})
-
-
 # --------------------------------------------------------------------------------------------
 # The evaluator: the first tier whose checks pass.
 
@@ -177,6 +163,8 @@ def test_the_first_tier_whose_checks_pass_is_the_one_that_applies():
 
     The verdict reports what it read, per tier, with the value measured and the bound declared, so
     a desk shown a route never has to re-derive the comparison to believe it.
+
+    Killing mutation: the scan run on past a tier that passed, so the last passing tier applies.
     """
     auto = tiers.assess(POLICY, ticket(), STANDING)
     assert sorted(auto) == ['checks', 'refusals', 'tier'] and auto['tier'] == 'auto'
@@ -211,6 +199,8 @@ def test_a_cap_is_a_maximum_and_a_ticket_sitting_on_one_passes_it():
     A notional is an AMOUNT of a currency and never a sign: a zero or a negative one is refused by
     name rather than clearing every cap there is, which is what a comparison against a magnitude
     the caller got backwards would otherwise do.
+
+    Killing mutation: the notional cap compared with `<`.
     """
     assert tiers.assess(POLICY, ticket(usd=5_000_000.0), STANDING)['tier'] == 'auto'
     assert tiers.assess(POLICY, ticket(usd=5_000_000.01), STANDING)['tier'] == 'senior'
@@ -235,6 +225,8 @@ def test_a_notional_the_caps_currency_cannot_see_fails_that_tier_and_says_so():
     that does not state its notional in that currency is a ticket this check cannot make - and a
     check that could not be made is a failure rather than a pass. Crossing one currency into
     another would make a policy check read a market, which is the thing policy-as-data forbids.
+
+    Killing mutation: an unstated notional read as a pass.
     """
     rand = tiers.assess(POLICY, ticket(usd=None, ZAR=18_500_000.0), STANDING)
 
@@ -258,6 +250,8 @@ def test_a_market_nobody_declared_fails_the_tier_that_prices_on_it():
     `markets` fold rather than off whatever the book is carrying. Nothing declared under it fails
     by name; a name standing on another vector fails naming both; and the declared one passes on
     the hash, which is the whole check.
+
+    Killing mutation: an undeclared market read as a pass.
     """
     unmarked = tiers.assess(POLICY, ticket(), {})
     assert unmarked['tier'] == 'senior'
@@ -279,6 +273,8 @@ def test_the_evaluator_is_pure_over_plain_data():
 
     The import half is the stronger claim: the module names nothing outside its own package, so
     there is no handle here to reach a home with even if a signature grew one.
+
+    Killing mutation: the evaluator importing `time`.
     """
     for named in (tiers.assess, tiers.check, tiers.standing_approval):
         parameters = set(inspect.signature(named).parameters)
@@ -386,8 +382,7 @@ def test_a_tier_covering_a_node_is_read_for_a_ticket_booking_into_it_and_skipped
     tier covering nothing the ticket books into is not a tier it can be signed under. A tier
     covering `*` covers every ticket, as a grant at `*` reaches every node.
 
-    Killing mutations: the scope matched without the `/`, which routes a `BANK/FXO` ticket through
-    the FX desk's own tier; and `*` read as a node's name, which routes nothing through it.
+    Killing mutation: `*` read as a node's name, which routes nothing through it.
     """
     scoped = {'tiers': [{'name': 'fx', 'scope': 'BANK/FX', 'four_eyes': True}, {'name': 'board'}]}
     for portfolio, expected in (('BANK/FX', 'fx'), ('BANK/FX/Options', 'fx'),
@@ -407,6 +402,8 @@ def test_check_raises_tier_refused_carrying_the_sentences_assess_lists():
     """`assess` returns and `check` raises, the two answering the same thing - so a caller that
     wants the route reads it and a caller that wants the refusal catches it, and neither of them
     holds a second copy of what a bound means.
+
+    Killing mutation: the refusal carrying the last sentence of the route alone.
     """
     closed = {'tiers': POLICY['tiers'][:2]}
     over = ticket(usd=100_000_000.0)

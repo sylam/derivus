@@ -53,7 +53,12 @@ def address(root, data):
 
 def test_a_blob_round_trips_under_the_hash_this_gate_computes_itself(tmp_path):
     """put answers the SHA-256 of the bytes, get answers the bytes, has answers yes - and the file
-    is where the layout says, not merely somewhere the store can find it again."""
+    is where the layout says, not merely somewhere the store can find it again. The same bytes put
+    twice are one file and one answer, and a store at rest has an EMPTY scratch directory: bytes go
+    to `blobs/tmp` and are renamed onto their address, so a leftover is a half-written blob.
+
+    Killing mutation: the blob filed one shard level deep, `blobs/<h[:2]>/<h>`.
+    """
     store = BlobStore(tmp_path)
     digest, path = address(tmp_path, PLAN)
     assert store.put(PLAN) == digest
@@ -62,34 +67,15 @@ def test_a_blob_round_trips_under_the_hash_this_gate_computes_itself(tmp_path):
     assert path.read_bytes() == PLAN
     assert store.get(digest) == PLAN
     assert store.has(digest)
+    assert store.put(bytearray(PLAN)) == digest
     # Bulk and empty are the same discipline: the empty blob is a legitimate object with a real
     # address, and nothing here reads zero bytes as absence.
     assert store.get(store.put(TAPE)) == TAPE
     empty = store.put(b'')
     assert empty == hashlib.sha256(b'').hexdigest()
     assert store.get(empty) == b'' and store.has(empty)
-    assert set(store.walk()) == {digest, hashlib.sha256(TAPE).hexdigest(), empty}
-
-
-def test_the_same_bytes_put_twice_are_one_file_and_one_answer(tmp_path):
-    """Dedup is the whole point of addressing by content: booking the same surface twice must not
-    cost a second copy, and the second put must answer the same name the first did."""
-    store = BlobStore(tmp_path)
-    first = store.put(PLAN)
-    second = store.put(bytearray(PLAN))
-    assert first == second
-    blobs = [p for p in (tmp_path / 'blobs').rglob('*') if p.is_file()]
-    assert len(blobs) == 1, blobs
-    assert list(store.walk()) == [first]
-
-
-def test_nothing_is_left_in_scratch_after_a_write(tmp_path):
-    """Atomicity leaves a trace when it is done right: bytes go to `blobs/tmp` and are renamed onto
-    their address, so a store at rest has an EMPTY scratch directory. A leftover here is a
-    half-written blob waiting to be mistaken for one."""
-    store = BlobStore(tmp_path)
-    for data in (PLAN, TAPE, PLAN, b'', b'a values vector'):
-        store.put(data)
+    assert sorted(store.walk()) == sorted({digest, hashlib.sha256(TAPE).hexdigest(), empty})
+    assert len([p for p in (tmp_path / 'blobs').rglob('*') if p.is_file()]) == 3
     assert list((tmp_path / 'blobs' / 'tmp').iterdir()) == []
 
 
@@ -97,7 +83,10 @@ def test_a_hash_that_arrives_with_different_bytes_is_refused_by_name(tmp_path):
     """The collision fault, injected as data: wrong bytes are written BY HAND at the address the
     true bytes hash to, and the true bytes are then offered. Verify-then-dedup means the store
     byte-compares and refuses - a silent dedup here would swap one object for another everywhere
-    it is cited, forever."""
+    it is cited, forever.
+
+    Killing mutation: the byte compare skipped, which dedups onto the doctored file.
+    """
     store = BlobStore(tmp_path)
     digest, path = address(tmp_path, PLAN)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +103,10 @@ def test_a_hash_that_arrives_with_different_bytes_is_refused_by_name(tmp_path):
 def test_bytes_altered_under_their_own_name_never_come_back_out(tmp_path):
     """The same suspicion on the read side. A blob is re-hashed as it leaves, so a file edited in
     place under a name that promises other content is a refusal naming the hash, never a payload
-    the caller goes on to trust."""
+    the caller goes on to trust.
+
+    Killing mutation: the re-hash on read skipped.
+    """
     store = BlobStore(tmp_path)
     digest = store.put(PLAN)
     _, path = address(tmp_path, PLAN)
@@ -126,7 +118,12 @@ def test_bytes_altered_under_their_own_name_never_come_back_out(tmp_path):
 
 def test_an_absent_blob_is_a_named_refusal_not_an_empty_answer(tmp_path):
     """Referential closure begins here: a hash that does not resolve is a stop with a name in it,
-    so the writer can refuse an event citing it instead of appending a dangling reference."""
+    so the writer can refuse an event citing it instead of appending a dangling reference. A store
+    pointed at a home that does not exist says "empty" and leaves the directory absent, so the
+    home's own refusals are the ones a caller sees.
+
+    Killing mutation: `has` answering any well-formed address.
+    """
     store = BlobStore(tmp_path)
     absent = hashlib.sha256(b'never stored').hexdigest()
     assert not store.has(absent)
@@ -142,21 +139,19 @@ def test_an_absent_blob_is_a_named_refusal_not_an_empty_answer(tmp_path):
     with pytest.raises(TypeError):
         store.put('a canonical plan, but as text')
 
-
-def test_a_read_never_provisions_a_home_that_is_not_there(tmp_path):
-    """Reads answer questions; they do not create trees. A store pointed at a home that does not
-    exist yet says "empty" and leaves the directory absent, so the home's own refusals are the ones
-    a caller sees."""
-    store = BlobStore(tmp_path / 'no_such_home')
-    assert not store.has(hashlib.sha256(PLAN).hexdigest())
-    assert list(store.walk()) == []
+    nowhere = BlobStore(tmp_path / 'no_such_home')
+    assert not nowhere.has(hashlib.sha256(PLAN).hexdigest())
+    assert list(nowhere.walk()) == []
     assert not (tmp_path / 'no_such_home').exists()
 
 
 def test_walk_yields_what_the_store_can_address_and_nothing_else(tmp_path):
     """The manifest is a projection rebuilt by this walk, so it must report CONTENT: scratch is not
     content, and a file sitting somewhere its own name does not resolve to is not addressable and
-    therefore is not a blob."""
+    therefore is not a blob.
+
+    Killing mutation: the shard check dropped, which yields a blob filed under the wrong shard.
+    """
     store = BlobStore(tmp_path)
     stored = {store.put(PLAN), store.put(TAPE)}
     (tmp_path / 'blobs' / 'tmp' / 'half-written').write_bytes(b'crashed mid-put')
@@ -171,6 +166,8 @@ def test_the_store_carries_no_verb_for_forgetting(tmp_path):
     """Retention is a logged event in a later increment. Until it exists, the guarantee IS this
     absence: no method on the store - public, private, or module level - can be asked to reduce or
     expire a blob, so 'expire the tape without a retention event' is not a thing anyone can spell.
+
+    Killing mutation: a `discard` method on the store.
     """
     store = BlobStore(tmp_path)
     surface = [name for name in dir(store) if not (name.startswith('__') and name.endswith('__'))]

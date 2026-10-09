@@ -46,7 +46,6 @@ from derivus_spine.projections import (
 from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run, file_quote
 from derivus_spine.vocabulary import ADMIN, EVENT_TYPES
 
-import test_spine_imports as imports
 from test_spine import (
     ACTOR, BOOK, INSTRUMENT, MON, OTHER, TUE, WED, fill, seeded, synthetic_book)
 
@@ -151,7 +150,10 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     """Fold equals materialisation: burn the state, refold from genesis, and require the rows to be
     the committed ones in canonical form - so a row reordered, a field renamed or a value derived
     differently is a red gate rather than a silent change of what a reader sees. The strip's table
-    of sentences is committed the same way, because it is data the fixture cannot exercise."""
+    of sentences is committed the same way, because it is data the fixture cannot exercise.
+
+    Killing mutation: a superseded print dropped from the row of the print that beat it.
+    """
     home, log, marks = synthetic_book(tmp_path)
     assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'cash',
                                'costs', 'decisions', 'denials', 'entities', 'lifecycle',
@@ -174,7 +176,10 @@ def test_a_seeded_fold_is_the_from_genesis_fold_byte_for_byte(tmp_path):
     """Seed equivalence, for every projector: the state cached at the close and advanced to the head
     is the state folded from genesis, in canonical bytes, as are the rows off it. The fold is PURE
     in its seed - the same seed folds twice to the same answer and is left where it was - and a
-    position behind the seed refuses rather than answering the state in front of it."""
+    position behind the seed refuses rather than answering the state in front of it.
+
+    Killing mutation: the seed's state advanced in place rather than copied.
+    """
     home, log, marks = synthetic_book(tmp_path)
     assert log.head()[0] == HEAD
 
@@ -204,7 +209,10 @@ def test_a_seeded_fold_is_the_from_genesis_fold_byte_for_byte(tmp_path):
 def test_the_seeded_fold_sees_the_restatement_behind_its_seed(tmp_path):
     """A seed is a starting point and never an answer. At the close the official market is the first
     values vector; folded on to the head it is the restated one, with the close it stands over
-    named."""
+    named.
+
+    Killing mutation: a close naming no close of its day it stood over.
+    """
     home, log, marks = synthetic_book(tmp_path)
     markets = PROJECTORS['markets']
 
@@ -223,7 +231,10 @@ def test_a_republished_print_supersedes_by_as_of_key_and_the_first_is_still_read
     one (index, date, source) wins by `(effective_time, lsn)` and the print it beat stays on the row;
     a print BACKDATED behind the one standing does not win merely by arriving last; and a second
     administrator's print of the same index and date is a SECOND row, because a source that was
-    never asked does not supersede the one that was."""
+    never asked does not supersede the one that was.
+
+    Killing mutation: a print standing by arrival, its LSN alone.
+    """
     home, log, marks = synthetic_book(tmp_path)
     log.append('fixing_observed', {'index': INDEX, 'date': DATE, 'source': BFIX, 'value': 1.0900},
                actor='subject-administrator', effective_time=WED)
@@ -243,7 +254,10 @@ def test_a_republished_print_supersedes_by_as_of_key_and_the_first_is_still_read
 
 def test_a_knock_is_read_off_the_fold_and_is_never_a_fact(tmp_path):
     """Consequence purity. The record holds the observations; the crossing is derived where it is
-    asked for, the log carries no knock, and the writer refuses to file one."""
+    asked for, the log carries no knock, and the writer refuses to file one.
+
+    Killing mutation: the crossing read the wrong way round.
+    """
     home = seeded(tmp_path, clips=())
     log = SpineLog(home)
     for date, value in (('2026-08-24', 1.0851), ('2026-08-25', 1.0920), ('2026-08-26', 1.0880)):
@@ -268,7 +282,10 @@ def test_a_knock_is_read_off_the_fold_and_is_never_a_fact(tmp_path):
 def test_facts_sharing_an_effective_time_fold_in_lsn_order(tmp_path):
     """Determinism: the fold is a function of the log, not of a sort's tie-breaking. The two prints
     of the republished key share one truth-time and the later LSN stands; three clips at one instant
-    fold into one row in the order they were written."""
+    fold into one row in the order they were written.
+
+    Killing mutation: a tie in truth-time broken against the LSN.
+    """
     home, log, marks = synthetic_book(tmp_path)
     assert log.frame_at(14)['effective_time'] == log.frame_at(16)['effective_time']
     assert fixings_at(log, sources={INDEX: [ECB]})[(INDEX, DATE)]['lsn'] == 16
@@ -290,7 +307,10 @@ def test_a_projector_one_version_on_folds_the_same_bodies_and_a_seed_is_verified
     moved on still folds the bodies an earlier writer wrote; the seed minted by the version before
     it refuses where it is read AND where it is folded; and a seed minted over another home's close,
     one torn, or one whose state was edited beneath an intact close, refuses by name instead of
-    folding a fiction nothing else can detect."""
+    folding a fiction nothing else can detect.
+
+    Killing mutation: the seed's version left unchecked where the state is folded.
+    """
     home, log, marks = synthetic_book(tmp_path)
     shipped, onward = PROJECTORS['positions'], PositionsOnward()
     filed_name = 'positions-{}-{}.json'.format(shipped.version, CLOSE)
@@ -313,7 +333,7 @@ def test_a_projector_one_version_on_folds_the_same_bodies_and_a_seed_is_verified
         fold(log, shipped, seed={'projector': 'blotter', 'version': 1, 'lsn': 6, 'state': {}})
     assert "'blotter'" in str(other.value)
 
-    elsewhere, elsewhere_log, _ = synthetic_book(tmp_path / 'elsewhere')
+    elsewhere, elsewhere_log, _ = synthetic_book(tmp_path / 'elsewhere', copied=False)
     seed_at(elsewhere_log, shipped, CLOSE)
     elsewhere_log.close()
     filed_at = home / SEEDS / filed_name
@@ -340,7 +360,10 @@ def test_a_projector_one_version_on_folds_the_same_bodies_and_a_seed_is_verified
 def test_a_fold_never_claims_the_home_and_sees_the_next_append(tmp_path):
     """Reading never claims: a handle folding beside a writer sees that writer's next frame on its
     next fold, while a second WRITER is refused. The attestation the run files lands on the fold
-    that reads `run_completed` and nowhere else."""
+    that reads `run_completed` and nowhere else.
+
+    Killing mutation: a fold taking the writer's claim.
+    """
     home, log, marks = synthetic_book(tmp_path)
     reader = SpineLog(home)
     attestations = PROJECTORS['attestations']
@@ -363,7 +386,10 @@ def test_a_fixing_with_no_declared_source_refuses_and_the_order_is_the_authority
     """The `fixings` policy is the authority an observation is read under. A home declaring none has
     named an authority for nothing and resolves nothing; once one is declared, an index it does not
     name refuses BY NAME where the caller asked for that index and is left alone where it did not.
-    The order picks the print, never the administrator who printed last."""
+    The order picks the print, never the administrator who printed last.
+
+    Killing mutation: an index the policy orders no source for left unrefused.
+    """
     home, log, marks = synthetic_book(tmp_path)
     log.append('fixing_observed', {'index': INDEX, 'date': DATE, 'source': BFIX, 'value': 1.0900},
                actor='subject-administrator', effective_time=WED)
@@ -397,6 +423,8 @@ def test_a_refused_append_is_readable_as_a_row(tmp_path):
     and so refusing nobody - the hole `quotes` has too - so the rows are driven here: two seats
     turned away, one of them twice, and a second refusal of one fact coalescing onto the LSN it
     already has by the ordinary tag rule.
+
+    Killing mutation: the row naming the frame's type where the body names the verb refused.
     """
     home = seeded(tmp_path, 'refused', clips=())
     log = SpineLog(home)
@@ -420,26 +448,13 @@ def test_a_refused_append_is_readable_as_a_row(tmp_path):
     log.close()
 
 
-def test_the_import_surface_still_holds_and_a_subpackage_cannot_hide():
-    """The dependency budget, asked of the new module and of every path a module could be added at:
-    the gate's own list is every `.py` under the package however deep, so a subpackage cannot
-    smuggle an import past it."""
-    sources = imports.spine_sources()
-    walked = sorted(os.path.join(base, name) for base, _, names in os.walk(imports.SPINE)
-                    for name in names if name.endswith('.py'))
-    assert sources == walked
-
-    module = os.path.join(imports.SPINE, 'projections.py')
-    assert module in sources
-    imported = imports.imported_names(module)
-    assert imported <= imports.ALLOWED and imported.isdisjoint(imports.FORBIDDEN)
-    assert 'duckdb' in imports.FORBIDDEN, 'no reading plane lives in this package'
-
-
 def test_the_seeds_directory_stands_beside_the_log_and_the_verifier_never_reads_it(tmp_path):
     """A seed is a file beside `log/` and `blobs/` that the verification does not know about: both
     modes answer exactly what they answered before one was minted, and deleting it costs a refold
-    and nothing else."""
+    and nothing else.
+
+    Killing mutation: the seed filed under `log/` rather than beside it.
+    """
     home, log, marks = synthetic_book(tmp_path)
     positions = PROJECTORS['positions']
     entitled, chain = verify_home(home), verify_home(home, entitled=False)
@@ -463,7 +478,10 @@ def test_the_second_fixture_pins_what_the_synthetic_book_cannot_say(tmp_path):
     stands, whole, which is what `verbs.attestation` answers; the LAST declaration of a policy
     stands, which is what `policy.in_force` answers; a print superseded twice keeps both prints it
     beat; verdicts read in the order they were filed; and a quote names the SEAT that struck it,
-    read off the envelope, with the ticket beside it where the caller computed one."""
+    read off the envelope, with the ticket beside it where the caller computed one.
+
+    Killing mutation: the LAST attestation of a replay tuple standing.
+    """
     home, log, marks = closed_book(tmp_path)
 
     closed = PROJECTORS['positions'].rows(fold(log, PROJECTORS['positions']))

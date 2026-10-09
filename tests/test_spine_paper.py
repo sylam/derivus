@@ -161,6 +161,8 @@ def test_a_reader_starts_at_the_newest_seed_a_named_folder_holds(tmp_path):
     seed of another version is not a candidate, since a shared folder may hold two releases'; a
     close past the log's head is not one a copy behind it can stand at; and a seed of this version
     that does not verify refuses by name rather than being stepped over.
+
+    Killing mutation: a close past the reader's head taken as a seed it can stand at.
     """
     home, log, marks = synthetic_book(tmp_path)
     shared = tmp_path / 'shared'

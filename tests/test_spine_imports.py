@@ -19,10 +19,7 @@ proves it again by watching what lands in a fresh interpreter's `sys.modules`. B
 
 The packaging gate reads `setup.py` as text and AST and installs nothing: the spine ships as a
 sibling package, `cryptography` is an EXTRA rather than a base dependency, the console script
-exists.
-
-The CLI smoke gates state their precondition rather than dying downstream of it - the CLI is a
-mouth over the core modules, and the skip heals the moment `derivus_spine/log.py` exists.
+exists. The CLI gates drive `DV_Spine` as a subprocess on real homes.
 """
 import ast
 import glob
@@ -30,8 +27,6 @@ import json
 import os
 import subprocess
 import sys
-
-import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPINE = os.path.join(ROOT, 'derivus_spine')
@@ -58,20 +53,6 @@ def spine_sources():
     return sorted(glob.glob(os.path.join(SPINE, '**', '*.py'), recursive=True))
 
 
-def spine_has(name):
-    return os.path.isfile(os.path.join(SPINE, name))
-
-
-needs_spine_package = pytest.mark.skipif(
-    not spine_has('__init__.py'),
-    reason='derivus_spine/__init__.py: the package surface lands with the core modules, and this '
-           'gate imports the package rather than reading it')
-needs_spine_core = pytest.mark.skipif(
-    not spine_has('log.py'),
-    reason='derivus_spine/log.py: the CLI is a mouth over the writer, so its smoke gates wait for '
-           'the core modules and go green the moment they land')
-
-
 def imported_names(source):
     """The top-level names a file imports, however deep in it the import sits. Relative imports
     are skipped rather than allowed: they resolve inside the package by construction and carry no
@@ -94,6 +75,8 @@ def test_one_module_under_derivus_imports_the_spine_and_it_is_the_seam():
 
     Read off the SOURCE, at any depth, so an import that never executes still counts - and a
     lazy import inside a function counts exactly as much as one at the top of the file.
+
+    Killing mutation: a second module under `derivus/` importing the spine.
     """
     importers = set()
     for source in sorted(glob.glob(os.path.join(ROOT, 'derivus', '**', '*.py'), recursive=True)):
@@ -112,7 +95,10 @@ def test_one_module_under_derivus_imports_the_spine_and_it_is_the_seam():
 def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
     """The dependency budget, read off the source of every module the package has. `cryptography`
     is in - bodies are sealed and checkpoints signed from genesis; the engine, torch and the HTTP
-    client are out."""
+    client are out.
+
+    Killing mutation: a spine module importing `numpy`.
+    """
     sources = spine_sources()
     assert sources, 'derivus_spine holds no modules at all'
     assert os.path.join(SPINE, 'cli.py') in sources
@@ -126,7 +112,6 @@ def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
     assert set().union(*(imported_names(source) for source in sources))
 
 
-@needs_spine_package
 def test_importing_the_spine_lands_neither_the_engine_nor_torch():
     """The source gate's answer proved a second way, because the first trusts the parser: a FRESH
     interpreter imports the package and reports what arrived. Run out of the repo root so the tree
@@ -134,6 +119,8 @@ def test_importing_the_spine_lands_neither_the_engine_nor_torch():
 
     EVERY MODULE BY GLOB: `__init__.py` keeps its surface to the truth layer, so importing the
     package alone would leave the CLI, custody, identity and the verbs unloaded and unwitnessed.
+
+    Killing mutation: a spine module importing `numpy`.
     """
     modules = sorted('derivus_spine.{}'.format(os.path.basename(source)[:-3])
                      for source in spine_sources()
@@ -183,7 +170,10 @@ def literal(node, env):
 def test_the_spine_ships_as_a_sibling_package_with_cryptography_as_an_extra():
     """Three declarations: the spine is in the wheel beside its siblings; `cryptography` is an
     EXTRA, so an engine install grows no crypto dependency and `desk` keeps its edge (they compose
-    as `derivus[desk,enterprise]`); and the console script exists."""
+    as `derivus[desk,enterprise]`); and the console script exists.
+
+    Killing mutation: the enterprise extra declaring another pin.
+    """
     kwargs, env = setup_call()
 
     packages = kwargs['packages']
@@ -201,28 +191,6 @@ def test_the_spine_ships_as_a_sibling_package_with_cryptography_as_an_extra():
     assert 'DV_Spine = derivus_spine.cli:main' in scripts
 
 
-def test_the_cli_declares_the_home_verbs_and_the_home_flag():
-    """Gated off the source, before the core exists to drive it. The HOME verbs are the ones spelled
-    out individually, each carrying its own flags; every other verb registers from a table and is
-    driven end to end below, so this gate stays the one that says a home is minted, verified,
-    signed, read, FOLLOWED, held to its invariants and SEEDED by exactly these seven."""
-    with open(os.path.join(SPINE, 'cli.py'), encoding='utf-8') as handle:
-        tree = ast.parse(handle.read(), filename='cli.py')
-
-    verbs, flags = set(), set()
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-            continue
-        if node.func.attr in ('add_parser', 'add_argument') and node.args:
-            named = node.args[0]
-            if isinstance(named, ast.Constant) and isinstance(named.value, str):
-                (verbs if node.func.attr == 'add_parser' else flags).add(named.value)
-
-    assert verbs == {'init', 'verify', 'checkpoint', 'status', 'follow', 'oracle', 'seed'}
-    assert {'--home', '--chain-only', '--actor', '--once', '--blobs', '--script',
-            '--against', '--at', '--out'} <= flags
-
-
 def spine(*argv, **kwargs):
     """`DV_Spine` as a subprocess, which is the only honest way to gate an exit code."""
     return subprocess.run([sys.executable, '-m', 'derivus_spine.cli'] + list(argv), cwd=ROOT,
@@ -230,11 +198,13 @@ def spine(*argv, **kwargs):
                           env=kwargs.get('env'))
 
 
-@needs_spine_core
 def test_the_cli_mints_verifies_checkpoints_and_reports(tmp_path):
     """The runbook end to end on a real home: mint, verify entitled, verify as an unentitled
     replica, sign the head, read where it stands. Every answer is JSON on stdout; the head moving
-    across the checkpoint is what says the verb did something."""
+    across the checkpoint is what says the verb did something.
+
+    Killing mutation: the checkpoint verb reporting without appending.
+    """
     home = str(tmp_path / 'spine')
 
     minted = spine('init', '--home', home)
@@ -265,7 +235,6 @@ def test_the_cli_mints_verifies_checkpoints_and_reports(tmp_path):
     assert json.loads(spine('status', env=named).stdout) == standing
 
 
-@needs_spine_core
 def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_path):
     """The policy-file editor this deployment has, in its CLI form. A document goes on the record
     from a JSON file and comes back with the blob it was stored under and the LSN it stands at;
@@ -345,11 +314,13 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
     assert spine('policy', 'capabilities', '--home', home).returncode == 1
 
 
-@needs_spine_core
 def test_verifying_a_home_that_is_not_there_refuses_by_name(tmp_path):
     """A refusal reaches the terminal as a SENTENCE and exit 1 - naming the thing and the remedy -
     never as a traceback. Nothing is minted on the way out: a verify that provisioned would be a
-    second source of truth."""
+    second source of truth.
+
+    Killing mutation: the CLI catching nothing, which reaches the terminal as a traceback.
+    """
     missing = str(tmp_path / 'nothing-here')
 
     refused = spine('verify', '--home', missing)

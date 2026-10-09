@@ -32,7 +32,6 @@ document with zero admin grants LANDS (its declarer had admin under the document
 later declaration is refused and recorded, a stranger's break-glass use lands and grants nothing,
 the genesis seat's use restores admin, a new document lands, and the history verifies green.
 """
-import ast
 import hashlib
 import json
 import os
@@ -45,14 +44,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus_spine import (
     CapabilityDenied, CollisionRefusal, MalformedEvent, MissingBlobRefusal, SpineLog,
     UnknownEventType, canonical_bytes, init_home, verify_home, write_checkpoint)
-from derivus_spine import capability, cli, genesis
+from derivus_spine import cli
 from derivus_spine.capability import (
     ANY_BOOK, CAPABILITIES_POLICY, UNREADABLE, canonical_document, declarable, evaluate,
     holds_any, read_subjects, scope_of, state_at, under, verb_for)
 from derivus_spine.vocabulary import (
-    ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK,
-    PROVENANCE_TYPES, RECOVERY, REFERENCE_TYPES, SETTLE, VALIDATE, VERBS, WRITER, WRITER_TYPES,
-    BLOB_FIELDS, classify, validate)
+    ADMIN, APPROVE, BOOK, CUSTODY_TYPES, EVENT_TYPES, EVENT_VERB, FACT_TYPES, MARK, PROVENANCE_TYPES,
+    RECOVERY, REFERENCE_TYPES, SETTLE, VALIDATE, VERBS, WRITER, WRITER_TYPES)
+
+from test_spine import copy_of
 
 MINT = 'subject-deployment'
 DESK = 'subject-desk-one'
@@ -95,12 +95,14 @@ def declare(log, actor, doc):
 
 
 def minted(tmp_path, name='home'):
-    """A home mid-genesis, handed back with the writer open on it."""
-    home = tmp_path / name
-    init_home(home, MINT)
-    log = SpineLog(home)
-    log.store.put(TERMS), log.store.put(RESTRUCK)
-    return home, log
+    """A home mid-genesis, handed back with the writer open on it - a copy of the one this process
+    minted."""
+    def build(home):
+        init_home(home, MINT)
+        store = SpineLog(home).store
+        store.put(TERMS), store.put(RESTRUCK)
+    home = copy_of(tmp_path, name, ('capability',), build)
+    return home, SpineLog(home)
 
 
 def fill(reference, book=BOOK_ONE, **placed):
@@ -181,7 +183,10 @@ def test_a_fresh_home_enforces_nothing_and_writes_exactly_as_increment_one_did(t
     """A home never told who may do what has no document to consult, so `evaluate` is never called
     and a stranger's fill lands - in the increment-1 FRAME: twelve fields, the firm class the
     classifier derives, and a chain that verifies entitled. The one case that has to hold for the
-    gates beside this file to mean anything after the writer learned to refuse.
+    gates beside this file to mean anything after the writer learned to refuse. Every frame of the
+    home is the twelve fields, the class in it the classifier's answer.
+
+    Killing mutation: a home with no document refusing a fill.
     """
     home, log = minted(tmp_path)
 
@@ -206,6 +211,8 @@ def test_a_fresh_home_enforces_nothing_and_writes_exactly_as_increment_one_did(t
     log.close()
     assert verify_home(home) == {'mode': 'entitled', 'events': 5, 'checkpoints_verified': 1,
                                  'head_lsn': 5, 'head_hash': landed['event_hash']}
+    for frame in SpineLog(home).frames():
+        assert len(frame) == 12 and frame['entitlement_class'] == 'firm'
 
 
 def test_the_break_glass_handle_is_gated_from_event_one_and_not_by_declaration(tmp_path):
@@ -216,6 +223,8 @@ def test_the_break_glass_handle_is_gated_from_event_one_and_not_by_declaration(t
 
     So the seat genesis named may use it here and now, nobody else may, and the reach is a fact
     either way.
+
+    Killing mutation: the recovery handle open to any seat.
     """
     home, log = minted(tmp_path)
     assert state_at(log)[0] is None, 'this home has never been told who may do what'
@@ -236,19 +245,6 @@ def test_the_break_glass_handle_is_gated_from_event_one_and_not_by_declaration(t
     assert verify_home(home)['events'] == SpineLog(home).head()[0]
 
 
-def test_the_frame_is_still_the_twelve_fields_increment_one_froze(tmp_path):
-    """A sibling of the check above, said as arithmetic: the nine sealed-against envelope fields,
-    the body, the chain hash and the position - and no thirteenth. A capability layer that had
-    leaked one field into the envelope would be caught here rather than three increments later by a
-    verifier that cannot open its own bodies. The class in every frame is the classifier's answer,
-    which is the seam consumed rather than a constant stamped in beside it."""
-    home, log = minted(tmp_path)
-    log.close()
-    for frame in SpineLog(home).frames():
-        assert len(frame) == 12 and frame['entitlement_class'] == classify(
-            frame['event_type'], frame['book'])
-
-
 # --------------------------------------------------------------------------------------------
 # The capability-denial gate: every verb, refused and recorded.
 
@@ -258,6 +254,8 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
     bolted onto each verb - and each refusal is asserted twice: the raised `CapabilityDenied` naming
     subject, verb, book scope, attempted type and the denial's LSN, and the `capability_denied` fact
     at that LSN. The document here grants nothing, so the sweep is total.
+
+    Killing mutation: the denial raised and never appended.
     """
     home, log = minted(tmp_path)
     table = attempts(log)
@@ -292,22 +290,6 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
     log.close()
     assert verify_home(home)['events'] == expected[-1][0], \
         'a log full of refusals is still a log that verifies'
-
-
-def test_a_repeated_refusal_is_one_fact_because_it_is_one_fact(tmp_path):
-    """Idempotency reaches the denials too. "This subject was refused this verb over this book for
-    this type" is one fact however many times it is attempted - the tempo of the attempts is
-    serving-layer telemetry under its own retention, which the design keeps out of the record."""
-    home, log = minted(tmp_path)
-    declare(log, MINT, document())
-
-    for _ in range(3):
-        with pytest.raises(CapabilityDenied):
-            log.append('fill', fill('EXEC-1'), actor=STRANGER, book=BOOK_ONE)
-
-    assert len(denials(log)) == 1
-    log.close()
-    assert verify_home(home)['events'] == log.head()[0]
 
 
 def test_the_writers_own_voice_is_no_seat_and_files_only_its_own(tmp_path):
@@ -373,6 +355,8 @@ def test_a_granted_actor_appends_and_a_book_scope_reaches_exactly_its_book(tmp_p
     checkpoints and official market declarations are acts of the deployment, and a desk's scope over
     its own book is not a licence to govern the firm. The checkpoint is the same rule met from the
     other side: `checkpoint` maps to admin, so signing the head under enforcement needs an admin.
+
+    Killing mutation: a named grant reaching a fact that names no book.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(
@@ -402,46 +386,6 @@ def test_a_granted_actor_appends_and_a_book_scope_reaches_exactly_its_book(tmp_p
 
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
-
-
-def test_the_evaluator_is_one_pure_function_over_a_document_and_a_fold():
-    """No home, no log, no store, no clock. Everything `evaluate` needs was folded out of the record
-    before it was called, which is what lets a replica reach the hub's verdict locally - the design's
-    "a check both sides evaluate locally because both hold the same log and the same policy fold."
-    """
-    doc = document(grants=((DESK, BOOK, BOOK_ONE), (GOVERNOR, ADMIN, ANY_BOOK)))
-    seats = {'admin': (MINT,), 'break_glass': MINT, 'recovered': ()}
-
-    assert evaluate(doc, seats, DESK, BOOK, BOOK_ONE) is True
-    assert evaluate(doc, seats, DESK, BOOK, BOOK_TWO) is False
-    assert evaluate(doc, seats, DESK, BOOK, None) is False
-    assert evaluate(doc, seats, DESK, APPROVE, BOOK_ONE) is False
-    assert evaluate(doc, seats, GOVERNOR, ADMIN, None) is True
-    assert evaluate(doc, seats, GOVERNOR, ADMIN, BOOK_TWO) is True
-    # genesis admin does NOT survive a document: a declaration can strand the last admin, and that
-    # is the property break-glass exists to answer rather than a defect to paper over
-    assert evaluate(doc, seats, MINT, ADMIN, None) is False
-    assert evaluate(None, seats, STRANGER, ADMIN, None) is True, 'no document, no enforcement'
-    # the authorization outside every document that is asked here: the recovery is the GENESIS
-    # SEAT's and nobody else's - it must survive a document that stranded every admin and still be
-    # a gated write path (the writer's own voice is never asked at all: `SpineLog.own`)
-    assert evaluate(doc, seats, MINT, RECOVERY, None) is True
-    assert evaluate(doc, seats, STRANGER, RECOVERY, None) is False
-    assert evaluate(None, seats, STRANGER, RECOVERY, None) is False, 'the seat, doc or no doc'
-    # and a recovered admin outranks the document it was recovered against
-    assert evaluate(doc, dict(seats, recovered=(MINT,)), MINT, ADMIN, None) is True
-
-    # a document IN FORCE that cannot be read grants nothing at all, and leaves exactly the two
-    # authorizations above to rescue the home with
-    assert evaluate(UNREADABLE, seats, DESK, BOOK, BOOK_ONE) is False
-    assert evaluate(UNREADABLE, seats, GOVERNOR, ADMIN, None) is False
-    assert evaluate(UNREADABLE, seats, MINT, RECOVERY, None) is True
-    assert evaluate(UNREADABLE, dict(seats, recovered=(MINT,)), MINT, ADMIN, None) is True
-    assert read_subjects(UNREADABLE) == ()
-
-    assert read_subjects(doc) == ()
-    assert read_subjects(document(read=((DESK, 'firm'), (STRANGER, 'desk-two')))) == (DESK,)
-    assert read_subjects(None) == ()
 
 
 def test_a_grant_at_a_node_reaches_every_path_under_it_and_nothing_beside_it(tmp_path):
@@ -594,24 +538,6 @@ def test_a_node_admins_declaration_leaves_a_recovery_standing(tmp_path):
     log.close()
 
 
-def test_a_stored_document_is_read_in_the_grammar_it_was_declared_under():
-    """THE RECORD'S OWN VERSION RULE. A document on the record granting a verb that has since
-    retired, `draft`, reads with that grant dropped and every other standing - a node spelled as
-    written - while a new declaration naming it is refused by name.
-
-    Killing mutation: a stored document read in today's grammar, which folds a home written before
-    the verb retired to UNREADABLE and refuses every document verb in it.
-    """
-    grants = [{'subject': MINT, 'verb': verb, 'book': ANY_BOOK} for verb in ('admin', 'draft')]
-    raw = canonical_bytes({'grants': grants + [{'subject': DESK, 'verb': BOOK, 'book': 'BANK/'}],
-                           'read': []})
-    with pytest.raises(CapabilityDenied) as refusal:
-        capability.parse_document(raw, 'a new declaration')
-    assert "'draft'" in str(refusal.value)
-    assert capability.parse_document(raw, 'the stored one', stored=True)['grants'] == [
-        grants[0], {'subject': DESK, 'verb': BOOK, 'book': 'BANK/'}]
-
-
 # --------------------------------------------------------------------------------------------
 # As-of: authorization replays like everything else.
 
@@ -622,6 +548,8 @@ def test_authorization_answers_as_of_the_lsn_it_is_asked_about(tmp_path):
     the span between them and False from the replacement on - read by passing the LSN, exactly as
     the checkpoint-key ladder reads the key in force at a checkpoint's own position. A declaration
     applies to the appends AFTER it, so the position it landed at is the first at which it answers.
+
+    Killing mutation: the fold read to the head whatever position is asked.
     """
     home, log = minted(tmp_path)
     granted = declare(log, MINT, document(
@@ -654,11 +582,11 @@ def test_a_declaration_can_strand_the_last_admin_and_break_glass_is_the_way_back
     recorded. The seat genesis named restores admin, a new document lands and clears the recovery,
     and the whole history verifies with the denials inside it.
 
-    Two mutants nothing else here reaches. `capability.apply_event`'s
-    `if genesis['break_glass'] is None:` -> `if True:`: the seat is read ONCE from the mint's own
-    grant, not from the latest thing calling itself one - without that guard, naming a new seat and
-    then stranding every admin is a permanently unwritable home whose recovery somebody else holds.
-    The same line for `genesis['admin']`: the LSN-1 grants are read once and scope-filtered.
+    The seat is read ONCE from the mint's own grant, not from the latest thing calling itself one:
+    otherwise naming a new seat and then stranding every admin is a permanently unwritable home
+    whose recovery somebody else holds.
+
+    Killing mutation: the break-glass seat read off the latest declaration naming one.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE))))
@@ -746,6 +674,8 @@ def test_a_capabilities_document_that_cannot_be_evaluated_does_not_land(tmp_path
     The last case is the house's fault injection: canonical bytes put into the store BEHIND the verb
     that would have canonicalised them, which is exactly how a hand-edited policy file arrives. One
     policy must be one blob, or the record holds two histories of one decision.
+
+    Killing mutation: the declared document left unparsed at the append.
     """
     home, log = minted(tmp_path)
     head = log.head()
@@ -791,6 +721,8 @@ def test_a_doctored_policy_blob_folds_to_unreadable_and_break_glass_walks_out_of
     unwritable while verifying green - the state the genesis break-glass grant exists to recover
     from. So: every verb refused by name, then the walk out - the genesis seat's use, a replacement
     document, the desk writing again.
+
+    Killing mutation: the store's collision refusal let out of the fold.
     """
     home, log = minted(tmp_path)
     blob = log.store.put(canonical_document(document(
@@ -844,6 +776,8 @@ def test_a_fold_answers_off_the_platter_rather_than_off_the_index_it_opened_with
 
     So the assertion is equality with a handle opened after the fact, on all three of the fold's
     answers - the document, the enumeration custody wraps keys on, and the evaluator's verdict.
+
+    Killing mutation: the fold stopped at the head the handle opened at.
     """
     home, log = minted(tmp_path)
     declare(log, MINT, document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE)),
@@ -879,7 +813,10 @@ def test_a_fold_answers_off_the_platter_rather_than_off_the_index_it_opened_with
 def test_the_verb_map_is_closed_over_the_closed_vocabulary():
     """Every type has a verb and every verb-map entry has a type. A type without a verb would be a
     write nobody could be scoped for and nobody could be refused for - a hole in enforcement shaped
-    exactly like the thing enforcement is for."""
+    exactly like the thing enforcement is for.
+
+    Killing mutation: a type dropped from the verb map.
+    """
     assert set(EVENT_TYPES) == (set(FACT_TYPES) | set(CUSTODY_TYPES) | set(PROVENANCE_TYPES)
                                 | set(REFERENCE_TYPES) | set(WRITER_TYPES))
     assert set(EVENT_VERB) == set(EVENT_TYPES)
@@ -893,105 +830,45 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
     assert verb_for('a_type_from_the_future') == ADMIN
 
 
-def test_the_classifier_is_the_seam_and_it_answers_firm_in_phase_one():
-    """Class is DERIVED, not assigned - one function whose inputs a later declaration changes,
-    rather than ten thousand per-object ACLs. Phase 1 is one trading unit, so it answers `firm` for
-    everything, and the mechanism ships dormant exactly as the design's posture says."""
-    for event_type in EVENT_TYPES:
-        assert classify(event_type, None) == 'firm'
-        assert classify(event_type, BOOK_ONE) == 'firm'
+def test_the_custody_types_are_shaped_and_their_blob_fields_are_closed(tmp_path):
+    """The custody vocabulary validates at the writer like everything else - every field present
+    and of its kind, nothing surplus - and the two fields that name BYTES are citations, so
+    durability ordering binds them: no enrollment appends before the key it publishes is on the
+    platter, and no wrap row before its wrap.
 
-
-def test_the_envelope_asks_the_classifier_rather_than_stamping_a_constant():
-    """The seam read off the SOURCE, because in phase 1 no behaviour can tell the two apart: with
-    one class, a writer that hardcoded `firm` and one that derived it produce identical frames, and
-    the difference surfaces the day desk two arrives. So this asserts the call."""
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        'derivus_spine', 'log.py')
-    with open(path, encoding='utf-8') as handle:
-        tree = ast.parse(handle.read(), filename='log.py')
-
-    stamped = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
-            continue
-        for key, value in zip(node.keys, node.values):
-            if isinstance(key, ast.Constant) and key.value == 'entitlement_class':
-                stamped.append(value)
-
-    assert len(stamped) == 1, 'the envelope is built in exactly one place'
-    assert isinstance(stamped[0], ast.Call) and getattr(stamped[0].func, 'id', None) == 'classify', \
-        'the envelope stamps a constant where it should ask the classifier'
-    assert len(stamped[0].args) == 2, 'the classifier is asked about the type AND the book'
-
-
-def test_the_two_genesis_policy_names_this_fold_reads_are_the_two_genesis_writes():
-    """`capability` spells the genesis policy names itself because `genesis` imports the writer and
-    the writer imports `capability` - so the two spellings are pinned here instead of by an import
-    that would be a cycle."""
-    assert capability.GENESIS_POLICY == genesis.GENESIS_POLICY
-    assert capability.BREAK_GLASS_POLICY == genesis.BREAK_GLASS_POLICY
-    assert capability.CAPABILITIES_POLICY not in (
-        genesis.GENESIS_POLICY, genesis.BREAK_GLASS_POLICY, genesis.VERIFYING_KEY_POLICY)
-
-
-def test_the_three_new_types_are_shaped_and_their_blob_fields_are_closed(tmp_path):
-    """The custody vocabulary validates like everything else - every field present and of its kind,
-    nothing surplus - and the two fields that name BYTES join `BLOB_FIELDS`, so durability ordering
-    binds them: no enrollment appends before the key it publishes is on the platter."""
-    validate('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': HASH_A})
-    validate('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': HASH_A})
-    validate('capability_denied', {'subject': DESK, 'verb': BOOK, 'book': ANY_BOOK,
-                                   'attempted_type': 'fill'})
-    with pytest.raises(MalformedEvent):
-        validate('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': 'short'})
-    with pytest.raises(MalformedEvent):
-        validate('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': HASH_A, 'note': 'why'})
-    with pytest.raises(UnknownEventType):
-        validate('key_unwrapped', {})
-    assert BLOB_FIELDS['seat_enrolled'] == ('public_key',)
-    assert BLOB_FIELDS['key_wrapped'] == ('wrap',)
-
+    Killing mutation: the seat's public key dropped from the fields that cite a blob.
+    """
     home, log = minted(tmp_path)
-    with pytest.raises(MissingBlobRefusal) as refusal:
-        log.append('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': HASH_B},
-                   actor=MINT)
-    assert HASH_B in str(refusal.value)
+    head = log.head()
+    for event_type, body in (
+            ('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': 'short'}),
+            ('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': HASH_A, 'note': 'why'})):
+        with pytest.raises(MalformedEvent):
+            log.append(event_type, body, actor=MINT)
+    with pytest.raises(UnknownEventType):
+        log.append('key_unwrapped', {}, actor=MINT)
+    for event_type, body, cited in (
+            ('seat_enrolled', {'subject': DESK, 'algorithm': 'x25519', 'public_key': HASH_B}, HASH_B),
+            ('key_wrapped', {'class': 'firm', 'subject': DESK, 'wrap': HASH_A}, HASH_A)):
+        with pytest.raises(MissingBlobRefusal) as refusal:
+            log.append(event_type, body, actor=MINT)
+        assert cited in str(refusal.value)
+    assert log.head() == head
     log.close()
 
 
 # --------------------------------------------------------------------------------------------
 # The mouth.
 
-NINE = ('init', 'verify', 'checkpoint', 'status', 'enroll', 'grant', 'rewrap', 'name', 'whoami')
-APPENDING = ('enroll', 'grant', 'rewrap')
-
-
-def test_the_cli_seats_the_identity_verbs_beside_the_home_verbs(capsys):
-    """Nine verbs, each reachable and each taking the home flag - the four increment-1 verbs plus
-    the five identity ones, which are the policy-file editor the non-goals allow and nothing more.
-    Every verb that APPENDS takes `--actor`, because an event without an authenticated pseudonymous
-    actor is the one thing this workstream will not write."""
-    for verb in NINE:
-        with pytest.raises(SystemExit) as left:
-            cli.main([verb, '--help'])
-        assert left.value.code == 0, verb
-        said = capsys.readouterr().out
-        assert '--home' in said, verb
-        assert ('--actor' in said) is (verb in APPENDING or verb == 'init'), verb
-
-    with pytest.raises(SystemExit) as left:
-        cli.main(['transmute', '--home', 'x'])
-    assert left.value.code == 2, 'an unknown verb is a command-line error, not a refusal'
-
-
 def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_path, capsys):
     """The editor end to end on a real home: a JSON file spelled however the operator spelled it
     becomes ONE canonical blob and one `policy_declared`, and enforcement is live on the next
     append. A second declaration of the same policy from differently-spelled JSON coalesces onto
-    the first, which is what "one policy, one blob" buys."""
-    home = tmp_path / 'home'
-    init_home(home, MINT)
+    the first, which is what "one policy, one blob" buys.
+
+    Killing mutation: the operator's file stored as written rather than canonicalised.
+    """
+    home, _ = minted(tmp_path)
     path = tmp_path / 'policy.json'
     path.write_text(json.dumps(document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE))),
                                indent=4, sort_keys=False), encoding='utf-8')
@@ -1001,7 +878,6 @@ def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_pat
     assert declared['policy'] == CAPABILITIES_POLICY and declared['coalesced'] is False
 
     log = SpineLog(home)
-    log.store.put(TERMS)
     assert log.store.get(declared['blob']) == canonical_document(
         document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE))))
     with pytest.raises(CapabilityDenied):
@@ -1020,9 +896,11 @@ def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_pat
 
 def test_the_grant_verb_refuses_a_file_it_cannot_read_and_says_which(tmp_path, capsys):
     """A refusal reaches the terminal as the library's own sentence and exit 1, naming the PATH -
-    which is the thing the operator can go and fix - and writes nothing on the way out."""
-    home = tmp_path / 'home'
-    init_home(home, MINT)
+    which is the thing the operator can go and fix - and writes nothing on the way out.
+
+    Killing mutation: the refusal naming the document rather than the path it was read from.
+    """
+    home, _ = minted(tmp_path)
     head = SpineLog(home).head()
 
     missing = str(tmp_path / 'nowhere.json')

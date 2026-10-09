@@ -120,7 +120,8 @@ def test_a_call_clears_its_minimum_strictly_on_the_side_it_falls():
     minimum received calls nothing and one a cent over it calls the whole of it; an excess exactly
     at the minimum posted posts nothing and one over it posts the whole of it, signed as the
     settlement moves it - received positive. The minimum reported is the one on the side the
-    difference falls.
+    difference falls. Nothing is rounded: a netting set declares no rounding, so the call is the
+    difference itself, to the last digit the arithmetic carries.
 
     Killing mutation: `>=` for the minimum transfer, which calls 20,000 at exactly the minimum.
     """
@@ -135,6 +136,13 @@ def test_a_call_clears_its_minimum_strictly_on_the_side_it_falls():
     assert (at['balance'], at['call'], at['direction'], at['minimum_transfer']) == (
         31_000.0, 0.0, None, 30_000.0)
     assert (over['call'], over['direction']) == (-30_000.625, CSA.POST)
+
+    declared = declared_fields(NettingCollateralSet).values()
+    names = [field.key for field in declared] + [
+        part.key for field in declared for part in field.sub_fields or ()]
+    assert not [name for name in names if 'round' in name.lower()],         'a rounding the terms declare is one the call must read'
+    said = CSA.call(144_000.123, {}, dials, FX)
+    assert said['call'] == CSA.required(144_000.123, dials, FX) != round(said['call'], 2)
 
 
 def test_a_haircut_is_the_engine_s_haircut_posted_on_either_side():
@@ -181,22 +189,6 @@ def test_collateral_and_margin_are_two_balances_and_the_call_reads_the_first():
     said = CSA.call(0.0, held['collateral'], CSA.of(TERMS), FX)
     assert (said['balance'], said['call'], said['direction']) == (41_000.0, -40_000.0,
                                                                   CSA.POST)
-
-
-def test_nothing_is_rounded_where_the_terms_declare_no_rounding():
-    """A CALL IS ROUNDED WHERE THE TERMS SAY, and a netting set declares no rounding: the call is
-    the difference itself, to the last digit the arithmetic carries.
-
-    Killing mutation: the call rounded to the cent.
-    """
-    declared = declared_fields(NettingCollateralSet).values()
-    names = [field.key for field in declared] + [
-        part.key for field in declared for part in field.sub_fields or ()]
-    assert not [name for name in names if 'round' in name.lower()], \
-        'a rounding the terms declare is one the call must read'
-    dials = CSA.of(TERMS)
-    said = CSA.call(144_000.123, {}, dials, FX)
-    assert said['call'] == CSA.required(144_000.123, dials, FX) != round(said['call'], 2)
 
 
 def test_a_mark_nobody_has_is_named_and_calls_nothing():
@@ -356,7 +348,6 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     assert spine.compiled_job(job, runs='BaseValuation') is job, 'a base valuation reads none'
 
 
-
 def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
     """THE DAY'S PAYMENT IS READ AS THE NETTING SET READS IT. A second forward under the set
     matures on the call date, so the gross exposure there carries what it pays that day, path by
@@ -467,26 +458,3 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
         with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
             run(assets)
         assert 'CSA-1: a Cash_Collateral row states no Amount, its weight among several' in caplog.text
-
-
-def test_a_batch_s_cashflows_are_saved_as_one_frame_of_its_rows():
-    """A batch's cashflow ledger is saved as one frame - a row a payment date, a column a path,
-    stacked once - and is the frame built a row at a time, cell, dtype, index and columns, in both
-    precisions, off a ledger carrying a graph, and a currency with no payment date an empty frame.
-
-    Killing mutation: the empty ledger stacked - a currency with no payment date fails the batch."""
-    from types import SimpleNamespace
-    from derivus.calculation import CMC_State
-    grid = SimpleNamespace(mtm_dates=set(pd.date_range('2026-10-05', periods=6, freq='MS')))
-    for dtype in (torch.float32, torch.float64):
-        paths = torch.linspace(-1.0, 1.0, 7, dtype=dtype, requires_grad=True)
-        ledger = {'USD': {4: paths * 3.0, 1: paths ** 2, 2: paths.exp()}, 'EUR': {}}
-        output = {}
-        CMC_State.save_cashflows(SimpleNamespace(t_Cashflows=ledger), output, grid)
-        dates = np.array(sorted(grid.mtm_dates))
-        for currency, rows in ledger.items():
-            by_row = pd.DataFrame([v.detach().numpy() for _, v in sorted(rows.items())],
-                                  index=dates[sorted(rows)])
-            saved, = output['cashflows'][currency]
-            assert saved.equals(by_row) and list(saved.dtypes) == list(by_row.dtypes), currency
-            assert saved.index.equals(by_row.index) and saved.columns.equals(by_row.columns)

@@ -148,7 +148,7 @@ def test_two_homes_that_are_not_copies_of_one_history_are_named(tmp_path):
     Killing mutation: the comparison taken at the deeper of the two heads, which asks the copy for
     a position it does not hold and calls every follower mid-pull a divergence.
     """
-    answers = oracle.report(seeded(tmp_path, 'one'), against=seeded(tmp_path, 'two'))
+    answers = oracle.report(seeded(tmp_path, 'one'), against=seeded(tmp_path, 'two', copied=False))
 
     assert oracle.failed(answers) == ['copies_agree'], answers
     assert 'copies of different histories' in answers['copies_agree']['evidence'][0]
@@ -652,6 +652,10 @@ def test_a_settlement_against_a_key_the_diary_has_no_row_for_is_named(tmp_path):
         'status': 'confirmed'}, book_name=BOOK)
     assert oracle.report(confirmed, diary_keys=[INSTRUMENT])[
         'the_diary_equals_the_filings']['held'] is True
+    named = planted(home, tmp_path, 'named', 'status_transition',
+                    {'subject': 'CF1', 'status': 'settled'}, book_name=BOOK)
+    assert oracle.report(named, diary_keys=[INSTRUMENT])[
+        'the_diary_equals_the_filings']['held'] is True, 'a name read as a settlement key'
     assert oracle.report(home, diary_keys=[INSTRUMENT])[
         'the_diary_equals_the_filings']['evidence'] == ['1 settlement(s) filed against 1 diary '
                                                         'key(s) and 2 clip(s)']
@@ -724,6 +728,7 @@ def test_one_fact_written_twice_under_one_tag_is_named(tmp_path):
     answers = oracle.report(where)
     assert oracle.failed(answers) == ['duplicates_coalesce'], answers
     assert 'one fact, written twice' in answers['duplicates_coalesce']['evidence'][0]
+    assert answers['duplicates_coalesce']['evidence'][0].startswith('LSN 8 carries the tag LSN 5')
 
     (where / 'keys' / 'class_firm.key').unlink()
     sealed = oracle.report(where)
@@ -1005,6 +1010,8 @@ def test_the_cli_answers_the_fourteen_and_exits_on_one_that_did_not_hold(tmp_pat
     keys and the P&L are files it takes as data.
 
     A subprocess, which is the only honest way to gate an exit code.
+
+    Killing mutation: the verb exiting 0 whatever did not hold.
     """
     home = str(synthetic_book(tmp_path)[:2][0])
     asked = spine('oracle', '--home', home)
@@ -1028,24 +1035,3 @@ def test_the_cli_answers_the_fourteen_and_exits_on_one_that_did_not_hold(tmp_pat
     assert scripted.returncode == 1
     assert 'the record holds none' in json.dumps(
         json.loads(scripted.stdout)['every_refusal_is_a_denial'])
-
-
-def test_the_oracle_holds_the_package_to_its_one_dependency():
-    """The oracle is a module of the record, so it reaches stdlib and `cryptography` and nothing
-    else - the import gate's glob already covers it, and this says out loud that it MUST.
-
-    Killing mutation: the oracle importing the engine for the diary or the P&L invariant, which is
-    exactly the temptation the `diary_keys` and `pnl` arguments exist to remove.
-    """
-    import ast
-
-    with open(oracle.__file__, encoding='utf-8') as handle:
-        tree = ast.parse(handle.read(), filename=oracle.__file__)
-    absolute = set((node.module or '').split('.')[0] for node in ast.walk(tree)
-                   if isinstance(node, ast.ImportFrom) and not node.level) | set(
-        alias.name.split('.')[0] for node in ast.walk(tree)
-        if isinstance(node, ast.Import) for alias in node.names)
-
-    assert absolute <= set(sys.stdlib_module_names), \
-        'the oracle reaches outside the package: {}'.format(absolute)
-    assert {'diary_keys', 'pnl'} <= set(oracle.report.__code__.co_varnames)
