@@ -17,7 +17,7 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_settlements,
+    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_settlements, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT, FX_TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
@@ -76,8 +76,9 @@ def option_date_info(deal, base_date, calendars, business_days=2):
     adjusted_forward_settlement_date = forward_settlement_date(
         expiry_date, calendar_names, calendars, business_days=business_days)
 
+    settlement_date, = deal.settlement_dates()
     expiry = (expiry_date - base_date).days
-    settlement = (deal.settlement_day() - base_date).days
+    settlement = (settlement_date - base_date).days
     forward_settlement = (adjusted_forward_settlement_date - base_date).days
 
     return expiry, settlement, forward_settlement
@@ -747,11 +748,11 @@ class Deal(object):
         if currency:
             self.settlement_currencies.setdefault(currency, set()).update(dates)
 
-    def settlement_day(self):
-        """The day the deal's one declared settlement field states, else the day that field's
+    def settlement_dates(self):
+        """Every day the deal's own declaration settles on, a blank field read as the day its
         `settles` marker names in its place."""
-        (key, _, cash), = declared_settlements(type(self))
-        return self.field[key] or self.field[cash.otherwise]
+        return {day for _, _, _, _, day in settlement_days(self.field, declared_settlements(type(self)))
+                if day is not None}
 
     def get_reval_dates(self, clip_expiry=False):
         if clip_expiry and bool(self.settlement_currencies):
@@ -4158,7 +4159,7 @@ class EquityOptionDeal(Deal):
         super(EquityOptionDeal, self).reset()
         self.payoff_ccy = utils.payoff_currency(self.field)
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.settlement_day()}, self.payoff_ccy)
+        self.add_reval_dates(self.settlement_dates(), self.payoff_ccy)
 
     def add_grid_dates(self, parser, base_date, grid):
         # we need to monitor the option for potential early exercise
@@ -5228,7 +5229,7 @@ class CommodityDigitalOption(Deal):
     def reset(self, calendars):
         super(CommodityDigitalOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.settlement_day()}, self.field['Currency'])
+        self.add_reval_dates(self.settlement_dates(), self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -7054,7 +7055,7 @@ class FXOptionDeal(Deal):
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']})
-        self.add_reval_dates({self.settlement_day()}, self.field['Currency'])
+        self.add_reval_dates(self.settlement_dates(), self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
