@@ -276,12 +276,13 @@ def test_a_commodity_digital_spread_reads_the_commodity_smile():
 
 
 def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
-    """A digital on a USD reference price paid in EUR. Under `Payoff_Type` Compo, what omission
-    means, the underlying is S*X on the EUR per USD forward, the strike a EUR level the local smile
-    is read at translated, and the vol composed with the pair's; under Quanto the local forward is
-    carried by `-rho sigma_S sigma_X` and the EUR payoff is paid at one. The correlation is read
-    under the name the energy family declares, `Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD`,
-    oriented local to payoff, so +0.35 is +0.35. The commodity smile is the collinear skew and the
+    """A digital on a USD reference price paid in EUR, through the option seam every equity option
+    wires its payoff type on. Under `Payoff_Type` Compo the underlying is S*X on the EUR per USD
+    forward, the strike a EUR level the local smile is read at translated, and the vol composed
+    with the pair's; under Quanto the local forward is carried by `-rho sigma_S sigma_X` and the
+    EUR payoff is paid at one. The correlation is read under the name the energy family declares,
+    `Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD`, oriented local to payoff, so +0.35 is
+    +0.35. The commodity smile is the collinear skew and the
     FX surface flat, so every read is exact: the compo's local vol at the translated strike's
     moneyness, which is the composed forward over the EUR strike, the quanto's at the local
     forward's with the ATM vol in its carry, and under the spread each leg composed at its own.
@@ -317,9 +318,10 @@ def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
                              local_vol(oil / strike_usd), R_EUR) * FX_SPOT
     spread = _spread_closed(oil * fx_fwd, strike_eur, composed, R_EUR) * FX_SPOT
     for terms, valuation, expected in (
-            ({'Strike_Price': strike_eur}, None, compo),
+            ({'Strike_Price': strike_eur, 'Payoff_Type': 'Compo'}, None, compo),
             ({'Strike_Price': strike_usd, 'Payoff_Type': 'Quanto'}, None, quanto),
-            ({'Strike_Price': strike_eur}, {'CommodityDigitalOption': {'Relative_Digital_Spread': EPS}}, spread)):
+            ({'Strike_Price': strike_eur, 'Payoff_Type': 'Compo'},
+             {'CommodityDigitalOption': {'Relative_Digital_Spread': EPS}}, spread)):
         out, _ = _run(_job([dict(deal, **terms)], factors, valuation=valuation))
         assert abs(_mtm(out, 'CDG') - expected) / expected < 1e-9, (terms, _mtm(out, 'CDG'), expected)
 

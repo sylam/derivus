@@ -793,19 +793,23 @@ class Deal(object):
         hedge path consumes only this MTM; a deal type may override to expose extra features."""
         return {'mtm': self.calculate(shared, time_grid, deal_data)}
 
-    def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors):
-        """Set the FX vol and implied-correlation dependencies of a compo or quanto payoff.
+    def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                          correlation=None):
+        """Set the FX vol and implied-correlation dependencies of a compo or quanto payoff, paid in
+        `field['Payoff_Currency']` on an underlying quoted in `field['Currency']`.
 
-        Equity derivatives only; other asset classes need extending - TODO.
+        The correlation is an equity's by default, named on the sorted pair with the deal's own
+        direction as a sign; a family naming its own another way hands in `(factor, sign)`.
         """
         if 'Payoff_Type' in self.field and field['Payoff_Currency'] != field['Currency']:
             field_index['Check_Payoff_Type'] = True
             corr_sign, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
             field_index['FXVol'] = get_vol_factor('FXVol', fx_lookup, static_offsets, stochastic_offsets, all_tenors)
             # the pair is named sorted, so the deal's own direction is a sign the compile resolves
-            field_index['Correlation_Sign'] = corr_sign
-            field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = get_implied_correlation(
-                ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors)
+            factor, sign = correlation or (get_implied_correlation(
+                ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors), corr_sign)
+            field_index['Correlation_Sign'] = sign
+            field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = factor
 
             if self.field['Payoff_Type'] == 'Compo':
                 # needed to calculate fx forwards
@@ -5116,7 +5120,7 @@ class CommodityDigitalOption(Deal):
         F('Strike_Price', 'Float', default=0.0),
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
-        F('Payoff_Type', 'Text', default='Compo', convention=True, values=['Compo', 'Quanto']),
+        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Reference_Type', 'Text', default='', obj='Tuple'),
         F('Reference_Volatility', 'Text', default='', obj='Tuple')
     ])]
@@ -5137,12 +5141,14 @@ class CommodityDigitalOption(Deal):
         'its vol is the **Reference_Volatility** surface at the forward\'s moneyness over the expiry;',
         'the payoff is discounted to **Settlement_Date**.',
         '',
-        'Paid in a **Currency** other than the forward curve\'s own, the digital is a compo on the',
-        'product $S\\cdot X$ under **Payoff_Type** `Compo` - the strike a payoff-currency level, the',
-        'local smile read at the translated strike $K/F_X(T)$ and the vol composed with the pair\'s -',
-        'or a quanto under `Quanto`, the forward carried by $-\\rho\\sigma_S\\sigma_X$. The pair\'s',
-        '`FXVol` and the correlation `Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>`',
-        'are the ones the energy family declares.',
+        'Paid in a **Currency** other than the forward curve\'s own, **Payoff_Type** says how, as it',
+        'does for an equity: `Compo` prices the product $S\\cdot X$ - the strike a payoff-currency',
+        'level, the local smile read at the translated strike $K/F_X(T)$ and the vol composed with',
+        'the pair\'s - `Quanto` carries the local forward by $-\\rho\\sigma_S\\sigma_X$ and pays at one,',
+        'and `Standard`, what omission means, pays the local digital\'s value in **Currency** at one',
+        'with no adjustment. The pair\'s `FXVol` and the correlation',
+        '`Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>` are the ones the',
+        'energy family declares.',
         '',
         'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
         'digital is priced as a call/put spread of width `Strike * Relative_Digital_Spread`',
@@ -5161,16 +5167,20 @@ class CommodityDigitalOption(Deal):
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         refuse_zero_payoff(self.field, 'CommodityDigitalOption', fieldname='Payoff')
-        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+        reference_factor, forward_factor = get_reference_factor_objects(
+            utils.check_rate_name(self.field['Reference_Type']), all_factors)
+        # the option seam's two roles: `Currency` the underlying's, which is the forward curve's own, and
+        # the deal's own currency the payoff's
+        field = {'Currency': forward_factor.get_currency(),
+                 'Payoff_Currency': utils.check_rate_name(self.field['Currency']),
                  'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
                  'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])}
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
-            field['Currency']
+            field['Payoff_Currency']
 
-        reference_factor, forward_factor = get_reference_factor_objects(field['Reference_Type'], all_factors)
         expiry, settlement, _ = option_date_info(self.field, base_date, calendars)
         field_index = {
-            'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
+            'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
             'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_commodity_vol_factor(
@@ -5180,23 +5190,17 @@ class CommodityDigitalOption(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Expiry': expiry,
             'Settlement': settlement,
-            'Check_Payoff_Type': False,
             # the forward curve's coordinate of the fixing: the delivery date the reference maps the expiry to
             'Delivery': float(reference_factor.get_fixings((self.field['Expiry_Date'] - utils.excel_offset).days))}
-        field_index['ForwardPrice'], field_index['Local'], field_index['Other'] = get_forwardprice_factor(
-            field['Currency'], static_offsets, stochastic_offsets, all_tenors,
+        field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
+            field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor, base_date)
-
-        local = forward_factor.get_currency()
-        if field['Currency'] != local:
-            # paid off the forward curve's currency: the pair's vol and the correlation as the energy family
-            # declares them (config.conditional_fields) - the pair named in the deal's own direction, so no sign
-            field_index['Check_Payoff_Type'] = True
-            field_index['Correlation_Sign'] = 1.0
-            field_index['FXVol'] = get_vol_factor('FXVol', tuple(sorted([local[0], field['Currency'][0]])),
-                                                  static_offsets, stochastic_offsets, all_tenors)
-            field_index['{}ImpliedCorrelation'.format(self.field['Payoff_Type'])] = get_implied_correlation(
-                ('FxRate',) + local + field['Currency'], ('ReferencePrice',) + field['Reference_Type'], all_factors)
+        # the pair's correlation as the energy family declares it (config.conditional_fields), named local to
+        # payoff and so read unsigned
+        self.check_option_data(
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+            correlation=(get_implied_correlation(('FxRate',) + field['Currency'] + field['Payoff_Currency'],
+                                                 ('ReferencePrice',) + field['Reference_Type'], all_factors), 1.0))
 
         return field_index
 
