@@ -107,16 +107,13 @@ UNREACHED = {
     ('pv_MC_AutoCallSwap', 'for flag in latch.fired:', 'exit'):
         "the same reconstruction's loop completing.",
     ('pv_MC_AutoCallSwap', 'if b_latch:', 'else'):
-        "a boundary-AAD autocall registering its terminal put alone, no coupon decision stamped "
-        "on any row of its grid.",
+        "a boundary-AAD autocall registering an observed put alone, no coupon decision on any "
+        "row of its grid.",
     ('pv_MC_AutoCallSwap', "if boundary_aad and factor_dep['oss_windows']:", 'body#3'):
         "the all-resolved block's counterfactual: boundary_aad on, and a block reached after "
         "EVERY scenario has autocalled, so the rows carry a zero counterfactual.",
     ('pv_MC_AutoCallSwap', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
         "the line that reconstruction logs - a diagnostic, not a payoff.",
-    ('pv_MC_AutoCallSwap', 'if row not in settle_map:', 'body'):
-        "a lagged averaging block under boundary_aad, whose rows re-observe a window an earlier "
-        "row decided: a fork, not a decision.",
     ('pv_MC_AutoCallSwap.sim_autocall', 'if coupon[t] <= 0.0:', 'body'):
         "a float date that is not also a coupon date.",
     ('pv_MC_AutoCallSwap.sim_spot', 'if P_cf is not None:', 'body#1'):

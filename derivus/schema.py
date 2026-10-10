@@ -999,7 +999,9 @@ QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple'),
     F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
     F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
+    F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList',
+      description="The swap leg's payment dates, a period's amount read only once it has started - "
+                  'a later period is forecast off Forecast_Rate plus Floating_Margin')
 ])
 
 ADMIN = Group('Admin', [

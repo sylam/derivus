@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import derivus as rf
 from derivus import utils
@@ -189,9 +190,6 @@ def test_a_coupon_observed_on_or_before_the_coupon_before_it_refuses_by_name(tmp
     Killing mutation: the check strict (`observed < previous`), the fixing on the coupon's day
     priced.
     """
-    import pytest
-
-    from derivus import utils
     coupons = ['2024-12-27', '2025-06-27']
     fixings = ['2024-12-20', '2024-12-24', '2024-12-27', '2025-06-24']
 
@@ -343,10 +341,12 @@ def _cmc(job, tmp_path, name):
 FLOAT = 0.0125
 
 
-def _swap(job, barrier=70.0, lag=0):
-    """The swap version: a floating payment of `FLOAT` per unit on each coupon date and a put
-    barrier observed on the last. With a `lag`, each coupon fixes that many days early, and a
-    floating payment also falls mid-period and between each fixing and its coupon."""
+def _swap(job, barrier=70.0, lag=0, margin=50.0):
+    """The swap version: a floating payment on each coupon date and a put barrier observed on the
+    last. The first period has started, so its row states the amount it fixed, `FLOAT`; every
+    later row states `-FLOAT`, which nothing reads - a later period is forecast, at `margin` basis
+    points over the curve. With a `lag`, each coupon fixes that many days early, and a floating
+    payment also falls mid-period and between each fixing and its coupon."""
     deal = _deal_of(job)
     coupons = [pd.Timestamp(row[0]['.Timestamp']) for row in deal['Autocall_Coupons']]
     fixings = [d - pd.Timedelta(days=lag) for d in coupons]
@@ -358,37 +358,72 @@ def _swap(job, barrier=70.0, lag=0):
     deal.update({
         'Object': 'QEDI_CustomAutoCallSwap_V2', 'Barrier': barrier, 'Barrier_Dates': fixings[-1:],
         'Price_Fixing': [[d, 0.0] for d in fixings], 'Forecast_Rate': 'USD',
-        'Floating_Margin': utils.Basis(50.0), 'Reset_Frequency': pd.DateOffset(months=3),
-        'Autocall_Floating': [[d, FLOAT] for d in floats]})
+        'Floating_Margin': utils.Basis(margin), 'Reset_Frequency': pd.DateOffset(months=3),
+        'Autocall_Floating': [[d, FLOAT if k == 0 else -FLOAT] for k, d in enumerate(floats)]})
     return job
 
 
-def _swap_job(threshold=100.0):
-    """The swap version under the credit Monte Carlo with a threshold no path reaches, so every
-    path survives to the expiry and pays the leg and the put alone."""
-    return _swap(_cmc_job(threshold))
+def _forecast(days):
+    """A forecast period's payment per unit: the flat curve's simple forward plus the 50bp margin."""
+    return math.expm1(R_USD * days / DAYS) + 0.005 * days / DAYS
 
 
-def test_the_floating_leg_and_the_put_settle_their_cash_on_their_own_rows(tmp_path):
-    """The ledger carried the coupons alone: the floating leg's payments and the terminal put were
-    in the mark and reached no row of `t_Cashflows`. On the swap version, with a threshold no path
-    reaches, every path survives: each coupon date books the leg's payment, `-Units * FLOAT`
-    exactly, and the expiry row books that beside the put - so on the expiry row, where everything
-    the deal still owes is paid, the ledger IS the mark, scenario by scenario.
+def test_the_swap_leg_pays_what_it_declares_and_settles_on_its_own_rows(tmp_path):
+    """The swap version's floating leg is the one it declares: the started period pays the amount
+    its row states, `FLOAT`, and each later one the forecast off `Forecast_Rate` plus the margin,
+    whatever its row states - here `-FLOAT`. With a threshold no path reaches every path survives,
+    so each coupon date books `-Units` times its period's payment exactly, and the expiry row books
+    that beside the put: there, where everything the deal owes is paid, the ledger IS the mark,
+    scenario by scenario; and with no put the base row is the leg alone, each payment discounted
+    from its date. The run is the calculation's float32, so the readings are held to 1e-6.
 
-    The run is the calculation's float32, so the readings are held to 1e-6.
-
-    Killing mutations: the leg's cash unbooked, every row reading 0 against -0.125; the put's
-    unbooked, the expiry row reading the leg alone against the mark.
+    Killing mutations: the row's stated value paid and a row stated at or below zero skipped, the
+    later rows reading 0 against -0.11269; every row paying the first period's amount, the base row
+    reading -0.36761 against -0.34359.
     """
-    ledger, mtm = _cmc(_swap_job(), tmp_path, 'swap')
+    ledger, mtm = _cmc(_swap(_cmc_job(threshold=100.0)), tmp_path, 'swap')
     dates = [pd.Timestamp(_stamp(d)) for d in (91, 182, 273)]
-    for date in dates[:-1]:
+    owed = [FLOAT, _forecast(91), _forecast(91)]
+    for date, amount in zip(dates[:-1], owed):
         cash = np.asarray(ledger.loc[date].values, dtype=float)
-        assert np.all(np.abs(cash + UNITS * FLOAT) < 1e-6), (date, cash[:4])
+        assert np.all(np.abs(cash + UNITS * amount) < 1e-6), (date, cash[:4], -UNITS * amount)
     paid, marked = (np.asarray(frame.loc[dates[-1]].values, dtype=float) for frame in (ledger, mtm))
     assert np.all(np.abs(paid - marked) <= 1e-6 * np.maximum(np.abs(marked), 1.0)), (paid[:4], marked[:4])
-    assert paid.mean() < -UNITS * FLOAT, 'the put pays on some path'
+    assert paid.mean() < -UNITS * owed[-1], 'the put pays on some path'
+    # with no put, the base row is the leg alone, each period's payment discounted from its date
+    bare = np.asarray(_cmc(_swap(_cmc_job(threshold=100.0), barrier=0.0), tmp_path, 'bare')[1].iloc[0])
+    leg = -UNITS * sum(a * math.exp(-R_USD * d / DAYS) for a, d in zip(owed, (91, 182, 273)))
+    assert np.all(np.abs(bare - leg) < 1e-6 * UNITS), (bare[:4], leg)
+
+
+def test_a_row_reads_only_what_has_printed_by_its_own_date(tmp_path):
+    """Two coupons fixed well before their dates - day 50 for day 91, day 172 for day 182 - at a
+    threshold of the strike, under a credit Monte Carlo reporting monthly. Day 61 falls between the
+    first fixing and its coupon: a scenario there is called, worth the coupon discounted to day 91,
+    or walks the second coupon from ITS OWN spot, worth that coupon's digital to day 172 paid on day
+    182. Day 122 falls after the first coupon and before the second fixing: dead, or that digital on
+    its own spot. Scenario by scenario, to 1e-5.
+
+    Killing mutations: the walk opening on the first fixing's print, day 61 missing by up to 0.123;
+    the fixing no block boundary, day 122 reading the second fixing's print - 0 or the whole coupon
+    - and missing by up to 0.738.
+    """
+    job = _cmc_job(threshold=1.0, coupon_days=(91, 182))
+    _deal_of(job)['Price_Fixing'] = [[{'.Timestamp': _stamp(d)}, 0.0] for d in (50, 172)]
+    job['Calc']['Calculation'].update(Time_grid='0d 1m(1m)', Calc_Scenarios='All')
+    out = _cva(job, tmp_path, 'printed')
+    spot = out['Results']['scenarios']['EquityPrice.EQ'].loc[0.0]
+
+    def second(day):
+        s = np.asarray(spot[pd.Timestamp(_stamp(day))].values, dtype=float)
+        t = (172 - day) / DAYS
+        d2 = (np.log(s / STRIKE) + (R_USD - Q_EQ - 0.5 * SIGMA ** 2) * t) / (SIGMA * math.sqrt(t))
+        return UNITS * COUPON * math.exp(-R_USD * (182 - day) / DAYS) * np.vectorize(_ndtr)(d2)
+
+    for day, called in ((61, UNITS * COUPON * math.exp(-R_USD * 30 / DAYS)), (122, 0.0)):
+        marked = np.asarray(out['Results']['mtm'].loc[pd.Timestamp(_stamp(day))].values, dtype=float)
+        miss = np.minimum(np.abs(marked - called), np.abs(marked - second(day)))
+        assert miss.max() < 1e-5, (day, miss.max(), marked[:4], second(day)[:4])
 
 
 def test_an_autocalled_path_pays_its_coupon_once_and_is_worth_nothing_after(tmp_path):
@@ -549,29 +584,31 @@ def _collateralised(job):
     return job
 
 
+def _lagged_swap(job):
+    """The swap version under a zero-threshold CSA at 4096 paths: each coupon fixed six days early,
+    a put at 90, and a funding spread of 400bp, wide enough that every floating row carries weight."""
+    job['Calc']['Calculation']['Batch_Size'] = 4096
+    return _collateralised(_swap(job, barrier=90.0, lag=6, margin=400.0))
+
+
 def test_a_collateralised_cva_delta_carries_every_row_a_decision_settles(tmp_path):
-    """The swap version under a zero-threshold CSA, so each decision's counterfactual runs the
-    gross->net chain and the settled-cash ledger: each coupon fixed six days early, a floating
-    payment on each coupon date, mid-period and between each fixing and its coupon, and a put at 90.
-    A counterfactual replays every row's WHOLE cash - the leg and the coupon if the row's decision
+    """Under a CSA each decision's counterfactual runs the gross->net chain and the settled-cash
+    ledger, so it replays every row's WHOLE cash - the leg and the coupon if the row's decision
     fires, the leg and the put if not, a float row between decisions under the last one before it -
-    and a decision forks every row observing it, the float row between its fixing and its coupon
-    falling in an earlier block than the coupon's own.
+    and forks every row observing it, a lagged coupon's float row before its own block included.
+    An observed put is a decision of its own the same way. The lagged swap version, `_lagged_swap`.
 
     MEASURED at 4096 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
-        cva 0.001037955   AAD -4.3485386e-05   CRN -4.25589/-4.08575/-4.09140e-05
-        disagreement +2.18% at the best rung, ladder flatness 4.00%; the coupons alone +34.23%
+        cva 0.001358907   AAD -6.3203508e-05   CRN -6.19671/-6.04400/-6.02352e-05
+        disagreement +2.00% at the best rung, ladder flatness 2.79%
 
-    Killing mutations, at the best rung: the floating leg left out of a row's cash +27.98%, the put
-    +30.67%, a float row between decisions undeclared +11.44%, a lagged decision's forks in an
-    earlier block dropped +21.53%, every row undeclared (`cash_events` None) +43.04%.
+    Killing mutations, at the best rung: the leg left out of a decision row's cash +11.15%, the put
+    +21.23%, a float row between decisions undeclared +6.67%, a lagged decision's forks in an
+    earlier block dropped +44.50%, every row undeclared +26.24%; the put's decision dropped +17.03%,
+    its cash left where it was booked +7.15%, its forks on its own row alone +11.16%.
     """
-    def lagged_swap(job):
-        job['Calc']['Calculation']['Batch_Size'] = 4096
-        return _collateralised(_swap(job, barrier=90.0, lag=6))
-
-    aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, wrap=lagged_swap)
+    aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, wrap=_lagged_swap)
     best = min(crn, key=lambda c: abs(aad - c))
     assert abs(aad - best) / abs(best) < 0.05, (aad, crn, cva)
 

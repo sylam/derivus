@@ -4421,14 +4421,14 @@ class QEDI_CustomAutoCallSwap(Deal):
                       'not to the deal - a Valuation Configuration declaring one that differs',
                       'from the fitted block is refused by name.'])
 
-    def __init__(self, params, valuation_options):
-        super(QEDI_CustomAutoCallSwap, self).__init__(params, valuation_options)
+    def floating_dates(self):
+        """The dates a swap leg pays on - none here, the swap version declaring the leg."""
+        return set()
 
     def reset(self, calendars):
         super(QEDI_CustomAutoCallSwap, self).reset()
-        floatdates = set([x[0] for x in self.field.get('Autocall_Floating', [])])
         coupondates = set([x[0] for x in self.field['Autocall_Coupons']])
-        self.add_reval_dates(coupondates.union(floatdates), self.field['Payoff_Currency'])
+        self.add_reval_dates(coupondates.union(self.floating_dates()), self.field['Payoff_Currency'])
 
     def coupon_windows(self, fixings, coupons):
         """Which fixings each coupon is observed on: the observations, and each coupon's LAST one.
@@ -4531,7 +4531,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         pf = dict(self.field['Price_Fixing'])
         ac = dict(self.field['Autocall_Coupons'])
         at = dict(self.field['Autocall_Thresholds'])
-        af = dict(self.field.get('Autocall_Floating', []))
+        floats = self.floating_dates()
         ab = set(self.field.get('Barrier_Dates', []))
 
         # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
@@ -4555,9 +4555,9 @@ class QEDI_CustomAutoCallSwap(Deal):
                          for f in pf_dates[starts[k]:ends[k] + 1]}
             ab = {x if x < base_date or x in coupon_dates else window_of.get(x, x) for x in ab}
         barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
-        # merge all the dates - except fixings - those will be added later
-        all_dates = reduce(set.union, [
-            set(coupon_dates), ab, set([x[0] for x in self.field.get('Autocall_Floating', [])])])
+        # every fixing is a grid date of its own: a block whose rows straddle one would read its
+        # print on the rows before it as well as after
+        all_dates = sorted(reduce(set.union, [set(coupon_dates), ab, floats, set(fixing_dates)]))
         oss_windows = barriers_on_coupons and ends is not None and (
                 one_each or spot_model != 'None')
 
@@ -4614,9 +4614,6 @@ class QEDI_CustomAutoCallSwap(Deal):
                             self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
                             coupon_date, ac[coupon_date], stale))
 
-            # a WINDOW's fixings are grid dates of their own: a block whose rows straddle one
-            # would read the same remaining-fixing strip either side of it
-            all_dates = sorted(all_dates.union(fixing_dates) if not one_each else all_dates)
             # a threshold row is the coupon row of its own POSITION whatever date it carries - the
             # book dates them on the observation and the repo on the coupon
             tl = {c: at[t] for c, t in zip(ac, at)}
@@ -4630,8 +4627,6 @@ class QEDI_CustomAutoCallSwap(Deal):
                 tl = {k: v if v else 1.0 for k, v in tl.items()}
 
             field_index.update({
-                'Fixings': utils.TensorResets.from_observations(
-                    base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
                 'Price_Fixing': utils.TensorResets.from_observations(
                     base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
                 'Coupon_Fixing': utils.TensorResets.from_observations(
@@ -4644,10 +4639,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                 'oss_windows': True
             })
         else:
-            all_dates = sorted(all_dates.union(fixing_dates))
             field_index.update({
-                'Fixings': utils.TensorResets.from_observations(
-                    base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
                 'Price_Fixing': [pf.get(x, -1) for x in all_dates],
                 'Autocall_Thresholds': [at.get(x, -1) for x in all_dates],
                 'oss_windows': False
@@ -4655,8 +4647,11 @@ class QEDI_CustomAutoCallSwap(Deal):
             logging.warning('Autocall involves averaging - running older pricing model')
 
         field_index.update({
+            'Fixings': utils.TensorResets.from_observations(
+                base_date, time_grid, [[x, pf.get(x, -1)] for x in all_dates]),
             'Barrier_Dates': [1 if x in ab else -1 for x in all_dates],
-            'Autocall_Floating': [af.get(x, -1) for x in all_dates],
+            # a row of the declared leg's table is a payment date whatever its value
+            'Autocall_Floating': [1 if x in floats else -1 for x in all_dates],
             'Autocall_Coupons': [ac.get(x, -1) for x in all_dates]
         })
 
@@ -4738,8 +4733,8 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
                       'intervals instead of a premium upfront.'
                       ])
 
-    def __init__(self, params, valuation_options):
-        super(QEDI_CustomAutoCallSwap_V2, self).__init__(params, valuation_options)
+    def floating_dates(self):
+        return {x[0] for x in self.field['Autocall_Floating']}
 
     def calc_dependencies(
             self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars):
