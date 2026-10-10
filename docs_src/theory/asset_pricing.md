@@ -41,6 +41,13 @@ currency $A$ as follows
 
 $$F_{S/A}(t,T)=S(t)X_{C/A}\frac{Q(t,T)}{D_A(t,T)}$$
 
+## Stochastic volatility
+
+The spot model the path-dependent equity and FX options can opt into, LogVar2FJ, has a page of its
+own: [Stochastic Volatility](stochastic_volatility.md) states the model, its Black-Scholes limit,
+its relation to Bergomi's forward-variance models with their references, and how one fit serves
+an equity index and an FX pair alike.
+
 ## Dividend rate interpolation
 
 A initial dividend rate curve $q(t)$ can be derived from discrete dividends using the no-arbitrage

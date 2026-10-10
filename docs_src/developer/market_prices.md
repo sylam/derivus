@@ -435,6 +435,10 @@ stands in the roadmap; nothing in the engine reads them, and a book that names o
 
 ## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 
+The model itself — its state, its return law, its Black-Scholes limit, what it shares with
+Bergomi's forward-variance models and the references — is on the
+[Theory page](../theory/stochastic_volatility.md).
+
 **The block** is `OptionQuoteFamily`'s shared quote preparation plus `Fit_Mode`, the walk, the
 structural constants, `Residual_Law`, the two declared guards, the weights, the calendar-time
 `Param_Buckets`, `Event_Days`, the forward block with its `Stickiness_Prior` DIFFERENCE pair,
@@ -447,8 +451,8 @@ of **eight** distinct contracts. What follows is what it MEASURED.
 DERIVED from it.** `ℓ + s` is Gaussian, so `E[e^{ℓ+s}] = e^{L* + Var(ℓ+s)/2}`: storing the LEVEL
 makes the stored curve not the expected variance, and every change of vol-of-vol drags the ATM
 level with it. Storing `ξ` and setting `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)` makes `E₀[h_t] = ξ(t)`
-exactly whatever the vol-of-vol is, so the ATM level is invariant to `σ_s, σ_ℓ` by construction and
-the inner solve is near-identity. The variance is measured from wherever the walk STARTS, so a row
+exactly whatever the vol-of-vol is; the ATM vol still moves with `σ_s, σ_ℓ`, but little, which keeps
+the inner solve near-identity. The variance is measured from wherever the walk STARTS, so a row
 the kit re-seeds at `(L*(t_row), 0)` reads `ξ` exactly where a base-date Jensen term would
 under-shoot it. `ξ` is piecewise CONSTANT on the segments between ATM expiries — flat forward
 variance, the shape var-swap strips are quoted in — so the strip has no recurrence to zig-zag along
@@ -459,12 +463,12 @@ so. The curve is comparable to a market object: it should sit on a replicated va
 to the smile's own ATM convexity, and the report prints it beside the market's ATM² forward variance
 rather than beside a log level. **No `e^{L*}` appears in any report.**
 
-**The residual is an NIG increment on the variance clock, and its drift is forced.** The part of a
-return leverage does not explain spends the clock `A = Σ c_k V_k` with `c = 1 − ρ_s² − ρ_ℓ²`, as
-`X_A ~ NIG(α, β, δ_A, μ_A)` with `γ = √(α² − β²)`, `δ_A = A γ³/α²` (which makes `Var(X_A) = A`
-exactly) and `μ_A = δ_A(√(α² − (β+1)²) − γ)` (which forces `E[e^{X_A}] = 1`). Both are LINEAR in
-the clock, so the residual composes exactly: a month cut into days is one law once the clock is one
-number, and a fixing interval straddling a bucket knot splits its clock there — two mixers, one
+**The residual is an NIG increment on the variance clock, and its drift is forced**
+([its law](../theory/stochastic_volatility.md#the-residual)). The part of a return leverage does
+not explain spends the clock `A = Σ c_k V_k` with `c = 1 − ρ_s² − ρ_ℓ²`, its variance exactly `A`
+and its drift whatever makes `E[e^{X_A}] = 1`. Both are LINEAR in the clock, so the residual
+composes exactly: a month cut into days is one law once the clock is one number, and a fixing
+interval straddling a bucket knot splits its clock there — two mixers, one
 Gaussian whose `M` and `Σ²` sum. `α` is tail thickness and smile convexity, `β` is skew, and there is
 no intensity, no jump size, no compensator to derive per segment and **no parameter the Greeks
 cannot reach**: the drift is no-arbitrage's, not the fit's. What replaces the Poisson intensity rule

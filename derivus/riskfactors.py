@@ -1173,7 +1173,8 @@ class LogVar2FJModelParameters(CurveModelParameters):
     **Xi_Curve** is $\\xi(t)=E_0[h_t]$, the expected forward variance a variance swap pays,
     piecewise CONSTANT and strictly positive on the segments its knots start. The OU mean level is
     DERIVED from it, $L^*(t)=\\log\\xi(t)-\\frac12\\mathrm{Var}(\\ell_t+s_t)$, so $E[h_t]=\\xi(t)$
-    exactly whatever the vol-of-vol and the ATM level is invariant to it by construction.
+    exactly whatever the vol-of-vol; the ATM vol still moves with it, which the fit's inner solve
+    of $\\xi$ absorbs.
 
     **Rho_S**, **Beta**, **Sigma_S** and **Alpha** are piecewise CONSTANT on calendar-time buckets:
     their knots ARE the buckets' start times in years, the four curves carry the same ones, and one

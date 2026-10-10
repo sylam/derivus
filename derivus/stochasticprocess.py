@@ -5294,9 +5294,10 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     """
 
     documentation = ('Asset Pricing', [
-        'The xVA scenario generator of the LogVar2FJ model. The state is two mean-reverting',
-        'log-variance factors and the return over a scenario interval is, GIVEN the daily shocks',
-        'and that interval\'s own inverse-Gaussian mixer $G_j$, exactly Gaussian:',
+        'The xVA scenario generator of the [LogVar2FJ model](stochastic_volatility.md). The state',
+        'is two mean-reverting log-variance factors and the return over a scenario interval is,',
+        'GIVEN the daily shocks and that interval\'s own inverse-Gaussian mixer $G_j$, exactly',
+        'Gaussian:',
         '',
         '$$ \\log\\frac{S_{t_{j+1}}}{S_{t_j}} = b_j + M^{lev}_j + \\mu_{A_j} + \\beta_j G_j'
         ' + \\sqrt{G_j}\\,Z_j $$',
