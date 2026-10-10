@@ -27,16 +27,16 @@ THE FIXTURE. A payer and a receiver on the SAME underlying - 1Y into 3Y, semi-an
 quarterly floating, ZAR 100m - struck at 9.50 against a 9.4932 forward, so about half the paths
 exercise. The pair makes both directions of the flip visible.
 
-The rows either side of expiry are one day apart structurally: `SwaptionDeal.finalize_dates` puts
-the expiry into each child's settlement dates and offsets them by a day. One day of Hull-White at 1%
-absolute vol is what has to move a path across, so the fixture pays for flips in PATHS: at 4096,
-seeds 1/2/3 give 33/30/31 payer flips and 28/24/30 receiver flips against 2099/2063/2078 exercises.
+The rows either side of expiry are one day apart structurally: `SwaptionDeal.finalize_dates` holds
+the swap from the day after the expiry. One day of Hull-White at 1% absolute vol is what has to move
+a path across, so the fixture pays for flips in PATHS: at 4096, seeds 1/2/3 give 23/32/25 payer
+flips and 36/31/33 receiver flips against 2076/2077/2091 exercises.
 
 KILL READINGS, two earlier builds failing different gates. With the DECISION also at `Ut_swap[0]`,
 the first post-expiry row is `relu(Ut_swap[0])` for a bought payer, so the flip count is
-structurally zero and the consistency gate fails on 61 of 4096 paths for each swaption - the SAME
-61. With the decision right and only the GAP from `Ut_swap[0]`, nothing reported moves - profile,
-exposure and CVA bit-identical - and only `gap_disagrees` sees it: 9 of 512 at seed 1, 61 of 4096.
+structurally zero and the consistency gate fails on 59 of 4096 paths for each swaption - the SAME
+59. With the decision right and only the GAP from `Ut_swap[0]`, nothing reported moves - profile,
+exposure and CVA bit-identical - and only `gap_disagrees` sees it: 10 of 512 at seed 1, 59 of 4096.
 """
 import logging
 import os
@@ -370,7 +370,7 @@ def test_the_registered_gap_is_the_decision_it_was_taken_on(caplog):
 
     `register_exercise_boundary` logs `gap_disagrees` at DEBUG: scenarios where `gap >= 0` and
     `fired` differ. Zero is the contract; against a gap taken at the first post-expiry row it reads
-    9 of 512 at seed 1 (61 of 4096, which is the payer's 33 down-flips plus the receiver's 28).
+    10 of 512 at seed 1 (59 of 4096, which is the payer's 23 down-flips plus the receiver's 36).
 
     512 paths rather than 4096 because this gate runs the whole engine at DEBUG.
 
@@ -404,9 +404,9 @@ def test_the_registration_moves_the_cva_gradient_and_not_the_cva():
     zero derivative. Nothing is patched; the registration still happens and is still scored.
 
     MEASURED at 4096 paths, seed 1: the CVA is bit-identical at both bandwidths
-    (151901.98057820834) and the gradient is not - the difference has an L2 norm 1.03x the
-    suppressed gradient's, the largest bucket moving by 846334.74 and the projection curve's 1Y
-    point by a factor of 5.7.
+    (152340.3657561677) and the gradient is not - the difference has an L2 norm 2.69x the
+    suppressed gradient's, the largest bucket moving by 2294109.46 and the projection curve's 1Y
+    point by a factor of 14.6.
 
     A full CRN ladder against a bumped adjoint is NOT taken here: this gate says the registration is
     live and correctly sourced. Whether the corrected number is right is `tests/crn_ladder.py`'s

@@ -350,7 +350,8 @@ def oss_window_ends(fixings, coupons):
 
 
 def cash_settle(shared, currency, time_index, value):
-    """Book `value` against `currency` at `time_index`, if that date is a settlement point."""
+    """Book `value` against `currency` at `time_index`, if that date is a settlement point. A leg
+    pricer books through its `settle_cash`: this, False, or its caller's own where the caller gates it."""
     if shared.t_Cashflows is not None and time_index in shared.t_Cashflows.get(currency, []):
         shared.t_Cashflows[currency][time_index] += value
 
@@ -5433,7 +5434,7 @@ def pricer_floor(all_resets, t_cash, factor_dep, expiries, tenor, shared, vol_ex
 
 
 def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.TimeGrid, deal_data: utils.DealDataType,
-                           cashflow_pricer, mtm_currency=None, settle_cash=True):
+                           cashflow_pricer, mtm_currency=None, settle_cash=cash_settle):
     """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
     every cashflow row carries exactly ONE effective reset, so a row is a rate and an accrual.
 
@@ -5720,7 +5721,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
         all_payments = torch.cat(payments, dim=0) if len(payments) > 1 else payments[0]
 
         if settle_cash:
-            cash_settle(shared, factor_dep['SettleCurrency'],
+            settle_cash(shared, factor_dep['SettleCurrency'],
                         np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), all_payments[-1][0])
         mtm_list.append(torch.sum(all_payments * discount_rates, dim=1))
 
@@ -5755,7 +5756,7 @@ def fixed_payments(interest, nominal, fixed_amt, cash_index, cash_counts, compou
     return payments
 
 
-def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, settle_cash=True):
+def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, settle_cash=cash_settle):
     """The fixed leg. `ignore_fixed_rate` prices it at a unit rate, which is what a par-rate solve
     divides by; `Settlement_Amount` makes it a forward, carried to the settlement date on repo and
     discounted back on the settlement curve."""
@@ -5825,18 +5826,18 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
 
         if settle_cash:
             if factor_dep.get('Settlement_Date') is not None:
-                cash_settle(shared, factor_dep['SettleCurrency'],
+                settle_cash(shared, factor_dep['SettleCurrency'],
                             np.searchsorted(time_grid.mtm_time_grid, factor_dep['Settlement_Date']),
                             mtm_list[-1][-1])
             else:
-                cash_settle(shared, factor_dep['SettleCurrency'],
+                settle_cash(shared, factor_dep['SettleCurrency'],
                             np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]),
                             schedule.derived[payment_key][0])
 
     return torch.cat(mtm_list, dim=0)
 
 
-def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
+def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=cash_settle):
     """The inflation-linked leg: each cashflow's fixed interest grown by the ratio of its final to
     its base index reference, discounted at the pay date. A `Settlement_Date` makes it a forward,
     carried on repo and discounted back on the settlement curve."""
@@ -5973,11 +5974,11 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=True):
 
         if settle_cash:
             if factor_dep['Settlement_Date'] is not None:
-                cash_settle(shared, factor_dep['SettleCurrency'],
+                settle_cash(shared, factor_dep['SettleCurrency'],
                             np.searchsorted(time_grid.mtm_time_grid, factor_dep['Settlement_Date']),
                             mtm_list[-1][-1])
             else:
-                cash_settle(shared, factor_dep['SettleCurrency'],
+                settle_cash(shared, factor_dep['SettleCurrency'],
                             np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]),
                             payments[-1][0])
 

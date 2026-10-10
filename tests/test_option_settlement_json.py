@@ -3,13 +3,15 @@
 `Settlement_Date` is the day the payoff is paid, the expiry where blank. Between the two the
 underlying is what the expiry fixed: on a simulated grid the path's own level on the expiry row,
 and on a base date past the expiry the print `Price_Fixing` states - which an expired deal must
-state, since the spot of today is not the level it settled on.
+state, since the spot of today is not the level it settled on. A swaption settled in cash is
+paid the same way; settled physically it becomes the swap its legs make and books its cash.
 
 THE ORACLES: under a credit Monte Carlo every row from the expiry on is the settlement row's payoff
 discounted to it, scenario by scenario, and the ledger books that payoff on the settlement row and
 nothing on the expiry's; under a base valuation past the expiry the mark is the print's intrinsic
 discounted to the settlement, exact.
 """
+import functools
 import json
 import math
 import os
@@ -21,8 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 import derivus
+import test_declared_defaults as book
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
@@ -185,3 +189,105 @@ def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
     assert marked['FXO'] == pytest.approx(black * df((EXPIRY - BASE).days), rel=1e-9)
     assert marked['UNDECLARED'] == marked['FXO']
     assert marked['DELIVERED'] == pytest.approx(black * df((delivery - BASE).days), rel=1e-9)
+
+
+#: The declared-defaults swaption, settled physically on its legs, and its cash twin paid 40 days
+#: after the expiry
+SWPT = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')
+SWPT_PAID = book.WORLD_EXPIRY + pd.DateOffset(days=40)
+CASH_SWPT = dict(SWPT, Reference='CSWPT', Settlement_Style='Cash', Settlement_Date=SWPT_PAID,
+                 Children=[dict(leg, Reference='C' + leg['Reference']) for leg in SWPT['Children']])
+
+
+@functools.lru_cache(maxsize=None)
+def swaptions():
+    """One float64 credit Monte Carlo of the declared-defaults world, a Hull-White on both curves:
+    the swaption, its cash twin, and the swap it delivers beside a unit paid on the twin's day, each
+    in a netting set of its own - `(dates, {set: ledger}, {reference: profile})`."""
+    def held(reference, deals):
+        return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
+                'Collateralized': 'False', 'Children': deals}
+
+    swap = [dict(leg, Reference='SWAP' + leg['Reference'][4:]) for leg in SWPT['Children']]
+    unit = {'Object': 'FixedCashflowDeal', 'Reference': 'UNIT', 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Amount': 1.0, 'Payment_Date': SWPT_PAID}
+    calc, out = book.simulated(
+        [held('PHYSICAL', [SWPT]), held('CASH', [CASH_SWPT]), held('SWAP', swap + [unit])],
+        ('USD', 'USD-PROJ'), prec=torch.float64, Generate_Cashflows='Yes'
+        )
+    sets = calc.netting_sets.sub_structures[0].sub_structures
+    priced = [x.obj for s in sets for x in s.sub_structures] + [d for s in sets for d in s.dependencies]
+    ledgers = {s.obj.Instrument.field['Reference']: pd.concat(s.obj.Calc_res['cashflows']['USD'], axis=1)
+               for s in sets}
+    profiles = {x.Instrument.field['Reference']: np.concatenate(x.Calc_res['Value'], axis=-1)
+                for x in priced if (x.Calc_res or {}).get('Value')}
+    return list(out['Results']['mtm'].index), ledgers, profiles
+
+
+def test_a_physical_swaption_settles_the_swap_it_becomes_and_nothing_where_it_lapses():
+    """Exercised, the swaption IS the swap its legs make: on the paths in the money at the expiry -
+    the delivered swap's own mark positive there - its ledger is that swap's ledger, the same two
+    legs held alone beside it in the run, on every payment date the swap has, to the bit, and on
+    the others it books nothing. Nothing settles on the base date or the expiry: the ledger's rows
+    are the swap's payment dates and the cash twin's.
+
+    Killing mutations: the legs' cash unbooked, an empty ledger where the swap's first coupon pays
+    11,166.27 on the first path; booked on every path, the lapsed paying the swap's coupons; the
+    base date or the expiry registered as a day it settles, a 2026-08-03 or 2027-08-03 row.
+    """
+    dates, ledgers, profiles = swaptions()
+    exercised = (profiles['SWAP_FIXED'] + profiles['SWAP_FLOAT'])[dates.index(book.WORLD_EXPIRY)] > 0.0
+    assert 0 < exercised.sum() < exercised.size, 'in and out of the money across the paths'
+    pays = sorted({row['Payment_Date'] for leg in SWPT['Children'] for row in leg['Cashflows']['Items']})
+    assert list(ledgers['PHYSICAL'].index) == sorted(pays + [SWPT_PAID]), ledgers['PHYSICAL'].index
+    for day in pays:
+        delivered, booked = (np.asarray(ledgers[name].loc[day].values, dtype=float) for name in ('SWAP', 'PHYSICAL'))
+        assert np.abs(delivered).min() > 0.0, day
+        assert np.array_equal(booked, delivered * exercised), day
+
+
+def test_a_cash_swaption_pays_the_expiry_value_on_its_settlement_date_and_holds_it_between():
+    """Settled in cash, the swaption pays `max(U(t0), 0)` - the delivered swap's own mark on the
+    expiry row, floored - on its settlement date, path by path, and nothing on any other day; from
+    the expiry on it marks that amount discounted to the settlement, the unit paid that day beside
+    it on the same path, which is the level the expiry fixed and not a later day's swap.
+
+    Killing mutations: the amount not held past the expiry, the row after it marking that day's
+    swap; the settlement not booked, an empty ledger.
+    """
+    dates, ledgers, profiles = swaptions()
+    expiry = dates.index(book.WORLD_EXPIRY)
+    paid = np.asarray(ledgers['CASH'].loc[SWPT_PAID].values, dtype=float)
+    swap = profiles['SWAP_FIXED'][expiry] + profiles['SWAP_FLOAT'][expiry]
+    assert np.allclose(paid, np.maximum(swap, 0.0), rtol=1e-12, atol=1e-8)
+    assert (paid > 0.0).any() and (paid == 0.0).any(), 'in and out of the money across the paths'
+    assert not np.asarray(ledgers['CASH'].drop(SWPT_PAID).values, dtype=float).any()
+    later = [row for row, day in enumerate(dates) if book.WORLD_EXPIRY <= day <= SWPT_PAID]
+    assert len(later) == 3, later                    # the expiry, the day after it, the settlement
+    for row in later:
+        assert np.allclose(profiles['CSWPT'][row], paid * profiles['UNIT'][row], rtol=1e-12, atol=1e-8), row
+
+
+def test_a_cash_swaption_is_discounted_on_to_its_settlement_and_either_style_expired_refuses():
+    """Paid 40 days after its expiry, the cash twin marks what it marks settling on the expiry -
+    where the blank date reads it - times the forward discount over the 40 days, `exp(-4% 40/365)`
+    on the flat USD curve, to 1e-12. On a base date past the expiry the document refuses naming the
+    deal, the day and what it needs: in cash the amount the expiry fixed, stated nowhere; settled
+    physically the holder's election, the swap it delivered booked or nothing if it lapsed.
+
+    Killing mutations: the forward discount dropped, 10,361.17 where it marks 10,315.85; either
+    refusal removed, the swaption skipped and the job run without it.
+    """
+    marked, _ = book.marks([CASH_SWPT, dict(CASH_SWPT, Reference='ON_EXPIRY', Settlement_Date=None)])
+    forward = math.exp(-0.04 * 40 / 365.0)
+    assert float.fromhex(marked['CSWPT']) == pytest.approx(float.fromhex(marked['ON_EXPIRY']) * forward, rel=1e-12)
+    for deal, needs in ((CASH_SWPT, 'stated nowhere'), (SWPT, 'nothing if it lapsed')):
+        expired, base = book.book([deal]), book.WORLD_EXPIRY + pd.DateOffset(days=10)
+        expired['Calc']['Calculation']['Base_Date'] = base
+        expired['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']['Base_Date'] = base
+        context = derivus.Context()
+        context.load_json((json.dumps(expired, cls=CustomJsonEncoder), 'expired'))
+        with pytest.raises(Exception) as refusal:
+            context.run_job()
+        message = str(refusal.value)
+        assert all(word in message for word in (deal['Reference'], 'Option_Expiry_Date', '2027-08-03', needs)), message

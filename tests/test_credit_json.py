@@ -199,13 +199,14 @@ def basket(deals=(trial_credit.DEALS[1],), factors=None, **calculation):
     return json.loads(json.dumps(job, cls=CustomJsonEncoder))
 
 
-def simulate(job, models, rate_model=None):
-    """`job` as a float64 credit Monte Carlo over one netting set, a hazard model per name in
-    `models` and a Hull-White on `rate_model`'s curve: `(calculation, {reference: profile})`."""
+def simulate(job, models, rate_model=None, grid='0d 3m(3m)', sigma=0.01):
+    """`job` as a float64 credit Monte Carlo on `grid` over one netting set, a hazard model per name
+    in `models` and a Hull-White of volatility `sigma` on `rate_model`'s curve:
+    `(calculation, {reference: profile})`."""
     calc = job['Calc']
     calc['Calculation'] = dict(
         Object='CreditMonteCarlo', Base_Date=calc['Calculation']['Base_Date'], Currency='USD',
-        Time_Grid='0d 3m(3m)', Batch_Size=256, Random_Seed=1, Deflation_Interest_Rate='USD',
+        Time_Grid=grid, Batch_Size=256, Random_Seed=1, Deflation_Interest_Rate='USD',
         DealLevel=True, Generate_Cashflows='No')
     calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
@@ -220,7 +221,7 @@ def simulate(job, models, rate_model=None):
         market['Price Models']['HullWhite1FactorInterestRateModel.' + rate_model] = {
             'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
             'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.0]]}},
-            'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, 0.01], [10.0, 0.01]]}}}
+            'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, sigma], [10.0, sigma]]}}}
     context = derivus.Context()
     context.load_json((json.dumps(job), 'basket'))
     calc, _ = derivus.run_cmc(context.current_cfg, prec=torch.float64)
@@ -324,3 +325,26 @@ def test_a_digital_default_swap_recovers_its_stated_share():
                            dict(digital, Reference='NOT', Is_Digital='No')], trial_credit.FACTORS)
     assert float.fromhex(hexes['DIGITAL']) == pytest.approx(by_hand(0.25), rel=1e-12)
     assert hexes['BARE'] == hexes['DIGITAL'] and hexes['NOT'] == hexes['CDS']
+
+
+def test_the_cash_account_accrues_each_interval_at_the_rate_its_start_reads():
+    """The trial's million in a cash account for a year, on a USD curve whose zero rate rises
+    linearly from 1% to 5% over two years and a Hull-White at zero volatility: a deterministic
+    world whose simulated curves are its forwards, exact between their knots, so an account
+    accruing each interval at the rate its start reads is `1e6 exp(R(t) t)` on every row, on a
+    weekly, a monthly and a half-yearly grid alike - 1,030,454.53 at the horizon - to 1e-10.
+
+    KILLING MUTATION: each interval accrued at the rate its END reads, the reading this replaced -
+    the horizon at 1,031,243.47 weekly, 1,033,897.88 monthly and 1,051,272.52 half-yearly.
+    """
+    line = {'InterestRate.USD': {
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[0.0, 0.01], [1.0, 0.03], [2.0, 0.05]])
+        }}
+    for grid in ('0d 1w(1w)', '0d 1m(1m)', '0d 6m(6m)'):
+        calc, profiles = simulate(basket([trial_credit.DEALS[2]], line), (), 'USD', grid, sigma=0.0)
+        deal = next(d for d in calc.netting_sets.deals() if d.Instrument.field['Reference'] == 'CASH')
+        years = calc.time_grid.mtm_time_grid[deal.Time_dep.deal_time_grid] / 365.0
+        accrued = 1e6 * np.exp((0.01 + 0.02 * years) * years)[:, None]
+        assert years[-1] == 1.0, (grid, years)
+        assert np.allclose(profiles['CASH'], accrued, rtol=1e-10, atol=0.0), (grid, profiles['CASH'][-1, 0])

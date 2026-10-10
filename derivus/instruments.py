@@ -3465,7 +3465,7 @@ class SwaptionDeal(Deal):
     documentation = ('Interest Rates',
                      ['Let $t_0, T_1$ and $T_2$ be the **Option Expiry Date**, **Swap Effective Date** and **Swap '
                       'Maturity Date** respectively of the swaption deal ($t_0 \\le T_1 \\lt T2$). If the deal is',
-                      'cash settled, then let $T$ be the **Settlement Date**.',
+                      'cash settled, then let $T$ be the **Settlement Date**, the expiry where blank.',
                       '',
                       'The value of the underlying swap is',
                       '',
@@ -3496,13 +3496,15 @@ class SwaptionDeal(Deal):
                       '#### Physically Settled Swaptions',
                       '',
                       'If the **Settlement Style** is **Physical** and $U(t_0)\\ge 0$, then the option holder',
-                      'receives the underlying swap and the value of the deal for $t\\ge t_0$ is $U(t)$. Note that',
-                      'physical settlement has significant path dependency.',
+                      'receives the underlying swap and the value of the deal for $t\\gt t_0$ is $U(t)$, the cash',
+                      'it settles what the swap\'s legs pay. Note that physical settlement has significant path',
+                      'dependency.',
                       '',
                       '#### Cash Settled Swaptions',
                       '',
                       'If the **Settlement Style** is **Cash**, then the option holder receives $\\max(U(t_0),0)$',
-                      'on settlement date $T$. The value of the deal at $t\\lt t_0$ is',
+                      'on settlement date $T$, and is worth $\\max(U(t_0),0)D(t,T)$ from the expiry on. The value',
+                      'of the deal at $t\\lt t_0$ is',
                       '$F(t)\\mathcal B_\\delta(s(r),K(0),\\sigma\\sqrt{(t_0-t)})D(t_0,T)$. Note that this assumes a',
                       'lognormal distribution of the forecast rate and uses the Black Model as usual.',
                       '',
@@ -3519,7 +3521,7 @@ class SwaptionDeal(Deal):
 
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
-        self.add_reval_dates({self.field['Option_Expiry_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.field['Option_Expiry_Date']})
         self.paydates = utils.generate_dates_backward(self.field['Swap_Maturity_Date'],
                                                       self.field['Swap_Effective_Date'],
                                                       self.field['Pay_Frequency'])
@@ -3531,23 +3533,21 @@ class SwaptionDeal(Deal):
             self.add_reval_dates(self.paydates, self.field['Currency'])
             self.add_reval_dates(self.recdates, self.field['Currency'])
         else:
-            self.add_reval_dates({self.field['Settlement_Date']}, self.field['Currency'])
+            settlement = self.field['Settlement_Date'] or self.field['Option_Expiry_Date']
+            self.add_reval_dates({settlement}, self.field['Currency'])
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # reset initialises reval_dates correctly for both Cash (expiry+settlement only)
-        # and Physical (expiry+swap dates) - so no need to duplicate that logic here
-        self.reset(None)
-
         if self.field['Settlement_Style'] == 'Cash':
-            # discard child swap dates from the time grid
+            # the legs only price the option, which pays one amount on its own settlement day
             node_resets.clear()
             node_settlements.clear()
-        else:
-            self.add_reval_dates(node_resets, self.field['Currency'])
-            # one stated by its terms has no legs here, and its generate refuses it by name
-            for child in node_children or ():
-                child.add_reval_dates({self.field['Option_Expiry_Date']}, self.field['Currency'])
-                child.add_reval_date_offset(1)
+        elif node_children is not None:
+            # exercised, it is the swap its legs pay, held from the day after the expiry
+            expiry = self.field['Option_Expiry_Date']
+            super(SwaptionDeal, self).reset()
+            self.add_reval_dates({expiry, expiry + pd.DateOffset(days=1)})
+            for currency, dates in node_settlements.items():
+                self.add_reval_dates(dates, currency)
 
         return super(SwaptionDeal, self).finalize_dates(parser, base_date, grid, node_children, node_resets,
                                                         node_settlements)
@@ -3571,6 +3571,15 @@ class SwaptionDeal(Deal):
                            field['Forecast_Rate_Volatility'], pd.DateOffset(years=2),
                            static_offsets, stochastic_offsets, all_tenors),
                        'Expiry': (self.field['Option_Expiry_Date'] - base_date).days}
+        if field_index['Expiry'] < 0:
+            raise utils.UnpriceableSchedule('{}: Option_Expiry_Date {:%Y-%m-%d} is behind the base date, {}'.format(
+                self.field.get('Reference'), self.field['Option_Expiry_Date'],
+                'and the cash amount it fixed is stated nowhere' if self.field['Settlement_Style'] == 'Cash' else
+                'so it is the swap it delivered or nothing: book that swap, or nothing if it lapsed'
+                ))
+        if self.field['Settlement_Style'] == 'Cash':
+            # the day it pays, the one its reset registered
+            field_index['Settlement'] = (max(self.settlement_currencies[self.field['Currency']]) - base_date).days
 
         Principal = self.field['Principal']
         Pay_Amortisation = self.field.get('Pay_Amortisation')
@@ -3629,15 +3638,25 @@ class SwaptionDeal(Deal):
         FX_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
         buysell = 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0
         delta = 1.0 if self.field['Payer_Receiver'] == 'Payer' else -1.0
+        # what each leg pays, signed as the holder of the swap receives it, booked where exercised
+        swap_cash = []
+
+        def swap_leg(sign):
+            return not factor_dep['Cash_Settled'] and (
+                lambda _, currency, index, cash: swap_cash.append((currency, index, buysell * sign * cash))
+                )
 
         # pvbp, vfixed and vfloat should all be positive
         pvbp = buy_sell['CFFixedInterestListDeal'] * pricing.pv_fixed_cashflows(
             shared, time_grid, child_map['CFFixedInterestListDeal'], ignore_fixed_rate=True, settle_cash=False)
         vfixed = buy_sell['CFFixedInterestListDeal'] * pricing.pv_fixed_cashflows(
-            shared, time_grid, child_map['CFFixedInterestListDeal'], settle_cash=False)
+            shared, time_grid, child_map['CFFixedInterestListDeal'],
+            settle_cash=swap_leg(-delta * buy_sell['CFFixedInterestListDeal'])
+            )
         vfloat = buy_sell['CFFloatingInterestListDeal'] * pricing.pv_float_cashflow_list(
-            shared, time_grid, child_map['CFFloatingInterestListDeal'],
-            pricing.pricer_float_cashflows, settle_cash=False)
+            shared, time_grid, child_map['CFFloatingInterestListDeal'], pricing.pricer_float_cashflows,
+            settle_cash=swap_leg(delta * buy_sell['CFFloatingInterestListDeal'])
+            )
 
         if child_map['CFFloatingInterestListDeal'].Factor_dep[
                'Cashflows'].schedule[:, utils.CASHFLOW_INDEX_FloatMargin].any():
@@ -3652,7 +3671,8 @@ class SwaptionDeal(Deal):
         # get the vol subtype (distribution_type, shift) tuple - only on the base (first vol factor)
         dist, shf = factor_dep['VolSurface'][0][utils.FACTOR_INDEX_SubType]
         pricing_fn = utils.black_european_option if dist == 'Lognormal' else utils.bachelier_european_option
-        tenor = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
+        tenor_in_days = factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]
+        tenor = daycount_fn(tenor_in_days)
 
         if factor_dep['Cash_Settled']:
             vols = utils.VolSurface.tenor_rate(
@@ -3662,7 +3682,16 @@ class SwaptionDeal(Deal):
             theo_price = pricing_fn(
                 st, self.field['Swap_Rate'] / 100.0, vols, tenor, buysell, delta, shared, shift=shf.amount)
 
-            mtm = FX_rep * pvbp * theo_price
+            # the amount the expiry fixes, held past it and paid on the settlement day
+            discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+            to_settlement, to_expiry = (
+                torch.squeeze(utils.calc_discount_rate(discount, days.clip(min=0).reshape(-1, 1), shared), dim=1)
+                for days in (factor_dep['Settlement'] - deal_time[:, utils.TIME_GRID_MTM], tenor_in_days)
+                )
+            value = utils.held_past_expiry(pvbp * theo_price, tenor_in_days, None) * to_settlement / to_expiry
+            pricing.cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
+
+            mtm = FX_rep * value
         else:
             expiry = tenor[tenor >= 0.0]
             counts = (expiry.size, tenor.size - expiry.size)
@@ -3686,10 +3715,13 @@ class SwaptionDeal(Deal):
                 exercised = decision >= 0
                 Ut_mask = Ut_swap * exercised
                 mtm = FX_rep * torch.cat([value, buysell * Ut_mask], dim=0)
+                # what the swap pays, on the paths that exercised into it
+                for currency, index, cash in swap_cash:
+                    pricing.cash_settle(shared, currency, index, cash * exercised)
                 if getattr(shared, 'boundary_aad', False) and time_grid.report_index is not None:
                     self.register_exercise_boundary(
                         shared, time_grid, deal_data, FX_rep, value,
-                        buysell * Ut_swap, decision, exercised)
+                        buysell * Ut_swap, decision, exercised, swap_cash)
             else:
                 mtm = FX_rep * value
 
@@ -3699,7 +3731,7 @@ class SwaptionDeal(Deal):
         return pricing.interpolate(mtm, shared, time_grid, deal_data)
 
     @staticmethod
-    def register_exercise_boundary(shared, time_grid, deal_data, fx_rep, option, swap, gap, exercised):
+    def register_exercise_boundary(shared, time_grid, deal_data, fx_rep, option, swap, gap, exercised, swap_cash):
         """Record the frozen exercise decision so its derivative can be restored.
 
         Physical settlement is genuinely path dependent, so the jump is real product economics and
@@ -3711,7 +3743,8 @@ class SwaptionDeal(Deal):
 
         Registered as a single-decision LatchedBoundarySet, the shape a discrete barrier uses:
         `triggered` holds the swap, `untriggered` lets the option lapse. The decision is a property
-        of the SCENARIO, resolved for every row alike, so `obs_before` needs no row labels.
+        of the SCENARIO, resolved for every row alike, so `obs_before` needs no row labels. Each
+        payment of the swap, `swap_cash`, is the decision's own: made if it fired, nothing if not.
 
         `gap_disagrees` on the debug line is the only place a wrongly sourced gap is visible: the
         reported profile is the same either way and only the gradient moves.
@@ -3722,11 +3755,17 @@ class SwaptionDeal(Deal):
                           int(exercised.sum()), exercised.numel(),
                           int(((gap.detach() >= 0) != exercised).sum()))
         triggered = torch.cat([option, swap], dim=0).detach()
+        cash_events = []
+        for _, index, cash in swap_cash:
+            row = np.searchsorted(deal_data.Time_dep.deal_time_grid, index)
+            paid = (pricing.report_fx(fx_rep, row) * cash + torch.zeros_like(gap)).detach()
+            cash_events.append((int(index), 0, paid, torch.zeros_like(paid), paid * exercised))
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=[gap], fired=[exercised.detach()],
             obs_before=np.ones(triggered.shape[0], dtype=np.int64),
             triggered=triggered,
             untriggered=torch.cat([option, torch.zeros_like(swap)], dim=0).detach(),
+            cash_events=cash_events or None,
             to_mtm=pricing.deal_to_mtm_grid(time_grid, deal_data, fx_rep),
             report_index=time_grid.report_index))
 
@@ -5724,7 +5763,10 @@ class CashAccountDeal(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate']}
 
-    documentation = ('Fx And Equity', ['Described [here](definitions.md#cash)'])
+    documentation = ('Fx And Equity', [
+        '**Units** of cash to **Investment_Horizon**, each interval of the grid accruing at the rate',
+        'its start reads off **Discount_Rate**: $V(t_i)=\\text{Units}/\\prod_{j<i}D(t_j,t_{j+1})$.'
+        ])
 
     def __init__(self, params, valuation_options):
         super(CashAccountDeal, self).__init__(params, valuation_options)
@@ -5750,10 +5792,11 @@ class CashAccountDeal(Deal):
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
-
-        discount = utils.calc_discount_rate(
-            discount, np.append(0, np.diff(deal_time[:, utils.TIME_GRID_MTM])).reshape(-1, 1),
-            shared).squeeze(1).cumprod(0)
+        # each interval accrues at the rate its start reads, which is all that is known then
+        step = utils.calc_discount_rate(
+            discount, np.append(np.diff(deal_time[:, utils.TIME_GRID_MTM]), 0).reshape(-1, 1), shared
+            ).squeeze(1)
+        discount = torch.cat([torch.ones_like(step[:1]), step[:-1]]).cumprod(0)
 
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
         cash = self.field['Units'] / discount
