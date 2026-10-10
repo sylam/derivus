@@ -749,6 +749,11 @@ class Deal(object):
         if currency:
             self.settlement_currencies.setdefault(currency, set()).update(dates)
 
+    def closeout_window(self):
+        """The liquidation and settlement periods this deal closes out over, None where it holds no
+        collateral."""
+        return None
+
     def add_settlement_dates(self):
         """Register every day the deal's own declaration settles on under the currency its `settles`
         marker names - the marker's field, else the deal's own - a blank day read as the day the
@@ -1037,6 +1042,10 @@ class NettingCollateralSet(Deal):
         'Note that Standard closeout causes exposure to be reported one closeout period after portfolio',
         'maturity (as the mechanics of default are still present).',
         '',
+        'Every collateralised set in one job closes out over the same $\\delta_l$ and $\\delta_s$; a job',
+        'whose sets differ is refused by name. Beside an uncollateralised set, which reports every date',
+        'of the grid, a collateralised set contributes zero on its own $t_l$ and $t_s$ dates.',
+        '',
         '### Cashflow Accounting',
         '',
         'Define (for time $t$):',
@@ -1157,18 +1166,15 @@ class NettingCollateralSet(Deal):
         self.calendar = None
         self.options = {'Cash_Settlement_Risk': utils.CASH_SETTLEMENT_Received_Only,
                         'Forward_Looking_Closeout': False,
-                        'Use_Optimal_Collateral': False,
                         'Exclude_Paid_Today': False}
         self.options.update(valuation_options)
 
     def reset(self, calendars):
         super(NettingCollateralSet, self).reset()
         self.accum_dependencies = True
-        if self.field.get('Collateralized', 'False') == 'True':
-            self.path_dependent = True
-            calendar = calendars.get(self.field.get('Calendars'))
-            if calendar:
-                self.calendar = calendar['businessday']
+        calendar = calendars.get(self.field.get('Calendars')) if self.closeout_window() else None
+        if calendar:
+            self.calendar = calendar['businessday']
 
     def calc_liquidation_settlement_dates(self, date, base_date):
         if self.options['Forward_Looking_Closeout']:
@@ -1179,6 +1185,11 @@ class NettingCollateralSet(Deal):
             ts = max(date - pd.DateOffset(days=self.field['Settlement_Period'] + self.field['Liquidation_Period']),
                      base_date)
         return ts, tl
+
+    def closeout_window(self):
+        """The liquidation and settlement periods a collateralised set closes out over."""
+        if self.field.get('Collateralized', 'False') == 'True':
+            return self.field['Liquidation_Period'], self.field['Settlement_Period']
 
     def get_report_dates(self, time_grid, base_date):
         reval_dates = super(NettingCollateralSet, self).get_report_dates(time_grid, base_date)
@@ -1415,6 +1426,8 @@ class NettingCollateralSet(Deal):
             reval_dates = self.get_report_dates(time_grid, base_date)
 
             call_dates = np.array([(x - base_date).days for x in reval_dates])
+            # where each reported row sits on the global grid the root sums every set on
+            field_index['Report_Rows'] = np.searchsorted(t, call_dates)
             call_mask = np.ones(time_grid.mtm_time_grid.size, dtype=np.int32)
 
             if call_freq.kwds != {'days': 1}:
@@ -1645,11 +1658,17 @@ class NettingCollateralSet(Deal):
                                                ), dim=0)
                 net_accum = net_accum * St_T
 
+            # each of the set's rows lands on its own date among the root's report rows
+            on_report = shared.upload(
+                np.searchsorted(time_grid.report_index, factor_dep['Report_Rows']), torch.int64)
+
+            def reported(rows):
+                return rows.new_zeros(time_grid.report_index.size, rows.shape[1]).index_copy(0, on_report, rows)
+
             if boundary_aad:
                 # Balance-independent, detached captures for the MTA replay (see docstring).
                 b_Vte, b_C, b_Ste = Vte.detach(), C_ts_te.detach(), Ste.detach()
                 b_fx, b_surv = fx_base.detach(), St_T.detach() if surv else None
-                b_pad = time_grid.report_index.size - net_accum.shape[0]
 
                 def replay_net_mtm(balance_path, vte=None, c_delta=None, base_i=base_i,
                                    delta_T=delta_T):
@@ -1668,7 +1687,7 @@ class NettingCollateralSet(Deal):
                            running * b_Ste) / b_fx
                     if b_surv is not None:
                         out = out * b_surv
-                    return Fn.pad(out, [0, 0, 0, b_pad]) if b_pad else out
+                    return reported(out)
 
                 def rescan(opening, start, req=Bt_new.detach(), recv=Mr.detach(),
                            post=Mp.detach(), mask=factor_dep['call_mask'].astype(bool)):
@@ -1753,22 +1772,22 @@ class NettingCollateralSet(Deal):
                 # beneath THIS netting set and drops it again
                 shared.gross_to_net = net_from_gross
 
-            padding = time_grid.report_index.size - net_accum.shape[0]
             gross_padding = time_grid.mtm_time_grid.size - local_accum.shape[0]
-            final_mtm = Fn.pad(net_accum, [0, 0, 0, padding]) if padding else net_accum
             shared.save_results(
                 deal_data.Calc_res, {
-                    'Collateral': Fn.pad(expected_collateral, [0, 0, 0, padding]) if padding else expected_collateral,
+                    'Collateral': reported(expected_collateral),
                     'GrossMTM': Fn.pad(local_accum, [0, 0, 0, gross_padding]) if gross_padding else local_accum,
-                    'Value': final_mtm
+                    'Value': reported(net_accum)
                 })
-            return final_mtm
+            # the root sums every set row by row on the global grid and reports its own dates off it
+            return net_accum.new_zeros(time_grid.mtm_time_grid.size, net_accum.shape[1]).index_copy(
+                0, shared.upload(factor_dep['Report_Rows'], torch.int64), net_accum)
         else:
             St_T = torch.squeeze(torch.exp(-surv.gather_weighted_curve(
                 shared, time_grid.time_grid[:, utils.TIME_GRID_MTM].reshape(1, -1), multiply_by_time=False)), dim=0
                                  ) if surv else shared.one
 
-            return pricing.interpolate(accum, shared, time_grid, deal_data) * St_T
+            return pricing.interpolate(accum, shared, time_grid, deal_data, interpolate_grid=False) * St_T
 
 
 class MtMCrossCurrencySwapDeal(Deal):

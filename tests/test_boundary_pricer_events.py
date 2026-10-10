@@ -260,11 +260,12 @@ def test_a_funding_benefit_curve_no_deal_reads_is_a_dependency_of_the_run():
 MTA_LIVE = 2.0          # agreement currency, against a barrier worth ~5: transfers get suppressed
 
 # Negative in EVERY scenario at EVERY reporting date by construction: a sold forward struck at
-# ~zero is -(S - K) per unit, and 100 of them swamp anything one barrier can be worth.
+# ~zero is -(S - K) per unit, and 100 of them swamp anything one barrier can be worth - and it
+# outlives the collateralised set, which reports its closeout ten days past the barrier's expiry.
 DOMINATING_SHORT = {
     'Object': 'EquityForwardDeal', 'Reference': 'SHORT1', 'Currency': 'USD', 'Equity': 'EQ',
     'Discount_Rate': 'USD', 'Payoff_Currency': 'USD', 'Buy_Sell': 'Sell', 'Units': 100.0,
-    'Forward_Price': 1.0, 'Maturity_Date': bb.BASE + pd.Timedelta(days=365)}
+    'Forward_Price': 1.0, 'Maturity_Date': bb.BASE + pd.Timedelta(days=395)}
 
 
 def _collateralised_barrier(c):

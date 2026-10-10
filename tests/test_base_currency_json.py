@@ -192,6 +192,67 @@ def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
     assert np.array_equal(root.values, netted.loc[root.index].values)
 
 
+CSA = {'.CreditSupportList': [[0.0, 0.0]]}
+
+
+def netting_set(reference, children, liquidation=None):
+    """An uncollateralised netting set, or with `liquidation` a zero-threshold CSA closing out over
+    that many days and no settlement period."""
+    terms = {} if liquidation is None else {
+        'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
+        'Liquidation_Period': liquidation, 'Settlement_Period': 0, 'Credit_Support_Amounts': dict.fromkeys(
+            ('Received_Threshold', 'Posted_Threshold', 'Independent_Amount', 'Minimum_Received',
+             'Minimum_Posted'), CSA)}
+    return dict({'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
+                 'Collateralized': 'False', 'Children': children}, **terms)
+
+
+def forward(reference, units, years):
+    return {'Object': 'EquityForwardDeal', 'Reference': reference, 'Currency': 'USD', 'Equity': 'EQ',
+            'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Units': units, 'Forward_Price': 95.0,
+            'Maturity_Date': book.WORLD_BASE + pd.DateOffset(years=years)}
+
+
+def cashflow(reference, days):
+    return {'Object': 'FixedCashflowDeal', 'Reference': reference, 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Amount': 1_000.0, 'Payment_Date': book.WORLD_BASE + pd.DateOffset(days=days)}
+
+
+def test_netting_sets_side_by_side_read_as_each_one_alone():
+    """The root adds its netting sets row by row on the global grid and reports its own dates off
+    it, so every set side by side reads, on every date it reports alone, what it reads alone - at
+    zero volatility, where the dates one set adds cannot move another's paths. An uncollateralised
+    set holding a two-year forward beside one paying on days 45 and 120 reads its forward once the
+    cashflows are paid; beside a ten-day CSA over a one-year forward, the two add up on the dates both
+    report and the plain set reads alone once the CSA has expired. A second CSA closing out over
+    another period is refused by name.
+
+    Killing mutations: the uncollateralised set interpolating its total a second time off its own
+    dates (100.04 against 77.30 on the slide's case); the CSA set handing back its own report rows,
+    which slide past the look-back dates the plain set reports.
+    """
+    long = netting_set('P1', [forward('FWD2', 10.0, 2)])
+    paid = netting_set('P2', [cashflow('CF45', 45), cashflow('CF120', 120)])
+    csa = netting_set('C1', [forward('FWD1', 1_000.0, 1)], liquidation=10)
+    for pair in ((long, paid), (long, csa)):
+        alone = [rooted([deal], 0.0).mean(axis=1) for deal in pair]
+        joint = rooted(list(pair), 0.0).mean(axis=1)
+        last = max(alone[1].index)
+        compared = 0
+        for day in joint.index:
+            parts = [frame.get(day) for frame in alone]
+            if day > last:
+                parts[1] = 0.0
+            if None not in parts:
+                compared += 1
+                assert abs(joint[day] - sum(parts)) <= 1e-3 * max(1.0, abs(sum(parts))), (
+                    pair[1]['Reference'], day, joint[day], parts)
+        assert compared >= 4, (pair[1]['Reference'], compared)
+    with pytest.raises(utils.UnpriceableSchedule) as refusal:
+        rooted([csa, netting_set('C2', [forward('FWD3', 1.0, 1)], liquidation=5)], 0.0)
+    assert all(word in str(refusal.value) for word in ('C1', 'C2', 'Liquidation_Period')), refusal.value
+
+
 def test_a_deal_settled_before_the_base_date_is_skipped_by_name_under_a_scenario_grid(tmp_path, caplog):
     """A forward whose settlement date is behind the base date has expired, and a credit Monte Carlo
     skips it by name as a base valuation does: the profile is the book without it to the bit and

@@ -12,8 +12,8 @@ the H=95 monthly digital, at 1024 paths).
 
 BOTH BARRIER DIRECTIONS, mirrored about the spot. The digital's survival is monotone in the spot, so
 the CVA delta's SIGN is known before anything is run: positive below a down barrier, negative under
-an up one. The smooth term alone carries the OPPOSITE sign in both, so the sign is the correction's,
-and a gap signed the wrong way for its direction reports the wrong one.
+an up one. The correction carries it at ten to twenty times the smooth term, so a gap signed the
+wrong way for its direction reports the wrong one.
 
 TWO COLLATERALISED SETS, at different barriers, so the two corrections add rather than cancel and
 neither set's gross-to-net chain can stand in for the other's. No minimum transfer amount, because
@@ -23,7 +23,7 @@ LIFTED OFF THE RELU. A DELTA-FREE cash cushion in its own uncollateralised set l
 portfolio clear of the CVA's kink. Off the relu every counterfactual is scored at full weight and
 what a collateralised set is worth turns on the cash it has already paid - so a counterfactual
 whose SETTLEMENT does not follow its branch prices the wrong exposure. With the settlement
-undeclared the lifted portfolio reported -0.00010726372 where its own CRN oracle wants +0.00034761669.
+undeclared the lifted portfolio reads +3.83e-5 down where its own CRN oracle wants +3.57e-4.
 Parked ON the relu instead (the un-lifted portfolio spans -16.6 to +14.4), the same two sets read
 the correction at 3.71x the smooth term and the AAD 1.47% from its CRN ladder at 8192 paths (1.14%
 at seed 2), where suppressing the correction reads 363.78% - and the undeclared settlement is
@@ -65,7 +65,8 @@ MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 DIRECTIONS = {'Down_And_Out': ((95.0, 90.0), 1.0), 'Up_And_Out': ((105.0, 110.0), -1.0)}
 
 #: A delta-free cash cushion: buy the forward struck at zero, sell the one struck at CUSHION, in
-#: its own uncollateralised set. Worth CUSHION*DF every scenario with zero equity delta.
+#: its own uncollateralised set. Worth CUSHION*DF every scenario with zero equity delta, and
+#: outliving the collateralised sets, which report their closeout ten days past the digitals.
 CUSHION = 300.0
 
 
@@ -84,7 +85,7 @@ def _forward(reference, side, price):
     return {'Object': 'EquityForwardDeal', 'Reference': reference, 'Currency': 'USD',
             'Equity': 'EQ', 'Discount_Rate': 'USD', 'Payoff_Currency': 'USD', 'Buy_Sell': side,
             'Units': 1.0, 'Forward_Price': price,
-            'Maturity_Date': bb.BASE + pd.Timedelta(days=365)}
+            'Maturity_Date': bb.BASE + pd.Timedelta(days=395)}
 
 
 def _set(reference, collateralised, *deals):
@@ -108,13 +109,13 @@ def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(
     read off the same document with the correction suppressed through `Boundary_AAD_Bandwidth`,
     floored at 3.0.
 
-    At the 512 paths run here, seed 1: down +4.65e-4 against a smooth -5.07e-5, up -3.41e-4 against
-    +4.10e-5. Measured at 8192 paths, down, cushion 300: 7.38x (6.62x at seed 2); the AAD
-    +0.00032924550 against a CRN best of +0.00035978764, 9.28% on a ladder flat to 3.59%, the
-    estimator's residual here (14.80% at seed 2, 10.79% at 16384).
+    At the 512 paths run here, seed 1: down +4.94e-4 against a smooth +2.40e-5, up -3.82e-4 against
+    -3.39e-5. Measured at 8192 paths, down, cushion 300: 13.14x; the AAD +0.00036508220 against a
+    CRN best of +0.00035665579, 2.31% on a ladder flat to 5.58%.
 
-    Killing mutation: the discrete barrier's gap signed against its direction - up reads +4.23e-4
-    (+4.90 / +4.92e-4 at seeds 2 and 3), down -5.66e-4; an undeclared `settles` flips both too.
+    Killing mutations: the discrete barrier's gap signed against its direction - down reads
+    -4.46e-4, up +3.14e-4; an undeclared `settles` collapses the correction to 0.60x (down) and
+    0.002x (up) the smooth term.
     """
     (h_first, h_second), sign = DIRECTIONS[barrier_type]
     first = _digital('DIG_A', h_first, barrier_type)

@@ -58,6 +58,10 @@ class Aggregation(object):
         self.reval_dates = reval_dates
 
     def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
+        # every netting set hands back the global grid and the root reports its own dates off it; a
+        # book that valued nothing sums to the unit, which has no rows to report
+        if time_grid.report_index is not None and accum.shape[:1] == time_grid.mtm_time_grid.shape:
+            accum = accum[time_grid.report_index]
         # Honour store_results=False (Calc_res is None) exactly as pricing.interpolate does.
         if deal_data.Calc_res is not None:
             shared.save_results(deal_data.Calc_res, {'Value': accum})
@@ -126,7 +130,24 @@ class DealStructure(object):
             instrument.unpriced_because = error
             shared.calc_stats['Structs Skipped'] = shared.calc_stats.get('Structs Skipped', 0) + 1
 
+    def structures(self):
+        """Every structure beneath this one, depth first."""
+        for structure in self.sub_structures:
+            yield structure
+            yield from structure.structures()
+
     def finalize_struct(self, base_date, time_grid):
+        windows = {}
+        for structure in self.structures():
+            window = structure.obj.Instrument.closeout_window()
+            if window is not None:
+                windows.setdefault(window, []).append(structure.obj.Instrument.field.get('Reference'))
+        if len(windows) > 1:
+            raise utils.UnpriceableSchedule(
+                'Collateralised netting sets in one job close out over one Liquidation_Period and '
+                'Settlement_Period, and these differ: {}'.format('; '.join(
+                    '{} over (Liquidation_Period, Settlement_Period) = {}'.format(', '.join(refs), window)
+                    for window, refs in sorted(windows.items()))))
         all_report_dates = [set(instrument.get_report_dates(time_grid, base_date)) for instrument in
                             [x.obj.Instrument for x in self.sub_structures] +
                             [x.Instrument for x in self.dependencies]]
