@@ -52,8 +52,13 @@ unmeasured — a limitation without a number is absolution, not documentation
   arm pays `Autocall_Floating`'s stated value on each of its dates, while the full-path arm pays
   the forecast leg the swap version builds off `Forecast_Rate` - which the survival arm builds
   too and never reads. A swap version authored with blank values pays nothing on the survival
-  arm; one authored with its forecast amounts pays them as fixed. UNMEASURED beyond that; the
-  survival arm reading the leg it already builds is the fix, S.
+  arm; one authored with its forecast amounts pays them as fixed. Both arms read a stated amount
+  at or below zero as no floating date, so a negative one is not paid at all. UNMEASURED beyond
+  that; the survival arm reading the leg it already builds is the fix, S.
+- **The autocall's put decision moves its row's value and not the cash it settles there**
+  (2026-10-10). Under a CSA, moving the cash with it reads a float-and-put swap's CVA delta 0.97%
+  from its ladder against 1.74% unmoved at 1,024 x 4 paths, inside the estimator's own spread,
+  and moves a lagged one by nothing, which is not understood. S once it is.
 - **The target redemption forward's target pin is a kink the crisp estimator is blind to.** The
   pin fires on 41% to 60% of paths. Under the default (`Branch_And_Weight`) a common-random-number
   ladder of the switch's own value surface is flat to 0.05% and lands on the reported delta to

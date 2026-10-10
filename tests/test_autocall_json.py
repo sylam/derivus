@@ -343,19 +343,30 @@ def _cmc(job, tmp_path, name):
 FLOAT = 0.0125
 
 
-def _swap_job(threshold=100.0):
-    """The swap version under the credit Monte Carlo: a floating payment of `FLOAT` per unit on
-    each coupon date, a put barrier at 70 observed on the last, and a threshold no path reaches,
-    so every path survives to the expiry and pays the leg and the put alone."""
-    job = _cmc_job(threshold)
+def _swap(job, barrier=70.0, lag=0):
+    """The swap version: a floating payment of `FLOAT` per unit on each coupon date and a put
+    barrier observed on the last. With a `lag`, each coupon fixes that many days early, and a
+    floating payment also falls mid-period and between each fixing and its coupon."""
     deal = _deal_of(job)
-    dates = [row[0] for row in deal['Autocall_Coupons']]
+    coupons = [pd.Timestamp(row[0]['.Timestamp']) for row in deal['Autocall_Coupons']]
+    fixings = [d - pd.Timedelta(days=lag) for d in coupons]
+    floats = coupons
+    if lag:
+        starts = [pd.Timestamp(BASE)] + coupons[:-1]
+        floats = sorted(coupons + [d - pd.Timedelta(days=lag // 2) for d in coupons] +
+                        [a + pd.Timedelta(days=(b - a).days // 2) for a, b in zip(starts, coupons)])
     deal.update({
-        'Object': 'QEDI_CustomAutoCallSwap_V2', 'Barrier': 70.0, 'Barrier_Dates': dates[-1:],
-        'Forecast_Rate': 'USD', 'Floating_Margin': utils.Basis(50.0),
-        'Reset_Frequency': pd.DateOffset(months=3), 'Autocall_Floating': [[d, FLOAT] for d in dates]
-        })
+        'Object': 'QEDI_CustomAutoCallSwap_V2', 'Barrier': barrier, 'Barrier_Dates': fixings[-1:],
+        'Price_Fixing': [[d, 0.0] for d in fixings], 'Forecast_Rate': 'USD',
+        'Floating_Margin': utils.Basis(50.0), 'Reset_Frequency': pd.DateOffset(months=3),
+        'Autocall_Floating': [[d, FLOAT] for d in floats]})
     return job
+
+
+def _swap_job(threshold=100.0):
+    """The swap version under the credit Monte Carlo with a threshold no path reaches, so every
+    path survives to the expiry and pays the leg and the put alone."""
+    return _swap(_cmc_job(threshold))
 
 
 def test_the_floating_leg_and_the_put_settle_their_cash_on_their_own_rows(tmp_path):
@@ -469,21 +480,20 @@ def _cva_job(threshold=1.02, spot=None, gradient='No'):
 def _cva(job, tmp_path, name):
     path = os.path.join(str(tmp_path), f'{name}.json')
     with open(path, 'w') as f:
-        json.dump(job, f, default=str)
+        json.dump(job, f, cls=CustomJsonEncoder)
     cx = rf.Context()
     cx.load_json(path)
     _, out = cx.run_job()
     return out
 
 
-def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), collateral=False):
+def _cva_ladder(tmp_path, threshold, rungs=(0.3, 0.5, 1.0), wrap=lambda j: j):
     """AAD spot delta of the CVA, and a central-difference ladder of the SAME document.
 
     Common random numbers arrive through the contract: `Random_Seed` is in the document and the
     bumped runs change nothing but the `EquityPrice.EQ` `Spot` value, so each rung differences
     two runs drawing identical paths. No internals, nothing patched.
     """
-    wrap = _collateralised if collateral else (lambda j: j)
     out = _cva(wrap(_cva_job(threshold=threshold, gradient='Yes')), tmp_path, 'aad')
     g = out['Results']['grad_cva']['Gradient']
     eq_rows = [i for i in g.index if 'EquityPrice' in str(i[0])]
@@ -539,25 +549,29 @@ def _collateralised(job):
     return job
 
 
-def test_a_collateralised_cva_delta_carries_the_settled_coupon(tmp_path):
-    """The collateralised twin: the same document under a zero-threshold CSA, so each decision's
-    counterfactual runs the gross->net chain and the settled-cash ledger.
+def test_a_collateralised_cva_delta_carries_every_row_a_decision_settles(tmp_path):
+    """The swap version under a zero-threshold CSA, so each decision's counterfactual runs the
+    gross->net chain and the settled-cash ledger: each coupon fixed six days early, a floating
+    payment on each coupon date, mid-period and between each fixing and its coupon, and a put at 90.
+    A counterfactual replays every row's WHOLE cash - the leg and the coupon if the row's decision
+    fires, the leg and the put if not, a float row between decisions under the last one before it -
+    and a decision forks every row observing it, the float row between its fixing and its coupon
+    falling in an earlier block than the coupon's own.
 
-    What this measures is the decision's LEDGER REACH. A trigger forced ON kills every later
-    coupon's settled cash; forced OFF it pays at the path's first later firing - so the
-    counterfactual must flip every payment row it touches. Scoring the own payment alone leaves the
-    later coupons' booked cash in the margin period's exposure windows, +6.5% per added later
-    decision on a two-coupon cut of this document.
+    MEASURED at 4096 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
-    MEASURED at 1024 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
+        cva 0.001037955   AAD -4.3485386e-05   CRN -4.25589/-4.08575/-4.09140e-05
+        disagreement +2.18% at the best rung, ladder flatness 4.00%; the coupons alone +34.23%
 
-        cva 0.0017986481   AAD +5.0705166e-05   CRN 4.9345/5.0634/5.15172e-05
-        disagreement 0.14% at the best rung, ladder flatness 4.29%
-
-    Killing mutation: the decision's `cash_events` left undeclared, so the settled coupon stays at
-    its realised amount in both counterfactuals.
+    Killing mutations, at the best rung: the floating leg left out of a row's cash +27.98%, the put
+    +30.67%, a float row between decisions undeclared +11.44%, a lagged decision's forks in an
+    earlier block dropped +21.53%, every row undeclared (`cash_events` None) +43.04%.
     """
-    aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, collateral=True)
+    def lagged_swap(job):
+        job['Calc']['Calculation']['Batch_Size'] = 4096
+        return _collateralised(_swap(job, barrier=90.0, lag=6))
+
+    aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, wrap=lagged_swap)
     best = min(crn, key=lambda c: abs(aad - c))
     assert abs(aad - best) / abs(best) < 0.05, (aad, crn, cva)
 
