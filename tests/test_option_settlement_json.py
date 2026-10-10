@@ -67,6 +67,12 @@ CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 25
        'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes'}
 
 
+def node(deal):
+    """A deal-tree node, a netting set's `Children` beneath it."""
+    out = {'Instrument': {'.Deal': {k: v for k, v in deal.items() if k != 'Children'}}}
+    return dict(out, Children=[node(child) for child in deal['Children']]) if 'Children' in deal else out
+
+
 def run(deals, base=BASE, calc=None):
     """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot."""
     market = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
@@ -78,8 +84,7 @@ def run(deals, base=BASE, calc=None):
     job = {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                              'MCMC_Simulations': 1, 'Random_Seed': 1}, **(calc or {})),
-        'Deals': {'Reference': 'settle',
-                  'Deals': {'Children': [{'Instrument': {'.Deal': d}} for d in deals]}},
+        'Deals': {'Reference': 'settle', 'Deals': {'Children': [node(d) for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
     cx = derivus.Context()
     cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'settle'))
@@ -291,3 +296,56 @@ def test_a_cash_swaption_is_discounted_on_to_its_settlement_and_either_style_exp
             context.run_job()
         message = str(refusal.value)
         assert all(word in message for word in (deal['Reference'], 'Option_Expiry_Date', '2027-08-03', needs)), message
+
+
+#: Four equity types paying in the payoff currency at the expiry, none stating it
+BLANK_PAYOFF = [
+    dict({k: v for k, v in VANILLA.items() if k not in ('Payoff_Currency', 'Settlement_Date')},
+         Reference='AMER', Option_Type='Put', Strike_Price=120.0, Option_Style='American'),
+    {'Object': 'EquityDiscreteExplicitAsianOption', 'Reference': 'ASN', 'Currency': 'USD',
+     'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ',
+     'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': 95.0, 'Units': UNITS,
+     'Expiry_Date': EXPIRY,
+     'Sampling_Data': [[BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (3, 6, 9)] + [[EXPIRY, 0.0, 1.0]]},
+    {'Object': 'EquityBarrierBinaryOption', 'Reference': 'KOBIN', 'Currency': 'USD',
+     'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ',
+     'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Cash_Payoff': CASH,
+     'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 130.0, 'Expiry_Date': EXPIRY,
+     'Barrier_Dates': [[BASE + pd.DateOffset(months=m)] for m in range(1, 12)] + [[EXPIRY]]},
+    {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC', 'Currency': 'USD', 'Equity': 'EQ',
+     'Dividends': 'EQ', 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
+     'Option_Type': 'Call', 'Strike_Price': STRIKE, 'Expiry_Date': EXPIRY, 'Units': UNITS,
+     'Price_Fixing': [[EXPIRY, 0.0]], 'Autocall_Coupons': [[EXPIRY, 0.08]],
+     'Autocall_Thresholds': [[EXPIRY, 1.0]]}]
+
+#: A zero-threshold CSA closing out over ten days
+CSA = {'Object': 'NettingCollateralSet', 'Reference': 'CSA', 'Netted': 'True', 'Collateralized': 'True',
+       'Agreement_Currency': 'USD', 'Balance_Currency': 'USD', 'Liquidation_Period': 10,
+       'Settlement_Period': 0, 'Credit_Support_Amounts': dict.fromkeys(
+           ('Received_Threshold', 'Posted_Threshold', 'Independent_Amount', 'Minimum_Received',
+            'Minimum_Posted'), {'.CreditSupportList': [[0.0, 0.0]]})}
+
+
+def test_a_blank_payoff_currency_is_the_deal_s_own_currency():
+    """`Payoff_Currency` declares its blank the deal's own `Currency`, so a document omitting it is
+    the one stating USD: under a credit Monte Carlo the American put, the Asian, the barrier binary
+    and the autocall mark and book bit for bit alike either way, 570.74 a path on the expiry, and
+    a collateralised set holding the American alone prices as it does.
+
+    Killing mutations, each a reader taking the raw field again: the barrier binary registering its
+    dates under it, the ledger's thirteen rows down to two; the Asian booking under it, the expiry
+    471.89; the autocall naming its factor off it, skipped, the book's t0 mark 756.032 against
+    756.415; the American keying its grid dates under it, a '' ledger beside USD - and, held under
+    the CSA, the whole set refused ('Cannot find FxRate.').
+    """
+    stated = [dict(deal, Payoff_Currency='USD') for deal in BLANK_PAYOFF]
+    held = tuple([dict(CSA, Children=deals[:1])] for deals in (BLANK_PAYOFF, stated))
+    for pair in ((BLANK_PAYOFF, stated), held):
+        blank, usd = (run(deals, calc=CMC) for deals in pair)
+        assert np.array_equal(blank['mtm'].values, usd['mtm'].values), pair[0][0]['Reference']
+        assert set(blank['cashflows']) == set(usd['cashflows']) == {'USD'}, set(blank['cashflows'])
+        paid, owed = blank['cashflows']['USD'], usd['cashflows']['USD']
+        assert paid.index.equals(owed.index) and np.array_equal(paid.values, owed.values), (
+            pair[0][0]['Reference'], paid.loc[EXPIRY].mean(), owed.loc[EXPIRY].mean())
+        if len(pair[0]) > 1:
+            assert paid.loc[EXPIRY].mean() == pytest.approx(570.74260938, rel=1e-6)

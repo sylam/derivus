@@ -116,8 +116,10 @@ def term_sheets():
         dict(rates_world.fra('FRA-1', 'ZAR', 'ZAR', 'ZAR', 3, 6, 2.0),
              Effective_Date=d1 + months(months=3), Maturity_Date=d1 + months(months=6),
              Reset_Date=d1 + months(months=3), Principal=50_000_000.0),
+        # its first fixing stated, which the compile does not fill from the record
         dict(rates_world.par_swap('SWAP-1', 'ZAR', 'ZAR', 'ZAR', 2, 2.0), Effective_Date=d1,
-             Maturity_Date=d1 + months(years=2), Principal=100_000_000.0),
+             Maturity_Date=d1 + months(years=2), Principal=100_000_000.0,
+             Known_Rates=utils.DateList({d1: 2.0})),
         {'Object': 'CommodityForwardDeal', 'Reference': 'METAL-1', 'Commodity': 'METAL',
          'Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Reference_Type': 'METAL',
          'Forward_Date': d0 + months(months=6), 'Maturity_Date': d0 + months(months=6),

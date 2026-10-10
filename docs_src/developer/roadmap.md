@@ -271,14 +271,14 @@ unmeasured — a limitation without a number is absolution, not documentation
   print filed under the index it names, which a type declares as `observes`; a row naming none is
   answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no close,
   no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the deposit
-  declare theirs, and read a reset the record has printed off the curve until their known-rate
-  tables are filled from the record at compile as an observation table is - a day's move on one
-  reset; a blank index field, which the compile resolves to the currency's curve, still announces
-  its fixings under none. The double Asian, the equity swap leg and swaplet list, the two energy
-  deals and the composite equity Asian read fixings off a table the fill cannot write yet (M), the
-  inflation list M-L - a month its base date has not printed reading observed at its forward
-  meanwhile - and a swaption announces no expiry of its own, its legs reading as a live swap's - a
-  design call. The census in `tests/test_diary.py` names every type still open.
+  declare theirs, and refuse by name a reset the record has printed - its own day reading the
+  curve, a list its row - until their known-rate tables are filled from the record at compile as an
+  observation table is; a blank index field, which the compile resolves to the currency's curve,
+  still announces its fixings under none. The double Asian, the equity swap leg and swaplet list,
+  the two energy deals and the composite equity Asian read fixings off a table the fill cannot
+  write yet (M), the inflation list M-L - a month its base date has not printed reading observed at
+  its forward meanwhile - and a swaption announces no expiry of its own, its legs reading as a live
+  swap's - a design call. The census in `tests/test_diary.py` names every type still open.
 - **The pricer branch census names 38 arcs no test executes** (2026-10-11; 48 on 2026-10-04,
   read before the tracer counted a jump onto a line-less instruction, which closes a nested `if`,
   as the branch not taken), the LogVar2FJ arcs on the discrete barrier the ones a fixture would

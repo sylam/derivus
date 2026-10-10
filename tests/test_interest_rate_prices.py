@@ -777,6 +777,16 @@ def discount(day, rate=0.04):
     return math.exp(-rate * (day - BASE).days / 365.0)
 
 
+def forward(start, end):
+    """The simple ACT/360 forward off USD-PROJ."""
+    return (discount(start, 0.045) / discount(end, 0.045) - 1.0) / ((end - start).days / 360.0)
+
+
+def value(flows, at=BASE):
+    """The `(pay day, amount)` flows still to pay on `at`, discounted to it."""
+    return sum(amount * discount(day) / discount(at) for day, amount in flows if day >= at)
+
+
 def test_an_amortising_deposit_repays_each_step_on_the_day_its_balance_steps_down():
     """The trial's two amortising deposits: a million lent today for two years in 6M periods, 4.2%
     ACT/360 pinned or forecast off USD-PROJ, 250,000 amortised on the 18-month date. By hand, with
@@ -841,9 +851,6 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
     the base date (`Reset_Day < time_slice.max()`): every base valuation holds, and the Monte Carlo
     misprices every coupon from its first fixing on.
     """
-    def forward(start, end):
-        return (discount(start, 0.045) / discount(end, 0.045) - 1.0) / ((end - start).days / 360.0)
-
     def legs(start, known=None):
         """The averaged and the compounded floating flows and the fixed ones, `(pay day, amount)`."""
         averaged, compounded = [], []
@@ -859,11 +866,7 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
             (start + pd.DateOffset(years=1), start + pd.DateOffset(years=2)))]
         return averaged, compounded, fixed
 
-    def value(flows, at=BASE):
-        """The flows still to pay on `at`, discounted to it."""
-        return sum(amount * discount(day) / discount(at) for day, amount in flows if day >= at)
-
-    swap = dict(par_swap('SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.5, fixed_frequency=12,
+    swap =dict(par_swap('SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.5, fixed_frequency=12,
                          float_frequency=6), Index_Tenor=pd.DateOffset(months=3))
     items = []
     for begin, end in ((BASE + pd.DateOffset(months=6 * k), BASE + pd.DateOffset(months=6 * k + 6))
@@ -959,3 +962,79 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
     assert {BASE + pd.DateOffset(months=3 * k) for k in range(9)} <= set(read)
     for at, paths in zip(read, profile):
         assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at
+
+
+def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states():
+    """A reset behind the base date reads the rate its document states and is refused BY NAME where
+    it states none, where it read as a fixing at 0%; one ON the base date reads the stated rate
+    where there is one and the curve where not. By hand, each stated fixing at its rate and the rest
+    at the simple ACT/360 forward off USD-PROJ, a coupon's fixings averaged, discounted on USD:
+
+        a one-year 4.5% swap on quarterly coupons seasoned a month, its 6% stated   4,204.67
+        the same swap effective today, its 6% stated today                          4,190.41
+        six-month coupons on a 3M index seasoned three months, 4% then 6% today     2,797.59
+        a 4.3% FRA reset a month ago, Use_Known_Rate Yes at 6%: (6% - 4.3%) a D(T)  4,315.50
+        and one resetting today                                                     4,300.86
+
+    The seasoned swap stating no row is refused, and so is the FRA saying Use_Known_Rate No, which
+    states no rate whatever its Known_Rate. Under a credit Monte Carlo with no volatility the swap
+    effective today reads its flows still to pay, its 6% fixing among them, on every date.
+
+    Killing mutations: the refusal dropped, the unstated swap marking -11,026.51 off a 0% fixing;
+    a row stated today unread, 303.50 off the curve; the FRA's Known_Rate read whatever its flag;
+    a cashflow list's Use_Known_Rate unread today, the FRA at 413.95; a known reset counted by its
+    day in the block split, 303.50, or in the coupon fold, 17,977.10; its row read by day, three
+    deals skipped.
+    """
+    start, earlier = BASE - pd.DateOffset(months=1), BASE - pd.DateOffset(months=3)
+
+    def swap(reference, effective, months, rows, index=0):
+        """A one-year 4.5% swap from `effective` paying `months`-month coupons on an `index`-month
+        index, its known rates `rows`, and its flows by hand."""
+        deal = dict(par_swap(reference, 'USD', 'USD-PROJ', 'USD', 1, 4.5, float_frequency=months),
+                    Effective_Date=effective, Maturity_Date=effective + pd.DateOffset(years=1),
+                    Index_Tenor=pd.DateOffset(months=index), Known_Rates=utils.DateList(rows))
+        flows = [(effective + pd.DateOffset(years=1), -1e6 * 0.045 * (
+            effective + pd.DateOffset(years=1) - effective).days / 360.0)]
+        for k in range(12 // months):
+            begin, end = (effective + pd.DateOffset(months=months * k),
+                          effective + pd.DateOffset(months=months * (k + 1)))
+            fixings = [begin + pd.DateOffset(months=index * j) for j in range(months // (index or months))]
+            rates = [rows[day] / 100.0 if day in rows else forward(day, min(day + pd.DateOffset(
+                months=index or months), end)) for day in fixings]
+            flows.append((end, 1e6 * sum(rates) / len(rates) * (end - begin).days / 360.0))
+        return deal, value(flows), flows
+
+    def agreement(reference, months_ago):
+        """A three-month 4.3% FRA reset `months_ago` months ago, fixed at 6%, and its mark by hand."""
+        deal = dict(fra(reference, 'USD', 'USD-PROJ', 'USD', -months_ago, 3 - months_ago, 4.3),
+                    Use_Known_Rate='Yes', Known_Rate=utils.Percent(6.0))
+        effective, maturity = deal['Effective_Date'], deal['Maturity_Date']
+        return deal, 1e6 * (0.06 - 0.043) * (maturity - effective).days / 360.0 * discount(maturity)
+
+    documents = {
+        'SEASONED': swap('SEASONED', start, 3, {start: 6.0}),
+        'TODAY': swap('TODAY', BASE, 3, {BASE: 6.0}),
+        'AVERAGED': swap('AVERAGED', earlier, 6, {earlier: 4.0, BASE: 6.0}, index=3),
+        'FRA': agreement('FRA', 1),
+        'FRA_TODAY': agreement('FRA_TODAY', 0)}
+    marks, stats = book.marks([document[0] for document in documents.values()])
+    assert 'Deals Skipped' not in stats, stats
+    for reference, (_, hand, *_) in documents.items():
+        assert float.fromhex(marks[reference]) == pytest.approx(hand, rel=1e-12), (reference, hand)
+
+    for unstated in (dict(documents['SEASONED'][0], Reference='UNSTATED', Known_Rates=None),
+                     dict(documents['FRA'][0], Reference='FRA_UNSTATED', Use_Known_Rate='No')):
+        with pytest.raises(utils.UnpriceableSchedule, match='{}: the reset fixing 2026-07-03'.format(
+                unstated['Reference'])):
+            book.marks([unstated])
+
+    deal, _, flows = documents['TODAY']
+    calc, _ = book.simulated([deal], ('USD', 'USD-PROJ'), sigma=0.0, prec=torch.float64,
+                             Generate_Cashflows='No')
+    profile = next(deal.Calc_res['Value'][0] for deal in calc.netting_sets.deals()
+                   if deal.Instrument.field['Reference'] == 'TODAY')
+    read = [BASE + pd.Timedelta(days=int(day)) for day in calc.time_grid.mtm_time_grid[:len(profile)]]
+    assert {BASE + pd.DateOffset(months=3 * k) for k in range(5)} <= set(read)
+    for at, paths in zip(read, profile):
+        assert paths.mean() == pytest.approx(value(flows, at), rel=1e-9, abs=1e-6), at

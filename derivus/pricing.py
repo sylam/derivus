@@ -4764,10 +4764,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             cashflows = factor_dep['Cashflows'].dual(cash_start_index[sample_index_t])
             reset_offset = factor_dep['Cashflows'].offsets[cash_start_index[sample_index_t]][1]
             reset_ofs, reset_count = np.unique(
-                np.searchsorted(
-                    resets.schedule[reset_offset:, utils.RESET_INDEX_Reset_Day],
-                    t_block[:, utils.TIME_GRID_MTM]),
-                return_counts=True)
+                resets.split_block_resets(reset_offset, t_block[:, utils.TIME_GRID_MTM]), return_counts=True)
 
             floating_legs = []
             forward_blocks = forward_block.split_counts(
@@ -5594,7 +5591,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 accrual = reset_block.tn[:, utils.RESET_INDEX_Accrual]  # aligns with all_resets[1]
                 weight = reset_block.tn[:, utils.RESET_INDEX_Weight]
                 # each reset read back as its rate: a forecast one arrives weighted, a fixed one not
-                known = shared.upload(reset_block.np[:, utils.RESET_INDEX_Reset_Day] < 0, torch.bool)
+                known = shared.upload(reset_block.np[:, utils.RESET_INDEX_Scenario] < 0, torch.bool)
                 all_resets = all_resets / torch.where(known, 1.0, weight).view(1, -1, 1)
                 reset_split = shared.upload(reset_per_cashflows[reset_per_cashflows > 0], torch.long)
                 lengths = reset_split.unsqueeze(0).expand(all_resets.shape[0], -1)

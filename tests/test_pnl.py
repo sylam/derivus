@@ -490,9 +490,11 @@ RAND = 'InterestRate.ZAR'
 
 def seasoned(reference, struck=pd.Timestamp('2024-01-01')):
     """A two-year rand swap struck in January, receiving a quarterly floating coupon whose amount is
-    the floating pricer's and nobody else's - one of them due on the second marked day."""
+    the floating pricer's and nobody else's - one of them due on the second marked day - its fixings
+    stated at the 2% the record prints, which the compile does not fill from it."""
     return dict(rates_world.par_swap(reference, 'ZAR', 'ZAR', 'ZAR', 2, 7.5),
-                Effective_Date=struck, Maturity_Date=struck + pd.DateOffset(years=2))
+                Effective_Date=struck, Maturity_Date=struck + pd.DateOffset(years=2),
+                Known_Rates=utils.DateList({struck + pd.DateOffset(months=3 * k): 2.0 for k in range(8)}))
 
 
 def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recorded, desk):

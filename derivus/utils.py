@@ -1700,7 +1700,7 @@ class TensorSchedule(object):
                      filter_index=RESET_INDEX_Reset_Day, include_today=False):
         """The already-fixed rows' VALUE column, one `(1, num_scenarios)` tensor each.
         `include_today` keeps a row resetting today, which only an equity reset wants."""
-        key = ('known_resets', num_scenarios, index, include_today)
+        key = ('known_resets', num_scenarios, index, filter_index, include_today)
         if self.derived.get(key) is None:
             values = ([x[index] for x in self.schedule
                        if x[filter_index] <= 0.0 and x[index] > 0] if include_today
@@ -1874,6 +1874,15 @@ def join_resets(blocks, dim, deal_data, codes):
     return torch.cat(blocks, dim)
 
 
+def unstated_reset(reference, day):
+    """The refusal of a rate reset fixed by the base date whose document states no rate for it."""
+    return UnpriceableSchedule(
+        '{}: the reset fixing {:%Y-%m-%d} has fixed by the base date and its document states no rate '
+        'for it, which is not a fixing at 0%. State the rate it fixed at: a Known_Rates row, a '
+        'deposit\'s Interest_Rate_Schedule row, a cashflow list\'s reset row, or an FRA\'s Known_Rate '
+        'under Use_Known_Rate Yes'.format(reference, day))
+
+
 class TensorResets(TensorSchedule):
     def __init__(self, schedule, offsets):
         super(TensorResets, self).__init__(schedule, offsets)
@@ -1913,7 +1922,7 @@ class TensorResets(TensorSchedule):
     def get_simulated_resets(self, max_time, forward, shared):
         within_horizon = (self.offsets > -1) & (self.schedule[:, RESET_INDEX_Reset_Day] <= max_time)
         sim_resets = self.dual()[within_horizon]
-        known_resets = self.known_resets(shared.simulation_batch)
+        known_resets = self.known_resets(shared.simulation_batch, filter_index=RESET_INDEX_Scenario)
         old_resets = calc_time_grid_curve_rate(
             forward, sim_resets.np[:, :RESET_INDEX_Scenario + 1], shared)
         delta_start = (sim_resets.np[:, RESET_INDEX_Start_Day] -
@@ -1937,10 +1946,11 @@ class TensorResets(TensorSchedule):
                 [shared.fillvalue if not known_resets else torch.stack(known_resets), reset_values], dim=0)
             , dim=1)
 
-    def split_block_resets(self, reset_offset, t, date_offset=0):
-        all_resets = self.schedule[reset_offset:]
-        future_resets = np.searchsorted(all_resets[:, RESET_INDEX_Reset_Day] - date_offset, t)
-        return future_resets
+    def split_block_resets(self, reset_offset, t):
+        """How many of the resets from `reset_offset` on each day of `t` reads as fixed: those
+        before it, and every known one."""
+        return np.searchsorted(np.where(self.offsets[reset_offset:] < 0, -np.inf,
+                                        self.schedule[reset_offset:, RESET_INDEX_Reset_Day]), t)
 
     def get_start_index(self, time_grid, offset=0):
         """Read the start index (relative to the time_grid) of each reset"""
@@ -2058,9 +2068,10 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def generate_float(cls, reference_date, time_grid, reset_dates, nominal, amort, known_rate_list,
-                       reset_tenor, reset_frequency, daycount_code, spread):
+                       reset_tenor, reset_frequency, daycount_code, spread, reference=None):
         """`periods`' schedule plus the reset structure. The nominal array must be one shorter
-        than `reset_dates`, or a single number for a constant profile.
+        than `reset_dates`, or a single number for a constant profile; `reference` names the deal
+        a reset behind the base date with no known rate is refused for.
         """
         # prepare to consume reset dates
         known_rates = known_rate_list if known_rate_list is not None else DateList({})
@@ -2092,9 +2103,12 @@ class TensorCashFlows(TensorSchedule):
                 if closest_date is not None:
                     min_date = closest_date if min_date is None else max(min_date, closest_date)
 
-                # only add a reset if it's in the past
+                # a reset on or before the base date reads the row stated for it, a known reset
+                stated = Reset_Day <= 0 and closest_date is not None and closest_date <= reference_date
+                if Reset_Day < 0 and not stated:
+                    raise unstated_reset(reference, reset_day)
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                           Value / 100.0 if reset_day < reference_date else 0.0, Accrual], Scenario))
+                           Value / 100.0 if stated else 0.0, Accrual], -1 if stated else Scenario))
 
                 if Start_Day == End_Day:
                     raise Exception("Reset Start and End Days coincide")
@@ -2371,9 +2385,13 @@ class TensorCashFlows(TensorSchedule):
                 Accrual = reset[3]
                 Weight = 1.0 / len(cashflow['Resets'])
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
-                # only add a reset if it's in the past
+                # a reset reads its row's rate once behind the base date, or on it where the row's
+                # Use_Known_Rate (its next-to-last column) says Yes
+                known = Reset_Day < 0 or Reset_Day == 0 and reset[-2] == 'Yes'
+                if known and reset[-1] is None:
+                    raise unstated_reset(reference, reset[0])
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                           reset[-1].amount if reset[0] < reference_date else 0.0, Accrual], Scenario))
+                           reset[-1].amount if known else 0.0, Accrual], -1 if known else Scenario))
             return r
 
         return cls.from_items(
@@ -2569,7 +2587,7 @@ class TensorCashFlows(TensorSchedule):
                         reset_scenario_offsets.extend(self.Resets.offsets[reset_offset].tolist())
 
                     elif nominals.size <= groupsize and margins.size <= groupsize and (check_resets and not (
-                            self.Resets[reset_offset, RESET_INDEX_Reset_Day] < 0).any() or not check_resets):
+                            self.Resets[reset_offset, RESET_INDEX_Scenario] < 0).any() or not check_resets):
                         # we can compress this
                         for cash_group, ofs_group in zip(*map(
                                 lambda x: np.array_split(x, groupsize), [cashflow_schedule, cashflow_offsets])):
@@ -5413,16 +5431,6 @@ def resolve_factor_key(factor, price_factors):
     # equity block - right gradient label, wrong number (measured)
     legacy = check_tuple_name(Factor('VolatilityGrid', factor.name))
     return legacy if legacy in price_factors else name
-
-
-def payoff_currency(field):
-    """A deal's payoff currency, which is its own currency unless it says otherwise.
-
-    Optional currency fields are declared with an EMPTY default, so 'not specified' reaches the
-    engine as a present empty string from a UI and as an absent key from hand-written JSON. Both
-    mean the same thing, so the test is on the VALUE rather than on presence.
-    """
-    return field.get('Payoff_Currency') or field['Currency']
 
 
 # 0D spot factor types whose NAME may carry a composed reference: a primary spot plus one or

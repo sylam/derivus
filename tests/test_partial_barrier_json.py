@@ -99,6 +99,17 @@ def _job(deal, calc=None):
             'Price Factors': FACTORS}}}}
 
 
+def _cmc_job(deal, **calc):
+    """`deal` under a credit Monte Carlo on a GBM EUR drifting at the USD-EUR carry."""
+    job = _job(deal, calc=dict(
+        {'Object': 'CreditMonteCarlo', 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'}, **calc))
+    md = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': R_USD - R_EUR}}
+    md['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+    return job
+
+
 def _run(job):
     cx = derivus.Context()
     cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'pb'))
@@ -291,13 +302,7 @@ def test_a_closed_start_window_reads_the_same_state_its_own_scenario_walk_does()
     for barrier_type, barrier in CLOSED_BOTH_SIDES:
         deal = _deal(barrier_type, barrier, at_start='Yes', limit_days=-30)
         base = _mtm(_run(_job(deal)))
-        job = _job(deal, calc={
-            'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256,
-            'Simulation_Batches': 1, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'})
-        md = job['Calc']['MergeMarketData']['ExplicitMarketData']
-        md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': R_USD - R_EUR}}
-        md['Model Configuration'] = {'.ModelParams': {
-            'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+        job = _cmc_job(deal, Time_grid='0d 12m(1m)', Batch_Size=256, Simulation_Batches=1)
         row0 = np.asarray(_run(job)['Results']['mtm'], float)[0]
         where = (barrier_type, barrier, base, row0.min(), row0.max())
         assert row0.min() == row0.max(), ('a resolved row is one number per scenario', where)
@@ -339,25 +344,42 @@ def test_the_deal_ages_as_a_martingale(barrier_type, at_start, barrier, rebate):
     Killing mutation: the window mask dropped, every interval monitored.
     """
     t0 = _mtm(_run(_job(_deal(barrier_type, barrier, at_start=at_start, rebate=rebate))))
-    job = _job(_deal(barrier_type, barrier, at_start=at_start, rebate=rebate), calc={
-        'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 8192,
-        'Simulation_Batches': 2, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'})
-    md = job['Calc']['MergeMarketData']['ExplicitMarketData']
-    md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': R_USD - R_EUR}}
-    md['Model Configuration'] = {'.ModelParams': {
-        'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
-    profile = _run(job)['Results']['mtm']
+    profile = _run(_cmc_job(_deal(barrier_type, barrier, at_start=at_start, rebate=rebate),
+                            Time_grid='0d 12m(1m)', Batch_Size=8192, Simulation_Batches=2))['Results']['mtm']
     days = np.array([(d - BASE).days for d in profile.index], dtype=float)
     deflated = np.asarray(profile, float).mean(axis=1) * np.exp(-R_USD * days / 365.0)
     assert np.abs(deflated - t0).max() / max(abs(t0), 0.02 * NOTIONAL) < 3e-2, (
         t0, deflated, list(days))
 
 
+def test_a_window_booked_on_either_side_of_its_pair_reads_the_same_crossings():
+    """A start-window down-and-out EUR call on EUR/USD, booked the other way, is an up-and-out USD
+    put on USD/EUR at the inverted strike and barrier on the dollars the call delivers. Reported in
+    EUR off one simulated EUR the two read the same number on every row and scenario - 52.827 on
+    the limit date, 48.232 at expiry - the window's crossings bridged off the cross's one live leg.
+
+    Killing mutation: the bridge off where the quote leg is live, the rule before
+    `get_cross_barrier_underlying`: the USD/EUR booking reads 61.510 on the limit date and 55.660
+    at expiry, its window observed at its endpoints, one scenario 185.76 off its twin.
+    """
+    def profile(deal):
+        return np.asarray(_run(_cmc_job(deal, Currency='EUR', Time_grid='0d 12m(3m)', Batch_Size=4096,
+                                        Simulation_Batches=1))['Results']['mtm'], float)
+
+    call = profile(_deal('Down_And_Out', 1.15, at_start='Yes'))
+    put = profile(dict(
+        _deal('Up_And_Out', 1 / 1.15, strike=1 / 1.25, at_start='Yes', option_type='Put'),
+        Currency='EUR', Underlying_Currency='USD', Payoff_Currency='EUR', Discount_Rate='EUR',
+        Underlying_Amount=NOTIONAL * 1.25))
+    assert call.shape == (3, 4096) and call[1].mean() < call[0].mean(), call.mean(axis=1)
+    assert np.abs(call - put).max() < 1e-5 * NOTIONAL, (call.mean(axis=1), put.mean(axis=1))
+
+
 # --------------------------------------------------------------------------------------------
 # the window-touch decision, and which of its two forms is a LATCH
 # --------------------------------------------------------------------------------------------
-# `get_fx_barrier_underlying` publishes a bridge variance rate only while the deal's QUOTE leg is
-# static. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
+# `get_cross_barrier_underlying` publishes a bridge variance rate only while ONE leg of the pair is
+# live. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
 # variance is zero, and `barrier_touched` collapses to a 0/1 endpoint test - the latch form.
 def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
              batch=8192, batches=4, bandwidth=0.01, window_touch=None):
