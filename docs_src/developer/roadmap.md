@@ -38,11 +38,14 @@ unmeasured — a limitation without a number is absolution, not documentation
 
 ### The autocall, TARF and barrier pricers
 
-- **The collateralised autocall's CVA delta is the boundary estimator's own variance.** Under a
-  zero-threshold credit-support annex the boundary correction supplies two and a half times the
-  pathwise term and scatters with the path count: 51% short at 256 outer paths, 18% over at 1,024,
-  10% at 2,048; a lognormal autocall under the same annex reads 12% short at 2,048. The path
-  count, not the deal, is what the number depends on.
+- **The collateralised autocall's CVA delta reads short of its ladder below 16,384 outer paths**
+  (re-measured 2026-10-10). On a two-year lognormal index autocall swap under a zero-threshold
+  credit-support annex the boundary correction supplies 0.26 to 0.61 times the pathwise term and
+  carries the scatter: over four seeds the delta reads 8.0% short of its common-random-number
+  ladder on average at 1,024 paths (2% over to 25% short), 5.0% at 2,048, 3.7% at 4,096, 1.7% at
+  8,192 and within 1.4% either way at 16,384 - short on 12 of the 16 readings below that, so a
+  small under-read fading with the path count rather than variance alone. UNMEASURED under
+  LogVar2FJ, no fitted factor for that index being on hand.
 - **The target redemption forward's target pin is a kink the crisp estimator is blind to.** The
   pin fires on 41% to 60% of paths. Under the default (`Branch_And_Weight`) a common-random-number
   ladder of the switch's own value surface is flat to 0.05% and lands on the reported delta to
@@ -276,8 +279,9 @@ unmeasured — a limitation without a number is absolution, not documentation
   inflation list M-L - a month its base date has not printed reading observed at its forward
   meanwhile - and a swaption announces no expiry of its own, its legs reading as a live swap's - a
   design call. The census in `tests/test_diary.py` names every type still open.
-- **The pricer branch census names 48 arcs no test executes** (2026-10-04; 59 on 2026-09-02),
-  the LogVar2FJ arcs on the discrete barrier and the TARF's pathwise arm the ones a fixture would
+- **The pricer branch census names 38 arcs no test executes** (2026-10-11; 48 on 2026-10-04,
+  read before the tracer counted a jump onto a line-less instruction, which closes a nested `if`,
+  as the branch not taken), the LogVar2FJ arcs on the discrete barrier the ones a fixture would
   reach; the rest are diagnostics, completeness elses and code added since.
 - **Ungated since the 2026-08-21 purge**: three modules named on
   [Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open) - the vol term
@@ -361,9 +365,7 @@ them — so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep their numbers and
   undecidable from bars, and the plan refuses by name unless finer bars inside the window decide
   it or a `determination` stands, filed by the agent the contract vests it in. One rule serves the
   trade date, the expiry cut and the partial-time windows, a migrated trade's window opening at
-  the booking time its fill carries. The autocall's coupon and threshold ladders fold with the put
-  barrier and the pricer's barrier-hit read (it tests for presence, so it fires on a declared
-  `'No'`) retires with them; the TARF's and accumulator's decisions-remain arm is folded
+  the booking time its fill carries. The TARF's and accumulator's decisions-remain arm is folded
   parameters, not a substituted deal.
 - **A payoff-shaped settlement amount in the diary.** An option's settlement row is due with
   `amount: null` because no field holds `Units × max(S−K, 0)`; the amount wants the expiry fixing

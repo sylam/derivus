@@ -480,18 +480,18 @@ def test_an_omitted_floating_margin_completes_to_the_basis_its_reader_takes():
     out it completes to `Basis(0)` and prices to the bit as `{".Basis": 0}`, where a float 0.0
     skipped the deal, and the store publishes the Basis wire form. A stated 25bp moves the forecast
     leg by the hand margin `-Units 25e-4 sum_k a_k D(t_k)`, on the trial's terms with every trigger
-    out of reach and the barrier, out of reach too, observed after the last coupon - the arm that
-    pays that leg - and by the same amount with two price fixings a quarter, each payment
-    discounted at its own date.
+    out of reach and the barrier out of reach too, and by the same amount with two price fixings a
+    quarter, each payment discounted at its own date.
 
     KILLING MUTATIONS: the declaration back to a bare Float, which skips the omitted margin's deal;
-    a payment written at its count among the payments, the k-th read at the k-th fixing's date.
+    a payment read at its position among the strip's dates rather than its count among the
+    payments, which the two fixings a quarter set apart.
     """
     import trial_equity_swaps as trial
     quarters = trial.QUARTERS
     v2 = {key: value for key, value in trial.DEALS[-1].items() if key != 'Floating_Margin'}
     v2.update(Reference='OMITTED', Autocall_Thresholds=[[date, 1000.0] for date in quarters],
-              Barrier=1e-6, Barrier_Dates=[quarters[-1] + pd.Timedelta(days=1)])
+              Barrier=1e-6, Barrier_Dates=[quarters[-1]])
     twice = dict(v2, Price_Fixing=[
         [day, 0.0] for quarter in quarters for day in (quarter - pd.DateOffset(months=1), quarter)])
     valued, stats = marks([v2] + [

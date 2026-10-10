@@ -775,15 +775,36 @@ def _barrier_on_the_base_date(job):
     return job
 
 
-def _averaging(job, by='fixings'):
-    """Push the SAME deal onto the averaging arm, the two ways `calc_dependencies` decides it:
-    more than one price fixing per coupon, or a barrier date off the coupon dates."""
+AC_WINDOWS = (170, 180, 355, 365)
+
+
+def _averaging(job, observation='Spot'):
+    """The SAME deal with each coupon averaging a window of two fixings, ten days apart, and the
+    put reading the window's last fixing or its average."""
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
-    if by == 'fixings':
-        deal['Price_Fixing'] = [[_stamp(d), 0.0] for d in (170, 180, 355, 365)]
-    else:
-        deal['Barrier_Dates'] = [_stamp(300)]
+    deal['Price_Fixing'] = [[_stamp(d), 0.0] for d in AC_WINDOWS]
+    deal['Barrier_Observation'] = observation
     return job
+
+
+def _averaging_reference(observation, put_barrier=0.7, chunks=4, n=1 << 22, seed=7):
+    """The averaging document by brute force: the GBM at its four fixings drawn exactly, each
+    coupon paid off its window's mean, the put off the last fixing or the mean. Written from the
+    DEAL and the flat world above."""
+    rng = np.random.default_rng(seed)
+    dt = np.diff((0,) + AC_WINDOWS) / 365.0
+    D1, D2 = (math.exp(-AC_R * d / 365.0) for d in AC_DAYS)
+    total = 0.0
+    for _ in range(chunks):
+        z = rng.standard_normal((n // 2, len(AC_WINDOWS)))
+        s = AUTOCALL_SPOT * np.exp(np.cumsum((AC_R - AC_Q - 0.5 * AC_SIGMA ** 2) * dt + AC_SIGMA *
+                                             np.sqrt(dt) * np.concatenate([z, -z]), axis=1))
+        a1, a2 = s[:, :2].mean(1), s[:, 2:].mean(1)
+        seen = s[:, -1] if observation == 'Spot' else a2
+        put = np.where(seen <= put_barrier * AC_STRIKE, D2 * (a2 / AC_STRIKE - 1.0), 0.0)
+        total += np.where(a1 >= AC_STRIKE, AC_COUPON * D1,
+                          np.where(a2 >= AC_STRIKE, AC_COUPON * D2, put)).sum()
+    return AC_UNITS * total / (chunks * n)
 
 
 def _autocall_reference(spot, sigma, put_barrier=0.7, rebate=0.0, threshold=1.0,
@@ -990,30 +1011,24 @@ def test_a_zero_coupon_row_refuses_by_name(barrier, tmp_path):
     priced, _, log = _run_doc(_zero_coupon_doc(coupon=AC_COUPON, barrier=barrier),
                               tmp_path, 'zc_real', debug=True)
     line, = [ln for ln in log.splitlines() if 'AUTOCALL AC1' in ln]
-    assert 'fullpath=0' in line and 'coupons=3 thresholds=3' in line, line
+    assert 'coupons=3 thresholds=3' in line, line
     assert np.isfinite(priced) and priced != 0.0, priced
 
 
-@pytest.mark.parametrize('by', ['fixings', 'barrier'])
-def test_an_averaging_autocall_under_the_switch_falls_back_by_name(by, tmp_path):
-    """THE ARM THE SWITCH DOES NOT REACH, priced on the CRISP estimator and said so rather than
-    refused - so a mixed book runs under one setting with every deal priced. Its termination is a
-    smoothed per-inner-path weight and its breach a hard indicator on the AVERAGE. Both ways
-    `calc_dependencies` puts a deal on that arm are walked: more than one price fixing per coupon,
-    and a barrier date off the coupon dates. The fallback is the switch-off run BIT FOR BIT, and
-    the line names the deal and what its greeks are blind to; the switch-off run carries no line.
+@pytest.mark.parametrize('observation', ['Spot', 'Average'])
+@pytest.mark.parametrize('on', [True, False], ids=['switch on', 'switch off'])
+def test_an_averaging_autocall_lands_on_a_brute_force_simulation_of_its_terms(on, observation,
+                                                                              tmp_path):
+    """Each coupon averages a window of two fixings ten days apart and the 70% put reads the last
+    window's last fixing or its mean: the window's later block is sampled on GBM's own interval of
+    the strip while the survival truncates the prefix, under either estimator. Against the payoff
+    simulated outright at 2^24 paths (0.22402 and 0.22871), 2^20 inner paths read -0.14% / -0.36%
+    switched on and off, and -0.17% / -0.47% on the average.
 
-    Killing mutation: the fallback dropped, the full-path arm run under the switch unannounced.
+    Killing mutations, red on all four: the window's block drawn with no Ito term, +1.84% and +1.63%
+    on the spot reading; its sd read as `vol * dt`, +7.53% and +7.31%.
     """
-    crisp, _, off_log = _run_doc(_crisp(_averaging(_autocall_doc(0.7), by)), tmp_path,
-                                 'avg_off', debug=True)
-    assert np.isfinite(crisp) and crisp != 0.0, crisp
-    assert 'falls back to the CRISP estimator' not in off_log
-    fell_back, _, log = _run_doc(_smooth(_averaging(_autocall_doc(0.7), by)), tmp_path, 'avg_on',
-                                 debug=True)
-    assert fell_back.hex() == crisp.hex(), (fell_back.hex(), crisp.hex())
-    assert 'falls back to the CRISP estimator on AC1' in log, log[-1200:]
-    assert 'FULL-PATH branch' in log and 'AVERAGE' in log, log[-1200:]
-    assert 'smooth_heaviside_up' in log
-    assert 'BLIND to the threshold kink' in log
-    assert 'ONE price fixing per coupon' in log
+    ref = _averaging_reference(observation)
+    got, _, _ = _run_doc(_smooth(_averaging(_autocall_doc(0.7, sims=1 << 20), observation), on),
+                         tmp_path, 'avg')
+    assert _rel(got, ref) < 0.01, (got, ref, _rel(got, ref))

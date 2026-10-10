@@ -134,8 +134,7 @@ def test_a_single_coupon_autocall_is_a_digital_between_its_two_limits(tmp_path):
     error of its own. The two limits fix the SCALE, so a pricer returning a constant cannot satisfy
     all three: no path clears a 10x threshold, so the deal is worth ~0, and a threshold at a
     hundredth of spot is cleared almost surely, so it is the discounted coupon. The DEBUG line says
-    what the pricer decided - one coupon date, one fixing per coupon (the OSS branch), one block -
-    which the value alone cannot.
+    what the pricer decided - one coupon date, one block - which the value alone cannot.
 
     Killing mutation: the coupon's cash paid undiscounted (`D[j]` dropped).
     """
@@ -143,7 +142,7 @@ def test_a_single_coupon_autocall_is_a_digital_between_its_two_limits(tmp_path):
     v = _mtm(out)
     assert abs(v - EXPECTED_ATM) / EXPECTED_ATM < 1e-2, (v, EXPECTED_ATM)
     organ = [ln for ln in log.splitlines() if 'AUTOCALL ' in ln and 'coupons=' in ln][-1]
-    assert 'coupons=1' in organ and 'fullpath=0' in organ and 'blocks=1' in organ, organ
+    assert 'coupons=1' in organ and 'blocks=1' in organ, organ
 
     far, _ = _run(_job(threshold=10.0), tmp_path, 'far')
     assert abs(_mtm(far)) < 1e-6 * UNITS * COUPON, _mtm(far)
@@ -156,10 +155,10 @@ def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_pa
     """A barrier date is a fixing: observed on its coupon's window, settled on the coupon date.
 
     Two coupons fixed three days early with a 70% put. The barrier dated on the FIXINGS prices
-    bit-identically to the barrier dated on the COUPONS (-0.0542905931889), both on the
-    one-step-survival arm, and the put is live: the no-barrier document reads +0.2804032290490.
+    bit-identically to the barrier dated on the COUPONS (-0.0542905931889), and the put is live:
+    the no-barrier document reads +0.2804032290490.
     Killing mutation: a barrier date read by its date alone, with no window behind it - the
-    fixing-dated document falls to the full-path arm (`fullpath=1`) and reads +0.0185267.
+    fixing-dated document refused as dated on no coupon.
     """
     coupons, fixings = ['2024-12-27', '2025-06-27'], ['2024-12-24', '2025-06-24']
 
@@ -176,8 +175,68 @@ def test_a_barrier_dated_on_the_fixing_is_the_barrier_dated_on_the_coupon(tmp_pa
     assert _mtm(on_fixings) == _mtm(on_coupons), (_mtm(on_fixings), _mtm(on_coupons))
     for log in (log_c, log_f):
         organ = [ln for ln in log.splitlines() if 'AUTOCALL ' in ln and 'coupons=2' in ln][-1]
-        assert 'fullpath=0' in organ and 'barrier=70' in organ, organ
+        assert 'barrier=70' in organ, organ
     assert _mtm(none) != _mtm(on_coupons)
+
+
+def _seasoned(base, barrier_dates, **deal):
+    """Two coupons fixed three days early, valued on `base` with both fixings' prints authored -
+    90 under the threshold, then 60 under the 70% put barrier."""
+    coupons, fixings = ['2024-12-27', '2025-06-27'], ['2024-12-24', '2025-06-24']
+    job = _job(Expiry_Date={'.Timestamp': coupons[-1]},
+               Price_Fixing=[[{'.Timestamp': fixings[0]}, 90.0], [{'.Timestamp': fixings[1]}, 60.0]],
+               Autocall_Coupons=[[{'.Timestamp': x}, 0.04] for x in coupons],
+               Autocall_Thresholds=[[{'.Timestamp': x}, 1.0] for x in coupons],
+               Barrier=0.7, Barrier_Dates=[{'.Timestamp': x} for x in barrier_dates], **deal)
+    job['Calc']['Calculation']['Base_Date'] = {'.Timestamp': base}
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']['Base_Date'] = {
+        '.Timestamp': base}
+    return job, coupons, fixings
+
+
+def test_a_put_dated_on_a_printed_fixing_pays_on_its_coupon(tmp_path):
+    """Valued between the last fixing and its coupon, a put barrier dated on that fixing is still
+    the coupon's: the print, 60, is under the threshold, so the coupon is not paid, and under the
+    barrier, so the put pays its loss two days later - `-Units * (1 - 60/100)` discounted, -3.99912,
+    exactly what the barrier dated on the coupon reads.
+
+    Killing mutation: a barrier date before the base date kept on its own date, the put registered
+    on no row and the deal reading 0.0.
+    """
+    job, coupons, fixings = _seasoned('2025-06-25', ['2024-12-24', '2025-06-24'])
+    loss = -UNITS * (1.0 - 60.0 / STRIKE) * math.exp(-R_USD * 2 / DAYS)
+    on_fixings = _mtm(_run(job, tmp_path, 'printed_f')[0])
+    assert abs(on_fixings - loss) < 1e-9 * UNITS, (on_fixings, loss)
+    on_coupons = _mtm(_run(_seasoned('2025-06-25', coupons)[0], tmp_path, 'printed_c')[0])
+    assert on_fixings == on_coupons, (on_fixings, on_coupons)
+
+
+@pytest.mark.parametrize('shape', ['barrier on no fixing', 'fixing after the last coupon',
+                                   'BarrierIsHit'])
+def test_a_put_or_a_window_the_fixings_do_not_carry_refuses_by_name(shape, tmp_path):
+    """Every coupon decides on a window of fixings and a barrier observes a print, so a barrier
+    dated on no coupon and no fixing, and a fixing no coupon reads, refuse the document by name -
+    as does a `BarrierIsHit` stated on the deal, the put's state being its barrier date's print. A
+    blank `BarrierIsHit`, which a book carries, is no statement and prices.
+
+    Killing mutation: each refusal dropped - the barrier read off the row's stale spot, the
+    unpaired fixings crashing the compile into a skip, the stated flag priced past.
+    """
+    job, coupons, fixings = _seasoned('2024-06-28', ['2025-06-27'])
+    deal = _deal_of(job)
+    if shape == 'barrier on no fixing':
+        deal['Barrier_Dates'] = [{'.Timestamp': '2025-03-31'}]
+        said = r'barrier dated 2025-03-31 falls on no coupon date and no price fixing'
+    elif shape == 'fixing after the last coupon':
+        deal['Price_Fixing'].append([{'.Timestamp': '2025-07-04'}, 0.0])
+        said = r'do not give each coupon .* a window of its own'
+    else:
+        deal['BarrierIsHit'] = None
+        assert math.isfinite(_mtm(_run(job, tmp_path, 'blank_hit')[0]))
+        deal['BarrierIsHit'] = 'No'
+        said = r"'BarrierIsHit' declares a CONSEQUENCE .* record that close in Price_Fixing"
+    with pytest.raises(utils.UnpriceableSchedule, match=said):
+        _run(job, tmp_path, 'refused')
 
 
 def test_a_coupon_observed_on_or_before_the_coupon_before_it_refuses_by_name(tmp_path):

@@ -980,7 +980,9 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Barrier', 'Float', default=0, convention=True),
     F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
     F('Units', 'Float', default=0.0, sized=True),
-    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
+    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')]),
+      description="The put barrier's observation dates, each a coupon date or a price fixing in a "
+                  "coupon's window, the put paying on that coupon's date"),
     F('Autocall_Coupons', 'Table', default='null', row=Row([
         F('Date', 'Date', settles=Cash('Payoff_Currency')), F('Value', 'Float')]), tag='DateValueList'),
     F('Coupon_Observations', 'Table', default='null', convention=True,

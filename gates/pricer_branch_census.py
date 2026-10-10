@@ -85,8 +85,8 @@ FAMILY = (
 #: the whole suite. Regenerate with `python gates/pricer_branch_census.py --emit`; every entry is a
 #: work-list item, not an excuse.
 #:
-#: The shape of what is left: no document under SpotModel LogVar2FJ on the discrete barrier, the
-#: TARF or an averaging autocall; no inverted TARF; no quanto discrete barrier; no already-hit
+#: The shape of what is left: no document under SpotModel LogVar2FJ on the discrete barrier or
+#: the TARF; no inverted TARF; no quanto discrete barrier; no already-hit
 #: barrier digital; and the DEBUG reconstructions nothing runs.
 UNREACHED = {
     # ---- getbarrierpayoff ---------------------------------------------------------------------------
@@ -109,29 +109,14 @@ UNREACHED = {
     ('pv_MC_AutoCallSwap', 'if b_latch:', 'else'):
         "a boundary-AAD autocall registering an observed put alone, no coupon decision on any "
         "row of its grid.",
-    ('pv_MC_AutoCallSwap', "if boundary_aad and factor_dep['oss_windows']:", 'body#3'):
+    ('pv_MC_AutoCallSwap', 'if boundary_aad:', 'body#3'):
         "the all-resolved block's counterfactual: boundary_aad on, and a block reached after "
         "EVERY scenario has autocalled, so the rows carry a zero counterfactual.",
     ('pv_MC_AutoCallSwap', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
         "the line that reconstruction logs - a diagnostic, not a payoff.",
-    ('pv_MC_AutoCallSwap.sim_autocall', 'if coupon[t] <= 0.0:', 'body'):
-        "a float date that is not also a coupon date.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if P_cf is not None:', 'body#1'):
-        "the boundary-AAD counterfactual accumulator on a floating date - needs both a floating "
-        "leg and boundary_aad on.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if ahead > 1:', 'body'):
-        "a coupon averaging a window with more than one fixing still ahead of the row, walked on "
-        "the kit's own blocks - no fixture prices an averaging autocall under LogVar2FJ.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if coup > 0:', 'else'):
-        "an autocall observation step that carries no coupon.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
+    ('pv_MC_AutoCallSwap.sim_spot.fixing', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
         "the AUTOCALL_SETTLE debug line. Nothing runs the suite at DEBUG; a diagnostic rather "
         "than a payoff, and the one entry here no fixture should be written for.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if reduced_samples:', 'else'):
-        "an autocall MTM row with no remaining coupon observations.",
-    ('pv_MC_AutoCallSwap.sim_spot', 'if row_at[j] == 0.0:', 'else#1'):
-        "an averaging coupon decided off fixings already observed, on a row that is not the "
-        "coupon's own date - a reported row inside an observed window.",
     # ---- pv_MC_Tarf ---------------------------------------------------------------------------------
     ('pv_MC_Tarf', 'for flag in latch.fired:', 'body'):
         "the DEBUG reconstruction of a registered TARF latch - a diagnostic, not a payoff.",
@@ -148,15 +133,12 @@ UNREACHED = {
     ('pv_MC_Tarf.accrued', 'if inverted:', 'body'):
         "a TARF with Invert_Target set - the reciprocal accrual. Every TARF fixture is "
         "non-inverted.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if kit is None:', 'else#2'):
-        "a TARF under SpotModel LogVar2FJ, where the fixing interval reads its law off the kit's "
-        "block - the pathwise arm under it is not exercised.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if not integrated:', 'body'):
+    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not integrated:', 'body'):
         "a TARF carrying its OTM kink crisply rather than integrated - the non-integrated arm of "
         "the smoothing dial.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if not invertedTarget:', 'else#1'):
+    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not invertedTarget:', 'else#1'):
         "the same inverted TARF, on the PnL barrier B_pnl.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if not invertedTarget:', 'else#2'):
+    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not invertedTarget:', 'else#2'):
         "the same inverted TARF, on the second B_pnl site.",
     ('pv_MC_Tarf.sim_spot_tarf', 'if reduced_samples:', 'else'):
         "a TARF MTM row past its last fixing, where the block has no remaining samples to draw.",
@@ -182,14 +164,12 @@ UNREACHED = {
     ('pv_discrete_barrier_option', 'if isdigital:', 'body'):
         "an already-knocked-in GBM digital barrier. This is the cash-payoff twin of the leg that "
         "carried the +1432% forward defect, and it is still not executed by anything.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if eta == BARRIER_UP:', 'else#1'):
+    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if eta == BARRIER_UP:', 'else#1'):
         "a GBM barrier DIGITAL on a DOWN barrier whose integrated terminal step is a barrier "
         "date.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isBarrierDate_block[j] > 0:', 'body#1'):
+    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if isBarrierDate_block[j] > 0:', 'body#1'):
         "a GBM barrier digital whose LAST fixing is a zero-length step on a monitored date - a "
         "row ON the expiry that is also a barrier date.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isBarrierDate_block[j] > 0:', 'else#1'):
-        "the same zero-length terminal step on a date that is not monitored.",
     ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#1'):
         "a document declaring SpotModel LogVar2FJ on the discrete barrier - the kit's interval "
         "law; no fixture does.",
@@ -198,26 +178,23 @@ UNREACHED = {
         "Black over the walk and returns as the already-hit leg's by-product.",
     ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#3'):
         "the same document, where each monitored interval reads its law off that block.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#4'):
+    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if kit is None:', 'else'):
         "the same document, on the interval the walk reads its law off.",
+    ('pv_discrete_barrier_option.sim_spot_oss', 'if isdigital:', 'body'):
+        "a GBM knock-IN barrier DIGITAL, whose in-out-parity vanilla is cash-or-nothing; no "
+        "fixture books a knock-in digital.",
     ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is not None:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
+    # ---- pv_european_option -------------------------------------------------------------------------
+    ('pv_european_option', "if tenor_in_days[0] < 0 and 'Compo_Underlying' in factor_dep:", 'body'):
+        "a compo European expired before the base date - the refusal by name; no fixture books "
+        "one.",
     # ---- pv_one_touch_option ------------------------------------------------------------------------
     ('pv_one_touch_option', "elif timing == 'Touch':", 'else#1'):
         "a one-touch whose Payment_Timing is neither 'Expiry' nor 'Touch' - refused at "
         "construction, dead by the refusal.",
-    ('pv_one_touch_option', 'if expiry[index] == 0.0:', 'else'):
-        "TAKEN, and invisible to the tracer: test_position_scaling's trial no-touch runs this "
-        "line and not its body (a row before expiry), but the jump out of the no-touch branch's "
-        "last statement lands on an instruction carrying no line, so no arc is recorded. The "
-        "instrument's blind spot, not a fixture's.",
     ('pv_one_touch_option', 'if expiry_years_key not in factor_dep:', 'else'):
         "the tenor-cache hit, as in pv_barrier_option.",
-    ('pv_one_touch_option', 'if rebate_part.any():', 'else#1'):
-        "a touch-paid one-touch block in which NO scenario crossed during the interval, so "
-        "nothing is cash-settled on that row.",
-    ('pv_one_touch_option', 'if rebate_part.any():', 'else#2'):
-        "the same at the EXPIRY row: a one-touch that expired with no scenario ever touching.",
     # ---- pv_partial_barrier_option ------------------------------------------------------------------
     ('pv_partial_barrier_option', "elif barrierType in ['Up_And_Out', 'Up_And_In']:", 'else'):
         "a Barrier_Type that is neither Down_* nor Up_*, leaving eta at 0 - the completeness gap "
@@ -449,8 +426,9 @@ def trace_one(part, target):
             return mon.DISABLE
         table = line_map(code)
         src, dst = table.get(offset), table.get(destination)
-        if src is not None and dst is not None:
-            arcs.add((src, dst))
+        if src is not None:
+            # a jump onto a line-less instruction leaves the body: 3.13 closes a nested `if` so
+            arcs.add((src, -1 if dst is None else dst))
         taken = seen.setdefault((code, offset), set())
         taken.add(destination)
         if len(taken) > 1:

@@ -1698,24 +1698,9 @@ def calc_vol_adjustment(factor_dep, deal_time, expiry, vols, shared, fixings=Non
                 carry_adj=b_adj.unsqueeze(1) + geo['fx_carry'] if fixings is not None else None)
 
 
-def smooth_max(x, k, eps=0.01):
-    return torch.where(x < k - eps, torch.zeros_like(x), torch.where(
-        x > k + eps, x - k, (-k * x + 0.5 * x ** 2 + eps * x + 0.5 * (k - eps) ** 2) / (2 * eps)))
-
-
 def smooth_relu(x, eps=0.005):
     return torch.where(x < - eps, torch.zeros_like(x), torch.where(
         x > eps, x, (0.5 * x ** 2 + eps * x + 0.5 * eps ** 2) / (2 * eps)))
-
-
-def smooth_heaviside_up(x, k, eps=0.01):
-    return torch.where(x < k - eps, torch.zeros_like(x),
-                       torch.where(x > k + eps, torch.ones_like(x), 0.5 + (x - k) / (2.0 * eps)))
-
-
-def smooth_heaviside_down(x, k, eps=0.01):
-    return torch.where(x < k - eps, torch.ones_like(x),
-                       torch.where(x > k + eps, torch.zeros_like(x), 0.5 + (k - x) / (2.0 * eps)))
 
 
 def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_rep,
@@ -4182,7 +4167,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
 
 def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
-    """Autocallable swap by inner Monte Carlo, one-step-survival when there is no averaging.
+    """Autocallable swap by one-step-survival inner Monte Carlo, a coupon reading a window of fixings.
 
     RECOMPUTE: ``sim_spot`` is a pure bound/theta split called through ``InnerMCRecompute`` - the
     floating leg, past fixings and the spot model's scalars enter as theta, and settled cashflows and
@@ -4203,9 +4188,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     priced a 70% put at the ATM vol: 33% on an NKY structure against its own six legs,
     and a flat surface agreeing to 1% is what said the fold was fine and the read was not
     (roadmap.md). A SMILE-LESS model has no better answer than a world per strike; the LogVar2FJ
-    arm carries one smile in one walk and is the mark of record. The FULL-PATH branch is unreached
-    by this and still reads one strip; under a kit the leg reads the walk's own law, bit for bit
-    what it read before.
+    arm carries one smile in one walk and is the mark of record; under a kit the leg reads the
+    walk's own law, bit for bit what it read before.
 
     THE COUPON READS A WINDOW. Each coupon owns a window of one or more price fixings; a window of
     one is the spot at that fixing and a longer one their arithmetic AVERAGE. Which of the two the
@@ -4213,18 +4197,16 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     window's LAST FIXING here, the nearest boundary this walk has. Both readings are half-lines in
     the SAME prefix return, so the breach is their intersection, the put leg stays one
     ``lognormal_fired_gain``, the payoff is the average either way, and a window of one is one bit
-    under both. On the OSS arm the
-    window's own fixing-to-fixing blocks are SAMPLED as plain Gaussians and the survival truncates
-    the PREFIX return alone - the average is ``c + S*exp(R_pre)*G`` with ``c`` the
-    observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in ``R_pre``
-    and every leg on the average is ``lognormal_fired_gain`` at a shifted forward. A fixing AT the
-    row is an observation, not a step. The LogVar2FJ kit, whose conditioning step IS the fixing
-    interval, takes a window longer than one; GBM keeps the full-path branch.
+    under both. The window's own fixing-to-fixing blocks are SAMPLED as plain Gaussians - the
+    kit's walked blocks, or GBM's own intervals of the strip, the put's on its own - and the
+    survival truncates the PREFIX return alone - the average is ``c + S*exp(R_pre)*G`` with ``c``
+    the observed fixings and ``G`` the sampled ones, so ``{A <= K}`` is still a half-line in
+    ``R_pre`` and every leg on the average is ``lognormal_fired_gain`` at a shifted forward. A
+    fixing AT the row is an observation, not a step.
 
     THE KNOCK-OUT LATCH IS CARRIED. ``terminationDate`` is stamped inside ``sim_spot`` at each
     observed fixing, returned as a by-product and handed to the next block's theta - an autocalled
-    path settles its coupon once and marks zero from then on. The full-path branch cannot stamp it,
-    its termination being a smoothed per-inner-path weight, and returns it unchanged.
+    path settles its coupon once and marks zero from then on.
 
     BOUNDARY AAD: the trigger's gap is decided on the window's own average INSIDE the simulation,
     so under the node it is an OUTPUT whose cotangent carries the correction. Each decision
@@ -4239,8 +4221,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     one decision per barrier date in a set of its own that latches nothing; an unobserved one is
     the conditional-p splice's.
 
-    BRANCH AND WEIGHT REACHES THE OSS ARM (``Branch_And_Weight``, THE DEFAULT, base valuation
-    only) and SUPERSEDES that registration rather than joining it. A constant coupon already makes
+    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SUPERSEDES that registration rather than joining it. A constant coupon already makes
     ``(1 - p) * L * coup * D_j`` a conditional expectation; what the switch adds is the deal's
     SECOND per-fixing decision, the PUT LEG INTEGRATED rather than sampled -
     ``breach * (rebate - (1 - S/strike))`` is a gain over one tail of the interval's own law, so it
@@ -4260,70 +4241,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     this iteration's coupon block did not advance ``Sj`` over, which is an OBSERVED fixing and
     exact. A coupon row of ``<= 0`` would be an inexact way; ``calc_dependencies`` refuses that
     document by name.
-
-    THE FULL-PATH BRANCH FALLS BACK TO THE CRISP ESTIMATOR, named at INFO: its termination is a
-    smoothed per-inner-path weight with no crisp per-scenario decision to replace and its
-    ``breached`` is a hard indicator, so clearing ``smooth`` prices it bit for bit as the switch off
-    does - greeks included, blind to the kink - and a mixed book runs under one setting.
     """
-    def sim_autocall(S, isBarrierDate, isFixingDate, isFloatDate, floating, threshold, coupon, terminationDate):
-        """The FULL-PATH branch's inner walk: coupons trigger off the running average of spots and
-        termination is a smoothed heaviside, so there is no crisp per-scenario decision. An
-        ``'Average'`` barrier date reads the window's fixings TO that date, and one that has none
-        is refused in ``calc_dependencies`` rather than compared against a mean of nothing."""
-        avg = 0.0
-        averageCounter = 0.0
-        fx = isQuanto * (fixFXRate - 1.0) + 1.0
-
-        resetTime = 0
-        breachEvent = barrierIsHit - 0.01
-        floatingTime = 0
-        sumOfSpots = 0.0
-
-        tMax = len(S)
-        # a payment lands on its own date's row, which the caller discounts at that date
-        mtm_list = S.new_zeros((len(isFixingDate),) + S.shape[1:])
-        paid = -1
-
-        for t in range(tMax):
-            inforce = 1.0 * (terminationDate < 0.0)
-
-            if isFixingDate[t] > 0.0:
-                sumOfSpots = sumOfSpots + S[t]
-                averageCounter = averageCounter + 1.0
-
-            if isBarrierDate[t] > 0.0:
-                # AFTER the fixing, so an `Average` date reads its own window fixing too; the count
-                # scales the LEVEL rather than dividing the sum, which costs `Spot` nothing
-                breachEvent = inforce * (observe(S[t], sumOfSpots) <=
-                                         putBarrier * observe(1.0, averageCounter))
-
-            if isFloatDate[t] > 0.0:
-                lastKnownFloatingRate = -floating[floatingTime]
-                mtm_list[t] = inforce * fx * lastKnownFloatingRate
-                floatingTime, paid = floatingTime + 1, t
-
-                if coupon[t] <= 0.0:
-                    resetTime = resetTime + 1
-
-            if coupon[t] > 0.0:
-                avg = sumOfSpots / averageCounter
-
-                sumOfSpots = 0.0
-                averageCounter = 0.0
-                termination = inforce * smooth_heaviside_up(avg, threshold[t] * strike)
-                mtm_list[t] += termination * fx * (rebate + coupon[t])
-                terminationDate = (1 - termination) * terminationDate + termination * resetTime
-                breachEvent = (1 - termination) * breachEvent
-
-                resetTime, paid = resetTime + 1, t
-
-        alive = 1.0 * (terminationDate < 0.0)
-        breached = 1.0 * (breachEvent > 0.0)
-        mtm_list[paid] += alive * fx * (rebate + breached * (rebate - (strike - avg) / strike))
-
-        return mtm_list.mean(axis=2)
-
     def sim_spot(offset, times, steps, row_days, row_times, windows, sobol, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, quanto, put_vols, *scalars):
@@ -4374,367 +4292,346 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         # each floating date's cashflow in the leg the block's rows forecast
         float_at = np.cumsum(np.asarray(isFloatingDate) > 0) - 1
 
-        # every coupon owning its own window of fixings is the one-step-survival arm
-        if factor_dep['oss_windows']:
-            eps = torch.finfo(shared.one.dtype).eps
-            # a put leg with a strip of its own; without one it reads the path's, bit for bit
-            own_put = bool(put_vols.numel())
-            fx = isQuanto * (fixFXRate - 1.0) + 1.0
-            # block-entry latch state: a scenario that fires at THIS block's fixing settles its
-            # coupon here and dies from the next block on
-            dead = (terminationDate != -1).squeeze(1)
-            mcmc = []
-            for i, (row_at, df, s, v, carry_rate, delta_t, host_dt, floating) in enumerate(zip(
-                    row_days, discount_rates, spot_prices, vols, carry, times, steps, floating_leg)):
+        eps = torch.finfo(shared.one.dtype).eps
+        # a put leg with a strip of its own; without one it reads the path's, bit for bit
+        own_put = bool(put_vols.numel())
 
-                # zero when only the floating leg is left
-                reduced_samples = len(delta_t)
-                u = law = None
-                if reduced_samples:
-                    # the mixer columns come AFTER the OSS ones, so a GBM row asks for nothing new
-                    n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-                    rows = reduced_samples + n_mix
-                    if sobol:
-                        # the canonical block's rows, raw: one per fixing broadcast over every
-                        # outer path, each mixer beside its exact complement
-                        u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
-                        mix = torch.stack([u[reduced_samples:], ubar[reduced_samples:]]
-                                          ) if n_mix else None
-                    else:
-                        wide = torch.rand([rows, shared.simulation_batch, num_sims],
-                                          dtype=torch.float64 if n_mix else shared.one.dtype,
-                                          device=shared.one.device)
-                        mix = wide[reduced_samples:]
-                        u, mix = wide.to(shared.one.dtype), torch.stack(
-                            [mix, 1.0 - mix]) if n_mix else None
-                # the walk starts from the ROW's own spot; a fixing already printed is read only by
-                # the decision it observes
-                Sj = torch.unsqueeze(s, 1)
-                if kit is not None and reduced_samples:
-                    # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
-                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False,
-                                     mix, quanto[i] if quanto.numel() else None)
+        def gbm_blocks(vols, carry_rate, delta_t, win):
+            """GBM's own intervals of a strip over `win` as a kit's walked blocks, steps last."""
+            dt = delta_t[win].reshape(-1, 1)
+            v, c = (x[win].reshape(dt.shape[0], -1) for x in (vols, carry_rate))
+            return ((c - 0.5 * v * v) * dt).T.unsqueeze(1), (v * torch.sqrt(dt)).T.unsqueeze(1)
 
-                P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
-                L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
-                # the counterfactual for this row's OBSERVED autocall; it does not exist until the
-                # trigger is met, at most once per row
-                P_cf = L_cf = None
-                # the accumulators run alive, so the ledger opens at one
-                ledger = SurvivalLedger(L) if smooth else None
-                # the vol is per INTERVAL, so it is picked off the strip at the coupon's own index
-                # rather than hoisted out of the loop
-                D = df.unsqueeze(2)
-                # the put leg's own walk and weight, on the strip ITS strike reads; the same
-                # tensors bit for bit where that strip is the path's
-                put_S, put_L = Sj, L
+        def window(m, s, z, n_win):
+            """A window's sampled blocks: its last fixing over its first, and the average's factor."""
+            blocks = (m + s * z).cumsum(-1)
+            return torch.exp(blocks[..., -1]), (1.0 + torch.exp(blocks).sum(-1)) / n_win
 
-                coupon_index = coupon_count = 0
+        fx = isQuanto * (fixFXRate - 1.0) + 1.0
+        # block-entry latch state: a scenario that fires at THIS block's fixing settles its
+        # coupon here and dies from the next block on
+        dead = (terminationDate != -1).squeeze(1)
+        mcmc = []
+        for i, (row_at, df, s, v, carry_rate, delta_t, host_dt, floating) in enumerate(zip(
+                row_days, discount_rates, spot_prices, vols, carry, times, steps, floating_leg)):
 
-                def booked(settle, cash):
-                    """`cash` paid on THIS row, per scenario, beside what the row already books."""
-                    paid = torch.where(dead, 0.0, cash.mean(axis=1))
-                    return paid if settle is None else settle + paid
+            # zero when only the floating leg is left
+            reduced_samples = len(delta_t)
+            u = law = None
+            if reduced_samples:
+                # the mixer columns come AFTER the OSS ones, so a GBM row asks for nothing new
+                n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
+                rows = reduced_samples + n_mix
+                if sobol:
+                    # the canonical block's rows, raw: one per fixing broadcast over every
+                    # outer path, each mixer beside its exact complement
+                    u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
+                    mix = torch.stack([u[reduced_samples:], ubar[reduced_samples:]]
+                                      ) if n_mix else None
+                else:
+                    wide = torch.rand([rows, shared.simulation_batch, num_sims],
+                                      dtype=torch.float64 if n_mix else shared.one.dtype,
+                                      device=shared.one.device)
+                    mix = wide[reduced_samples:]
+                    u, mix = wide.to(shared.one.dtype), torch.stack(
+                        [mix, 1.0 - mix]) if n_mix else None
+            # the walk starts from the ROW's own spot; a fixing already printed is read only by
+            # the decision it observes
+            Sj = torch.unsqueeze(s, 1)
+            if kit is not None and reduced_samples:
+                # one walk per row, AFTER its `u`; NOT antithetic, this loop drawing raw
+                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, False,
+                                 mix, quanto[i] if quanto.numel() else None)
 
-                def fixing(j, Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                           coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t, host_dt=host_dt,
-                           carry_rate=carry_rate, v=v, row_at=row_at, ledger=ledger,
-                           floating=floating):
-                    """One date of the strip: the state it leaves, and the decision, the settlement
-                    and the put leg's indicator it returns (see `oss_stream`)."""
-                    coup, thresh = coupon[j], threshold[j]
-                    barrier = isBarrierDate[j]
-                    event = settle = bar = declared = None
-                    due = {}
-                    # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
-                    # None - the put leg below integrates against it, and only a fresh one is one
-                    interval = None
-                    # what this date's decisions read: the window's average where a coupon block
-                    # ran, this row's own spot otherwise; `seen` the window's last print, where it
-                    # was observed before this row
-                    decided, seen = Sj, None
+            P = torch.zeros((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
+            L = torch.ones((shared.simulation_batch, num_sims), dtype=shared.one.dtype, device=shared.one.device)
+            # the counterfactual for this row's OBSERVED autocall; it does not exist until the
+            # trigger is met, at most once per row
+            P_cf = L_cf = None
+            # the accumulators run alive, so the ledger opens at one
+            ledger = SurvivalLedger(L) if smooth else None
+            # the vol is per INTERVAL, so it is picked off the strip at the coupon's own index
+            # rather than hoisted out of the loop
+            D = df.unsqueeze(2)
+            # the put leg's own walk and weight, on the strip ITS strike reads; the same
+            # tensors bit for bit where that strip is the path's
+            put_S, put_L = Sj, L
 
-                    if isFloatingDate[j] > 0:
-                        # the leg the row forecasts, a started period's amount fixed in it
-                        amount = floating[float_at[j]]
-                        float_cash = L * fx * -amount * D[j]
-                        P = P + float_cash
-                        if P_cf is not None:
-                            # the counterfactual is read detached, so it is built off the tape
-                            with torch.no_grad():
-                                P_cf = P_cf + L_cf * fx * -amount * D[j]
-                        if row_at[j] == 0.0:
-                            # the leg pays on this row
-                            settle = booked(settle, float_cash)
-                            due['float'] = fx * -amount * D[j]
+            coupon_index = coupon_count = 0
 
-                    if coup > 0:
-                        K = thresh * strike
-                        n_win, n_obs, obs_lo = windows[coupon_count].tolist()
-                        coupon_count += 1
-                        obs = past_fixings[obs_lo:obs_lo + n_obs].sum(0).unsqueeze(1) if n_obs else 0.0
-                        ahead = n_win - n_obs
-                        if ahead and host_dt[coupon_index] <= 0:
-                            # a fixing AT this row is an OBSERVATION, not a step - the row's own
-                            # spot IS it, and the interval it would open has no length
-                            obs, ahead, coupon_index = obs + Sj, ahead - 1, coupon_index + 1
-                        # the average's observed part and its sampled factor; a window of one
-                        # leaves both at the constants the no-averaging arithmetic reads
-                        c, G, win_end = obs / n_win, 1.0 / n_win, 1.0
-                        dt = delta_t[coupon_index] if ahead else 0.0
-                        if ahead and host_dt[coupon_index] > 0:
-                            # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
-                            forward_carry = carry_rate[coupon_index].reshape(-1, 1)
-                            # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
-                            # the step GBM simulates, the fixing interval BEING that step. `s`
-                            # shadows the row's spot, which `Sj` captured before the loop
-                            if kit is None:
-                                vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
-                                m, s = ((forward_carry - 0.5 * vol * vol) * dt,
-                                        vol * torch.sqrt(dt))
-                            else:
-                                m, s = law[0][..., coupon_index], law[1][..., coupon_index]
+            def booked(settle, cash):
+                """`cash` paid on THIS row, per scenario, beside what the row already books."""
+                paid = torch.where(dead, 0.0, cash.mean(axis=1))
+                return paid if settle is None else settle + paid
+
+            def fixing(j, Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                       coupon_count, i=i, u=u, law=law, D=D, delta_t=delta_t, host_dt=host_dt,
+                       carry_rate=carry_rate, v=v, row_at=row_at, ledger=ledger,
+                       floating=floating):
+                """One date of the strip: the state it leaves, and the decision, the settlement
+                and the put leg's indicator it returns (see `oss_stream`)."""
+                coup, thresh = coupon[j], threshold[j]
+                barrier = isBarrierDate[j]
+                event = settle = bar = declared = None
+                due = {}
+                # the conditioning step THIS iteration's coupon block advanced `Sj` over, or
+                # None - the put leg below integrates against it, and only a fresh one is one
+                interval = None
+                # what this date's decisions read: the window's average where a coupon block
+                # ran, this row's own spot otherwise; `seen` the window's last print, where it
+                # was observed before this row
+                decided, seen = Sj, None
+
+                if isFloatingDate[j] > 0:
+                    # the leg the row forecasts, a started period's amount fixed in it
+                    amount = floating[float_at[j]]
+                    float_cash = L * fx * -amount * D[j]
+                    P = P + float_cash
+                    if P_cf is not None:
+                        # the counterfactual is read detached, so it is built off the tape
+                        with torch.no_grad():
+                            P_cf = P_cf + L_cf * fx * -amount * D[j]
+                    if row_at[j] == 0.0:
+                        # the leg pays on this row
+                        settle = booked(settle, float_cash)
+                        due['float'] = fx * -amount * D[j]
+
+                if coup > 0:
+                    K = thresh * strike
+                    n_win, n_obs, obs_lo = windows[coupon_count].tolist()
+                    coupon_count += 1
+                    obs = past_fixings[obs_lo:obs_lo + n_obs].sum(0).unsqueeze(1) if n_obs else 0.0
+                    ahead = n_win - n_obs
+                    if ahead and host_dt[coupon_index] <= 0:
+                        # a fixing AT this row is an OBSERVATION, not a step - the row's own
+                        # spot IS it, and the interval it would open has no length
+                        obs, ahead, coupon_index = obs + Sj, ahead - 1, coupon_index + 1
+                    # the average's observed part and its sampled factor; a window of one
+                    # leaves both at the constants the no-averaging arithmetic reads
+                    c, G, win_end = obs / n_win, 1.0 / n_win, 1.0
+                    dt = delta_t[coupon_index] if ahead else 0.0
+                    if ahead and host_dt[coupon_index] > 0:
+                        # `carry` arrives as the INTERVAL carry strip (forward_carry_rate)
+                        forward_carry = carry_rate[coupon_index].reshape(-1, 1)
+                        # THE INTERVAL'S OWN LAW as `(m, s)` - the kit's walked block, or
+                        # the step GBM simulates, the fixing interval BEING that step. `s`
+                        # shadows the row's spot, which `Sj` captured before the loop
+                        if kit is None:
+                            vol = v[coupon_index].reshape(-1, 1)  # [batch,1]
+                            m, s = ((forward_carry - 0.5 * vol * vol) * dt,
+                                    vol * torch.sqrt(dt))
+                        else:
+                            m, s = law[0][..., coupon_index], law[1][..., coupon_index]
+                        if ahead > 1:
+                            # THE WINDOW: fixing-to-fixing blocks of the same walk, drawn
+                            # as plain Gaussians off their own dimensions of this row's
+                            # block, and summed into the average's factor `G`
+                            win = slice(coupon_index + 1, coupon_index + ahead)
+                            z = utils.norm_icdf(
+                                torch.clamp(u[win], eps, 1.0 - eps)).permute(1, 2, 0)
+                            win_end, G = window(*(
+                                gbm_blocks(v, carry_rate, delta_t, win) if kit is None
+                                else (law[0][..., win], law[1][..., win])), z, n_win)
+                        scale = Sj * G
+                        k_ratio = (K - c) / scale
+                        p = utils.norm_cdf(
+                            (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
+                        # THE PUT LEG'S OWN INTERVAL - this interval's forward, its own
+                        # strike's variance and the trigger's survival under that law; a kit's
+                        # ONE law carries the smile, so each is then the path's own bits
+                        put_m, put_s, put_scale, put_k, put_p = m, s, scale, k_ratio, p
+                        put_end, put_G = win_end, G
+                        if own_put:
+                            put_vol = put_vols[i][coupon_index].reshape(-1, 1)
+                            put_m, put_s = (
+                                (forward_carry - 0.5 * put_vol * put_vol) * dt,
+                                put_vol * torch.sqrt(dt))
                             if ahead > 1:
-                                # THE WINDOW: fixing-to-fixing blocks of the same walk, drawn
-                                # as plain Gaussians off their own dimensions of this row's
-                                # block, and summed into the average's factor `G`
-                                win = slice(coupon_index + 1, coupon_index + ahead)
-                                z = utils.norm_icdf(
-                                    torch.clamp(u[win], eps, 1.0 - eps)).permute(1, 2, 0)
-                                steps = (law[0][..., win] + law[1][..., win] * z).cumsum(-1)
-                                win_end = torch.exp(steps[..., -1])
-                                G = (1.0 + torch.exp(steps).sum(-1)) / n_win
-                            scale = Sj * G
-                            k_ratio = (K - c) / scale
-                            p = utils.norm_cdf(
-                                (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
-                            # THE PUT LEG'S OWN INTERVAL - this interval's forward, its own
-                            # strike's variance and the trigger's survival under that law; a kit's
-                            # ONE law carries the smile, so each is then the path's own bits
-                            put_m, put_s, put_scale, put_k, put_p = m, s, scale, k_ratio, p
-                            if own_put:
-                                put_vol = put_vols[i][coupon_index].reshape(-1, 1)
-                                put_m, put_s = (
-                                    (forward_carry - 0.5 * put_vol * put_vol) * dt,
-                                    put_vol * torch.sqrt(dt))
-                                put_scale = put_S * G
-                                put_k = (K - c) / put_scale
-                                put_p = utils.norm_cdf(
-                                    (torch.log(torch.clamp_min(put_k, eps)) - put_m) / put_s)
-                            if barrier > 0 and putBarrier > 0.0:
-                                # held below: the average's pre-advance factor, the prefix's law,
-                                # the weight before `p` enters `L`, the breach's half-line
-                                # INTERSECTED with the surviving one (one return), and the shift
-                                b_ratio = observe(putBarrier, putBarrier - c) / (
-                                    put_S * observe(win_end, G))
-                                interval = (put_scale, put_m, put_s, put_L, (torch.log(
-                                    torch.clamp_min(torch.minimum(b_ratio, put_k), eps))
-                                    - put_m) / put_s, c)
-                        else:
-                            decided = obs / n_win
-                            if n_obs == n_win:
-                                seen = past_fixings[obs_lo + n_obs - 1].unsqueeze(1)
-                            p = torch.where(K > decided, 1.0, 0.0)
-                            put_p = p
-                            if row_at[j] == 0.0:
-                                # stamp the latch: the coupon's date IS this row, the decision is
-                                # the scenario's own average, and the marker is the fixing index
-                                terminationDate = torch.where(
-                                    (terminationDate == -1) & (p == 0), float(offset), terminationDate)
-
-                        if P_cf is not None:
-                            # every LATER coupon is the same smooth p in both worlds - the weight
-                            # never feeds back into Sj, so the fork is one extra accumulator rather
-                            # than a second simulation
-                            with torch.no_grad():
-                                P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
-                                L_cf = p * L_cf
-                        elif boundary_aad and not ahead:
-                            # OBSERVED here: `decided` is the scenario's own average, gap > 0 means
-                            # FIRED, the branches are DEAD-AWARE, and every row observing a coupon
-                            # forks the decision its own row registers
-                            event = (torch.log(decided / K).squeeze(dim=1), torch.where(
-                                dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach(),
-                                (offset + j, row_at[j] == 0.0))
-                            if row_at[j] == 0.0:
-                                due['coupon'] = fx * coup * D[j]
-                            P_cf, L_cf = P, L
-
-                        # the payment this coupon makes: the knocked-out weight times the coupon,
-                        # discounted from the row to the coupon's own date. On an OBSERVED coupon
-                        # (dt <= 0) that discount is 1 and this IS the cash that changes hands.
-                        coupon_cash = fx * (1 - p) * L * coup * D[j]
-                        P = P + coupon_cash
-                        if ledger is not None:
-                            # `L * p` and `p * L` are the same IEEE product, so the ledger's advance
-                            # is the crisp line's; what it adds is the fired mass beside it, off the
-                            # SAME `p`, which is what makes the identity exact
-                            ledger.fire(p)
-                            L = ledger.alive
-                        else:
-                            L = p * L
-                        put_L = put_p * put_L if own_put else L
+                                # the window's blocks on the put's own strip, off the same draws
+                                put_end, put_G = window(
+                                    *gbm_blocks(put_vols[i], carry_rate, delta_t, win), z, n_win)
+                            put_scale = put_S * put_G
+                            put_k = (K - c) / put_scale
+                            put_p = utils.norm_cdf(
+                                (torch.log(torch.clamp_min(put_k, eps)) - put_m) / put_s)
+                        if barrier > 0 and putBarrier > 0.0:
+                            # held below: the average's pre-advance factor, the prefix's law,
+                            # the weight before `p` enters `L`, the breach's half-line
+                            # INTERSECTED with the surviving one (one return), and the shift
+                            b_ratio = observe(putBarrier, putBarrier - c) / (
+                                put_S * observe(put_end, put_G))
+                            interval = (put_scale, put_m, put_s, put_L, (torch.log(
+                                torch.clamp_min(torch.minimum(b_ratio, put_k), eps))
+                                - put_m) / put_s, c)
+                    else:
+                        decided = obs / n_win
+                        if n_obs == n_win:
+                            seen = past_fixings[obs_lo + n_obs - 1].unsqueeze(1)
+                        p = torch.where(K > decided, 1.0, 0.0)
+                        put_p = p
                         if row_at[j] == 0.0:
-                            # SETTLE HERE, not at the bottom of the loop: a test down there holds
-                            # for every coupon and would book the running `P` - the accumulated
-                            # VALUE, not the payment - once per coupon
-                            settle = booked(settle, coupon_cash)
-                            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                                logging.debug(
-                                    'AUTOCALL_SETTLE row=%d j=%d coup=%.6g cash=%.6g P=%.6g',
-                                    i, j, float(coup), float(settle.mean()), float(P.mean()))
+                            # stamp the latch: the coupon's date IS this row, the decision is
+                            # the scenario's own average, and the marker is the fixing index
+                            terminationDate = torch.where(
+                                (terminationDate == -1) & (p == 0), float(offset), terminationDate)
 
-                        if ahead:
-                            # prevent underflow or overflow
-                            safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
+                    if P_cf is not None:
+                        # every LATER coupon is the same smooth p in both worlds - the weight
+                        # never feeds back into Sj, so the fork is one extra accumulator rather
+                        # than a second simulation
+                        with torch.no_grad():
+                            P_cf = P_cf + fx * (1 - p) * L_cf * coup * D[j]
+                            L_cf = p * L_cf
+                    elif boundary_aad and not ahead:
+                        # OBSERVED here: `decided` is the scenario's own average, gap > 0 means
+                        # FIRED, the branches are DEAD-AWARE, and every row observing a coupon
+                        # forks the decision its own row registers
+                        event = (torch.log(decided / K).squeeze(dim=1), torch.where(
+                            dead, 0.0, (P + fx * L * coup * D[j]).mean(axis=1)).detach(),
+                            (offset + j, row_at[j] == 0.0))
+                        if row_at[j] == 0.0:
+                            due['coupon'] = fx * coup * D[j]
+                        P_cf, L_cf = P, L
 
-                            Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
-                            # the average this coupon decided on, then the window's LAST fixing,
-                            # which is where the next coupon's prefix opens
-                            decided = c + Sj * G
-                            Sj = Sj * win_end
-                            if own_put:
-                                # THE PUT'S OWN STEP off the SAME uniform, so the leg walks its
-                                # strike's world without asking the stream for a number
-                                put_S = put_S * torch.exp(put_m + put_s * utils.norm_icdf(
-                                    torch.clamp(put_p * u[coupon_index], min=eps, max=1.0-eps)))
-                                put_read = (put_S * win_end, c + put_S * G)
-                                put_S = put_S * win_end
-                            else:
-                                put_S, put_read = Sj, (Sj, decided)
-                            coupon_index += ahead
+                    # the payment this coupon makes: the knocked-out weight times the coupon,
+                    # discounted from the row to the coupon's own date. On an OBSERVED coupon
+                    # (dt <= 0) that discount is 1 and this IS the cash that changes hands.
+                    coupon_cash = fx * (1 - p) * L * coup * D[j]
+                    P = P + coupon_cash
+                    if ledger is not None:
+                        # `L * p` and `p * L` are the same IEEE product, so the ledger's advance
+                        # is the crisp line's; what it adds is the fired mass beside it, off the
+                        # SAME `p`, which is what makes the identity exact
+                        ledger.fire(p)
+                        L = ledger.alive
+                    else:
+                        L = p * L
+                    put_L = put_p * put_L if own_put else L
+                    if row_at[j] == 0.0:
+                        # SETTLE HERE, not at the bottom of the loop: a test down there holds
+                        # for every coupon and would book the running `P` - the accumulated
+                        # VALUE, not the payment - once per coupon
+                        settle = booked(settle, coupon_cash)
+                        if logging.getLogger().isEnabledFor(logging.DEBUG):
+                            logging.debug(
+                                'AUTOCALL_SETTLE row=%d j=%d coup=%.6g cash=%.6g P=%.6g',
+                                i, j, float(coup), float(settle.mean()), float(P.mean()))
 
-                    if barrier > 0:
-                        # WHAT THE BREACH READS - the deal's `Barrier_Observation`: the window's
-                        # last fixing, which is where the walk left `Sj` or the print it was, or the
-                        # average the trigger itself decided on. The PAYOFF stays the average
-                        at = observe(Sj if seen is None else seen, decided)
-                        if interval is not None:
-                            # THE PUT LEG, INTEGRATED against `bound`; `L_prev`, the weight before
-                            # `p` entered `L`, IS `L / p` without the 0/0 where every path fired,
-                            # and the law, weight and both readings are its own strike's
-                            scale, put_m, put_s, L_prev, bound, c = interval
-                            at, decided = observe(*put_read), put_read[1]
-                            analytic = L_prev * D[j] * fx * lognormal_fired_gain(
-                                scale, put_m, put_s, bound, strike * (1.0 - rebate) - c,
-                                False) / strike
-                            if smooth:
-                                P = P + analytic
-                            else:
-                                # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit
-                                # for bit, every derivative is the integral's
-                                breach = torch.where(at <= putBarrier, 1.0, 0.0)
-                                crisp = put_L * D[j] * fx * breach * (
-                                    rebate - (1.0 - decided / strike))
-                                P = P + crisp + splice_conditional_p(crisp, analytic)
-                                if P_cf is not None:
-                                    with torch.no_grad():
-                                        P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                            rebate - (1.0 - decided / strike))
+                    if ahead:
+                        # prevent underflow or overflow
+                        safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
+
+                        Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
+                        # the average this coupon decided on, then the window's LAST fixing,
+                        # which is where the next coupon's prefix opens
+                        decided = c + Sj * G
+                        Sj = Sj * win_end
+                        if own_put:
+                            # THE PUT'S OWN STEP off the SAME uniform, so the leg walks its
+                            # strike's world without asking the stream for a number
+                            put_S = put_S * torch.exp(put_m + put_s * utils.norm_icdf(
+                                torch.clamp(put_p * u[coupon_index], min=eps, max=1.0-eps)))
+                            put_read = (put_S * put_end, c + put_S * put_G)
+                            put_S = put_S * put_end
                         else:
-                            # no conditioning step this iteration: the fixing is OBSERVED, and the
-                            # breach EXACT on the level the deal names
+                            put_S, put_read = Sj, (Sj, decided)
+                        coupon_index += ahead
+
+                if barrier > 0:
+                    # WHAT THE BREACH READS - the deal's `Barrier_Observation`: the window's
+                    # last fixing, which is where the walk left `Sj` or the print it was, or the
+                    # average the trigger itself decided on. The PAYOFF stays the average
+                    at = observe(Sj if seen is None else seen, decided)
+                    if interval is not None:
+                        # THE PUT LEG, INTEGRATED against `bound`; `L_prev`, the weight before
+                        # `p` entered `L`, IS `L / p` without the 0/0 where every path fired,
+                        # and the law, weight and both readings are its own strike's
+                        scale, put_m, put_s, L_prev, bound, c = interval
+                        at, decided = observe(*put_read), put_read[1]
+                        analytic = L_prev * D[j] * fx * lognormal_fired_gain(
+                            scale, put_m, put_s, bound, strike * (1.0 - rebate) - c,
+                            False) / strike
+                        if smooth:
+                            P = P + analytic
+                        else:
+                            # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit
+                            # for bit, every derivative is the integral's
                             breach = torch.where(at <= putBarrier, 1.0, 0.0)
-                            put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
-                            P = P + breach * put_leg
-                            if row_at[j] == 0.0:
-                                # the put pays on its own date, which this row is
-                                settle = booked(settle, breach * put_leg)
-                                due['put'] = breach * D[j] * fx * (rebate - (1.0 - decided / strike))
+                            crisp = put_L * D[j] * fx * breach * (
+                                rebate - (1.0 - decided / strike))
+                            P = P + crisp + splice_conditional_p(crisp, analytic)
                             if P_cf is not None:
                                 with torch.no_grad():
                                     P_cf = P_cf + L_cf * D[j] * fx * breach * (
                                         rebate - (1.0 - decided / strike))
-                            if boundary_aad and putBarrier > 0.0:
-                                # the scenario's own breach, gap > 0 BREACHED, and what the row
-                                # gains where it flips - here only, the splice taking it where
-                                # `interval` is set; no barrier decides nothing (log(0))
-                                bar = (torch.log(putBarrier / at).squeeze(1), breach.squeeze(1),
-                                       torch.where(dead, 0.0, put_leg.mean(axis=1)).detach(),
-                                       (offset + j, row_at[j] == 0.0))
-                    if settle is not None and boundary_aad:
-                        # the row's WHOLE cash, unmasked, in the two states of the decision gating
-                        # it: its own where the coupon is decided here, else the last one before
-                        # it, whose firing leaves the row nothing to pay
-                        both = due.get('float', 0.0)
-                        declared = tuple(
-                            x.mean(axis=1).detach() if torch.is_tensor(x) else torch.zeros_like(settle)
-                            for x in (both + due['coupon'] if 'coupon' in due else 0.0,
-                                      both + due.get('put', 0.0)))
-                    return (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                            coupon_count), (event, settle, bar, declared)
+                    else:
+                        # no conditioning step this iteration: the fixing is OBSERVED, and the
+                        # breach EXACT on the level the deal names
+                        breach = torch.where(at <= putBarrier, 1.0, 0.0)
+                        put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
+                        P = P + breach * put_leg
+                        if row_at[j] == 0.0:
+                            # the put pays on its own date, which this row is
+                            settle = booked(settle, breach * put_leg)
+                            due['put'] = breach * D[j] * fx * (rebate - (1.0 - decided / strike))
+                        if P_cf is not None:
+                            with torch.no_grad():
+                                P_cf = P_cf + L_cf * D[j] * fx * breach * (
+                                    rebate - (1.0 - decided / strike))
+                        if boundary_aad and putBarrier > 0.0:
+                            # the scenario's own breach, gap > 0 BREACHED, and what the row
+                            # gains where it flips - here only, the splice taking it where
+                            # `interval` is set; no barrier decides nothing (log(0))
+                            bar = (torch.log(putBarrier / at).squeeze(1), breach.squeeze(1),
+                                   torch.where(dead, 0.0, put_leg.mean(axis=1)).detach(),
+                                   (offset + j, row_at[j] == 0.0))
+                if settle is not None and boundary_aad:
+                    # the row's WHOLE cash, unmasked, in the two states of the decision gating
+                    # it: its own where the coupon is decided here, else the last one before
+                    # it, whose firing leaves the row nothing to pay
+                    both = due.get('float', 0.0)
+                    declared = tuple(
+                        x.mean(axis=1).detach() if torch.is_tensor(x) else torch.zeros_like(settle)
+                        for x in (both + due['coupon'] if 'coupon' in due else 0.0,
+                                  both + due.get('put', 0.0)))
+                return (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                        coupon_count), (event, settle, bar, declared)
 
-                # a ledger is mutated step by step, so a smoothed row walks the plain loop
-                (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                 coupon_count), steps = oss_stream(
-                    fixing, (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                             coupon_count), len(coupon), shared.oss_chunk if ledger is None else 0)
-                row_bars = []
-                for event, settle, bar, declared in steps:
-                    if event is not None:
-                        event_rows.append((i,) + event[2])
-                        gaps.append(event[0])
-                        fired.append(event[1])
-                    if settle is not None:
-                        settled.append(settle)
-                        settle_rows.append(i)
-                    if declared is not None:
-                        due_fired.append(declared[0])
-                        due_survived.append(declared[1])
-                    if bar is not None:
-                        row_bars.append(bar)
-
-                if ledger is not None:
-                    ledger.check('AUTOCALL row {}'.format(i))
-                row_value = P.mean(axis=1)
-                alive.append(row_value)
-                mcmc.append(torch.where(dead, torch.zeros_like(row_value), row_value))
-                if P_cf is not None:
-                    survived.append(torch.where(dead, 0.0, P_cf.mean(axis=1)).detach())
-                for gap, breach, jump, key in row_bars:
-                    # the row's value with the put breached and not, everything else as it stands
-                    held = torch.where(dead, 0.0, row_value - breach * jump).detach()
-                    bar_rows.append((i,) + key)
-                    bar_gaps.append(gap)
-                    bar_on.append(held + jump)
-                    bar_off.append(held)
-                    bar_jumps.append(jump)
-        else:
-            isFixingDate = FixingDates[offset:]
-            dt = times.unsqueeze(axis=2)
-            # a ZERO-LENGTH step is the IDENTITY - the row IS the observation date, so the running
-            # average takes its own spot rather than a sigma kick of it. The floor stays under
-            # `sqrt`, whose gradient at an exact zero is not finite; the mask is what zeroes the step
-            live = (dt > 0).to(vols.dtype)
-            # `vols` is the INTERVAL strip (forward_vol_rate), so this product is interval variance
-            var = vols * vols * dt
-            var = torch.where(dt > 0, var, var.clamp(min=1e-4))
-            drift = (carry * dt - 0.5 * var) * live
-            vol = torch.sqrt(var) * live
-
-            mcmc = []
-            for i, (row_at, D, s, r, sigma, floating) in enumerate(zip(
-                    row_days, discount_rates, spot_prices, drift, vol, floating_leg)):
-                if sobol:
-                    z = utils.norm_icdf(shared.inner_block(num_samples, num_sims)[0]).unsqueeze(1)
-                else:
-                    z = torch.randn([num_samples, shared.simulation_batch, num_sims],
-                                    dtype=shared.one.dtype, device=shared.one.device)
-                f1 = (r.unsqueeze(axis=2) + sigma.unsqueeze(axis=2) * z).cumsum(axis=0)
-                mcmc_spot = s.reshape(1, -1, 1) * torch.exp(f1)
-                val = sim_autocall(
-                    mcmc_spot, isBarrierDate, isFixingDate, isFloatingDate, floating, threshold, coupon,
-                    terminationDate)
-                pv = (val * D).sum(axis=0)
-                mcmc.append(pv)
-
-                # RETURNED, because a replay would settle these twice
-                if row_at[0] == 0.0:
-                    settled.append(pv)
+            # a ledger is mutated step by step, so a smoothed row walks the plain loop
+            (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+             coupon_count), steps = oss_stream(
+                fixing, (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
+                         coupon_count), len(coupon), shared.oss_chunk if ledger is None else 0)
+            row_bars = []
+            for event, settle, bar, declared in steps:
+                if event is not None:
+                    event_rows.append((i,) + event[2])
+                    gaps.append(event[0])
+                    fired.append(event[1])
+                if settle is not None:
+                    settled.append(settle)
                     settle_rows.append(i)
-            # the full-path branch carries NO latch out - its termination is a smoothed
-            # per-inner-path weight, with no crisp per-scenario decision to stamp. The incoming
-            # latch is respected (sim_autocall's `inforce`) and returned unchanged
+                if declared is not None:
+                    due_fired.append(declared[0])
+                    due_survived.append(declared[1])
+                if bar is not None:
+                    row_bars.append(bar)
+
+            if ledger is not None:
+                ledger.check('AUTOCALL row {}'.format(i))
+            row_value = P.mean(axis=1)
+            alive.append(row_value)
+            mcmc.append(torch.where(dead, torch.zeros_like(row_value), row_value))
+            if P_cf is not None:
+                survived.append(torch.where(dead, 0.0, P_cf.mean(axis=1)).detach())
+            for gap, breach, jump, key in row_bars:
+                # the row's value with the put breached and not, everything else as it stands
+                held = torch.where(dead, 0.0, row_value - breach * jump).detach()
+                bar_rows.append((i,) + key)
+                bar_gaps.append(gap)
+                bar_on.append(held + jump)
+                bar_off.append(held)
+                bar_jumps.append(jump)
 
         stack = lambda rows: torch.stack(rows) if rows else spot_prices.new_empty(0)
         return (torch.stack(mcmc), stack(settled), settle_rows, event_rows, terminationDate,
@@ -4754,29 +4651,28 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     dual_samples = samples.dual()
     start_index, counts = np.unique(start_idx, return_counts=True)
 
-    if factor_dep['oss_windows']:
-        # a reset can be prior to its coupon date, so the two schedules are tracked separately
-        equity_samples = factor_dep['Price_Fixing']
-        coupon_samples = factor_dep['Coupon_Fixing']
-        eq_start_idx = equity_samples.get_start_index(deal_time)
-        cp_start_idx = coupon_samples.get_start_index(deal_time)
-        known_resets = equity_samples.known_resets(shared.simulation_batch)
-        sim_samples = equity_samples.schedule[
-            (equity_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
-            (equity_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
-        past_samples = utils.calc_time_grid_spot_rate(
-            deal_data.Factor_dep['Equity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
-        all_eq_samples = torch.cat(
-            [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
-        fixing_indices = counts.cumsum() - 1
-        eq_start_index = eq_start_idx[fixing_indices]
-        cp_start_index = cp_start_idx[fixing_indices]
-        # each coupon's LAST observation, as `calc_dependencies` paired it; the extra entry is the
-        # open window a block past every coupon reads
-        coupon_equity_index = np.append(
-            factor_dep['Coupon_Windows'], factor_dep['Coupon_Windows'][-1] + 1)
-        # each coupon's window OPENS one past its predecessor's last fixing
-        coupon_window_lo = np.concatenate([[0], coupon_equity_index[:-1] + 1])
+    # a reset can be prior to its coupon date, so the two schedules are tracked separately
+    equity_samples = factor_dep['Price_Fixing']
+    coupon_samples = factor_dep['Coupon_Fixing']
+    eq_start_idx = equity_samples.get_start_index(deal_time)
+    cp_start_idx = coupon_samples.get_start_index(deal_time)
+    known_resets = equity_samples.known_resets(shared.simulation_batch)
+    sim_samples = equity_samples.schedule[
+        (equity_samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+        (equity_samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
+    past_samples = utils.calc_time_grid_spot_rate(
+        deal_data.Factor_dep['Equity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+    all_eq_samples = torch.cat(
+        [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
+    fixing_indices = counts.cumsum() - 1
+    eq_start_index = eq_start_idx[fixing_indices]
+    cp_start_index = cp_start_idx[fixing_indices]
+    # each coupon's LAST observation, as `calc_dependencies` paired it; the extra entry is the
+    # open window a block past every coupon reads
+    coupon_equity_index = np.append(
+        factor_dep['Coupon_Windows'], factor_dep['Coupon_Windows'][-1] + 1)
+    # each coupon's window OPENS one past its predecessor's last fixing
+    coupon_window_lo = np.concatenate([[0], coupon_equity_index[:-1] + 1])
 
     if 'Forward' in factor_dep:
         resets = factor_dep['Cashflows'].Resets
@@ -4791,8 +4687,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         forward = discount
 
     BarrierDates = factor_dep['Barrier_Dates']
-    if not factor_dep['oss_windows']:
-        FixingDates = [1 if x != -1 else -1 for x in factor_dep['Price_Fixing']]
     Threshold = factor_dep['Autocall_Thresholds']
     Floating = factor_dep['Autocall_Floating']
     Coupon = factor_dep['Autocall_Coupons']
@@ -4801,7 +4695,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     isQuanto = 1.0 * ('QuantoImpliedCorrelation' in factor_dep)
     fixFXRate = deal_data.Instrument.field.get('FixFXRate', 1.0)
     rebate = deal_data.Instrument.field.get('Rebate', 0.0)
-    barrierIsHit = 1.0 * (deal_data.Instrument.field.get('BarrierIsHit') is not None)
     strike = factor_dep['Strike_Price']
     # THE PUT LEG'S OWN STRIKE: a `Rebate` 0 leg is a full loss below the barrier, which is a
     # vanilla plus a digital both struck THERE; with a rebate it is the level the payoff crosses
@@ -4809,32 +4702,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     nominal = factor_dep['Buy_Sell'] * deal_data.Instrument.field['Units']
     terminationDate = -shared.one.new_ones(shared.simulation_batch, 1)
 
-    # the ARM changes the estimator, not the product: the OSS path integrates each coupon's
-    # survival analytically off its window's prefix, the full-path one simulates a mean of spots
-    logging.debug('AUTOCALL %s coupons=%d thresholds=%d fullpath=%d barrier=%.6g blocks=%d',
+    logging.debug('AUTOCALL %s coupons=%d thresholds=%d barrier=%.6g blocks=%d',
                   deal_data.Instrument.field.get('Reference'), int((np.asarray(Coupon) > 0).sum()),
-                  len(Threshold), int(not factor_dep['oss_windows']), putBarrier, len(counts))
+                  len(Threshold), putBarrier, len(counts))
 
-    # read once before a draw is taken so a non-GBM refusal lands first. It SUPERSEDES the
-    # registration below rather than joining it - one decision, one estimator
+    # it SUPERSEDES the registration below rather than joining it - one decision, one estimator
     smooth = shared.branch_and_weight
-    if smooth and not factor_dep['oss_windows']:
-        # THE FALLBACK, so a mixed book runs under ONE setting with every deal priced: clearing
-        # `smooth` restores the crisp path entire - the registration below, the estimator, the bits
-        smooth = False
-        logging.info(
-            "Branch_And_Weight: 'Yes' falls back to the CRISP estimator on %s - it prices on the "
-            'FULL-PATH branch (a barrier date off the coupon dates, or a window of fixings under '
-            'GBM or a DAILY spot model), whose termination is a smoothed per-inner-path weight '
-            '(pricing.smooth_heaviside_up) and whose breach is a hard indicator on the AVERAGE, '
-            'with no block law to truncate a window prefix against. Its value and greeks are the '
-            "crisp estimator's, BLIND to the threshold kink, bit for bit what it prices with the "
-            "switch off. To reach the switch's own estimator: put every barrier date ON a coupon "
-            "date and either book ONE price fixing per coupon or declare SpotModel: 'LogVar2FJ'.",
-            deal_data.Instrument.field.get('Reference'))
-
-    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM. The
-    # model is only wired into the OSS arm
+    # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     scalars = oss_model_scalars(factor_dep, shared)
 
     sobol = shared.simulation_batch > 16
@@ -4854,8 +4728,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
         all_fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
                        t_block[:, utils.TIME_GRID_MTM, np.newaxis])
-        fixings = (factor_dep['Price_Fixing'].schedule[np.newaxis, eq_start_index[index]:, utils.RESET_INDEX_End_Day] -
-                   t_block[:, utils.TIME_GRID_MTM, np.newaxis]) if factor_dep['oss_windows'] else all_fixings
+        fixings = (equity_samples.schedule[np.newaxis, eq_start_index[index]:, utils.RESET_INDEX_End_Day] -
+                   t_block[:, utils.TIME_GRID_MTM, np.newaxis])
 
         drifts = utils.curve_spread(
             deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield'],
@@ -4922,40 +4796,34 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             floating_leg = spot_block
 
         discount_rates = utils.calc_discount_rate(discount_block, all_fixings, shared)
-        if boundary_aad and factor_dep['oss_windows']:
+        if boundary_aad:
             # decisions latched STRICTLY BEFORE this block's rows, at block granularity - the
             # block's own fixing is priced by its own simulation (the barrier's spelling)
             b_obs.extend([len(b_latch)] * len(t_block))
         # skip the simulation once EVERY scenario has autocalled - nothing is left to price
         if (terminationDate == -1).any():
-            windows = None
-            if factor_dep['oss_windows']:
-                eq0 = eq_start_index[index]
-                hi = coupon_equity_index[cp_start_index[index]:]
-                lo = coupon_window_lo[cp_start_index[index]:]
-                # each remaining coupon's window: how long it is, how much of it this block has
-                # already observed, and where it opens in the equity strip
-                windows = np.stack(
-                    [hi - lo + 1, np.clip(np.minimum(hi + 1, eq0) - lo, 0, None), lo], axis=1)
-            # the interval carry and vol strips, which put the FULL-PATH branch's `carry * dt` and
-            # `vols * vols * dt` on interval integrals; both take the ZERO carry `drifts`, the strip
+            eq0 = eq_start_index[index]
+            hi = coupon_equity_index[cp_start_index[index]:]
+            lo = coupon_window_lo[cp_start_index[index]:]
+            # each remaining coupon's window: how long it is, how much of it this block has
+            # already observed, and where it opens in the equity strip
+            windows = np.stack(
+                [hi - lo + 1, np.clip(np.minimum(hi + 1, eq0) - lo, 0, None), lo], axis=1)
+            # the interval carry and vol strips, both off the ZERO carry `drifts`, the strip at
             # each TRIGGER's own strike and the put leg a second strip at its own
             cum_t = shared.upload(fixing_block, drifts.dtype) if fixing_block.any() else fixing_block
             fwd_drifts = forward_carry_rate(
                 drifts, cum_t, sample_ts) if fixing_block.any() else drifts
             put_vols = spot_block.new_empty(0)
             if fixing_block.any():
-                levels = (factor_dep['Fixing_Thresholds'][eq_start_index[index]:]
-                          if windows is not None else np.ones(fixing_block.shape[-1]))
+                levels = factor_dep['Fixing_Thresholds'][eq_start_index[index]:]
                 smile_spot, smile_carry, fx_forward = local or (spot_block, drifts, 1.0)
                 interval_vols = trigger_vol_strip(
                     deal_data, strike / fx_forward, levels, smile_spot, smile_carry, fixing_block,
                     cum_t, sample_ts, shared)
-                if (windows is not None and not scalars and putBarrier > 0.0
-                        and max(BarrierDates) > 0):
+                if not scalars and putBarrier > 0.0 and max(BarrierDates) > 0:
                     # THE PUT LEG'S OWN STRIP, its own strike at every fixing's own tenor - the
-                    # leg is a deal of its own here, as the six-leg booking books it. Only the OSS
-                    # arm (`windows`) reads it; the full-path branch has no leg to hand it to
+                    # leg is a deal of its own here, as the six-leg booking books it
                     put_vols = forward_vol_rate(forward_vol_strip(
                         deal_data, put_strike / fx_forward * shared.one, smile_spot, smile_carry,
                         fixing_block, shared), cum_t, sample_ts)
@@ -4980,9 +4848,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             simulate = partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
                                windows, sobol, shared.MCMC_sims)
             theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
-                     floating_leg,
-                     all_eq_samples if factor_dep['oss_windows'] else spot_block.new_empty(0),
-                     quanto, put_vols) + scalars
+                     floating_leg, all_eq_samples, quanto, put_vols) + scalars
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             # `terminationDate` comes back stamped by this block's observed fixing and is handed to
@@ -4996,7 +4862,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             for t, value in zip(settle_at, block_settled):
                 cash_settle(shared, factor_dep['SettleCurrency'], t, nominal * value)
             fixed, n_events = 9, len(event_rows)
-            if boundary_aad and factor_dep['oss_windows']:
+            if boundary_aad:
                 b_alive.append(block_alive)
                 # every row observing a coupon's decision forks it - a LAGGED coupon's, decided off
                 # one observed fixing, in whichever block they fall - and the decision registers
@@ -5037,7 +4903,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                        (int(t), 0, held + jump, held, booked)))
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
-            if boundary_aad and factor_dep['oss_windows']:
+            if boundary_aad:
                 # every scenario resolved: both branches are the same zero, so the rows carry no
                 # counterfactual - the barrier's all_hit discipline
                 b_alive.append(theo_cashflow)

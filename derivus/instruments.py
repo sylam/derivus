@@ -103,9 +103,9 @@ def refuse_consequence_field(field, name, deal_type, remedy):
 
     A knock, an expiry, an accrual is what the observations already say; a field asserting one is a
     second, unfalsifiable source for the same answer. The spine's vocabulary closure at the deal
-    schema (`derivus_spine.vocabulary`).
+    schema (`derivus_spine.vocabulary`). A blank is no statement, so it passes.
     """
-    if name in field:
+    if field.get(name) not in (None, ''):
         raise utils.UnpriceableSchedule(
             '{}: {!r} declares a CONSEQUENCE ({}={!r}), and the state it asserts is DERIVED from '
             'the observations rather than declared beside them - a document that can say both can '
@@ -4361,9 +4361,11 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '$H_j^{\\text{call}}$ on a scheduled observation date. An optional put barrier $H^{\\text{put}}$',
                       'can condition participation in the downside leg.',
                       '',
-                      'Note that the code has been adjusted to deal with Quanto Payoffs (if necessary) ',
-                      'and only supports a single stock sample per coupon payoff (Averaging is possible ',
-                      'if the distribution of the mean can be provided - TODO)',
+                      'A coupon reads a WINDOW of price fixings - one fixing is the spot at that fixing,',
+                      'several their arithmetic average - whose fixing-to-fixing blocks are sampled while',
+                      'the survival truncates the return up to the window\'s first fixing, so the',
+                      'termination stays a crisp decision under either spot model. Fixings that do not',
+                      'give each coupon a window of its own are refused by name.',
                       '',
                       '**Autocall barrier**',
                       '',
@@ -4375,10 +4377,14 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '',
                       '**Barrier_Observation** picks what the breach reads on a coupon whose window holds more',
                       'than one fixing: `Spot` (the default) reads the spot at the barrier date - the last',
-                      'fixing of the window on the OSS arm - and `Average` reads that window as the trigger',
+                      'fixing of the window - and `Average` reads that window as the trigger',
                       'does, its arithmetic mean. A window of one fixing prices the same bit either way, and',
                       'the payoff stays the average under both. An `Average` barrier date whose coupon',
                       'window holds no fixing is refused by name, not compared against a mean of nothing.',
+                      'A barrier date is a fixing: dated on a coupon or on a price fixing of its window it',
+                      'is observed on that window and paid on the coupon date, and dated on neither it is',
+                      'refused by name. Whether the put is in is its barrier date\'s print, so a',
+                      '`BarrierIsHit` stated on the deal is refused by name too.',
                       '',
                       'When a put barrier is present, a second OSS truncation applies within each surviving path',
                       'to handle the put protection level. The analytic contribution is the conditional put payoff',
@@ -4407,10 +4413,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                       '`LogVar2FJModelParameters.SPX`). It walks its own INTERNAL step and hands each fixing',
                       'interval one Gaussian block law rather than a daily state. Switching the model on',
                       'without that factor in the market data is a loud skip, never a silent lognormal',
-                      'fallback. It also prices an AVERAGING coupon - a window of fixings whose arithmetic',
-                      'mean is compared to the threshold - by sampling the window and truncating the prefix',
-                      'return, which keeps the termination a crisp per-scenario decision.',
-                      'Every barrier date must sit ON a coupon date. A `Quanto` payoff prices: the',
+                      'fallback. A `Quanto` payoff prices: the',
                       'payoff-currency measure change enters the walk as a per-step drift',
                       '$-\\rho\\,\\sigma_{FX,k}\\sqrt{V_k}$ read off the state\'s own variance budget, with',
                       '$\\rho$ the marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` and $\\sigma_{FX}$ the',
@@ -4439,7 +4442,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         the first holds exactly ONE fixing the deal fixes once per coupon, so the fixings before
         the first coupon's own observation are its strike observation and no coupon's and are
         dropped. `ends` is None where the fixings do not partition into one non-empty window per
-        coupon, which is the full-path arm.
+        coupon, which the document is refused for.
         """
         declared = dict(self.field.get('Coupon_Observations', []))
         if declared:
@@ -4492,27 +4495,30 @@ class QEDI_CustomAutoCallSwap(Deal):
         """Resolve the autocall's factor dependencies, date lookups and pricing-model switches.
 
         The non-GBM spot model resolves by NAMING CONVENTION off the equity underlying, with no
-        deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). Only the
-        one-step-survival arm carries the non-GBM branch, hence the raise. A QUANTO payoff prices
-        there - the measure change is a drift the walk carries per step off its own variance
+        deal field: <SpotModel>ModelParameters.<equity>; off or absent gives None (GBM). A QUANTO
+        payoff prices under it - the measure change is a drift the walk carries per step off its own variance
         budget - but a COMPO raises, being the product S*X the arm has no second asset for, and so
         does a quanto naming no `Correlation` factor, an unauthored pair reading as uncorrelated
         and pricing with no quanto drift at all. Those refusals land in the deal-skip path, so a
         refusal is an attributable value loss rather than a wrong number.
 
         THE FIXING-TO-COUPON PAIRING is `coupon_windows`, declared or derived from the schedule
-        with no free parameter, and every arm reads it: whether the OSS arm is admitted at all,
-        which fixings are observations, and which coupon's trigger level each fixing's vol strip is
-        read at. Only the PAST coupons filter the fixings - a coupon before the base date closes
-        every window it opened. A BARRIER DATE IS A FIXING: dated on a coupon it names that
-        coupon, dated on a fixing it names the coupon whose window holds it, and either way it is
-        observed on the window and settled on the coupon date.
+        with no free parameter: which fixings are observations, and which coupon's trigger level
+        each fixing's vol strip is read at. Only the PAST coupons filter the fixings - a coupon
+        before the base date closes every window it opened. A BARRIER DATE IS A FIXING: dated on a
+        coupon it names that coupon, dated on a fixing - printed or not - it names the coupon whose
+        window holds it, and either way it is observed on the window and settled on the coupon date.
 
         THE ZERO-COUPON ROW IS THE FATAL REFUSAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
-        reach it. An `'Average'` barrier date whose coupon window holds no fixing is the same kind
-        - the mean it would read is a mean of nothing, and so is a `Coupon_Observations` table that
-        does not pair. The max(all_dates) <= Expiry_Date warning is currently DISABLED."""
+        reach it. So are fixings that do not give each coupon a window of its own, a barrier dated
+        on no coupon and no fixing, an `'Average'` barrier date whose coupon window holds no fixing
+        - the mean it would read is a mean of nothing - a `Coupon_Observations` table that does not
+        pair, and a `BarrierIsHit`, the put's state being its barrier date's print. The
+        max(all_dates) <= Expiry_Date warning is currently DISABLED."""
+        refuse_consequence_field(self.field, 'BarrierIsHit', 'QEDI_CustomAutoCallSwap', (
+            'date the put\'s barrier on the fixing or coupon it observes and record that close in '
+            'Price_Fixing'))
         field = {
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.field['Payoff_Currency']),
@@ -4536,35 +4542,42 @@ class QEDI_CustomAutoCallSwap(Deal):
 
         # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
 
-        # THE OSS ARM. Every coupon owns a WINDOW of fixings and every barrier date sits on a
-        # coupon date; a window of ONE is the common case the fast calc below was written for, and
-        # a longer one is the arithmetic average, which only a kit whose conditioning step IS the
-        # fixing interval can truncate the prefix of (`pv_MC_AutoCallSwap`).
+        # EVERY COUPON OWNS A WINDOW of fixings: a window of ONE is the spot at that fixing, and a
+        # longer one the arithmetic average (`pv_MC_AutoCallSwap`)
         spot_model = self.options.get('SpotModel', 'None')
         ac_dates = sorted([x for x in ac if x >= base_date])
         prior = [x for x in ac if x < min(ac_dates)]
         pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
         pf_dates, ends = self.coupon_windows(pf_dates, ac_dates)
-        one_each = ends is not None and len(ends) == len(pf_dates)
+        if ends is None:
+            raise utils.UnpriceableSchedule(
+                '{}: the price fixings {} do not give each coupon {} a window of its own - every '
+                'coupon decides on at least one fixing after the coupon before it, and no fixing '
+                'falls after the last coupon. Add the fixing a coupon observes, or delete the one '
+                'no coupon reads'.format(
+                    self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                    [x.strftime('%Y-%m-%d') for x in pf_dates],
+                    [x.strftime('%Y-%m-%d') for x in ac_dates]))
         # A BARRIER DATE IS A FIXING: observed on its coupon's window, settled on the coupon date.
         # A row dated on a coupon names that coupon; one dated on a fixing names the coupon whose
-        # window holds it, and its flag lands on the coupon's row
-        if ends is not None:
-            starts = np.concatenate([[0], ends[:-1] + 1])
-            window_of = {f: c for k, c in enumerate(ac_dates)
-                         for f in pf_dates[starts[k]:ends[k] + 1]}
-            ab = {x if x < base_date or x in coupon_dates else window_of.get(x, x) for x in ab}
-        barriers_on_coupons = not np.any([x not in coupon_dates for x in ab if x >= base_date])
+        # window holds it - printed or not - and its flag lands on the coupon's row
+        starts = np.concatenate([[0], ends[:-1] + 1])
+        window_of = {f: c for k, c in enumerate(ac_dates) for f in pf_dates[starts[k]:ends[k] + 1]}
+        ab = {x if x in coupon_dates else window_of.get(x, x) for x in ab}
+        off = sorted(x for x in ab if x >= base_date and x not in coupon_dates)
+        if off:
+            raise utils.UnpriceableSchedule(
+                '{}: the barrier dated {} falls on no coupon date and no price fixing, and a '
+                'barrier observes a print. Date it on the coupon or the fixing it observes, or add '
+                'that fixing'.format(self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                                     ', '.join(x.strftime('%Y-%m-%d') for x in off)))
         # every fixing is a grid date of its own: a block whose rows straddle one would read its
         # print on the rows before it as well as after
         all_dates = sorted(reduce(set.union, [set(coupon_dates), ab, floats, set(fixing_dates)]))
-        oss_windows = barriers_on_coupons and ends is not None and (
-                one_each or spot_model != 'None')
 
         if self.field['Barrier_Observation'] == 'Average':
             # AN `Average` BARRIER READS ITS COUPON'S WINDOW, which opens after that coupon's
-            # predecessor, and a mean of no fixings is not a level. Both arms, though only the
-            # full-path one can author it: an OSS window is non-empty by construction
+            # predecessor, and a mean of no fixings is not a level
             for barrier_date in sorted(x for x in ab if x >= base_date):
                 opens = max([x for x in coupon_dates if x < barrier_date] or [pd.Timestamp.min])
                 if not any(opens < x <= barrier_date for x in fixing_dates):
@@ -4597,54 +4610,45 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days
         }
 
-        if oss_windows:
-            # A ZERO-COUPON ROW IS REFUSED, not priced. This arm advances both the spot and the
-            # price-fixing index INSIDE the coupon block (`if coup > 0` in pv_MC_AutoCallSwap), so
-            # a row quoted zero runs no block and the coupon after it takes this row's interval -
-            # 4.41%, or 24.2% where a barrier dated on it then reads a stale spot too.
-            for coupon_date in ac_dates:
-                if ac[coupon_date] <= 0.0:
-                    stale = 'the barrier dated on it reads the PREVIOUS fixing\'s spot and ' \
-                        if coupon_date in ab else ''
-                    raise utils.UnpriceableSchedule(
-                        '{}: the Autocall_Coupons row dated {:%Y-%m-%d} is quoted {:g}, and a '
-                        'coupon of zero is not a coupon - the row runs no coupon block at all, so '
-                        '{}the coupon after it takes this row\'s interval in place of its own. '
-                        'Author a real coupon on that row, or delete the row'.format(
-                            self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
-                            coupon_date, ac[coupon_date], stale))
+        # A ZERO-COUPON ROW IS REFUSED, not priced. This arm advances both the spot and the
+        # price-fixing index INSIDE the coupon block (`if coup > 0` in pv_MC_AutoCallSwap), so
+        # a row quoted zero runs no block and the coupon after it takes this row's interval -
+        # 4.41%, or 24.2% where a barrier dated on it then reads a stale spot too.
+        for coupon_date in ac_dates:
+            if ac[coupon_date] <= 0.0:
+                stale = 'the barrier dated on it reads the PREVIOUS fixing\'s spot and ' \
+                    if coupon_date in ab else ''
+                raise utils.UnpriceableSchedule(
+                    '{}: the Autocall_Coupons row dated {:%Y-%m-%d} is quoted {:g}, and a '
+                    'coupon of zero is not a coupon - the row runs no coupon block at all, so '
+                    '{}the coupon after it takes this row\'s interval in place of its own. '
+                    'Author a real coupon on that row, or delete the row'.format(
+                        self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                        coupon_date, ac[coupon_date], stale))
 
-            # a threshold row is the coupon row of its own POSITION whatever date it carries - the
-            # book dates them on the observation and the repo on the coupon
-            tl = {c: at[t] for c, t in zip(ac, at)}
+        # a threshold row is the coupon row of its own POSITION whatever date it carries - the
+        # book dates them on the observation and the repo on the coupon
+        tl = {c: at[t] for c, t in zip(ac, at)}
 
-            if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):
-                logging.error('AutoCall has past fixing set to 0 - please map the correct fixing')
+        if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):
+            logging.error('AutoCall has past fixing set to 0 - please map the correct fixing')
 
-            if min(tl.values()) <= 0.0:
-                logging.error(
-                    'AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
-                tl = {k: v if v else 1.0 for k, v in tl.items()}
+        if min(tl.values()) <= 0.0:
+            logging.error(
+                'AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
+            tl = {k: v if v else 1.0 for k, v in tl.items()}
 
-            field_index.update({
-                'Price_Fixing': utils.TensorResets.from_observations(
-                    base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
-                'Coupon_Fixing': utils.TensorResets.from_observations(
-                    base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
-                'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
-                'Coupon_Windows': ends,
-                # every fixing carries the trigger level of the coupon whose window it is in, which
-                # is the strike that coupon's digital is read at
-                'Fixing_Thresholds': np.repeat([tl[c] for c in ac_dates], np.diff(ends, prepend=-1)),
-                'oss_windows': True
-            })
-        else:
-            field_index.update({
-                'Price_Fixing': [pf.get(x, -1) for x in all_dates],
-                'Autocall_Thresholds': [at.get(x, -1) for x in all_dates],
-                'oss_windows': False
-            })
-            logging.warning('Autocall involves averaging - running older pricing model')
+        field_index.update({
+            'Price_Fixing': utils.TensorResets.from_observations(
+                base_date, time_grid, [[x, pf[x]] for x in pf_dates]),
+            'Coupon_Fixing': utils.TensorResets.from_observations(
+                base_date, time_grid, [[x, ac[x]] for x in ac_dates]),
+            'Autocall_Thresholds': [tl.get(x, -1) for x in all_dates],
+            'Coupon_Windows': ends,
+            # every fixing carries the trigger level of the coupon whose window it is in, which
+            # is the strike that coupon's digital is read at
+            'Fixing_Thresholds': np.repeat([tl[c] for c in ac_dates], np.diff(ends, prepend=-1))
+        })
 
         field_index.update({
             'Fixings': utils.TensorResets.from_observations(
@@ -4659,14 +4663,6 @@ class QEDI_CustomAutoCallSwap(Deal):
                                equity_fx_correlation)
 
         # non-GBM spot model, by naming convention off the equity - see docstring
-        if spot_model != 'None' and not field_index['oss_windows']:
-            raise ValueError(
-                'SpotModel=%s requires the one-step-survival autocall: every barrier date ON a '
-                'coupon date, and every coupon owning a window of fixings that its predecessor '
-                'does not. A window of MORE than one fixing is the arithmetic average, which the '
-                'OSS arm prices by truncating the prefix of the window, the LogVar2FJ kit\'s '
-                'conditioning step being the fixing interval. The averaging (full-path) sim '
-                'has no non-GBM path at all.' % spot_model)
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
             pair = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])[1]
             if self.field['Payoff_Type'] != 'Quanto':

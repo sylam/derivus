@@ -18,12 +18,8 @@ the snapshot. What IS observable is the cashflow's GRAPH - settled inside, it re
 carrying nothing, so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of
 the CVA gradient.
 
-The AVERAGING branch is the autocall with two fixings per coupon (`_averaging_autocall`), its
-settlement a returned output placed by `settle_rows`, on a fixture authored around three defects.
-
-UNGATED: `past_fixings` (the averaging branch is handed an empty one) and the floating leg, reached
-only by `QEDI_CustomAutoCallSwap_V2`, which does not price at HEAD. Both are hoisted into theta on
-the same rule as everything else and carried on trust.
+UNGATED: `past_fixings` and the floating leg, reached only by `QEDI_CustomAutoCallSwap_V2`. Both
+are hoisted into theta on the same rule as everything else and carried on trust.
 """
 import os
 import sys
@@ -32,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
-import pandas as pd
 import pytest
 
 import derivus
@@ -46,38 +41,6 @@ DTYPE = bb.DTYPE
 #: `test_boundary_pricer_events` owns the deals and `test_barrier_bridge` owns the market.
 DEALS = {'autocall': bp.AUTOCALL, 'barrier': bp.DISCRETE_BARRIER}
 PRICERS = list(DEALS)
-
-
-def _averaging_autocall():
-    """`bp.AUTOCALL` with TWO `Price_Fixing` dates per `Autocall_Coupon` date, which is what selects
-    `pv_MC_AutoCallSwap`'s other branch: `oss_windows` is one window of fixings per coupon over the
-    fixings inside the window, so 9 against 4 is False.
-
-    THREE DATES ARE LOAD-BEARING, each around a defect the branch has at HEAD:
-
-      A FIXING ON THE COUPON DATE. `sim_autocall` divides by `averageCounter` and zeroes it at each
-      coupon, so a block whose window OPENS on a coupon with no earlier fixing divides by zero.
-      A TRAILING FIXING a week after the LAST coupon. `sample_ts` stays NUMPY where every remaining
-      fixing is observed today and this branch calls `times.unsqueeze`, so the last reporting row
-      dies on "'numpy.ndarray' object has no attribute 'unsqueeze'".
-      COUPONS TWO DAYS OFF THE 3m REPORTING GRID. Coupons ON the grid make every block one row long,
-      where `settle_rows.append(i)` and `.append(0)` are the same function. Two days late puts a row
-      immediately before each coupon and the settlement on block-local row 1: 5 blocks, four `(2, [1])`.
-
-    Returns `(the coupon dates, the deal)`; the dates are what the settlement gate reads.
-    """
-    coupons = [bb.BASE + pd.DateOffset(months=m) + pd.Timedelta(days=2) for m in (3, 6, 9, 12)]
-    fixings = sorted([d - pd.Timedelta(days=7) for d in coupons] + coupons +
-                     [coupons[-1] + pd.Timedelta(days=7)])
-    return coupons, dict(bp.AUTOCALL, Expiry_Date=coupons[-1],
-                         Price_Fixing=[[d, 0.0] for d in fixings],
-                         Autocall_Coupons=[[d, 0.05] for d in coupons],
-                         Autocall_Thresholds=[[d, 1.02] for d in coupons])
-
-
-#: A DEAL, not a third port - registered after `PRICERS` is taken so that it reaches the shared
-#: `_cfg`/`baseval`/`cmc` harness without joining the parametrizations above.
-AVERAGING_COUPONS, DEALS['averaging'] = _averaging_autocall()
 
 
 def _cfg(pricer, spot=bb.SPOT, counterparty=False, collateralised=False):
@@ -175,8 +138,8 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
                 off vs on   0 on 7 readings, 2 on 5. Never 1, never above 2.
       barrier   0 steps on every one of the 35 readings, all three comparisons.
 
-    So the step IS the node's replayed backward disagreeing with itself, the opposite of what the
-    averaging branch does. A defect at 8.7% and a reduction at 2 ulps are not confusable.
+    So the step IS the node's replayed backward disagreeing with itself. A defect at 8.7% and a
+    reduction at 2 ulps are not confusable.
 
     Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
     """
@@ -260,112 +223,3 @@ def test_the_second_derivative_is_refused_rather_than_reported_wrong():
     assert np.abs(taped).max() > 0.0, 'no second derivative even with the node off'
     with pytest.raises(Exception, match='create_graph is not supported'):
         base_hessian('autocall', 'Yes')
-
-
-# ---------------------------------- the AVERAGING branch, which nothing above reaches at all
-
-def base_gradient(pricer, recompute):
-    """(price, gradient) off the one-scenario run - the `torch.rand` stream."""
-    return baseval(pricer, greeks=True, recompute=recompute)
-
-
-def cva_gradient(pricer, recompute):
-    """(cva, gradient) off the 256-scenario run - the Sobol stream."""
-    cva, _, gradient, _ = cmc(pricer, gradient=True, recompute=recompute)
-    return cva, gradient
-
-
-@pytest.mark.parametrize('collateralised', [False, True])
-def test_the_averaging_exposure_and_cashflows_are_bit_identical_with_the_node_on(collateralised):
-    """Value, exposure and every settled cashflow, uncollateralised and collateralised - the
-    branch's settlement is a returned output indexed after the loop rather than a `cash_settle`
-    performed inside it, and this is what says the two spellings agree. The fixture reaches the
-    branch (`oss_windows` False) and settles off block-local row 1 - coupons two days off the grid
-    put five blocks, four of them `(2, [1])` - so placement is observable: `t_Cashflows` is
-    pre-allocated per DECLARED payment date and `cash_settle` drops anything booked elsewhere, so a
-    mis-placed settlement deletes the number rather than moving it.
-
-    Killing mutation: `settle_rows.append(i)` -> `.append(0)` - every reported cashflow collapses to
-    zero, the days becoming the grid's 92/183/273/365 instead of the coupons' 94/185/275/367.
-    """
-    cva_off, mtm_off, _, cash_off = cmc('averaging', collateralised=collateralised)
-    cva_on, mtm_on, _, cash_on = cmc('averaging', recompute='Yes', collateralised=collateralised)
-    assert np.array_equal(mtm_off, mtm_on), 'the averaging exposure moved with the node on'
-    assert cva_off == cva_on, f'the averaging cva moved: {cva_off!r} -> {cva_on!r}'
-    assert any(np.abs(x).max() > 0.0 for x in cash_off), 'no cashflow settled - this reads nothing'
-    assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on)), (
-        'a settled cashflow moved with the node on')
-
-
-@pytest.mark.parametrize('run,stream', [(base_gradient, 'torch.rand'), (cva_gradient, 'Sobol')])
-def test_the_averaging_gradient_is_bit_identical_with_the_node_on(run, stream):
-    """The price and the WHOLE vector, on both streams. This branch has no boundary registration -
-    the trigger is smoothed by `smooth_heaviside_up` inside `sim_autocall` and `event_rows` comes
-    back empty - so the ordinary AAD path is the entire statement.
-
-    Mutation-verified against the row loop reading the closure's `spot_block` instead of the
-    `spot_prices` theta: a no-op with the switch off and a stale read under it. Off `torch.rand` it
-    is SILENT - the `EquityPrice.EQ` entry, 1.245414e-03, vanishes from the reported vector, 7
-    entries down to 6, because autograd has no gradient for a theta the replay never read. Off Sobol
-    it is loud: the closure holds the LAST block's strip, the replay's output stops matching the
-    forward's shape, and autograd raises.
-
-    Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
-    """
-    value_off, grad_off = run('averaging', 'No')
-    value_on, grad_on = run('averaging', 'Yes')
-    assert np.abs(grad_off).max() > 0.0, f'{stream}: no gradient was reported'
-    assert value_off == value_on
-    assert np.array_equal(grad_off, grad_on), (
-        'the recomputed averaging gradient over the {} stream is not the taped one:\n{}\n{}'.format(
-            stream, grad_off, grad_on))
-
-
-def test_the_collateralised_averaging_gradient_is_the_taped_one_to_the_last_bit():
-    """TWO ENTRIES, SIXTY-FOUR STEPS, AND THE TAPED SIDE SPENDS THEM TOO - which is why this gate is
-    a statement about the SHAPE of the disagreement rather than a tolerance on its size.
-
-    THE MEASURED DISTRIBUTION, `Random_Seed` fixed at 1 - 10 off and 10 on in one process, giving
-    45 + 45 self-paired and 100 crossed:
-
-      off vs off     36 readings at 0 steps, 9 at (2 entries, 64).  <- the TAPED path, no node
-      on  vs on       9 at 0, 12 at (1, 16), 12 at (1, 64), 12 at (2, 64)
-      off vs on      38 at 0, 20 at (1, 16), 20 at (1, 64), 22 at (2, 64)
-      moved entries  always inside {7, 8}, in all three comparisons. Never a third.
-
-    Entry 8 moves by 16 steps and entry 7 by 64; no reading has landed between the quanta.
-    UNCOLLATERALISED the taped path reads one value 6 times of 6 - so the instability is the
-    COLLATERAL chain's backward, present with the node OFF, and no node-against-taped comparison can
-    be tighter than it. (The two unstable entries are the two tenor nodes a per-fixing vol read
-    touches; before the strip became per-fixing there was one, at four steps.)
-
-    HENCE THE TWO CLAUSES: at most TWO entries may move (12 of the 14 held at ZERO, which a blanket
-    `steps.max() <= 64` would not do), and those by at most the observed quantum.
-
-    Mutation-verified against the settle-inside-the-loop form - `cash_settle` booking
-    `value.detach()` exactly when `shared.recompute_inner_mc` is set. It moves 11 of the 14 entries
-    by up to 6.81e+15 float64 steps, max |d| 4.28e-05 on a gradient of 6.26e-04 = 6.85%, while
-    `mtm`, `cva` and every reported cashflow stay bit-identical - so the entry-count clause fails on
-    its own. Sixty-four steps against 7.75e+15 is 14.1 orders of margin.
-
-    Detaching on BOTH runs survives green, because a source edit moves both switch settings alike;
-    what places the settlement is gated absolutely by the exposure test above.
-
-    Killing mutation: the settled coupon booked `detach()`ed exactly when the node is on.
-    """
-    cva_off, mtm_off, grad_off, cash_off = cmc('averaging', gradient=True, collateralised=True)
-    cva_on, mtm_on, grad_on, cash_on = cmc('averaging', gradient=True, recompute='Yes',
-                                           collateralised=True)
-    assert np.array_equal(mtm_off, mtm_on) and cva_off == cva_on, (
-        'the collateralised averaging exposure moved with the node on')
-    assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on))
-    assert np.abs(grad_off).max() > 0.0, 'no gradient was reported'
-    steps = _ulps(grad_off, grad_on)
-    moved = np.nonzero(steps)[0]
-    assert len(moved) <= 2 and steps.max() <= 64, (
-        'the collateralised averaging gradient moved on {} of {} entries (indices {}) by up to {} '
-        'float64 steps (max |d| {:.6g} on {:.6g}) - the collateral reduction is two entries at '
-        'sixty-four steps, so this is a channel the node lost:\n{}\n{}'.format(
-            len(moved), len(steps), moved.tolist(), int(steps.max()),
-            float(np.abs(grad_off - grad_on).max()), float(np.abs(grad_off).max()),
-            grad_off, grad_on))
