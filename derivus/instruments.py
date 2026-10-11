@@ -2476,7 +2476,6 @@ class DepositDeal(Deal):
 
 
 class SwapInterestDeal(Deal):
-    accepts_children = True
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Swap_Rate'
@@ -2552,9 +2551,6 @@ class SwapInterestDeal(Deal):
         self.add_reval_dates(self.recdates, self.field['Currency'])
         # this swap could be quantoed - TODO
         self.isQuanto = None
-
-    def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
-        logging.warning('SwapInterestDeal {0} - TODO'.format(self.field['Reference']))
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):

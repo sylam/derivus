@@ -1188,6 +1188,23 @@ def test_a_parent_that_takes_no_children_is_refused(book):
     assert book.read_bytes() == before
 
 
+def test_a_swap_takes_no_children():
+    """A swap was declared a container with a `post_process` that only logged, so a deal booked
+    under one - an ordinary `parent_reference` on the booking, the what-if or the dependency walk -
+    took the whole job down; the splice now refuses it by name and the document is untouched.
+
+    Killing mutation: `accepts_children = True` restored on `SwapInterestDeal`, so the splice lands.
+    """
+    document = json.loads(dump(job()))
+    derivus.schema.job_children(document).append(
+        {'Instrument': {'.Deal': {'Object': 'SwapInterestDeal', 'Reference': 'IRS1'}}})
+    before = json.dumps(document, sort_keys=True)
+    with pytest.raises(ValueError, match="'IRS1' is a SwapInterestDeal, which takes no children"):
+        derivus.schema.splice_deal(document, json.loads(dump(BOOKED)), 'IRS1')
+    assert json.dumps(document, sort_keys=True) == before
+    assert 'SwapInterestDeal' not in derivus.schema.mapping['Instrument']['containers']
+
+
 def test_the_service_being_down_names_dv_service(book):
     """'Connection refused' tells a model nothing actionable; the refusal names the service and
     how to start it.
