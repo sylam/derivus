@@ -1828,9 +1828,6 @@ class MtMCrossCurrencySwapDeal(Deal):
                       '- $F(t,T)$ is the forward FX rate for settlement at time $T$.'
                       ])
 
-    def __init__(self, params, valuation_options):
-        super(MtMCrossCurrencySwapDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(MtMCrossCurrencySwapDeal, self).reset()
         self.paydates = utils.generate_dates_backward(
@@ -1988,9 +1985,6 @@ class FXNonDeliverableForward(Deal):
                       '- $F(t,T)$ is the forward price of the sell currency in settlement currency'
                       ])
 
-    def __init__(self, params, valuation_options):
-        super(FXNonDeliverableForward, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FXNonDeliverableForward, self).reset()
         self.add_reval_dates({self.field['Settlement_Date']}, self.field['Settlement_Currency'])
@@ -2082,9 +2076,6 @@ class FXSwapDeal(Deal):
         'where $A_1$ ($A_2$) is amount of the buy currency bought (sold) at $t_1$, ($t_2$), and $B_1$ ($B_2$)',
         'is amount of the sell currency sold (bought) at $t_1$ ($t_2$). Typically, $t_1$ is the spot',
         'settlement date and $A_2 = A_1$'])
-
-    def __init__(self, params, valuation_options):
-        super(FXSwapDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(FXSwapDeal, self).reset()
@@ -2218,9 +2209,6 @@ class FXForwardDeal(Deal):
         residual. Not a percent, and nothing converts it: each type's field carries its own unit."""
         deal['Buy_Amount'] = value * deal['Sell_Amount']
 
-    def __init__(self, params, valuation_options):
-        super(FXForwardDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FXForwardDeal, self).reset()
         self.add_reval_dates({self.field['Settlement_Date']}, self.field['Buy_Currency'])
@@ -2300,9 +2288,6 @@ class StructuredDeal(Deal):
         '- $V_i$ is the value of the $i^{th}$ underlying deal in currency $C_i$',
         '- $X_i$ is the price of currency $C_i$ in currency $C$',
         '- $\\delta$ is 1 if the deal is a **Buy** else -1 if the deal is a **Sell**'])
-
-    def __init__(self, params, valuation_options):
-        super(StructuredDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(StructuredDeal, self).reset()
@@ -2424,9 +2409,6 @@ class DepositDeal(Deal):
         starts = utils.generate_dates_backward(
             deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'])[:-1]
         deal['Interest_Rate_Schedule'] = utils.DateList({date: value for date in starts})
-
-    def __init__(self, params, valuation_options):
-        super(DepositDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(DepositDeal, self).reset()
@@ -2554,9 +2536,6 @@ class SwapInterestDeal(Deal):
                      'Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
                      'Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
 
-    def __init__(self, params, valuation_options):
-        super(SwapInterestDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(SwapInterestDeal, self).reset()
         # a leg's payment calendar rolls its coupon dates Modified Following; a blank one leaves
@@ -2677,9 +2656,6 @@ class CFFixedInterestListDeal(Deal):
         for item in deal['Cashflows']['Items']:
             item['Rate'] = utils.Percent(value)
 
-    def __init__(self, params, valuation_options):
-        super(CFFixedInterestListDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CFFixedInterestListDeal, self).reset()
 
@@ -2762,9 +2738,6 @@ class CFFixedListDeal(Deal):
          '$\\delta$ is 1 if the deal is a **Buy** else -1 if the deal is a **Sell**']
     )
 
-    def __init__(self, params, valuation_options):
-        super(CFFixedListDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CFFixedListDeal, self).reset()
         self.paydates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
@@ -2807,9 +2780,6 @@ class FixedCashflowDeal(Deal):
 
     documentation = (
         'Interest Rates', ['The time $t$ value of a fixed cashflow amount $C$ paid at time $T$ is $D(t,T)C$.'])
-
-    def __init__(self, params, valuation_options):
-        super(FixedCashflowDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(FixedCashflowDeal, self).reset()
@@ -3060,9 +3030,6 @@ class YieldInflationCashflowListDeal(Deal):
                                    'deal its pricer cannot value.',
                                    ])
 
-    def __init__(self, params, valuation_options):
-        super(YieldInflationCashflowListDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(YieldInflationCashflowListDeal, self).reset()
 
@@ -3193,9 +3160,6 @@ class CapDeal(Deal):
     documentation = (
         'Interest Rates', ['A series of caplets as described [here](#capletsfloorlets)'])
 
-    def __init__(self, params, valuation_options):
-        super(CapDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CapDeal, self).reset()
         self.resetdates = utils.generate_dates_backward(
@@ -3317,9 +3281,6 @@ class FloorDeal(Deal):
 
     documentation = (
         'Interest Rates', ['A series of floorlets as described [here](#capletsfloorlets)'])
-
-    def __init__(self, params, valuation_options):
-        super(FloorDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(FloorDeal, self).reset()
@@ -3507,9 +3468,6 @@ class SwaptionDeal(Deal):
                       'extended as needed. Otherwise, $\\sigma$ is the volatility of the underlying rate at time $t$',
                       'for expiry $t_0$, tenor $\\tau=T_2-T_1$ and strike $K(0)$'
                       ])
-
-    def __init__(self, params, valuation_options):
-        super(SwaptionDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
@@ -3793,9 +3751,6 @@ class FXDiscreteExplicitAsianOption(Deal):
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
 
-    def __init__(self, params, valuation_options):
-        super(FXDiscreteExplicitAsianOption, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FXDiscreteExplicitAsianOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
@@ -3883,9 +3838,6 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
                      'FX_Volatility': ['FXVol']}
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-double-asian-options)'])
-
-    def __init__(self, params, valuation_options):
-        super(FXDiscreteExplicitDoubleAsianOption, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(FXDiscreteExplicitDoubleAsianOption, self).reset()
@@ -4071,9 +4023,6 @@ class EquityBarrierBinaryOption(Deal):
         'observation dates lie on that grid. A knocked-in binary compiles as the plain',
         '`EquityBinaryOption` it now is.'
     ])
-
-    def __init__(self, params, valuation_options):
-        super(EquityBarrierBinaryOption, self).__init__(params, valuation_options)
 
     def resolve_history(self, base_date, calendars, valuation_options):
         # the plain binary pays its cash as `Payoff`, the style it defaults to
@@ -5363,9 +5312,6 @@ class CommodityForwardDeal(Deal):
                       'by replacing $t$ with $max(t, f)$.'
                       ])
 
-    def __init__(self, params, valuation_options):
-        super(CommodityForwardDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CommodityForwardDeal, self).reset()
         self.add_reval_dates({self.field['Maturity_Date']}, self.field['Currency'])
@@ -5452,9 +5398,6 @@ class CommodityFutureDeal(Deal):
         '**Carry** factor (a `ForwardPrice`-shaped factor with absolute-date tenors). Output is',
         '**Units** contracts, converted to the report currency via **Currency**.',
     ])
-
-    def __init__(self, params, valuation_options):
-        super(CommodityFutureDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(CommodityFutureDeal, self).reset()
@@ -5544,9 +5487,6 @@ class CommodityAveragePriceSwapDeal(Deal):
         'model\'s declared AR coefficient and published slow mean. $n_j$ is measured in SIMULATION',
         'STEPS, which is what that model applies $\\phi$ to.',
     ])
-
-    def __init__(self, params, valuation_options):
-        super(CommodityAveragePriceSwapDeal, self).__init__(params, valuation_options)
 
     def validate(self):
         """Settlement cannot precede the average it settles.
@@ -5659,9 +5599,6 @@ class EquityForwardDeal(Deal):
         'the equity\'s forward is carried by $-\\rho\\sigma_S\\sigma_X$ and paid in **Payoff_Currency** at',
         'one. Either names **Equity_Volatility**, which names the pair\'s correlation.'])
 
-    def __init__(self, params, valuation_options):
-        super(EquityForwardDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(EquityForwardDeal, self).reset()
         self.add_reval_dates({self.field['Maturity_Date']}, self.payoff_ccy)
@@ -5746,9 +5683,6 @@ class CashAccountDeal(Deal):
         'its start reads off **Discount_Rate**: $V(t_i)=\\text{Units}/\\prod_{j<i}D(t_j,t_{j+1})$.'
         ])
 
-    def __init__(self, params, valuation_options):
-        super(CashAccountDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CashAccountDeal, self).reset()
         self.add_reval_dates({self.field['Investment_Horizon']}, self.field['Currency'])
@@ -5795,9 +5729,6 @@ class EquityDeal(Deal):
                      'Equity': ['EquityPrice']}
 
     documentation = ('Fx And Equity', ['Described [here](definitions.md#forwards)'])
-
-    def __init__(self, params, valuation_options):
-        super(EquityDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(EquityDeal, self).reset()
@@ -5862,9 +5793,6 @@ class EquitySwapletListDeal(Deal):
         'outright fx forward - and `Quanto` carries each forward by $-\\rho\\sigma_S\\sigma_X$ and pays at',
         'one. Both are the forward calculation on a price return: a row reinvesting its dividends refuses',
         'by name.'])
-
-    def __init__(self, params, valuation_options):
-        super(EquitySwapletListDeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(EquitySwapletListDeal, self).reset()
@@ -5973,9 +5901,6 @@ class EquitySwapLeg(Deal):
         'swaplet list: `Compo` prices the product $S\\cdot X$, `Quanto` carries the forward by',
         '$-\\rho\\sigma_S\\sigma_X$ and pays at one, and either is the forward calculation on a price',
         'return, so a leg including its dividends refuses by name.'])
-
-    def __init__(self, params, valuation_options):
-        super(EquitySwapLeg, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(EquitySwapLeg, self).reset()
@@ -6548,9 +6473,6 @@ class FXTARFOptionDeal(Deal):
             'the deal - a Valuation Configuration declaring one that differs from the fitted',
             'block is refused by name.'])
 
-    def __init__(self, params, valuation_options):
-        super(FXTARFOptionDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FXTARFOptionDeal, self).reset()
         # TARF dates are Fixing, then settlement
@@ -7083,9 +7005,6 @@ class FXOptionDeal(Deal):
                           'The payoff is paid on **Delivery_Date**, the expiry where blank; past the expiry the',
                           'forward is held at what the expiry fixed.'])
 
-    def __init__(self, params, valuation_options):
-        super(FXOptionDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']})
@@ -7268,9 +7187,6 @@ class CreditNthToDefault(Deal):
          '*Buy_Sell* sign and any *Amortisation*, and discounted to the valuation date. Note that',
          'the default (protection) leg is not valued here.'])
 
-    def __init__(self, params, valuation_options):
-        super(CreditNthToDefault, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(CreditNthToDefault, self).reset()
         bus_day = calendars.get(self.field['Calendars'], {'businessday': pd.offsets.Day(1)})['businessday']
@@ -7403,9 +7319,6 @@ class DealDefaultSwap(Deal):
                       'Note that $\\alpha^A$ becomes 0 and $\\alpha^R$ becomes 1 for cashflows yet to be paid'
                       ])
 
-    def __init__(self, params, valuation_options):
-        super(DealDefaultSwap, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(DealDefaultSwap, self).reset()
         bus_day = calendars.get(self.field['Calendars'], {'businessday': pd.offsets.Day(1)})['businessday']
@@ -7513,9 +7426,6 @@ class FRADeal(Deal):
                       '',
                       'The FRA deal is a special case of a  [floating swap leg](#floating-interest-cashflows)'
                       ])
-
-    def __init__(self, params, valuation_options):
-        super(FRADeal, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(FRADeal, self).reset()
@@ -7630,9 +7540,6 @@ class FloatingEnergyDeal(Deal):
         'without a separately simulated forward curve.'
     ])
 
-    def __init__(self, params, valuation_options):
-        super(FloatingEnergyDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FloatingEnergyDeal, self).reset()
         paydates = set([x['Payment_Date'] for x in self.field['Payments']['Items']])
@@ -7722,9 +7629,6 @@ class FixedEnergyDeal(Deal):
         '$$V K D(t,T)$$',
     ])
 
-    def __init__(self, params, valuation_options):
-        super(FixedEnergyDeal, self).__init__(params, valuation_options)
-
     def reset(self, calendars):
         super(FixedEnergyDeal, self).reset()
         self.paydates = set([x['Payment_Date'] for x in self.field['Payments']['Items']])
@@ -7809,9 +7713,6 @@ class EnergySingleOption(Deal):
         '`Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>` are the ones the energy',
         'family declares.'
     ])
-
-    def __init__(self, params, valuation_options):
-        super(EnergySingleOption, self).__init__(params, valuation_options)
 
     def reset(self, calendars):
         super(EnergySingleOption, self).reset()
