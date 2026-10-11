@@ -4695,7 +4695,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     observe = BARRIER_OBSERVATION[factor_dep['Barrier_Observation']]
     isQuanto = 1.0 * ('QuantoImpliedCorrelation' in factor_dep)
     fixFXRate = deal_data.Instrument.field.get('FixFXRate', 1.0)
-    rebate = deal_data.Instrument.field.get('Rebate', 0.0)
+    rebate = deal_data.Instrument.field['Rebate']
     strike = factor_dep['Strike_Price']
     # THE PUT LEG'S OWN STRIKE: a `Rebate` 0 leg is a full loss below the barrier, which is a
     # vanilla plus a digital both struck THERE; with a rebate it is the level the payoff crosses

@@ -978,6 +978,9 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
     F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
     F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
     F('Barrier', 'Float', default=0, convention=True),
+    F('Rebate', 'Float', default=0.0, convention=True,
+      description='The fraction of the strike a breached put gives back, the put paying '
+                  'S/K - 1 + Rebate of the notional, so 0 owes the whole loss below the strike'),
     F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
     F('Units', 'Float', default=0.0, sized=True),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')]),
