@@ -995,6 +995,9 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
                   'date'),
     F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+    F('FixFXRate', 'Float', default=1.0, convention=True,
+      description='The fixed rate a quanto converts its payoff at, payoff currency per unit of '
+                  "the underlying's currency, read under a Quanto Payoff_Type alone"),
     F('Barrier_Observation', 'Text', default='Spot', convention=True, values=['Spot', 'Average'],
       description="Where the put barrier is observed - the barrier date's own spot, or the "
                   "arithmetic average of the coupon window it falls in")
