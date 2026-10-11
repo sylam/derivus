@@ -255,8 +255,8 @@ unmeasured — a limitation without a number is absolution, not documentation
   floating coupon is never determined - its known-rate table is not filled from the record at
   compile - so one settled on time for another amount books the difference the next day, and a
   floating-coupon swap bought on its coupon day, ex-coupon, carries the engine's coupon in that
-  day's value and gives it back the next. Each month sums right. Closing it is the known-rate
-  tables filled from the record as an observation table is: M.
+  day's value and gives it back the next. Each month sums right. Closing it is the fixing
+  recorded as market data the deal references, [below](#designed-not-built): M.
 - **The market, the book's date and the file move under no seat** (2026-09-30). The tick and a
   values patch (`POST /book/market`), `/book/date`, the bootstrapping dials (`/book/configure`),
   `/book/curve`, `/book/bloomberg`, `/book/securities`, a saved calculation (`/calculations`),
@@ -272,8 +272,8 @@ unmeasured — a limitation without a number is absolution, not documentation
   answered by nothing, so `close_check` waits on it for ever and the day it falls on gets no close,
   no marks and no P&L. The swap, the floating list, the cap and the floor, the FRA and the deposit
   declare theirs, and refuse by name a reset the record has printed - its own day reading the
-  curve, a list its row - until their known-rate tables are filled from the record at compile as an
-  observation table is; a blank index field, which the compile resolves to the currency's curve,
+  curve, a list its row - until every fixing is recorded as market data the deal references
+  ([below](#designed-not-built)); a blank index field, which the compile resolves to the currency's curve,
   still announces its fixings under none. The double Asian, the equity swap leg and swaplet list,
   the two energy deals and the composite equity Asian read fixings off a table the fill cannot
   write yet (M), the inflation list M-L - a month its base date has not printed reading observed at

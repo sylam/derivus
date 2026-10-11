@@ -285,17 +285,17 @@ and what each costs against a quote, are on
 ## References {#references}
 
 - Barndorff-Nielsen, O. E. (1997). Normal inverse Gaussian distributions and stochastic volatility
-  modelling. *Scandinavian Journal of Statistics*, 24(1), 1-13.
-  [doi:10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)
-- Bergomi, L. (2004). Smile dynamics. *Risk*, September 2004, 117-123.
-  [SSRN, doi:10.2139/ssrn.1493294](https://doi.org/10.2139/ssrn.1493294)
-- Bergomi, L. (2005). Smile dynamics II. *Risk*, October 2005, 67-73.
-  [SSRN, doi:10.2139/ssrn.1493302](https://doi.org/10.2139/ssrn.1493302)
-- Bergomi, L. (2008). Smile dynamics III. *Risk*, October 2008, 90-96.
-  [SSRN, doi:10.2139/ssrn.1493308](https://doi.org/10.2139/ssrn.1493308);
+  modelling. *Scandinavian Journal of Statistics*, 24(1), 1-13 (March 1997; Wiley's online copy is dated
+  2007). [doi:10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)
+- Bergomi, L. (2004). Smile dynamics. *Risk*, September 2004, 117-123. Posted to SSRN in 2009:
+  [doi:10.2139/ssrn.1493294](https://doi.org/10.2139/ssrn.1493294)
+- Bergomi, L. (2005). Smile dynamics II. *Risk*, October 2005, 67-73. Posted to SSRN in 2009:
+  [doi:10.2139/ssrn.1493302](https://doi.org/10.2139/ssrn.1493302)
+- Bergomi, L. (2008). Smile dynamics III. *Risk*, October 2008, 90-96. On SSRN:
+  [doi:10.2139/ssrn.1493308](https://doi.org/10.2139/ssrn.1493308);
   [PDF at Risk](https://www.risk.net/media/download/920801/download)
 - Bergomi, L. (2016). *Stochastic Volatility Modeling*. Chapman and Hall/CRC. Chapters 3
   (forward-start options), 7 (forward variance models) and 8 (the smile of stochastic volatility
-  models). [doi:10.1201/b19649](https://doi.org/10.1201/b19649)
+  models); the eBook's DOI record is dated 16 December 2015. [doi:10.1201/b19649](https://doi.org/10.1201/b19649)
 - Black, F. and Scholes, M. (1973). The pricing of options and corporate liabilities. *Journal of
   Political Economy*, 81(3), 637-654. [doi:10.1086/260062](https://doi.org/10.1086/260062)
