@@ -3751,6 +3751,8 @@ class FXDiscreteExplicitAsianOption(Deal):
 
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
 
+    pricer = staticmethod(pricing.pv_discrete_asian_option)
+
     def reset(self, calendars):
         super(FXDiscreteExplicitAsianOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
@@ -3773,23 +3775,25 @@ class FXDiscreteExplicitAsianOption(Deal):
                 field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Volatility': get_vol_factor('FXVol',
                                          field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
-            'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Samples': utils.TensorResets.from_observations(
-                base_date, time_grid, self.field['Sampling_Data'], weighted=True),
-            'Strike': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
         }
+        field_index.update(self.samples(base_date, time_grid))
+        return field_index
 
+    def samples(self, base_date, time_grid):
+        """The averaged fixings and the strike, as this type's pricer reads them."""
         missing_fixings = [x for x in self.field['Sampling_Data'] if x[0] < base_date and not x[1]]
         if missing_fixings:
             logging.error('Past fixings not defined - please specify fixings for {}'.format(
                 ', '.join([str(x[0]) for x in missing_fixings])))
-
-        return field_index
+        return {'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
+                'Samples': utils.TensorResets.from_observations(
+                    base_date, time_grid, self.field['Sampling_Data'], weighted=True),
+                'Strike': self.field['Strike_Price']}
 
     def generate(self, shared, time_grid, deal_data):
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -3802,7 +3806,7 @@ class FXDiscreteExplicitAsianOption(Deal):
             deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
             deal_data.Factor_dep['Expiry'], deal_time, shared)
 
-        mtm = pricing.pv_discrete_asian_option(
+        mtm = self.pricer(
             shared, time_grid, deal_data, self.field['Underlying_Amount'], spot,
             forward, [deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0]],
             invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'], use_forwards=True) * FX_rep
@@ -3810,7 +3814,7 @@ class FXDiscreteExplicitAsianOption(Deal):
         return mtm
 
 
-class FXDiscreteExplicitDoubleAsianOption(Deal):
+class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
     vernacular = 'FX double Asian, average-strike average-rate option'
     fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitDoubleAsianOption', [
         F('Currency', 'Text', default=''),
@@ -3832,69 +3836,21 @@ class FXDiscreteExplicitDoubleAsianOption(Deal):
         F('Sampling_Multiplier_2', 'Float', default=1.0, convention=True)
     ])]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
-
+    observes = None
     documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-double-asian-options)'])
 
-    def reset(self, calendars):
-        super(FXDiscreteExplicitDoubleAsianOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
+    pricer = staticmethod(pricing.pv_discrete_double_asian_option)
 
-    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
-                          calendars):
-        field = {'Currency': utils.check_rate_name(self.field['Currency']),
-                 'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency'])}
-        field['Discount_Rate'] = utils.check_rate_name(
-            self.field['Discount_Rate']) if self.field['Discount_Rate'] else field['Currency']
-        field['FX_Volatility'] = utils.check_rate_name(self.field['FX_Volatility'])
-
-        field_index = {
-            'Currency': get_fx_and_zero_rate_factor(
-                field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'SettleCurrency': self.field['Currency'],
-            'Discount': get_interest_factor(
-                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Underlying_Currency': get_fx_and_zero_rate_factor(
-                field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Volatility': get_vol_factor('FXVol',
-                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
-            'Expiry': (self.field['Expiry_Date'] - base_date).days,
-            'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Alpha_0': self.field.get('Strike_Multiplier', 1.0),
-            'Alpha_1': self.field.get('Sampling_Multiplier_1', 1.0),
-            'Alpha_2': self.field.get('Sampling_Multiplier_2', 1.0),
-            'Samples_1': utils.TensorResets.from_observations(
-                base_date, time_grid, self.field['Sampling_Data_1'], weighted=True),
-            'Samples_2': utils.TensorResets.from_observations(
-                base_date, time_grid, self.field['Sampling_Data_2'], weighted=True),
-            'Strike': self.field.get('Strike_Price', 0.0),
-            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
-            'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
-        }
-
-        return field_index
-
-    def generate(self, shared, time_grid, deal_data):
-        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
-        FX_rep = utils.calc_fx_cross(
-            deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-        spot = utils.calc_fx_cross(
-            deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared)
-        forward = utils.calc_fx_forward(
-            deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
-            deal_data.Factor_dep['Expiry'], deal_time, shared)
-
-        mtm = pricing.pv_discrete_double_asian_option(
-            shared, time_grid, deal_data, self.field['Underlying_Amount'], spot,
-            forward, [deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0]],
-            invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'], use_forwards=True) * FX_rep
-
-        return mtm
+    def samples(self, base_date, time_grid):
+        """The two averaged strips, their multipliers and the strike."""
+        return {'Alpha_0': self.field.get('Strike_Multiplier', 1.0),
+                'Alpha_1': self.field.get('Sampling_Multiplier_1', 1.0),
+                'Alpha_2': self.field.get('Sampling_Multiplier_2', 1.0),
+                'Samples_1': utils.TensorResets.from_observations(
+                    base_date, time_grid, self.field['Sampling_Data_1'], weighted=True),
+                'Samples_2': utils.TensorResets.from_observations(
+                    base_date, time_grid, self.field['Sampling_Data_2'], weighted=True),
+                'Strike': self.field.get('Strike_Price', 0.0)}
 
 
 class EquityDiscreteExplicitAsianOption(Deal):
