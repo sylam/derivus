@@ -37,7 +37,7 @@ The public surface is documented in [API Overview](../api_overview.md); this sec
 
 **1. Compile — `calculate_dependencies`.** Walk the deal tree, discover every price factor a deal touches, wire each to its sub-factors, collect the max date each is needed to, topologically order them, and split **stochastic** (simulated) vs **static** (frozen leaf). Table-driven, not branching code — see [Dependency System](dependency_system.md).
 
-**2. Compile — `_build_factor_state` + `precalculate`.** Construct the factor objects, mint AAD leaves (`torch.tensor(..., requires_grad=…)`; reverse-mode sensitivities as in Capriotti, 2011), build each stochastic process, assemble the correlation matrix and its cholesky, and assign each process its RNG-substream offset (`process_ofs`). See [Calc Lifecycle](calc_lifecycle.md).
+**2. Compile — `_build_factor_state` + `precalculate`.** Construct the factor objects, mint AAD leaves (`torch.tensor(..., requires_grad=…)`; reverse-mode sensitivities as in [@capriotti2011]), build each stochastic process, assemble the correlation matrix and its cholesky, and assign each process its RNG-substream offset (`process_ofs`). See [Calc Lifecycle](calc_lifecycle.md).
 
 **3. Execute — the generate loop.** Per simulation batch: draw the correlated random block, iterate `stoch_factors` in topological order publishing each path into `t_Scenario_Buffer` as it is produced (so a linked factor reads its parent's already-published path), then price the deal tree, accumulating MTM.
 
@@ -52,8 +52,3 @@ Extension points are **data**, not control flow. Adding a factor type, a process
 ## Design direction
 
 The long-term shape is a stateless streaming compute: JSON events in, stateless compute, JSON results out, state living outside the process. The engine holds no cross-job state beyond the market-data cache, and the job JSON is the whole contract. See [Conventions — JSON is the contract](conventions.md#json-is-the-contract).
-
-## References {#references}
-
-- Capriotti, L. (2011). Fast Greeks by algorithmic differentiation. *The Journal of Computational
-  Finance*, 14(3), 3-35. [doi:10.21314/jcf.2011.234](https://doi.org/10.21314/jcf.2011.234)

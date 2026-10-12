@@ -40,14 +40,6 @@ attached is read at a later row $t$ as the calculation's `NoModel` field declare
 | `RiskNeutral` | today's curve rolled forward to $t$: $D(t,t+\tau)=D(0,t+\tau)/D(0,t)$ | today's value |
 
 `RiskNeutral` is the forward of the base-date curve, so a deterministic curve realises the forwards
-the base date implied (Harrison and Pliska, 1981, for pricing under the risk-neutral measure). A
+the base date implied ([@harrison1981], for pricing under the risk-neutral measure). A
 `YieldInflationCashflowListDeal` whose price index has no model is refused under `Constant` on any
 grid longer than the base date, and priced under `RiskNeutral` off the inflation curve's forward.
-
-## References
-
-- Harrison, J. M. and Pliska, S. R. (1981). Martingales and stochastic integrals in the theory of
-  continuous trading. *Stochastic Processes and their Applications*, 11(3), 215-260.
-  [doi:10.1016/0304-4149(81)90026-0](https://doi.org/10.1016/0304-4149%2881%2990026-0)
-
----

@@ -9,7 +9,7 @@ every type, with its type, default and menu, is on the type's own page under thi
 | `BaseValuation` | `run_baseval` | `cx.Base_Valuation` | each deal's mark at the valuation date, and AAD factor sensitivities (`Greeks`) |
 | `CreditMonteCarlo` | `run_cmc` | `cx.Credit_Monte_Carlo` | the simulated portfolio mark, exposure profile, CVA and FVA (CollVA and an initial margin experimental) |
 | `HedgeMonteCarlo` | `run_hedgemontecarlo` | `cx.Hedge_Monte_Carlo` | the dynamic-hedging solve or simulation of [Hedging](../hedging/overview.md) |
-| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) by bump and revaluation, one booked trade at a time |
+| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, one booked trade at a time |
 
 ## How a block is completed {#defaults}
 
@@ -59,8 +59,8 @@ For `CreditMonteCarlo` and `HedgeMonteCarlo`:
 |---|---|
 | Outer paths | `Batch_Size × Simulation_Batches`. Sharded over `n` workers, each runs `Simulation_Batches // n` batches, so a remainder is not run |
 | Outer normals | `torch.randn`, correlated through the Cholesky factor of the matrix [Correlations](correlations.md) assembles. The generator is seeded once per worker with `Random_Seed + worker index`; a sharded run (`runparallel`) reseeds every batch from a SplitMix64 mix of `Random_Seed` and the batch's global index (`calculation.batch_seed`), so its batches do not depend on the worker count |
-| `Antithetic: Yes` | draws `Batch_Size // 2` correlated normals and appends their negatives. The path count is unchanged: the pairs are the two halves of the batch axis |
-| Quasi-random stream | a scrambled Sobol sequence (`torch.quasirandom.SobolEngine`, scramble seed 1234, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers. It is not derived from `Random_Seed` |
+| `Antithetic: Yes` | draws `Batch_Size // 2` correlated normals and appends their negatives. The path count is unchanged: the pairs are the two halves of the batch axis [@glasserman2003] |
+| Quasi-random stream | a scrambled Sobol sequence [@sobol1967; @owen1998; @joe2008] (`torch.quasirandom.SobolEngine`, scramble seed 1234, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers. It is not derived from `Random_Seed` |
 | Inner paths | `MCMC_Simulations` per simulated pricing: 2,048 by default here, 16,384 under `BaseValuation` and `SIMM` |
 | Precision | float32 by default (`run_cmc`, `run_hedgemontecarlo`); `run_baseval` defaults to float64 |
 | Model time | a scenario date's year fraction is its calendar days from `Base_Date` / 365.25 |
@@ -84,21 +84,3 @@ A book with no date after `Base_Date` is refused: the grid is grown from the dat
 `EE` $=\mathbb{E}[\max(V,0)]$, `ENE` $=\mathbb{E}[\min(V,0)]$, and one `PFE_<p>` per entry of
 `Percentile` (comma-separated, default `95`), the $p$-th percentile of $V$ itself, not of
 $\max(V,0)$, by NumPy's default linear interpolation.
-
-## References
-
-- I. M. Sobol', "On the distribution of points in a cube and the approximate evaluation of
-  integrals", *USSR Computational Mathematics and Mathematical Physics* 7(4), 86-112, 1967.
-  [doi:10.1016/0041-5553(67)90144-9](https://doi.org/10.1016/0041-5553(67)90144-9)
-- A. B. Owen, "Scrambling Sobol' and Niederreiter-Xing Points", *Journal of Complexity* 14(4),
-  466-489, 1998. [doi:10.1006/jcom.1998.0487](https://doi.org/10.1006/jcom.1998.0487) - the
-  scrambling `scramble=True` applies.
-- S. Joe and F. Y. Kuo, "Constructing Sobol Sequences with Better Two-Dimensional Projections",
-  *SIAM Journal on Scientific Computing* 30(5), 2635-2654, 2008 (issued January 2008, online
-  August 2008). [doi:10.1137/070709359](https://doi.org/10.1137/070709359) - the direction numbers
-  PyTorch's `SobolEngine` documents using.
-- P. Glasserman, *Monte Carlo Methods in Financial Engineering*, Springer, 2003.
-  [doi:10.1007/978-0-387-21617-1](https://doi.org/10.1007/978-0-387-21617-1) - antithetic
-  variates and quasi-Monte Carlo.
-- ISDA SIMM methodology and the Common Risk Interchange Format (CRIF): no version is fixed by the
-  engine; a `SIMM` run records the `version` its `Parameters` file states as `Stats['Parameters']`.

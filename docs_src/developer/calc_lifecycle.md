@@ -16,7 +16,7 @@ Discovers the factor universe, wires the dependency DAG, topologically orders it
 ## Compile phase 2 — `_build_factor_state`
 
 - **Factor objects.** Stochastic → `construct_process(model.type, factor_obj, Price Models[...], implied_obj)`; static = `set(dependent_factors) - stochastic_factors.values()` → `construct_factor`. `all_factors` = stochastic + static + implied.
-- **AAD leaves** (reverse-mode differentiation; Capriotti, 2011). Each stochastic factor's `current_value` (offset by `Tenor_Offset`) becomes a `torch.tensor(..., requires_grad=calc_grad)` in `stoch_var`; implied params in `implied_var`; static in `static_var`. Every mint goes through `Calculation.factor_leaf`, the single seam where a factor the library itself calibrated is offered still carrying the graph of the quotes it was solved from, as `leaf + (θ* − θ*.detach())` — worth zero forward; see [Quote Sensitivities](quote_sensitivities.md#the-attachment).
+- **AAD leaves** (reverse-mode differentiation; [@capriotti2011]). Each stochastic factor's `current_value` (offset by `Tenor_Offset`) becomes a `torch.tensor(..., requires_grad=calc_grad)` in `stoch_var`; implied params in `implied_var`; static in `static_var`. Every mint goes through `Calculation.factor_leaf`, the single seam where a factor the library itself calibrated is offered still carrying the graph of the quotes it was solved from, as `leaf + (θ* − θ*.detach())` — worth zero forward; see [Quote Sensitivities](quote_sensitivities.md#the-attachment).
 - **Implied-leaf dedupe.** `implied_leaves` makes a factor that is both a static dependent and a spot process's implied factor reuse the one tensor, so `backward()` sums both consumers into it.
 - **Sizing.** `num_factors = sum(v.num_factors() for v in stoch_factors.values())` sizes the correlated random block.
 - **precalculate, then calc_references.** First loop caches `_factor_precalc_args[key]`, sets `factor_key`, calls `precalculate(..., process_ofs[key], ...)` (which sets `z_offset`, `spot0`). Second loop's `calc_references` resolves cross-process links (`BasisLinkedSpotModel` sets `linked_key` from the name-prefix parent).
@@ -42,7 +42,7 @@ A step *inside* phase 2: `_build_factor_state` → `_init_shared_mem` → `get_c
     | `Eigenvalue_Raising` (the default) | eigenvalues floored at `1e-4`, the result rescaled to a unit diagonal: $C\leftarrow D^{-1/2}\,Q\max(\Lambda,10^{-4})Q^{\top}D^{-1/2}$ |
     | `Alternating_Projections` | up to 100 alternations of that eigenvalue floor and a reset of the diagonal to one, each diagonal correction added into the next iterate, stopping when two results agree to a relative `1e-8` |
 
-    The second follows Higham's (2002) alternating projections without Dykstra's correction, so its result is a nearby correlation matrix, not provably the nearest. A repair logs one WARNING naming the matrix size; how far it moved the matrix is not reported. The matrix is not an AAD leaf (`requires_grad=False`), so a correlation sensitivity is a bump ([Roadmap](roadmap.md#decisions-waiting-on-the-desk), decision 12).
+    The second follows Higham's alternating projections [@higham2002] without Dykstra's correction, so its result is a nearby correlation matrix, not provably the nearest. A repair logs one WARNING naming the matrix size; how far it moved the matrix is not reported. The matrix is not an AAD leaf (`requires_grad=False`), so a correlation sensitivity is a bump ([Roadmap](roadmap.md#decisions-waiting-on-the-desk), decision 12).
 
 ## Execute — the per-batch generate loop
 
@@ -70,8 +70,8 @@ A run draws from four streams:
 
 | stream | generator | seeded by | consumers |
 | --- | --- | --- | --- |
-| the correlated normal block `t_random_numbers` | torch's default generator: Mersenne Twister on the host (Matsumoto and Nishimura, 1998), Philox on CUDA (Salmon et al., 2011) | `Random_Seed + job_id` once per worker; under `deterministic_batches`, `batch_seed(Random_Seed, b)` per global batch `b`, one SplitMix64 round (Steele, Lea and Flood, 2014) | every process's `generate`, through its `z_offset` |
-| `CMC_State.quasi_rng` | torch's Sobol engine (Sobol', 1967) on Joe and Kuo's (2008) direction numbers, scrambled by a random linear matrix and a digital shift (Owen, 1998) | fixed: scramble seed `QUASI_SEED = 1234`, first point `QUASI_ANCHOR = 1024`, not `Random_Seed` | `MarkovHMMSpotModel`'s regime uniforms, `GARCHSpotModel`, `BasisLinkedSpotModel`, LogVar2FJ's extra bucket-knot mixers, and `reset_inner`'s normals under `Inner_Draws: sobol` |
+| the correlated normal block `t_random_numbers` | torch's default generator: Mersenne Twister on the host [@matsumoto1998], Philox on CUDA [@salmon2011] | `Random_Seed + job_id` once per worker; under `deterministic_batches`, `batch_seed(Random_Seed, b)` per global batch `b`, one SplitMix64 round [@steele2014] | every process's `generate`, through its `z_offset` |
+| `CMC_State.quasi_rng` | torch's Sobol engine [@sobol1967] on Joe and Kuo's direction numbers [@joe2008], scrambled by a random linear matrix and a digital shift [@owen1998] | fixed: scramble seed `QUASI_SEED = 1234`, first point `QUASI_ANCHOR = 1024`, not `Random_Seed` | `MarkovHMMSpotModel`'s regime uniforms, `GARCHSpotModel`, `BasisLinkedSpotModel`, LogVar2FJ's extra bucket-knot mixers, and `reset_inner`'s normals under `Inner_Draws: sobol` |
 | `CMC_State.inner_block` | the same Sobol points as 30-bit integers | fixed; a function of the strip's length and the inner path count | the one-step-survival pricers' inner paths when the outer batch exceeds 16 paths (pseudo-random uniforms otherwise) |
 | per-segment `torch.Generator`s | one per calendar-anchored segment of the LogVar2FJ walk | an integer drawn off the default generator per batch, plus the segment's index | the LogVar2FJ outer process's and pricer's daily shocks, redrawn in a checkpoint's backward |
 
@@ -174,13 +174,13 @@ A seed key may be read by a PRICER rather than by a process's `generate`. `prici
 
 ## The inner draws are one canonical block, and the strip streams {#inner-block}
 
-**One block.** Every inner Monte Carlo in a run reads the same quasi-random points: `CMC_State.inner_block(rows, sims)` is a pure function of a strip's length and the inner path count - scrambled Sobol points at a fixed anchor, 30-bit integers made on the device, their antithetic complement taken on the integer before conversion so both tails keep their bits in the job's dtype, and a strip longer than a chunk of 64 rows reads more DIMENSIONS of the one point set, never more points of it, so each inner path is one point in as many dimensions as the strip has fixings. The block is prefix-stable - the first K rows of a longer strip are the K-row block - and broadcast over the outer batch: every product, every outer path, every batch and every worker read it. So a trade's value does not depend on what is booked before it in the job, an inner-MC book shards deterministically with nothing to anchor, and nothing is kept in double or memoized for the run. The outer scenario streams are untouched and keep their anchoring. The inner error is common to the outer paths and is reduced by `MCMC_Simulations` alone - which is what the memory below buys. On the bias and variance of a nested estimator see Gordy and Juneja (2010).
+**One block.** Every inner Monte Carlo in a run reads the same quasi-random points: `CMC_State.inner_block(rows, sims)` is a pure function of a strip's length and the inner path count - scrambled Sobol points at a fixed anchor, 30-bit integers made on the device, their antithetic complement taken on the integer before conversion so both tails keep their bits in the job's dtype, and a strip longer than a chunk of 64 rows reads more DIMENSIONS of the one point set, never more points of it, so each inner path is one point in as many dimensions as the strip has fixings. The block is prefix-stable - the first K rows of a longer strip are the K-row block - and broadcast over the outer batch: every product, every outer path, every batch and every worker read it. So a trade's value does not depend on what is booked before it in the job, an inner-MC book shards deterministically with nothing to anchor, and nothing is kept in double or memoized for the run. The outer scenario streams are untouched and keep their anchoring. The inner error is common to the outer paths and is reduced by `MCMC_Simulations` alone - which is what the memory below buys. On the bias and variance of a nested estimator see Gordy and Juneja [@gordy2010].
 
-**The strip streams.** The four one-step-survival pricers (barrier, accumulator, target redemption forward, autocall; Glasserman and Staum, 2001; Alm et al., 2013) walk their fixings as pure steps through one driver, `pricing.oss_stream`: under a gradient, four fixings are one checkpoint, so a row's tape is its state at the chunk edges and one chunk's intermediates; otherwise it is the plain loop. The alive branch, the pending payment and the autocall's counterfactual, which every consumer reads detached, are built under no gradient. Measured at 512 outer by 8,192 inner paths (RTX 3090): a value run that peaked near 28 GB - and spilled over the bus - peaks at 0.3 to 0.9 GB at 45 to 79% of the card busy, the LogVar2FJ autocall runs where it could not, and a gradient that left the card peaks at 1.8 to 9.0 GB at 58 to 85%, a fifth more wall for the replay.
+**The strip streams.** The four one-step-survival pricers (barrier, accumulator, target redemption forward, autocall; [@glasserman2001; @alm2013]) walk their fixings as pure steps through one driver, `pricing.oss_stream`: under a gradient, four fixings are one checkpoint, so a row's tape is its state at the chunk edges and one chunk's intermediates; otherwise it is the plain loop. The alive branch, the pending payment and the autocall's counterfactual, which every consumer reads detached, are built under no gradient. Measured at 512 outer by 8,192 inner paths (RTX 3090): a value run that peaked near 28 GB - and spilled over the bus - peaks at 0.3 to 0.9 GB at 45 to 79% of the card busy, the LogVar2FJ autocall runs where it could not, and a gradient that left the card peaks at 1.8 to 9.0 GB at 58 to 85%, a fifth more wall for the replay.
 
 ## Recomputing the inner Monte Carlo {#recompute-inner-mc}
 
-An MC-priced deal builds one autograd graph per pricing, and the terminal `backward()` holds every one at once — every fixing of every reporting row of every deal — while the simulation that built them is cheap. `Recompute_Inner_MC` (a `Calculation` field, `No` by default, on `BaseValuation` and `CreditMonteCarlo`) trades the tape for a second forward pass, checkpointing in the sense of Griewank and Walther (2000): `pricing.InnerMCRecompute` runs its forward under `no_grad` leaving nothing but its inputs, and its backward re-runs **the same callable** under `enable_grad`, contracting the cotangent through one graph that dies immediately. Peak is one inner graph rather than all of them.
+An MC-priced deal builds one autograd graph per pricing, and the terminal `backward()` holds every one at once — every fixing of every reporting row of every deal — while the simulation that built them is cheap. `Recompute_Inner_MC` (a `Calculation` field, `No` by default, on `BaseValuation` and `CreditMonteCarlo`) trades the tape for a second forward pass, checkpointing in the sense of Griewank and Walther [@griewank2000]: `pricing.InnerMCRecompute` runs its forward under `no_grad` leaving nothing but its inputs, and its backward re-runs **the same callable** under `enable_grad`, contracting the cotangent through one graph that dies immediately. Peak is one inner graph rather than all of them.
 
 Four adopters — `pv_MC_Tarf`, `pv_MC_AutoCallSwap`, `pv_MC_Accumulator`, `pv_discrete_barrier_option` — reach it through `InnerMCRecompute.run(shared, simulate, *theta)`: the node when the switch is on, the callable when off, RNG position taken at the call site. No per-pricer flag — what a run can afford to tape is a property of the engine and the machine, not the trade. `run` uses `cls.apply`, so a gate that subclasses the node gets its mutation.
 
@@ -219,11 +219,11 @@ Some deals take a decision on **simulated state**: a barrier crosses, an autocal
 
 $$f_G(0)\;\mathbb E\Big[J\,\frac{\partial G}{\partial\theta}\;\Big|\;G=0\Big]$$
 
-(Lyuu and Teng, 2011; Glasserman, 2003, ch. 7). `pricing.boundary_weights` estimates its two factors separately from a registration's $n$ gaps $g_k$: with width $h=$ `Boundary_AAD_Bandwidth` $\times\ \mathrm{sd}(g)$, $K_k=e^{-g_k^2/2h^2}$ and $s_r=\sum_k K_k g_k^r$,
+([@lyuu2011]; [@glasserman2003], ch. 7). `pricing.boundary_weights` estimates its two factors separately from a registration's $n$ gaps $g_k$: with width $h=$ `Boundary_AAD_Bandwidth` $\times\ \mathrm{sd}(g)$, $K_k=e^{-g_k^2/2h^2}$ and $s_r=\sum_k K_k g_k^r$,
 
 $$\hat f_G(0)=\frac{s_0}{n\sqrt{2\pi}\,h},\qquad w_k=\frac{K_k\,(s_2-g_k s_1)}{s_2s_0-s_1^2},$$
 
-a Gaussian-kernel density and local-linear regression weights at zero (Fan and Gijbels, 2018), which sum to one so the conditional expectation is $\sum_k w_kJ_k\,\partial g_k/\partial\theta$ and holds still over a range of $h$ where a local-constant fit carries an $O(h)$ bias. The term added is $\sum_k (g_k-\bar g_k)\,\hat f_G(0)\,w_kJ_k$, $\bar g$ the detached gap and the coefficient detached. One gap (a base valuation's single scenario) has no spread: zero width, zero correction.
+a Gaussian-kernel density and local-linear regression weights at zero [@fan2018], which sum to one so the conditional expectation is $\sum_k w_kJ_k\,\partial g_k/\partial\theta$ and holds still over a range of $h$ where a local-constant fit carries an $O(h)$ bias. The term added is $\sum_k (g_k-\bar g_k)\,\hat f_G(0)\,w_kJ_k$, $\bar g$ the detached gap and the coefficient detached. One gap (a base valuation's single scenario) has no spread: zero width, zero correction.
 
 | parameter | default | declared on | meaning |
 | --- | --- | --- | --- |
@@ -277,49 +277,4 @@ A gate passes when the ladder's spread is at most 10% of its median and its flat
 | discrete barrier latch | FVA | same | 1,024 × 4 | 2e-3 to 1e-2 | 5% |
 | the exposure kink, second order | CVA gamma, vanna | `tests/test_cva_gamma_kink.py` | 65,536 × 1 | 2e-3 to 5e-2 | 5%, 10% |
 
-**The CVA Hessian** is a second-order relative of the same idea. Second-order AAD drops $\delta(V)\,V_\theta V_\theta^{\top}$ at the exposure's $\max(V,0)$; `pricing.exposure_kink_term` adds $\tfrac12 K_\varepsilon(\bar V)(V-\bar V)^2$ under the CVA's own weights, zero in value and at first order, with a normalised Gaussian kernel at Silverman's (2018) width $\varepsilon=1.06\,\mathrm{sd}(V)\,N^{-1/5}$ per report row, $N$ the run's paths. It refuses a row whose kernel density at zero climbs 2x or more across $(2,1,\tfrac12,\tfrac14)\varepsilon$, the signature of a point mass, and the run refuses `Hessian: 'Yes'` on any book that registered a boundary correction. Its declared bias is $O(\varepsilon^2)$, visible on volga, so it is a gamma-and-vanna term ([xVA](../theory/valuation_adjustments.md#sensitivities)).
-
-## References {#references}
-
-- Alm, T., Harrach, B., Harrach, D. and Keller, M. (2013). A Monte Carlo pricing algorithm for
-  autocallables that allows for stable differentiation. *The Journal of Computational Finance*,
-  17(1), 43-70. [doi:10.21314/jcf.2013.265](https://doi.org/10.21314/jcf.2013.265)
-- Capriotti, L. (2011). Fast Greeks by algorithmic differentiation. *The Journal of Computational
-  Finance*, 14(3), 3-35. [doi:10.21314/jcf.2011.234](https://doi.org/10.21314/jcf.2011.234)
-- Fan, J. and Gijbels, I. (2018). *Local Polynomial Modelling and Its Applications*. Routledge
-  (the DOI record of the 1996 monograph is dated 2 May 2018).
-  [doi:10.1201/9780203748725](https://doi.org/10.1201/9780203748725)
-- Glasserman, P. (2003). *Monte Carlo Methods in Financial Engineering*. Stochastic Modelling and
-  Applied Probability, Springer. [doi:10.1007/978-0-387-21617-1](https://doi.org/10.1007/978-0-387-21617-1)
-- Glasserman, P. and Staum, J. (2001). Conditioning on One-Step Survival for Barrier Option
-  Simulations. *Operations Research*, 49(6), 923-937.
-  [doi:10.1287/opre.49.6.923.10018](https://doi.org/10.1287/opre.49.6.923.10018)
-- Gordy, M. B. and Juneja, S. (2010). Nested Simulation in Portfolio Risk Measurement. *Management
-  Science*, 56(10), 1833-1848. [doi:10.1287/mnsc.1100.1213](https://doi.org/10.1287/mnsc.1100.1213)
-- Griewank, A. and Walther, A. (2000). Algorithm 799: revolve. *ACM Transactions on Mathematical
-  Software*, 26(1), 19-45. [doi:10.1145/347837.347846](https://doi.org/10.1145/347837.347846)
-- Higham, N. J. (2002). Computing the nearest correlation matrix--a problem from finance. *IMA
-  Journal of Numerical Analysis*, 22(3), 329-343.
-  [doi:10.1093/imanum/22.3.329](https://doi.org/10.1093/imanum/22.3.329)
-- Joe, S. and Kuo, F. Y. (2008). Constructing Sobol Sequences with Better Two-Dimensional
-  Projections. *SIAM Journal on Scientific Computing*, 30(5), 2635-2654 (online 1 August 2008).
-  [doi:10.1137/070709359](https://doi.org/10.1137/070709359)
-- Lyuu, Y.-D. and Teng, H.-W. (2011). Unbiased and efficient Greeks of financial options. *Finance
-  and Stochastics*, 15(1), 141-181 (online 3 September 2010).
-  [doi:10.1007/s00780-010-0137-5](https://doi.org/10.1007/s00780-010-0137-5)
-- Matsumoto, M. and Nishimura, T. (1998). Mersenne twister. *ACM Transactions on Modeling and
-  Computer Simulation*, 8(1), 3-30. [doi:10.1145/272991.272995](https://doi.org/10.1145/272991.272995)
-- Owen, A. B. (1998). Scrambling Sobol' and Niederreiter–Xing Points. *Journal of Complexity*,
-  14(4), 466-489. [doi:10.1006/jcom.1998.0487](https://doi.org/10.1006/jcom.1998.0487)
-- Salmon, J. K., Moraes, M. A., Dror, R. O. and Shaw, D. E. (2011). Parallel random numbers.
-  *Proceedings of 2011 International Conference for High Performance Computing, Networking, Storage
-  and Analysis*, 1-12. ACM. [doi:10.1145/2063384.2063405](https://doi.org/10.1145/2063384.2063405)
-- Silverman, B. W. (1986). *Density Estimation for Statistics and Data Analysis*. Chapman and Hall;
-  the Routledge eBook's DOI record is dated 19 February 2018.
-  [doi:10.1201/9781315140919](https://doi.org/10.1201/9781315140919)
-- Sobol', I. M. (1967). On the distribution of points in a cube and the approximate evaluation of
-  integrals. *USSR Computational Mathematics and Mathematical Physics*, 7(4), 86-112.
-  [doi:10.1016/0041-5553(67)90144-9](https://doi.org/10.1016/0041-5553%2867%2990144-9)
-- Steele, G. L., Lea, D. and Flood, C. H. (2014). Fast splittable pseudorandom number generators.
-  *Proceedings of the 2014 ACM International Conference on Object Oriented Programming Systems
-  Languages & Applications*, 453-472. [doi:10.1145/2660193.2660195](https://doi.org/10.1145/2660193.2660195)
+**The CVA Hessian** is a second-order relative of the same idea. Second-order AAD drops $\delta(V)\,V_\theta V_\theta^{\top}$ at the exposure's $\max(V,0)$; `pricing.exposure_kink_term` adds $\tfrac12 K_\varepsilon(\bar V)(V-\bar V)^2$ under the CVA's own weights, zero in value and at first order, with a normalised Gaussian kernel at Silverman's width [@silverman1986] $\varepsilon=1.06\,\mathrm{sd}(V)\,N^{-1/5}$ per report row, $N$ the run's paths. It refuses a row whose kernel density at zero climbs 2x or more across $(2,1,\tfrac12,\tfrac14)\varepsilon$, the signature of a point mass, and the run refuses `Hessian: 'Yes'` on any book that registered a boundary correction. Its declared bias is $O(\varepsilon^2)$, visible on volga, so it is a gamma-and-vanna term ([xVA](../theory/valuation_adjustments.md#sensitivities)).

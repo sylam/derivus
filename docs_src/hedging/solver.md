@@ -13,13 +13,13 @@ track (the solver, the benchmarks, the stepper rollout) optimizes over the same
 ## Method
 
 The problem is utility-optimal hedging of a liability under trading frictions on simulated paths,
-the setting of deep hedging [1]. The method is not [1]'s end-to-end policy network: `DiffSolver`
+the setting of deep hedging [@buehler2019]. The method is not [@buehler2019]'s end-to-end policy network: `DiffSolver`
 runs a backward dynamic program whose continuation value at each decision step is regressed on the
-cross-section of simulated states, the regression Monte Carlo of [2], with a neural network fitted
-by the differential loss of [3] (value plus pathwise gradient). Its labels are inner Monte Carlo
+cross-section of simulated states, the regression Monte Carlo of [@longstaff2001], with a neural network fitted
+by the differential loss of [@huge2020] (value plus pathwise gradient). Its labels are inner Monte Carlo
 estimates of the next step's continuation, and the Bellman maximum is a grid search over target
 positions outside the fitted function. The verdict's `textbook` hedge is a one-step
-minimum-variance hedge ratio, a simplification of the discrete-time quadratic hedging of [4, 5]:
+minimum-variance hedge ratio, a simplification of the discrete-time quadratic hedging of [@follmer1988; @schweizer1995]:
 unconditional across the paths at each step rather than conditional on the state, and per
 instrument rather than joint.
 
@@ -44,18 +44,3 @@ and `verdict_beats_textbook_on_utility` (greedy `u_mean` at least the other's) a
 magnitude). The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.
-
-## References
-
-1. Buehler, H.; Gonon, L.; Teichmann, J.; Wood, B. "Deep hedging". *Quantitative Finance* 19(8),
-   1271-1291, 2019. [doi:10.1080/14697688.2019.1571683](https://doi.org/10.1080/14697688.2019.1571683)
-2. Longstaff, F. A.; Schwartz, E. S. "Valuing American Options by Simulation: A Simple
-   Least-Squares Approach". *Review of Financial Studies* 14(1), 113-147, 2001.
-   [doi:10.1093/rfs/14.1.113](https://doi.org/10.1093/rfs/14.1.113)
-3. Huge, B. N.; Savine, A. "Differential Machine Learning". *SSRN Electronic Journal*, 2020.
-   [doi:10.2139/ssrn.3591734](https://doi.org/10.2139/ssrn.3591734)
-4. Föllmer, H.; Schweizer, M. "Hedging by Sequential Regression: An Introduction to the Mathematics
-   of Option Trading". *ASTIN Bulletin* 18(2), 147-160, 1988.
-   [doi:10.2143/ast.18.2.2014948](https://doi.org/10.2143/ast.18.2.2014948)
-5. Schweizer, M. "Variance-Optimal Hedging in Discrete Time". *Mathematics of Operations Research*
-   20(1), 1-32, 1995. [doi:10.1287/moor.20.1.1](https://doi.org/10.1287/moor.20.1.1)

@@ -61,7 +61,7 @@ $$\widehat{\mathrm{CVA}}=(1-R)\sum_{i=1}^{m}\frac1N\sum_{k=1}^{N}
 E^*_k(t)=\frac{\max\big(V_k(t)\,X_k(t)\,D_k(t),\,0\big)}{X(0)}.$$
 
 This is the trapezoid discretisation of $(1-R)\,\mathbb E\big[\int_0^T E^*(t)\,(-dH(t))\big]$
-(Gregory, 2020; Brigo, Morini and Pallavicini, 2013): the deflated positive exposure averaged over
+[@gregory2020; @brigo2013]: the deflated positive exposure averaged over
 each interval's two ends, times the probability of default in the interval. The path mean is taken
 per interval and then summed, an order the code keeps so the reported float does not move.
 
@@ -98,7 +98,7 @@ API page ([`Credit_Monte_Carlo`](../api_usage/calculations.md#credit_monte_carlo
 same run divides its exposure by the CVA counterparty's $S(0,t)$ to undo the scaling - the run's one
 counterparty (see the scope above). The block's `Counterparty` only adds that
 survival curve to the factor universe; `Bank` and `Stochastic_Funding` are not read. Funding
-adjustments of this shape are derived by Burgard and Kjaer (2011) and Green (2015).
+adjustments of this shape are derived by Burgard and Kjaer [@burgard2011] and Green [@green2015].
 
 ### Inputs and defaults
 
@@ -132,12 +132,12 @@ zero) and three options in the market data's `Valuation Configuration` under
 `NettingCollateralSet`: `Cash_Settlement_Risk` (0 received only, the default; 1 paid only; 2 all),
 `Forward_Looking_Closeout` and `Exclude_Paid_Today` (both off). Every collateralised set in one job
 must share one $(\delta_l,\delta_s)$; a job whose sets differ is refused by name. On the margin
-period of risk itself see Andersen, Pykhtin and Sokol (2017).
+period of risk itself see Andersen, Pykhtin and Sokol [@andersen2017].
 
 ### Sensitivities
 
 `Gradient: Yes` on a block differentiates that block's scalar by reverse-mode algorithmic
-differentiation (Capriotti, 2011; Griewank and Walther, 2008): one backward pass per batch against
+differentiation [@capriotti2011; @griewank2008]: one backward pass per batch against
 every leaf `Gradient_Variables` selects (today's curve knots, vols, spots and calibrated model
 parameters; `Implied` or `Factors` narrows it), averaged over batches and reported as `grad_cva`
 or `grad_fva`. A leaf the library calibrated carries the graph of the quotes it was
@@ -150,7 +150,7 @@ A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap
   ([Boundary corrections](../developer/calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)).
 - **CS01.** With `CDS_Tenors`, the run reports par CDS rates off the counterparty and deflation
   curves under the standard CDS model (piecewise-constant hazard and forward rates, quarterly
-  standard coupons, accrual on default; O'Kane, 2008) and, per tenor, the log-survival curve a 1bp
+  standard coupons, accrual on default; [@okane2008]) and, per tenor, the log-survival curve a 1bp
   bump of that tenor's rate implies (`Results['CS01']`), to map `grad_cva`'s survival rows onto CDS
   quotes.
 - **Curve Jacobians.** Where the market data holds an `InterestRateJacobian.<curve>` factor for a
@@ -159,7 +159,7 @@ A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap
   matrix, `grad_cva_hessian`, by a second differentiation of the first. Second-order AAD drops
   $\delta(V)\,V_\theta V_\theta^{\top}$ at the exposure's $\max(\cdot,0)$; a term worth zero in value
   and at first order restores it, with a Gaussian kernel at Silverman's width
-  $\varepsilon=1.06\,\hat\sigma\,(N)^{-1/5}$ per report row (Silverman, 2018). A row whose density
+  $\varepsilon=1.06\,\hat\sigma\,(N)^{-1/5}$ per report row [@silverman1986]. A row whose density
   estimate at zero climbs by 2x or more across widths $(2,1,\tfrac12,\tfrac14)\varepsilon$ is a
   point mass and is refused by name, and the run refuses outright on a book that registered a
   decision correction, a collateralised set included. Gated in `tests/test_cva_gamma_kink.py`: on a
@@ -188,30 +188,3 @@ A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap
 | no test holds the CVA or FVA value to an independent closed form | the gates hold derivatives to bump ladders and switches to bit-identity |
 
 The trapezoid's error in the report-grid spacing is unmeasured on the library's grids.
-
-## References {#references}
-
-- Andersen, L., Pykhtin, M. and Sokol, A. (2017). Rethinking the margin period of risk. *The
-  Journal of Credit Risk*, 13(1), January 2017 (the registry gives no pages).
-  [doi:10.21314/JCR.2016.218](https://doi.org/10.21314/JCR.2016.218)
-- Brigo, D., Morini, M. and Pallavicini, A. (2013). *Counterparty Credit Risk, Collateral and
-  Funding*. Wiley. ISBN 9780470748466. [doi:10.1002/9781118818589](https://doi.org/10.1002/9781118818589)
-- Burgard, C. and Kjaer, M. (2011). Partial differential equation representations of derivatives
-  with bilateral counterparty risk and funding costs. *The Journal of Credit Risk*, 7(3), 75-93.
-  [doi:10.21314/jcr.2011.131](https://doi.org/10.21314/jcr.2011.131)
-- Capriotti, L. (2011). Fast Greeks by algorithmic differentiation. *The Journal of Computational
-  Finance*, 14(3), 3-35. [doi:10.21314/jcf.2011.234](https://doi.org/10.21314/jcf.2011.234)
-- Green, A. (2015). *XVA: Credit, Funding and Capital Valuation Adjustments*. Wiley. ISBN
-  9781118556788 (Crossref files Green as editor; online 16 October 2015, print 26 October 2015).
-  [doi:10.1002/9781119161233](https://doi.org/10.1002/9781119161233)
-- Gregory, J. (2020). *The xVA Challenge*. Wiley. ISBN 9781119508977 (online 4 June 2020).
-  [doi:10.1002/9781119508991](https://doi.org/10.1002/9781119508991)
-- Griewank, A. and Walther, A. (2008). *Evaluating Derivatives*, 2nd edition. SIAM (online edition
-  dated 25 May 2012).
-  [doi:10.1137/1.9780898717761](https://doi.org/10.1137/1.9780898717761)
-- O'Kane, D. (2008). *Modelling Single-name and Multi-name Credit Derivatives*. Wiley. ISBN
-  9780470519288 (the DOI record is dated 2 January 2012 and files O'Kane as editor).
-  [doi:10.1002/9781119201960](https://doi.org/10.1002/9781119201960)
-- Silverman, B. W. (1986). *Density Estimation for Statistics and Data Analysis*. Chapman and Hall;
-  the Routledge eBook's DOI record is dated 19 February 2018.
-  [doi:10.1201/9781315140919](https://doi.org/10.1201/9781315140919)

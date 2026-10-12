@@ -64,7 +64,7 @@ $\delta_A$ makes $\mathrm{Var}\,X_A=A$, and $\mu_A$ forces $E[e^{X_A}]=1$: the d
 no-arbitrage's, not a parameter. $\alpha$ is tail thickness and smile convexity, $\beta$ is skew.
 The NIG law is a normal variance-mean mixture with an inverse Gaussian mixer, and it generates a
 Lévy process, a Brownian motion subordinated by the inverse Gaussian process
-(Barndorff-Nielsen, 1997):
+[@barndorffnielsen1997]:
 
 $$X_A=\mu_A+\beta G+\sqrt{G}\,Z,\qquad G\sim\mathrm{IG}\big(\text{mean }\delta_A/\gamma,\ \text{shape }\delta_A^2\big),\qquad Z\sim N(0,1).$$
 
@@ -103,7 +103,7 @@ reach.
 
 Set the vol-of-vols and the leverages to zero and the residual to `Gaussian`. Then
 $\mathrm{Var}(\ell_t+s_t)=0$, $h_t=\xi(t)$, $c=1$ and the log-return over $[t,T]$ is Gaussian with
-variance $\sum_k\delta_k\xi(t_k)$: Black-Scholes (Black and Scholes, 1973) with a deterministic,
+variance $\sum_k\delta_k\xi(t_k)$: Black-Scholes [@black1973] with a deterministic,
 time-dependent variance, and Black-Scholes itself on a flat $\xi=\sigma^2$. The limit is gated
 against the GBM pricer on one document, on the mark and through the CVA
 (`tests/test_logvar2fj_json.py`).
@@ -111,9 +111,9 @@ against the GBM pricer on one document, on the mark and through the CVA
 ### Bergomi's forward-variance models {#bergomi}
 
 Bergomi's models specify the joint dynamics of the spot and its forward variance-swap variances
-$\xi^T_t$, the forward instantaneous variance for date $T$ seen at $t$ (Bergomi, 2005; restated
-in Bergomi, 2008). The initial curve $\xi^T_0$ is an input beside the spot, naturally generated
-from variance-swap volatilities. His $N$-factor lognormal form (Bergomi, 2008, eq. 1) is
+$\xi^T_t$, the forward instantaneous variance for date $T$ seen at $t$ ([@bergomi2005]; restated
+in [@bergomi2008] and in [@bergomi2016], chapter 7). The initial curve $\xi^T_0$ is an input beside the spot, naturally generated
+from variance-swap volatilities. His $N$-factor lognormal form ([@bergomi2008], eq. 1) is
 
 $$\xi^T_t=\xi^T_0\exp\Big(\omega\sum_n w_n e^{-k_n(T-t)}X^n_t
 -\frac{\omega^2}{2}\sum_{n,m}w_nw_m e^{-(k_n+k_m)(T-t)}E\big[X^n_tX^m_t\big]\Big),
@@ -156,15 +156,15 @@ seventeen months ($\kappa_\ell=0.5$).
 - *Two factors at two speeds*, with the leverages playing $\rho_{SX}$ and $\rho_{SY}$.
 - *The skew coordinate.* At first order in the vol-of-vol, the two-factor model's ATM-forward skew
   is the vol-of-vol times a combination of the two spot/volatility correlations whose weights the
-  reversion speeds set (Bergomi, 2008, eq. 16). Here the corresponding products are
+  reversion speeds set ([@bergomi2008], eq. 16). Here the corresponding products are
   $\rho_s\sigma_s$ and $\rho_\ell\sigma_\ell$, and $\rho_s\sigma_s$ is the coordinate one of the
   calibration's two leverage-prior rows sits on.
 - *The forward smile is the open quantity.* Bergomi starts from the observation that most recent
   exotic structures, reverse cliquets and Napoleons among them, depend more on the assumed future
-  dynamics of implied vols than on today's vanillas (Bergomi, 2004), and that the usual
+  dynamics of implied vols than on today's vanillas [@bergomi2004], and that the usual
   stochastic-volatility and jump models tie the short forward skew, the spot/vol correlation and
-  the vol-of-vol term structure together, which his 2005 model controls separately (Bergomi,
-  2005). Here the vanillas leave the split between residual skew and leverage skew, and with it the
+  the vol-of-vol term structure together, which his 2005 model controls separately
+  [@bergomi2005]. Here the vanillas leave the split between residual skew and leverage skew, and with it the
   forward smile, unpinned; see [what the vanillas identify](#what-the-vanillas-identify).
 
 **What derivus does differently.**
@@ -175,12 +175,12 @@ seventeen months ($\kappa_\ell=0.5$).
 - *The residual is NIG on the variance clock.* Bergomi's spot is a diffusion given the variance: a
   Brownian one in the continuous form, and in the discrete form, which controls the short forward
   skew on its own, one with a local volatility function of the spot's move since the start of each
-  interval (Bergomi, 2008, after Bergomi, 2005). Here $\beta$ and $\alpha$ carry short-dated skew and
+  interval ([@bergomi2008], after [@bergomi2005]). Here $\beta$ and $\alpha$ carry short-dated skew and
   tails beyond what leverage and vol-of-vol give.
 - *Calendar buckets.* $\rho_s$, $\beta$, $\sigma_s$ and $\alpha$ move in calendar time, a lever that is
   not one of the factors. Bergomi notes that in a two-factor framework $k_1$ and $k_2$ shape both
   the decay of the skew and the term structure of vol-of-vol, which makes separate handles on the
-  two difficult (Bergomi, 2008).
+  two difficult [@bergomi2008].
 - *Uncorrelated factors.* The walk draws the two factors' shocks independently, where Bergomi's
   carry a correlation $\rho$.
 
@@ -281,21 +281,3 @@ g=\Big(\frac{\partial PV}{\partial\beta},\frac{\partial PV}{\partial\rho_s}\Big)
 and is reported per deal and for the portfolio. The priors that hold what the ladder cannot see,
 and what each costs against a quote, are on
 [Market Prices](../developer/market_prices.md#logvar2fj).
-
-## References {#references}
-
-- Barndorff-Nielsen, O. E. (1997). Normal inverse Gaussian distributions and stochastic volatility
-  modelling. *Scandinavian Journal of Statistics*, 24(1), 1-13 (March 1997; Wiley's online copy is dated
-  2007). [doi:10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)
-- Bergomi, L. (2004). Smile dynamics. *Risk*, September 2004, 117-123. Posted to SSRN in 2009:
-  [doi:10.2139/ssrn.1493294](https://doi.org/10.2139/ssrn.1493294)
-- Bergomi, L. (2005). Smile dynamics II. *Risk*, October 2005, 67-73. Posted to SSRN in 2009:
-  [doi:10.2139/ssrn.1493302](https://doi.org/10.2139/ssrn.1493302)
-- Bergomi, L. (2008). Smile dynamics III. *Risk*, October 2008, 90-96. On SSRN:
-  [doi:10.2139/ssrn.1493308](https://doi.org/10.2139/ssrn.1493308);
-  [PDF at Risk](https://www.risk.net/media/download/920801/download)
-- Bergomi, L. (2016). *Stochastic Volatility Modeling*. Chapman and Hall/CRC. Chapters 3
-  (forward-start options), 7 (forward variance models) and 8 (the smile of stochastic volatility
-  models); the eBook's DOI record is dated 16 December 2015. [doi:10.1201/b19649](https://doi.org/10.1201/b19649)
-- Black, F. and Scholes, M. (1973). The pricing of options and corporate liabilities. *Journal of
-  Political Economy*, 81(3), 637-654. [doi:10.1086/260062](https://doi.org/10.1086/260062)

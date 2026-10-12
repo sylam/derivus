@@ -40,13 +40,6 @@ neither is the InflationRate factor's **Reference_Name**.
 
 ## Inflation Rates
 
-Inflation rate price factors are similar to interest rate price factors but have an associated price
+Inflation rate price factors are similar to interest rate price factors [@brigo2006] but have an associated price
 index factor (**Price_Index**); their curve is the growth rate $r_I$ above, interpolated as an interest
 rate curve ([Asset Pricing](asset_pricing.md#interest-and-inflation-rate-interpolation)).
-
-## References
-
-- Brigo, D. and Mercurio, F. (2006). *Interest Rate Models - Theory and Practice*, 2nd edition.
-  Springer Finance; the second edition adds inflation-indexed derivatives. ISBN 9783540221494 (the
-  DOI record lists no authors).
-  [doi:10.1007/978-3-540-34604-3](https://doi.org/10.1007/978-3-540-34604-3)

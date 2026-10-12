@@ -24,7 +24,7 @@ The USD and ZAR "round-trip worlds" named below are the synthetic curve worlds o
 `tests/test_interest_rate_prices.py`; `tests/test_quote_propagation.py` re-checks the artifact, the
 drift constants, the tolerance boundary, the coupled-set rules and the refusals on them. The
 operator is the first-order Taylor expansion of $\theta^*(q)$, whose derivative is the implicit
-function theorem at the curve's root (Christianson, 1998; Henrard, 2014).
+function theorem at the curve's root [@christianson1998; @henrard2014].
 
 !!! note "Built for the curve family only"
     `InterestRatePrices` is the family this lands on, deliberately: its fixed point is a unique root,
@@ -395,10 +395,3 @@ reval with no re-bootstrap in it.
   cross-currency refusal firing first when both blocks solve together).
 - **Not generalised past curves.** The artifact shape does not assume a square Jacobian, and no other
   family publishes one yet.
-
-## References {#references}
-
-- Bruce Christianson, "Reverse accumulation and implicit functions", *Optimization Methods and
-  Software* 9(4), 307-322, 1998, DOI 10.1080/10556789808805697.
-- Marc Henrard, "Adjoint algorithmic differentiation: calibration and implicit function theorem",
-  *The Journal of Computational Finance* 17(4), 37-47, 2014, DOI 10.21314/jcf.2014.284.

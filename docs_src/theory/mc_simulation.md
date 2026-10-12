@@ -2,12 +2,12 @@
 
 The path-dependent equity and FX pricers that observe a trigger on discrete fixing dates value
 each reporting row by an **inner** Monte Carlo that conditions every simulated step on the
-trigger's outcome (Glasserman and Staum, 2001): at each monitored fixing the probability $p_j$
+trigger's outcome [@glasserman2001]: at each monitored fixing the probability $p_j$
 that the step does *not* fire is computed in closed form, the fired mass $(1-p_j)$ is paid its
 payoff analytically, and only the surviving branch is sampled, from the step's law truncated to
 the survival region. The path weight then carries the survival probability instead of a 0/1
 indicator, so the estimator is unbiased, has no indicator to differentiate, and gives AAD a
-pathwise derivative through every decision (Alm, Harrach, Harrach and Keller, 2013, for the
+pathwise derivative through every decision ([@alm2013], for the
 autocall).
 
 | Pricer (`derivus/pricing.py`) | Deals | Trigger $H_j$ | Fired branch pays |
@@ -20,7 +20,7 @@ autocall).
 
 Not on this page: the continuously monitored barrier (`EquityBarrierOption` without
 `Barrier_Dates`, `FXBarrierOption`) and the partial-time barrier are closed forms weighted by a
-Brownian-bridge touch probability, with the Broadie-Glasserman-Kou shift for a discrete monitoring
+Brownian-bridge touch probability [@beaglehole1997], with the Broadie-Glasserman-Kou shift [@broadie1997] for a discrete monitoring
 frequency ([FX and Equity](../valuation/fx_and_equity.md)).
 
 ### What each reporting row supplies
@@ -138,7 +138,7 @@ $F(t,T)=S(t)\,e^{b_N\tau_N}$. The vanilla is priced at the surface's own vol at 
 not at the strip's total variance - and the already-hit leg below uses the same forward and the
 same vol, so the two Europeans cannot disagree. $T-t$ is floored at $10^{-4}$ years inside the
 square root. Under LogVar2FJ, $V_{\text{van}}$ is the walk's own European: the inner average of a
-conditional Black on the terminal law $(\sum_jM_j,\sqrt{\sum_j\Sigma_j^2})$, so it carries the
+conditional Black [@black1976] on the terminal law $(\sum_jM_j,\sqrt{\sum_j\Sigma_j^2})$, so it carries the
 inner noise. The inner mean of each row is floored at zero (an individual parity sample can be
 negative).
 
@@ -183,10 +183,10 @@ a crossed knock-out as its rebate cash flow.
 |---|---|---|
 | uniforms $u_j$ | the canonical inner block `CMC_State.inner_block`: inner path $i$ is point $i$ of a scrambled Sobol sequence from point 1024, fixing $j$ its dimension $j$ (64 dimensions per chunk), clamped to $[1074,\,2^{30}-1074]\times2^{-30}$ | `torch.rand`, seeded from `Random_Seed` |
 | shared across outer paths | yes: every outer path, batch and worker reads the same rows | no: independent per outer path |
-| antithetic half | $1-u$, taken on the 30-bit integer | $1-u$ |
+| antithetic half [@hammersley1956; @glasserman2003] | $1-u$, taken on the 30-bit integer | $1-u$ |
 
-The Sobol stream is `torch.quasirandom.SobolEngine` (Joe-Kuo direction numbers, 30 bits, random
-linear matrix scramble with a digital shift, scramble seed 1234). Because the Sobol rows are shared,
+The Sobol stream [@sobol1967] is `torch.quasirandom.SobolEngine` (Joe-Kuo direction numbers [@joe2008], 30 bits,
+random linear matrix scramble with a digital shift [@owen1998], scramble seed 1234). Because the Sobol rows are shared,
 a row's inner error is common to all its outer paths and is not averaged away by more outer paths.
 
 Inner paths per row, $N=$ `MCMC_Simulations`:
@@ -215,7 +215,7 @@ derivatives they carry.
 The second-order kink term is $\tfrac12K_h(g)\,(g-\bar g)^2$ with $\bar g$ detached: zero in value
 and at first order, it adds the Gaussian-kernel estimate of $f_g(0)\,E[\nabla g\,\nabla g^\top\mid g=0]$
 to the Hessian, bandwidth $h=1.06\,\mathrm{sd}(g)\,n^{-1/5}$ over the fixing's inner paths
-(Silverman's rule); a fixing whose accrual has an atom at the strike refuses by name.
+(Silverman's rule [@silverman1986]); a fixing whose accrual has an atom at the strike refuses by name.
 
 ### Measured accuracy
 
@@ -254,37 +254,3 @@ binds; the variance reduction of the antithetic pairs.
 - Under LogVar2FJ the walk re-seeds at each row unless an outer LogVar2FJ process publishes its
   state. `EquityBarrierOption` refuses a Quanto or Compo payoff under the kit and the autocall a
   Compo; the autocall's Quanto correlation enters the walk per step.
-
-## References
-
-- Alm, T., Harrach, B., Harrach, D. and Keller, M. (2013). A Monte Carlo pricing algorithm for
-  autocallables that allows for stable differentiation. *The Journal of Computational Finance*,
-  17(1), 43-70. [doi:10.21314/jcf.2013.265](https://doi.org/10.21314/jcf.2013.265)
-- Beaglehole, D. R., Dybvig, P. H. and Zhou, G. (1997). Going to extremes: correcting simulation
-  bias in exotic option valuation. *Financial Analysts Journal*, 53(1), 62-68 (January 1997; the
-  online record is dated 2019). [doi:10.2469/faj.v53.n1.2057](https://doi.org/10.2469/faj.v53.n1.2057)
-- Black, F. (1976). The pricing of commodity contracts. *Journal of Financial Economics*, 3(1-2),
-  167-179. [doi:10.1016/0304-405X(76)90024-6](https://doi.org/10.1016/0304-405X%2876%2990024-6)
-- Broadie, M., Glasserman, P. and Kou, S. (1997). A continuity correction for discrete barrier
-  options. *Mathematical Finance*, 7(4), 325-349 (October 1997; Wiley's online copy is dated 2002).
-  [doi:10.1111/1467-9965.00035](https://doi.org/10.1111/1467-9965.00035)
-- Glasserman, P. (2003). *Monte Carlo Methods in Financial Engineering*. Springer, Stochastic
-  Modelling and Applied Probability. Antithetic variates, conditional Monte Carlo and
-  quasi-Monte Carlo. [doi:10.1007/978-0-387-21617-1](https://doi.org/10.1007/978-0-387-21617-1)
-- Glasserman, P. and Staum, J. (2001). Conditioning on one-step survival for barrier option
-  simulations. *Operations Research*, 49(6), 923-937.
-  [doi:10.1287/opre.49.6.923.10018](https://doi.org/10.1287/opre.49.6.923.10018)
-- Hammersley, J. M. and Morton, K. W. (1956). A new Monte Carlo technique: antithetic variates.
-  *Mathematical Proceedings of the Cambridge Philosophical Society*, 52(3), 449-475 (July 1956; the
-  online record is dated 2008). [doi:10.1017/S0305004100031455](https://doi.org/10.1017/S0305004100031455)
-- Joe, S. and Kuo, F. Y. (2008). Constructing Sobol sequences with better two-dimensional
-  projections. *SIAM Journal on Scientific Computing*, 30(5), 2635-2654 (the issue is dated
-  January 2008, the online record August 2008). [doi:10.1137/070709359](https://doi.org/10.1137/070709359)
-- Owen, A. B. (1998). Scrambling Sobol' and Niederreiter-Xing points. *Journal of Complexity*,
-  14(4), 466-489. [doi:10.1006/jcom.1998.0487](https://doi.org/10.1006/jcom.1998.0487)
-- Silverman, B. W. (1986). *Density Estimation for Statistics and Data Analysis*. Chapman and Hall;
-  the Routledge eBook's DOI record is dated 19 February 2018.
-  [doi:10.1201/9781315140919](https://doi.org/10.1201/9781315140919)
-- Sobol', I. M. (1967). On the distribution of points in a cube and the approximate evaluation of
-  integrals. *USSR Computational Mathematics and Mathematical Physics*, 7(4), 86-112.
-  [doi:10.1016/0041-5553(67)90144-9](https://doi.org/10.1016/0041-5553%2867%2990144-9)

@@ -65,8 +65,8 @@ $$\hat b=\frac{\widehat{\mathrm{Cov}}(\Delta x_t,x_t)}{\widehat{\mathrm{Var}}(x_
 $$\hat\sigma^2=\Big(\widehat{\mathrm{Var}}(\Delta x)-\big(e^{-\hat\alpha\Delta}-1\big)^2\widehat{\mathrm{Var}}(x)\Big)\frac{2\hat\alpha}{1-e^{-2\hat\alpha\Delta}},\qquad
 \hat\theta=\overline{x}+\frac{\overline{\Delta x}}{1-e^{-\hat\alpha\Delta}}$$
 
-This is the least-squares fit of the exact AR(1) discretisation of an Ornstein-Uhlenbeck process,
-$x_{t+\Delta}=\theta(1-e^{-\alpha\Delta})+e^{-\alpha\Delta}x_t+\varepsilon_t$ (Vasicek 1977), mapped
+This is the least-squares fit of the exact AR(1) discretisation of an Ornstein-Uhlenbeck process [@uhlenbeck1930],
+$x_{t+\Delta}=\theta(1-e^{-\alpha\Delta})+e^{-\alpha\Delta}x_t+\varepsilon_t$ [@vasicek1977], mapped
 back to $(\alpha,\sigma,\theta)$. The function also returns:
 
 | Output | Formula |
@@ -79,7 +79,7 @@ back to $(\alpha,\sigma,\theta)$. The function also returns:
 | correlation | Pearson correlation of $\Delta x$ across the factor's columns. |
 
 Limitations: $\hat\alpha$ from a least-squares AR(1) fit is biased upward in short samples
-(Tang & Chen 2009); its size on any archive here is unmeasured. No standard error is computed.
+[@tang2009]; its size on any archive here is unmeasured. No standard error is computed.
 
 ## Output
 
@@ -102,11 +102,11 @@ Three further properties:
    repairs it when it builds the Cholesky factor, by `Correlations_Healing_Method` in `System
    Parameters`: `Eigenvalue_Raising` (the default) floors the eigenvalues at $10^{-4}$ and rescales
    to a unit diagonal; the alternative runs alternating projections for at most 100 iterations
-   (Higham 2002). Both log a warning.
+   [@higham2002]. Both log a warning.
 2. `overwrite_correlations=True` (the default) clears the whole `Correlations` section before
    writing, including entries for factors this run did not calibrate.
 3. Daily closes taken at different times of day bias a same-day correlation towards zero
-   (Burns, Engle & Mezrich 1998). No adjustment is made; the size on any archive here is
+   [@burns1998]. No adjustment is made; the size on any archive here is
    unmeasured.
 
 A subsequent `Config.write_marketdata_json` call serialises the result to disk.
@@ -161,16 +161,3 @@ Factors are calibrated in alphabetical order of their fully-qualified name (`<Ty
 class that needs a sibling factor's data receives it through `data_frame`, by the archive pulls of
 [Cross-Factor Calibration](cross_factor.md), never through iteration order or another class's
 fitted parameters.
-
-## References
-
-- O. Vasicek, "An equilibrium characterization of the term structure", *Journal of Financial
-  Economics* 5(2), 177-188, 1977. DOI [10.1016/0304-405X(77)90016-2](https://doi.org/10.1016/0304-405X(77)90016-2)
-- G. E. Uhlenbeck, L. S. Ornstein, "On the Theory of the Brownian Motion", *Physical Review* 36(5),
-  823-841, 1930. DOI [10.1103/PhysRev.36.823](https://doi.org/10.1103/PhysRev.36.823)
-- C. Y. Tang, S. X. Chen, "Parameter estimation and bias correction for diffusion processes",
-  *Journal of Econometrics* 149(1), 65-81, 2009. DOI [10.1016/j.jeconom.2008.11.001](https://doi.org/10.1016/j.jeconom.2008.11.001)
-- N. J. Higham, "Computing the nearest correlation matrix--a problem from finance", *IMA Journal of
-  Numerical Analysis* 22(3), 329-343, 2002. DOI [10.1093/imanum/22.3.329](https://doi.org/10.1093/imanum/22.3.329)
-- P. Burns, R. F. Engle, J. J. Mezrich, "Correlations and Volatilities of Asynchronous Data",
-  *The Journal of Derivatives* 5(4), 7-18, 1998. DOI [10.3905/jod.1998.408000](https://doi.org/10.3905/jod.1998.408000)

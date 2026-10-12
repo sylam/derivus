@@ -30,13 +30,8 @@ below $10^{-8}$, with a WARNING line each time; the size of the change is not re
 | `Eigenvalue_Raising` | $C = V\Lambda V^\top$; floor the eigenvalues, $P = V\max(\Lambda, 10^{-4})V^\top$; rescale to a unit diagonal, $C' = D^{-1/2} P D^{-1/2}$ with $D = \mathrm{diag}(P)$ |
 | `Alternating_Projections` | start $B_0 = C_0 = C$. For $k = 0, \dots, 99$: $X_k = V\max(\Lambda, 10^{-4})V^\top$ from the eigendecomposition of $B_k$; $C_{k+1}$ is $X_k$ with its diagonal set to one; $B_{k+1} = B_k + (C_{k+1} - X_k)$. Stop when $\max\lvert C_{k+1} - C_k\rvert < 10^{-8}\max\lvert C_{k+1}\rvert$ or after 100 iterations |
 
-The second follows the alternating-projections idea of Higham (2002) between the positive
+The second follows the alternating-projections idea of Higham [@higham2002] between the positive
 semidefinite matrices and the unit-diagonal ones, with three departures: the eigenvalue floor is
 $10^{-4}$ rather than 0, the correction carried between iterations is the one above rather than
 Higham's Dykstra correction, and the iteration is capped at 100. Neither method is guaranteed to
 return the nearest correlation matrix to $C$, and the healed matrix is not differentiated (correlation is not an AAD leaf).
-
-## References
-
-- N. J. Higham, "Computing the nearest correlation matrix--a problem from finance", *IMA Journal of
-  Numerical Analysis* 22(3), 329-343, 2002. [doi:10.1093/imanum/22.3.329](https://doi.org/10.1093/imanum/22.3.329)

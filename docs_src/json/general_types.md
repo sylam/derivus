@@ -1,12 +1,12 @@
 # General JSON Datatypes
 
-Every Derivus document is JSON (RFC 8259): objects, arrays, strings, numbers, `true`/`false` and
+Every Derivus document is JSON (RFC 8259 [@rfc8259]): objects, arrays, strings, numbers, `true`/`false` and
 `null`. On top of that, an object keyed by a name starting with a period is a **tag**: the loader
 converts the value it holds into the engine object the tag names.
 
 | Tag | Value | Becomes |
 |---|---|---|
-| `.Timestamp` | an ISO 8601 date, `"YYYY-MM-DD"`, or date-time | a date (`pandas.Timestamp`) |
+| `.Timestamp` | an ISO 8601 date [@iso8601], `"YYYY-MM-DD"`, or date-time | a date (`pandas.Timestamp`) |
 | `.DateOffset` | a period string, e.g. `"3M"`, `"1Y6M"` (below) | a calendar period |
 | `.DateOffset` with `.Offset` | two periods in one object | a grid item: a date and the step it repeats by |
 | `.Grid` | an array of `.DateOffset` objects, with or without `.Offset` | a time grid (below) |
@@ -51,7 +51,7 @@ from one week to three months, monthly to two years, and quarterly after that. T
 The day-count menus (`Day_Count` and the like) offer six names. Two of them do not yet accrue the
 convention they are named after:
 
-| Name | Year fraction the code computes | Named after |
+| Name | Year fraction the code computes | Named after [@isda2006] |
 |---|---|---|
 | `ACT_365` | days / 365 | Actual/365 (Fixed) |
 | `ACT_360` | days / 360 | Actual/360 |
@@ -62,15 +62,3 @@ convention they are named after:
 
 For the two 30/360 conventions, a schedule accrued several periods at once takes every period's
 $d_1$ from the first period's start date.
-
-## References
-
-- T. Bray (ed.), *The JavaScript Object Notation (JSON) Data Interchange Format*, RFC 8259, Internet
-  Standard, December 2017. [doi:10.17487/RFC8259](https://doi.org/10.17487/RFC8259)
-- ISO 8601-1:2019, *Date and time - Representations for information interchange - Part 1: Basic
-  rules* (International Organization for Standardization, edition 1, 2019). G. Klyne and C. Newman,
-  *Date and Time on the Internet: Timestamps*, RFC 3339, July 2002, is a freely readable profile of
-  it. [doi:10.17487/RFC3339](https://doi.org/10.17487/RFC3339)
-- International Swaps and Derivatives Association, *2006 ISDA Definitions*, Section 4.16 (Day Count
-  Fraction) - the conventions the day-count names refer to. A published contract standard with no
-  DOI.

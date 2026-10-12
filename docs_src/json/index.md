@@ -1,6 +1,6 @@
 # Derivus JSON data format
 
-A Derivus job is one JSON document (RFC 8259; tagged values such as dates are described in
+A Derivus job is one JSON document (RFC 8259 [@rfc8259]; tagged values such as dates are described in
 [General Types](general_types.md)):
 
 ```json
@@ -187,8 +187,3 @@ An XML file of business-day calendars, loaded once per `Context` and cached by i
   }
 }
 ```
-
-## References
-
-- T. Bray (ed.), *The JavaScript Object Notation (JSON) Data Interchange Format*, RFC 8259, Internet
-  Standard, December 2017. [doi:10.17487/RFC8259](https://doi.org/10.17487/RFC8259)

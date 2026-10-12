@@ -659,8 +659,8 @@ class GBMAssetPriceModel(StochasticProcess):
     """The Geometric Brownian Motion Stochastic Process"""
 
     documentation = ('Asset Pricing', [
-        'Geometric Brownian motion with constant parameters for an equity price or an FX rate, under the',
-        'historical measure: the drift is an estimated real-world one, not the carry.',
+        'Geometric Brownian motion [@black1973] with constant parameters for an equity price or an FX',
+        'rate, under the historical measure: the drift is an estimated real-world one, not the carry.',
         '',
         '$$ dS(t) = \\mu S(t)\\,dt + \\sigma S(t)\\,dW(t),\\qquad',
         'S(t) = S(0)\\exp\\Big(\\big(\\mu-\\tfrac12\\sigma^2\\big)t+\\sigma W(t)\\Big)$$',
@@ -673,9 +673,6 @@ class GBMAssetPriceModel(StochasticProcess):
         '',
         '[GBMAssetPriceCalibration](../calibration/asset_pricing.md#gbmassetpricecalibration) estimates',
         'both parameters.',
-        '',
-        '**References.** F. Black, M. Scholes, "The Pricing of Options and Corporate Liabilities", *Journal',
-        'of Political Economy* 81(3), 637-654, 1973. DOI [10.1086/260062](https://doi.org/10.1086/260062)',
         ])
 
     factor_types = ('EquityPrice', 'FxRate')
@@ -726,8 +723,8 @@ class GBMAssetPriceModel(StochasticProcess):
 class GBMAssetPriceCalibration(object):
     """Lognormal drift and volatility from `calc_statistics`. Takes no tuning."""
     documentation_calibration = ('Asset Pricing', [
-        'Estimates the drift and volatility of `GBMAssetPriceModel` under the historical measure. Takes no',
-        'tuning.',
+        'Estimates the drift and volatility of `GBMAssetPriceModel` [@black1973] under the historical',
+        'measure. Takes no tuning.',
         '',
         "**Data.** The factor's spot column. $r_t=\\log S_{t+1}-\\log S_t$, each row one business day",
         '(levels below $10^{-4}$ are floored before the log).',
@@ -752,9 +749,6 @@ class GBMAssetPriceCalibration(object):
         '**Limitations.** The drift is weakly identified: its standard error is $\\hat\\sigma/\\sqrt{N/252}$ for',
         '$N$ daily returns (0.063 at $\\hat\\sigma=0.2$ over ten years), and is neither written nor logged.',
         'Both parameters are constant over the window.',
-        '',
-        '**References.** F. Black, M. Scholes, "The Pricing of Options and Corporate Liabilities", *Journal',
-        'of Political Economy* 81(3), 637-654, 1973. DOI [10.1086/260062](https://doi.org/10.1086/260062)',
         ])
     model_type = 'GBMAssetPriceModel'
     fields = []
@@ -779,8 +773,9 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
     """The Geometric Brownian Motion Stochastic Process with implied drift and vol"""
 
     documentation = ('Asset Pricing', [
-        'Risk-neutral geometric Brownian motion with a deterministic, time-dependent volatility, for an',
-        'equity price or an FX rate. The drift is the carry read off the curves:',
+        'Risk-neutral geometric Brownian motion [@black1973] with a deterministic, time-dependent',
+        'volatility [@merton1973], for an equity price or an FX rate. The drift is the carry read off the',
+        'curves:',
         '',
         '$$ \\frac{dS(t)}{S(t)} = \\big(r(t)-q(t)-\\rho\\,v(t)\\sigma(t)\\big)\\,dt + \\sigma(t)\\,dW(t)$$',
         '',
@@ -795,8 +790,8 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         '  in time between its knots and flat beyond the last; $V(t)=\\int_0^t\\sigma(s)^2ds$ and',
         '  $C(t)=\\int_0^tv(s)\\sigma(s)ds$ are integrated exactly on that shape',
         "- $r$ and $q$ are, for an **EquityPrice**, the zero curve of the equity's currency and its dividend",
-        '  curve, and for an **FxRate**, the domestic and foreign zero curves; each step reads them as they',
-        "  stand at the step's start, so a simulated curve moves the drift",
+        '  curve, and for an **FxRate**, the domestic and foreign zero curves [@garman1983]; each step reads',
+        "  them as they stand at the step's start, so a simulated curve moves the drift",
         "- $v$ and $\\rho$ are the quanto term, applied only to an **EquityPrice** whose currency's FX rate",
         "  is itself simulated with implied parameters: $v$ is that FX rate's **Vol** curve and $\\rho$ the",
         "  **Quanto_FX_Correlation** of the equity's parameter factor. Otherwise, and always for an",
@@ -807,15 +802,6 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         '- $Z$ is a standard normal',
         '',
         '**Risk_Premium** is declared and not read: no risk premium enters the simulation.',
-        '',
-        '**References.**',
-        '',
-        '- F. Black, M. Scholes, "The Pricing of Options and Corporate Liabilities", *Journal of Political',
-        '  Economy* 81(3), 637-654, 1973. DOI [10.1086/260062](https://doi.org/10.1086/260062)',
-        '- R. C. Merton, "Theory of Rational Option Pricing", *The Bell Journal of Economics and Management',
-        '  Science* 4(1), 141, 1973, for the time-dependent volatility. DOI [10.2307/3003143](https://doi.org/10.2307/3003143)',
-        '- M. B. Garman, S. W. Kohlhagen, "Foreign currency option values", *Journal of International Money',
-        '  and Finance* 2(3), 231-237, 1983. DOI [10.1016/S0261-5606(83)80001-1](https://doi.org/10.1016/S0261-5606(83)80001-1)',
         ])
 
     factor_types = ('EquityPrice', 'FxRate')
@@ -1054,10 +1040,10 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
     """Hull white 2 factor implied interest rate model for risk neutral simulation of yield curves"""
 
     documentation = ('Interest Rates', [
-        'The two-factor Hull-White model: a Gaussian short rate driven by two correlated mean-reverting',
-        'factors, the G2++ form of Brigo & Mercurio with time-dependent volatilities. The $i^{th}$ factor',
-        'has a volatility curve $\\sigma_i(t)$, a constant reversion speed $\\alpha_i$ and a market price of',
-        'risk $\\lambda_i$.',
+        'The two-factor Hull-White model [@hull1994]: a Gaussian short rate driven by two correlated',
+        'mean-reverting factors, the G2++ form of Brigo & Mercurio [@brigo2006] with time-dependent',
+        'volatilities. The $i^{th}$ factor has a volatility curve $\\sigma_i(t)$, a constant reversion speed',
+        '$\\alpha_i$ and a market price of risk $\\lambda_i$.',
         '',
         'Final form of the model is:',
         '',
@@ -1078,7 +1064,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         '',
         '- $\\sigma_1$, $\\sigma_2$ are its **Sigma_1** and **Sigma_2** curves, piecewise LINEAR in time',
         '  between their knots and flat beyond the last; $H$, $I$, $J$ and $K$ are integrated exactly on',
-        "  that shape, as are the bootstrap's analytic swaptions",
+        "  that shape, as are the bootstrap's analytic swaptions [@schrager2006]",
         '- $\\alpha_i$ is **Alpha_1**, **Alpha_2**, held at $\\pm10^{-8}$ (sign kept) where smaller, because',
         '  the assembly of $A$ divides by it',
         '- $\\rho$ is **Correlation**',
@@ -1108,16 +1094,6 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         '',
         "Where an increment covariance is not positive definite, that step reuses the previous step's",
         'factor and the process marks its parameters not OK; the size of that approximation is unmeasured.',
-        '',
-        '**References.**',
-        '',
-        '- J. C. Hull, A. D. White, "Numerical Procedures for Implementing Term Structure Models II", *The',
-        '  Journal of Derivatives* 2(2), 37-48, 1994. DOI [10.3905/jod.1994.407908](https://doi.org/10.3905/jod.1994.407908)',
-        '- D. Brigo, F. Mercurio, *Interest Rate Models - Theory and Practice*, 2nd ed., Springer Finance,',
-        '  Springer, 2006 (the registry record names no authors). DOI [10.1007/978-3-540-34604-3](https://doi.org/10.1007/978-3-540-34604-3)',
-        '- D. F. Schrager, A. A. J. Pelsser, "Pricing Swaptions and Coupon Bond Options in Affine Term',
-        '  Structure Models", *Mathematical Finance* 16(4), 673-694, 2006, for the analytic swaption.',
-        '  DOI [10.1111/j.1467-9965.2006.00289.x](https://doi.org/10.1111/j.1467-9965.2006.00289.x)',
         ])
 
     factor_types = ('InterestRate',)
@@ -1478,8 +1454,8 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
     """Hull White 1 factor model"""
 
     documentation = ('Interest Rates', [
-        'The one-factor Hull-White model for an interest, inflation or dividend rate curve. The',
-        'instantaneous short rate is',
+        'The one-factor Hull-White model [@hull1990; @vasicek1977] for an interest, inflation or dividend',
+        'rate curve. The instantaneous short rate is',
         '',
         '$$ dr(t) = \\big(\\theta(t)-\\alpha r(t)-v(t)\\sigma(t)\\rho\\big)dt + \\sigma(t)\\,dW^*(t)$$',
         '',
@@ -1516,13 +1492,6 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
         '',
         '[HWInterestRateCalibration](../calibration/interest_rates.md#hwinterestratecalibration) estimates',
         '$\\alpha$ and a flat $\\sigma$ from history, with $\\lambda=0$.',
-        '',
-        '**References.**',
-        '',
-        '- J. Hull, A. White, "Pricing Interest-Rate-Derivative Securities", *Review of Financial Studies*',
-        '  3(4), 573-592, 1990. DOI [10.1093/rfs/3.4.573](https://doi.org/10.1093/rfs/3.4.573)',
-        '- O. Vasicek, "An equilibrium characterization of the term structure", *Journal of Financial',
-        '  Economics* 5(2), 177-188, 1977. DOI [10.1016/0304-405X(77)90016-2](https://doi.org/10.1016/0304-405X(77)90016-2)',
         ])
 
     factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
@@ -1630,8 +1599,8 @@ class HWInterestRateCalibration(object):
     """Mean reversion and reversion volatility averaged across the curve's tenors. Takes no
     tuning - the name is also why a calibration has to declare the process it calibrates."""
     documentation_calibration = ('Interest Rates', [
-        'Estimates the reversion speed and volatility of `HullWhite1FactorInterestRateModel` from the',
-        "history of the curve's zero rates. Takes no tuning.",
+        'Estimates the reversion speed and volatility of `HullWhite1FactorInterestRateModel`',
+        "[@hull1990; @vasicek1977] from the history of the curve's zero rates. Takes no tuning.",
         '',
         '**Data.** Every `<factor>,<tenor>` column as a level (`Diff`): $\\Delta R_\\tau$, the daily change of',
         'the zero rate at tenor $\\tau$. Every column needs a numeric tenor sub-key; any other column makes',
@@ -1667,13 +1636,6 @@ class HWInterestRateCalibration(object):
         '  drift.',
         "- A one-factor model moves every tenor together; the tenors' own correlation enters only through",
         "  the equal-weight average move's correlation with other factors.",
-        '',
-        '**References.**',
-        '',
-        '- J. Hull, A. White, "Pricing Interest-Rate-Derivative Securities", *Review of Financial Studies*',
-        '  3(4), 573-592, 1990. DOI [10.1093/rfs/3.4.573](https://doi.org/10.1093/rfs/3.4.573)',
-        '- O. Vasicek, "An equilibrium characterization of the term structure", *Journal of Financial',
-        '  Economics* 5(2), 177-188, 1977. DOI [10.1016/0304-405X(77)90016-2](https://doi.org/10.1016/0304-405X(77)90016-2)',
         ])
     model_type = 'HullWhite1FactorInterestRateModel'
     fields = []
@@ -1700,7 +1662,7 @@ class HWHazardRateModel(StochasticProcess):
     """Hull White 1 factor hazard Rate model"""
 
     documentation = ('Survival Rates', [
-        'The Hull-White instantaneous hazard rate process is modelled as:',
+        'The Hull-White instantaneous hazard rate process [@hull1990] is modelled as:',
         '',
         '$$ dh(t) = \\big(\\theta(t)-\\alpha h(t)\\big)dt + \\sigma\\,dW^*(t)$$',
         '',
@@ -1727,9 +1689,6 @@ class HWHazardRateModel(StochasticProcess):
         '',
         '[HWHazardRateCalibration](../calibration/survival_rates.md#hwhazardratecalibration) estimates',
         '$\\alpha$ and $\\sigma$ from history, with $\\lambda=0$.',
-        '',
-        '**References.** J. Hull, A. White, "Pricing Interest-Rate-Derivative Securities", *Review of',
-        'Financial Studies* 3(4), 573-592, 1990. DOI [10.1093/rfs/3.4.573](https://doi.org/10.1093/rfs/3.4.573)',
         ])
 
     factor_types = ('SurvivalProb',)
@@ -1800,7 +1759,7 @@ class HWHazardRateModel(StochasticProcess):
 class HWHazardRateCalibration(object):
     """Mean reversion and reversion volatility of a hazard rate curve. Takes no tuning."""
     documentation_calibration = ('Survival Rates', [
-        'Estimates the reversion speed and volatility of `HWHazardRateModel`. Takes no tuning.',
+        'Estimates the reversion speed and volatility of `HWHazardRateModel` [@hull1990]. Takes no tuning.',
         '',
         '**Data.** Every `SurvivalProb.<Name>,<tenor>` column as a level (`Diff`): the daily change of',
         '$\\Lambda(\\tau)=-\\log S(0,\\tau)$ at each tenor. Every column needs a numeric tenor sub-key.',
@@ -1820,9 +1779,6 @@ class HWHazardRateCalibration(object):
         '$B(\\tau)=(1-e^{-\\alpha\\tau})/\\alpha$, so $\\hat\\sigma_{\\tau_1}/\\tau_1$ estimates $\\sigma B(\\tau_1)/\\tau_1$:',
         'low by the factor $B(\\tau_1)/\\tau_1$, 0.885 at $\\alpha=0.5$, $\\tau_1=0.5$. `Lambda` is 0, so no',
         'risk premium is estimated.',
-        '',
-        '**References.** J. Hull, A. White, "Pricing Interest-Rate-Derivative Securities", *Review of',
-        'Financial Studies* 3(4), 573-592, 1990. DOI [10.1093/rfs/3.4.573](https://doi.org/10.1093/rfs/3.4.573)',
         ])
     model_type = 'HWHazardRateModel'
     fields = []
@@ -1847,8 +1803,8 @@ class CSForwardPriceModel(StochasticProcess):
     """Clewlow-Strickland Model"""
 
     documentation = ('Energy Pricing', [
-        'The one-factor Clewlow-Strickland model of a commodity forward curve, under the historical measure.',
-        'For each settlement date $T$ the forward price follows',
+        'The one-factor Clewlow-Strickland model [@clewlow1999] of a commodity forward curve, under the',
+        'historical measure. For each settlement date $T$ the forward price follows',
         '',
         '$$ dF(t,T) = \\mu F(t,T)\\,dt + \\sigma e^{-\\alpha(T-t)}F(t,T)\\,dW(t)$$',
         '',
@@ -1867,20 +1823,12 @@ class CSForwardPriceModel(StochasticProcess):
         '',
         '$$v(t) = \\frac{1-e^{-2\\alpha t}}{2\\alpha}$$',
         '',
-        'After its settlement date a contract is frozen at $F(T,T)$. The spot rate is',
+        'After its settlement date a contract is frozen at $F(T,T)$. The spot rate [@schwartz1997] is',
         '',
         '$$S(t)=F(t,t)=F(0,t)\\exp\\Big(\\mu t-\\frac{1}{2}\\sigma^2v(t)+\\sigma Y(t)\\Big)$$',
         '',
         '[CSForwardPriceCalibration](../calibration/energy_pricing.md#csforwardpricecalibration) estimates',
         'the three parameters from history.',
-        '',
-        '**References.**',
-        '',
-        '- L. Clewlow, C. Strickland, "Valuing Energy Options in a One Factor Model Fitted to Forward',
-        '  Prices", SSRN, 1999. DOI [10.2139/ssrn.160608](https://doi.org/10.2139/ssrn.160608)',
-        '- E. S. Schwartz, "The Stochastic Behavior of Commodity Prices: Implications for Valuation and',
-        '  Hedging", *The Journal of Finance* 52(3), 923-973, 1997 (the registry\'s online record is dated',
-        '  2012). DOI [10.1111/j.1540-6261.1997.tb02721.x](https://doi.org/10.1111/j.1540-6261.1997.tb02721.x)',
         ])
 
     factor_types = ('ForwardPrice',)
@@ -1967,9 +1915,9 @@ class CSImpliedForwardPriceModel(CSForwardPriceModel):
     """The Clewlow Strickland Stochastic Process with implied vol and mean reversion"""
 
     documentation = ('Energy Pricing', [
-        'The risk-neutral (implied) variant of the Clewlow-Strickland forward price model. The drift is',
-        'zero, so each forward price is a martingale under the pricing measure. For each settlement date',
-        '$T$:',
+        'The risk-neutral (implied) variant of the Clewlow-Strickland forward price model [@clewlow1999].',
+        'The drift is zero, so each forward price is a martingale under the pricing measure. For each',
+        'settlement date $T$:',
         '',
         '$$ dF(t,T) = \\sigma e^{-\\alpha(T-t)}F(t,T)\\,dW(t)$$',
         '',
@@ -1990,9 +1938,6 @@ class CSImpliedForwardPriceModel(CSForwardPriceModel):
         'After its settlement date a contract is frozen at $F(T,T)$. The spot rate is',
         '',
         '$$S(t)=F(t,t)=F(0,t)\\exp\\Big(-\\frac{1}{2}\\sigma^2v(t)+\\sigma Y(t)\\Big)$$',
-        '',
-        '**References.** L. Clewlow, C. Strickland, "Valuing Energy Options in a One Factor Model Fitted to',
-        'Forward Prices", SSRN, 1999. DOI [10.2139/ssrn.160608](https://doi.org/10.2139/ssrn.160608)',
         ])
 
     factor_types = ('ForwardPrice',)
@@ -2010,7 +1955,7 @@ class CSForwardPriceCalibration(object):
     """Clewlow-Strickland sigma, alpha and drift from log statistics. Takes no tuning."""
     documentation_calibration = ('Energy Pricing', [
         'Estimates the reversion speed, volatility and drift of the historical Clewlow-Strickland model',
-        '`CSForwardPriceModel`. Takes no tuning.',
+        '`CSForwardPriceModel` [@clewlow1999; @schwartz1997]. Takes no tuning.',
         '',
         '**Data.** Every `ForwardPrice.<Name>,<tenor>` column, in logs (levels below $10^{-4}$ are floored',
         'before the log). Every column needs a numeric tenor sub-key.',
@@ -2033,14 +1978,6 @@ class CSForwardPriceCalibration(object):
         '  column is the spot ($\\tau_1=0$); otherwise it is low by $e^{-\\alpha\\tau_1}$.',
         '- The other columns enter the correlation only.',
         "- The drift's standard error ($\\hat\\sigma/\\sqrt{\\text{years}}$) is not written.",
-        '',
-        '**References.**',
-        '',
-        '- L. Clewlow, C. Strickland, "Valuing Energy Options in a One Factor Model Fitted to Forward',
-        '  Prices", SSRN, 1999. DOI [10.2139/ssrn.160608](https://doi.org/10.2139/ssrn.160608)',
-        '- E. S. Schwartz, "The Stochastic Behavior of Commodity Prices: Implications for Valuation and',
-        '  Hedging", *The Journal of Finance* 52(3), 923-973, 1997 (the registry\'s online record is dated',
-        '  2012). DOI [10.1111/j.1540-6261.1997.tb02721.x](https://doi.org/10.1111/j.1540-6261.1997.tb02721.x)',
         ])
     model_type = 'CSForwardPriceModel'
     fields = []
@@ -2067,7 +2004,8 @@ class PCAInterestRateModel(StochasticProcess):
     interface and the low level cuda code"""
 
     documentation = ('Interest Rates', [
-        "A principal-component model of the zero curve, lognormal in each tenor's rate. Its parameters are:",
+        "A principal-component model of the zero curve [@litterman1991], lognormal in each tenor's rate.",
+        'Its parameters are:',
         '',
         '- a volatility curve $\\sigma_\\tau$ (**Yield_Volatility**) for each tenor $\\tau$ of the zero curve $r_\\tau$',
         '- a mean reversion speed $\\alpha$ (**Reversion_Speed**)',
@@ -2111,9 +2049,6 @@ class PCAInterestRateModel(StochasticProcess):
         '',
         '[PCAInterestRateCalibration](../calibration/interest_rates.md#pcainterestratecalibration)',
         'estimates every parameter from history.',
-        '',
-        '**References.** R. B. Litterman, J. Scheinkman, "Common Factors Affecting Bond Returns", *The',
-        'Journal of Fixed Income* 1(1), 54-61, 1991. DOI [10.3905/jfi.1991.692347](https://doi.org/10.3905/jfi.1991.692347)',
         ])
 
     factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
@@ -2260,14 +2195,14 @@ class PCAInterestRateCalibration(object):
     """Principal components of the tenor covariance, with the three shape choices stamped through
     onto the emitted `Price Models` block - which is why all three are hard-keyed and required."""
     documentation_calibration = ('Interest Rates', [
-        'Estimates `PCAInterestRateModel`: the reversion speed, the per-tenor volatility and long-run level,',
-        "and three principal components of the curve's moves.",
+        'Estimates `PCAInterestRateModel` [@litterman1991]: the reversion speed, the per-tenor volatility',
+        "and long-run level, and three principal components of the curve's moves.",
         '',
         "**Data.** Every `<factor>,<tenor>` column, in logs. A rate at or below $10^{-4}$ (in the archive's",
         'units) is floored there before the log, so zero and negative rates are read as one constant value.',
         '',
         '**Estimator.** [The shared OU regression](general.md#the-shared-ou-regression) (`Log`,',
-        '$\\alpha_{max}=4$) on each tenor, then:',
+        '$\\alpha_{max}=4$) on each tenor [@vasicek1977], then:',
         '',
         '1. $\\hat\\sigma_\\tau$, the `Reversion Volatility`, with gaps filled by interpolation across tenors.',
         '2. The covariance $C=D\\rho D$, $D=\\mathrm{diag}(\\hat\\sigma_\\tau)$ and $\\rho$ the Pearson correlation',
@@ -2308,13 +2243,6 @@ class PCAInterestRateCalibration(object):
         '  differences; $C$ combines the two as one covariance.',
         '- The floor at $10^{-4}$ distorts the log-rate volatility and correlation over any period of rates',
         '  at or below it; unmeasured.',
-        '',
-        '**References.**',
-        '',
-        '- R. B. Litterman, J. Scheinkman, "Common Factors Affecting Bond Returns", *The Journal of Fixed',
-        '  Income* 1(1), 54-61, 1991. DOI [10.3905/jfi.1991.692347](https://doi.org/10.3905/jfi.1991.692347)',
-        '- O. Vasicek, "An equilibrium characterization of the term structure", *Journal of Financial',
-        '  Economics* 5(2), 177-188, 1977. DOI [10.1016/0304-405X(77)90016-2](https://doi.org/10.1016/0304-405X(77)90016-2)',
         ])
     model_type = 'PCAInterestRateModel'
     fields = [
@@ -2376,8 +2304,8 @@ class LogOUSpotModel(StochasticProcess):
     """
 
     documentation = ('Asset Pricing', [
-        'A commodity spot whose log $X_t=\\log S_t$ follows a mean-reverting Ornstein-Uhlenbeck process under',
-        'the historical measure, the one-factor model of Schwartz (1997):',
+        'A commodity spot whose log $X_t=\\log S_t$ follows a mean-reverting Ornstein-Uhlenbeck process',
+        '[@uhlenbeck1930] under the historical measure, the one-factor model of Schwartz [@schwartz1997]:',
         '',
         '$$ dX_t = \\kappa(\\theta - X_t)\\,dt + \\sigma\\,dW_t $$',
         '',
@@ -2399,14 +2327,6 @@ class LogOUSpotModel(StochasticProcess):
         "$S_0$ is the `CommodityPrice` factor's spot. A block with $\\kappa\\le0$ or $\\sigma<0$ is marked not",
         'OK. [LogOUSpotCalibration](../calibration/commodity_spot.md#logouspotcalibration) estimates the',
         'three parameters.',
-        '',
-        '**References.**',
-        '',
-        '- E. S. Schwartz, "The Stochastic Behavior of Commodity Prices: Implications for Valuation and',
-        '  Hedging", *The Journal of Finance* 52(3), 923-973, 1997 (the registry\'s online record is dated',
-        '  2012). DOI [10.1111/j.1540-6261.1997.tb02721.x](https://doi.org/10.1111/j.1540-6261.1997.tb02721.x)',
-        '- G. E. Uhlenbeck, L. S. Ornstein, "On the Theory of the Brownian Motion", *Physical Review* 36(5),',
-        '  823-841, 1930. DOI [10.1103/PhysRev.36.823](https://doi.org/10.1103/PhysRev.36.823)',
         ])
 
     factor_types = ('CommodityPrice',)
@@ -2504,7 +2424,8 @@ class LogOUSpotCalibration(object):
     current market value and is not calibrated here.
     """
     documentation_calibration = ('Commodity Spot', [
-        'Estimates `LogOUSpotModel`, an Ornstein-Uhlenbeck process on the log spot. Takes no tuning.',
+        'Estimates `LogOUSpotModel` [@schwartz1997], an Ornstein-Uhlenbeck process [@uhlenbeck1930] on the',
+        'log spot. Takes no tuning.',
         '',
         '**Data.** The spot column, in logs (levels below $10^{-4}$ are floored before the log).',
         '',
@@ -2531,14 +2452,6 @@ class LogOUSpotCalibration(object):
         '  declare.',
         '- The upward finite-sample bias of $\\hat\\alpha$ ([shared OU regression](general.md#the-shared-ou-regression))',
         '  applies; unmeasured.',
-        '',
-        '**References.**',
-        '',
-        '- E. S. Schwartz, "The Stochastic Behavior of Commodity Prices: Implications for Valuation and',
-        '  Hedging", *The Journal of Finance* 52(3), 923-973, 1997 (the registry\'s online record is dated',
-        '  2012). DOI [10.1111/j.1540-6261.1997.tb02721.x](https://doi.org/10.1111/j.1540-6261.1997.tb02721.x)',
-        '- G. E. Uhlenbeck, L. S. Ornstein, "On the Theory of the Brownian Motion", *Physical Review* 36(5),',
-        '  823-841, 1930. DOI [10.1103/PhysRev.36.823](https://doi.org/10.1103/PhysRev.36.823)',
         ])
     model_type = 'LogOUSpotModel'
     fields = []
@@ -2592,8 +2505,9 @@ class MarkovHMMSpotModel(StochasticProcess):
     `Log_Price` (emit log returns rather than raw price diffs)."""
 
     documentation = ('Asset Pricing', [
-        'An N-state hidden-Markov spot-price model under the historical measure. A latent regime $z_t$',
-        'follows a Markov chain with transition matrix $P$; conditional on it, the per-step move $x_t$ is',
+        'An N-state hidden-Markov spot-price model [@hamilton1989] under the historical measure. A latent',
+        'regime $z_t$ follows a Markov chain with transition matrix $P$; conditional on it, the per-step',
+        'move $x_t$ is',
         '',
         '$$ x_t \\sim \\mathcal{N}(\\mu_{z_t}\\delta,\\, \\sigma_{z_t}^2\\delta) $$',
         '',
@@ -2605,7 +2519,7 @@ class MarkovHMMSpotModel(StochasticProcess):
         '',
         '$P$ is calibrated at the step **Calibration_DT_Years** ($\\delta_c$) and re-discretised to each',
         'simulation step through its generator, $P(\\delta)=\\exp\\big(\\delta\\,\\mathrm{Re}\\log(P)/\\delta_c\\big)$; a',
-        'calibrated $P$ need not have a valid generator (Israel, Rosenthal & Wei 2001). The regime path is',
+        'calibrated $P$ need not have a valid generator [@israel2001]. The regime path is',
         'sampled from an independent quasi-random uniform stream, and under **Log_Price** the log path is',
         'floored at $-10$ before exponentiation.',
         '',
@@ -2620,14 +2534,6 @@ class MarkovHMMSpotModel(StochasticProcess):
         '',
         '[MarkovHMMSpotCalibration](../calibration/commodity_spot.md#markovhmmspotcalibration) estimates',
         'the block by EM.',
-        '',
-        '**References.**',
-        '',
-        '- J. D. Hamilton, "A New Approach to the Economic Analysis of Nonstationary Time Series and the',
-        '  Business Cycle", *Econometrica* 57(2), 357, 1989. DOI [10.2307/1912559](https://doi.org/10.2307/1912559)',
-        '- R. B. Israel, J. S. Rosenthal, J. Z. Wei, "Finding Generators for Markov Chains via Empirical',
-        '  Transition Matrices, with Applications to Credit Ratings", *Mathematical Finance* 11(2),',
-        '  245-265, 2001. DOI [10.1111/1467-9965.00114](https://doi.org/10.1111/1467-9965.00114)',
         ])
 
     factor_types = ('CommodityPrice',)
@@ -3024,13 +2930,13 @@ class MarkovHMMSpotCalibration(object):
     (mu, sigma) so each regime's marginal variance stays sigma^2. States are reordered ascending
     by sigma; `delta` is the regime-standardised innovation series."""
     documentation_calibration = ('Commodity Spot', [
-        'Estimates `MarkovHMMSpotModel`, a hidden Markov chain of regimes each with its own drift and',
-        'volatility, by expectation-maximisation.',
+        'Estimates `MarkovHMMSpotModel` [@hamilton1989], a hidden Markov chain of regimes each with its own',
+        'drift and volatility, by expectation-maximisation [@dempster1977].',
         '',
         '**Data.** The first column, missing rows dropped. $x_t=\\Delta\\log S_t$ under `Log_Price` (the',
         'default), else $x_t=\\Delta S_t$.',
         '',
-        '**Estimator.** A Gaussian-emission HMM by Baum-Welch EM, the forward-backward pass in log space:',
+        '**Estimator.** A Gaussian-emission HMM by Baum-Welch EM [@baum1970], the forward-backward pass in log space:',
         '',
         '| Step | What the code does |',
         '|---|---|',
@@ -3081,22 +2987,8 @@ class MarkovHMMSpotCalibration(object):
         '  re-estimated under the t, and the fourth-moment match ignores the regime means.',
         "- `Initial_State_Probs` is the sample's occupancy, not the filtered regime at the sample's end.",
         '- The process re-discretises $P$ to its grid through the matrix logarithm (real part); a one-day',
-        '  $P$ need not have a valid generator (Israel, Rosenthal & Wei 2001). The effect is unmeasured.',
+        '  $P$ need not have a valid generator [@israel2001]. The effect is unmeasured.',
         '- A block written without `Log_Price` simulates price differences (the process default is false).',
-        '',
-        '**References.**',
-        '',
-        '- L. E. Baum, T. Petrie, G. Soules, N. Weiss, "A Maximization Technique Occurring in the',
-        '  Statistical Analysis of Probabilistic Functions of Markov Chains", *The Annals of Mathematical',
-        '  Statistics* 41(1), 164-171, 1970. DOI [10.1214/aoms/1177697196](https://doi.org/10.1214/aoms/1177697196)',
-        '- A. P. Dempster, N. M. Laird, D. B. Rubin, "Maximum Likelihood from Incomplete Data Via the EM',
-        '  Algorithm", *Journal of the Royal Statistical Society Series B* 39(1), 1-22, 1977 (the',
-        "  registry's online record is dated 2018). DOI [10.1111/j.2517-6161.1977.tb01600.x](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x)",
-        '- J. D. Hamilton, "A New Approach to the Economic Analysis of Nonstationary Time Series and the',
-        '  Business Cycle", *Econometrica* 57(2), 357, 1989. DOI [10.2307/1912559](https://doi.org/10.2307/1912559)',
-        '- R. B. Israel, J. S. Rosenthal, J. Z. Wei, "Finding Generators for Markov Chains via Empirical',
-        '  Transition Matrices, with Applications to Credit Ratings", *Mathematical Finance* 11(2),',
-        '  245-265, 2001. DOI [10.1111/1467-9965.00114](https://doi.org/10.1111/1467-9965.00114)',
         ])
     model_type = 'MarkovHMMSpotModel'
     fields = [
@@ -3252,8 +3144,9 @@ class GARCHSpotModel(StochasticProcess):
     remaining JSON fields are declared with their contracts in `fields` below."""
 
     documentation = ('Asset Pricing', [
-        'A zero-mean GARCH(1,1) spot-price model with standardised Student-t innovations on the log return',
-        '$r_t = \\Delta\\log S_t - \\mu\\delta$, under the historical measure. The conditional variance follows',
+        'A zero-mean GARCH(1,1) spot-price model [@bollerslev1986] with standardised Student-t innovations',
+        '[@bollerslev1987] on the log return $r_t = \\Delta\\log S_t - \\mu\\delta$, under the historical',
+        'measure. The conditional variance follows',
         '',
         '$$ r_t = \\sqrt{h_t}\\,\\varepsilon_t,\\quad \\varepsilon_t\\sim t_\\nu\\ (\\text{unit var}),\\quad h_{t+1} = \\omega + \\alpha r_t^2 + \\beta h_t $$',
         '',
@@ -3287,13 +3180,6 @@ class GARCHSpotModel(StochasticProcess):
         '',
         '[GARCHSpotCalibration](../calibration/commodity_spot.md#garchspotcalibration) estimates $\\omega$,',
         '$\\alpha$, $\\beta$, $\\nu$ and $H_0$, with $\\mu=0$.',
-        '',
-        '**References.**',
-        '',
-        '- T. Bollerslev, "Generalized autoregressive conditional heteroskedasticity", *Journal of',
-        '  Econometrics* 31(3), 307-327, 1986. DOI [10.1016/0304-4076(86)90063-1](https://doi.org/10.1016/0304-4076(86)90063-1)',
-        '- T. Bollerslev, "A Conditionally Heteroskedastic Time Series Model for Speculative Prices and',
-        '  Rates of Return", *The Review of Economics and Statistics* 69(3), 542, 1987. DOI [10.2307/1925546](https://doi.org/10.2307/1925546)',
         ])
 
     factor_types = ('CommodityPrice',)
@@ -3677,8 +3563,8 @@ class GARCHSpotCalibration(object):
     calibrated model, so the framework's correlation consolidation isn't contaminated by
     the GARCH heteroskedasticity (the analog of the HMM's regime-standardised innovation)."""
     documentation_calibration = ('Commodity Spot', [
-        'Estimates `GARCHSpotModel`, a zero-mean GARCH(1,1) on daily log returns with standardised',
-        'Student-t innovations, by maximum likelihood.',
+        'Estimates `GARCHSpotModel`, a zero-mean GARCH(1,1) [@bollerslev1986] on daily log returns with',
+        'standardised Student-t innovations [@bollerslev1987], by maximum likelihood.',
         '',
         '**Data.** The first column, missing rows dropped. $r_t=\\Delta\\log S_t$; returns with',
         '$\\lvert r_t\\rvert\\ge$ `Outlier_Threshold` are dropped, and the recursion then treats the returns either',
@@ -3734,13 +3620,6 @@ class GARCHSpotCalibration(object):
         '  ([Skips and refusals](general.md#skips-and-refusals)).',
         "- The process's optional drift chain (`Drift_States` and its matrix) is not calibrated, and a",
         '  recalibration drops it with the rest of the block.',
-        '',
-        '**References.**',
-        '',
-        '- T. Bollerslev, "Generalized autoregressive conditional heteroskedasticity", *Journal of',
-        '  Econometrics* 31(3), 307-327, 1986. DOI [10.1016/0304-4076(86)90063-1](https://doi.org/10.1016/0304-4076(86)90063-1)',
-        '- T. Bollerslev, "A Conditionally Heteroskedastic Time Series Model for Speculative Prices and',
-        '  Rates of Return", *The Review of Economics and Statistics* 69(3), 542, 1987. DOI [10.2307/1925546](https://doi.org/10.2307/1925546)',
         ])
     model_type = 'GARCHSpotModel'
     fields = [
@@ -4062,7 +3941,7 @@ class QuadraticCarryCurveCalibration(object):
     wherever the fit lands. The default 3.0 is the lowest nu whose innovation variance exists."""
     documentation_calibration = ('Energy Pricing', [
         'Estimates `QuadraticCarryCurveModel`, the level/shape AR(1) pair of a commodity carry curve, by',
-        'joint Student-t maximum likelihood.',
+        'joint Student-t maximum likelihood [@bollerslev1987].',
         '',
         '**Data.** Exactly two `ForwardRate.<Name>,<tau>` columns of the average carry to maturity',
         '$z(\\tau)$ (anything else is refused), sorted by $\\tau$, rows missing either dropped:',
@@ -4107,10 +3986,6 @@ class QuadraticCarryCurveCalibration(object):
         "  `correlation_cuttoff` (default 0.2); the simulated coupling is then $\\Gamma$'s alone.",
         '- The fit admits $\\phi<0$ while the process requires $0\\le\\phi<1$; a negative fit aborts the run',
         '  ([Skips and refusals](general.md#skips-and-refusals)).',
-        '',
-        '**References.** T. Bollerslev, "A Conditionally Heteroskedastic Time Series Model for Speculative',
-        'Prices and Rates of Return", *The Review of Economics and Statistics* 69(3), 542, 1987, for the',
-        'standardised Student-t likelihood. DOI [10.2307/1925546](https://doi.org/10.2307/1925546)',
         ])
     model_type = 'QuadraticCarryCurveModel'
     fields = [
@@ -4375,8 +4250,8 @@ class FixingBridgeModel(StochasticProcess):
     `Bridge_Premium` (mean log(fixing/parent) net of the bridge), `Calibration_DT_Years`."""
 
     documentation = ('Asset Pricing', [
-        'An intraday fixing bridged between consecutive observations of its parent price $P$, under the',
-        'historical measure (the linked-parent family: an open link, unlike the closed-chain',
+        'An intraday fixing bridged [@glasserman2003] between consecutive observations of its parent price',
+        '$P$, under the historical measure (the linked-parent family: an open link, unlike the closed-chain',
         '`ChainedBasisModel`):',
         '',
         '$$ \\log B_t = \\log P_t + W(\\log P_{t+1} - \\log P_t) + \\text{premium} + \\sigma_t Z_t, \\quad \\sigma_t^2 = W(1-W)h_t f_{t+1} $$',
@@ -4396,9 +4271,6 @@ class FixingBridgeModel(StochasticProcess):
         '',
         '[FixingBridgeCalibration](../calibration/observed_basis.md#fixingbridgecalibration) estimates the',
         'weight and the premium.',
-        '',
-        '**References.** P. Glasserman, *Monte Carlo Methods in Financial Engineering*, Springer, 2003, for',
-        'the Brownian bridge. DOI [10.1007/978-0-387-21617-1](https://doi.org/10.1007/978-0-387-21617-1)',
         ])
 
     factor_types = ('ObservedBasis',)
@@ -4515,7 +4387,8 @@ class FixingBridgeCalibration(object):
         '',
         '$$\\log\\frac{P_t+b_t}{P_t}=\\text{premium}+W\\log\\frac{P_{t+1}}{P_t}+e_t$$',
         '',
-        "Under a Brownian bridge between the two closes, $W$ is the fixing's share of the day's variance.",
+        "Under a Brownian bridge [@glasserman2003] between the two closes, $W$ is the fixing's share of the",
+        "day's variance.",
         '',
         '**Writes.** `Bridge_Weight` $=\\hat W$, `Bridge_Premium` $=$ the intercept, `Calibration_DT_Years`',
         '1/252. `delta` is $e_t/\\mathrm{sd}(e)$ dated $t$; `correlation` is `[[1.0]]`. $\\hat W$, the',
@@ -4529,9 +4402,6 @@ class FixingBridgeCalibration(object):
         '  them.',
         "- The bridge variance is not estimated: the process takes $W(1-W)h_tf$ from the parent's GARCH",
         '  variance.',
-        '',
-        '**References.** P. Glasserman, *Monte Carlo Methods in Financial Engineering*, Springer, 2003, for',
-        'the Brownian bridge. DOI [10.1007/978-0-387-21617-1](https://doi.org/10.1007/978-0-387-21617-1)',
         ])
     model_type = 'FixingBridgeModel'
     fields = []
@@ -5194,7 +5064,7 @@ class BasisLinkedSpotCalibration(object):
         '|---|---|',
         '| default | ordinary least squares, moment $\\nu$, regime volatilities by rolling-volatility terciles |',
         '| `Slow_Mean_Span` $>0$ or `GARCH_Innovation` Yes | one Student-t likelihood for the whole system |',
-        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state mixture by EM |',
+        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state mixture by EM [@dempster1977] |',
         '',
         '**Default fit.** $b_t=a\\Delta S_t+\\phi b_{t-1}+\\eta_t$ by least squares with no intercept. With',
         "$\\hat K$ the sample excess kurtosis of $\\eta$ (a t's is $6/(\\nu-4)$),",
@@ -5233,7 +5103,7 @@ class BasisLinkedSpotCalibration(object):
         '|---|---|',
         '| every fit | `A`, `Phi`, `Nu`, `Calibration_DT_Years` 1/252 |',
         "| default, or joint without GARCH | `Sigma_By_State`, the terciles above applied to that fit's $\\eta$ |",
-        '| joint with GARCH | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
+        '| joint with GARCH [@bollerslev1986] | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
         "| with a span | `Slow_Mean_Lambda` $=\\lambda$, `Mu_0` the mean at the sample's end |",
         '| Band_Mixture | `Sigma` $=\\mathrm{sd}(\\eta)$, `Nu` 0, `Reversion_Model`, `Band_Kappa`, `Band_Beta`, `Mix_Q_Stress`, `Mix_Sigma_Quiet`, `Mix_Sigma_Stress`, `Mix_Stay_Stress`, `Mix_P0_Stress`, `Slow_Mean_Lambda`, `Mu_0` |',
         '',
@@ -5264,14 +5134,6 @@ class BasisLinkedSpotCalibration(object):
         '  draws and its persistence read off afterwards.',
         '- `Calibration_DT_Years` is metadata: the process applies the daily AR per simulation step,',
         "  whatever the step's length.",
-        '',
-        '**References.**',
-        '',
-        '- T. Bollerslev, "Generalized autoregressive conditional heteroskedasticity", *Journal of',
-        '  Econometrics* 31(3), 307-327, 1986. DOI [10.1016/0304-4076(86)90063-1](https://doi.org/10.1016/0304-4076(86)90063-1)',
-        '- A. P. Dempster, N. M. Laird, D. B. Rubin, "Maximum Likelihood from Incomplete Data Via the EM',
-        '  Algorithm", *Journal of the Royal Statistical Society Series B* 39(1), 1-22, 1977 (the',
-        "  registry's online record is dated 2018). DOI [10.1111/j.2517-6161.1977.tb01600.x](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x)",
         ])
     model_type = 'BasisLinkedSpotModel'
     fields = [
@@ -5564,10 +5426,10 @@ class LogVar2FJCalibration(object):
         '| `Garman_Klass` | HIGH, LOW | $\\frac12\\log^2\\frac hl-(2\\log2-1)\\log^2\\frac cp$ | $\\sigma_u$ fitted, offset $-\\sigma_u^2/2$ |',
         '| `Log_Chi2` | close only | $\\log^2\\frac cp$ | $\\sigma_u=\\sqrt{4.93}$, offset $-1.27$, both fixed |',
         '',
-        "`Yang_Zhang` here is one day's overnight term plus the Rogers-Satchell term, without the multi-day",
-        'weighting of Yang & Zhang (2000); `Garman_Klass` uses the close-to-close return where Garman &',
-        "Klass (1980) use open-to-close. `Log_Chi2`'s constants are the variance and mean of",
-        '$\\log\\chi^2_1$ (Harvey, Ruiz & Shephard 1994). The measurement is $y_t=\\log(252\\,RV_t)$; a day with',
+        "`Yang_Zhang` here is one day's overnight term plus the Rogers-Satchell term [@rogers1991], without",
+        'the multi-day weighting of Yang & Zhang [@yang2000]; `Garman_Klass` uses the close-to-close return',
+        "where Garman & Klass [@garman1980] use open-to-close. `Log_Chi2`'s constants are the variance and",
+        'mean of $\\log\\chi^2_1$ [@harvey1994]. The measurement is $y_t=\\log(252\\,RV_t)$; a day with',
         '$RV_t\\le0$ or declared in `Event_Days` is unmeasured and passes the filter as a prediction.',
         '',
         '**State-space fit.** With $\\delta=1/252$, $\\phi_i=e^{-\\kappa_i\\delta}$ and',
@@ -5576,7 +5438,7 @@ class LogVar2FJCalibration(object):
         '$$s_{t+1}=\\phi_ss_t+w_s\\eta^s_t,\\qquad \\ell_{t+1}=L+\\phi_\\ell(\\ell_t-L)+w_\\ell\\eta^\\ell_t,\\qquad',
         'y_t=\\ell_t+s_t+\\text{offset}+u_t,\\quad u_t\\sim N(0,\\sigma_u^2)$$',
         '',
-        'The Kalman filter gives the exact Gaussian likelihood of this linear model. $(\\kappa_s,\\sigma_s,',
+        'The Kalman filter [@kalman1960] gives the exact Gaussian likelihood of this linear model. $(\\kappa_s,\\sigma_s,',
         '\\kappa_\\ell,\\sigma_\\ell,L,\\sigma_u)$ is fitted by L-BFGS-B on its AAD gradient, from moment starts',
         '($\\kappa_s=6$, $\\kappa_\\ell=0.5$, the sample variance net of $\\sigma_u^2$ split between the factors),',
         'inside the box',
@@ -5589,16 +5451,17 @@ class LogVar2FJCalibration(object):
         "roots of the inverse AAD Hessian's diagonal (infinite where not positive); a parameter ending on",
         'its bound is logged.',
         '',
-        '**Leverages.** One Rauch-Tung-Striebel backward pass gives the smoothed shocks $\\hat\\eta^s_t$,',
+        '**Leverages.** One Rauch-Tung-Striebel backward pass [@rauch1965] gives the smoothed shocks $\\hat\\eta^s_t$,',
         '$\\hat\\eta^\\ell_t$. With $V_t=\\delta\\,E[e^{\\ell_t+s_t}\\mid y_{<t}]$ the predictable daily variance and',
         '$\\bar r$ the mean daily log return (event days excluded), $z_t=(r_t-\\bar r)/\\sqrt{V_t}$ is regressed',
         'on the two shocks without intercept. Where $\\rho_s^2+\\rho_\\ell^2$ exceeds $1-C_{min}$ ($C_{min}=0.12$)',
-        'the regression is ridged until it lands on that bound. Standard errors from the unridged normal equations;',
-        '$c=1-\\rho_s^2-\\rho_\\ell^2$.',
+        'the regression is ridged [@hoerl1970] until it lands on that bound. Standard errors from the',
+        'unridged normal equations; $c=1-\\rho_s^2-\\rho_\\ell^2$.',
         '',
         '**Residual.** The remainder $x_t=(z_t-\\rho\\cdot\\hat\\eta_t)\\sqrt{V_t}$ is fitted as',
-        '$\\mathrm{NIG}(\\alpha,\\beta,\\delta_A,\\mu A)$ on the clock $A_t=C_{Eff}V_t$, with $\\gamma=\\sqrt{\\alpha^2-\\beta^2}$,',
-        '$\\delta_A=A\\gamma^3/\\alpha^2$ (so the variance is the clock) and a free location $\\mu$',
+        '$\\mathrm{NIG}(\\alpha,\\beta,\\delta_A,\\mu A)$ [@barndorffnielsen1997] on the clock $A_t=C_{Eff}V_t$,',
+        'with $\\gamma=\\sqrt{\\alpha^2-\\beta^2}$, $\\delta_A=A\\gamma^3/\\alpha^2$ (so the variance is the',
+        'clock) and a free location $\\mu$',
         '(`Residual_Drift`): maximum likelihood by L-BFGS-B over $\\alpha=e^a\\in[0.5,4000]$,',
         '$\\beta=\\alpha\\tanh b$ with $b\\in[-6,6]$, $C_{Eff}\\in[10^{-3},4]$, from moment starts ($\\alpha=44$,',
         '$\\beta/\\alpha=-0.5$ where the moments fall outside the admissible map); standard errors from the',
@@ -5619,8 +5482,9 @@ class LogVar2FJCalibration(object):
         '',
         '**Checks and refusals.**',
         '',
-        '- A bootstrap particle filter on the same state and measurement (`Particle_Count` particles, 4',
-        '  replicates, seeded by `Random_Seed`, resampling when the effective sample size falls below half)',
+        '- A bootstrap particle filter [@gordon1993] on the same state and measurement (`Particle_Count`',
+        '  particles, 4 replicates, seeded by `Random_Seed`, resampling when the effective sample size falls',
+        '  below half)',
         "  must reproduce the Kalman filter's posterior-mean $h$ path within 10% RMS (relative), or the run",
         '  is refused. Both filters use the same Gaussian measurement density, so the gate checks the',
         '  filter, not the measurement model.',
@@ -5663,28 +5527,6 @@ class LogVar2FJCalibration(object):
         '  can set $\\rho_\\ell$.',
         '- `Log_Chi2` is a quasi-likelihood: $\\log\\chi^2_1$ is not Gaussian.',
         '- The row clock assumes one business day per row; corporate events must be declared to be excluded.',
-        '',
-        '**References.**',
-        '',
-        '- R. E. Kalman, "A New Approach to Linear Filtering and Prediction Problems", *Journal of Basic',
-        '  Engineering* 82(1), 35-45, 1960. DOI [10.1115/1.3662552](https://doi.org/10.1115/1.3662552)',
-        '- H. E. Rauch, F. Tung, C. T. Striebel, "Maximum likelihood estimates of linear dynamic systems",',
-        '  *AIAA Journal* 3(8), 1445-1450, 1965. DOI [10.2514/3.3166](https://doi.org/10.2514/3.3166)',
-        '- A. Harvey, E. Ruiz, N. Shephard, "Multivariate Stochastic Variance Models", *The Review of',
-        '  Economic Studies* 61(2), 247-264, 1994. DOI [10.2307/2297980](https://doi.org/10.2307/2297980)',
-        '- M. B. Garman, M. J. Klass, "On the Estimation of Security Price Volatilities from Historical',
-        '  Data", *The Journal of Business* 53(1), 67, 1980. DOI [10.1086/296072](https://doi.org/10.1086/296072)',
-        '- L. C. G. Rogers, S. E. Satchell, "Estimating Variance From High, Low and Closing Prices", *The',
-        '  Annals of Applied Probability* 1(4), 1991. DOI [10.1214/aoap/1177005835](https://doi.org/10.1214/aoap/1177005835)',
-        '- D. Yang, Q. Zhang, "Drift Independent Volatility Estimation Based on High, Low, Open, and Close',
-        '  Prices", *The Journal of Business* 73(3), 477-492, 2000. DOI [10.1086/209650](https://doi.org/10.1086/209650)',
-        '- O. E. Barndorff-Nielsen, "Normal Inverse Gaussian Distributions and Stochastic Volatility',
-        '  Modelling", *Scandinavian Journal of Statistics* 24(1), 1-13, 1997 (the registry\'s online record',
-        '  is dated 2007). DOI [10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)',
-        '- A. E. Hoerl, R. W. Kennard, "Ridge Regression: Biased Estimation for Nonorthogonal Problems",',
-        "  *Technometrics* 12(1), 55-67, 1970 (the registry's online record is dated 2012). DOI [10.1080/00401706.1970.10488634](https://doi.org/10.1080/00401706.1970.10488634)",
-        '- N. J. Gordon, D. J. Salmond, A. F. M. Smith, "Novel approach to nonlinear/non-Gaussian Bayesian',
-        '  state estimation", *IEE Proceedings F* 140(2), 107, 1993. DOI [10.1049/ip-f-2.1993.0015](https://doi.org/10.1049/ip-f-2.1993.0015)',
         ])
     model_type = utils.LogVar2FJ.SLOW_HISTORY[0]
 

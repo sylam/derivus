@@ -128,7 +128,7 @@ number, and the `Timestamp` it was seen at; the surface carries the latest of th
 
 | Convention | What the solve assumes |
 |---|---|
-| Pillar delta | premium-adjusted forward delta (`Delta_Type: Forward`, `Premium_Adjusted: Yes`, the only values offered) |
+| Pillar delta | premium-adjusted forward delta [@reiswich2010] (`Delta_Type: Forward`, `Premium_Adjusted: Yes`, the only values offered) |
 | ATM | the delta-neutral straddle, $K = F e^{-\sigma^2 T/2}$ (`ATM_Convention: Delta_Neutral_Straddle`) |
 | Wings | call $\sigma_{ATM} + BF + RR/2$, put $\sigma_{ATM} + BF - RR/2$; a missing `RR` or `BF` reads as 0 |
 | `BF` | the **smile** strangle, $(\sigma_{call} + \sigma_{put})/2 - \sigma_{ATM}$. A broker's market (one-vol) strangle is a different number and must be converted before it is entered |
@@ -138,7 +138,7 @@ number, and the `Timestamp` it was seen at; the surface carries the latest of th
 re-bootstrapping the same expiries at the same tolerance over a surface this family already wrote
 moves the vols and leaves the grid alone, so a vol tick is a value patch rather than a new plan; a
 changed tolerance refines a new grid. A `Timestamp` keeps the resolution it was authored at: a plain
-date stays a date, an intraday stamp is written in ISO 8601 form with its time.
+date stays a date, an intraday stamp is written in ISO 8601 form [@iso8601] with its time.
 
 ```json
 {
@@ -216,12 +216,3 @@ family's page and its method and limits on the
   }
 }
 ```
-
-## References
-
-- D. Reiswich and U. Wystup, "A Guide to FX Options Quoting Conventions", *The Journal of
-  Derivatives* 18(2), 58-68, 2010. [doi:10.3905/jod.2010.18.2.058](https://doi.org/10.3905/jod.2010.18.2.058)
-  - premium-adjusted forward delta, the delta-neutral straddle ATM, and the smile versus market
-  strangle.
-- ISO 8601-1:2019, *Date and time - Representations for information interchange - Part 1: Basic
-  rules* (International Organization for Standardization, edition 1, 2019) - the `Timestamp` form.

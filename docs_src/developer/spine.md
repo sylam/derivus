@@ -143,10 +143,10 @@ delete method is gated as the increment-1 form of that law.
 
 ## Two hashes, and why the envelope carries a tag instead of one of them
 
-Every event is a sealed body under a firm-visible envelope. `content_hash` is SHA-256 over the RFC 8785
+Every event is a sealed body under a firm-visible envelope. `content_hash` is SHA-256 [@fips180-4] over the RFC 8785 [@rfc8785]
 canonicalization of the semantic tuple (type, version, effective_time, actor, book, body), and it rides
 INSIDE the sealed body, because a plaintext hash in a public envelope is a dictionary oracle for
-low-entropy bodies. The envelope instead carries the `idempotency_tag`: an HMAC-SHA256 of the same
+low-entropy bodies. The envelope instead carries the `idempotency_tag`: an HMAC-SHA256 [@rfc2104] of the same
 canonical bytes under a writer-held blind key, so no keyless confirmation exists — gated with a toy
 key, and by the same tuple landing different tags in different homes. `event_hash` chains each frame
 to the one before it, from a genesis `prev_hash` of sixty-four zeros. LSN is positional and outside
@@ -185,7 +185,7 @@ a `parse_int` mapping such literals back to floats (`log.parse_number`).
 Sealing is AES-256-GCM under the firm class key with a fresh random 96-bit nonce, AAD over the nine
 pre-LSN envelope fields — so no envelope field can move without the body refusing to open — and the
 interior binding `{content_hash, payload}` closing the loop. Random 96-bit nonces under one key are
-bounded to 2^32 invocations by NIST SP 800-38D §8.3; the class key is never rotated and nothing
+bounded to 2^32 invocations by NIST SP 800-38D §8.3 [@nist-sp800-38d]; the class key is never rotated and nothing
 counts its invocations. Classification ships DORMANT: one class, everyone
 holds it, and the day desk two arrives walls are a classification decision, not a redesign. Sealing
 itself is not deferred with the classes: genesis-era bodies must be crypto-shreddable, and the shred is
@@ -225,7 +225,7 @@ unterminated bytes, and no gate covers that interleaving.
 
 ## Checkpoints, and verification as a replica
 
-`checkpoint` events sign (lsn, head event_hash) with the deployment's Ed25519 key. The verifying key is
+`checkpoint` events sign (lsn, head event_hash) with the deployment's Ed25519 key [@rfc8032]. The verifying key is
 published at genesis as a firm-class policy blob, so a replica asserts checkpoint AUTHENTICITY — not
 merely chain integrity — from checkpoint one, against the log's own contents rather than any local
 file: the gates prove it by deleting the local `checkpoint_verify.key` (verification still passes) and
@@ -280,7 +280,7 @@ shapes re-verified on the far side.
 
 ## Increment 2 — identity, attribution, key custody
 
-**Identity is bought, not built.** `identity.py` VERIFIES an OIDC ID token against a JWKS the deployment
+**Identity is bought, not built.** `identity.py` VERIFIES an OIDC ID token [@openid] against a JWKS [@rfc7519] the deployment
 hands in as data — nothing is fetched, verification stays local — under an RS256/ES256 allowlist that
 refuses `none` and every HMAC by name before any key is selected (the alg-confusion attacks are gates,
 not warnings), with `kid` selection across key types, the ES256 raw-`R||S` signature contract,
@@ -305,8 +305,8 @@ grant from event one, the admin it restores is revocable by the next capabilitie
 `vocabulary.classify` derives the entitlement class the envelope carries ("firm" for everything until
 desk two — one function instead of one constant).
 
-**Custody.** Per-seat X25519 keypairs at enrollment; the firm class key wrapped per READ-entitled
-subject — ephemeral ECDH, HKDF, AES-GCM with the (class, subject) pair bound into the AAD, so a wrap
+**Custody.** Per-seat X25519 [@rfc7748] keypairs at enrollment; the firm class key wrapped per READ-entitled
+subject — ephemeral ECDH, HKDF [@rfc5869], AES-GCM with the (class, subject) pair bound into the AAD, so a wrap
 re-addressed to another seat refuses to open — plus an escrow wrap under a declared escrow key. `rewrap`
 is idempotent and driven by the document in force; `grant` reports the rewrap it now owes, so "rewrap on
 grant change" is a printed obligation rather than operator memory; `custody.materialize` (a library
@@ -1083,7 +1083,7 @@ head is a pull that answers nothing — which is why three replicas fed one stre
 losing every third beat, one hearing them twice and out of order, end at ONE head hash with every
 projector - fourteen today - folding to byte-equal rows. The beat itself costs **0.164 ms** from the append landing to
 a follower reading it over a socket on one box, and 0.014 ms where the two share a process — against
-the two-second cadence it replaces. The desk's strip rides an `EventSource` on it and keeps the
+the two-second cadence it replaces. The desk's strip rides an `EventSource` [@whatwg-sse] on it and keeps the
 two-second poll as the fallback and for the status block; the follower does the same, falling back
 to its interval when the stream drops and reconnecting, with ONE catch-up either way.
 
@@ -1892,28 +1892,3 @@ checkpointed index: the three maps written down at a close and re-read instead o
 | Pillar staleness (`pillar_seconds` in the `firmness` policy) | none: a home declaring none refuses nothing | `policy.py` |
 | Tolerance policy | none: every replay difference departs | `policy.compare` |
 | Capabilities | none: enforcement activates by declaration; break-glass and the writer's own voice are gated from genesis | `log.py`, `capability.py` |
-
-## References
-
-- RFC 8785, *JSON Canonicalization Scheme (JCS)*. A. Rundgren, B. Jordan, S. Erdtman, June 2020.
-  <https://www.rfc-editor.org/rfc/rfc8785>
-- FIPS 180-4, *Secure Hash Standard (SHS)*. NIST, 2015.
-  [doi:10.6028/NIST.FIPS.180-4](https://doi.org/10.6028/NIST.FIPS.180-4)
-- RFC 2104, *HMAC: Keyed-Hashing for Message Authentication*. H. Krawczyk, M. Bellare, R. Canetti,
-  February 1997. <https://www.rfc-editor.org/rfc/rfc2104>
-- NIST SP 800-38D, *Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM)
-  and GMAC*. M. Dworkin, 2007. [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
-- RFC 8032, *Edwards-Curve Digital Signature Algorithm (EdDSA)*. S. Josefsson, I. Liusvaara,
-  January 2017. <https://www.rfc-editor.org/rfc/rfc8032>
-- RFC 7748, *Elliptic Curves for Security*. A. Langley, M. Hamburg, S. Turner, January 2016.
-  <https://www.rfc-editor.org/rfc/rfc7748>
-- RFC 5869, *HMAC-based Extract-and-Expand Key Derivation Function (HKDF)*. H. Krawczyk, P. Eronen,
-  May 2010. <https://www.rfc-editor.org/rfc/rfc5869>
-- *OpenID Connect Core 1.0 incorporating errata set 2*. OpenID Foundation.
-  <https://openid.net/specs/openid-connect-core-1_0.html>
-- RFC 7519, *JSON Web Token (JWT)*; RFC 7515, *JSON Web Signature (JWS)*; RFC 7517, *JSON Web Key
-  (JWK)*; RFC 7518, *JSON Web Algorithms (JWA)*, §3.3-3.4 for RS256 and ES256. M. Jones et al., May
-  2015. <https://www.rfc-editor.org/rfc/rfc7519>, <https://www.rfc-editor.org/rfc/rfc7515>,
-  <https://www.rfc-editor.org/rfc/rfc7517>, <https://www.rfc-editor.org/rfc/rfc7518>
-- *HTML Living Standard*, §9.2 Server-sent events. WHATWG.
-  <https://html.spec.whatwg.org/multipage/server-sent-events.html>

@@ -55,7 +55,7 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 ## Ordering — `topological_sort`
 
-Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass variant of Kahn's (1962) algorithm that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
+Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass variant of Kahn's algorithm [@kahn1962] that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
 
 `traverse_dependents` (`config.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
 
@@ -100,8 +100,3 @@ Registries, not functions. Each recipe is "which registry / attribute to touch."
 - **valuation option** — A field on the `Calculation` block, honored inside the relevant `Calculation` class. A new whole mode is a class dispatched by `run_job` / `construct_calculation`. Do **not** touch `Credit_Monte_Carlo`'s CVA/FVA block ([Change Scope](conventions.md#change-scope)) — the sole exception, and the bar for any other, is a term that provably cannot move a reported number.
 
 Before writing any of these, search `utils.py` and the package for an existing equivalent — see [Conventions — look before you write](conventions.md#look-before-you-write).
-
-## References {#references}
-
-- Kahn, A. B. (1962). Topological sorting of large networks. *Communications of the ACM*, 5(11),
-  558-562. [doi:10.1145/368996.369025](https://doi.org/10.1145/368996.369025)

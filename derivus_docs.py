@@ -13,6 +13,7 @@
 
 # standard imports
 import os
+import re
 import inspect
 import importlib
 import logging
@@ -132,6 +133,9 @@ class ConstructMarkdown(object):
     METHODOLOGY = {'MarketPrices': ('bootstrapping', '.bootstrappers'),
                    'Bootstrapper Configuration': ('bootstrapping', '.bootstrappers'),
                    'Calculation': ('api_usage', '.calculation')}
+
+    #: A citation as a page writes it: `[@key]`, or several keys `[@a; @b]`.
+    CITATION = re.compile(r'\[(@[\w-]+(?:;\s*@[\w-]+)*)\]')
 
     def __init__(self, project_dir):
         self.project_dir = Path(project_dir).resolve()
@@ -475,6 +479,47 @@ class ConstructMarkdown(object):
 
         return {display_name: json_nav_entries}
 
+    def _bibliography(self):
+        """`docs_src/references.md` as `{key: entry}` in file order: an entry is a `[@key]: ` line
+        and the indented lines under it."""
+        entries = {}
+        for line in self._read_static_content(self.docs_src_dir / 'references.md'):
+            match = re.match(r'\[@([\w-]+)\]:\s*(.*)', line)
+            if match:
+                if match[1] in entries:
+                    raise ValueError(f"references.md lists [@{match[1]}] twice")
+                entries[match[1]] = match[2]
+            elif line.strip():
+                entries[next(reversed(entries))] += ' ' + line.strip()
+        return entries
+
+    def number_references(self):
+        """Numbers the bibliography in file order, writes it as the References page and turns every
+        built page's `[@key]` into its linked number; a key the bibliography lacks fails the build."""
+        entries = self._bibliography()
+        number = {key: n for n, key in enumerate(entries, 1)}
+        target = self.doc_build_dir / 'references.md'
+        cited = set()
+        for page in sorted(self.doc_build_dir.rglob('*.md')):
+            link = Path(os.path.relpath(target, page.parent)).as_posix()
+
+            def numbered(match):
+                keys = [key.strip()[1:] for key in match[1].split(';')]
+                unknown = [key for key in keys if key not in number]
+                if unknown:
+                    raise KeyError(f"{page.relative_to(self.doc_build_dir).as_posix()} cites "
+                                   f"{', '.join(unknown)}, which docs_src/references.md does not list")
+                cited.update(keys)
+                return '[{}]'.format(', '.join(f'[{number[key]}]({link}#ref-{key})' for key in keys))
+            text = page.read_text(encoding='utf-8')
+            page.write_text(self.CITATION.sub(numbered, text), encoding='utf-8')
+        for key in entries:
+            if key not in cited:
+                logging.warning(f"  references.md lists [@{key}], which no page cites")
+        target.write_text('\n'.join(['# References', ''] + [
+            f'{n}. <span id="ref-{key}"></span>{entry}' for n, (key, entry) in enumerate(entries.items(), 1)]) + '\n',
+            encoding='utf-8')
+        logging.info(f"  Generated: {target} ({len(entries)} works, {len(cited)} cited)")
 
     def build_config(self, generated_docs_nav):
         """Generates the mkdocs.yml content."""
@@ -563,6 +608,7 @@ class ConstructMarkdown(object):
                             config_lines.append(f"{sub_sub_indent}{self._generate_nav_entry(sub_page_title, sub_filepath_or_dict)}")
                 elif isinstance(filepath_or_dict, Path):
                     config_lines.append(f"{sub_indent}{self._generate_nav_entry(page_title, filepath_or_dict)}")
+        config_lines.append(f"{base_indent}- References: references.md")
 
         config_lines.extend([
             '',
@@ -638,6 +684,9 @@ class ConstructMarkdown(object):
         # --- Generate Detailed JSON Docs using the declarations ---
         json_nav_data = self.generate_json_docs()
         generated_nav.update(json_nav_data)
+
+        # --- Number the citations on every page written above, and write the References page ---
+        self.number_references()
 
         # --- Generate mkdocs.yml ---
         logging.info("Generating mkdocs.yml...")

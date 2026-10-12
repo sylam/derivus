@@ -4,7 +4,7 @@ the forecast rate. The currency of the discount rate must be the same as the set
 settlement currency but is currently not implemented.
 
 The volatility factor's **Distribution_Type** picks the option formula: `Lognormal` (default) prices
-Black on the forward rate and strike, each displaced by the factor's **Shift**; `Normal` prices Bachelier
+Black [@black1976] on the forward rate and strike, each displaced by the factor's **Shift**; `Normal` prices Bachelier [@bachelier1900]
 (see [European Options](definitions.md#european-options)), and a swaption surface (`InterestYieldVol`)
 declaring a **Shift** beside `Normal` is refused by name.
 
@@ -66,7 +66,7 @@ where
 
 ### Caplets/Floorlets
 
-A caplet/floorlet is a call/put option on a simply compounded rate. The option payoff at time $T$ is:
+A caplet/floorlet is a call/put option on a simply compounded rate [@brigo2006]. The option payoff at time $T$ is:
 
 $$P\max(\delta(L(t_0)-K),0)\alpha$$
 
@@ -153,10 +153,3 @@ $J_i=I_i-m_i\alpha_i$. Its value at $t\le T_k$ is
 $$(P_i I_i(t)(1+J_{i+1}(t))...(1+J_{n(k)}(t))+C_i)D(t,T_k)$$
 
 **None** in which case the $i^{th}$ cashflow pays $P_i I_i+C_i$ at time $T_k$.
-
-## References
-
-- Black, F. The pricing of commodity contracts. *Journal of Financial Economics* 3(1-2), 167-179, 1976. [doi:10.1016/0304-405X(76)90024-6](https://doi.org/10.1016/0304-405X(76)90024-6)
-- Bachelier, L. Théorie de la spéculation. *Annales scientifiques de l'École normale supérieure* 17, 21-86, 1900. [doi:10.24033/asens.476](https://doi.org/10.24033/asens.476)
-- Brigo, D.; Mercurio, F. *Interest Rate Models - Theory and Practice*. Springer Finance, Springer Berlin Heidelberg, 2006, ISBN 978-3-540-22149-4. [doi:10.1007/978-3-540-34604-3](https://doi.org/10.1007/978-3-540-34604-3)
-- Lyashenko, A.; Mercurio, F. Looking Forward to Backward-Looking Rates: A Modeling Framework for Term Rates Replacing LIBOR. SSRN Electronic Journal, 2019. [doi:10.2139/ssrn.3330240](https://doi.org/10.2139/ssrn.3330240)

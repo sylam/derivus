@@ -261,13 +261,13 @@ Under the single rule it separates by **3.78%** on that book, against a solve fl
 
 **The forced TARF sits on the reciprocal of the fitted axis, which is a change of NUMERAIRE as well as
 of axis** — the deal pays in the other currency, and a law that cannot be carried there prices on an
-axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift (Siegel, 1972) in the answer: the two
+axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift [@siegel1972] in the answer: the two
 orientations of one accumulator then solve strikes **3.7e-3** apart and the gap does not close with
 the path count.
 
 **LogVar2FJ transports as a measure change rather than a parameter.** Under the `S`-numeraire the
 step's density factorises over its own draws, so each shifts by its own loading —
-`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)` — and the residual's MIXER, the normal inverse Gaussian's (Barndorff-Nielsen, 1997), is drawn
+`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)` — and the residual's MIXER, the normal inverse Gaussian's [@barndorffnielsen1997], is drawn
 from its Esscher-tilted law: tilting the joint law by `exp(X)` leaves the inverse Gaussian's shape
 `delta_A^2` alone and moves its mean from `delta_A/gamma` to `delta_A/gamma_1` with
 `gamma_1 = sqrt(alpha^2 - (beta+1)^2)`, which is the same `gamma_1` the forced drift already
@@ -350,7 +350,7 @@ realises **0.028** on returns (the private-dice behaviour it replaces), all four
 put one die back to a private draw and the four-row reading collapses to 0.432. The historical
 estimator returns the four innovation columns under the inverse map — `eps`, the two smoothed
 shocks standardised, `Φ⁻¹(F_IG(Ĝ))` — so an estimated row is the row the outer realises; on a
-closes-only archive the Kalman smoother (Kalman, 1960; Rauch, Tung and Striebel, 1965) attenuates the shock columns (0.32 and 0.53 against a
+closes-only archive the Kalman smoother [@kalman1960; @rauch1965] attenuates the shock columns (0.32 and 0.53 against a
 drawn 0.60, where the return and mixer columns read 0.55 and 0.35), a property of the measurement
 the estimator states by name.
 
@@ -730,16 +730,3 @@ next, in order of what they exercise:
   moves a notional fraction rather than a strike.
 - **A tenor-vocabulary note**: `expiry` parses `<n><D|W|M|Y>` through the job grammar's own period
   letters, or an ISO date for a broken date; anything else refuses by name.
-
-## References {#references}
-
-- Barndorff-Nielsen, O. E. (1997). Normal Inverse Gaussian Distributions and Stochastic Volatility
-  Modelling. *Scandinavian Journal of Statistics*, 24(1), 1-13 (Wiley's online copy is dated 2007).
-  [doi:10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)
-- Kalman, R. E. (1960). A New Approach to Linear Filtering and Prediction Problems. *Journal of
-  Basic Engineering*, 82(1), 35-45. [doi:10.1115/1.3662552](https://doi.org/10.1115/1.3662552)
-- Rauch, H. E., Tung, F. and Striebel, C. T. (1965). Maximum likelihood estimates of linear dynamic
-  systems. *AIAA Journal*, 3(8), 1445-1450. [doi:10.2514/3.3166](https://doi.org/10.2514/3.3166)
-- Siegel, J. J. (1972). Risk, Interest Rates and the Forward Exchange. *The Quarterly Journal of
-  Economics*, 86(2), first page 303 (the registry gives no end page).
-  [doi:10.2307/1880565](https://doi.org/10.2307/1880565)

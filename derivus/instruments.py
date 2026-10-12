@@ -1003,7 +1003,7 @@ class NettingCollateralSet(Deal):
         'settlement period $\\delta_s$ followed by a liquidation period $\\delta_l$ such that the',
         'liquidation begins at $t_l$ when the settlement period ends. After the settlement period,',
         'neither party pays cashflows or transfers collateral but the market risk on the portfolio and',
-        'collateral continue until the end of liquidation period.',
+        'collateral continue until the end of liquidation period [@gregory2015; @andersen2017].',
         '',
         'The collateralized portfolio at time $t$ is the difference between the sum of the liquidated',
         'portfolio value and the cash accumulated during the closeout period $C(t_s,t_e)$ and the',
@@ -2909,7 +2909,7 @@ class CFFloatingInterestListDeal(Deal):
             'with a digital payoff a range accrual), placing no margin and so reading `None` or',
             '`OIS` alone, while `Post_Aggregation` folds first and prices one',
             'option on the period $[T_s,T_e]$ rate, vol read at the period end $T_e$ and the Black',
-            'time the averaging decay of a backward-looking rate (Lyashenko-Mercurio):',
+            'time the averaging decay of a backward-looking rate (Lyashenko-Mercurio [@lyashenko2019]):',
             '',
             '$$T_{\\text{eff}}=\\begin{cases}(T_s-t)+\\tfrac13(T_e-T_s), & t<T_s\\\\'
             '\\dfrac{(T_e-t)^3}{3(T_e-T_s)^2}, & T_s\\le t<T_e\\end{cases}$$',
@@ -4112,7 +4112,7 @@ class EquityOptionDeal(Deal):
         'terminal law is the product $S\\cdot X$ and the local smile is read at the translated strike',
         '$K/F_X(T)$.',
         '',
-        '**Option_Style** `American` is priced by the Bjerksund-Stensland (1993) trigger approximation',
+        '**Option_Style** `American` is priced by the Bjerksund-Stensland trigger approximation [@bjerksund1993]',
         'with $r$ the discount curve\'s zero rate to expiry, $b=\\log(F/S)/\\tau$ and the same vol. For a call',
         'with $\\beta=\\tfrac12-\\tfrac{b}{\\sigma^2}+\\sqrt{(\\tfrac{b}{\\sigma^2}-\\tfrac12)^2+\\tfrac{2r}{\\sigma^2}}$, the',
         'flat exercise trigger is',
@@ -4642,7 +4642,7 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
         '  notional with the margin in it.',
         '',
         'The one-step-survival construction for autocallables is that of Alm, Harrach, Harrach and Keller',
-        '(2013), cited under [References](#references).'])
+        '[@alm2013].'])
 
     def floating_dates(self):
         return {x[0] for x in self.field['Autocall_Floating']}
@@ -6990,7 +6990,7 @@ class FXOptionDeal(Deal):
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX Option on **Underlying_Amount** units of',
                           '**Underlying_Currency**, priced in **Currency** by Black on the FX forward',
-                          '(Garman-Kohlhagen), with the conventions of',
+                          '(Garman-Kohlhagen [@garman1983]), with the conventions of',
                           '[European Options](./definitions.md#european-options): the forward to expiry plus',
                           'two business days, the vol at the forward\'s moneyness and the expiry, discounted',
                           'on **Discount_Rate**.',
@@ -7173,9 +7173,9 @@ class CreditNthToDefault(Deal):
          'where $c$ is *Pay_Rate*. Only at $n=1$, $k_0=0$ does this reduce to $c$ times the',
          'probability that no name has defaulted.',
          '',
-         'Names default under a one-factor Gaussian copula with a flat pairwise *Correlation*',
-         '$\\rho$ on marginal default probabilities $1-e^{-\\Lambda_j}$, each name\'s cumulative hazard over',
-         'the horizon $h$ scaled by the *CDS_Index* proxy,',
+         'Names default under a one-factor Gaussian copula [@li2000; @laurent2005] with a flat pairwise',
+         '*Correlation* $\\rho$ on marginal default probabilities $1-e^{-\\Lambda_j}$, each name\'s cumulative',
+         'hazard over the horizon $h$ scaled by the *CDS_Index* proxy,',
          '',
          '$$\\Lambda_j(t,t+h)=\\Lambda^{\\text{name}}_j(t,t+h)\\,\\frac{\\Lambda_{\\text{idx}}(t,t+h)}{\\Lambda_{\\text{idx}}(0,h)},$$',
          '',
@@ -7275,8 +7275,8 @@ class DealDefaultSwap(Deal):
                      'Name': ['SurvivalProb']}
 
     documentation = ('Credit', [
-        'A single-name credit default swap. The protection buyer pays a periodic fee **Pay_Rate**',
-        '(basis points) on the **Principal** (less any **Amortisation**) while the **Name** survives;',
+        'A single-name credit default swap [@hull2000; @okane2008]. The protection buyer pays a periodic fee',
+        '**Pay_Rate** (basis points) on the **Principal** (less any **Amortisation**) while the **Name** survives;',
         'on default the seller pays $P(1-R)$, $R$ the recovery on the name\'s survival factor, or',
         '**Digital_Recovery** in its place where **Is_Digital** is `Yes`. For a protection buyer, with',
         '$\\tilde t_i=\\max(t_i,t)$, $t_i$ the period boundaries, $T_i$ the payment dates and $S(t,\\cdot)$ the',
@@ -7697,7 +7697,7 @@ class EnergySingleOption(Deal):
         '$$\\mathcal B_\\delta (S^R(t,t_s^s,t_e^s,\\mathcal S),K,w(t,t_e^s,t_s^s,t_e^s,\\mathcal S))D(t,T)$$',
         '',
         'where $w(t,t_e^s,t_s^s,t_e^s,\\mathcal S)$ is the standard deviation of $S^R(t,t_s^s,t_e^s,\\mathcal S)$',
-        'and $\\mathcal B_\\delta$ is the Black formula.',
+        'and $\\mathcal B_\\delta$ is the Black formula [@black1976].',
         '',
         'Paid in a **Currency** other than the forward curve\'s own, **Payoff_Type** says how: `Compo`, what',
         'omission means, averages the product $S\\cdot X$ - every sample at its own fx forward and its variance',

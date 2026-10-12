@@ -123,8 +123,8 @@ the same derivative the IFT needs on the other side — *written once, different
 Damping is a backtracking line search on the residual's max-norm: full step first, halved until it
 decreases. The three knobs are **declared fields of the block being solved**, not module constants,
 each read off the block completed by its declarations (`block['N_Iter']`); a coupled set runs at the
-largest `N_Iter`, the smallest `Tol` and the largest `Damping_Halvings` of its members (Dennis and
-Schnabel, 1996, on the damped Newton method).
+largest `N_Iter`, the smallest `Tol` and the largest `Damping_Halvings` of its members
+([@dennis1996], on the damped Newton method).
 
 | Field | Default | |
 | --- | --- | --- |
@@ -198,7 +198,7 @@ changes is the SET: on a multi-curve book it solves each [coupled set](quote_pro
 inside a currency as one system, the only solve whose Jacobian carries `dθ₂/dq₁` - the same root,
 the USD world's OIS curve bit for bit and its projection curve 2 ulp of zero rate away.
 
-**Backward is the implicit function theorem** (Christianson, 1998; Henrard, 2014), never an
+**Backward is the implicit function theorem** [@christianson1998; @henrard2014], never an
 unrolled solver. At $F(\theta^*, q) = 0$,
 $d\theta/dq = -(\partial F/\partial\theta)^{-1}\partial F/\partial q$, so an incoming cotangent
 $v = \partial L/\partial\theta^*$ contracts in two steps:
@@ -239,7 +239,7 @@ seeds on the four-quote fixture. This is therefore the first reproducible HW2F c
 is no earlier baseline to preserve.
 
 `HullWhite2FactorModelParameters.Objective` picks the residual. **`Analytic` is the declared
-default** (Schrager and Pelsser, 2006); `Monte_Carlo` is the estimator and this page's oracle, and an analytic solve ends by repricing θ\*
+default** [@schrager2006]; `Monte_Carlo` is the estimator and this page's oracle, and an analytic solve ends by repricing θ\*
 through it and logging what it makes of the answer. Everything from here to [the
 analytic section](#the-analytic-quote-side) is the Monte Carlo path, unchanged to the bit.
 
@@ -303,8 +303,8 @@ ATM.
 ### Gauss–Newton, and the two terms it drops {#the-dropped-term}
 
 $r(\theta^*, q) \neq 0$ and never will be, so what is held fixed is the gradient of half the sum of
-squares, $g = J^\top r = 0$. Differentiating that gives a dropped term on **each** side (Nocedal and
-Wright, 2006, ch. 10, on the Gauss–Newton approximation):
+squares, $g = J^\top r = 0$. Differentiating that gives a dropped term on **each** side
+([@nocedal2006], ch. 10, on the Gauss–Newton approximation):
 
 $$\Big(J^\top J + \underbrace{\sum_i r_i \nabla^2_\theta r_i}_{\text{dropped}}\Big)\frac{d\theta}{dq}
 = -\Big(J^\top \frac{\partial r}{\partial q} + \underbrace{\sum_i r_i \frac{\partial^2 r_i}{\partial\theta\,\partial q}}_{\text{dropped}}\Big)$$
@@ -359,8 +359,8 @@ $J$ has one row per benchmark and 23 columns — two mean reversions, a correlat
 volatility term structures. A block quoting four swaptions leaves a **19-dimensional null space**:
 combinations the quote set does not identify, which no care in the linear algebra can invent.
 
-The inverse is therefore a **pseudo-inverse** (Penrose, 1955) at the declared `Jacobian_Rcond`, a
-truncated SVD (Hansen, 1987), and `dθ/dq` in a null direction is the **minimum-norm
+The inverse is therefore a **pseudo-inverse** [@penrose1955] at the declared `Jacobian_Rcond`, a
+truncated SVD [@hansen1987], and `dθ/dq` in a null direction is the **minimum-norm
 representative**. No ridge is added: a Tikhonov term returns a
 unique-looking number that is the derivative of a different problem.
 
@@ -444,8 +444,8 @@ and every difference below follows from it.
 
 **One severance, one splice, one leaf.** The severance is the scipy market premium, so the repair is
 the twin `create_market_swaps` already built (`utils.black_european_option` or
-`utils.bachelier_european_option`), carried through the closed-form Bachelier inversion (Bachelier,
-1900).
+`utils.bachelier_european_option`), carried through the closed-form Bachelier inversion
+[@bachelier1900].
 `market_swap_class.market_normal_vol` is the whole of it. The splice is worth **exactly zero**
 forward: residual, model value, market normal vol, `‖J'r‖` and **θ\* itself** are bit-identical with
 the quote side on and off, taken through two whole optimizer chains by `np.array_equal` and hex
@@ -1116,23 +1116,3 @@ itself. Without that row a scattering ladder would be evidence against everythin
 - ~~**No differentiable Malz solve.**~~ **BUILT — see [the delta solve](#the-delta-solve).** The
   premise was that a bisection per node would have to go on the tape; it does not, and the IFT needs
   the answer rather than the iteration.
-
-## References {#references}
-
-- Bruce Christianson, "Reverse accumulation and implicit functions", *Optimization Methods and
-  Software* 9(4), 307-322, 1998, DOI 10.1080/10556789808805697.
-- Marc Henrard, "Adjoint algorithmic differentiation: calibration and implicit function theorem",
-  *The Journal of Computational Finance* 17(4), 37-47, 2014, DOI 10.21314/jcf.2014.284.
-- J. E. Dennis, Robert B. Schnabel, *Numerical Methods for Unconstrained Optimization and Nonlinear
-  Equations*, SIAM, 1996, DOI 10.1137/1.9781611971200.
-- Jorge Nocedal, Stephen J. Wright, *Numerical Optimization*, 2nd ed., Springer, 2006,
-  DOI 10.1007/978-0-387-40065-5.
-- R. Penrose, "A generalized inverse for matrices", *Mathematical Proceedings of the Cambridge
-  Philosophical Society* 51(3), 406-413, 1955, DOI 10.1017/S0305004100030401.
-- Per Christian Hansen, "The truncated SVD as a method for regularization", *BIT* 27(4),
-  534-553, 1987, DOI 10.1007/BF01937276.
-- David F. Schrager, Antoon A. J. Pelsser, "Pricing Swaptions and Coupon Bond Options in Affine Term
-  Structure Models", *Mathematical Finance* 16(4), 673-694, 2006,
-  DOI 10.1111/j.1467-9965.2006.00289.x.
-- L. Bachelier, "Théorie de la spéculation", *Annales scientifiques de l'École normale supérieure*
-  17, 21-86, 1900, DOI 10.24033/asens.476.

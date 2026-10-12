@@ -6,7 +6,7 @@ knocked in pays $R$ at expiry.
 
 ### Closed form
 
-The continuously monitored value (Merton; Reiner-Rubinstein, as tabulated in Haug) is a sum of six terms.
+The continuously monitored value (Merton [@merton1973]; Reiner-Rubinstein, as tabulated in Haug [@haug]) is a sum of six terms.
 With $\phi=+1$ for a call and $-1$ for a put, $\eta=+1$ for a down and $-1$ for an up barrier,
 $S=S(t)$, $v=\sigma\sqrt\tau$, $\mu=(b-\sigma^2/2)/\sigma^2$ and $\lambda=\sqrt{\mu^2+2r/\sigma^2}$:
 
@@ -46,7 +46,7 @@ scenario date $t_i$ of the deal:
 - $\sigma=\max(\sigma(m,\tau),\,0.05)$: the surface vol at the deal's moneyness is **floored at 5%**, a
   model adjustment whose effect is unmeasured (it binds only where the surface is below 5%).
 - The touch probability $P_i$ accumulates between scenario dates by the Brownian-bridge crossing
-  probability of the barrier actually priced (after the shift below), formula (B) below.
+  probability [@beaglehole1997] of the barrier actually priced (after the shift below), formula (B) below.
 - A knock-in reports $(1-P_i)V_i^{\text{closed}}+P_iV_i^{\text{vanilla}}$, the vanilla being Black at the
   floored vol, and pays $R(1-P_T)$ at expiry. A knock-out reports $(1-P_i)V_i^{\text{closed}}$ and pays
   $R(P_i-P_{i-1})$ as cash on $t_i$. At expiry the surviving branch is the intrinsic on the forward.
@@ -82,7 +82,7 @@ the touch settles $P_i-P_{i-1}$ on $t_i$. A no-touch reports $(1-P_i)(e^{-r\tau}
 ### Discontinuous Barrier Sampling
 
 A barrier observed every $\delta$ years rather than continuously is priced as a continuous one against
-the shifted level of Broadie, Glasserman and Kou:
+the shifted level of Broadie, Glasserman and Kou [@broadie1997]:
 
 $$H'=He^{\pm\beta\sigma\sqrt\delta},\qquad \beta=-\frac{\zeta(1/2)}{\sqrt{2\pi}}\approx0.5826$$
 
@@ -96,8 +96,8 @@ gap between those dates and stays continuously monitored: the dates are not an o
 `FXPartialTimeBarrierOption` monitors the barrier over a window only. With $t_\ell$ the
 **Barrier_Limit_Date**, $\tau_\ell=t_\ell-t$ and $\tau=T-t$, **Barrier_At_Start** `Yes` monitors
 $[t,t_\ell]$ and `No` monitors $[t_\ell,T]$. The knock-out call is the Heynen-Kat closed form as tabulated
-in Haug (type A for a start window, type B2 for an end window), with $M(a,b;\rho)$ the bivariate normal
-distribution (Genz) and $\rho=\sqrt{\tau_\ell/\tau}$. Define $F=Se^{b\tau}$, $\mu'=2b/\sigma^2-1$,
+in Haug [@haug] (type A for a start window, type B2 for an end window), with $M(a,b;\rho)$ the bivariate normal
+distribution (Genz [@genz2004]) and $\rho=\sqrt{\tau_\ell/\tau}$. Define $F=Se^{b\tau}$, $\mu'=2b/\sigma^2-1$,
 $v=\sigma\sqrt\tau$, $v_\ell=\sigma\sqrt{\tau_\ell}$, $k=\log(S/K)$, $h=\log(S/H)$, $c=b+\sigma^2/2$ and
 
 $$d_1=\frac{k+c\tau}{v},\ f_1=\frac{k-2h+c\tau}{v},\ g_1=\frac{h+c\tau}{v},\ g_3=g_1-\frac{2h}{v},\ e_1=\frac{h+c\tau_\ell}{v_\ell},\ e_3=e_1-\frac{2h}{v_\ell}$$
@@ -158,7 +158,7 @@ For valuation date $t$ let $m$ be the number of samples on or before $t$. Then $
 $$A=\sum_{i=m+1}^n\omega_iS(t_i),\qquad \bar K=K-\sum_{i=1}^m\omega_iS(t_i).$$
 
 If $\bar K\le0$ the option is exercised with certainty and valued as $\delta(F-\bar K)^+$ on the forward
-$F$ below. Otherwise $A$ is matched to a lognormal on its first two moments (Turnbull-Wakeman, Levy):
+$F$ below. Otherwise $A$ is matched to a lognormal on its first two moments (Turnbull-Wakeman [@turnbull1991], Levy [@levy1992]):
 
 $$F=\mathbb E_t[A]=\sum_{i>m}\omega_iF(t,t_i),\qquad F^2e^{v^2}=\sum_{i,j>m}\omega_i\omega_jF(t,t_i)F(t,t_j)e^{\sigma_{i\wedge j}^2\tau_{i\wedge j}}$$
 
@@ -190,7 +190,7 @@ log-correlation is matched from the cross moment:
 
 $$M_\rho=\sum_{i,j}\omega^1_i\omega^2_jF(t,t^1_i)F(t,t^2_j)e^{\sigma^2\min(\tau^1_i,\tau^2_j)},\qquad \rho=\frac{\log M_\rho-\log F_1-\log F_2}{v_1v_2}$$
 
-- Both strips live: the Bjerksund-Stensland (2014) spread formula on $(\alpha_1F_1,\alpha_2F_2,\bar K,v_1,v_2,\rho)$,
+- Both strips live: the Bjerksund-Stensland spread formula [@bjerksund2014] on $(\alpha_1F_1,\alpha_2F_2,\bar K,v_1,v_2,\rho)$,
   discounted from the expiry.
 - One strip fully fixed: Black on the live strip, struck at $\bar K$ (first strip live) or at $-\bar K$ with
   the option type reversed (second strip live), and exercised with certainty where that strike is not
@@ -249,7 +249,7 @@ exchanged. A floating payment on a coupon date is paid whatever that date's auto
 
 ### Valuation
 
-By one-step-survival Monte Carlo ([One-Step Survival](../theory/mc_simulation.md)), an inner simulation
+By one-step-survival Monte Carlo [@glasserman2001] ([One-Step Survival](../theory/mc_simulation.md)), an inner simulation
 from every outer scenario row. Coupon $j$ survives with conditional probability
 $p_j=\mathbb P(A_j<h_jK\mid\cdot)$, the surviving weight is $L_j=p_jL_{j-1}$ ($L_0=1$), and the inner
 estimate is
@@ -343,18 +343,3 @@ and/or the simulated spot and forward prices along the current scenario path.
 
 Dividends are paid at the swaplet's payment date: the swaplet pays $\frac{AbH(t_0,t_1)}{S(t_0)^a}$ at $T$.
 **Dividend_Timing** `Continuous` is accepted and priced as `Terminal`.
-
-## References
-
-- Merton, R. C. Theory of Rational Option Pricing. *The Bell Journal of Economics and Management Science* 4(1), first page 141, 1973. [doi:10.2307/3003143](https://doi.org/10.2307/3003143)
-- Haug, E. G. *The Complete Guide to Option Pricing Formulas*. McGraw-Hill, ISBN 978-0-07-138997-6 (library record dated 2006-12-18): single barrier, touch, partial-time barrier (Heynen-Kat) and spread formulas.
-- Broadie, M.; Glasserman, P.; Kou, S. A Continuity Correction for Discrete Barrier Options. *Mathematical Finance* 7(4), 325-349, 1997-10 (online 2002-01-05). [doi:10.1111/1467-9965.00035](https://doi.org/10.1111/1467-9965.00035)
-- Beaglehole, D. R.; Dybvig, P. H.; Zhou, G. Going to Extremes: Correcting Simulation Bias in Exotic Option Valuation. *Financial Analysts Journal* 53(1), 62-68, 1997-01. [doi:10.2469/faj.v53.n1.2057](https://doi.org/10.2469/faj.v53.n1.2057)
-- Genz, A. Numerical computation of rectangular bivariate and trivariate normal and t probabilities. *Statistics and Computing* 14(3), 251-260, 2004. [doi:10.1023/B:STCO.0000035304.20635.31](https://doi.org/10.1023/B:STCO.0000035304.20635.31)
-- Turnbull, S. M.; Wakeman, L. M. A Quick Algorithm for Pricing European Average Options. *The Journal of Financial and Quantitative Analysis* 26(3), first page 377, 1991. [doi:10.2307/2331213](https://doi.org/10.2307/2331213)
-- Levy, E. Pricing European average rate currency options. *Journal of International Money and Finance* 11(5), 474-491, 1992. [doi:10.1016/0261-5606(92)90013-N](https://doi.org/10.1016/0261-5606(92)90013-N)
-- Bjerksund, P.; Stensland, G. Closed form spread option valuation. *Quantitative Finance* 14(10), 1785-1794, print 2014-10 (online 2011-11-03). [doi:10.1080/14697688.2011.617775](https://doi.org/10.1080/14697688.2011.617775)
-- Bjerksund, P.; Stensland, G. Closed-form approximation of American options. *Scandinavian Journal of Management* 9, S87-S99, 1993. [doi:10.1016/0956-5221(93)90009-H](https://doi.org/10.1016/0956-5221(93)90009-H)
-- Glasserman, P.; Staum, J. Conditioning on One-Step Survival for Barrier Option Simulations. *Operations Research* 49(6), 923-937, 2001. [doi:10.1287/opre.49.6.923.10018](https://doi.org/10.1287/opre.49.6.923.10018)
-- Alm, T.; Harrach, B.; Harrach, D.; Keller, M. A Monte Carlo pricing algorithm for autocallables that allows for stable differentiation. *The Journal of Computational Finance* 17(1), 43-70, 2013. [doi:10.21314/jcf.2013.265](https://doi.org/10.21314/jcf.2013.265)
-- Garman, M. B.; Kohlhagen, S. W. Foreign currency option values. *Journal of International Money and Finance* 2(3), 231-237, 1983. [doi:10.1016/S0261-5606(83)80001-1](https://doi.org/10.1016/S0261-5606(83)80001-1)

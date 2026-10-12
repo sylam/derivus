@@ -424,9 +424,9 @@ interpolated curve no longer reprices its quotes. There is therefore no `Zero_Ra
 holding a quote out with `Use` drops its knot with it.
 
 **The solve.** A damped Newton root find in float64 on the vector of the engine's own pricers held at
-par (Dennis and Schnabel, 1996). Two blocks make a multi-curve set and `Discount_Rate` orders them,
-the discount curve solved before the projection curve that discounts on it (Ametrano and
-Bianchetti, 2013). The Jacobian comes from AAD
+par [@dennis1996]. Two blocks make a multi-curve set and `Discount_Rate` orders them,
+the discount curve solved before the projection curve that discounts on it
+[@ametrano2013]. The Jacobian comes from AAD
 through the pricers — one backward pass per quote gives a whole row, no bump loop — which is the same
 derivative the [quote-sensitivity](quote_sensitivities.md) thread carries the other way into `dV/dq`.
 The residual is written once and differentiated twice.
@@ -482,11 +482,11 @@ and every ATM still reprices exactly. `Event_Days` is then a one-day segment of 
 `Event_Variance_Prior` times the level enclosing it — unless the day already HAS a segment of its
 own, in which case the ordinary pillar bootstrap sets it, the prior is ignored and the report says
 so. The curve is comparable to a market object: it should sit on a replicated variance-swap strip
-(Demeterfi et al., 1999) up to the smile's own ATM convexity, and the report prints it beside the market's ATM² forward variance
+[@demeterfi1999] up to the smile's own ATM convexity, and the report prints it beside the market's ATM² forward variance
 rather than beside a log level. **No `e^{L*}` appears in any report.**
 
 **The residual is an NIG increment on the variance clock, and its drift is forced**
-([its law](../theory/stochastic_volatility.md#the-residual); Barndorff-Nielsen, 1998). The part of a return leverage does
+([its law](../theory/stochastic_volatility.md#the-residual); [@barndorffnielsen1998]). The part of a return leverage does
 not explain spends the clock `A = Σ c_k V_k` with `c = 1 − ρ_s² − ρ_ℓ²`, its variance exactly `A`
 and its drift whatever makes `E[e^{X_A}] = 1`. Both are LINEAR in the clock, so the residual
 composes exactly: a month cut into days is one law once the clock is one number, and a fixing
@@ -569,7 +569,7 @@ where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forwar
 with its backward **0.251 s against 0.704 s**; the same walk on an RTX 3090 is **0.0062 s and
 0.0099 s**, twenty-five times the CPU, where the scan measured SLOWER on the card than on the
 host. **`Vanilla_Pricer` is `Quadrature` by default**: a vanilla is priced off the surrogate law's
-closed-form moments by Gauss-Hermite (Golub and Welsch, 1969) over the clock and the mixer
+closed-form moments by Gauss-Hermite [@golub1969] over the clock and the mixer
 (`Quadrature_Nodes`, 24 and 16, converged to 2e-5 vol points against 64 and 48), with no seed, no
 path count and no sampling noise in the objective, so the same document writes the same bytes on
 every run; the forward-start rows price on the walk either way, and `Walk` prices the vanillas on
@@ -649,7 +649,7 @@ fit, so `Paths` is not a confidence interval around θ\*, it is the NOISE FLOOR 
 ladder at another `Random_Seed` lands somewhere else, and how far is the only honest reading of
 how much of a fitted number is the surface. `Pseudo` is the generator this family drew from
 before the field existed and is what a bit-identity gate against a banked fit declares. `Sobol`
-is a scrambled Sobol' sequence (Sobol', 1967; Owen, 1997) over the `2 × steps + blocks` dimensions in the calculation's own
+is a scrambled Sobol' sequence [@sobol1967; @owen1997] over the `2 × steps + blocks` dimensions in the calculation's own
 convention (`calculation.CMC_State.quasi_rng` — one engine at `QUASI_ANCHOR`, that clamp margin,
 that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than the engine's `MAXDIM` refuses
 by name rather than chunking, the calculation chunking because a scenario grid can be that wide
@@ -764,7 +764,7 @@ declared error weights its row at one quote per standard error; a blank one take
 weight, `Leverage_Prior_Weight` on `ρ_s` and that over `Sigma_S_Reference` on the product. **The
 block's own numbers come from the IMPLIED REGRESSION** that sizes the reference — the daily
 log change of the index's implied-vol index on the index's return, `σ_s` the annualised sd of the
-log-variance change, with Fisher (1915), `σ/√2N` and delta-method errors: SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
+log-variance change, with Fisher [@fisher1915], `σ/√2N` and delta-method errors: SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
 product −1.89 ± 0.05, the reference to the second decimal; NDX/VXN −0.712, 1.88, −1.34; NKY against
 the Nikkei VI **−0.529 ± 0.025, 3.07, −1.62 ± 0.09** — a weaker correlation and more vol-of-vol
 than SPX, which is why NKY's wings wanted a positive residual skew at SPX's −1.85: it is not NKY's
@@ -830,7 +830,7 @@ by name naming the share; the residual seed is `share × α_seed`, −22 at the 
 both the class spread AND the bar a history's own standard error has to beat. `α` is a scale, so
 its prior is on `log α` and a history's own error is read in the same units; a history's share
 `β^P/α^P` carries its delta-method error. `β^P` crosses only through that share, as a prior with
-its standard error: an Esscher tilt (Gerber and Shiu, 1996) moves `β` by one unit at most, so the
+its standard error: an Esscher tilt [@gerber1996] moves `β` by one unit at most, so the
 P and Q skews are not the same number and the sanity table still says so on its row; what the
 prior states is not that they are equal but that the ladder has nothing to say.
 
@@ -1021,7 +1021,7 @@ is why the fit cannot move when the switch flips.
     re-fit displacement is two to three orders under the contraction's. **`Jacobian_Rcond` is the
     dial that reaches this**, and it is measured: on a reduced USDZAR polish whose five scaled
     singular values are 1.940 / 0.871 / 0.567 / 0.384 / 0.0861, raising the cutoff (a truncated
-    SVD, Hansen, 1987) from 1e-3 to 0.05
+    SVD, [@hansen1987]) from 1e-3 to 0.05
     drops the last direction and takes `Sigma_S` from −430.8 to −232.2 against a re-solved −196.3,
     and `Rho_S` from +11.5 to −13.4 against −15.7 — from sign-wrong to within a fifth. What a desk
     should read first is the identification table.
@@ -1216,11 +1216,11 @@ this family is the same conversion **moved**, and the move is the point. The spe
 [its Bootstrapping page](../bootstrapping/fx_and_equity.md); two of its readings matter here.
 
 - **`BF` is the SMILE strangle**, the wing pair's average vol over ATM. A broker's MARKET (one-vol)
-  strangle is in general a different number (Clark, 2011; Reiswich and Wystup, 2010), and one
+  strangle is in general a different number [@clark2011; @reiswich2010], and one
   authored here is read as a smile strangle; the error that makes is unmeasured.
 - **"Malz" is a label.** The wings are piecewise LINEAR in premium-adjusted forward delta, flat
   beyond the outermost quoted delta, which is not the quadratic-in-delta interpolation of Malz
-  (1997).
+  [@malz1997].
 
 **The x-grid is pinned, because refinement is compile-time work.** The delta solve refines a
 log-moneyness grid until interpolating total variance between the nodes resolves the smile to
@@ -1248,7 +1248,7 @@ measured during development against a scalar `brentq` solve; no test re-checks i
 exactly one: `Delta_Type` `Forward`, `Premium_Adjusted` `Yes` (the pillar delta is `(K/F)N(d₂)`) and
 `ATM_Convention` `Delta_Neutral_Straddle` (`K = F exp(−σ²T/2)`). A spot delta or an ATMF quote needs
 different algebra, and a value the engine cannot honour is the same defect as a field nothing reads.
-The conventions are the standard ones of Reiswich and Wystup (2010). No test checks them as
+The conventions are the standard ones of Reiswich and Wystup [@reiswich2010]. No test checks them as
 mathematics; the single-valued declarations are what holds them.
 
 **The ATM row is the surface's ATM vol, and a second family reads it as one.** `malz_skew` places the
@@ -1300,34 +1300,3 @@ not move leaves the hash bit-identical. Resolution is still FULL where the stamp
 `CustomJsonEncoder` writes a midnight `Timestamp` as the plain date it always did (old files
 re-encode byte-stable) and a non-midnight one in ISO form with its time, so the 09:15 and 16:30
 snapshots of a quote survive a save as themselves.
-
-## References {#references}
-
-- J. E. Dennis, Robert B. Schnabel, *Numerical Methods for Unconstrained Optimization and Nonlinear
-  Equations*, SIAM, 1996, DOI 10.1137/1.9781611971200.
-- Ferdinando Ametrano, Marco Bianchetti, "Everything You Always Wanted to Know about Multiple
-  Interest Rate Curve Bootstrapping but Were Afraid to Ask", *SSRN Electronic Journal*, 2013,
-  DOI 10.2139/ssrn.2219548.
-- Kresimir Demeterfi, Emanuel Derman, Michael Kamal, Joseph Zou, "A Guide to Volatility and
-  Variance Swaps", *The Journal of Derivatives* 6(4), 9-32, 1999, DOI 10.3905/jod.1999.319129.
-- Ole E. Barndorff-Nielsen, "Processes of normal inverse Gaussian type", *Finance and Stochastics*
-  2(1), 41-68, 1998, DOI 10.1007/s007800050032 (the registry dates the record 1997-11).
-- Gene H. Golub, John H. Welsch, "Calculation of Gauss quadrature rules", *Mathematics of
-  Computation* 23(106), 221-230, 1969, DOI 10.1090/S0025-5718-69-99647-1.
-- I. M. Sobol', "On the distribution of points in a cube and the approximate evaluation of
-  integrals", *USSR Computational Mathematics and Mathematical Physics* 7(4), 86-112, 1967,
-  DOI 10.1016/0041-5553(67)90144-9.
-- Art B. Owen, "Scrambled net variance for integrals of smooth functions", *The Annals of
-  Statistics* 25(4), 1997, DOI 10.1214/aos/1031594731.
-- R. A. Fisher, "Frequency Distribution of the Values of the Correlation Coefficient in Samples from
-  an Indefinitely Large Population", *Biometrika* 10(4), 507, 1915, DOI 10.2307/2331838.
-- Hans U. Gerber, Elias S. W. Shiu, "Actuarial bridges to dynamic hedging and option pricing",
-  *Insurance: Mathematics and Economics* 18(3), 183-218, 1996, DOI 10.1016/0167-6687(96)85007-4.
-- Per Christian Hansen, "The truncated SVD as a method for regularization", *BIT* 27(4),
-  534-553, 1987, DOI 10.1007/BF01937276.
-- Dimitri Reiswich, Uwe Wystup, "A Guide to FX Options Quoting Conventions", *The Journal of
-  Derivatives* 18(2), 58-68, 2010, DOI 10.3905/jod.2010.18.2.058.
-- Iain J. Clark, *Foreign Exchange Option Pricing: A Practitioner's Guide*, Wiley, 2011,
-  ISBN 9780470683682, DOI 10.1002/9781119208679 (the registry dates the record 2012-01-02).
-- Allan M. Malz, "Estimating the Probability Distribution of the Future Exchange Rate from Option
-  Prices", *The Journal of Derivatives* 5(2), 18-36, 1997, DOI 10.3905/jod.1997.407988.
