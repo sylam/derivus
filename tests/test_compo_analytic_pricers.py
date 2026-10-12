@@ -594,3 +594,24 @@ def test_the_monitored_path_crosses_on_the_composite_not_the_local_spot():
     assert touched > 0.2, touched
     local = _one_touch_closed(MC_BARRIER, False, SPOT, R_USD - Q_EQ, 0.01, R_EUR)
     assert local / CASH < 1e-6, local
+
+
+# --------------------------------------------------------------------------------------------
+# 6. discovery: the pair's vol and correlation are asked for only where the payoff crosses
+# --------------------------------------------------------------------------------------------
+def test_only_a_quanto_or_compo_payoff_asks_the_market_for_its_pair():
+    """Three forwards on the USD equity, each paid in EUR and naming the equity's surface, on a
+    market carrying neither the EUR/USD vol nor the equity's correlation with it: the Standard one
+    reads neither and its want-list is empty, while the Quanto and the Compo want both, by name.
+
+    Killing mutation: the `Payoff_Type` read dropped from the `EquityPrice` discovery rule - the
+    Standard forward then wants the pair's vol and correlation it never reads, and a booking of it
+    on this market is refused for want of them."""
+    factors = {name: block for name, block in _factors().items()
+               if name not in ('FXVol.EUR.USD', 'Correlation.EquityPrice.EQ/FxRate.EUR.USD')}
+    pair = {'FXVol.EUR.USD', 'Correlation.EquityPrice.EQ/FxRate.EUR.USD'}
+    for payoff_type, wanted in (('Standard', set()), ('Quanto', pair), ('Compo', pair)):
+        cx = derivus.Context()
+        cx.load_json((json.dumps(_job([dict(_forward('F'), Payoff_Type=payoff_type)], factors),
+                                 cls=CustomJsonEncoder), 'compo'))
+        assert set(cx.describe()['factors']['missing']) == wanted, payoff_type

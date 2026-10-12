@@ -393,9 +393,9 @@ conditional_fields = {
     'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
         sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
     instrument.field['Currency'] != factor_fields['Currency'] else [],
-    # SpotModel params, plus the quanto pair's vol and correlation. Keyed on the UNDERLYING
-    # like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so it is
-    # an FXVol whatever asset class the underlying belongs to.
+    # SpotModel params, plus a quanto or compo payoff's pair vol and correlation. Keyed on the
+    # UNDERLYING like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so
+    # it is an FXVol whatever asset class the underlying belongs to.
     'EquityPrice': lambda instrument, factor_fields, params:
     ([utils.spot_model_factor(instrument.options['SpotModel'],
                               utils.check_rate_name(instrument.field['Equity']))]
@@ -407,6 +407,7 @@ conditional_fields = {
     ).split('.'))),
       utils.Factor('FXVol', tuple(sorted([factor_fields['Currency'], instrument.payoff_ccy])))]
      if instrument.field.get('Equity_Volatility') is not None
+     and instrument.payoff_type != 'Standard'
      and factor_fields['Currency'] != instrument.payoff_ccy else []),
     # FX analogue, keyed on the pair by the same `utils.spot_model_currency` rule the deal's own
     # lookup takes, or discovery loads a block the compile will not ask for

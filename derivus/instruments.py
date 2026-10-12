@@ -758,6 +758,12 @@ class Deal(object):
         and a blank alike reading the deal's own `Currency`."""
         return self.field.get('Payoff_Currency') or self.field['Currency']
 
+    @property
+    def payoff_type(self):
+        """How the payoff reaches `payoff_ccy`: the `Payoff_Type` stated, else the convention the
+        type declares, else `Standard` for a type declaring none."""
+        return self.field.get('Payoff_Type') or self.field.declared.get('Payoff_Type', 'Standard')
+
     def add_settlement_dates(self):
         """Register every day the deal's own declaration settles on under the currency its `settles`
         marker names - the marker's field, else the deal's own - a blank day read as the day the
@@ -853,9 +859,7 @@ class Deal(object):
         `equity_fx_correlation`, `reference_fx_correlation`. `vol_field` names the field holding the
         equity surface a deal pricing no option of its own reads for the quanto carry's ATM vol.
         """
-        # the type's own reading of `Payoff_Type`: stated, else the convention it declares, else
-        # Standard for a type declaring none
-        payoff_type = self.field.get('Payoff_Type') or self.field.declared.get('Payoff_Type', 'Standard')
+        payoff_type = self.payoff_type
         if payoff_type != 'Standard' and field['Payoff_Currency'] != field['Currency']:
             field_index['Check_Payoff_Type'] = True
             _, fx_lookup = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])
@@ -4471,7 +4475,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         # non-GBM spot model, by naming convention off the equity - see docstring
         if spot_model != 'None' and field_index['Check_Payoff_Type']:
             pair = utils.check_fx_name([field['Currency'][0], field['Payoff_Currency'][0]])[1]
-            if self.field['Payoff_Type'] != 'Quanto':
+            if self.payoff_type != 'Quanto':
                 raise ValueError(
                     'SpotModel=%s cannot price Payoff_Type=%s settled in %s: a compo payoff is the '
                     'PRODUCT S*X, so the fx rate has to be simulated JOINTLY with the equity and '
@@ -4479,7 +4483,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                     'the walk carries per step off its own variance; a compo is a second asset, '
                     'which it does not have. Settle the autocall in %s, book it Quanto if the fx '
                     'is fixed, or drop the SpotModel'
-                    % (spot_model, self.field['Payoff_Type'], self.payoff_ccy, self.field['Currency']))
+                    % (spot_model, self.payoff_type, self.payoff_ccy, self.field['Currency']))
             if field_index['QuantoImpliedCorrelation'] is None:
                 raise ValueError(
                     'SpotModel=%s prices Payoff_Type=Quanto off the marked equity/fx correlation '
@@ -4936,7 +4940,7 @@ class EquityBarrierOption(Deal):
                              'per-step drift the walk does carry, but only the autocall passes it '
                              'the loading today (`pricing.quanto_step_loading`) - settle the '
                              'barrier in %s or drop the SpotModel'
-                             % (spot_model, self.field['Payoff_Type'], self.payoff_ccy,
+                             % (spot_model, self.payoff_type, self.payoff_ccy,
                                 self.field['Currency']))
         hn = get_spot_model_params_factor(
             spot_model, field['Equity'], all_factors, static_offsets, stochastic_offsets)
