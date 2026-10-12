@@ -711,8 +711,24 @@ class Deal(object):
         """
         return self
 
+    def pays_on_grid(self):
+        """Whether this deal can pay on a grid date before its expiry - a touch, a rebate, an exercise."""
+        return False
+
     def add_grid_dates(self, parser, base_date, grid):
-        pass
+        if not self.pays_on_grid():
+            return
+        if isinstance(grid, str):
+            grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
+            self.reval_dates.update(grid_dates)
+            self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
+        else:
+            # a grid stated as dates: every date before a currency's last payment pays in it
+            for cash_flow in self.settlement_currencies.values():
+                last_pmt = max(cash_flow)
+                delta = {x for x in grid if x < last_pmt}
+                cash_flow.update(delta)
+                self.reval_dates.update(delta)
 
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         if relative_to_settlement:
@@ -4138,18 +4154,9 @@ class EquityOptionDeal(Deal):
         self.add_reval_dates({self.field['Expiry_Date']})
         self.add_settlement_dates()
 
-    def add_grid_dates(self, parser, base_date, grid):
-        # we need to monitor the option for potential early exercise
-        if isinstance(grid, str):
-            grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-            self.reval_dates.update(grid_dates)
-            self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-        else:
-            for curr, cash_flow in self.settlement_currencies.items():
-                last_pmt = max(cash_flow)
-                delta = set([x for x in grid if x < last_pmt])
-                self.settlement_currencies[curr].update(delta)
-                self.reval_dates.update(delta)
+    def pays_on_grid(self):
+        # the option is monitored for potential early exercise
+        return True
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -4688,12 +4695,9 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
         return field_index
 
 
-class EquityOneTouchOption(Deal):
-    vernacular = 'equity one-touch, one touch, touch option'
-    fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
-        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-    ], role='Timing')]
-
+class TouchLifecycle:
+    """What a one-touch registers, equity or FX: its payout on the touch or at expiry, a third
+    value refused at construction."""
     #: paid where the barrier WAS touched - a no-touch pays where it never was
     no_touch = False
 
@@ -4701,6 +4705,36 @@ class EquityOneTouchOption(Deal):
     def payment_timing(self):
         """When the payout is paid - at the `Touch` or at `Expiry` - which a no-touch fixes."""
         return self.field['Payment_Timing']
+
+    def __init__(self, params, valuation_options):
+        super().__init__(params, valuation_options)
+        self.path_dependent = True
+        # the pricer's closed-form chain has exactly these two branches, and `reset` /
+        # `add_grid_dates` read the field before dependencies run - a third value is a malformed
+        # program, refused at construction
+        if self.payment_timing not in ('Touch', 'Expiry'):
+            raise ValueError('{} Payment_Timing must be Touch or Expiry, not {!r}'.format(
+                type(self).__name__, self.payment_timing))
+
+    def reset(self, calendars):
+        super().reset()
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+
+    def pays_on_grid(self):
+        return self.payment_timing == 'Touch'
+
+    def add_reval_date_offset(self, offset, relative_to_settlement=True):
+        # a touch already pays on the grid, so it takes no offset dates past its settlements
+        if relative_to_settlement and self.payment_timing == 'Touch':
+            return
+        super().add_reval_date_offset(offset, relative_to_settlement)
+
+
+class EquityOneTouchOption(TouchLifecycle, Deal):
+    vernacular = 'equity one-touch, one touch, touch option'
+    fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
+        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
+    ], role='Timing')]
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -4719,48 +4753,6 @@ class EquityOneTouchOption(Deal):
         'spot at the fx cross, carry including the fx forward\'s own, vol composed of the two legs -',
         'and the barrier is the payoff-currency level on that product it is declared as, with the',
         'local smile read at the translated level $H/F_X(T)$.'])
-
-    def __init__(self, params, valuation_options):
-        super(EquityOneTouchOption, self).__init__(params, valuation_options)
-        self.path_dependent = True
-        # the pricer's closed-form chain has exactly these two branches, and `reset` /
-        # `add_grid_dates` read the field before dependencies run - a third value is a malformed
-        # program, refused at construction
-        if self.payment_timing not in ('Touch', 'Expiry'):
-            raise ValueError('EquityOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
-                self.payment_timing))
-
-    def reset(self, calendars):
-        super(EquityOneTouchOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
-
-    def add_grid_dates(self, parser, base_date, grid):
-        # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.payment_timing == 'Touch':
-            if isinstance(grid, str):
-                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-                self.reval_dates.update(grid_dates)
-                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-            else:
-                # this is called if the grid is fully defined i.e. a set of dates
-                for curr, cash_flow in self.settlement_currencies.items():
-                    last_pmt = max(cash_flow)
-                    delta = set([x for x in grid if x < last_pmt])
-                    self.settlement_currencies[curr].update(delta)
-                    self.reval_dates.update(delta)
-
-    def add_reval_date_offset(self, offset, relative_to_settlement=True):
-        # don't add any extra reval dates if this is a touch option
-        if relative_to_settlement:
-            if self.payment_timing != 'Touch':
-                for curr, fixings in self.settlement_currencies.items():
-                    new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
-                    self.reval_dates.update(new_dates)
-        else:
-            fixings = reduce(
-                set.union, [{x + pd.DateOffset(days=ofs) for ofs in offset}
-                            for x in self.reval_dates])
-            self.reval_dates.update(fixings)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -4981,19 +4973,9 @@ class EquityBarrierOption(Deal):
         else:
             self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
-    def add_grid_dates(self, parser, base_date, grid):
+    def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out
-        if self.field['Cash_Rebate']:
-            if isinstance(grid, str):
-                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-                self.reval_dates.update(grid_dates)
-                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-            else:
-                for curr, cash_flow in self.settlement_currencies.items():
-                    last_pmt = max(cash_flow)
-                    delta = set([x for x in grid if x < last_pmt])
-                    self.settlement_currencies[curr].update(delta)
-                    self.reval_dates.update(delta)
+        return bool(self.field['Cash_Rebate'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5963,19 +5945,11 @@ class EquitySwapLeg(Deal):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)
 
 
-class FXOneTouchOption(Deal):
+class FXOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'FX one-touch, one touch, touch option'
     fields = [ADMIN, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing')]
-
-    #: paid where the barrier WAS touched - a no-touch pays where it never was
-    no_touch = False
-
-    @property
-    def payment_timing(self):
-        """When the payout is paid - at the `Touch` or at `Expiry` - which a no-touch fixes."""
-        return self.field['Payment_Timing']
 
     factor_fields = {'Currency': ['FxRate'],
                      'Payoff_Currency': ['FxRate'],
@@ -5985,48 +5959,6 @@ class FXOneTouchOption(Deal):
 
     documentation = ('Fx And Equity', [
         'A path dependent FX Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])
-
-    def __init__(self, params, valuation_options):
-        super(FXOneTouchOption, self).__init__(params, valuation_options)
-        self.path_dependent = True
-        # the pricer's closed-form chain has exactly these two branches, and `reset` /
-        # `add_grid_dates` read the field before dependencies run - a third value is a malformed
-        # program, refused at construction
-        if self.payment_timing not in ('Touch', 'Expiry'):
-            raise ValueError('FXOneTouchOption Payment_Timing must be Touch or Expiry, not {!r}'.format(
-                self.payment_timing))
-
-    def reset(self, calendars):
-        super(FXOneTouchOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
-
-    def add_grid_dates(self, parser, base_date, grid):
-        # only if the payoff is american (Touch) should we add potential payoff dates
-        if self.payment_timing == 'Touch':
-            if isinstance(grid, str):
-                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-                self.reval_dates.update(grid_dates)
-                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-            else:
-                # this is called if the grid is fully defined i.e. a set of dates
-                for curr, cash_flow in self.settlement_currencies.items():
-                    last_pmt = max(cash_flow)
-                    delta = set([x for x in grid if x < last_pmt])
-                    self.settlement_currencies[curr].update(delta)
-                    self.reval_dates.update(delta)
-
-    def add_reval_date_offset(self, offset, relative_to_settlement=True):
-        # don't add any extra reval dates if this is a touch option
-        if relative_to_settlement:
-            if self.payment_timing != 'Touch':
-                for curr, fixings in self.settlement_currencies.items():
-                    new_dates = [x + pd.DateOffset(days=offset) for x in fixings]
-                    self.reval_dates.update(new_dates)
-        else:
-            fixings = reduce(
-                set.union, [{x + pd.DateOffset(days=ofs) for ofs in offset}
-                            for x in self.reval_dates])
-            self.reval_dates.update(fixings)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -6144,20 +6076,9 @@ class FXBarrierOption(Deal):
         super(FXBarrierOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
 
-    def add_grid_dates(self, parser, base_date, grid):
+    def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out
-        if self.field['Cash_Rebate']:
-            if isinstance(grid, str):
-                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-                self.reval_dates.update(grid_dates)
-                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-            else:
-                # this is called if the grid is fully defined i.e. a set of dates
-                for curr, cash_flow in self.settlement_currencies.items():
-                    last_pmt = max(cash_flow)
-                    delta = set([x for x in grid if x < last_pmt])
-                    self.settlement_currencies[curr].update(delta)
-                    self.reval_dates.update(delta)
+        return bool(self.field['Cash_Rebate'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -6270,21 +6191,10 @@ class FXPartialTimeBarrierOption(Deal):
         super(FXPartialTimeBarrierOption, self).reset()
         self.add_reval_dates({self.field['Expiry_Date'], self.field['Barrier_Limit_Date']}, self.payoff_ccy)
 
-    def add_grid_dates(self, parser, base_date, grid):
+    def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out; an untouched knock-in pays its
         # rebate at expiry, which `reset` already declares
-        if self.field['Cash_Rebate'] and 'Out' in self.field['Barrier_Type']:
-            if isinstance(grid, str):
-                grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
-                self.reval_dates.update(grid_dates)
-                self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
-            else:
-                # this is called if the grid is fully defined i.e. a set of dates
-                for curr, cash_flow in self.settlement_currencies.items():
-                    last_pmt = max(cash_flow)
-                    delta = set([x for x in grid if x < last_pmt])
-                    self.settlement_currencies[curr].update(delta)
-                    self.reval_dates.update(delta)
+        return bool(self.field['Cash_Rebate']) and 'Out' in self.field['Barrier_Type']
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
