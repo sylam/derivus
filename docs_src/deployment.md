@@ -71,7 +71,9 @@ Any host that launches a local stdio server configures the command `DV_MCP` the 
 
 ### The Excel add-in
 
-The add-in is not in the wheel. It runs from a clone of the repository, with xlwings installed and
+The add-in is to be replaced: a desk will reach Excel through worksheets the service writes on
+demand and the MCP binding and the web UI hand over, as the quote sheet already is
+([Roadmap](developer/roadmap.md#designed-not-built)). Until then: the add-in is not in the wheel. It runs from a clone of the repository, with xlwings installed and
 the UDF module set to `excel_integration.xlwings_udfs`. Its module imports the engine and
 `experiments/run_textbook_hedge.py`, so the Excel machine installs derivus as well. The pricing and
 table functions go to the service at `RF_SERVICE_URL`; the solve and portfolio-sheet functions run

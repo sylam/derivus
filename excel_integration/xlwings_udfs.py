@@ -6,7 +6,7 @@ nothing here can be imported without `xlwings` — the client and everything wor
 `service_client.py`, which imports neither xlwings nor derivus.
 
 Pricing goes over HTTP. Solving does not: `RF_SOLVE_*` iterates a pricing run on one changing DEAL
-field, which is the STRUCTURING calculation the roadmap has yet to build; until it exists, each
+field, which no calculation does yet; until one does, each
 iterate is a fresh document and a fresh compile, so the loop stays in process where it costs one
 recompile instead of one recompile plus one round trip. `RF_*_PORTFOLIO` is in process for the
 other standing reason: it builds its job from the sheets through `portfolio_service`, which still

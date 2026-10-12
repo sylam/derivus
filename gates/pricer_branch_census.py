@@ -98,8 +98,8 @@ UNREACHED = {
     # ---- getpartialbarrierpayoff --------------------------------------------------------------------
     ('getpartialbarrierpayoff.partial_barrier_option', 'if eta == 0:  # type B1', 'body'):
         "a window barrier with eta 0 - the Heynen-Kat type-B1 form. No declared Barrier_Type "
-        "produces it (the selector sets eta from Down or Up and nothing else), which is why the "
-        "roadmap could fix this arm's inverted strike selection without any fixture moving.",
+        "produces it (the selector sets eta from Down or Up and nothing else), so no fixture can "
+        "reach this arm.",
     # ---- pv_MC_AutoCallSwap -------------------------------------------------------------------------
     ('pv_MC_AutoCallSwap', 'for flag in latch.fired:', 'body'):
         "the DEBUG reconstruction of a registered autocall latch: nothing runs the autocall at "

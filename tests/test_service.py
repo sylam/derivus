@@ -808,8 +808,8 @@ def test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws(boo
     whose deals all matured gives it no grid to grow: each refuses naming which.
 
     KILLING MUTATION: `RuntimeError: cannot reshape tensor of 0 elements into shape [0, 16, -1]`
-    for the first and `ValueError: max() iterable argument is empty` for the second - the roadmap's
-    three books, dying on the tensor with nothing said about the book.
+    for the first and `ValueError: max() iterable argument is empty` for the second - dying on the
+    tensor with nothing said about the book.
     """
     submitted = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Object': 'CreditMonteCarlo'}}), headers=JSON).json()

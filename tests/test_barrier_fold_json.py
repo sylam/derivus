@@ -377,7 +377,7 @@ def test_a_knocked_out_barrier_walks_its_rebate_s_own_exposure_profile(barrier_t
 
     Each sits beside the same vanilla. Alone, a book whose only deal folded to a static cashflow
     while the factor the original discovered is still simulated does not frame under a credit
-    Monte Carlo (a (1, 1) root against a (T, B) grid) - a roadmap row, not this gate's.
+    Monte Carlo (a (1, 1) root against a (T, B) grid), which is outside this gate.
 
     Killing mutation: the crossing test's direction swapped.
     """

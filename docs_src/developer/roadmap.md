@@ -73,8 +73,11 @@ there.
   budget caps, and screens for the dependency walk and the set-up, which only the MCP binding serves
   today. The Securities screen stays read-only: it names a knot quoted off a drifted or unmapped
   ticker, fixed by a curve row or a seed entry elsewhere.
-- **Excel end-state**: `RF_*_PORTFOLIO` moved to `GET /schema`, after which nothing in
-  `excel_integration/` imports the engine.
+- **Excel through the service, not an add-in**: the xlwings add-in in `excel_integration/` retires,
+  and a desk reaches Excel through worksheets the service writes on demand and the MCP binding and
+  the web UI hand over, the quote sheet (`quote_sheet.py`, `derivus://quote/{id}/sheet`) being the
+  first. The writer is a service verb, the binding staying `requests` and `mcp`; generalising it to
+  Gridcraft, a spreadsheet written in Rust that also runs on Linux, comes after.
 - **`bind=` for payoff-only deal fields**: every deal field is structural today, so `/book/solve`
   recompiles on every iterate, even for a strike. Four candidates stay declined with a citation
   (reset rows and value-dependent leaf sets).

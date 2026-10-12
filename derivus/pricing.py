@@ -951,8 +951,7 @@ def exposure_kink_term(shared, V, n_paths_axis=1):
             'need; or drop the position that pins the net. A MARGIN PERIOD or a transfer THRESHOLD '
             'is what would smear an atom into a density, but that is not a book you can price here '
             'yet - a collateralised set registers an MTA boundary correction and is refused one '
-            'step earlier - and estimating through one is the conditional-p mixture on the roadmap '
-            '(Second-order flux at a JUMP).'.format(
+            'step earlier.'.format(
                 rows, worst_row, reading, ladder, climb, span))
 
     u = V - Vbar
@@ -2789,14 +2788,10 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
     BOUNDARY AAD: the knock-out is decided on OUTER scenario state, so the whole latch is built
     outside the node - gaps signed so ``gap > 0`` means CROSSED, ``untriggered`` the alive branch on
-    a weight the observed indicators never zero, ``triggered`` ZEROS. A deal whose settled prefix
-    already breached registers nothing, its death being data - ``Prefix_Breached`` is that fold
-    over the schedule, not a flag the document declares.
-
-    DECLARED LIMITATION: the zero dead branch omits the pending settlements a knocked deal still
-    owes - exact wherever the settlement lag is shorter than the fixing spacing, NOT one-signed on a
-    leveraged deal, and confined to cells the latch calls dead (magnitudes in roadmap.md). An exact
-    branch would be a per-decision head profile, a fourth BoundarySet shape.
+    a weight the observed indicators never zero, ``triggered`` ZEROS, and per row the pending head -
+    the settlements a knocked deal still owes - which the set applies wherever the latch says dead.
+    A deal whose settled prefix already breached registers nothing, its death being data -
+    ``Prefix_Breached`` is that fold over the schedule, not a flag the document declares.
 
     THE SETTLED LEDGER IS DECLARED PER FIXING. A stream cannot declare through ``settles``, which
     states an identity - the row pays out everything the deal is still worth - that reads a
@@ -4186,10 +4181,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     and the level the payoff crosses zero otherwise. That strip's first interval is measured from
     the PATH's own prefix, so a leg whose barrier opens mid-deal still reads its own total variance
     from today. The put then walks, survives and pays in its own world off the SAME uniforms, so
-    the stream is untouched and no other document moves. Reading ONE moneyness for the whole path
-    priced a 70% put at the ATM vol: 33% on an NKY structure against its own six legs,
-    and a flat surface agreeing to 1% is what said the fold was fine and the read was not
-    (roadmap.md). A SMILE-LESS model has no better answer than a world per strike; the LogVar2FJ
+    the stream is untouched and no other document moves. A SMILE-LESS model has no better answer than a world per strike; the LogVar2FJ
     arm carries one smile in one walk and is the mark of record; under a kit the leg reads the
     walk's own law, bit for bit what it read before.
 

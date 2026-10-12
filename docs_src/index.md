@@ -57,8 +57,11 @@ no service at all. [Deployment and Operations](deployment.md) describes each box
 
 ## What is ready and what is not
 
-Base valuation and the credit Monte Carlo's exposure, CVA and FVA are the library's production
-valuation paths, the ones every other part of it reconciles against. Three parts are not at that
+The base valuation and the credit Monte Carlo - marks, exposure, CVA and FVA - are mature: they
+are the production valuation paths every other part of the library reconciles against. The
+hedging stack is being refined and extended, and its simulation (`HedgeMonteCarlo`) and solver are
+where the research is; a job stays a JSON document whatever changes behind it, and the MCP binding
+carries a client across, so that work changes no interface. Two parts are not at the production
 standard:
 
 - The collateral valuation adjustment (CollVA) and the initial margin add-on in the credit Monte
@@ -66,8 +69,6 @@ standard:
   their numbers.
 - The `SIMM` calculation writes the sensitivities file; the margin aggregated from it is not
   computed by the library.
-- The hedging simulation (`HedgeMonteCarlo`) and its solver are a research stack whose design is
-  still open.
 
 Everything known to be wrong or limited elsewhere is listed on [Model Limitations](limitations.md).
 
@@ -86,4 +87,6 @@ Everything known to be wrong or limited elsewhere is listed on [Model Limitation
 Derivus is free for **noncommercial** use under the
 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0):
 research, personal projects, education and evaluation are all in scope, and the source is open to
-read, run and validate. Commercial use requires a separate licence — contact the author.
+read, run and validate. Commercial use requires a separate licence, and a ninety-day commercial
+evaluation is available beside it ([LICENSE](https://github.com/sylam/derivus/blob/main/LICENSE));
+for either, contact the author.

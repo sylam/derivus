@@ -61,7 +61,7 @@ so `=RF_GET_TABLE("cashflows/ZAR")`.
 ## Solve mode stays in process
 
 `RF_SOLVE_JSON` / `RF_SOLVE_PATH` iterate a pricing run on one changing **deal** field (a strike, a
-margin) through `scipy.optimize`, which is the STRUCTURING calculation the roadmap has yet to build.
+margin) through `scipy.optimize`, which no calculation does yet.
 A deal field is structural today, so every iterate is a fresh document and a fresh compile: pushing
 the loop through HTTP would add a round trip per iterate and buy nothing. When the structuring calc
 lands it becomes a `Calculation.Object` like any other, submitted through the same `/execute`.
@@ -111,5 +111,5 @@ client.fetch_table(run['result_id'], 'mtm', offset=0, limit=100)
 because it cannot be imported without Excel installed and so cannot be tested. Everything worth
 gating is in `service_client.py`, against the real app — see `tests/test_service_client.py`.
 
-Solace returns later as a second **transport** in front of the same verbs, per the roadmap; it is
-not a second queue, and nothing in this folder waits for it.
+A second transport in front of the same verbs would not be a second queue, and nothing in this
+folder waits for one.

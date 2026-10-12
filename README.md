@@ -46,16 +46,17 @@ calc, results = cx.run_job()
 ```
 
 The JSON is the whole contract — every feature is reachable from it, and a user script should never
-need to import derivus internals. Six console scripts are installed:
+need to import derivus internals. Seven console scripts are installed:
 
 | | |
 | --- | --- |
 | `DV_Batch` | CVA, CollVA and FVA over a folder of netting sets |
-| `DV_Bootstrap` | calibration (currently Hull-White 2-factor from swaption vols) |
+| `DV_Bootstrap` | the market calibrations over a market data file - one day or a range of them - in parallel workers, `--families` naming which `Bootstrapper Configuration` entries run |
 | `DV_Docs` | builds `./docs` from `./docs_src` |
 | `DV_Service` | the HTTP service - the live book, the web UI, the verbs every client rides |
 | `DV_MCP` | the MCP binding over stdio, for an LLM host (`derivus[mcp]`) |
 | `DV_Bloomberg` | builds and re-verifies a Bloomberg security map on a terminal workstation |
+| `DV_Spine` | the book of record: mint, verify, checkpoint and replicate a home, declare its seats, policies and portfolios (`derivus[enterprise]`) |
 
 `DV_Service` also serves a **desk** over the same engine: a live book that validates before it
 writes, and named structures — a collar, a seagull, a forward extra — quoted two-sided in the
@@ -70,6 +71,7 @@ client's frame, solved server-side and booked as the desk's mirror through `/boo
 | `derivus/` | the library |
 | `derivus_bloomberg/` | the Bloomberg adapter: `DV_Bloomberg` discovery, the evidence-carrying security map, the FX vol fetch |
 | `derivus_mcp/` | the MCP binding — a thin HTTP client of `DV_Service`, never the engine |
+| `derivus_spine/` | the book of record — the append-only, verified log of bookings, markets and closes the engine prices against |
 | `web/` | the web UI, a client of the same verbs; a release wheel ships its build |
 | `tests/` | the suite |
 | `tests/fixtures/` | every input the suite needs — configs and small calibrated market data |
@@ -77,7 +79,7 @@ client's frame, solved server-side and booked as the desk's mirror through `/boo
 | `docs_src/` | documentation sources, including the developer section |
 | `experiments/` | research and validation drivers; end-user scripts that only use `load_json` / `run_job` |
 | `notebooks/` | exploratory notebooks |
-| `excel_integration/` | xlwings add-in, and the HTTP client it talks to `DV_Service` through |
+| `excel_integration/` | the xlwings add-in, to be replaced by worksheets the MCP binding generates on demand |
 | `data/` | *untracked* — where you drop real market data |
 | `artifacts/` | *untracked* — run outputs, fits, decks |
 
@@ -95,9 +97,9 @@ supply your own.
 
 The suite needs nothing from you. Its inputs live in `tests/fixtures/` and are calibrated
 *parameters* — HMM transition matrices, VAR coefficients, GARCH fits — because a fitted statistic
-is not the series it was fitted to. A fresh clone runs the whole suite green. The only tests that
-skip are the ones whose precondition this box cannot meet — `torch.compile` with no backend for
-its device, and one CRN gate calibrated under CUDA — and each names it.
+is not the series it was fitted to. A fresh clone runs the whole suite green; a test skips only
+where its precondition is missing - a GPU, a terminal, an optional package - and names it.
+[`docs_src/validating.md`](docs_src/validating.md) lists them and says how to run the evidence.
 
 The platinum drivers under `experiments/` and `gates/` do want real data: put a CSV at
 `data/pl_exp.csv` with a date index and a `CommodityPrice.PLATINUM` column.
@@ -108,9 +110,10 @@ The platinum drivers under `experiments/` and `gates/` do want real data: put a 
 Build it locally with `DV_Docs`, or read the sources under `docs_src/`.
 [`docs_src/getting_started.md`](docs_src/getting_started.md) is the working stack in fifteen
 minutes — the service with a live book, the web UI, Claude over MCP, and a Bloomberg quote source
-ticking the market. The developer section
-(`docs_src/developer/`) is the internal view: architecture, the calculation lifecycle, the
-dependency system, the resolver layer and the house conventions.
+ticking the market. [`docs_src/deployment.md`](docs_src/deployment.md) is for whoever runs it; a
+model validator starts at [`docs_src/validating.md`](docs_src/validating.md) and
+[`docs_src/limitations.md`](docs_src/limitations.md). The developer section (`docs_src/developer/`)
+is the internal view for whoever builds on it, and an agent starts at [`AGENTS.md`](AGENTS.md).
 
 ## Licence
 
@@ -118,5 +121,5 @@ dependency system, the resolver layer and the house conventions.
 free for any noncommercial purpose, including research, teaching and personal projects — with one
 additional permission, stated in [LICENSE](LICENSE): a single ninety-day internal evaluation for a
 commercial purpose, not in production and not relied upon for any decision on positions held for
-commercial gain. Commercial use beyond that requires a separate licence from the licensor; ask
-through the project repository.
+commercial gain. Commercial use beyond that requires a separate licence; for either, contact the
+author through the project repository.

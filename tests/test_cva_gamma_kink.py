@@ -375,7 +375,7 @@ def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path)
         _run(_job(children=book, hessian='Yes', paths=1024), tmp_path, 'decision')
     message = str(refusal.value)
     assert 'AC1' in message, 'the refusal must name the registering deal: ' + message
-    assert 'Second-order flux at a JUMP' in message, message
+    assert 'keep grad_cva' in message, 'the refusal must name its remedy: ' + message
 
     survives = _run(_job(children=book, hessian='No', paths=1024), tmp_path, 'decision_first')
     assert survives['cva'] > 0.0, 'the same book must still price at first order'

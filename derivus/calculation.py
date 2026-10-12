@@ -1866,9 +1866,7 @@ class Credit_Monte_Carlo(Calculation):
                             'plausible-looking cross-gamma rather than a failure, which is the '
                             'failure mode this refusal exists to prevent. Two remedies: drop '
                             'Hessian and keep grad_cva, which is unaffected, or ask for the '
-                            'second-order block on a book without decision products. The estimator '
-                            'that will answer this is the conditional-p mixture on the roadmap '
-                            '(Second-order flux at a JUMP), pinned to the stride.'.format(
+                            'second-order block on a book without decision products.'.format(
                                 ', '.join(sorted({str(b.deal) for b in shared_mem.boundary_sets}))))
                     cva_for_aad = tensors['cva']
                     if shared_mem.boundary_sets:
