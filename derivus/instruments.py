@@ -223,7 +223,7 @@ def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vani
 
     A t0-folded state registers no boundary set, so nothing here reaches the sensitivity
     architecture. Continuous monitoring (no `Barrier_Dates`) needs a daily bar series to fold
-    over; hydrating one is spine increment 4's, so it is returned untouched.
+    over, which nothing files yet, so it is returned untouched.
     """
     rows = deal.field.get('Barrier_Dates', [])
     if not rows:
@@ -289,7 +289,7 @@ def get_inflation_index_name(fieldname, all_factors):
 
 
 def get_inflation_index_objects(inflation_name, index_name, all_factors):
-    """Read the Name of the Price Index price factor linked to this inflation index"""
+    """Read the inflation rate and Price Index factor objects behind an inflation index"""
     inflation = all_factors.get(utils.Factor('InflationRate', inflation_name))
     inflation_factor = inflation.factor if hasattr(inflation, 'factor') else inflation
     index = all_factors.get(utils.Factor('PriceIndex', index_name))
@@ -454,7 +454,7 @@ def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):
 
 
 def get_equity_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
-    """Read the spot of the FX rate price factor"""
+    """Read the spot of the equity price factor"""
     return calc_factor_value(
         utils.Factor('EquityPrice', fieldname), static_offsets, stochastic_offsets, all_factors)[0]
 
@@ -509,16 +509,15 @@ def get_price_index_factor(fieldname, static_offsets, stochastic_offsets):
 
 
 def get_survival_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the inflation rate price factor"""
+    """Read the index of the survival probability price factor"""
     return [calc_factor_index(utils.Factor('SurvivalProb', fieldname), static_offsets,
                               stochastic_offsets, all_tenors)]
 
 
 def get_inflation_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the inflation rate price factor"""
-    return [calc_factor_index(utils.Factor('InflationRate', fieldname[:x]),
-                              static_offsets, stochastic_offsets, all_tenors)
-            for x in range(1, len(fieldname) + 1)]
+    """Read the index of the inflation rate price factor (a curve + its prefix chain)"""
+    return calc_factor_code_chain('InflationRate', 'InflationRate', fieldname,
+                                  static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_vol_factor(factor_type, fieldname, static_offsets, stochastic_offsets, all_tenors):
@@ -633,12 +632,6 @@ def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets
     pricefactor = 'InterestRateVol' if pd.Timestamp('1900-01-01') + tenor <= pd.Timestamp('1900-01-01') + pd.DateOffset(
         years=1) else 'InterestYieldVol'
     return [calc_factor_index(utils.Factor(pricefactor, fieldname), static_offsets,
-                              stochastic_offsets, all_tenors)]
-
-
-def get_forward_price_vol_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the forward vol price factor"""
-    return [calc_factor_index(utils.Factor('ForwardPriceVol', fieldname), static_offsets,
                               stochastic_offsets, all_tenors)]
 
 
@@ -852,12 +845,13 @@ class Deal(object):
         return {'mtm': self.calculate(shared, time_grid, deal_data)}
 
     def check_option_data(self, field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
-                          correlation):
+                          correlation, vol_field=None):
         """Set the FX vol and implied-correlation dependencies of a compo or quanto payoff, paid in
         `field['Payoff_Currency']` on an underlying quoted in `field['Currency']`.
 
         `correlation(field, all_factors)` names the family's own pair and the sign it is read with -
-        `equity_fx_correlation`, `reference_fx_correlation`.
+        `equity_fx_correlation`, `reference_fx_correlation`. `vol_field` names the field holding the
+        equity surface a deal pricing no option of its own reads for the quanto carry's ATM vol.
         """
         # the type's own reading of `Payoff_Type`: stated, else the convention it declares, else
         # Standard for a type declaring none
@@ -879,6 +873,9 @@ class Deal(object):
                 # the compo is monitored on S*X, so a bridge needs the cross's variance too
                 field_index['Compo_Underlying'] = get_cross_barrier_underlying(
                     (field['Currency'], field['Payoff_Currency']), stochastic_offsets)
+            if vol_field is not None:
+                field_index['Volatility'] = get_vol_factor(
+                    'EquityPriceVol', field[vol_field], static_offsets, stochastic_offsets, all_tenors)
         else:
             field_index['Check_Payoff_Type'] = False
 
@@ -2306,9 +2303,6 @@ class StructuredDeal(Deal):
         'There is no direction: a child carries its own **Buy_Sell**. **Currency** names an FX factor',
         'the deal depends on and does not convert the sum. **Net_Cashflows** is accepted and has no',
         'effect.'])
-
-    def reset(self, calendars):
-        super(StructuredDeal, self).reset()
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
         if node_children is not None:
@@ -5547,11 +5541,8 @@ class EquityForwardDeal(Deal):
             }
 
         self.check_option_data(
-            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
-        if field_index['Check_Payoff_Type']:
-            # the quanto's carry reads the equity's at-the-money vol
-            field_index['Volatility'] = get_vol_factor(
-                'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors)
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation,
+            vol_field='Equity_Volatility')
 
         return field_index
 
@@ -5760,11 +5751,8 @@ class EquitySwapletListDeal(Deal):
             field, Currency=get_equity_component(field['Equity'], all_factors).get_currency(),
             Payoff_Currency=field['Currency'])
         self.check_option_data(
-            pair, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
-        if field_index['Check_Payoff_Type']:
-            # the quanto's carry reads the equity's at-the-money vol
-            field_index['Volatility'] = get_vol_factor(
-                'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors)
+            pair, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation,
+            vol_field='Equity_Volatility')
         refuse_reinvested_dividends(
             self.field['Cashflows']['Items'], field_index, self.field.get('Reference'), 'EquitySwapletListDeal')
 
@@ -5917,11 +5905,8 @@ class EquitySwapLeg(Deal):
             field['cashflow'], current_price, self.field.get('Settlement_Days', 0) * bus_day)
 
         self.check_option_data(
-            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation)
-        if field_index['Check_Payoff_Type']:
-            # the quanto's carry reads the equity's at-the-money vol
-            field_index['Volatility'] = get_vol_factor(
-                'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors)
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation,
+            vol_field='Equity_Volatility')
         refuse_reinvested_dividends(
             field['cashflow']['Items'], field_index, self.field.get('Reference'), 'EquitySwapLeg')
 
