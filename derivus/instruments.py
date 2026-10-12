@@ -3186,6 +3186,9 @@ class CapDeal(Deal):
         F('Principal', 'Float', default=0.0, sized=True)
     ])]
 
+    #: what each period is an option on: the strike the schedule reads and the pricer it takes
+    optionlet = ('Cap_Rate', pricing.pricer_cap)
+
     factor_fields = {'Currency': ['FxRate'],
                      'Discount_Rate': ['InterestRate'],
                      'Forecast_Rate': ['InterestRate'],
@@ -3204,7 +3207,7 @@ class CapDeal(Deal):
         self.isQuanto = None
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # a cap on its optionlet list takes the list's dates; stated by its terms it keeps its own
+        # a cap or floor on its optionlet list takes the list's dates; stated by its terms it keeps its own
         if node_children is not None:
             super(CapDeal, self).reset()
             for currency, dates in node_settlements.items():
@@ -3226,6 +3229,7 @@ class CapDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
+        strike, pricer = self.optionlet
         field = {'Currency': utils.check_rate_name(self.field['Currency'])}
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
             field['Currency']
@@ -3256,11 +3260,11 @@ class CapDeal(Deal):
                 base_date, time_grid, self.resetdates,
                 (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                 Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
-                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Cap_Rate'] / 100.0,
+                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
                 self.field.get('Reference'))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
-                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_cap)
+                AveragingMethod=self.field['Averaging_Method'], Model=pricer)
 
         return field_index
 
@@ -3268,9 +3272,9 @@ class CapDeal(Deal):
         return pricing.pv_float_leg(shared, time_grid, deal_data)
 
 
-class FloorDeal(Deal):
-    accepts_children = True
+class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
+    # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
@@ -3307,86 +3311,10 @@ class FloorDeal(Deal):
         F('Principal', 'Float', default=0.0, sized=True)
     ])]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Forecast_Rate': ['InterestRate'],
-                     'Forecast_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
+    optionlet = ('Floor_Rate', pricing.pricer_floor)
 
     documentation = (
         'Interest Rates', ['A series of floorlets as described [here](#capletsfloorlets)'])
-
-    def reset(self, calendars):
-        super(FloorDeal, self).reset()
-        self.resetdates = utils.generate_dates_backward(
-            self.field['Maturity_Date'], self.field['Effective_Date'], self.field['Payment_Interval'])
-        self.add_reval_dates(self.resetdates, self.field['Currency'])
-        # this swap could be quantoed
-        self.isQuanto = None
-
-    def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # a floor on its optionlet list takes the list's dates; stated by its terms it keeps its own
-        if node_children is not None:
-            super(FloorDeal, self).reset()
-            for currency, dates in node_settlements.items():
-                self.add_reval_dates(dates, currency)
-        return super(FloorDeal, self).finalize_dates(
-            parser, base_date, grid, node_children, node_resets, node_settlements)
-
-    def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
-        mtm_list = []
-
-        for child in child_dependencies:
-            # make the child price to the same grid as the parent
-            child.Time_dep.assign(deal_data.Time_dep)
-            mtm_list.append(child.Instrument.calculate(shared, time_grid, child))
-
-        mtm = torch.sum(torch.stack(mtm_list), dim=0)
-
-        return pricing.interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=False)
-
-    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
-                          calendars):
-        field = {'Currency': utils.check_rate_name(self.field['Currency'])}
-        field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate']) if self.field['Discount_Rate'] else \
-            field['Currency']
-        field['Forecast_Rate'] = utils.check_rate_name(self.field['Forecast_Rate']) if self.field['Forecast_Rate'] else \
-            field['Discount_Rate']
-        field['Forecast_Rate_Volatility'] = utils.check_rate_name(self.field['Forecast_Rate_Volatility'])
-
-        field_index = {}
-        Principal = self.field['Principal']
-        Amortisation = self.field.get('Amortisation')
-        Known_Rates = self.field.get('Known_Rates')
-
-        self.isQuanto = get_interest_rate_currency(field['Forecast_Rate'], all_factors) != field['Currency']
-        if self.isQuanto:
-            # TODO - Deal with Quanto Interest Rate swaps
-            pass
-        else:
-            field_index['Forward'] = get_interest_factor(
-                field['Forecast_Rate'], static_offsets, stochastic_offsets, all_tenors)
-            field_index['Discount'] = get_interest_factor(
-                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors)
-            field_index['Currency'] = get_fx_and_zero_rate_factor(
-                field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
-            field_index['VolSurface'] = get_interest_vol_factor(
-                field['Forecast_Rate_Volatility'], self.field['Payment_Interval'],
-                static_offsets, stochastic_offsets, all_tenors)
-            field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
-                base_date, time_grid, self.resetdates,
-                (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
-                Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
-                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field['Floor_Rate'] / 100.0,
-                self.field.get('Reference'))
-            field_index.update(
-                SettleCurrency=self.field['Currency'], CompoundingMethod='None',
-                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_floor)
-
-        return field_index
-
-    def generate(self, shared, time_grid, deal_data):
-        return pricing.pv_float_leg(shared, time_grid, deal_data)
 
 
 class SwaptionDeal(Deal):
@@ -4147,6 +4075,7 @@ class EquityOptionDeal(Deal):
 
     def __init__(self, params, valuation_options):
         super(EquityOptionDeal, self).__init__(params, valuation_options)
+        # the binary subclass declares no Option_Style, so its absence reads European here
         self.path_dependent = self.field.get('Option_Style', 'European') == 'American'
 
     def reset(self, calendars):
@@ -4155,8 +4084,9 @@ class EquityOptionDeal(Deal):
         self.add_settlement_dates()
 
     def pays_on_grid(self):
-        # the option is monitored for potential early exercise
-        return True
+        # only an American option is path dependent: it can be exercised, and so settle, on any
+        # grid date
+        return self.path_dependent
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
