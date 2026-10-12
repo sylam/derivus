@@ -22,7 +22,7 @@ A declared field on an `ObservedBasis` block naming the next link of a chain tha
 
 Each member also declares **`Chained_Lag`**, the rows back at which its law references its link.
 
-- **Same-row** (lag 0, the default) enters the graph as a real edge, because positional depth cannot order it: `topological_sort` emits whole chains **within a pass in insertion order**, and a member pulled by the declaration (always inserted last) would leapfrog its depth, so a book entering from the same-row side alone would generate the bridge before its source.
+- **Same-row** (lag 0, the default) enters the graph as a real edge, because positional depth cannot order it: within a pass the sort visits nodes in factor order, which need not put a link before the member reading it, so without the edge a book entering from the same-row side alone could generate the bridge before its source.
 - **Lagged** is the chain's day boundary: the member steps off the link's *previous* row, the acyclic bridge factorization carries the dependency, no edge needed.
 
 A closed chain must lag somewhere; all same-row is a same-instant loop and refuses in discovery, named, before the sort would refuse its cycle namelessly. `ChainedBasisModel` refuses a lagged link of its own: a bridge reads its link on the same row. **Held by** `tests/test_chained_basis.py::test_the_declaration_pulls_the_partner_and_the_omitted_field_pulls_nothing` (the cross-branch pair `LBMA_AM.PM ↔ LBMA_AM.CME`, which no positional rule can pull), `::test_a_chain_that_cannot_close_refuses_by_name` (the four refusals) and `::test_the_same_row_entry_orders_its_link_first` (entry from `LBMA_AM.PM.CME` alone; killing mutation: the lag-0 edge dropped).
@@ -55,7 +55,7 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 ## Ordering — `topological_sort`
 
-Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass variant of Kahn's algorithm [@kahn1962] that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set — so an edge naming a node absent from the graph counts as resolved. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
+Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort(..., canonical=True)`): a repeated-pass variant of Kahn's algorithm [@kahn1962] that, **within a pass, visits nodes in sorted `Factor` order** (type, then name) and moves every node whose edges all point outside the still-unsorted set — so an edge naming a node absent from the graph counts as resolved. Dependencies land first, dependents follow, cycles raise `RuntimeError`. A conditional factor's dependencies are the union over every occurrence the walk meets, so the graph does not depend on which deal is walked last.
 
 `traverse_dependents` (`config.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
 
@@ -71,10 +71,10 @@ Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `t
 
 ## RNG ordering {#rng-ordering}
 
-!!! danger "Invariant (WARNING) — insertion order into `dependent_factors` is load-bearing for reproducibility"
-    `topological_sort` tie-breaks equal-depth factors by **insertion order**. That order flows through `find_models` (`setdefault`) → `stoch_factors` → `get_cholesky_decomp`'s `process_ofs` → the RNG-substream / correlation column each process reads from `t_random_numbers`. Permuting equal-depth factors — by changing **deal-walk order, `factor_fields` dict order, or `dependant_fields` list order** — moves realized results bit-for-bit. **Preserve all three, or treat any reordering as a results-changing event and say so in the commit.** Not gated: nothing pins the order itself; a reordering shows only where a test banks a simulated number to the bit.
+The factor order discovery returns flows through `find_models` (`setdefault`) → `stoch_factors` → `get_cholesky_decomp`'s `process_ofs`, the random rows each process reads from `t_random_numbers`, and through the generate order, which is the order processes draw the quasi-random `quasi_rng` stream in. The canonical sort makes all of it a function of the factor graph: the order deals are booked in, the order a type lists its `factor_fields` and the order a registry lists `dependant_fields` move no draw. **Held by** `tests/test_chained_basis.py::test_the_order_factors_draw_in_is_the_graph_s_not_the_book_s` (killing mutation: each pass visited in insertion order).
 
-    A permutation is statistically harmless (the cholesky rows permute consistently, so the joint distribution is identical) and the same JSON reproduces the same order, so user-facing reproducibility holds for free. What ordering stability buys is the developer oracle: bitwise "no reported number moved" verifies a refactor in minutes rather than by statistical comparison, which is why the replay contract keys on `engine_version`. The quasi-random `quasi_rng` stream (the HMM regime path, GARCH, the linked basis and LogVar2FJ's extra mixers) is a second, parallel surface whose position `reset()` never rewinds; every stream is listed on [Calc Lifecycle](calc_lifecycle.md#rng-substream-ordering-the-reproducibility-surface).
+!!! warning "Invariant — a change to the factor graph can move other factors' draws"
+    Adding or removing a factor, renaming one, or changing a dependency can change which rows other simulated factors read, moving realized results bit for bit while the joint law is unchanged (the Cholesky rows permute consistently). That is a results-changing event: say so in the commit. What order stability buys is the developer oracle - bitwise "no reported number moved" verifies a refactor in minutes rather than by statistical comparison, which is why the replay tuple keys on `engine_version`. Every stream is listed on [Calc Lifecycle](calc_lifecycle.md#rng-substream-ordering-the-reproducibility-surface).
 
 ## The process protocol {#the-process-protocol}
 

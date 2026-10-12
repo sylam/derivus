@@ -106,8 +106,9 @@ there.
   suite (the curve read's blend reaches 83%). The full suite runs at campaign boundaries. A rename or
   a deletion also runs `python gates/doc_symbols.py`
   ([Conventions](conventions.md#what-a-landing-runs)).
-- **The standing readings every landing runs**: sixteen banked autocall-campaign documents under the
-  lognormal and Hull-White laws, 5,471 floats bit for bit, and one lognormal target redemption
+- **The standing readings every landing runs**: sixteen banked documents of the autocall, TARF and
+  accumulator campaigns under the lognormal and Hull-White laws, every float they report bit for
+  bit, and one lognormal target redemption
   forward to the bit (`-0x1.2b36cda3bf2d4p+5` under the default estimator; the crisp path, one
   `'No'` away, reads `-0x1.2c48f36318e38p+5`). The documents, banks and scripts live outside the
   repository, so a clone cannot rerun them; moving them under `gates/` waits on a check that none

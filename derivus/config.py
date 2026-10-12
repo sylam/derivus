@@ -1111,7 +1111,11 @@ class Config(object):
 
                 def add_rates_for_factor(factor):
                     try:
-                        rates_to_add.update(get_rates(factor, instrument))
+                        # a conditional factor is re-read at every occurrence, and its dependencies
+                        # are the union of all of them rather than the last deal's
+                        for found, edges in get_rates(factor, instrument).items():
+                            known = rates_to_add.setdefault(found, [])
+                            known.extend(edge for edge in edges if edge not in known)
                         return
                     except KeyError as e:
                         # the key names the block the lookup wanted - this factor's own, or that
@@ -1253,7 +1257,9 @@ class Config(object):
                 if k.type == 'FxRate' and k != base_factor and base_factor not in v:
                     v.append(base_factor)
 
-            sorted_factors = utils.topological_sort(dependent_factors)
+            # canonical: the order processes draw their random rows in is a function of the factor
+            # graph, never of the order deals, fields or registries happen to list them
+            sorted_factors = utils.topological_sort(dependent_factors, canonical=True)
             v_max = max(reset_dates)
             for k, v in missing_tenors.items():
                 dependent_factor_tenors.setdefault(k, set()).update(min(x, v_max) for x in v)

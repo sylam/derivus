@@ -5358,9 +5358,10 @@ def hermite_knots(t):
 
 # Graph operations - needed for dependency solving
 
-def topological_sort(graph_unsorted):
+def topological_sort(graph_unsorted, canonical=False):
     """Move each node whose edges are all resolved onto the sorted sequence, repeatedly. DESTROYS
-    `graph_unsorted` and returns the sorted keys.
+    `graph_unsorted` and returns the sorted keys. Each pass visits the nodes in insertion order, or
+    `canonical`, in their own sorted order, so the result is a function of the graph alone.
     """
 
     graph_sorted = []
@@ -5369,7 +5370,7 @@ def topological_sort(graph_unsorted):
     while graph_unsorted:
 
         acyclic = False
-        for node, edges in list(graph_unsorted.items()):
+        for node, edges in (sorted(graph_unsorted.items()) if canonical else list(graph_unsorted.items())):
             for edge in edges:
                 if edge in graph_unsorted:
                     break

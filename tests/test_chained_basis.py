@@ -150,6 +150,25 @@ def test_a_composed_fx_link_orders_its_chain_before_the_factor_that_reads_it():
     assert order.index(curve) < order.index(head) < order.index(tail) < order.index(commodity)
 
 
+def test_the_order_factors_draw_in_is_the_graph_s_not_the_book_s():
+    """Two futures on two spots of one depth, booked in both orders, discover the same factor
+    order: the random rows each simulated factor reads are assigned in that order, so a book's
+    draws cannot depend on how its deals happen to be listed.
+
+    Killing mutation: the sort visiting each pass in insertion order - the two books then order
+    the spots as each lists them."""
+    def two(first, second):
+        world = _world('LBMA_AM.CME', chained=False)
+        factors = world['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+        factors['CommodityPrice.ALUMINIUM'] = dict(factors['CommodityPrice.LBMA_AM'], Spot=2400.0)
+        children = world['Calc']['Deals']['Deals']['Children'][0]['Children']
+        future = children[0]['Instrument']['.Deal']
+        children[:] = [{'Instrument': {'.Deal': dict(future, Reference=name, Commodity=name)}}
+                       for name in (first, second)]
+        return list(_discover(world))
+    assert two('LBMA_AM', 'ALUMINIUM') == two('ALUMINIUM', 'LBMA_AM')
+
+
 def test_the_same_row_entry_orders_its_link_first():
     """The production book enters from the same-row side only, so its link is pulled last and
     positional depth cannot order it - the sort emits whole chains within a pass in insertion

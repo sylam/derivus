@@ -121,8 +121,8 @@ compo correlation under common random numbers (`Correlation_Bump`, 0.025).
 
 ## Random streams {#rng-substream-ordering-the-reproducibility-surface}
 
-`process_ofs` follows the topological order; [Dependency System](dependency_system.md#rng-ordering)
-gives its tie-breaks and why it is held stable.
+`process_ofs` follows discovery's canonical order, a function of the factor graph alone;
+[Dependency System](dependency_system.md#rng-ordering) says how and what moves it.
 
 | stream | seeded by | read by |
 | --- | --- | --- |
