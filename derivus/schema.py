@@ -958,6 +958,23 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
 
 #: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
 #: pays, a no-touch paying at expiry alone.
+#: What a one-touch and a no-touch on a commodity reference price both are - the equity touch's
+#: terms on the reference's fixing, paid in `Currency`.
+COMMODITY_TOUCH = own('CommodityOneTouchOption', [
+    F('Currency', 'Text', default=''),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+    F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
+    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
+    F('Barrier_Price', 'Float', default=0),
+    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
+    F('Reference_Type', 'Text', default='', obj='Tuple'),
+    F('Reference_Volatility', 'Text', default='', obj='Tuple')
+])
+
 FX_TOUCH = own('FXOneTouchOption', [
     F('Payoff_Currency', 'Text', default='', convention=True),
     F('Underlying_Currency', 'Text', default=''),
@@ -1348,7 +1365,8 @@ mapping = {
                  'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
             'New Energy Derivative':
                 ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
-                 'CommodityDigitalOption', 'CommodityForwardDeal', 'CommodityFutureDeal',
+                 'CommodityDigitalOption', 'CommodityOneTouchOption', 'CommodityNoTouchOption',
+                 'CommodityForwardDeal', 'CommodityFutureDeal',
                  'CommodityAveragePriceSwapDeal'],
             'New Equity Derivative':
                 ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',

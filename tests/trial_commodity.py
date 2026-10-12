@@ -1,5 +1,5 @@
-"""Commodity and energy - forwards, futures, average-price swaps, the energy option and both energy
-legs, as `tests/test_position_scaling.py` trials them."""
+"""Commodity and energy - forwards, futures, average-price swaps, the energy option, both energy
+legs and the touches, as `tests/test_position_scaling.py` trials them."""
 
 import pandas as pd
 
@@ -27,6 +27,9 @@ def paid(n):
 METAL = {'Commodity': 'METAL', 'Currency': 'USD', 'Discount_Rate': 'USD'}
 FUEL = {'Currency': 'USD', 'Discount_Rate': 'USD', 'Sampling_Type': 'FUEL',
         'FX_Sampling_Type': '', 'Reference_Type': 'FUEL'}
+TOUCH = {'Currency': 'USD', 'Discount_Rate': 'USD', 'Reference_Type': 'FUEL',
+         'Reference_Volatility': 'FUEL', 'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0,
+         'Barrier_Type': 'Up', 'Barrier_Price': 83.0}
 FUTURE = dict(METAL, Object='CommodityFutureDeal', Maturity_Date=month(6), Repo_Rate='USD',
               Carry='METAL_CARRY')
 
@@ -54,6 +57,8 @@ DEALS = [
      'Discount_Rate': 'USD', 'Reference_Type': 'FUEL', 'Reference_Volatility': 'FUEL',
      'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Expiry_Date': E, 'Strike_Price': 82.0,
      'Payoff': 25_000.0},
+    dict(TOUCH, Object='CommodityOneTouchOption', Reference='FUEL_OT'),
+    dict(TOUCH, Object='CommodityNoTouchOption', Reference='FUEL_NT'),
 ]
 
 FACTORS = {

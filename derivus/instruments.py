@@ -18,7 +18,8 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_settlements, settlement_days,
-    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT, FX_TOUCH,
+    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
+    FX_TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -4621,6 +4622,15 @@ class TouchLifecycle:
     def pays_on_grid(self):
         return self.payment_timing == 'Touch'
 
+    def barrier_monitoring(self, base_date):
+        """The Broadie-Glasserman-Kou shift's spacing term: `Barrier_Dates`' mean gap where a type
+        declares and states them, else `Barrier_Monitoring_Frequency` (`0M` continuous)."""
+        # NOT a monitoring schedule the pricer walks: the touch is monitored CONTINUOUSLY and the
+        # dates only estimate the spacing the continuity correction is sized on
+        dates = self.field.get('Barrier_Dates', [])
+        days = np.mean([x.days for x in np.diff(sorted(set(dates)))]) if dates else             (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days
+        return 0.5826 * np.sqrt(days / 365.0)
+
     def add_reval_date_offset(self, offset, relative_to_settlement=True):
         # a touch already pays on the grid, so it takes no offset dates past its settlements
         if relative_to_settlement and self.payment_timing == 'Touch':
@@ -4679,17 +4689,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
             'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
             'Expiry': (self.field['Expiry_Date'] - base_date).days}
 
-        if self.field.get('Barrier_Dates', []):
-            # NOT a monitoring schedule the pricer walks: this deal is monitored CONTINUOUSLY and
-            # the dates only estimate the spacing the continuity correction is sized on. So the
-            # table grows no `Observed` column - a touch is a fold over daily bars, which is spine
-            # increment 4's to hydrate
-            average_days = np.mean(
-                [x.days for x in np.diff(sorted(set(self.field['Barrier_Dates'])))])
-            field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(average_days / 365.0)
-        else:
-            field_index['Barrier_Monitoring'] = 0.5826 * np.sqrt(
-                (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0)
+        field_index['Barrier_Monitoring'] = self.barrier_monitoring(base_date)
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
                                equity_fx_correlation)
@@ -5100,6 +5100,103 @@ class CommodityDigitalOption(Deal):
         return pricing.pv_european_option(
             shared, time_grid, deal_data, self.field['Payoff'], moneyness, forward, binary=True,
             digital_spread=spread, payoff_style=self.field['Payoff_Style'].lower()) * fx_rep
+
+
+class CommodityOneTouchOption(TouchLifecycle, Deal):
+    vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
+    fields = [ADMIN, COMMODITY_TOUCH, own('CommodityOneTouchOption', [
+        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
+    ], role='Timing')]
+
+    factor_fields = {'Currency': ['FxRate'],
+                     'Discount_Rate': ['InterestRate'],
+                     'Reference_Type': ['ReferencePrice'],
+                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol']}
+
+    documentation = ('Energy', [
+        'A one-touch on a commodity reference price, priced by the closed form and bridge described',
+        '[here](./fx_and_equity.md#one-touch-and-no-touch-binary-options-and-rebates) for equity and FX.',
+        "The monitored price on each date is the reference's fixing there, the forward curve read at",
+        'the delivery its `Fixing_Curve` maps that date to, and its carry to the expiry is',
+        "$b = \\ln\\big(F(t,D(T))/F(t,D(t))\\big)/(T-t)$, so the closed form's forward is the forward of",
+        "the expiry's delivery. That holds while the delivery stays put (one contract) or moves with the",
+        'date (a spot-like reference); a reference that rolls from one contract to another before the',
+        'expiry jumps at the roll, which the closed form cannot price, and is refused by name. The',
+        'bridge observes endpoints: the forward-price process publishes no bridge variance.'])
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        reference_factor, forward_factor = get_reference_factor_objects(
+            utils.check_rate_name(self.field['Reference_Type']), all_factors)
+        base, expiry = ((d - utils.excel_offset).days for d in (base_date, self.field['Expiry_Date']))
+        step = np.diff(reference_factor.get_fixings(np.arange(base, expiry + 1)))
+        if step.size and not (np.allclose(step, 0.0) or np.allclose(step, 1.0)):
+            raise ValueError(
+                '{}: reference {} rolls from one delivery to another before the expiry {}, so the '
+                'fixing it watches jumps at the roll - state an option on the contract itself'.format(
+                    self.field['Reference'], self.field['Reference_Type'], self.field['Expiry_Date'].date()))
+        # the option seam's roles: `Currency` the forward curve's own, `Payoff_Currency` the deal's
+        field = {'Currency': forward_factor.get_currency(),
+                 'Payoff_Currency': utils.check_rate_name(self.field['Currency']),
+                 'Reference_Type': utils.check_rate_name(self.field['Reference_Type']),
+                 'Reference_Volatility': utils.check_rate_name(self.field['Reference_Volatility'])}
+        field['Discount_Rate'] = self.factor_name('Discount_Rate', field['Payoff_Currency'])
+
+        curve = reference_factor.param['Fixing_Curve'].array
+        field_index = {
+            'Payoff_Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
+            'SettleCurrency': self.field['Currency'],
+            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Volatility': get_commodity_vol_factor(
+                field['Reference_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Barrier_Underlying': None,
+            'Barrier_Monitoring': self.barrier_monitoring(base_date),
+            'Expiry': expiry - base,
+            # the delivery each row's fixing reads, off the days since the base date
+            'Fixing_Curve': (curve[:, 0] - base, curve[:, 1]),
+            'Delivery': float(reference_factor.get_fixings(expiry))}
+        field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
+            field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
+            all_factors, reference_factor, forward_factor, base_date)
+        self.check_option_data(
+            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
+
+        return field_index
+
+    def generate(self, shared, time_grid, deal_data):
+        factor_dep = deal_data.Factor_dep
+        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+        fx_rep = utils.calc_fx_cross(factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
+        curve = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], deal_time, shared)
+        days = deal_time[:, utils.TIME_GRID_MTM]
+        observed = np.interp(days, *factor_dep['Fixing_Curve']).reshape(-1, 1)
+        # a static forward curve answers one column; the pricer assumes one per scenario
+        spot = torch.squeeze(curve.gather_weighted_curve(shared, observed, multiply_by_time=False), dim=1).expand(
+            -1, shared.simulation_batch)
+        forward = torch.squeeze(curve.gather_weighted_curve(
+            shared, np.full_like(observed, factor_dep['Delivery']), multiply_by_time=False), dim=1)
+        tau = factor_dep['Expiry'] - days
+        years = spot.new(factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](tau)).reshape(-1, 1)
+        # the carry growing the watched fixing into the expiry's forward; on the expiry row the two
+        # are one read, so its log is 0 over a year fraction held off 0
+        b = torch.log(forward / spot) / torch.where(years > 0.0, years, 1.0)
+
+        return pricing.pv_one_touch_option(
+            shared, time_grid, deal_data, self.field['Cash_Payoff'], spot, b, tau, self.payoff_ccy) * fx_rep
+
+
+class CommodityNoTouchOption(CommodityOneTouchOption):
+    vernacular = 'commodity no-touch, energy no-touch, no touch on a reference price'
+    fields = [ADMIN, COMMODITY_TOUCH]
+
+    no_touch = True
+    #: paid at expiry alone, where the barrier was never touched
+    payment_timing = 'Expiry'
+
+    documentation = ('Energy', [
+        'A no-touch on a commodity reference price, the one-touch above paying **Cash_Payoff** at expiry',
+        'where the barrier was never touched - the one-touch paid at expiry on the same terms is its',
+        'complement, the two together the discounted payout.'])
 
 
 class CommodityForwardDeal(Deal):
@@ -5865,8 +5962,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Barrier_Monitoring': 0.5826 * np.sqrt(
-                (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
+            'Barrier_Monitoring': self.barrier_monitoring(base_date),
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
 
         return field_index
