@@ -1,43 +1,52 @@
 ## Price Index
 
-The Price Index can be monthly or quarterly. It is a flat-right interpolated curve $I(t)$ that contains
-historical values. The curve is defined on a discrete set of dates $\mathcal T$ where for
-$\tau\in\mathcal T, I(\tau)$ is the published price index for period start date $\tau$. If
-$\tau_0=$max$\mathcal T$ is the latest historical start period, then for $\tau>\tau_0$,
+The Price Index can be monthly or quarterly (**Publication_Period**). It holds the published values
+$I(\tau)$ on a discrete set of period start dates $\mathcal T$ (**Index**). If
+$\tau_0=$ **Last_Period_Start** is the latest published period, then for $\tau>\tau_0$
 
-$$I(\tau)=I(\tau_0)F(\tau-\tau_0)$$
+$$I(\tau)=I(\tau_0)\,F(\tau-\tau_0),\qquad F(u)=e^{\,r_I(u)\,u},$$
 
-Note that no seasonal factor adjustments are made (but can be included here). Also note that
-**Last Period Start** should be set to $\tau_0$.
+where $r_I$ is the associated **InflationRate** curve (a continuously compounded inflation growth
+rate) and $u$ is measured in its day count. No seasonal adjustment is applied.
 
-If $p(\tau)$ is the publication date for period starting $\tau$ (typically $p(\tau)\gt\tau$) and
+If $p(\tau)$ is the publication date for period starting $\tau$ (typically $p(\tau)\gt\tau$; the
+publication dates run from **Next_Publication_Date** at the publication period) and
 $s(t)$ is the greatest $\tau$ for a given date $t$ for which $p(\tau) \le t$, then $p(s(t))\le t$
 and $s(p(\tau))=\tau$. The value of the Index at $t$ is $I(t)=I(s(t))$.
 
 ## Price Index References
 
 If an inflation contract needs the value of a price index sampled at time $T$, the sampled value is
-called a **reference** value $I_R(T)$. Generally, $I_R(T)$ will be a function of several previously
-published price index values.
+called a **reference** value $I_R(T)$. The convention is the deal's own **Index_Reference**: a
+**Months_Lag** $\ell$ and a **Reference_Type**. With $T^{(1)}$ the first day
+of the month of $T$ and $T-\ell m$ the date $\ell$ calendar months before $T$:
 
-For deal valuation, the price index reference convention needs to be known. The following conventions
-have been implemented:
+- **Interpolated**: the two month-start prints straddling the lagged date, weighted by how far into
+  its own month $T$ falls,
 
-- **IndexReference$\mathscr l$M** (for $\mathscr l$=2,3) gives the published price index on the first
-day of the month that is $\mathscr l$ calendar months prior to the month of $T$:
+$$I_R(T)=I\big((T-\ell m)^{(1)}\big)+w\Big(I\big((T-(\ell-1) m)^{(1)}\big)-I\big((T-\ell m)^{(1)}\big)\Big),
+\qquad w=\frac{T-T^{(1)}}{(T^{(1)}+1m)-T^{(1)}}.$$
 
-$$I_R(T)=I((T-\mathscr {l} m)^{(1)})$$
+- **Single** (and **Average**, which is read as **Single**): the print of the month $\ell$ months back,
 
-where $T^{(i)}$ denotes the $i^{th}$ day in month $T$ and $T-\mathscr {l} m$ is result of subtracting
-$\mathscr l$ calendar months from T.
+$$I_R(T)=I\big((T-\ell m)^{(1)}\big).$$
 
-- **IndexReferenceInterpolated$\mathscr l$M** (for $\mathscr l$=3 or 4) gives the following
-interpolation of $I((T-\mathscr {l} m)^{(1)})$ and $I((T-(\mathscr {l}-1) m)^{(1)})$:
-
-$$I_R(T)=I((T-\mathscr {l} m)^{(1)})+\Biggl( \frac{T-T^{(1)}}{(T^{(1)}+1m)-T^{(1)}} \Biggl)\Big(
-I((T-(\mathscr {l}-1) m)^{(1)})-I((T-\mathscr {l}m)^{(1)})\Big)$$
+A reference date at or before the last published period reads the published print; one after it
+and on or before the base date reads the base-date forward $I(\tau_0)F(\cdot)$ above; a later one
+reads the simulated index (or, with no index model, the inflation curve's forward under
+`NoModel: RiskNeutral`; see [Definitions](definitions.md)). **Quarters_Lag**,
+**Quarter_Reference_Month**, **Reference_Day** and **Days_In_Period** are accepted and not read, and
+neither is the InflationRate factor's **Reference_Name**.
 
 ## Inflation Rates
 
 Inflation rate price factors are similar to interest rate price factors but have an associated price
-index factor.
+index factor (**Price_Index**); their curve is the growth rate $r_I$ above, interpolated as an interest
+rate curve ([Asset Pricing](asset_pricing.md#interest-and-inflation-rate-interpolation)).
+
+## References
+
+- Brigo, D. and Mercurio, F. (2006). *Interest Rate Models - Theory and Practice*, 2nd edition.
+  Springer Finance; the second edition adds inflation-indexed derivatives. ISBN 9783540221494 (the
+  DOI record lists no authors).
+  [doi:10.1007/978-3-540-34604-3](https://doi.org/10.1007/978-3-540-34604-3)

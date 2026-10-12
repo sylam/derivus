@@ -1,18 +1,33 @@
 # Market Prices
 
-All risk neutral models need to derived from observable market prices. This section specifies both the
-model used and the necessary data required to correctly simulate a risk-neutral model.
+The quotes the bootstrap fits. A block is keyed `<Family>Prices.<name>` and carries the family's
+fields under `instrument`; the [Bootstrapper Configuration](bootstrapper_configuration.md) decides
+which families run, in what order, and how a block's fields fall back. A block of a type no family
+reads refuses the bootstrap by name.
 
-Currently only FX, Equities, Commodities and IR rates may be risk neutral:
+| Block type | What it fits | Quote table | Writes |
+|---|---|---|---|
+| `InterestRatePrices` | a zero curve, holding its benchmarks (`DepositDeal`, `FRADeal`, `SwapInterestDeal`, `StructuredDeal`, `FXForwardDeal`) at par | `Points` | `InterestRate.<name>` |
+| `FXVolPrices` | an FX smile surface from ATM, risk-reversal and butterfly quotes | `Points` | `FXVol.<name>` |
+| `GBMAssetPriceTSModelPrices` | the integrated ATM vol curve of `GBMAssetPriceTSModelImplied` | none: the named surface's ATM column | `GBMAssetPriceTSModelParameters.<name>` |
+| `HullWhite2FactorModelPrices` | the two-factor Hull-White model to ATM swaption vols | `Instrument_Definitions` | `HullWhite2FactorModelParameters.<name>` |
+| `CSForwardPriceModelPrices` | the Clewlow-Strickland $(\sigma, \alpha)$ to energy futures options | `Energy_Futures_Options` | `CSForwardPriceModelParameters.<name>` |
+| `LogVar2FJModelPrices` | the LogVar2FJ spot model to vanilla option quotes | `European_Options` | `LogVar2FJModelParameters.<name>` |
 
-- FX may be simulated via *GBMAssetPriceTSModelPrices*  and requires only a corresponding FX vol surface to
-  establish average ATM vols used by the corresponding *GBMAssetPriceTSModelImplied* model. It is
-  specified as follows:
+Each family's fields, defaults and table columns are on its page under this section, and its method
+on the [Bootstrapping](../bootstrapping/general.md) pages. A quote table's rows are objects keyed by
+column name. In `Points` and `European_Options` the values a market patch may move are
+`Quoted_Market_Value`, `Quoted_Bid`, `Quoted_Ask` and `Timestamp`; everything else in a block is
+structural.
+
+## GBMAssetPriceTSModelPrices
+
+Names the vol surface (`FXVol`, `EquityPriceVol`, `CommodityPriceVol` or `VolatilityGrid`) whose
+ATM column becomes the integrated vol curve:
 
 ```json
 {
-"GBMAssetPriceTSModelPrices.AUD":
-  {
+  "GBMAssetPriceTSModelPrices.AUD": {
     "instrument": {
       "Asset_Price_Volatility": "AUD.USD"
     },
@@ -21,213 +36,42 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 }
 ```
 
-- The only risk neutral IR currently available may be simulated via 
-  *HullWhite2FactorModelPrices* and requires both a corresponding swaption volatility
-   surface and a set of **instrument definitions** that define the forward starting swaps that
-   reference the swaption vol surface. Note that again, only ATM vols are used. Every row must
-   carry its own `Market_Volatility`: a zero (which used to mean "read the named surface's ATM
-   instead") and an absent column both refuse by name since 2026-09-01, and the vol is read in the
-   convention that surface's `Distribution_Type` declares — a lognormal Black vol by default, an
-   absolute normal one where it says `Normal`. The block may declare a `Distribution_Type` of its
-   own saying which convention its numbers are in: blank, the default, is unchecked, and a
-   non-blank one differing from that surface's refuses by name before a premium is priced. They are
-   specified as:
+## HullWhite2FactorModelPrices
+
+Names a swaption vol surface (`InterestYieldVol`) and the forward-starting swaps the benchmark
+swaptions are struck on. Each `Instrument_Definitions` row is one ATM swaption and must carry its
+own `Market_Volatility`: a zero and an absent column both refuse by name. The vol is read in the
+convention the named surface's `Distribution_Type` declares - a lognormal Black vol by default, an
+absolute normal vol where it says `Normal`. A block may state its own `Distribution_Type`; blank,
+the default, is unchecked, and one differing from the surface's refuses before anything is priced.
+`Weight` weights the row's residual in the objective. `Generate_Instruments` and
+`Generation_Parameters` are declared but not built: state the rows.
 
 ```json
 {
   "HullWhite2FactorModelPrices.ZAR-JIBAR-3M": {
     "instrument": {
       "Swaption_Volatility": "ZAR_SMILE_ICE",
-      "Property_Aliases": null,
-      "Generation_Parameters": {
-        "Last_Tenor": {
-          ".DateOffset": "9Y"
-        },
-        "Floating_Frequency": {
-          ".DateOffset": "6M"
-        },
-        "First_Tenor": {
-          ".DateOffset": "1Y"
-        },
-        "Day_Count": "ACT_365",
-        "Last_Maturity": {
-          ".DateOffset": "10Y"
-        },
-        "First_Start": {
-          ".DateOffset": "1Y"
-        },
-        "Fixed_Frequency": {
-          ".DateOffset": "6M"
-        },
-        "Index_Offset": 0,
-        "Last_Start": {
-          ".DateOffset": "9Y"
-        },
-        "First_Maturity": {
-          ".DateOffset": "10Y"
-        }
-      },
-      "Generate_Instruments": "No",
       "Instrument_Definitions": [
         {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
+          "Start": {".DateOffset": "3M"},
+          "Tenor": {".DateOffset": "1Y"},
+          "Floating_Frequency": {".DateOffset": "3M"},
+          "Fixed_Frequency": {".DateOffset": "3M"},
           "Floating_Day_Count": "ACT_365",
           "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "3M"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "1Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 21.5
-          }
+          "Market_Volatility": {".Percent": 21.5},
+          "Weight": 1
         },
         {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
+          "Start": {".DateOffset": "10Y"},
+          "Tenor": {".DateOffset": "10Y"},
+          "Floating_Frequency": {".DateOffset": "3M"},
+          "Fixed_Frequency": {".DateOffset": "3M"},
           "Floating_Day_Count": "ACT_365",
           "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "3M"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "2Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 20.8
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "3M"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "5Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 20.1
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "3M"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "10Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 19.6
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "6M"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "1Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 19.2
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "10Y"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "2Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 18.9
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "10Y"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "5Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 18.6
-          }
-        },
-        {
-          "Floating_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Weight": 1,
-          "Floating_Day_Count": "ACT_365",
-          "Fixed_Day_Count": "ACT_365",
-          "Start": {
-            ".DateOffset": "10Y"
-          },
-          "Fixed_Frequency": {
-            ".DateOffset": "3M"
-          },
-          "Tenor": {
-            ".DateOffset": "10Y"
-          },
-          "Market_Volatility": {
-            ".Percent": 18.4
-          }
+          "Market_Volatility": {".Percent": 18.4},
+          "Weight": 1
         }
       ]
     },
@@ -236,16 +80,16 @@ Currently only FX, Equities, Commodities and IR rates may be risk neutral:
 }
 ```
 
-Note that although *Generation paramaters* can be specified, instrument definitions are preferred.
+## InterestRatePrices
 
-- *InterestRatePrices* solves an *InterestRate* zero curve from deposit, FRA and swap quotes. Each
-  `Points` entry names an instrument type in `DealType` and carries a block of that type under
-  `Deal`, authored exactly as `Trade Data` would author it, with `Quoted_Market_Value` the rate in
-  percent the instrument is held at par at. A blank `Discount_Rate` builds a self-discounting
-  curve; naming another block's curve makes this one a projection curve solved after it. The
-  solved curve carries one knot per used quote, at that quote's last cashflow date, so holding a
-  quote out with `Use` drops its knot too. An OIS swap is a `StructuredDeal` over a
-  `Compounding_Method: OIS` floating leg and a fixed leg:
+Each `Points` entry names an instrument type in `DealType` and carries a block of that type under
+`Deal`, authored exactly as [Trade Data](trade_data.md) would author it, with `Quoted_Market_Value`
+the number the solve holds the instrument at par at: a rate in percent for a rate benchmark, the
+outright in `Buy_Currency` per unit of `Sell_Currency` for an `FXForwardDeal`. A blank `Discount_Rate` builds a
+self-discounting curve; naming another block's curve makes this one a projection curve solved after
+it. The solved curve carries one knot per used quote, at that quote's last cashflow date, so
+holding a quote out with `Use` drops its knot too. An OIS swap is a `StructuredDeal` over a
+`Compounding_Method: OIS` floating leg and a fixed leg:
 
 ```json
 {
@@ -275,19 +119,26 @@ Note that although *Generation paramaters* can be specified, instrument definiti
 }
 ```
 
-- *FXVolPrices* builds an *FXVol* log-moneyness surface from the delta quotes an FX smile ticks in
-  as. Each `Points` row is an `Expiry` in years, a delta `Pillar`, a `Quote_Type` of `ATM`, `RR` or
-  `BF`, the number, and the `Timestamp` it was seen at; the surface carries the latest of those as
-  its `Quote_Timestamp`. The wings come from the strangle pair, `ATM + BF + RR/2` for the call and
-  `ATM + BF - RR/2` for the put, and the pillar delta is a premium-adjusted FORWARD delta with the
-  ATM quote at the delta-neutral straddle strike - which is what the three convention fields
-  declare, each offering the one value the solve implements. A `Pillar` of 0.5 is refused: a 50
-  delta pair is quoted as the ATM row. `Grid_Tolerance` sizes the log-moneyness grid the surface
-  is written on, and that grid is PINNED: re-bootstrapping the same expiries at the same tolerance
-  over a surface this already wrote moves the vols and leaves the grid alone, so a vol tick is a
-  value patch rather than a new plan - while a changed tolerance refines a new one. A `Timestamp`
-  keeps whatever resolution it was authored at: a plain date stays a date, an intraday stamp is
-  written in ISO form with its time and survives the save.
+## FXVolPrices
+
+Builds an `FXVol` log-moneyness surface from the delta quotes an FX smile is dealt in. Each
+`Points` row is an `Expiry` in years, a delta `Pillar`, a `Quote_Type` of `ATM`, `RR` or `BF`, the
+number, and the `Timestamp` it was seen at; the surface carries the latest of those as its
+`Quote_Timestamp`.
+
+| Convention | What the solve assumes |
+|---|---|
+| Pillar delta | premium-adjusted forward delta (`Delta_Type: Forward`, `Premium_Adjusted: Yes`, the only values offered) |
+| ATM | the delta-neutral straddle, $K = F e^{-\sigma^2 T/2}$ (`ATM_Convention: Delta_Neutral_Straddle`) |
+| Wings | call $\sigma_{ATM} + BF + RR/2$, put $\sigma_{ATM} + BF - RR/2$; a missing `RR` or `BF` reads as 0 |
+| `BF` | the **smile** strangle, $(\sigma_{call} + \sigma_{put})/2 - \sigma_{ATM}$. A broker's market (one-vol) strangle is a different number and must be converted before it is entered |
+| `Pillar` 0.5 | refused: a 50-delta pair is quoted as the ATM row |
+
+`Grid_Tolerance` sizes the log-moneyness grid the surface is written on, and that grid is pinned:
+re-bootstrapping the same expiries at the same tolerance over a surface this family already wrote
+moves the vols and leaves the grid alone, so a vol tick is a value patch rather than a new plan; a
+changed tolerance refines a new grid. A `Timestamp` keeps the resolution it was authored at: a plain
+date stays a date, an intraday stamp is written in ISO 8601 form with its time.
 
 ```json
 {
@@ -299,39 +150,78 @@ Note that although *Generation paramaters* can be specified, instrument definiti
       "ATM_Convention": "Delta_Neutral_Straddle",
       "Grid_Tolerance": 0.0001,
       "Points": [
-        {
-          "Use": "Yes",
-          "Expiry": 1.0,
-          "Pillar": 0.0,
-          "Quote_Type": "ATM",
-          "Quoted_Market_Value": 0.161,
-          "Timestamp": {
-            ".Timestamp": "2026-06-30"
-          }
-        },
-        {
-          "Use": "Yes",
-          "Expiry": 1.0,
-          "Pillar": 0.25,
-          "Quote_Type": "RR",
-          "Quoted_Market_Value": 0.019,
-          "Timestamp": {
-            ".Timestamp": "2026-06-30"
-          }
-        },
-        {
-          "Use": "Yes",
-          "Expiry": 1.0,
-          "Pillar": 0.25,
-          "Quote_Type": "BF",
-          "Quoted_Market_Value": 0.0041,
-          "Timestamp": {
-            ".Timestamp": "2026-06-30"
-          }
-        }
+        {"Use": "Yes", "Expiry": 1.0, "Pillar": 0.0, "Quote_Type": "ATM",
+         "Quoted_Market_Value": 0.161, "Timestamp": {".Timestamp": "2026-06-30"}},
+        {"Use": "Yes", "Expiry": 1.0, "Pillar": 0.25, "Quote_Type": "RR",
+         "Quoted_Market_Value": 0.019, "Timestamp": {".Timestamp": "2026-06-30"}},
+        {"Use": "Yes", "Expiry": 1.0, "Pillar": 0.25, "Quote_Type": "BF",
+         "Quoted_Market_Value": 0.0041, "Timestamp": {".Timestamp": "2026-06-30"}}
       ]
     },
     "Children": []
   }
 }
 ```
+
+## CSForwardPriceModelPrices
+
+Names the `ForwardPrice` factor, the `ForwardPriceVol` surface the quoted vols are read off and the
+discount curve; each `Energy_Futures_Options` row is one option on the future settling at
+`Settlement_Date`. `Quote_Type` takes vols only.
+
+```json
+{
+  "CSForwardPriceModelPrices.BRENT": {
+    "instrument": {
+      "Energy": "BRENT",
+      "Forward_Volatility": "BRENT",
+      "Discount_Rate": "USD-OIS",
+      "Quote_Type": "Implied_Volatility",
+      "Energy_Futures_Options": [
+        {"Expiry_Date": {".Timestamp": "2026-11-03"}, "Settlement_Date": {".Timestamp": "2026-12-03"},
+         "Option_Type": "Call", "Strike": 74.7965, "Units": 1000.0, "Weight": 1.0,
+         "Quoted_Market_Value": 0.3323568397}
+      ]
+    }
+  }
+}
+```
+
+## LogVar2FJModelPrices
+
+Names the underlying, its vol surface, discount and carry curves (a `*_Type` field says which
+factor type a name means where it exists under more than one), and the vanilla quotes in
+`European_Options`. Under `Quote_Type: Implied_Volatility`, the default, a quote is a vol the
+target premium is priced at off the named surface; under `Premium` the quote is the premium and no
+surface is read. The fit's many dials are on the
+family's page and its method and limits on the
+[Bootstrapping](../bootstrapping/fx_and_equity.md) and
+[developer](../developer/market_prices.md#logvar2fj) pages.
+
+```json
+{
+  "LogVar2FJModelPrices.INDEX_A": {
+    "instrument": {
+      "Underlying": "INDEX_A", "Underlying_Type": "EquityPrice",
+      "Volatility": "INDEX_A.EUR", "Volatility_Type": "EquityPriceVol",
+      "Discount_Rate": "EUR", "Discount_Rate_Type": "InterestRate",
+      "Yield": "INDEX_A", "Yield_Type": "DividendRate",
+      "Quote_Type": "Implied_Volatility",
+      "European_Options": [
+        {"Expiry_Date": {".Timestamp": "2024-07-26"}, "Strike": 90.103621, "Option_Type": "Put",
+         "Units": 1.0, "Weight": 1.0, "Quoted_Market_Value": 0.23237528,
+         "Timestamp": {".Timestamp": "2024-06-28"}}
+      ]
+    }
+  }
+}
+```
+
+## References
+
+- D. Reiswich and U. Wystup, "A Guide to FX Options Quoting Conventions", *The Journal of
+  Derivatives* 18(2), 58-68, 2010. [doi:10.3905/jod.2010.18.2.058](https://doi.org/10.3905/jod.2010.18.2.058)
+  - premium-adjusted forward delta, the delta-neutral straddle ATM, and the smile versus market
+  strangle.
+- ISO 8601-1:2019, *Date and time - Representations for information interchange - Part 1: Basic
+  rules* (International Organization for Standardization, edition 1, 2019) - the `Timestamp` form.

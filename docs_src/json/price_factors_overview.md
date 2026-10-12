@@ -57,7 +57,7 @@ Interest Rate price factors uses the .Curve format. e.g.
 This specifies that the curve starts roughly 3m (0.25 years) from now at 7% and goes to 9.2% 15 years
 from now. Curve Interpolation is discussed [here](../theory/asset_pricing.md#interest-and-inflation-rate-interpolation).
 
-Generally, in Derivus, all time periods (unless otherwise specified) are assumed to be annual.
+Tenors are in years, and rates are continuously compounded unless a field says otherwise.
 
 Basis spreads are defined as InterestRates but have a subtype specified i.e.
 
@@ -86,5 +86,7 @@ Basis spreads are defined as InterestRates but have a subtype specified i.e.
 }
 ```
 
-In general, when defining price models, combine the name of the Price Factor with the **Sub_Type** 
-(if the **Sub_Type** is defined for that price factor).
+The **Sub_Type** does not enter any key: the curve above is `InterestRate.ZAR-SWAP.ZAR-USD-BASIS`
+under `Price Factors` and `<Model>.ZAR-SWAP.ZAR-USD-BASIS` under `Price Models`. It selects the
+`InterestRateBasisSpread` rules of [Model Configuration](model_configuration.md), so a basis curve
+can be modelled apart from the curve it is a spread on.

@@ -3,10 +3,10 @@ the forecast rate. The currency of the discount rate must be the same as the set
 (**Currency**). Note that the currency of the forecast rate may in future be different to the
 settlement currency but is currently not implemented.
 
-The **Distribution Type** on the volatility price factor can only be set to **Lognormal** currently.
-This assumes that the price factors are log-normally distributed (hence have implied *Black*
-volatilities). Note that this can be extended to **Normal** resulting in the price factor having
-implied *Bachelier* volatilities.
+The volatility factor's **Distribution_Type** picks the option formula: `Lognormal` (default) prices
+Black on the forward rate and strike, each displaced by the factor's **Shift**; `Normal` prices Bachelier
+(see [European Options](definitions.md#european-options)), and a swaption surface (`InterestYieldVol`)
+declaring a **Shift** beside `Normal` is refused by name.
 
 ## Cashflows
 
@@ -30,7 +30,7 @@ with value at time $t$ of $G(r)D(t,T)$.
 
 ### Floating Interest Cashflows
 
-In addtion to the Fixed Interest Cashflow, a Floating Interest Cashflow also has
+In addition to the Fixed Interest Cashflow, a Floating Interest Cashflow also has
 
 - reset date $t_0$
 - reset start $t_1$
@@ -52,8 +52,8 @@ If $T=t_2, \alpha=\alpha_2$ and the discount and forecast rate are the same, the
 
 $$P(D(t,t_1)-D(t,t_2))+Pm\alpha D(t,t_2)$$
 
-For $T\neq t_2$, the valuation needs a *convexity correction* but this is yet to be implemented. The
-standard payoff is:
+For $T\neq t_2$ (a payment delayed or in arrears) no *convexity correction* is applied; the error is
+unmeasured. The standard payoff is:
 
 $$G(r)=P(\eta r+\kappa\max((r-K_c),0)+\lambda\max((K_f-r),0)+m)\alpha+C$$
 
@@ -75,14 +75,16 @@ the option value at time $t\lt t_0$ is
 
 $$P\mathcal B_\delta(L(t),K,\sigma\sqrt{t_0-t})\alpha D(t,T)$$
 
-where $\mathcal B_\delta(F,K,v)$ is the Black function and $\sigma$ is the volatility of the forecast
-rate at time $t$ for expiry $t_0$, tenor $t_2-t_1$ and strike $K$. Note that if $T\neq t_2$ then the
-above formula is still used as no covexity correction has been applied.
+where $\mathcal B_\delta(F,K,v)$ is the Black function (Bachelier under a `Normal` factor). $\sigma$ is read
+from the cap surface at moneyness $100(K-L(t))$ (strike less forward, in percentage points), expiry the
+cashflow's accrual start, and tenor the mean accrual year fraction of the leg's cashflows; the Black time
+is the discount curve's day count to that expiry. If $T\neq t_2$ the same formula is used with no
+convexity correction (error unmeasured).
 
 #### Averaging
 
 A cashflow with averaging depends on a sequence of simply compounded rates $r_1,...,r_m$ with the same
-nominal tenor $\tau$. Each rate $r_k$ jas a positive weight $\omega_k$. Let $t_{0,k}$ be the reset
+nominal tenor $\tau$. Each rate $r_k$ has a positive weight $\omega_k$. Let $t_{0,k}$ be the reset
 date of $r_k$. The average rate $R$ at time $T$ is
 
 $$R=\frac{\sum_{k=1}^m \omega_k r_k(t_{0,k})}{\sum_{k=1}^m \omega_k}$$
@@ -101,7 +103,7 @@ The time $t(>T)$ value of the deal is
 $$V(t)=U(t)\delta$$
 
 where either $\delta=1$ for a **Buy**, else $\delta=-1$ for a **Sell**. If $t\le T$, the deal is
-treated as a forward contract on the underling cashflow list. If $A$ is the accrued interest up to 
+treated as a forward contract on the underlying cashflow list. If $A$ is the accrued interest up to 
 $T$, then $K=C+A$ if **Settlement Amount Is Clean** else $K=A$. The value at time $t\le T$ is
 
 $$V(t)=\Big(\frac{U(t)}{D(t,T)}-K\Big)D_r(t,T)\delta,$$
@@ -113,7 +115,7 @@ continues until $t_n$.
 #### Fixed Compounding Cashflow Lists
 
 For cashflow lists with the interest frequency greater than its payment frequency with payment dates
-$T_1\lt ...\lt T_c$,let $n(k)$ be the index of the last cashflow with payment date $T_k$ (with
+$T_1\lt ...\lt T_c$, let $n(k)$ be the index of the last cashflow with payment date $T_k$ (with
 $n(0)=0$). For groups of cashflows with the same payment date, interest is compounded as follows: the
 $i^{th}$ cashflow at time $T_k$ pays $K_i+C_i$ with
 
@@ -122,7 +124,7 @@ $$K_i=P_i I_i(1+I_{i+1})...(1+I_{n(k)})$$
 where
 
 - $I_i=r_i\alpha_i$
-- $P_i$ is the principal amount$
+- $P_i$ is the principal amount
 - $r_i$ is the fixed rate
 - $\alpha_i$ is the accrual year fraction
 - $C_i$ is the **Fixed Amount** of the $i^{th}$ cashflow.
@@ -151,3 +153,10 @@ $J_i=I_i-m_i\alpha_i$. Its value at $t\le T_k$ is
 $$(P_i I_i(t)(1+J_{i+1}(t))...(1+J_{n(k)}(t))+C_i)D(t,T_k)$$
 
 **None** in which case the $i^{th}$ cashflow pays $P_i I_i+C_i$ at time $T_k$.
+
+## References
+
+- Black, F. The pricing of commodity contracts. *Journal of Financial Economics* 3(1-2), 167-179, 1976. [doi:10.1016/0304-405X(76)90024-6](https://doi.org/10.1016/0304-405X(76)90024-6)
+- Bachelier, L. Théorie de la spéculation. *Annales scientifiques de l'École normale supérieure* 17, 21-86, 1900. [doi:10.24033/asens.476](https://doi.org/10.24033/asens.476)
+- Brigo, D.; Mercurio, F. *Interest Rate Models - Theory and Practice*. Springer Finance, Springer Berlin Heidelberg, 2006, ISBN 978-3-540-22149-4. [doi:10.1007/978-3-540-34604-3](https://doi.org/10.1007/978-3-540-34604-3)
+- Lyashenko, A.; Mercurio, F. Looking Forward to Backward-Looking Rates: A Modeling Framework for Term Rates Replacing LIBOR. SSRN Electronic Journal, 2019. [doi:10.2139/ssrn.3330240](https://doi.org/10.2139/ssrn.3330240)

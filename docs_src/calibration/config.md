@@ -39,15 +39,17 @@ object as the MarketData JSON via a second `parse_json` call.
 
 Describes how to load the historical archive into a pandas DataFrame.
 
-| Field | Description |
-|---|---|
-| `name` | Path to the archive CSV |
-| `skiprows` | Rows to skip at the top of the file (typically 0) |
-| `index_column` | Column index to use as the date index (typically 0) |
-| `sep` | Field separator (default `\t` for legacy archives; set `,` for CSV) |
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Path to the archive file |
+| `skiprows` | Yes | Rows to skip at the top of the file, usually 0 |
+| `index_column` | Yes | Column (position or name) holding the dates |
+| `sep` | No | Field separator, default `\t`; set `,` for CSV |
 
-The archive's index is normalised to Excel-offset integers at load time. Date strings
-in the index column (e.g. `2009/11/10`) are parsed and converted automatically.
+A missing required key raises `KeyError` at `parse_json`. The archive's index is normalised to
+Excel-offset integers at load time; date strings in the index column (e.g. `2009/11/10`) are
+parsed and converted. Column headers are `<Type>.<Name>` or `<Type>.<Name>,<sub-key>`; a numeric
+sub-key is a tenor (see [Cross Factor](cross_factor.md)).
 
 ## `Calibrations`
 
@@ -56,6 +58,14 @@ to its calibration parameters. Each entry must contain:
 
 - `Method` — the calibration class name (resolved via `globals()` in `stochasticprocess.py`)
 - Any model-specific tuning knobs (clamps, EM iteration caps, RNG seeds, etc.)
+
+A class reads only the tuning keys it declares in its `fields`; each estimator's section in this
+chapter lists them with their defaults. Every other key is accepted and ignored without a message:
+the shipped `tests/fixtures/calibration_config.json` carries `ID`, `Use_Pre_Computed_Statistics`,
+`Data_Retrieval_Parameters`, `MLE_Parameters`, `Number_Of_PCA_Factors` and, under
+`LogOUSpotModel`, `Kappa_Max`, `Sigma_Max` and `Vol_Shift`, none of which is read. A `Method` that
+names no class in `stochasticprocess.py` (a misspelling or a retired estimator) fails at
+`parse_json` with the unexplained `TypeError: 'NoneType' object is not callable`.
 
 Calibration is keyed by **model class**, not by factor instance. All factors routed to the
 same model class share the same calibration config. Per-factor configuration that depends

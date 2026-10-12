@@ -4,10 +4,12 @@ Everything in Derivus is based off a *Context*. All calculations are constructed
 to one.
 
 !!! note "Curve convention"
-    Interest rate curves typically start one day from now, i.e. $1/365\approx 0.00274$. A knot at
-    time 0 is redundant rather than forbidden — the discount factor there is 1 by identity — so a
-    curve may carry one (the job skeleton and the shipped fixtures do), and a curve without one
-    flat-extrapolates its first timepoint back.
+    Interest rate curves typically start one day from now, i.e. $1/365\approx 0.00274$. A curve
+    without a knot at time 0 flat-extrapolates its first rate back. A knot at time 0 is harmless
+    under the `Linear` and `Hermite` interpolations (the job skeleton carries one, under the default
+    `Linear`), but under `LinearRT` and `HermiteRT` the rate is recovered by dividing by the query
+    tenor, so a query at exactly 0 on such a curve has no rate (0/0) - see
+    [Price Factor Interpolation](json/model_configuration.md#price-factor-interpolation).
 
 ## The Context
 
@@ -46,14 +48,16 @@ The active configuration exposes:
 
 ## Running a calculation
 
-Three calculation types are supported, each with both an explicit method and a JSON-driven
-dispatcher:
+Four calculation types are supported. Three have an explicit method, and all four run from the
+JSON-driven dispatcher; every field each reads is in the [Calculations](json/calculations.md)
+reference:
 
 | Method | JSON `Calculation.Object` | Purpose |
 |---|---|---|
 | `cx.Base_Valuation(overrides)` | `BaseValuation` | Single-point MTM revaluation |
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
+| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, one booked trade at a time |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 | `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
@@ -133,12 +137,15 @@ its percentile — one `PFE_<p>` per entry in the calculation's `Percentile` fie
 comma-separated for several — so there is no column called plain `PFE`. The result is a pandas
 DataFrame and so can be plotted via `.plot()`.
 
-!!! danger "`runparallel=True` does not work at HEAD"
-    `Credit_Monte_Carlo(runparallel=True)` is meant to shard the simulation across all visible CUDA
-    devices and merge the results. It cannot: the worker spawn passes **seven** positional arguments
-    to six-parameter `run_cmc`, so every child raises `TypeError` before running and the parent then
-    blocks forever on `results.get()`. The branch also returns a dict rather than the `(calc, out)`
-    tuple. Do not call it until the stray argument is dropped from the call site.
+!!! note "Sharding with `runparallel`"
+    `Credit_Monte_Carlo(runparallel=True)` runs one worker process per visible CUDA device (one on a
+    box without CUDA); an integer asks for exactly that many workers, sharing devices. Workers take
+    contiguous ranges of the batches and every batch is seeded from its global index, so the result
+    does not depend on the worker count; a remainder of `Simulation_Batches` that does not divide
+    by the worker count is not run. It returns a dict of LISTS, one entry per worker under each of
+    `Results`, `Stats`, `Params`, `Reference` and `Job`, rather than `(calc, out)`: pool the `mtm`
+    and re-summarize, since `EE`/`ENE` average over equal shards and a `PFE_<p>` percentile does
+    not.
 
 ### Hedge Monte Carlo
 
@@ -258,7 +265,9 @@ because a code change may legitimately reassign the RNG substreams.
 Every calculation method accepts an `overrides` dict that updates the JSON's `Calculation` section
 just before execution. Common overrides:
 
-- `Run_Date` / `Base_Date` — switch the valuation date without editing the JSON
+- `Run_Date` — switch the valuation date without editing the JSON. The runner sets it from the
+  document's `Base_Date` before overrides apply, so overriding `Base_Date` alone does not move the
+  date (a `SIMM` run is the exception: it reads `Base_Date`)
 - `Currency` — change the reporting currency
 - `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo reproducibility and size;
   on a CUDA device a credit Monte Carlo reports what it held at its peak beside what the device
@@ -292,7 +301,8 @@ there's no implicit cache that needs to be invalidated.
 ## Output structure
 
 A base valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
-Monte Carlo returns the same three plus a fourth. (A hedge run returns a
+Monte Carlo returns the same three plus a fourth; a `SIMM` run returns `Stats` and `Results` only.
+(A hedge run returns a
 `HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 
 - `'Netting'` — the internal `DealStructure` tree. Useful for developers walking the hierarchy.

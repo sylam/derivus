@@ -1,6 +1,15 @@
 # Calibration Class Contract
 
-A calibration class implements one method:
+A calibration class is defined in `derivus/stochasticprocess.py` and carries:
+
+| Member | Read by | Contract |
+|---|---|---|
+| `model_type` | `schema.emit_calibration` | The process class it calibrates, which is the key of its `Calibrations` entry |
+| `fields` | `schema.emit_calibration` | A list of `schema.F` declaring every tuning key it reads; `[]` for none |
+| `documentation_calibration` | the documentation build | Optional `(page, [markdown lines])`; the page is one of this chapter's |
+| `__init__(self, model, param)` | `construct_calibration_config` | `model` is the process name, `param` its `Calibrations` entry |
+| `self.num_factors` | `calibrate_factors` | The number of rows of the `correlation` it returns |
+| `calibrate(...)` | `calibrate_factors` | Returns `utils.CalibrationInfo(param, correlation, delta)` |
 
 ```python
 def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
@@ -8,16 +17,17 @@ def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
     return utils.CalibrationInfo(param, correlation, delta)
 ```
 
-Once registered (see below), the framework discovers it automatically and runs it as part
-of `calibrate_factors`. New model authors should follow this contract verbatim — there
-are no other framework hooks.
+The process it writes must also accept the written `param` at construction with `factor=None`,
+and its `correlation_name` must list one sub-factor per row of `correlation`: the framework
+constructs it to name the correlation rows, outside the per-factor guard, so a constructor that
+refuses the parameters aborts the run ([Skips and refusals](general.md#skips-and-refusals)).
 
 ## Inputs
 
 | Argument | Description |
 |---|---|
 | `data_frame` | The factor's archive columns, plus any related-factor columns the framework auto-pulled via the [subkey convention](cross_factor.md) |
-| `vol_shift` | Optional volatility floor shift (model-specific; most classes pass through unused) |
+| `vol_shift` | An additive volatility shift, passed through from `calibrate_factors(vol_shift=...)` (default 0.0). Only `LogOUSpotCalibration` reads it, adding it to $\hat\sigma$ before its clip |
 | `num_business_days` | Days-per-year for annualisation. Default `252.0` |
 
 The framework calls exactly that and passes nothing else —
@@ -55,10 +65,12 @@ param = {
 
 ### `correlation`
 
-A `(num_factors, num_delta_columns)` matrix that maps the factor's primitive Gaussian
-factors (declared via `correlation_name` on the process class) to the columns of `delta`.
-For most single-factor processes this is `[[1.0]]`. For multi-factor processes (e.g. PCA,
-VAR) it's typically the identity matrix or a per-PC loadings matrix.
+A `(num_factors, num_delta_columns)` matrix that maps the columns of `delta` to the factor's
+primitive Gaussian factors (declared via `correlation_name` on the process class). A
+single-column estimator returns `[[1.0]]`; `QuadraticCarryCurveCalibration` and
+`LogVar2FJCalibration` return the identity; the one-factor curve estimators return an equal-weight
+row over their tenors and `PCAInterestRateCalibration` a per-component loadings matrix (see their
+sections).
 
 The framework uses this matrix during the consolidate-and-correlate step:
 
@@ -71,18 +83,18 @@ the empirical Pearson correlation of all `delta` columns concatenated.
 
 ### `delta`
 
-A `pandas.DataFrame` of standardised innovation residuals, one column per primitive
-factor. Indexed by the calibration date range. The framework concatenates all factors'
-`delta` columns and computes pairwise Pearson correlations across them — these become
+A `pandas.DataFrame` of innovations, one column per column of the `correlation` matrix, indexed by the date each return STARTS on (`start_of_return`). The framework concatenates
+all factors' `delta` columns and computes pairwise Pearson correlations across them; these become
 the entries in the global `Correlations` block (subject to the absolute-value cutoff).
 
-For a calibration to participate in cross-factor correlation discovery, its `delta` should
-be approximately *iid N(0, 1)* under the calibrated model. Examples:
+Pearson correlation is scale-free, so a column need not be standardised; it should be
+approximately serially independent and homoskedastic under the calibrated model. What the
+shipped classes emit:
 
-- **HMM with regime-switching emissions:** delta = `(diff_t - μ_state(t)) / σ_state(t)` —
-  standardised under the decoded regime.
-- **OU/AR(1):** delta = innovation residual after subtracting the mean-reversion term.
-- **VAR(1):** delta = per-factor innovation column (one per primitive Gaussian).
+- **Regime-switching HMM:** `(diff_t - μ_state(t)) / σ_state(t)` under the decoded regime.
+- **GARCH:** $r_t/\sqrt{h_t}$, the return over its filtered conditional sd.
+- **The shared OU regression:** the raw difference $\Delta x_t$, with no reversion term removed.
+- **Two-equation and four-factor fits:** one standardised residual per primitive factor.
 
 If `delta` columns are not approximately iid, cross-factor correlation estimates will be
 contaminated by within-factor structure (autocorrelation, heteroskedasticity, regime
@@ -97,6 +109,9 @@ Calibration classes are resolved by string lookup at config load time:
 def construct_calibration_config(calibration_model, param):
     return globals().get(param['Method'])(calibration_model, param)
 ```
+
+A `Method` naming no class is not refused by name: `globals().get` returns `None` and
+`parse_json` fails with `TypeError: 'NoneType' object is not callable`.
 
 To add a new calibration class:
 

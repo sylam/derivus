@@ -7,8 +7,9 @@ valuation, XVA and hedging, with sensitivities by automatic differentiation carr
 back to market quotes.
 
 A calculation is a JSON document in and a set of tables out: the job file declares the market
-data, the models and the book, and the engine compiles and runs it. Every run is replayable from
-`(plan, values, engine version, seed)`.
+data, the models and the book, and the engine compiles and runs it. A run is identified by
+`(plan, values, engine version, seed)`; repeating its last bits also needs the same device and
+PyTorch build, and for a GPU gradient `Deterministic_Kernels: Yes`.
 
 ## Licence
 
@@ -20,7 +21,9 @@ read, run and validate. Commercial use requires a separate licence — contact t
 ## Features
 
 * Full-portfolio Monte Carlo through time: exposure profiles and XVA (CVA / FVA / collateral /
-  initial margin) at GPU speed
+  an LCH-style initial margin) at GPU speed
+* ISDA SIMM sensitivities: a CRIF built by bump and revaluation, re-bootstrapping what each move
+  feeds
 * Sensitivities via automatic differentiation, including the boundary terms a path-dependent
   decision contributes — a barrier crossing or an autocall trigger moves the value
   discontinuously, and the flux of scenarios across the trigger is carried onto the tape rather
@@ -66,5 +69,4 @@ What the library should be able to price and report next — engineering work th
 itself is tracked separately in the [Developer Roadmap](developer/roadmap.md):
 
 - Wrong-way risk during the Monte Carlo simulation
-- Initial-margin analytics (SIMM) from the bucketed quote deltas the sensitivity work now
-  produces
+- The ISDA SIMM margin itself, aggregated from the CRIF the `SIMM` calculation writes

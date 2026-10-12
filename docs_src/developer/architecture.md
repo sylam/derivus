@@ -24,7 +24,7 @@ The public surface is documented in [API Overview](../api_overview.md); this sec
 
 **One context, one job at a time.** `load_json` sets the config the next `run_job` prices, so loads and runs on a context are sequential, and whoever runs long — a batch, a service's worker — KEEPS the context and loads through it. A data cache is an attribute of the object that owns the data, here the context; it is never a dictionary at the top of a module.
 
-**The files are part of the record.** A valuation adjustment, or an exposure profile as it stood on a past date, is reproducible only against the files it was priced on, so a market data file and a calendar are each a blob addressed by its content like any other the [spine](spine.md) holds - configuration, and so kept in the clear - and each is DECLARED in the record like any other fact. One of each name stands at a time, the latest, and a run at a point in the record reads the ones standing there: nothing carries a version, so nothing can be priced against an older file by choice, and a document is its deals and nothing of the market. What the record and the service do not yet do with a named file is on the [Roadmap](roadmap.md).
+**The files are to be part of the record — designed, not built.** A valuation adjustment, or an exposure profile as it stood on a past date, is reproducible only against the files it was priced on. In the design a market data file and a calendar are each a blob addressed by its content like any other the [spine](spine.md) holds - configuration, and so kept in the clear - and each is DECLARED in the record like any other fact: one of each name stands at a time, the latest, and a run at a point in the record reads the ones standing there, so nothing carries a version, nothing can be priced against an older file by choice, and a document is its deals and nothing of the market. Today a job names each file by its path and the record declares none of them ([Roadmap](roadmap.md#the-engine)).
 
 ## One `Factor` keys everything
 
@@ -37,7 +37,7 @@ The public surface is documented in [API Overview](../api_overview.md); this sec
 
 **1. Compile — `calculate_dependencies`.** Walk the deal tree, discover every price factor a deal touches, wire each to its sub-factors, collect the max date each is needed to, topologically order them, and split **stochastic** (simulated) vs **static** (frozen leaf). Table-driven, not branching code — see [Dependency System](dependency_system.md).
 
-**2. Compile — `_build_factor_state` + `precalculate`.** Construct the factor objects, mint AAD leaves (`torch.tensor(..., requires_grad=…)`), build each stochastic process, assemble the correlation matrix and its cholesky, and assign each process its RNG-substream offset (`process_ofs`). See [Calc Lifecycle](calc_lifecycle.md).
+**2. Compile — `_build_factor_state` + `precalculate`.** Construct the factor objects, mint AAD leaves (`torch.tensor(..., requires_grad=…)`; reverse-mode sensitivities as in Capriotti, 2011), build each stochastic process, assemble the correlation matrix and its cholesky, and assign each process its RNG-substream offset (`process_ofs`). See [Calc Lifecycle](calc_lifecycle.md).
 
 **3. Execute — the generate loop.** Per simulation batch: draw the correlated random block, iterate `stoch_factors` in topological order publishing each path into `t_Scenario_Buffer` as it is produced (so a linked factor reads its parent's already-published path), then price the deal tree, accumulating MTM.
 
@@ -47,8 +47,13 @@ Extension points are **data**, not control flow. Adding a factor type, a process
 
 ## Where valuation modes diverge
 
-`Context.run_job` is a 4-way branch on `Calculation['Object']`: `BaseValuation` (single-date static reval), `CreditMonteCarlo` (the full scenario engine — CVA/FVA/exposure), `HedgeMonteCarlo` (the CMC engine, harvesting raw marks for the diff-ML hedge solver and forking an inner Monte-Carlo) and `SIMM` (a CRIF by bump and revaluation, one booked trade at a time, each market move re-bootstrapped and revalued). All four share the compile phases; they differ only in what execute does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
+`Context.run_job` is a 4-way branch on `Calculation['Object']`: `BaseValuation` (single-date static reval), `CreditMonteCarlo` (the full scenario engine — exposure and the [xVA](../theory/valuation_adjustments.md)), `HedgeMonteCarlo` (the CMC engine, harvesting raw marks for the diff-ML hedge solver and forking an inner Monte-Carlo) and `SIMM` (a CRIF by bump and revaluation, one booked trade at a time, each market move re-bootstrapped and revalued). All four share the compile phases; they differ only in what execute does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
 
 ## Design direction
 
 The long-term shape is a stateless streaming compute: JSON events in, stateless compute, JSON results out, state living outside the process. The engine holds no cross-job state beyond the market-data cache, and the job JSON is the whole contract. See [Conventions — JSON is the contract](conventions.md#json-is-the-contract).
+
+## References {#references}
+
+- Capriotti, L. (2011). Fast Greeks by algorithmic differentiation. *The Journal of Computational
+  Finance*, 14(3), 3-35. [doi:10.21314/jcf.2011.234](https://doi.org/10.21314/jcf.2011.234)

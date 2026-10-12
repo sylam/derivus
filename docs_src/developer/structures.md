@@ -217,7 +217,7 @@ price. `furnish_accrual` is where a leg becomes a strip:
   because a quote is not a trade and must not touch the book. That copy dies with the answer, so the
   outcome REPORTS what it pinned (`valuation_configuration`), the pending file records it, and
   `/book/quote` merges it into the book inside the same edit closure that splices the deal — one lock,
-  one validation, one write. Without that, a leg dealt under a GARCH re-marks as a lognormal on the next
+  one validation, one write. Without that, a leg dealt under LogVar2FJ re-marks as a lognormal on the next
   valuation and nothing says so, because both numbers are plausible. A pin whose parameters the book no
   longer carries REFUSES at the approval rather than booking a switch the engine would raise on.
 
@@ -261,13 +261,13 @@ Under the single rule it separates by **3.78%** on that book, against a solve fl
 
 **The forced TARF sits on the reciprocal of the fitted axis, which is a change of NUMERAIRE as well as
 of axis** — the deal pays in the other currency, and a law that cannot be carried there prices on an
-axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift in the answer: the two
+axis nobody fitted. Leaving the carry out leaves one variance of Siegel drift (Siegel, 1972) in the answer: the two
 orientations of one accumulator then solve strikes **3.7e-3** apart and the gap does not close with
 the path count.
 
 **LogVar2FJ transports as a measure change rather than a parameter.** Under the `S`-numeraire the
 step's density factorises over its own draws, so each shifts by its own loading —
-`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)` — and the residual's MIXER is drawn
+`eta_l ~ N(rho_l sqrt(V), 1)`, `eta_s ~ N(rho_s sqrt(V), 1)` — and the residual's MIXER, the normal inverse Gaussian's (Barndorff-Nielsen, 1997), is drawn
 from its Esscher-tilted law: tilting the joint law by `exp(X)` leaves the inverse Gaussian's shape
 `delta_A^2` alone and moves its mean from `delta_A/gamma` to `delta_A/gamma_1` with
 `gamma_1 = sqrt(alpha^2 - (beta+1)^2)`, which is the same `gamma_1` the forced drift already
@@ -281,10 +281,9 @@ forwards on `1/S` at 2^18 paths reads **7.9e-05** relative against `Σ_j D_j N S
 `δ_A/γ`. Uncarried, the two orientations of one accumulator solved 3.7e-3 apart on the Poisson
 residual and the gap did not close with the path count; carried, they solve inside the seed spread.
 
-The COMPONENT family does not transport — the change puts a state-dependent term in its long-run
-intercept, `omega_t + phi(1 − 2·gamma_2)h_t`, and leaves the family — so a component deal on the
-reciprocal axis REFUSES by name rather than pricing off a law nobody fitted; `spot_model_reciprocal_axis`
-is the allow-list (`LogVar2FJ`) a family joins. A CROSS asks the same question with the token its
+`spot_model_reciprocal_axis` is the allow-list a spot model joins once it carries this measure
+change, and it holds `LogVar2FJ` alone: any other model on the reciprocal axis REFUSES by name rather
+than pricing off a law nobody fitted. A CROSS asks the same question with the token its
 law is priced in standing in for the base, so a EURZAR strip whose `Underlying_Currency` is EUR is
 carried exactly as a USDZAR one whose underlying is USD.
 
@@ -311,19 +310,18 @@ canonical; a pair with a leg on the base follows its book. Two books of the same
 
 ### What the model is worth, and what it is not {#model-worth}
 
-The case for a spot model on an accrual strip is **not "the skew and only the skew"**. Measured on
-the gate's book under the plain Heston-Nandi family - retired 2026-09-06, the reading kept because
-the decomposition is the model class's and not that family's - an accumulator's zero-cost strike
-moved **+0.378%** from GBM, of which the LEVERAGE CHANNEL alone (the ARCH coefficient to zero with
-the persistence and the stationary per-step variance held where the fit put them) was **+0.048%**,
-about an eighth, and the sign of the leverage alone +0.003%, inside the solve's own Monte Carlo
-floor at 16,384 paths.
-
-So what a spot model is mostly worth on this book is its VARIANCE PATH — a level and a persistence a
-lognormal read off the same surface does not have — and the skew is a real but secondary term. What
-LogVar2FJ adds over that is the FORWARD skew, a lever in calendar time rather than in the state
-([Market Prices](market_prices.md#logvar2fj)), plus the second-order greeks and the quote-space risk
-neither retired family carried.
+**UNMEASURED under LogVar2FJ.** How much of a spot model's effect on an accrual strip is the skew
+and how much the variance path has been measured once, under a GARCH-type family (Heston-Nandi)
+since retired from the engine: on one accumulator at 16,384 paths its zero-cost strike moved
+**+0.378%** from GBM, of which the LEVERAGE CHANNEL alone (the ARCH coefficient to zero with the
+persistence and the stationary per-step variance held where the fit put them) was **+0.048%**, about
+an eighth, and the sign of the leverage alone +0.003%, inside the solve's own Monte Carlo floor.
+Under that family a spot model was mostly worth its VARIANCE PATH — a level and a persistence a
+lognormal read off the same surface does not have — with the skew a real but secondary term.
+Measuring the same decomposition under LogVar2FJ wants its leverages set to zero with the variance
+law held, against GBM, on that accumulator. What LogVar2FJ adds beyond a variance path is the FORWARD
+skew, a lever in calendar time rather than in the state ([Market Prices](market_prices.md#logvar2fj)),
+plus the second-order greeks and the quote-space risk.
 
 **The scenario generator is the pricer's own walk.** `LogVar2FJImpliedSpotModel` is the xVA outer
 process: an implied process reading the same calibrated `LogVar2FJModelParameters` factor the OSS
@@ -338,20 +336,21 @@ Given the day's two shocks and the block's mixer the interval return is `N(M, G)
 the process declares FOUR sub-factors per name — the return's Gaussian given the mixer (the row
 every book already marks, under the key GBM's estimator answers), the fast and the slow
 log-variance shocks (`.S`, `.L`) and the mixer (`.G`) — so the framework hands it one normal per
-row per scenario step and a declared correlation on each is realised (2026-09-11). Each variance
+row per scenario step and a declared correlation on each is realised. Each variance
 factor's node-to-node step is the exact OU transition on the interval driven by its framework
 normal; the daily path inside the interval is the OU bridge between the endpoints, spelled as a
 conditioning of the free shocks (`e = z − u(u'z) + uZ` with `Σu² = 1`), so the walk is untouched,
 the endpoint is a function of the previous endpoint and the framework normal alone, and a daily
 grid leaves `u = 1` exactly. The mixer is the fourth normal through its own quantile,
-`G = F_IG⁻¹(Φ(Z_G))`, `Φ` taken in double. Measured on two names at the Q-sized truth against a
-truth simulated outside the engine at the document's own clock: the return row alone at 0.60
+`G = F_IG⁻¹(Φ(Z_G))`, `Φ` taken in double. Measured on two names at the model's risk-neutral default parameters over a daily two-year grid at
+4,096 paths, against a reference simulated outside the engine at the document's own clock and curve
+(standard errors 0.0006 to 0.0008), as the correlation of the realised daily returns: the return row alone at 0.60
 realises **0.028** on returns (the private-dice behaviour it replaces), all four rows at 0.60
 **0.483** against 0.482, the variance rows at 0.8 with the mixer at 1 **0.732** against 0.729;
 put one die back to a private draw and the four-row reading collapses to 0.432. The historical
 estimator returns the four innovation columns under the inverse map — `eps`, the two smoothed
 shocks standardised, `Φ⁻¹(F_IG(Ĝ))` — so an estimated row is the row the outer realises; on a
-closes-only archive the Kalman smoother attenuates the shock columns (0.32 and 0.53 against a
+closes-only archive the Kalman smoother (Kalman, 1960; Rauch, Tung and Striebel, 1965) attenuates the shock columns (0.32 and 0.53 against a
 drawn 0.60, where the return and mixer columns read 0.55 and 0.35), a property of the measurement
 the estimator states by name.
 
@@ -366,8 +365,8 @@ bucket, so nothing reaches it.
 **The day's shocks are a function of the day.** They come from a `torch.Generator` per
 CALENDAR-ANCHORED segment of `LogVar2FJKit.CHECKPOINT_STEPS` trading days, never stored and redrawn inside
 the checkpoint's recompute, so where the scenario nodes fall moves no draw; `-eta` on the antithetic
-half, as the framework mirrors its own normals, and the mixer uniform per scenario step is
-`quasi_rng`'s with `1 - u` on that half. `Checkpoint_Outer_Walk` (default `Yes`) is the outer tape's
+half, as the framework mirrors its own normals. The mixer is the framework's fourth normal, as
+above; only an extra bucket-knot mixer draws `quasi_rng`'s uniforms, with `1 - u` on that half. `Checkpoint_Outer_Walk` (default `Yes`) is the outer tape's
 own switch beside `Recompute_Inner_MC`, the pricer's: two tapes, two named switches.
 
 **Replay is refused.** The log-variance carries its own two shocks, so `(ell, s)` is not a function
@@ -731,3 +730,16 @@ next, in order of what they exercise:
   moves a notional fraction rather than a strike.
 - **A tenor-vocabulary note**: `expiry` parses `<n><D|W|M|Y>` through the job grammar's own period
   letters, or an ISO date for a broken date; anything else refuses by name.
+
+## References {#references}
+
+- Barndorff-Nielsen, O. E. (1997). Normal Inverse Gaussian Distributions and Stochastic Volatility
+  Modelling. *Scandinavian Journal of Statistics*, 24(1), 1-13 (Wiley's online copy is dated 2007).
+  [doi:10.1111/1467-9469.00045](https://doi.org/10.1111/1467-9469.00045)
+- Kalman, R. E. (1960). A New Approach to Linear Filtering and Prediction Problems. *Journal of
+  Basic Engineering*, 82(1), 35-45. [doi:10.1115/1.3662552](https://doi.org/10.1115/1.3662552)
+- Rauch, H. E., Tung, F. and Striebel, C. T. (1965). Maximum likelihood estimates of linear dynamic
+  systems. *AIAA Journal*, 3(8), 1445-1450. [doi:10.2514/3.3166](https://doi.org/10.2514/3.3166)
+- Siegel, J. J. (1972). Risk, Interest Rates and the Forward Exchange. *The Quarterly Journal of
+  Economics*, 86(2), first page 303 (the registry gives no end page).
+  [doi:10.2307/1880565](https://doi.org/10.2307/1880565)

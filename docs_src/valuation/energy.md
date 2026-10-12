@@ -19,7 +19,7 @@ indirectly via their forward prices and are denoted $S^R(t,t_s^s,t_e^s,\mathcal 
 ### Fixings
 
 Reference prices are represented by a fixing curve i.e. a mapping of reference dates to the underlying
-forward price dates. In general, it is possible to contruct reference prices that sample the forward
+forward price dates. In general, it is possible to construct reference prices that sample the forward
 price curve more than once by simply averaging all prices within a reference price window - this is
 not implemented. Currently, each reference price simply looks up a single forward price using the
 fixing curve mapping.
@@ -60,8 +60,8 @@ selected or if the deal is a compo. If the deal is a compo, the realized average
 When an energy deal is specified in a currency other than the price factor currency, each price
 sample must be converted to the native (deal) currency
 
-Currently, **Average FX** can only be set to **No**, meaning that each price sample is converted to
-deal currency at the prevailing spot FX rate. A fixing price with $N$ samples is given in deal
+Each price sample is converted to deal currency at the spot FX rate of its own date; **Average_FX**
+`Yes` is accepted and not read, so it prices the same. A fixing price with $N$ samples is given in deal
 currency as:
 
 $$F^f(t,T^f)=\frac{1}{N}\sum_{i=1}^N F(t_i^s,T^f)X(t_i^s) $$
@@ -79,8 +79,8 @@ where $D_p,D_d$ are the price factor and deal currency discount factors respecti
 ### Reference volatility
 
 The volatility of a reference price $S^R(t,t_s^s,t_e^s,\mathcal S)$ with strike price $K$ can be
-estimated using the moment matching technique mentioned earlier (assuming that future reference prices
-are log-normally distributed).
+estimated by two-moment matching, as for [Discrete Asian Options](fx_and_equity.md#discrete-asian-options)
+(assuming that future reference prices are log-normally distributed).
 
 For valuation date $t$, define $n$ to be the least index for which $t_{n+1}^s\gt t$ (here
 $t_{N+1}^s=\infty$). Then $S^R(t,t_s^s,t_e^s,\mathcal S)-K=A-\bar K$, where
@@ -125,3 +125,10 @@ with the compo-adjusted volatility $\sqrt{\sigma_S^2+\sigma_X^2+2\rho\sigma_S\si
 each sampling date for both the reference price and reference price volatility (during moment matching)
 respectively. The deal currency and the payoff currency must be the same with the **Realized Average**
 expressed in payoff currency.
+
+## References
+
+- Black, F. The pricing of commodity contracts. *Journal of Financial Economics* 3(1-2), 167-179, 1976. [doi:10.1016/0304-405X(76)90024-6](https://doi.org/10.1016/0304-405X(76)90024-6)
+- Turnbull, S. M.; Wakeman, L. M. A Quick Algorithm for Pricing European Average Options. *The Journal of Financial and Quantitative Analysis* 26(3), first page 377, 1991. [doi:10.2307/2331213](https://doi.org/10.2307/2331213)
+- Levy, E. Pricing European average rate currency options. *Journal of International Money and Finance* 11(5), 474-491, 1992. [doi:10.1016/0261-5606(92)90013-N](https://doi.org/10.1016/0261-5606(92)90013-N)
+- Clewlow, L.; Strickland, C. Valuing Energy Options in a One Factor Model Fitted to Forward Prices. SSRN posted content, 1999. [doi:10.2139/ssrn.160608](https://doi.org/10.2139/ssrn.160608)

@@ -76,10 +76,15 @@ at its net, and seeds filed where a deployment says; **9** the money the settlem
 every position cost, and the desk's P&L between the closes it marks; and the seats - seven verbs
 granted at the nodes of a declared tree, the hub's own facts in the writer's voice, and a trade's
 pending read rather than filed; and the collateral each agreement calls on a marked close, its
-balance written into the plan. A library, a CLI, nine delegators on `Context`, eighteen read verbs
-and ten write verbs on the service, and 412 gates.
+balance written into the plan. A library, a CLI, nine delegators on `Context`, and read and write
+verbs on the service and the MCP binding.
 Nothing here imports the engine, and exactly one module under `derivus/` imports `derivus_spine`:
 `derivus/spine.py`.
+
+Timings and sizes quoted on this page were measured on one developer workstation, in one process,
+on a local disk; they are orders of magnitude, not gated figures. Where the page leaves the
+engine's numbers for the record's mechanisms, the [Trust limits](#trust-limits) and
+[Defaults](#defaults) sections are what a reviewer reads first.
 
 ## The package, and the one dependency
 
@@ -87,19 +92,46 @@ A sibling package on the `derivus_mcp` terms: in the wheel, never importing the 
 surface is **stdlib plus `cryptography`** (AES-GCM sealing, Ed25519 checkpoint signatures) and nothing
 else, held by an AST gate over every module and a subprocess gate proving `import derivus_spine` pulls
 no torch and no `derivus.*`. The extra is `pip install derivus[enterprise]`, orthogonal to `desk`.
-`DV_Spine init | verify [--chain-only] | checkpoint | status | follow | oracle` is the console script; the home is
+`DV_Spine` is the console script ([its verbs](#the-cli)); the home is
 `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine` — the spine is the CENTER's store and
 deliberately not `DV_HOME`, which is the edge's.
+
+### The CLI
+
+| Verb | What it does |
+| --- | --- |
+| `init` | mint a home: keys, genesis, the published verifying key, the first checkpoint |
+| `verify [--chain-only]` | `verify_home`, entitled or keyless |
+| `checkpoint` | sign the current head and append the `checkpoint` |
+| `status` | print `home`, `head_lsn`, `head_hash` and whether bodies are readable; no fold |
+| `follow <url> [--once] [--verify] [--interval] [--blobs] [--actor]` | pull a hub's frames into a replica |
+| `oracle [--script] [--against] [--diary] [--pnl]` | the fourteen invariants; exit 1 on one that fails |
+| `seed [--at] [--out]` | mint every fold but the strip's at an official close |
+| `enroll`, `grant`, `rewrap`, `name`, `whoami` | seats, the capabilities document, key wraps, display names, token check |
+| `declare`, `policy`, `portfolio` | declare a reserved policy, report those in force, declare a node |
+
+`custody.materialize`, `custody.declare_escrow` and `custody.recover_escrow` are library functions
+with no CLI verb.
 
 ## The truth layer is files
 
 ```
 DV_SPINE_HOME/
-  log/segment-00000001.jsonl   append-only frames, fsync per append, roll at 64 MiB
-  blobs/ab/cd/<sha256>         content-addressed, write-once: tmp + fsync + os.replace
-  keys/                        blind.key, class_firm.key, the Ed25519 checkpoint pair
-  seeds/<projector>-<v>-<lsn>  a fold cached at a close: derivable, and deletable
+  .writer.lock                       the writer's claim
+  log/segment-00000001.jsonl         append-only frames, one fsync per append, roll at 64 MiB
+  blobs/ab/cd/<sha256>               content-addressed, write-once: tmp + fsync + os.replace
+  blobs/tmp/                         scratch for a put in flight
+  keys/                              blind.key, class_firm.key, checkpoint_signing.key, checkpoint_verify.key
+  keys/seats/<sha256(subject)[:16]>.key   a seat's private key where the hub minted it
+  names.json                         display names, a mutable side table outside the log
+  seeds/<projector>-<v>-<lsn>.json   a fold cached at a close: derivable, and deletable
 ```
+
+Durability, as coded: an append writes one line, then `flush` and `fsync` of its segment; a blob
+put writes a scratch file, fsyncs it, `os.replace`s it into place and fsyncs the directory on POSIX
+only (Windows offers no directory handle, and `os.replace` is atomic there). The directory entry of a
+NEW segment is never fsynced, so a power loss just after a roll can lose the new segment's name on
+a file system that does not order it.
 
 The manifest is a PROJECTION — presence is the tree itself, and `verify` rebuilds what it needs by
 walking it — so "the record never trusts what it can re-derive" holds from day one. DuckDB belongs to a
@@ -114,47 +146,82 @@ delete method is gated as the increment-1 form of that law.
 Every event is a sealed body under a firm-visible envelope. `content_hash` is SHA-256 over the RFC 8785
 canonicalization of the semantic tuple (type, version, effective_time, actor, book, body), and it rides
 INSIDE the sealed body, because a plaintext hash in a public envelope is a dictionary oracle for
-low-entropy bodies. The envelope instead carries the `idempotency_tag`: an HMAC of the same canonical
-bytes under a writer-held blind key, so no keyless confirmation exists — gated with a toy key, and by
-the same tuple landing different tags in different homes. `event_hash` is SHA-256 over
-(idempotency_tag, ciphertext_hash, prev_hash, record_time): the chain, from a genesis `prev_hash` of
-sixty-four zeros. LSN is positional and outside both.
+low-entropy bodies. The envelope instead carries the `idempotency_tag`: an HMAC-SHA256 of the same
+canonical bytes under a writer-held blind key, so no keyless confirmation exists — gated with a toy
+key, and by the same tuple landing different tags in different homes. `event_hash` chains each frame
+to the one before it, from a genesis `prev_hash` of sixty-four zeros. LSN is positional and outside
+both.
+
+Every address the record and the engine take, byte for byte. "JCS" is RFC 8785 as
+`derivus_spine/canon.py` emits it; "engine form" is `json.dumps(obj, sort_keys=True,
+separators=(',', ':'), cls=CustomJsonEncoder)` encoded UTF-8 (`derivus.content_hash`,
+`derivus.spine.canonical`): Python float `repr`, ASCII escaping and code-point key order, which is
+NOT RFC 8785, so an RFC 8785 library re-derives different digests for every row marked engine form.
+Every digest is lowercase hex.
+
+| Value | Bytes | Function |
+| --- | --- | --- |
+| `content_hash` (inside the body) | JCS of `{actor, body, book, effective_time, type, version}` | SHA-256 |
+| `idempotency_tag` (envelope) | the same JCS bytes | HMAC-SHA256 under `keys/blind.key` |
+| `body` (envelope, base64) | plaintext: JCS of `{content_hash, payload}`; AAD: JCS of the nine fields `actor, book, effective_time, entitlement_class, event_type, event_version, idempotency_tag, prev_hash, record_time` | AES-256-GCM under `keys/class_firm.key`, fresh random 12-byte nonce; stored as `nonce ‖ ciphertext ‖ 16-byte tag` |
+| `ciphertext_hash` (recomputed, not stored) | the base64-decoded `body` | SHA-256 |
+| `event_hash` | JCS of `{ciphertext_hash, idempotency_tag, prev_hash, record_time}` | SHA-256 |
+| `checkpoint.signature` | JCS of `{event_hash, lsn}` | Ed25519 under `keys/checkpoint_signing.key` |
+| a blob's address | the blob's bytes as stored | SHA-256 |
+| `cashflow_key`, `ticket`, `fill_key`, a reserved policy's blob, a seed's `state_hash` | JCS of the object | SHA-256 |
+| an instrument's address (`fill.instrument`, `amendment`), `plan_hash`, `values_hash`, a run's job, values and result blobs | engine form | SHA-256 |
+
+The two forms compose because a blob is named by the SHA-256 of whatever bytes are handed in:
+`values_hash` and the address of the stored values vector are one number.
 
 The canonicaliser is VENDORED (stdlib only) and held to the RFC's own vectors. The trap is ECMAScript
 number serialization, where Python's `repr` has the right digits in the wrong clothing (`1e+16` where
 ES writes `10000000000000000`, `1e-07` where ES writes `1e-7`); a repr-passthrough implementation turns
-the gate file red by design. Keys sort by UTF-16 code unit; ints past 2^53 and non-finite floats refuse
-by name.
+the gate file red by design. Keys sort by UTF-16 code unit; ints past 2^53, non-finite floats and a
+string holding a lone surrogate refuse by name. A FLOAT at or past 2^53 canonicalises to an integer
+literal, which does not re-parse as the float it was, so a reader re-parsing canonical bytes passes
+a `parse_int` mapping such literals back to floats (`log.parse_number`).
 
-Sealing is AES-256-GCM under the firm class key with a fresh 96-bit nonce, AAD over the nine pre-LSN
-envelope fields — so no envelope field can move without the body refusing to open — and the interior
-binding `{content_hash, payload}` closing the loop. Classification ships DORMANT: one class, everyone
+Sealing is AES-256-GCM under the firm class key with a fresh random 96-bit nonce, AAD over the nine
+pre-LSN envelope fields — so no envelope field can move without the body refusing to open — and the
+interior binding `{content_hash, payload}` closing the loop. Random 96-bit nonces under one key are
+bounded to 2^32 invocations by NIST SP 800-38D §8.3; the class key is never rotated and nothing
+counts its invocations. Classification ships DORMANT: one class, everyone
 holds it, and the day desk two arrives walls are a classification decision, not a redesign. Sealing
 itself is not deferred with the classes: genesis-era bodies must be crypto-shreddable, and the shred is
 gated — delete the class key and the chain still verifies while every body is unreadable.
 
 ## The writer
 
-One writer, enforced rather than asserted: the first `append` takes an exclusive byte-range claim on
-`log/.writer.lock` (msvcrt/fcntl per platform) and a second writer refuses with `WriterBusy` naming the
-lock. Verify never takes it, so replicas read freely. The append flow is ordered so nothing partial can
-land: validate against the closed vocabulary → canonical bytes → tag → duplicate-tag check (on a hit the
-writer DECRYPTS the stored body and byte-compares canonical plaintexts — equal is the safe retry,
-coalesced onto the existing LSN; different is `CollisionRefusal` naming both) → every blob the body
-cites must already be in the store (`vocabulary.BLOB_FIELDS` declares which fields name stored bytes) →
-stamp, seal, hash, one fsynced line. A retry with no caller-passed `effective_time` coalesces because
-the tuple carries `null` there — the writer's own clock is not part of the fact — and `as_of_key`
-resolves null to `record_time` at read time.
+One writer, enforced rather than asserted: the first `append` takes an exclusive, non-blocking claim
+on `<home>/.writer.lock` (a one-byte `msvcrt` lock on Windows, a whole-file `fcntl.flock` on POSIX)
+and a second writer refuses with `WriterBusy` naming the lock. Verify never takes it, so replicas read
+freely. The append flow, in the order `SpineLog.append` runs it, so no refusal lands any part of
+the refused fact: the claim → validate against the closed vocabulary → the actor, the book, a portfolio
+outside the book, the effective time → authorise (a refused seat lands a `capability_denied` in the
+writer's voice, then raises) → stamp `record_time` → canonical bytes → `content_hash` → tag →
+duplicate-tag check (on a hit the writer DECRYPTS the stored body and byte-compares canonical
+plaintexts — equal is the safe retry, coalesced onto the existing LSN; different is
+`CollisionRefusal` naming both) → every blob the body cites must be in the store or handed in with
+the append as pending bytes (`vocabulary.BLOB_FIELDS` declares which fields name stored bytes) →
+seal → `event_hash` → put the pending blobs, fsynced → one fsynced line. A retry with no
+caller-passed `effective_time` coalesces because the tuple carries `null` there — the writer's own
+clock is not part of the fact — and `as_of_key` resolves null to `record_time` at read time.
 
 The vocabulary is CLOSED: seventeen trading fact types (`checkpoint` among them), the two custody
 types, increment 3's three provenance types, the paper's two and the writer's own reserved one, with
 validators naming the missing or surplus field. A consequence-shaped submission ("knocked_out") is
 refused with the closure stated — knocks and expiries are projections, never events.
 
-The torn-tail rule is exact: a final line with no terminating newline was never durable (the write is
-one call, newline last) and is truncated on open; a newline-TERMINATED line that will not parse is a
-durable line that was altered, and is `ChainBroken`. That distinction is what stops the recovery path
-being usable to roll a log back through its own checkpoints.
+The torn tail, as coded (`SpineLog._scan`): the write is one call, newline last, so an unterminated
+final line of the LAST segment that will not parse was interrupted mid-write and is truncated; an
+unterminated final line that DOES parse is kept, indexed and chained, and the next append starts a
+fresh line before it writes; a line that will not parse anywhere else — newline-terminated, or in an
+earlier segment — is a durable line that was altered, and is `ChainBroken`. That distinction is what
+stops the recovery path being usable to roll a log back through its own checkpoints. The scan runs
+on EVERY open of a `SpineLog` — a reader, `verify_home`, a replica — without the writer's claim, so a
+reader can truncate; a reader opening while an append is mid-write could see that append's
+unterminated bytes, and no gate covers that interleaving.
 
 ## Checkpoints, and verification as a replica
 
@@ -174,19 +241,42 @@ ciphertext it cannot read and says honestly that checkpoint authenticity and bod
 rather than skipping silently. Frames refuse surplus fields in both modes: there is no unauthenticated
 channel into the record.
 
+### Trust limits
+
+What verification proves today, and what it does not:
+
+| Property | Holds | Does not hold |
+| --- | --- | --- |
+| Chain integrity | every frame's `event_hash` recomputes and links, keyless | against anyone who can rewrite the whole home: the chain is self-consistent by construction |
+| Checkpoint authenticity | each checkpoint verifies under the key declared in force at its LSN | a key rotation is a rung because it sits on an intact chain: `verify_home` takes every `checkpoint_verifying_key` declaration as a new rung and checks neither that the key then in force signed it nor who declared it (the writer judged the declarer's scope at the append, where a capabilities document stood) |
+| Tamper-evidence against the hub | relative to a genesis event hash and verifying-key blob obtained OUT OF BAND, or to a replica that agrees | on the hub alone: `keys/checkpoint_signing.key` lives in the hub's home, so write access to that home can re-sign a rewritten history |
+| Idempotency tags | recomputed where `keys/blind.key` is present | on a home without the blind key, where they are not checked |
+| Time | `record_time` is the hub's own clock | no external timestamping, and no Merkle structure beyond the hash chain |
+
+### Replay: what the tuple pins
+
+A `run_completed` pins `(plan_hash, values_hash, engine_version, seed)`. `engine_version` is the
+package's hand-set version string (`derivus/_version.py`), so two builds carrying one version string
+are indistinguishable to the record; the tuple names no commit, no torch or CUDA version and no
+device; and `Deterministic_Kernels` defaults to `No` (`Yes` calls
+`torch.use_deterministic_algorithms(True, warn_only=True)`, which warns rather than refuses on a
+kernel with no deterministic form). Bit-equality on replay is therefore to be expected only on the
+same build, stack and device, and for a gradient taken on a GPU only under
+`Deterministic_Kernels: Yes`; elsewhere a declared tolerance policy decides, and with none every
+difference is a departure. This limit and the key rotation's are rows on the [Roadmap](roadmap.md).
+
 ## The gates
 
-106 in four files (`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py`,
-`test_spine_store.py`; the glob `tests/test_spine*.py` is the wider fifteen-file set worth 379 of
-the 412 above, and `tests/test_diary.py` carries the rest),
+The record's gates are `tests/test_spine*.py` and `tests/test_diary.py`; this increment's are
+`test_spine.py`, `test_spine_canon.py`, `test_spine_imports.py` and `test_spine_store.py`,
 all real stores in temp dirs, every fault injected by doctoring DATA on disk. The shapes worth naming:
 three tampers on three copies, each caught by a different layer (body byte by the chain, envelope field
 by the AAD, record_time by a keyless replica); a re-forged tail caught by the interior binding AND its
 dual caught by the stale tag, each proven independently load-bearing in the posture where the other is
-absent; the design's synthetic book (late booking, backdated amendment, republished fixing under one
-(index, date, source) key, superseding close) driving all seventeen fact types through the writer
-with as-of provably departing from as-at; and restore as file-copy, both replica shapes re-verified on
-the far side.
+absent; the synthetic book of `tests/test_spine.py` (late booking, backdated amendment, republished
+fixing under one (index, date, source) key, superseding close) driving all seventeen fact types
+through the writer with as-of provably departing from as-at; and restore as file-copy, both replica
+shapes re-verified on the far side.
 
 ## Increment 2 — identity, attribution, key custody
 
@@ -195,9 +285,9 @@ hands in as data — nothing is fetched, verification stays local — under an R
 refuses `none` and every HMAC by name before any key is selected (the alg-confusion attacks are gates,
 not warnings), with `kid` selection across key types, the ES256 raw-`R||S` signature contract,
 `exp`/`nbf` on an injectable clock, and OIDC Core's `azp` rule so a co-audienced client cannot replay
-its own token as a spine credential. The subject reference is the token's `sub`, pseudonymous by the
-the design's rule; display names live in `names.json`, a mutable side table OUTSIDE the log whose erasure is
-gated to leave every chain byte identical.
+its own token as a spine credential. The subject reference is the token's `sub`, and the record holds
+nothing else about a person: display names live in `names.json`, a mutable side table OUTSIDE the log
+whose erasure is gated to leave every chain byte identical.
 
 **Capabilities are one document and one pure function.** The document — grants of (verb × node) over
 `validate | book | approve | mark | document | settle | admin`, plus READ over entitlement classes —
@@ -219,14 +309,16 @@ desk two — one function instead of one constant).
 subject — ephemeral ECDH, HKDF, AES-GCM with the (class, subject) pair bound into the AAD, so a wrap
 re-addressed to another seat refuses to open — plus an escrow wrap under a declared escrow key. `rewrap`
 is idempotent and driven by the document in force; `grant` reports the rewrap it now owes, so "rewrap on
-grant change" is a printed obligation rather than operator memory; `materialize` turns a chain-only
-replica entitled off its wrap without overwriting anything; escrow recovery is gated on a
-crypto-shredded copy. **THREE residuals are declared**: the design's two (forward-only revocation,
-traffic shape) and this increment's own — a hub-minted seat key is a bootstrap the hub has seen, stated
-in `custody.py`'s docstring, with seat-generated `--public-key` enrollment as the form that eliminates
+grant change" is a printed obligation rather than operator memory; `custody.materialize` (a library
+function, no CLI verb) turns a chain-only replica entitled off its wrap without overwriting anything;
+escrow recovery is gated on a crypto-shredded copy. **THREE residuals are declared**: revocation is
+forward-only (no unwrap and no re-sealing of history, so a revoked seat keeps what its wrap opened;
+the remedy, a class-key rotation, is not built), the envelopes' traffic shape is visible to every
+reader, and a hub-minted seat key is a bootstrap the hub has seen, stated in
+`custody.py`'s docstring, with seat-generated `--public-key` enrollment as the form that eliminates
 it.
 
-The CLI grows `enroll | grant | rewrap | name | whoami`. Of the 64 new gates the two shapes worth
+The CLI grows `enroll | grant | rewrap | name | whoami`. Of the new gates the two shapes worth
 naming are the strand-and-recover walk (a document stranding the last admin, every later declaration
 refused, the genesis seat walking out, the recovered admin later revoked) and the stale-fold check (a
 revocation lands and the same open handle answers off the platter, never a snapshot).
@@ -244,9 +336,9 @@ two fields: a nullable seed (a job declaring no `Random_Seed` is hashed with a n
 substituted zero would name a tuple no result was ever filed under) and an object of name-to-number for
 a quote's solved coordinates.
 
-**The verbs live in the spine and the engine gets delegators.** The build order says "booking
-verbs on `Context`"; the house's first law says no module under `derivus/` learns about users, workflow
-or storage. Both hold because the LOGIC is `derivus_spine/verbs.py` — plain functions over plain data —
+**The verbs live in the spine and the engine gets delegators.** The booking verbs are reachable
+from `Context`, and no module under `derivus/` learns about users, workflow or storage. Both hold
+because the LOGIC is `derivus_spine/verbs.py` — plain functions over plain data —
 and `Context` gains five one-line delegators (`book | amend | apply_lifecycle | declare_market |
 pin_result`) that canonicalise through the engine's own encoder and hand bytes across.
 `derivus/spine.py` is the whole seam: it imports `derivus_spine` LAZILY inside the function (the
@@ -290,10 +382,17 @@ result is refused, because one replay tuple cannot have two); bit-equality as th
 per-result-class tolerance comparison; and refusal by name for a version that is not the recorded one,
 bytes that will not reproduce, or a result class the policy does not name. The fold reads
 `run_completed` and never `result_pinned`, so one unverified promotion can never become the evidence for
-the next. **The spine admits no tolerance of its own**: the only floating-point comparison in the
+the next. **The spine admits no tolerance of its own**: the only tolerance comparison in the
 package is `policy.compare`, it runs on numbers that came out of the engine, and every epsilon it uses
 was declared by a deployment in a hashed policy blob — a home that has declared no tolerance policy pins
 nothing at all.
+
+A TOLERANCE POLICY is the reserved policy `tolerance`, `{"tolerances": {class: epsilon}}`: a class
+is a top-level key of the result, and epsilon a finite number ≥ 0 in that result's own units.
+`policy.compare` walks the claimed and replayed results in lockstep: a difference of shape - a
+missing class or table, a row count, a label or a date - is a departure no epsilon admits; two
+numbers inside a named class depart where `|a − b| > epsilon`, an ABSOLUTE comparison; and a class
+the policy does not name departs on any difference.
 
 **A quote pins TWO hashes, and what they are asked is 5b's.** `quote_filed` carries the values vector
 the quote was struck on and the book plan its marginal charge was solved against, beside the solved
@@ -314,7 +413,7 @@ quote id for an approval), plus a `NettingCollateralSet` above the trade to name
 `delete` records nothing: the fact that ends a trade is an election, an observation or a status
 transition, never an inference from a row leaving a cache.
 
-**58 new gates in two files.** `tests/test_spine_verbs.py` drives the spine half with no engine anywhere
+**The gates are two files.** `tests/test_spine_verbs.py` drives the spine half with no engine anywhere
 near it — the executors are ordinary functions written in the file. `tests/test_spine_engine.py` drives
 the seam through both at once: real homes, a real book, a real `BaseValuation`, the real partition. The
 shapes worth naming: the plan hash RE-DERIVED by recompiling the blob-stored job document at the
@@ -328,7 +427,7 @@ still queued" is a fact rather than a timing window.
 ## Increment 4a — the folds, the seeds, and the fixings policy
 
 **A projection is a pure fold, and a consequence is never a fact.** `derivus_spine/projections.py` is
-seven projectors and one driver: `fold(log, projector, lsn=None, seed=None)` streams the frames a
+seven projectors when this landed (fourteen today) and one driver: `fold(log, projector, lsn=None, seed=None)` streams the frames a
 projector NAMES, opens only those bodies, and answers state nobody edited. `positions`, `blotter`,
 `lifecycle`, `markets`, `attestations`, `decisions` and `activity` each carry three members and no
 state of their own — `initial`, `apply`, `rows` — so what a reader sees is sorted canonicalisable JSON
@@ -374,7 +473,7 @@ a plan may use — and is left alone where it did not, so one stray print cannot
 The prints are the `lifecycle` fold's rather than a second walk for them; the policy itself is read
 the way every policy is, by `in_force`.
 
-**Twelve gates** (`tests/test_spine_projections.py`), eleven on the design's own synthetic book,
+**The gates** (`tests/test_spine_projections.py`), most on the synthetic book of `tests/test_spine.py`,
 imported rather than written again: a committed golden per projector and for the strip's table of
 sentences, seed equivalence with the fold pure in its seed, the seeded fold seeing the restatement
 behind it, supersession in both directions and under the whole key, a knock derived while
@@ -382,7 +481,7 @@ behind it, supersession in both directions and under the whole key, a knock deri
 bodies while a seed of another version, another home or a torn file refuses, a fold that never claims
 the home and sees the writer's next frame, the fixings refusal and the declared order, `seeds/`
 invisible to verification, and the import surface with the gate's glob widened to every `.py` at any
-depth so a subpackage cannot smuggle one past it. The twelfth is a second fixture for what the first
+depth so a subpackage cannot smuggle one past it. One more takes a second fixture for what the first
 cannot say: a position closed to zero, one replay tuple attested twice (the FIRST stands, as
 `verbs.attestation` answers), one policy declared twice (the LAST stands, as `policy.in_force`
 answers), a print superseded twice, and two verdicts read in the order they were filed.
@@ -487,9 +586,10 @@ so a desk that declares the missing order is answered on its next ask rather tha
 thing until the book file moves.
 
 **The close check is the catch-up rule as a read.** `GET /book/close/check?date=` answers whether a
-close on that day is legal and what it waits on: a `fixing` row no declared source has printed, a
-`payment` row no settlement transition was filed against its key, and an `expiry` row whose terms
-vest a choice nobody has elected. An expiry a fixing determines never blocks a close — the fixing
+close on that day is legal and what it waits on (`close_verdict`): a `fixing` row no declared source
+has printed, a `payment` row no settlement transition was filed against its key, an `expiry` row
+whose terms vest a choice nobody has elected, and - on every day, having no date of its own - an
+`unreadable` row, a deal the compile could not read. An expiry a fixing determines never blocks a close — the fixing
 and payment rows already carry it. Nothing is declared here; declaring the close stays a verb.
 `?date=` is PARSED to a calendar day — a time, a year or a garbage string refuses 422 by name, since
 a string compare would answer `legal` for an empty one. `GET /book/diary` serves the rows, cached
@@ -520,7 +620,7 @@ fold cannot make a client skip an event. The fold advances the strip's own `(lsn
 the pair `fold` takes, a strip's state being its history, and never a seed FILE, which is minted at
 a close and is not what a page wants. **A page saves the rows and not the read**: `Log.frames`
 reaches `start_lsn` by skipping LSNs rather than by seeking to a byte offset, so the log parses its
-segments either way. At the design's synthetic home — 21 events — the fold is 0.24 ms whole and
+segments either way. On the synthetic book's home — 21 events — the fold is 0.24 ms whole and
 0.25 ms from the head, against 0.41 ms to open the handle at all; at 2,004 events one HTTP read is
 25 ms and 40 KB for the capped strip against 21 ms and 22 bytes for a page that answers nothing
 new, and one beat of the web's poll is 47 ms at 2,005 events. Seeking would be a change inside the
@@ -649,7 +749,8 @@ self-declared, so the name and the fold cannot disagree about who owns a board. 
 and the designation rule are checked independently, neither standing behind the other. **The
 surveillance and admin read of a private market is DEFERRED**: it wants a second entitlement class
 and a `read` row per subject, which is the reclassification the dormant mechanism holds for desk
-two, and a per-market ACL now would be the per-object ACL the design forbids by name. Until then the
+two, and a per-market ACL now would be a per-object ACL, where entitlement is a class derived from an event's provenance
+(`vocabulary.classify`). Until then the
 owner rule refuses at the verb, without minting a fact for it.
 
 **The mouths.** `DV_Spine declare <policy> <file.json> --actor` puts any reserved policy on the
@@ -659,10 +760,10 @@ blob and the LSN of the declaration that put it there, a name nobody declared re
 three come off ONE WALK — `policy.in_force` answers the position of the frame it chose — because
 `policy_declared` is open-bodied and a declaration under a reserved name carrying no blob is a fact
 this reading steps over rather than a position it could borrow. `Context` gains `approve`, `reject`
-and `declare_close` beside `declare_market`, and the seam gains `tiers_policy`, `quotes` and
-`verdicts` as folds.
+and `declare_close` beside `declare_market`, and the seam gains `tiers_policy` and `verdicts`
+as folds.
 
-**18 new gates in four files**, with the `quotes` golden and its rows joining the twelve in
+**The gates are four files**, with the `quotes` golden and its rows joining those in
 `tests/test_spine_projections.py`. The shapes worth naming: the whole closure of the document met AT
 THE DECLARATION, seventeen ways at once, including the two that are not merely shape — a restated
 staleness window and a private market under a designation or a tier; three spellings of one workflow
@@ -705,16 +806,16 @@ carries refuses before anything appends. The TICKET an approval signs is minted 
 ticket, and no other trade ever does.
 
 **`POST /book/quote` IS THE ACCEPTANCE**, and the booking where the policy admits it. In order, and
-every refusal before anything appends: the desk's own `Quote Policy.firm_seconds`, which is a promise
-to a client and comes first; the PLAN, an equality, refused where the book moved under the solve; the
+every refusal before anything appends: the desk's own `Quote Policy.firm_seconds` (default 600 s,
+checked by the service), which is a promise to a client and comes first; the PLAN, an equality, refused where the book moved under the solve; the
 PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says it
 was already too old and refusing nothing where a home declared none; and the PLAN the acceptance
 leaves the book at, refused where it is not the one the quote pinned - a deploy that changes how a
 document is read moves that hash too, so the pending quotes are drained before one, or re-quoted.
 Then the MARKET, which is REPORTED as `{pinned, current, moved}` and NEVER refused: between a quote and the
 client's word the board may move materially and we follow the spine as usual, the desk's own window
-being the promise that bounds it. `firmness` is the one module that answers all four, and its
-document is one window and no second — `values_seconds` and `plan_seconds` are refused by name at the
+being the promise that bounds it. `firmness` answers three of these - the plan, the pillar age and
+the market (`firmness.assess`) - and its document is one window and no second — `values_seconds` and `plan_seconds` are refused by name at the
 declaration, so a desk carrying the old shape is told where its question went. **THE LAST THREE ARE
 READ INSIDE THE EDIT CLOSURE**, against the document the trade lands in: the closure reads under the
 book lock and the read above it does not, so a check taken up there is a statement about a book
@@ -767,7 +868,10 @@ signature. Folding them from genesis costs **0.164 ms per decision filed**, the 
 the `quotes` fold pays, so a desk two thousand decisions in would pay about 330 ms to book a trade.
 Holding the `(lsn, state)` pair the fold already takes — one per projector, under the HISTORY they
 were taken on (the genesis event hash, so a home re-minted in place drops them), dropped when it
-changes — makes it **0.026 ms per decision**, 6.3× cheaper and about 57 ms at two thousand. Cheaper
+changes — makes it **0.026 ms per decision**. The pairs are held process-wide and keyed on the
+genesis hash alone, so two homes copied from one template and read by one process answer each
+other's folds once they diverge (a [Roadmap](roadmap.md) row; one home per service process is the
+deployed shape). That holding is 6.3× cheaper and about 57 ms at two thousand. Cheaper
 but not flat, and the residual is not the walk: 0.011 of that is the envelope walk every fold pays
 per EVENT, and the other 0.015 is `_from_seed`'s canonical copy of a state that grows with the
 decisions — the same copy that makes the `activity` strip 219 ms where folding it costs 38. Holding
@@ -803,7 +907,8 @@ it back.
 
 **The binding closes its own warning.** `book_deal` carries the `quantity`, `execution_reference` and
 `actor` a recorded desk requires, `amend_deal` and `solve_structure` carry `actor`, `book_quote` is
-documented as the acceptance, and `approve_quote`/`reject_quote` are the second seat's. The server
+documented as the acceptance, and `approve_quote`/`reject_quote` (by quote id) and
+`approve_ticket`/`reject_ticket` (by ticket) are the second seat's. The server
 `INSTRUCTIONS` and the `quote_a_structure` prompt say the walk: quote, the client's word, accept,
 and where the desk's policy wants a second seat, its approval of the trade booked pending.
 
@@ -827,7 +932,7 @@ the second answer to who owns one board that the rule exists to prevent.
 answers, on the day it answers for: `market` defaults to `official` and `date` to the book's own
 `Calculation.Base_Date`, parsed by the check's own reader, and a day the check calls illegal refuses
 naming what it waits on with NOTHING APPENDED — a close over a payment nobody settled, a fixing nobody
-printed or a payoff nobody elected is a clean bill nobody earned. Both defaults are CONVENTIONS, so
+printed, a payoff nobody elected or a deal the compile could not read is a clean bill nobody earned. Both defaults are CONVENTIONS, so
 only an omitted key takes one: a date that names nothing is refused rather than defaulted, since a
 string compare would call the empty one legal. The verdict is `close_verdict`, the rule as a pure
 function over rows, so the read verb and the declaration answer ONE verdict about ONE document: the
@@ -867,10 +972,12 @@ Enforcement activates BY DECLARATION, as at the writer: with no capabilities doc
 job is admitted and the box is the single-user instrument it was, and under one a request naming no
 seat is refused by name — a job nobody signed for is one the record could not attribute, and it is
 never taken for the deployment's own. **THE SEAT IS THE REQUEST'S**: `/execute`, `/book/price`,
-`/book/solve`, `/book/model`, `/book/xva`, `/book/setup`, `/book/structure`, `/book/close` and
-`/book/settlements` all take an `actor` and are admitted under it, so a stranger reaching this box is
-a stranger to the record too. The POLL PATHS name `spine.hub()`, `DV_SPINE_ACTOR` — the diary read,
-the tick and the securities verification are the deployment's own and that name is the whole of what
+`/book/solve`, `/book/model`, `/book/xva`, `/book/setup`, `/book/structure`, `/book/close`,
+`/book/settlements`, `/calculations/run` and `/book/marks` all take an `actor` and are admitted
+under it - a seat the verified token names where a key set is configured, and otherwise the name
+the request states ([what that binds](#what-is-not-built-yet)). The POLL PATHS name `spine.hub()`,
+`DV_SPINE_ACTOR` — the diary read, the tick (`/book/bloomberg`) and the securities verification
+(`/book/securities/verify`) are queued under the deployment's own seat whoever asks; that name is the whole of what
 the metronome has, which is also why the one grant a ticking desk cannot withhold must not be the
 grant that admits everybody.
 
@@ -885,9 +992,11 @@ A refusal is a fact: `SpineLog.refuse` is the denial verb IN PUBLIC, so the queu
 voice, and a repeated refusal coalesces onto the LSN it already has. The job never reaches the
 executor and no result is stored — counted, never believed — and the caller gets a 422 in the
 record's own words.
-**This closes increment 3's own boundary**: `pin_result` re-executes before the writer adjudicates the
-append, and it has no HTTP verb, so the queue was the whole of the path an unscoped actor had to this
-box's arithmetic and the queue now asks first. The cost is a fold and NOTHING CACHES IT:
+**This closes increment 3's boundary for the queue**: `pin_result` re-executes before the writer
+adjudicates the append, and it has no HTTP verb, so a queued job now asks first. The queue is NOT the
+only path to this box's arithmetic: `GET /book/risk` runs its consolidated greeks valuation and
+`GET /book/pnl?explain=` its three valuations on the request thread, admitted by nobody (a
+[Roadmap](roadmap.md) row). Admission costs a fold and NOTHING CACHES IT:
 `capability.state_at` is 1.2 ms at 21 events and 20.5 ms at 1,994, with or without a document, while
 the cheapest thing on this queue is a diary compile — the walk itself is the log's missing seek, which
 is one row on the roadmap for every reader that pays it.
@@ -923,6 +1032,9 @@ serves six of a frame's twelve fields plus a declared sentence, and every one of
 something `accept` asks for. `GET /spine/frames?since=&limit=` serves the frame itself, `body` the
 base64 ciphertext it is on the platter, opening nothing — so it answers on a crypto-shredded home
 exactly as it answers on the hub — with `since` the last LSN delivered, as the strip's cursor is.
+It asks for NO SEAT: where a key set is configured it wants a verified token, and otherwise
+nothing, so every envelope - actor, book, event type, both times - is readable by any caller that
+reaches the service; only the bodies are sealed.
 `GET /spine/blobs/{hash}` serves bytes by address, `store.get` re-hashing on the way out so the
 serving side needs no trust, gated on the asking seat's READ row against the blob's class — firm for
 everything while classification is dormant — a home declaring no document serving everyone as every
@@ -956,7 +1068,9 @@ referential closure stay whole-history assertions, both reaching behind any rang
 
 **THE AUTHENTICITY BOUNDARY, said out loud**: a checkpoint signs the head BEFORE it, so a replica
 proves authenticity up to its last pulled checkpoint and the frames past it are chained but unsigned.
-A follower wanting signed history asks the hub to checkpoint, or waits.
+A checkpoint is minted at `init` and by `DV_Spine checkpoint` on the hub, and by nothing else - no
+HTTP verb, no close - so how often history is signed is the operator's policy, and a follower
+wanting signed history waits for the next one.
 
 **THE DOORBELL IS A NOTIFICATION AND NEVER A DELIVERY.** `GET /spine/doorbell` is an event stream
 carrying `{lsn, head}` and nothing else, plus a comment on a fixed cadence so a proxy does not close
@@ -966,8 +1080,8 @@ of the log runs inside the service and a watcher that refuses is logged rather t
 an append. Because a beat carries a position and the pull asks from the position the replica stands
 at, a beat dropped is covered by the next, a beat repeated is one empty pull, and a beat behind the
 head is a pull that answers nothing — which is why three replicas fed one stream, one intact, one
-losing every third beat, one hearing them twice and out of order, end at ONE head hash with all nine
-projectors folding to byte-equal rows. The beat itself costs **0.164 ms** from the append landing to
+losing every third beat, one hearing them twice and out of order, end at ONE head hash with every
+projector - fourteen today - folding to byte-equal rows. The beat itself costs **0.164 ms** from the append landing to
 a follower reading it over a socket on one box, and 0.014 ms where the two share a process — against
 the two-second cadence it replaces. The desk's strip rides an `EventSource` on it and keeps the
 two-second poll as the fallback and for the status block; the follower does the same, falling back
@@ -984,7 +1098,7 @@ fiftieth reader behind a fifteen-second wait. And a client that goes away takes 
 it, dropped by the generator's own close rather than whenever a cyclic collection runs: fifty opened
 and closed leave zero.
 
-**The ninth projector.** `denials` reads `capability_denied` and answers `{lsn, subject, verb, book,
+**The `denials` projector** reads `capability_denied` and answers `{lsn, subject, verb, book,
 attempted_type}` — the only reading that says who was refused what, since the envelope says only that
 a refusal happened and the strip renders one declared sentence for every one of them. Its reader is
 the acceptance game's oracle, which holds a script's attempts against the refusals the record kept. A
@@ -1030,7 +1144,11 @@ could not put — a question nobody asked is never a question that held. The fou
    one way an approval stands alone until the act is retried, which is right to name. The ENVELOPE
    HALF stands without a key — a type no verb declares is a write nobody could be scoped for, a type
    only the writer files under any other name is its voice forged, and the writer's name on anything
-   its voice does not say is a seat wearing it;
+   its voice does not say is a seat wearing it. Two limits, both [Roadmap](roadmap.md) rows: every
+   frame is judged by the verb map deployed NOW, so a frame filed before a type moved between verbs
+   reads as outside its seat; and under a tiers policy declaring both an automatic and a four-eyes
+   tier, a forged hub approval of a ticket only the four-eyes tier admits holds here, caught only by
+   a copy agreeing with the hub (invariant 1);
 3. **every refusal is a denial** — what the script says was refused AT THE WRITER is in the
    `denials` fold and nothing else is, matched on the four fields the writer files rather than on a
    position, since a seat refused twice coalesces. A refusal that never reached the writer mints
@@ -1161,9 +1279,10 @@ at what size, which ticket the rates approver rejects, and which P&L windows are
 A ROLE IS A CALLABLE over the table, which is the whole of the interface — the scripted players are
 functions, and a host driving `DV_MCP` against the same hub plays the same days by handing one of
 its own in; the LLM-driven mode is that substitution and nothing else. ONE ACT REACHES PAST THE
-BINDING and says so: a fixing is printed through the hub's writer, no endpoint filing one. A gate
-holds the players to that: every binding call a published tool and the raw transport never, every
-CLI verb a shipped subcommand, the writer only for a print.
+BINDING: the game prints its fixing through the hub's writer, although `POST /book/lifecycle` and
+the binding's `file_lifecycle` now file a print, an election or a determination. A gate holds the
+players to the rest: every binding call a published tool and the raw transport never, every CLI
+verb a shipped subcommand, the writer only for that print.
 
 **SIXTEEN OBJECTIVES, AND THE ANSWERS COME IN THREE SHAPES.** A DENIAL is the writer refusing an
 append and filing the refusal as a fact: settlements booking a trade, a trader settling its own, an
@@ -1237,7 +1356,7 @@ killing mutation their docstrings name red.
 filed before them validates exactly as it did: the `agreement` and the `portfolio` it sits under,
 and the `price` it was done at. Its `quantity` is the signed position CHANGE in units of the
 instrument - 1 the instrument as written, -1 closing it, -0.5 unwinding half - and the position is
-a fold, never written. `positions` is version 2 and keys by instrument × agreement × portfolio: one
+a fold, never written. `positions` keys by instrument × agreement × portfolio: one
 instrument under two agreements is two positions, credit exposure being per agreement, and in two
 portfolios it is two, a portfolio being where risk is owned. A fill filed before the key existed
 sits under its netting set and its book, and an amendment carries every row forward under its own
@@ -1583,7 +1702,8 @@ it withholds. A READ RUNS UNDER NO REQUESTER: the diary it compiles is the hub's
 under `DV_SPINE_ACTOR` with the request's seat set aside (`spine.deployed`), so no read files a
 denial. Risk, XVA, `/book` and `/results` stay hub-wide. THIS IS PRESENTATION while classification
 is dormant: one class key opens every body, so a seat holding a `read` row reads every frame whole
-off `/spine/frames`, and the filter stops being presentation the day a second class exists.
+off `/spine/frames` - whose envelopes any caller reads, the read asking for no seat - and the filter
+stops being presentation the day a second class exists.
 
 **THE WORKLIST.** `GET /book/worklist` is six lists of what waits on the seat asking, read off what
 stands, each what one verb acts on where the seat holds it, each row `{kind, what, key, lsn,
@@ -1594,7 +1714,8 @@ against, at the key they were filled under (`spine.fill_key`) - a restrike makin
 due, one stating the day it was matched - and the collateral calls the marks of the book's day
 make, keyed by agreement, every movement filed counted and one nobody can work out listed with its
 `unknown`, for `settle`; closes on the market designated for P&L on a DAY after the last one
-marked - marks run forward, so no earlier day is owed - for `mark` over the book; and rejected
+marked, or a close restated on the last marked day after its marks - marks run forward, so no
+earlier day is owed - for `mark` over the book; and rejected
 trades still standing in a position, for `book`. `counts` says how many each list
 holds and each answers the newest `WORKLIST_ROWS` (the strip's 200). Nothing is filed for it, so a
 row leaves the moment its fact lands; the binding's `worklist` asks it, and the web UI's banner
@@ -1705,7 +1826,9 @@ close's spots do not value and which refuses as any asset without a spot does; t
 set's `Collateral_Assets` - a declared row states no amount, and a sole cash row stating none is
 one unit of it, the balance being held in units of its asset, so an agreement declaring one
 eligible cash row prices collateralised, while a row among several states its weight or is refused
-by name; and the hedge simulation's opening state, which reads the file.
+by name; rating-dependent support, every `CreditSupportList` - thresholds, minimum transfers and the
+independent amount - being read at its FIRST row's amount, as the engine reads it, whatever the
+counterparty's rating; and the hedge simulation's opening state, which reads the file.
 
 `tests/test_collateral.py` holds the arithmetic - the dials against `utils.CreditSupportList`,
 `At` in its three regimes, the strict minimum on both sides, `Haircut_Posted` on either side, the
@@ -1723,13 +1846,17 @@ seat - every killing mutation their docstrings name red.
 
 No DuckDB and no reading plane: every question a desk asks the record is a fold, the largest fold
 state is 167 bytes per event, and the trigger is one projector's state passing a declared budget.
-The network is READ-ONLY and localhost's: tokens are verified rather than fetched, the three reads a
-replica uses serve and never take, and no write path is exposed beyond the box — under that posture,
-with no key set named, `actor` is ATTRIBUTION rather than authentication and the honest control is
-the bind address; with one named, the seat is the verified token's subject. No
-class-key rotation (rewrap adds recipients; rotation is a later logged event). The external anchor
-hook is the checkpoint pair on `DV_Spine status`; wiring it to an anchor target is deployment data,
-out of scope by the design's own sentence.
+No peer writes: the three reads a replica uses serve and never take, and the service's own POST
+verbs are the only writers, bound to `127.0.0.1` unless `DV_Service --bind` says otherwise. Tokens
+are verified rather than fetched. WITH NO KEY SET NAMED, `actor` is ATTRIBUTION rather than
+authentication: a request's seat is the name it states, so four-eyes, the capability refusals and
+the queue's admission bind that name and not an identity; and CORS admits ANY origin by default
+(`DV_Service --origin` narrows it), so a web page open in a browser on the box can call the local
+service. The controls in that posture are the bind address, the origin list and who can run a
+browser or a process on the box; with a key set named, the seat is the verified token's subject. No
+class-key rotation (rewrap adds recipients; rotation is a later logged event). No external anchor:
+`DV_Spine status` prints the head (`head_lsn`, `head_hash`), which an operator may publish wherever
+it chooses, and nothing in the package sends it anywhere.
 
 Six boundaries stand, declared rather than discovered. A STANDING run must post its job document — a
 `plan_id` names a parse, `Context.save_json` is explicitly not a complete round trip, and a provenance
@@ -1746,3 +1873,47 @@ the writer, and this phase has one deployment. And OPENING a log still scans eve
 the head, the tag index and the offset per LSN — 11.3 ms at 2,005 events, which every reader pays
 once and 6a's seek does not touch — so the reading half is closed and the open's own half waits on a
 checkpointed index: the three maps written down at a close and re-read instead of rebuilt.
+
+## Defaults
+
+| Setting | Default | Where |
+| --- | --- | --- |
+| Segment roll | 64 MiB | `log.SEGMENT_LIMIT` |
+| Home | `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine` (CLI only; the service records nothing with `DV_SPINE_HOME` unset) | `cli.py`, `derivus/spine.py` |
+| Service bind, port | `127.0.0.1`, 8000 | `DV_Service --bind`, `--port` |
+| CORS origins | any | `DV_Service --origin` |
+| ID-token clock leeway on `exp`, `nbf` | 60 s | `identity.LEEWAY_SECONDS` |
+| Accepted token algorithms | RS256, ES256 | `identity.py` |
+| Replica page (`/spine/frames` without `?limit=`, `follow`) | 500 frames | `service.REPLICA_PAGE`, `replica.PAGE` |
+| Doorbell heartbeat | 15 s | `service.DOORBELL_SECONDS` |
+| Follower poll interval without the doorbell | 2 s | `replica.INTERVAL` |
+| `/book/activity` page, worklist rows per list | 200 | `book_activity(limit=)`, `service.WORKLIST_ROWS` |
+| Quote firmness (`Quote Policy.firm_seconds`) | 600 s | `structures.py` |
+| Pillar staleness (`pillar_seconds` in the `firmness` policy) | none: a home declaring none refuses nothing | `policy.py` |
+| Tolerance policy | none: every replay difference departs | `policy.compare` |
+| Capabilities | none: enforcement activates by declaration; break-glass and the writer's own voice are gated from genesis | `log.py`, `capability.py` |
+
+## References
+
+- RFC 8785, *JSON Canonicalization Scheme (JCS)*. A. Rundgren, B. Jordan, S. Erdtman, June 2020.
+  <https://www.rfc-editor.org/rfc/rfc8785>
+- FIPS 180-4, *Secure Hash Standard (SHS)*. NIST, 2015.
+  [doi:10.6028/NIST.FIPS.180-4](https://doi.org/10.6028/NIST.FIPS.180-4)
+- RFC 2104, *HMAC: Keyed-Hashing for Message Authentication*. H. Krawczyk, M. Bellare, R. Canetti,
+  February 1997. <https://www.rfc-editor.org/rfc/rfc2104>
+- NIST SP 800-38D, *Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM)
+  and GMAC*. M. Dworkin, 2007. [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
+- RFC 8032, *Edwards-Curve Digital Signature Algorithm (EdDSA)*. S. Josefsson, I. Liusvaara,
+  January 2017. <https://www.rfc-editor.org/rfc/rfc8032>
+- RFC 7748, *Elliptic Curves for Security*. A. Langley, M. Hamburg, S. Turner, January 2016.
+  <https://www.rfc-editor.org/rfc/rfc7748>
+- RFC 5869, *HMAC-based Extract-and-Expand Key Derivation Function (HKDF)*. H. Krawczyk, P. Eronen,
+  May 2010. <https://www.rfc-editor.org/rfc/rfc5869>
+- *OpenID Connect Core 1.0 incorporating errata set 2*. OpenID Foundation.
+  <https://openid.net/specs/openid-connect-core-1_0.html>
+- RFC 7519, *JSON Web Token (JWT)*; RFC 7515, *JSON Web Signature (JWS)*; RFC 7517, *JSON Web Key
+  (JWK)*; RFC 7518, *JSON Web Algorithms (JWA)*, §3.3-3.4 for RS256 and ES256. M. Jones et al., May
+  2015. <https://www.rfc-editor.org/rfc/rfc7519>, <https://www.rfc-editor.org/rfc/rfc7515>,
+  <https://www.rfc-editor.org/rfc/rfc7517>, <https://www.rfc-editor.org/rfc/rfc7518>
+- *HTML Living Standard*, §9.2 Server-sent events. WHATWG.
+  <https://html.spec.whatwg.org/multipage/server-sent-events.html>

@@ -963,11 +963,14 @@ class NettingCollateralSet(Deal):
         'collateral set. The idea is to first model the effect of an uncollateralized net portfolio ',
         '$V(t)$ and then, per scenario, transform this to a collateralized portfolio $\\hat V(t)$.',
         '',
-        'In addition to posting and recieving collateral there are still two residual risks viz.',
+        'The transformation runs only in a simulation of more than one scenario; a single-scenario',
+        'run reports the uncollateralised net.',
+        '',
+        'In addition to posting and receiving collateral there are still two residual risks viz.',
         '',
         '### Settlement Risk',
         '',
-        'This arises when counterparty default occurs unexpectantly. Potentially, a party may make ',
+        'This arises when counterparty default occurs unexpectedly. Potentially, a party may make ',
         'payment (or post collateral) to the counterparty without receiving the corresponding collateral',
         '(or payment) in return.',
         '',
@@ -1004,12 +1007,12 @@ class NettingCollateralSet(Deal):
         '',
         'The collateralized portfolio at time $t$ is the difference between the sum of the liquidated',
         'portfolio value and the cash accumulated during the closeout period $C(t_s,t_e)$ and the',
-        'liquidated value of the $B$ units of the collateral portfolio $S(t_e)$ held:'
+        'liquidated value, after haircuts, of the $B$ units of the collateral portfolio held:',
         '',
-        '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\min\\{B(u):t_s\\le u\\le t_l\\}S(t_e)$$',
+        '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\min\\{B(u):t_s\\le u\\le t_l\\}S_h(t_e)$$',
         '',
-        'The calculation of $C(t_s,t_e), B(t)$ and $S(t)$ is described below.',
-        ''
+        'The calculation of $C(t_s,t_e), B(t)$ and $S_h(t)$ is described below.',
+        '',
         '### Standard and Forward looking closeout',
         '',
         'Usually exposure is reported at the end of the closeout period i.e. :',
@@ -1059,9 +1062,9 @@ class NettingCollateralSet(Deal):
         '#### Settlement risk mechanics',
         '',
         'The **Cash Settlement Risk** mechanics are determined depending on the order of cash payments'
-        ' verses collateral.',
+        ' versus collateral.',
         '',
-        '- **Received Only** assumes that collateral is transfered before cash. All cash is retained'
+        '- **Received Only** assumes that collateral is transferred before cash. All cash is retained'
         ' during the settlement period.',
         '',
         '$$C(t_s,t_e)=C_r(t_e)-C_p(t_e)-C_r(t_s)+C_p(t_s)$$',
@@ -1104,16 +1107,16 @@ class NettingCollateralSet(Deal):
         '',
         '$$A(t_i)=X(t_i)I+\\begin{cases} V(t_i)-X(t_i)H(t_i), '
         '&\\text{if } V(t_i)>X(t_i)H(t_i)\\\\ V(t_i)-X(t_i)G(t_i), '
-        '&\\text{if } V(t_i)<X(t_i)G(t_i) \\end{cases}$$',
+        '&\\text{if } V(t_i)<X(t_i)G(t_i)\\\\ 0, &\\text{otherwise} \\end{cases}$$',
         '',
         'In general, the presence of minimum transfer amounts introduce a path dependency on $B(t)$ and,',
         'as such, is not a simple function of $A(t_i)$. Instead, it can be expressed via the following',
         'recurrence:',
         '',
         '$$B(t_i)=\\begin{cases} \\frac{A(0)}{S_h(0)}, &\\text{if } i=0\\\\',
-        '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
+        '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S_h(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
         '\\text{ and } i>0,\\\\',
-        '&\\text{or if } S(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
+        '&\\text{or if } S_h(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
         'B(t_{i-1}), &\\text{otherwise}\\end{cases}$$',
         '',
         'Since $B(t_i)$ is constant between call dates, $B(t)=B(t_{i^*})$, where $t_{i^*}$ is the closest',
@@ -1130,20 +1133,18 @@ class NettingCollateralSet(Deal):
         '- $a_i$ the number of units of the $i^{th}$ asset in the collateral portfolio.',
         '- $S_i(t)$ the base currency value per unit of the $i^{th}$ asset.',
         '',
-        'Currently, the collateral portfolio may only consist of equities and cash and therefore will be',
-        'sensitive to interest rates, FX and equity prices over the closeout period. The relative',
-        'amounts of each collateral asset in the collateral portfolio is held constant. The percent of',
-        'the collateral portfolio represented by a given asset may change as its price relative to other',
-        'assets change. The value of the portfolio is therefore:',
+        'The collateral portfolio may hold cash (**Amount** of a currency), equities (**Units** at the',
+        'equity price) and fixed-coupon bonds (**Principal**, **Coupon_Rate** every **Coupon_Interval**',
+        'to **Maturity** from the base date, valued on their **Discount_Rate**), so it is sensitive to',
+        'interest rates, FX and equity prices over the closeout period; **Commodity_Collateral** is',
+        'declared and not read. With none stated, the collateral is cash in the **Balance_Currency**.',
+        'The relative amounts of the assets are held constant, so each asset\'s share of the portfolio',
+        'moves with its price. The value of the portfolio is:',
         '',
-        '$$S(t)=\\sum_i a_i S_i(t)$$',
+        '$$S(t)=\\sum_i a_i S_i(t),\\qquad S_h(t)=\\sum_i (1-h_i)a_iS_i(t)$$',
         '',
-        'Haircuts may be defined for each asset class, including cash. The value of each asset allowing',
-        'for haircuts is as follows:',
-        '',
-        '$$S_{h,i}=(1-h)S_i(t)$$',
-        '',
-        'Haircuts must be strictly less than one.',
+        'where $h_i$ is the row\'s **Haircut_Posted**, applied whichever way the collateral moves;',
+        '**Haircut_Received** is declared and not read. Haircuts must be strictly less than one.',
     ])
 
     def __init__(self, params, valuation_options):
@@ -1970,19 +1971,20 @@ class FXNonDeliverableForward(Deal):
                       '',
                       'in **settlement currency** at the **settlement date** $T$ where:',
                       '',
-                      '- $A$ is the buy currency',
-                      '- $B$ is the sell currency',
+                      '- $A$ is the **Buy_Amount** of **Buy_Currency**',
+                      '- $B$ is the **Sell_Amount** of **Sell_Currency**',
                       '- $\\tilde X(t)$ is the price of the buy currency in settlement currency',
                       '- $X$ is the price of the sell currency in settlement currency',
                       '',
                       'The value of the deal in settlement currency at time $t$, ($t \\le T$), is',
-                      ''
+                      '',
                       '$$ \\Big(A \\tilde F(t,T)-BF(t,T)\\Big)D(t,T),$$',
                       '',
                       'where:',
                       '',
                       '- $\\tilde F(t,T)$ is the forward price of the buy currency in settlement currency',
-                      '- $F(t,T)$ is the forward price of the sell currency in settlement currency'
+                      '- $F(t,T)$ is the forward price of the sell currency in settlement currency',
+                      '- $D$ is the discount factor on **Discount_Rate**, the settlement currency\'s where blank'
                       ])
 
     def reset(self, calendars):
@@ -2069,13 +2071,15 @@ class FXSwapDeal(Deal):
     documentation = ('Fx And Equity', [
         'An FX swap is a combination of an FX forward deal with near settlement date $t_1$ and',
         'an FX forward deal in the opposite direction with far settlement date $t_2$, where $t_1 < t_2$.',
-        'The base-currency value of the FX swap at time $t$, $t \\le t_1$, is',
+        'The reporting-currency value of the FX swap at time $t$, $t \\le t_1$, is',
         '',
-        '$$A_1 \\tilde D(t,t_1) \\tilde X(t)-B_1 D(t,t_1)X(t) + B_2 \\tilde D(t,t_2) \\tilde X(t)-A_2 D(t,t_2) \\tilde X(t)$$',
+        '$$A_1 \\tilde D(t,t_1) \\tilde X(t)-B_1 D(t,t_1)X(t) + B_2 D(t,t_2) X(t)-A_2 \\tilde D(t,t_2) \\tilde X(t)$$',
         '',
-        'where $A_1$ ($A_2$) is amount of the buy currency bought (sold) at $t_1$, ($t_2$), and $B_1$ ($B_2$)',
-        'is amount of the sell currency sold (bought) at $t_1$ ($t_2$). Typically, $t_1$ is the spot',
-        'settlement date and $A_2 = A_1$'])
+        'where $A_1$ is **Near_Buy_Amount** and $A_2$ **Far_Sell_Amount** of **Near_Buy_Far_Sell_Ccy**',
+        '(discount factor $\\tilde D$ on **Near_Buy_Far_Sell_Discount_Rate**, price $\\tilde X$ in the',
+        'reporting currency), and $B_1$ is **Near_Sell_Amount** and $B_2$ **Far_Buy_Amount** of',
+        '**Near_Sell_Far_Buy_Ccy** ($D$ and $X$ likewise). The near leg drops out after $t_1$, leaving the',
+        'far leg. Typically $t_1$ is the spot settlement date and $A_2 = A_1$.'])
 
     def reset(self, calendars):
         super(FXSwapDeal, self).reset()
@@ -2189,17 +2193,18 @@ class FXForwardDeal(Deal):
                      'Sell_Discount_Rate': ['InterestRate']}
 
     documentation = ('Fx And Equity', [
-        'An FX forward is an agreement to buy an amount $A$ of one currency in exchange for an amount $B$ of another currency at settlement date $T$.',
-        'The value of the deal in base currency at time $t$, ($t \\le T$), is',
+        'An FX forward is an agreement to buy an amount $A$ (**Buy_Amount**) of one currency in exchange',
+        'for an amount $B$ (**Sell_Amount**) of another at settlement date $T$ (**Settlement_Date**).',
+        'The value of the deal in reporting currency at time $t$, ($t \\le T$), is',
         '',
         '$$A \\tilde D(t,T) \\tilde X(t)-BD(t,T)X(t)$$',
         '',
         'where',
         '',
-        '- $D$ is the sell currency discount factor',
-        '- $\\tilde D$ is the buy currency discount factor',
-        '- $X$ is the price of the sell currency in base currency',
-        '- $\\tilde X$ is the price of the buy currency in base currency'])
+        '- $D$ is the sell currency discount factor on **Sell_Discount_Rate**',
+        '- $\\tilde D$ is the buy currency discount factor on **Buy_Discount_Rate**',
+        '- $X$ is the price of the sell currency in reporting currency',
+        '- $\\tilde X$ is the price of the buy currency in reporting currency'])
 
     @classmethod
     def quote(cls, deal, value):
@@ -2273,21 +2278,16 @@ class StructuredDeal(Deal):
     factor_fields = {'Currency': ['FxRate']}
 
     documentation = ('Container', [
-        'A structured deal consists of multiple individual deals. In credit exposure calculations, ',
-        'it is treated as a single deal since the values of the underlying deals are netted together. ',
-        'For instance, an interest rate swap can be viewed as a structured deal made up of two swap legs.',
-        'Let $C$ represent the currency of the structured deal, while $C_i$ denotes the currency of the $i^{th}$ ',
-        'underlying deal. The currency of the structured deal is determined by its *Currency* property',
+        'A structured deal consists of multiple individual deals. In credit exposure calculations',
+        'it is treated as a single deal, the values of its children netted together - an interest rate',
+        'swap, for instance, booked as its two legs. Its value is the plain sum of the children\'s',
+        'values, each already in the reporting currency:',
         '',
-        'The value of the structured deal in currency $C$ at time $t$ is',
+        '$$V(t)=\\sum_i V_i(t)$$',
         '',
-        '$$\\delta \\sum_i V_i(t) X_i(t),$$',
-        '',
-        'where',
-        '',
-        '- $V_i$ is the value of the $i^{th}$ underlying deal in currency $C_i$',
-        '- $X_i$ is the price of currency $C_i$ in currency $C$',
-        '- $\\delta$ is 1 if the deal is a **Buy** else -1 if the deal is a **Sell**'])
+        'There is no direction: a child carries its own **Buy_Sell**. **Currency** names an FX factor',
+        'the deal depends on and does not convert the sum. **Net_Cashflows** is accepted and has no',
+        'effect.'])
 
     def reset(self, calendars):
         super(StructuredDeal, self).reset()
@@ -2334,6 +2334,10 @@ class StructuredDeal(Deal):
 
 
 class StructuredDealBreakClause(StructuredDeal):
+    documentation = ('Container', [
+        'Priced exactly as `StructuredDeal`, the sum of its children; the break itself is not',
+        'modelled.'])
+
     def __init__(self, params, valuation_options):
         super(StructuredDealBreakClause, self).__init__(params, valuation_options)
 
@@ -2535,6 +2539,18 @@ class SwapInterestDeal(Deal):
                      'Interest_Rate': ['InterestRate'],
                      'Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
                      'Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
+
+    documentation = ('Interest Rates', [
+        'A fixed-float interest rate swap built from its own fields: a fixed leg at **Swap_Rate**',
+        '(percent) and a floating leg forecast off **Interest_Rate** plus **Floating_Margin** (basis',
+        'points), both on **Principal** less any **Amortisation**, each valued as a cashflow list',
+        '([fixed](#fixed-interest-cashflows), [floating](#floating-interest-cashflows)) and discounted',
+        'on **Discount_Rate**. **Pay_Rate_Type** `Fixed` pays the fixed leg on the `Pay_` schedule and',
+        'receives the floating leg on the `Receive_` schedule; `Floating` the reverse.',
+        '',
+        'An **Interest_Rate** curve in a currency other than **Currency** (a quanto swap) is not built:',
+        'the deal is skipped. The type accepts `Children` but does not aggregate them, so a deal booked',
+        'under a swap fails when the structure resolves; book legs under a `StructuredDeal`.'])
 
     def reset(self, calendars):
         super(SwapInterestDeal, self).reset()
@@ -2893,9 +2909,13 @@ class CFFloatingInterestListDeal(Deal):
             'expiry and accrual before summing back to the period (the daily capped RFR shape, and',
             'with a digital payoff a range accrual), placing no margin and so reading `None` or',
             '`OIS` alone, while `Post_Aggregation` folds first and prices one',
-            'option on the period rate, vol read at the period end with the averaging-decay Black',
-            'time (integrated exactly when the valuation date sits inside the period). Any other',
-            'value folds and prices at the reset-start expiry.'])
+            'option on the period $[T_s,T_e]$ rate, vol read at the period end $T_e$ and the Black',
+            'time the averaging decay of a backward-looking rate (Lyashenko-Mercurio):',
+            '',
+            '$$T_{\\text{eff}}=\\begin{cases}(T_s-t)+\\tfrac13(T_e-T_s), & t<T_s\\\\'
+            '\\dfrac{(T_e-t)^3}{3(T_e-T_s)^2}, & T_s\\le t<T_e\\end{cases}$$',
+            '',
+            'Any other value folds and prices at the reset-start expiry.'])
 
     def __init__(self, params, valuation_options):
         super(CFFloatingInterestListDeal, self).__init__(params, valuation_options)
@@ -3415,59 +3435,44 @@ class SwaptionDeal(Deal):
                      'Forecast_Rate': ['InterestRate'],
                      'Forecast_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
 
-    documentation = ('Interest Rates',
-                     ['Let $t_0, T_1$ and $T_2$ be the **Option Expiry Date**, **Swap Effective Date** and **Swap '
-                      'Maturity Date** respectively of the swaption deal ($t_0 \\le T_1 \\lt T2$). If the deal is',
-                      'cash settled, then let $T$ be the **Settlement Date**, the expiry where blank.',
-                      '',
-                      'The value of the underlying swap is',
-                      '',
-                      '$$U(t)=\\delta(V_{float}(t)-V_{fixed}(t))$$',
-                      '',
-                      'where $V_{float}(t)$ is the value of floating interest rate cashflows, $V_{fixed}(t)$ the',
-                      'value of fixed interest cashflows and $\\delta$ is either $+1$ for payer swaptions and $-1$',
-                      'for receiver swaptions.',
-                      '',
-                      'If the fixed leg has payments at times $t_2,...,t_n$, then the Present value of a Basis Point is',
-                      '',
-                      '$$F(t)=\\sum_{i=2}^n P_i \\alpha_i D(t,t_i)$$',
-                      '',
-                      'where $P_i$ is the principal amount and $\\alpha_i$ is the accrual year fraction for the',
-                      '$i^{th}$ fixed interest cashflow. The forward swap rate is',
-                      '',
-                      '$$s(t)=\\frac{V_{float}(t)}{F(t)}.$$',
-                      '',
-                      'Define the *effective* strike rate as',
-                      '',
-                      '$$K(t)=\\frac{V_{fixed}(t)}{F(t)}$$',
-                      '',
-                      'Note that presently only zero-margin floating cashflow lists are supported (but this can be',
-                      'extended). The value of the underlying swap is given by $U(t)=\\delta(s(t)-K(t))F(t)$. If',
-                      'both fixed and floating cashflows have the same payment and accrual dates, then $K(t)=r$',
-                      'where $r$ is the constant fixed rate on the fixed interest cashflow list.',
-                      '',
-                      '#### Physically Settled Swaptions',
-                      '',
-                      'If the **Settlement Style** is **Physical** and $U(t_0)\\ge 0$, then the option holder',
-                      'receives the underlying swap and the value of the deal for $t\\gt t_0$ is $U(t)$, the cash',
-                      'it settles what the swap\'s legs pay. Note that physical settlement has significant path',
-                      'dependency.',
-                      '',
-                      '#### Cash Settled Swaptions',
-                      '',
-                      'If the **Settlement Style** is **Cash**, then the option holder receives $\\max(U(t_0),0)$',
-                      'on settlement date $T$, and is worth $\\max(U(t_0),0)D(t,T)$ from the expiry on. The value',
-                      'of the deal at $t\\lt t_0$ is',
-                      '$F(t)\\mathcal B_\\delta(s(r),K(0),\\sigma\\sqrt{(t_0-t)})D(t_0,T)$. Note that this assumes a',
-                      'lognormal distribution of the forecast rate and uses the Black Model as usual.',
-                      '',
-                      '#### Swap Rate Volatility',
-                      '',
-                      'Forward starting (where the effective date of the underlying swap is several months or years',
-                      'after the option expiry) and  amortizing swaptions are not currently supported. This can be',
-                      'extended as needed. Otherwise, $\\sigma$ is the volatility of the underlying rate at time $t$',
-                      'for expiry $t_0$, tenor $\\tau=T_2-T_1$ and strike $K(0)$'
-                      ])
+    documentation = ('Interest Rates', [
+        'Let $t_0, T_1$ and $T_2$ be the **Option_Expiry_Date**, **Swap_Effective_Date** and',
+        '**Swap_Maturity_Date** ($t_0 \\le T_1 \\lt T_2$). The underlying swap is the deal\'s two',
+        '`Children`, a `CFFixedInterestListDeal` and a `CFFloatingInterestListDeal`, each signed by its',
+        'own **Buy_Sell**. With $V_{fixed}$, $V_{float}$ their values, $V_{margin}$ the value of the',
+        'floating leg\'s margin cashflows and $A(t)$ the fixed leg\'s annuity (its principals times',
+        'accrual fractions, discounted),',
+        '',
+        '$$s(t)=\\frac{V_{float}(t)-V_{margin}(t)}{A(t)},\\qquad K(t)=\\frac{V_{fixed}(t)-V_{margin}(t)}{A(t)}$$',
+        '',
+        'and the underlying swap is worth $U(t)=\\delta(s(t)-K(t))A(t)$, $\\delta=+1$ for a **Payer** and',
+        '$-1$ for a **Receiver**. Before expiry the option is',
+        '',
+        '$$V(t)=\\omega\\,A(t)\\,\\mathcal B_\\delta\\big(s(t),\\,k,\\,\\sigma\\sqrt{t_0-t}\\big)$$',
+        '',
+        'with $\\omega=\\pm1$ for **Buy**/**Sell** and $k$ = **Swap_Rate**/100: the strike is the deal\'s',
+        'own rate, while the moneyness the vol is read at is $s(t)-K(t)$. $\\mathcal B_\\delta$ is Black on a',
+        '`Lognormal` surface (displaced by its **Shift**) and Bachelier on a `Normal` one. $\\sigma$ is the',
+        '**Forecast_Rate_Volatility** surface at moneyness $s-K$ (decimal), expiry $t_0-t$ in the discount',
+        'curve\'s day count, and tenor $T_2-T_1$ in **Index_Day_Count**.',
+        '',
+        '#### Physically Settled Swaptions',
+        '',
+        '**Settlement_Style** `Physical`: the holder exercises where $\\delta(s-K)\\ge0$ on the last scenario',
+        'date before expiry, and on those paths the deal is $\\omega U(t)$ from then on, its cash what the',
+        'swap\'s legs pay.',
+        '',
+        '#### Cash Settled Swaptions',
+        '',
+        '**Settlement_Style** `Cash` pays the option\'s expiry value on **Settlement_Date** (the expiry where',
+        'blank): $V(t)D(t,T)/D(t,t_0)$, held at its expiry value after $t_0$. Cash settlement uses the',
+        'physical annuity $A$; the cash (par-yield) annuity\'s convexity is not modelled, error unmeasured.',
+        '',
+        '#### Limitations',
+        '',
+        'An expiry before the base date is refused by name. A swap effective after the expiry (forward',
+        'start) or amortising reads the surface at the vanilla expiry and tenor above; neither is refused',
+        'and neither is adjusted, error unmeasured.'])
 
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
@@ -3749,7 +3754,9 @@ class FXDiscreteExplicitAsianOption(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'FX_Volatility': ['FXVol']}
 
-    documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-asian-options)'])
+    documentation = ('Fx And Equity', [
+        'A discretely sampled FX Asian option on **Underlying_Amount** units of **Underlying_Currency**,',
+        'priced in **Currency** as described in [Discrete Asian Options](#discrete-asian-options).'])
 
     pricer = staticmethod(pricing.pv_discrete_asian_option)
 
@@ -3837,7 +3844,9 @@ class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
     ])]
 
     observes = None
-    documentation = ('Fx And Equity', ['A path independent option described [here](#discrete-double-asian-options)'])
+    documentation = ('Fx And Equity', [
+        'A spread option on two discretely sampled FX averages, specified in',
+        '[Discrete Double Asian Options](#discrete-double-asian-options).'])
 
     pricer = staticmethod(pricing.pv_discrete_double_asian_option)
 
@@ -4093,14 +4102,35 @@ class EquityOptionDeal(Deal):
                      'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
-        'A vanilla option described [here](./definitions.md#european-options)',
+        'A vanilla option on **Units** shares, priced as described [here](./definitions.md#european-options)',
+        'with the conventions listed there: Black on the forward to expiry plus two business days,',
+        'the vol at the deal\'s moneyness and expiry, discounted from the settlement date.',
         '',
         'The payoff is paid on **Settlement_Date**, the expiry where blank. Past the expiry the',
         'underlying is what the expiry fixed: the path\'s own level on the expiry row or, where the',
         'expiry is behind the base date, the print **Price_Fixing** states for it, which it must.',
         '',
-        'Under **Payoff_Type** `Compo` the terminal law is the product $S\\cdot X$ and the local smile',
-        'is read at the translated strike $K/F_X(T)$.'])
+        'Under **Payoff_Type** `Quanto` or `Compo` the European prices as in',
+        '[Quanto and Compo Payoffs](./definitions.md#quanto-and-compo-payoffs); under `Compo` the',
+        'terminal law is the product $S\\cdot X$ and the local smile is read at the translated strike',
+        '$K/F_X(T)$.',
+        '',
+        '**Option_Style** `American` is priced by the Bjerksund-Stensland (1993) trigger approximation',
+        'with $r$ the discount curve\'s zero rate to expiry, $b=\\log(F/S)/\\tau$ and the same vol. For a call',
+        'with $\\beta=\\tfrac12-\\tfrac{b}{\\sigma^2}+\\sqrt{(\\tfrac{b}{\\sigma^2}-\\tfrac12)^2+\\tfrac{2r}{\\sigma^2}}$, the',
+        'flat exercise trigger is',
+        '',
+        '$$I=B_0+(B_\\infty-B_0)\\big(1-e^{h(\\tau)}\\big),\\quad h(\\tau)=-(b\\tau+2\\sigma\\sqrt\\tau)\\frac{B_0}{B_\\infty-B_0},\\quad B_0=K\\max\\Big(\\frac{r}{r-b},1\\Big),\\quad B_\\infty=\\frac{\\beta K}{\\beta-1}$$',
+        '',
+        'and the value below the trigger is the published closed form in $(I,\\beta)$, floored at the Black',
+        'European; at or above it, $S-K$. A put is the call on $(K,S)$ with $r\\to r-b$, $b\\to-b$. Where',
+        '$b\\ge r$ there is no early-exercise premium and the value is the Black European.',
+        '',
+        '- On a scenario path the option is monitored on the deal\'s grid dates: the first date the spot',
+        '  reaches $I$ exercises, the intrinsic settles that day and the deal is worth 0 after.',
+        '- A **Settlement_Date** on an American option is refused by name: it settles when exercised.',
+        '- The American arm ignores **Payoff_Type**: no quanto or compo adjustment is applied.',
+        '- Accuracy against a lattice or PDE: unmeasured.'])
 
     def __init__(self, params, valuation_options):
         super(EquityOptionDeal, self).__init__(params, valuation_options)
@@ -4207,7 +4237,7 @@ class EquityBinaryOption(EquityOptionDeal):
     ])]
 
     documentation = ('Fx And Equity', [
-        'A vanilla option described [here](definitions.md#european-options)',
+        'A European digital, priced with the conventions of [European Options](definitions.md#european-options).',
         '',
         'In the money at expiry it pays **Payoff**: that amount of cash under **Payoff_Style**',
         '`Cash` (cash-or-nothing), that many units of the equity under `Asset` (asset-or-nothing),',
@@ -4278,77 +4308,30 @@ class QEDI_CustomAutoCallSwap(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'Equity_Volatility': ['EquityPriceVol']}
 
-    documentation = ('Fx And Equity',
-                     ['An autocallable equity swap priced using the One-Step Survival (OSS) Monte Carlo',
-                      'technique. See [One-Step Survival Methodology](../theory/mc_simulation.md) for the',
-                      'general OSS theory.',
-                      '',
-                      'An autocall terminates early whenever the underlying spot exceeds an autocall threshold',
-                      '$H_j^{\\text{call}}$ on a scheduled observation date. An optional put barrier $H^{\\text{put}}$',
-                      'can condition participation in the downside leg.',
-                      '',
-                      'A coupon reads a WINDOW of price fixings - one fixing is the spot at that fixing,',
-                      'several their arithmetic average - whose fixing-to-fixing blocks are sampled while',
-                      'the survival truncates the return up to the window\'s first fixing, so the',
-                      'termination stays a crisp decision under either spot model. Fixings that do not',
-                      'give each coupon a window of its own are refused by name.',
-                      '',
-                      '**Autocall barrier**',
-                      '',
-                      'The OSS threshold is $H_j^{\\text{call}}$ — the autocall level for observation $j$.',
-                      'The non-surviving weight $(1-p_j)L_{j-1}$ pays the autocall coupon discounted to $t_j$',
-                      'and terminates. Surviving paths carry the weight $L_j = p_j L_{j-1}$ forward.',
-                      '',
-                      '**Put barrier** (optional)',
-                      '',
-                      '**Barrier_Observation** picks what the breach reads on a coupon whose window holds more',
-                      'than one fixing: `Spot` (the default) reads the spot at the barrier date - the last',
-                      'fixing of the window - and `Average` reads that window as the trigger',
-                      'does, its arithmetic mean. A window of one fixing prices the same bit either way, and',
-                      'the payoff stays the average under both. An `Average` barrier date whose coupon',
-                      'window holds no fixing is refused by name, not compared against a mean of nothing.',
-                      'A barrier date is a fixing: dated on a coupon or on a price fixing of its window it',
-                      'is observed on that window and paid on the coupon date, and dated on neither it is',
-                      'refused by name. Whether the put is in is its barrier date\'s print, so a',
-                      '`BarrierIsHit` stated on the deal is refused by name too.',
-                      '',
-                      'When a put barrier is present, a second OSS truncation applies within each surviving path',
-                      'to handle the put protection level. The analytic contribution is the conditional put payoff',
-                      'given the barrier is crossed, valued from the barrier level.',
-                      '',
-                      'Under `SpotModel: None` the put leg is priced on a vol strip of ITS OWN, read at the strike',
-                      'it decides on - the barrier where `Rebate` is 0, since a full loss below the barrier is a',
-                      'vanilla plus a digital both struck there, and $K(1-\\text{Rebate})$ otherwise - while the',
-                      'coupon triggers keep the strip read at the initial level. One strip per leg is what a',
-                      'smile-less model can say; a `SpotModel` carries one smile in one walk and both legs read it.',
-                      '',
-                      '**Floating leg**',
-                      '',
-                      'If a floating rate leg is present, the float payments on surviving paths are discounted at',
-                      'each payment date using the same survival weight $L_j$, so the full swap value is:',
-                      '',
-                      '$$V = \\sum_{j} (1-p_j)L_{j-1}\\,\\text{Coupon}_j\\,D_j + L_T\\,V_{\\text{terminal}}\\,D_T',
-                      '    - \\sum_k L_{t_k}\\,\\text{Float}_k\\,D_{t_k}$$',
-                      '',
-                      '**Valuation options** (set in the Valuation Configuration section, per deal type)',
-                      '',
-                      '- **SpotModel**: `None` (default — lognormal dynamics off the implied vol surface)',
-                      'or `LogVar2FJ`, the two-factor log-variance model with co-jumps, which drives the',
-                      'OSS simulation and its analytic legs; the parameters are resolved by naming convention',
-                      'from the `<SpotModel>ModelParameters.<underlying>` price factor (e.g.',
-                      '`LogVar2FJModelParameters.SPX`). It walks its own INTERNAL step and hands each fixing',
-                      'interval one Gaussian block law rather than a daily state. Switching the model on',
-                      'without that factor in the market data is a loud skip, never a silent lognormal',
-                      'fallback. A `Quanto` payoff prices: the',
-                      'payoff-currency measure change enters the walk as a per-step drift',
-                      '$-\\rho\\,\\sigma_{FX,k}\\sqrt{V_k}$ read off the state\'s own variance budget, with',
-                      '$\\rho$ the marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` and $\\sigma_{FX}$ the',
-                      'fx surface\'s ATM forward strip on the walk\'s own grid; declaring one without that',
-                      'correlation is a loud skip rather than an uncorrelated pair. `Compo` stays refused:',
-                      'it is the product S*X and this arm walks the equity alone.',
-                      '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and',
-                      'not to the deal - a Valuation Configuration declaring one that differs',
-                      'from the fitted block is refused by name.'])
+    documentation = ('Fx And Equity', [
+        'An autocall on one equity: contingent coupons that end the deal when the coupon window\'s',
+        'average reaches its threshold, and a put paying $A/K-1+$**Rebate** of **Units** where the barrier',
+        'is breached. Payoff, windows, valuation, refusals and limitations are specified in',
+        '[Autocallable Swaps](#autocallable-swaps); this type has NO floating leg.',
+        '',
+        '**Barrier** is RELATIVE here: the put barrier is $B=$ **Barrier** $\\times$ **Strike_Price**.',
+        '',
+        '**Valuation options** (set in the Valuation Configuration section, per deal type)',
+        '',
+        '- **SpotModel**: `None` (default - lognormal dynamics off the implied vol surface) or',
+        '`LogVar2FJ`, the two-factor log-variance model with an NIG residual',
+        '([Stochastic Volatility](../theory/stochastic_volatility.md)), which drives the OSS simulation',
+        'and its analytic legs. Its parameters resolve by naming convention from the',
+        '`<SpotModel>ModelParameters.<underlying>` price factor (e.g. `LogVar2FJModelParameters.SPX`);',
+        'it walks its own internal step and hands each fixing interval one Gaussian block law. Switching',
+        'the model on without that factor in the market data is a loud skip, never a silent lognormal',
+        'fallback. A `Quanto` payoff enters the walk as the per-step drift $-\\rho\\,\\sigma_{FX,k}\\sqrt{V_k}$,',
+        '$\\rho$ the marked `Correlation.EquityPrice.<eq>/FxRate.<pair>`; declaring one without that',
+        'correlation is a loud skip. `Compo` is refused: it is the product $S\\cdot X$ and this arm walks',
+        'the equity alone.',
+        '- **Steps_Per_Year**: the trading-day clock belongs to the parameter FACTOR and not to the',
+        'deal - a Valuation Configuration declaring one that differs from the fitted block is refused',
+        'by name.'])
 
     def floating_dates(self):
         """The dates a swap leg pays on - none here, the swap version declaring the leg."""
@@ -4646,13 +4629,23 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
                      'Forecast_Rate': ['InterestRate'],
                      'Equity_Volatility': ['EquityPriceVol']}
 
-    documentation = ('Fx And Equity',
-                     ['An exotic Equity option described',
-                      '[here](https://www.math.uni-frankfurt.de/~harrach/publications/StableDiffs.pdf).',
-                      '',
-                      'This version of the autocallable option has an embedded swap leg that pays at regular ',
-                      'intervals instead of a premium upfront.'
-                      ])
+    documentation = ('Fx And Equity', [
+        'The autocall of `QEDI_CustomAutoCallSwap` written as a swap: the same coupons, put, windows,',
+        'valuation options and refusals ([Autocallable Swaps](#autocallable-swaps)), plus a floating leg',
+        'the **Buy** side pays on each **Autocall_Floating** date while the deal is alive, in place of an',
+        'upfront premium. Two differences from the parent:',
+        '',
+        '- **Barrier** is ABSOLUTE here: the put barrier is $B=$ **Barrier**, a price level, where the',
+        '  parent reads a fraction of **Strike_Price**.',
+        '- The floating leg: periods between consecutive **Autocall_Floating** dates, the first starting',
+        '  **Reset_Frequency** before the first; each pays $(\\ell_k+m)\\alpha_k$ per unit of **Units**, with',
+        '  $\\ell_k$ the simply compounded **Forecast_Rate** forward over the period (ACT/365), $m$ the',
+        '  **Floating_Margin** in basis points and $\\alpha_k$ the **Forecast_Rate** curve\'s day count. A',
+        '  period started before the base date pays its table value instead, the period\'s amount per unit',
+        '  notional with the margin in it.',
+        '',
+        'The one-step-survival construction for autocallables is that of Alm, Harrach, Harrach and Keller',
+        '(2013), cited under [References](#references).'])
 
     def floating_dates(self):
         return {x[0] for x in self.field['Autocall_Floating']}
@@ -4720,6 +4713,10 @@ class EquityOneTouchOption(Deal):
 
     documentation = ('Fx And Equity', [
         'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)',
+        '',
+        'Monitoring is continuous. **Barrier_Dates**, where given, are not an observation schedule: they',
+        'only size the Broadie-Glasserman-Kou spacing $\\delta$ as their mean gap; without them $\\delta$ is',
+        '**Barrier_Monitoring_Frequency** (`0M` continuous).',
         '',
         'Under **Payoff_Type** `Compo` the priced and MONITORED process is the product $S\\cdot X$ -',
         'spot at the fx cross, carry including the fx forward\'s own, vol composed of the two legs -',
@@ -4881,12 +4878,16 @@ class EquityBarrierOption(Deal):
                      'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
-        'A path dependent barrier option priced using the One-Step Survival (OSS) Monte Carlo',
-        'technique. See [One-Step Survival Methodology](../theory/mc_simulation.md) for the',
-        'general OSS theory.',
+        'A barrier option on **Units** shares with two arms, chosen by **Barrier_Dates**:',
         '',
-        'The barrier is observed at a scheduled set of fixing dates. Between observation dates the',
-        'spot evolves freely; only at barrier dates does OSS truncation apply.',
+        '- WITH **Barrier_Dates** the barrier is observed on those dates only, priced by One-Step',
+        '  Survival (OSS) Monte Carlo ([One-Step Survival Methodology](../theory/mc_simulation.md));',
+        '  between observation dates the spot evolves freely and only at barrier dates does OSS',
+        '  truncation apply. The rest of this section describes this arm.',
+        '- WITHOUT them the barrier is continuous, priced by the closed form of',
+        '  [Single Barrier Options](#single-barrier-options) on every scenario date (vol floored at 5%,',
+        '  Brownian-bridge touch probability, Broadie-Glasserman-Kou shift for',
+        '  **Barrier_Monitoring_Frequency**); a non-`None` **SpotModel** is refused by name there.',
         '',
         '**Observed history**',
         '',
@@ -4896,6 +4897,10 @@ class EquityBarrierOption(Deal):
         'deal at compile - a knocked-in option compiles as the plain `EquityOptionDeal` it now is,',
         'and a knocked-out one as the `FixedCashflowDeal` paying its rebate on the crossing date.',
         'There is no hit flag to declare; the state is derived from the rows.',
+        '',
+        'The two readings differ on a level touched exactly: an `Observed` close EQUAL to the barrier',
+        'counts as a crossing at the compile-time fold, while on a simulated path (the outer hit mask',
+        'and the OSS step alike) a spot exactly on the barrier survives - crossing there is strict.',
         '',
         '**Knock-Out**',
         '',
@@ -4908,8 +4913,8 @@ class EquityBarrierOption(Deal):
         '**Knock-In** (via in-out parity)',
         '',
         'The exact identity $V_{\\text{KI}} = V_{\\text{vanilla}} - V_{\\text{KO,pure}} + R\\,E[L_T D_T]$',
-        'is used. $V_{\\text{vanilla}}$ is the declared model\'s closed form, evaluated at the start',
-        'of each MTM block and constant across inner paths; $V_{\\text{KO,pure}}$ is the',
+        'is used. $V_{\\text{vanilla}}$ is the declared model\'s closed form, evaluated at each',
+        'reporting row and constant across inner paths; $V_{\\text{KO,pure}}$ is the',
         'survival-weighted MC estimate. The per-path estimator is therefore:',
         '',
         '$$P = V_{\\text{vanilla}} - L_T\\,D_T\\bigl(g(S_T) - R\\bigr)$$',
@@ -4928,10 +4933,8 @@ class EquityBarrierOption(Deal):
         '| Knock-In | vanilla at the current outer spot, in the declared model |',
         '',
         'That leg and the in-out-parity leg above value the *same* European on the *same* state, so',
-        'they take the same model and the same forward — one `total_log_forward` over the remaining',
-        'fixing strip. Two spellings of that forward shipped once and marked the option at **+1432%**',
-        'of its value on every already-hit row; the leg is now unable to disagree with its sibling',
-        'rather than merely tested against it.',
+        'they take the same model and the same forward - one `total_log_forward` over the remaining',
+        'fixing strip.',
         '',
         'When *all* outer scenarios have resolved, the inner OSS simulation is skipped entirely and',
         'that closed form is the whole reported PV.',
@@ -5248,24 +5251,17 @@ class CommodityForwardDeal(Deal):
                      'Discount_Rate': ['InterestRate']}
 
     documentation = ('Energy',
-                     ['Here we fund a commodity at one rate that might be different to the implied ',
-                      'carry on the commodity forward curve. This could happen if you can earn a yield on a physical ',
-                      'commodity different to what the general market can provide. The forward Deal expires at time $T$',
+                     ['A commodity funded at its own repo rate, which may differ from the carry implied by',
+                      'the forward curve (a physical holding can earn a yield the market does not). No strike',
+                      'is exchanged: at **Maturity_Date** $T$ the deal is worth the funded price. With',
+                      '$t\'=\\max(t,f)$, $f$ the **Forward_Date** (the base date where blank),',
                       '',
-                      'At time $t$, we read the simulated value of the reference type called $S_t$ and lookup the ',
-                      'attached simulated commodity zero rate from the CommodityPrice price factor $r$',
+                      '$$V(t)=\\pm N\\,F_R(t,t\')\\,e^{r_c(t,\\,T-t\')\\,(T-t\')}\\,D(t,T)$$',
                       '',
-                      'The mtm of this deal is thus:',
-                      '',
-                      '$$ S_t\\exp(r(t,T)-d(t,T))(T-t) $$',
-                      '',
-                      'where',
-                      '$r(t,T)$ is the simulated zero rate at time $t$',
-                      '$d(t,T)$ is the simulated discount rate at time $t$',
-                      '',
-                      'If Forward Date is specified (call it $f$), then instead of reading the simulated value as $S_t$ ',
-                      'at time $t$, we read the simulated value at time $max(t, f)$. The formula above is then applied ',
-                      'by replacing $t$ with $max(t, f)$.'
+                      'where $\\pm$ is the **Buy_Sell** sign, $N$ **Units**, $F_R(t,t\')$ the **Reference_Type**',
+                      'forward price for delivery $t\'$ read off its ForwardPrice curve on the scenario date,',
+                      '$r_c$ the zero rate of the **Commodity** price factor\'s repo curve over $T-t\'$, and',
+                      '$D(t,T)$ the discount factor on **Discount_Rate** (the **Currency** curve where blank).'
                       ])
 
     def reset(self, calendars):
@@ -5684,7 +5680,14 @@ class EquityDeal(Deal):
     factor_fields = {'Currency': ['FxRate'],
                      'Equity': ['EquityPrice']}
 
-    documentation = ('Fx And Equity', ['Described [here](definitions.md#forwards)'])
+    documentation = ('Fx And Equity', [
+        'A holding of **Units** shares, not a forward: no strike is exchanged and no dividend is paid.',
+        'To **Investment_Horizon**, in the reporting currency,',
+        '',
+        '$$V(t)=\\pm N\\,S(t)\\,X(t)$$',
+        '',
+        'with $\\pm$ the **Buy_Sell** sign, $N$ **Units**, $S$ the equity price and $X$ the price of',
+        '**Currency** in the reporting currency.'])
 
     def reset(self, calendars):
         super(EquityDeal, self).reset()
@@ -6128,7 +6131,13 @@ class FXBarrierOption(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'FX_Volatility': ['FXVol']}
 
-    documentation = ('Fx And Equity', ['A path dependent FX Option described [here](#single-barrier-options)'])
+    documentation = ('Fx And Equity', [
+        'A continuously monitored FX barrier option on **Underlying_Amount** units of',
+        '**Underlying_Currency**, priced in **Currency** by the closed form of',
+        '[Single Barrier Options](#single-barrier-options) on every scenario date: vol floored at 5%,',
+        'Brownian-bridge touch probability, Broadie-Glasserman-Kou shift for',
+        '**Barrier_Monitoring_Frequency**. **Cash_Rebate** is an absolute amount. A **Payoff_Currency**',
+        'other than **Currency** is not quanto-adjusted (a warning is logged).'])
 
     def __init__(self, params, valuation_options):
         super(FXBarrierOption, self).__init__(params, valuation_options)
@@ -6252,7 +6261,10 @@ class FXPartialTimeBarrierOption(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'FX_Volatility': ['FXVol']}
 
-    documentation = ('Fx And Equity', ['A partial path dependent FX Option described [here](#partial-barrier-options)'])
+    documentation = ('Fx And Equity', [
+        'An FX barrier option monitored over a window only, on **Underlying_Amount** units of',
+        '**Underlying_Currency** and priced in **Currency**: specified in',
+        '[Partial Barrier Options](#partial-barrier-options).'])
 
     def __init__(self, params, valuation_options):
         super(FXPartialTimeBarrierOption, self).__init__(params, valuation_options)
@@ -6393,6 +6405,20 @@ class FXTARFOptionDeal(Deal):
             'The TARF knocks out when the accumulated profit to the client reaches a target',
             'level $T^*$. The OSS barrier is the *remaining target* at each fixing.',
             '',
+            '**Payoff.** With $c=+1$ for a Call and $-1$ for a Put, $K$ **Strike_Price**, $N_1$',
+            '**Underlying_Amount**, $N_2$ **LeverageNotional**, $H$ **Barrier**, $T^*$ **TargetLevel** and',
+            '$\\omega=\\pm1$ for **Buy**/**Sell**, fixing $j$ (row of **TARF_ExpiryDates**) accrues',
+            '',
+            '$$a_j=\\max(c(S_j-K),0)\\quad\\text{or, under a non-blank InvertedTarget,}\\quad a_j=\\max\\big(c(1/K-1/S_j),0\\big)$$',
+            '',
+            'and pays on its settlement date $\\omega\\big(N_1\\min(a_j,T^*-A_{j-1})-N_2\\,u_j\\,\\mathbf 1_{\\text{KI}}\\big)$, where',
+            '$A_j=A_{j-1}+a_j$, $u_j$ is the out-of-the-money amount $\\max(-c(S_j-K),0)$ (its reciprocal form',
+            'under **InvertedTarget**) and $\\mathbf 1_{\\text{KI}}$ is $c(H-S_j)\\ge0$ where $H>0$, else 1. The',
+            'deal redeems at the first fixing where $A_j\\ge T^*$, that fixing paying exactly the remainder.',
+            '$T^*$ is in the accrual\'s own units (price per unit of $N_1$). **Option_Style** and',
+            '**Settlement_Style** are accepted and not read. A fixing dated before the base date must carry',
+            'its observed rate (refused by name otherwise).',
+            '',
             'Let $A_{j-1}$ be the accumulated accrual entering fixing $j$ and $\\Delta_j$ the ITM accrual',
             'for that step. The barrier in the OSS sense is:',
             '',
@@ -6411,6 +6437,11 @@ class FXTARFOptionDeal(Deal):
             'FIXED but not yet settled is still the strip\'s: it pays in-loop on its `Value` at',
             'survival 1, banking its payment at its own settlement date, and the strip walks on',
             'from the row\'s spot.',
+            '',
+            'Inner paths: **MCMC_Simulations** per outer scenario and its antithetic mirror. Declared',
+            'limitation: under `Branch_And_Weight` the second-order (gamma) estimator\'s variance grows',
+            'like $s^{-3}$ in the fixing spacing $s$ - usable at monthly or quarterly fixings, rough at',
+            'daily ones; the size is unmeasured here.',
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
@@ -6778,10 +6809,16 @@ class FXExtendableForwardDeal(Deal):
             'both sides of the mirror: Yes/No once taken (mandatory once the fixing is historical),',
             'blank otherwise - future blanks are decided scenario-by-scenario by the exercise rule.',
             '',
-            'GBM off the implied surface only; the exercise boundary at each rolling decision is',
-            'built by a backward one-dimensional quadrature and the forward pass values the',
-            'decisions by One-Step Survival. See',
-            '[One-Step Survival Methodology](../theory/mc_simulation.md).',
+            'GBM off the implied surface only, every transition variance read from the smile frozen',
+            'at the **Extension_Strike** moneyness (an approximation, unmeasured). The exercise',
+            'boundary $H_j$ at each Rolling decision solves $C_j(H_j)=0$ by backward Gauss-Hermite',
+            'quadrature of the continuation value. The Strip boundary is closed form, the spot at which',
+            'the second half\'s strip of $K_2$ forwards is worth zero: $K_2B/A$ with',
+            '$A=\\sum_kD(t_e,T_k)F(t_e,t_k)/S(t_e)$ and $B=\\sum_kD(t_e,T_k)$ over those fixings $t_k$ paid',
+            'on $T_k$, $t_e$ the **Extension_Date**. The',
+            'forward pass draws only the continuing branch at each decision and weights it by the',
+            'analytic continuation probability (One-Step Survival, see',
+            '[One-Step Survival Methodology](../theory/mc_simulation.md)).',
             '',
             '**Valuation options** (set in the Valuation Configuration section, per deal type)',
             '',
@@ -6956,10 +6993,19 @@ class FXOptionDeal(Deal):
                      'FX_Volatility': ['FXVol']}
 
     documentation = (
-        'Fx And Equity', ['A path independent vanilla FX Option described [here](./definitions.md#european-options)',
+        'Fx And Equity', ['A path independent vanilla FX Option on **Underlying_Amount** units of',
+                          '**Underlying_Currency**, priced in **Currency** by Black on the FX forward',
+                          '(Garman-Kohlhagen), with the conventions of',
+                          '[European Options](./definitions.md#european-options): the forward to expiry plus',
+                          'two business days, the vol at the forward\'s moneyness and the expiry, discounted',
+                          'on **Discount_Rate**.',
                           '',
                           'The payoff is paid on **Delivery_Date**, the expiry where blank; past the expiry the',
-                          'forward is held at what the expiry fixed.'])
+                          'forward is held at what the expiry fixed.',
+                          '',
+                          '**Option_Style** is accepted and NOT read: an `American` FX option is priced as',
+                          'the European. **Settlement_Style**, **Forward_Price_Date** and **Option_On_Forward**',
+                          'do not enter the price either.'])
 
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()
@@ -7046,7 +7092,8 @@ class FXBinaryOption(FXOptionDeal):
                           ' [here](./definitions.md#european-options). In the money at expiry it'
                           ' pays **Payoff**: that amount in **Currency** under **Payoff_Style**'
                           ' `Cash` (cash-or-nothing), that many units of **Underlying_Currency**'
-                          ' under `Asset` (asset-or-nothing).',
+                          ' under `Asset` (asset-or-nothing). Unlike `FXOptionDeal`, its forward runs to',
+                          'the expiry date itself, with no spot lag.',
                           '',
                           'If the **Relative_Digital_Spread** Valuation Configuration option is set',
                           '(> 0), the digital is priced as a call/put spread of width',
@@ -7132,9 +7179,14 @@ class CreditNthToDefault(Deal):
          'probability that no name has defaulted.',
          '',
          'Names default under a one-factor Gaussian copula with a flat pairwise *Correlation*',
-         '$\\rho$ on marginal default probabilities read off each name\'s survival curve and scaled',
-         'by the *CDS_Index* proxy. Conditional on the common factor the names are independent, and',
-         'the factor integral is taken by Gauss-Hermite quadrature on *Quadrature_Points* nodes.',
+         '$\\rho$ on marginal default probabilities $1-e^{-\\Lambda_j}$, each name\'s cumulative hazard over',
+         'the horizon $h$ scaled by the *CDS_Index* proxy,',
+         '',
+         '$$\\Lambda_j(t,t+h)=\\Lambda^{\\text{name}}_j(t,t+h)\\,\\frac{\\Lambda_{\\text{idx}}(t,t+h)}{\\Lambda_{\\text{idx}}(0,h)},$$',
+         '',
+         'the index ratio being the scenario\'s index curve over today\'s for the same horizon.',
+         'Conditional on the common factor the names are independent; the factor integral is taken by',
+         'Gauss-Hermite quadrature on *Quadrature_Points* nodes (default 81).',
          '',
          'Each period\'s expected accrual $\\int E[\\text{rate}]\\,dt$ is integrated by trapezoid on',
          'hazard samples 30 days apart, from the period\'s own start date to its payment date, and',
@@ -7228,52 +7280,34 @@ class DealDefaultSwap(Deal):
                      'Discount_Rate': ['InterestRate'],
                      'Name': ['SurvivalProb']}
 
-    documentation = ('Credit',
-                     ['This is a bilateral agreement where the buyer purchases protection from the seller against',
-                      'default of a reference entity with period fixed payments. Should default of the reference',
-                      'entity occur, the seller pays the buyer the default amount and payment ceases. The default',
-                      'amount is $P(1-R)$, where $P$ is the principal amount and $R$ the name\'s recovery rate,',
-                      'or **Digital_Recovery** where **Is_Digital** is `Yes`. Note that there could also be an',
-                      'accrued fee (but is currently ignored).',
-                      '',
-                      'Assuming the default payment does not occur prior to the effective date of the swap, the',
-                      'value of this deal at $t$ is',
-                      '',
-                      '$$\\sum_{i=1}^n P_i(1-R)V_i(t)-\\sum_{i=1}^n P_i c\\alpha_i D(t,T_i)S(t,t_i)'
-                      '-UPD(t,T_u)$$',
-                      '',
-                      'where $c$ is the fixed payment rate, $U$ the **Upfront** as a fraction of $P$, paid by',
-                      'the protection buyer on $T_u$ - **Upfront_Date**, the effective date where none is',
-                      'stated - and counted while $t\\le T_u$ whatever the name does, $\\alpha_i$ is the day',
-                      'count accrual applicable and',
-                      '',
-                      '$$V_i(t)=\\frac{\\bar h_i}{f_i+\\bar h_i}\\Big((D(t,\\tilde t_{i-1})S(t,\\tilde t_{i-1})-D(t,\\tilde t_i)S(t,\\tilde t_i)\\Big)$$',
-                      '',
-                      '$$\\bar h_i=\\frac{1}{\\tilde t_i-\\tilde t_{i-1}}\\log\\Big(\\frac{S(t,\\tilde t_{i-1})}{S(t,\\tilde t_i)}\\Big)$$',
-                      '',
-                      '$$f_i=\\frac{1}{\\tilde t_i-\\tilde t_{i-1}}\\log\\Big(\\frac{D(t,\\tilde t_{i-1})}{D(t,\\tilde t_i)}\\Big)$$',
-                      '',
-                      'Note that this is further approximated by',
-                      '',
-                      '$$V_i(t)=\\frac{D(t,\\tilde t_{i-1})+D(t,\\tilde t_i)}{2}\\Big(S(t,\\tilde t_{i-1})-S(t,\\tilde t_i)\\Big)$$',
-                      '',
-                      'which is accurate for low to moderate rates of default.',
-                      '',
-                      'It is also possible to include accrued interest for the fee cashflow leg.',
-                      '',
-                      'Instead of calculating all fee cashflows as $P_i c\\alpha_i D(t,T_i)S(t,t_i)$, we modify ',
-                      'the cashflows thus:',
-                      '',
-                      '$$P c\\alpha D(t,T_i) \\big( S(t,t_i) + p^m(\\alpha^A+0.5\\alpha^R) \\big)$$',
-                      '',
-                      'where',
-                      '',
-                      '- $p^m$ is the marginal survival probability - i.e. $S(t,t_i)-S(t,t_{i+1})$',
-                      '- $\\alpha^A$ - length of time period already accrued divided by $\\alpha$',
-                      '- $\\alpha^R$ - length of time period remaining divided by $\\alpha$',
-                      '',
-                      'Note that $\\alpha^A$ becomes 0 and $\\alpha^R$ becomes 1 for cashflows yet to be paid'
-                      ])
+    documentation = ('Credit', [
+        'A single-name credit default swap. The protection buyer pays a periodic fee **Pay_Rate**',
+        '(basis points) on the **Principal** (less any **Amortisation**) while the **Name** survives;',
+        'on default the seller pays $P(1-R)$, $R$ the recovery on the name\'s survival factor, or',
+        '**Digital_Recovery** in its place where **Is_Digital** is `Yes`. For a protection buyer, with',
+        '$\\tilde t_i=\\max(t_i,t)$, $t_i$ the period boundaries, $T_i$ the payment dates and $S(t,\\cdot)$ the',
+        'survival curve,',
+        '',
+        '$$V(t)=\\sum_{i}P_i(1-R)V_i(t)-\\sum_{i}P_ic\\,\\alpha_iD(t,T_i)\\big(S(t,T_i)+a_i\\,p_i\\big)-UP\\,D(t,T_u)\\mathbf 1_{\\{t\\le T_u\\}}$$',
+        '',
+        'and a protection seller holds $-V$. Here $c$ is the fee rate, $\\alpha_i$ the accrual fraction in',
+        '**Accrual_Day_Count**, $p_i=S(t,\\tilde t_{i-1})-S(t,T_i)$ the period\'s default probability, and',
+        '$U$ the **Upfront** (percent of $P$) paid by the buyer on **Upfront_Date** (the effective date',
+        'where blank), counted while $t\\le T_u$ whatever the name does. The protection leg uses the',
+        'midpoint form',
+        '',
+        '$$V_i(t)=\\frac{D(t,\\tilde t_{i-1})+D(t,T_i)}{2}\\Big(S(t,\\tilde t_{i-1})-S(t,T_i)\\Big)$$',
+        '',
+        'of the exact flat-hazard, flat-rate period value',
+        '$\\frac{\\bar h_i}{f_i+\\bar h_i}\\big(D(t,\\tilde t_{i-1})S(t,\\tilde t_{i-1})-D(t,T_i)S(t,T_i)\\big)$, with',
+        '$\\bar h_i$ and $f_i$ the period\'s average hazard and forward rate. Its relative error per period',
+        'against that exact form, computed analytically: $7.8\\times10^{-6}$ ($f=5\\%$, $\\bar h=2\\%$,',
+        'quarterly), $-6.5\\times10^{-5}$ ($f=5\\%$, $\\bar h=30\\%$, quarterly), $-8.3\\times10^{-4}$',
+        '($f=10\\%$, $\\bar h=50\\%$, semi-annual).',
+        '',
+        '**Accrue_Fee** `Yes` adds the fee accrued to default, $a_i=\\alpha^A_i+\\tfrac12\\alpha^R_i$, with',
+        '$\\alpha^A_i$ the fraction of the period already accrued and $\\alpha^R_i=1-\\alpha^A_i$ the fraction',
+        'remaining (so $a_i=\\tfrac12$ for a period not yet started); `No` sets $a_i=0$.'])
 
     def reset(self, calendars):
         super(DealDefaultSwap, self).reset()
@@ -7378,9 +7412,18 @@ class FRADeal(Deal):
 
     documentation = ('Interest Rates',
                      ['A forward rate agreement (FRA) pays the difference between a floating rate and a fixed',
-                      'rate, usually discounted and paid at the start of the rate period.',
+                      'rate over **Effective_Date** to **Maturity_Date**. It is one',
+                      '[floating interest cashflow](#floating-interest-cashflows) with margin $-K$:',
                       '',
-                      'The FRA deal is a special case of a  [floating swap leg](#floating-interest-cashflows)'
+                      '$$V(t)=\\pm P\\,\\big(L(t)-K\\big)\\,\\alpha\\,D(t,T_{PV})$$',
+                      '',
+                      'with $\\pm$ $+$ for a **Borrower** and $-$ for a **Lender**, $P$ **Principal**, $K$ **FRA_Rate**,',
+                      '$\\alpha$ the accrual fraction in **Day_Count**, $L$ the forward on **Interest_Rate** (or',
+                      '**Known_Rate** where **Use_Known_Rate** is `Yes`) reset on **Reset_Date** (the effective date',
+                      'where blank). **Payment_Timing** `Begin` values and pays the amount at the effective date',
+                      'with no $1/(1+L\\alpha)$ discount; `End` and `Discounted` both value from maturity',
+                      '($T_{PV}$ = maturity), `End` paying there and `Discounted` paying the amount discounted back',
+                      'to the effective date.'
                       ])
 
     def reset(self, calendars):

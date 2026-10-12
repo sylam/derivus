@@ -12,9 +12,12 @@ calc, out = cx.run_job(overrides={})
 
 This returns the calculation object (`calc`, useful for inspecting state post-run) and the
 output itself (`out`). `run_job` dispatches on the document's `Calculation.Object` —
-`BaseValuation`, `CreditMonteCarlo` or `HedgeMonteCarlo` — and each also has an explicit method
-(`cx.Base_Valuation(...)`, `cx.Credit_Monte_Carlo(...)`, `cx.Hedge_Monte_Carlo(...)`) for
-running a different calculation than the JSON specifies. Check a document before running it with
+`BaseValuation`, `CreditMonteCarlo`, `HedgeMonteCarlo` or `SIMM`. The first three also have an
+explicit method (`cx.Base_Valuation(...)`, `cx.Credit_Monte_Carlo(...)`,
+`cx.Hedge_Monte_Carlo(...)`) for running a different calculation than the JSON specifies; `SIMM`
+runs through `run_job` or `derivus.run_simm(cx.current_cfg)`. Every field each type reads, and how
+a block is completed and overridden, is in the [Calculations](json/calculations.md) reference.
+Check a document before running it with
 `cx.validate()`; the [API Overview](api_overview.md) covers the full verb set, overrides,
 market-value patching and the replay identity.
 
@@ -32,6 +35,6 @@ Notice that the pairing of Risk Factor with a compatible stochastic process is f
   <source src="credit_monte_carlo.mp4" type="video/mp4">
 </video>
 
-The parameters are explained [here](api_usage/calculations.md). There is also the problem of
+The parameters are listed in the [Calculations](json/calculations.md) reference and their methods described [here](api_usage/calculations.md). There is also the problem of
 capturing correlations between risk factors: defining these Correlations and calculating the
 stochastic process parameters can be eased by loading a file of historical data.

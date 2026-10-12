@@ -133,10 +133,9 @@ This rule has a real cost. Some calibrations would, in principle, like to use a 
 fitted state. The canonical example is `BasisLinkedSpotCalibration`: it partitions η by
 regime to fit `Sigma_By_State`, and the *correct* partition is "the LME HMM's posterior
 state on this day." Currently the calibration uses a rolling-vol tercile of `ΔLME` as a
-proxy — correlated with the HMM partition but not identical. A recorded measurement puts it
-empirically close (0.6–0.8% recovery error), and the gate that holds it today is
-`tests/test_basis_slow_mean_garch.py`, which `BasisLinkedSpotCalibration`'s own docstring cites —
-but it's not the partition the simulator runtime uses.
+proxy — correlated with the HMM partition but not identical, and not the partition the simulator
+runtime uses. How far the proxy's `Sigma_By_State` sits from an HMM-partitioned one is unmeasured:
+no test in the repository holds it.
 
 We considered three ways to fix this:
 
@@ -147,9 +146,7 @@ We considered three ways to fix this:
    right (basis can run Viterbi against the actual production HMM), but breaks the
    self-containment rule.
 
-**Decision (2026-05): defer (3) until the next calibration class needs sibling state.**
-The current proxy is empirically validated; closing the theoretical gap is not blocking
-any failing test. When (3) eventually lands, it should come with a topo-sorted calibrate
+**Deferred: (3) waits until the next calibration class needs sibling state.** When (3) lands, it should come with a topo-sorted calibrate
 loop and an explicit `DEPENDS_ON` declaration on the calibration class — so dependency
 ordering is part of the contract, not an implicit alphabetical sort. That's the right
 moment to also drop the rolling-vol tercile in

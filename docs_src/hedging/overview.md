@@ -28,9 +28,41 @@ than re-checking it. A malformed schedule, a partial spot history, an unknown `E
 
 ## Objective
 
-The DP recursion lives in utility space, so `solve_hedge` requires a utility `Objective.Object` —
-one of `AsymmetricUtility_Symlog`, `AsymmetricUtility_Huber`, `AsymmetricUtility_CARA`. The scale
-`c` is resolved once when the bundle is built and never recomputed: a per-rollout `c` silently
+`solve_hedge` chooses hedge positions $q$ to maximise expected utility of hedged wealth,
+
+$$\max_q\ \mathbb{E}\big[u(x)\big],\qquad x=\frac{W_T-R}{c},\qquad
+W_{t+1}=W_t+\sum_i q_i\,cs_i\,(F_{t+1,i}-F_{t,i})+(L_{t+1}-L_t),$$
+
+where $W_t$ is the cumulative hedge P&L plus the marked liability $L_t$, $F_i$ the hedge
+instrument's mark, $cs_i$ its contract size, $R$ = `Reference_Wealth` (currency, default 0) and $c$
+the utility scale. This frictionless law is what the solver fits; the environment adds financing,
+margin, costs and rounding ([Bundle](bundle.md)). `Reference_Mode: Running_Wealth` applies $u$ to
+each day's wealth increment instead of $W_T$ and sums the step utilities.
+
+The DP recursion lives in utility space, so `solve_hedge` requires one of these `Objective.Object`
+values:
+
+| `Objective.Object` | $u(x)$ | parameters (default) |
+| --- | --- | --- |
+| `AsymmetricUtility_Symlog` | $\mathrm{sign}(x)\log(1+\lvert x\rvert)$ | none |
+| `AsymmetricUtility_Huber` | $x-a\,h_\delta(x^-)-a^+h_\kappa(x^+)$, with $h_k(y)=y^2$ for $y\le k$ and $k^2+2k(y-k)$ beyond | `Huber_Aversion` $a$ 2.5, `Huber_Delta` $\delta$ 1.0, `Up_Aversion` $a^+$ 0, `Up_Knee` $\kappa$ 0.15 |
+| `AsymmetricUtility_CARA` | $(1-e^{-\gamma x})/\gamma$ | `CARA_Gamma` $\gamma$ 1.0 |
+| `LogWealth` | per step $\log\big((C+W_{t+1})/(C+W_t)\big)$, summed; no $c$ | `Solver.DiffV2_Risk_Aversion` 1.0, in [0.1, 10] |
+
+$x^-=\max(-x,0)$ and $x^+=\max(x,0)$. Under `LogWealth` the capital line is
+$C=1.1\max(0,-\min W_{bank})/$`DiffV2_Risk_Aversion`, the worst wealth the training bank reaches;
+below a ratio of 1e-3 the log continues linearly, it is floored at −20, and a run whose worst bank
+wealth leaves no headroom is refused.
+
+The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` override):
+
+| Setting | $c$ |
+| --- | --- |
+| `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days to the last settlement / 252; spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; refused below 1,000 |
+| `Utility_Scale_Explicit` | the stated currency amount |
+| `conditional_sim` | per decision step, the cross-sectional standard deviation of the flat-book wealth $L_t$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` (default 0.05) of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
+
+$c$ is resolved once when the bundle is built and never recomputed: a per-rollout `c` silently
 rescales every reward, so a loaded checkpoint evaluates in **its own** frame.
 
 ## Privileged factors

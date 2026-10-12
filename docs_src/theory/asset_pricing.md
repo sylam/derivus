@@ -26,7 +26,8 @@ $$F(t,T)=S(t)\frac{Q(t,T)}{D(t,T)}$$
 
 Here $D(t,T)$ is the discount rate from the asset's interest rate price factor (i.e. its repo rate
 specified by the **Interest Rate** price factor) and $Q(t,T)$ is the discount rate from the dividend
-rate (for equities) or convenience yield (for commodities).
+rate (for equities) or convenience yield (for commodities): the continuous-yield forward of
+Merton (1973).
 
 ### FX Rates
 
@@ -35,7 +36,8 @@ Forward FX rates for currency $C$ in currency $A$ is given by:
 $$F_{C/A}(t,T)=X_{C/A}\frac{D_C(t,T)}{D_A(t,T)}$$
 
 where $D_C(t;T)$ is the discount rate from the interest rate price factor specified by the
-**Interest Rate** property on the FX rate price factor for currency $C$. This can be extended to handle
+**Interest Rate** property on the FX rate price factor for currency $C$ (covered interest parity, the
+forward of Garman and Kohlhagen, 1983). This can be extended to handle
 the case where a given equity/commodity price $S(t)$ with asset currency $C$ is required in another
 currency $A$ as follows
 
@@ -62,13 +64,29 @@ the implied dividend rate is:
 
 $$q(t)=\frac{1}{t} \log \Biggl( \frac{S(0)}{S(0)-\sum_{0 \lt s_i \le t} H_i D(0,t_i)} \Biggl)$$
 
-Since the curve $q(t)t$ is constant on each interval $[s_i,s_{i+1}]$, and is a piecewise linear
-function of $1/t$, interpolation should also be linear in $1/t$ with flat extrapolation. If $t_1$ and
-$t_2$ are points on the curve with $t_1 \le t \le t_2$, then
+Since the curve $q(t)t$ is constant on each interval $[s_i,s_{i+1}]$, $q(t)$ is a piecewise linear
+function of $1/t$, and a **DividendRate** curve is interpolated linearly in $1/t$ with flat
+extrapolation. If $t_1$ and $t_2$ are points on the curve with $t_1 \le t \le t_2$, then
 
 $$q(t)=q(t_1)+\Biggl(\frac{1/t_1 - 1/t}{1/t_1 - 1/t_2}\Biggl)(q(t_2)-q(t_1))$$
 
 ## Interest and Inflation rate interpolation
+
+**InterestRate**, **InflationRate** and **ForwardRate** factors take their method from the
+**Price Factor Interpolation** section (default Linear); dividend, survival and forward-price curves
+interpolate as their own sections state. Accepted names:
+
+| Name | Method |
+|---|---|
+| `Linear`, `LinearInterFlatExtrapCurveGetValue` | Linear |
+| `LinearRT`, `LogLinearCurveInterpolation` | LinearRT (log-linear in the discount factor) |
+| `Hermite`, `HermiteInterpolationCurveGetValue`, `CubicSplineCurveInterpolation`, `NaturalCubicSplineCurveInterLinearExtrap` | Hermite |
+| `HermiteRT`, `HermiteRTInterpolationCurveGetValue`, `CubicSplineOnXTimesYCurveInterpolation`, `LogNaturalCubicSplineCurveInterFlatExtrap` | HermiteRT |
+| `LinearExtrapolate` | linear, extrapolated along the end segments |
+| any other name | Linear |
+
+The cubic-spline names are read as the Hermite scheme below, not as a cubic spline; the difference
+from a natural cubic spline is unmeasured.
 
 ### Hermite Interpolation
 
@@ -79,9 +97,8 @@ continuity up to the second degree. This approach allows changes in one section 
 only its immediate neighbours. However, when using default extrapolation at the long end, a slight 
 drop in forward rates may occur before they become flat.
 
-The formulas for the Hermite method are provided below:
-
-$$r'(t) = (r'_1,, r'_i,, r'_n)$$
+The formulas for the Hermite method are provided below. With knots $(t_i,r_i)$, $i=1,\dots,n$, and
+slopes $r'=(r'_1,\dots,r'_n)$, for $t_i\le t\le t_{i+1}$:
 
 $$r(t)=r_i + m_i(t)\big( r_{i+1} - r_i\big) + m_i(t)\big(1-m_i(t)\big)g_i+m_i^2(t)\big(1-m_i(t)\big)c_i$$
 
@@ -92,12 +109,13 @@ $$g_i = (t_{i+1}-t_i)r'_i - (r_{i+1}-r_i)$$
 
 $$c_i = 2(r_{i+1}-r_i) -(t_{i+1}-t_i)(r'_i+r'_{i+1})$$
 
-The vector $r'$ is calculated as
+The vector $r'$ is the slope at $t_i$ of the parabola through the three neighbouring knots (the
+Bessel slope of Hagan and West, 2006):
 
-$$ r'_i = \frac{1}{t_{i+1} - t_i} \left[ \frac{(r_i - r_{i-1}) (t_{i+1} - t_i)}{(t_i - t_{i-1})} + 
-\frac{(r_{i+1} - r_i) (t_i - t_{i-1})}{t_{i+1} - t_i} \right]$$
+$$ r'_i = \frac{1}{t_{i+1} - t_{i-1}} \left[ \frac{(r_i - r_{i-1}) (t_{i+1} - t_i)}{(t_i - t_{i-1})} + 
+\frac{(r_{i+1} - r_i) (t_i - t_{i-1})}{t_{i+1} - t_i} \right],\qquad 1<i<n$$
 
-Boundry Conditions
+Boundary conditions:
 
 $$ r'_1 = \frac{1}{t_3 - t_1} \left[ \frac{(r_2 - r_1) (t_3 + t_2 - 2t_1)}{(t_2 - t_1)} - 
 \frac{(r_3 - r_2) (t_2 - t_1)}{t_3 - t_2} \right]$$
@@ -117,9 +135,11 @@ where $t_i < t < t_{i+1}$ and
 
 $$ \alpha = \frac{t - t_i}{t_{i + 1} - t_i} $$
 
+The rate is held flat before the first tenor and beyond the last.
+
 ### RT interpolation
 
-Both Linear and Hermite interpolation can be applied to the rate multiplied by the tenor instead of just the rate. The variations are HermiteRT and LinearRT and they are exactly as described above except instead of interpolating just the rate, we interpolate the rate x tenor
+Both Linear and Hermite interpolation can be applied to the rate multiplied by the tenor instead of just the rate. The variations are HermiteRT and LinearRT and they are exactly as described above except instead of interpolating just the rate, we interpolate the rate x tenor (LinearRT is therefore log-linear in the discount factor)
 
 i.e. instead of interpolating:
 
@@ -131,31 +151,40 @@ $$r = (r_1t_1,, r_it_i,, r_nt_n)$$
 
 ## Volatility rate interpolation
 
-Interpolation across expiry is linear in volatility across all surfaces defined below. This may change to being linear in variance in future.
+Equity, FX and commodity surfaces (**Surface_Type**) are static: a simulation reads the base-date
+surface at the tenor measured from each row. Between quoted expiries and beyond them:
+
+| Surface_Type | Moneyness coordinate | Across expiry | Beyond the quotes |
+|---|---|---|---|
+| `Explicit` | ratio $S/K$ or $F/K$ as the deal declares ($K/S$, $K/F$ inverted); ATM $=1$ | linear in vol | flat in moneyness and expiry |
+| `Relative_Forward` | $(K-F)/F$; ATM $=0$ | linear in vol | flat |
+| `Malz` | $\ln(F/K)$ (or $\ln(S/K)$ as the deal declares); ATM $=0$ | linear in total variance $\sigma^2T$ | flat in moneyness; before the first expiry its vol; after the last its total variance $\sigma_n^2T_n$, so the vol falls as $\sigma_n\sqrt{T_n/T}$ and the forward variance there is zero |
+| `SVI` | $x$ of the sticky rule below | linear in variance $\sigma^2$ | expiry flat |
+| `Skew` | $x$ of the sticky rule below | linear in vol, between the two expiries' smiles | expiry flat; wings as tabled |
+
+Within one expiry the grid surfaces (`Explicit`, `Relative_Forward`, `Malz`) are linear in
+moneyness.
+
 ### Sticky rule
 
-The Sticky Rule dictates the fixed volatility parameters that influence the retrieved volatility. The volatility value $v(x)$ for Skews and SVI surfaces is based on log - moneyness, which is defined differently depending on the sticky rule applied. These are:
+**Moneyness_Rule** is read by Skew and SVI surfaces only, which are functions of a log-moneyness $x$:
 
- - **Sticky Strike** calculates log-moneyness as
- - 
-$$ x=ln(\frac{K}{ATM_{ref}})$$
+ - **Sticky_Strike**: $x=\ln(K/\mathrm{ATM}_{\mathrm{ref}})$ (**ATM_Ref**), the reference interpolated linearly in expiry;
+ - **Sticky_Moneyness** (default) and **Sticky_Delta**, read alike: $x=\ln(K/F)$.
 
-$K$ is the option strike price
+$K$ is the option strike price and $F$ is the underlying forward price. An `Explicit`, `Malz` or
+`Relative_Forward` surface does not read the rule.
 
- - **Sticky Moneyness** calculates log-moneyness as
- - 
-$$ x=ln(\frac{K}{F})$$
+### Shifts and normal vols
 
-$K$ is the option strike price and $F$ is the underlying forward price
+An interest rate vol surface (caps, floors, swaptions) declares **Distribution_Type**:
 
-### Shifts
-
-A shift value may be defined on Volatility surfaces used to price Caplets/Floorlets and Swaptions. The default value is 0 but should it be defined, it is ignored during volatility interpolation and only used when pricing the interest rate option by adding the shift value to both the Forward and Strike values in the usual Black Formula.
-i.e.
-
-Instead of $\mathcal B_\delta(F,K,\sigma\sqrt{t_0-t})$, we calculate $\mathcal B_\delta(F+s,K+s,\sigma\sqrt{t_0-t})$ 
-
-where $s$ is the shift value. Note that this applies to lognormal Surfaces.
+- `Lognormal` (default) prices Black (1976). A **Shift** $s$ (default 0) is ignored during
+  volatility interpolation and added to both forward and strike: instead of
+  $\mathcal B_\delta(F,K,\sigma\sqrt{t_0-t})$ we calculate $\mathcal B_\delta(F+s,K+s,\sigma\sqrt{t_0-t})$.
+- `Normal` prices Bachelier (1900) on an absolute normal vol: the undiscounted premium is
+  $\mu\,\Phi(\mu/v)+v\,\phi(\mu/v)$ with $\mu=\omega(F-K)$, $v=\sigma_N\sqrt{\tau}$; a nonzero shift
+  beside it is refused.
 
 
 ### Skew Surfaces
@@ -163,7 +192,7 @@ where $s$ is the shift value. Note that this applies to lognormal Surfaces.
 Skews are built up by nine parameters. These parameters are:
 
  - ATM Volatility $(v_0>0)$
- - Underlying ATM reference quote
+ - Underlying ATM reference quote (**ATM_Ref**, read under Sticky_Strike)
  - the slope $s$
  - the Left curvature $L$
  - the Right curvature $R$
@@ -191,33 +220,43 @@ $$ s+2LC=\beta + 2\gamma C $$
 
 $$0=\beta + 2\gamma(1+\lambda)C$$
 
-The right side of the curve with coefficients $\alpha', \beta', \gamma'$ are solved analogously but using $D, \rho$ instead of $C, \lambda$
+The right side of the curve with coefficients $\alpha', \beta', \gamma'$ are solved analogously but using $D, \rho$ instead of $C, \lambda$.
+A wing of zero ($\lambda=0$ or $\rho=0$) holds the smile flat beyond its cutoff.
 
 ### SVI Surfaces
 
-The SVI volatility skew is defined by the five parameters $a, b, \rho, m, \sigma$
+The SVI volatility skew is defined by the five parameters $a, b, \rho, m, \sigma$ per expiry; it
+gives the variance (not the total variance $\sigma^2T$ of the raw SVI of Gatheral and Jacquier, 2014):
 
 $$ \sigma_{SVI}^2(x)=a+b\big(\rho(x-m)+\sqrt{(x-m)^2+\sigma^2}\big)$$
 
-Arbitrage constraints are not checked (can be implemented in future)
+No arbitrage constraint is checked, in particular neither
 
 $$0 \leq b \leq \frac{2}{(1+|\rho|)T}$$
 
-and
+(the wing-slope bound of Lee's moment formula, 2004, written for this variance) nor
 
 $$|\rho| \leq 1$$
 
 ### Explicit Surfaces
 
-These are moneyness surfaces (defined as either Spot over strike for equities or Forward over strike for FX). These moneyness surfaces must have the moneyness axis strictly greater than 1.0. Volatility is then linearly interpolated across moneyness.
+These are moneyness surfaces: the moneyness is spot over strike, or forward over strike, as the
+pricing deal declares (strike over spot or forward where it declares the inverse). The moneyness
+axis must be strictly positive; volatility is linear in moneyness and flat beyond the grid.
+
+### Relative_Forward Surfaces
+
+A moneyness surface on the relative forward moneyness $(K-F)/F$ (ATM at 0), otherwise read as an
+`Explicit` one.
 
 ### Malz (Delta-Quoted) Surfaces
 
 FX volatility surfaces are commonly quoted in terms of the option *delta* rather than strike or
-log-moneyness. The Malz convention uses the **percentage-of-foreign-forward delta** to label
-each vol quote. Derivus converts this delta-quoted surface into an explicit
-log-moneyness surface on initialisation so that the generic `Explicit` pricing path can be
-reused without modification.
+log-moneyness (Malz, 1997). The convention here labels each vol quote (**Delta_Surface**) with
+its **percentage-of-foreign-forward delta**, the premium-adjusted forward delta (Reiswich and
+Wystup, 2010). Derivus converts this delta-quoted surface into a log-moneyness surface on
+initialisation; it is then read linearly in log-moneyness, as an `Explicit` one is, but across
+expiry in total variance.
 
 #### Delta Convention
 
@@ -244,7 +283,9 @@ under this convention gives
 $$\delta_{\text{ATM}} = \tfrac{1}{2}\exp\!\left(-\tfrac{1}{2}\sigma_{\text{ATM}}^2 T\right)$$
 
 rather than exactly $0.5$. The implementation replaces the vendor $\pm 0.5$ nodes with
-the corrected $\pm\delta_{\text{ATM}}$ before any interpolation is performed.
+the corrected $\pm\delta_{\text{ATM}}$ before any interpolation is performed ($\sigma_{\text{ATM}}$
+is the $+0.5$ quote where both are present; a smile quoted on one side only gets the ATM node on
+the other). Quoted vols are floored at $10^{-4}$.
 
 #### Self-Consistency Inversion
 
@@ -254,10 +295,12 @@ the fixed-point condition
 $$\Delta\bigl(x,\,\sigma^*(x,T),\,T\bigr) = \delta^*,\qquad
   \sigma^*(\delta^*, T) = \sigma_{\text{interp}}(\delta^*)$$
 
-where $\sigma_{\text{interp}}$ is the piecewise-linear interpolant of the vendor delta-vol quotes.
-This is a scalar nonlinear equation in $\delta^*$ which is solved with Brent's method, separately
-for calls ($x \le x_{\text{ATM}}$) and puts ($x > x_{\text{ATM}}$), bracketed by the available
-wing deltas.
+where $\sigma_{\text{interp}}$ is the piecewise-linear interpolant of the vendor delta-vol quotes
+(linear in delta, not Malz's quadratic). This is a scalar nonlinear equation in $\delta^*$ which is
+solved by bisection (64 halvings), separately for calls ($x \le x_{\text{ATM}}$) and puts
+($x > x_{\text{ATM}}$), bracketed by the available wing deltas. Where the root lies outside the
+bracket, $\delta^*$ is the bracket end with the smaller residual, so the smile is flat beyond its
+widest quoted delta.
 
 The ATM dividing point in log-moneyness is
 
@@ -280,5 +323,56 @@ as follows. For each consecutive pair $(x_l, x_r)$ the midpoint $x_m = (x_l+x_r)
    insert $x_m$ into the grid with the exact value $w(x_m,T) = \sigma^{*2}(x_m,T)\,T$.
 4. Repeat until all midpoint errors are within tolerance.
 
-The resulting `(x, T, \sigma)` triples are stored as an `Explicit` log-moneyness surface and
-the remainder of the pricing pipeline is unchanged.
+The resulting $(x, T, \sigma)$ triples are the surface pricing reads, each expiry on its own
+refined grid.
+
+## Spot models
+
+The spot models documented below are geometric Brownian motion (Black and Scholes, 1973), with a
+term structure of implied vol in the implied variant; a log-spot Ornstein-Uhlenbeck process
+(Uhlenbeck and Ornstein, 1930), Schwartz's (1997) one-factor commodity model; a hidden-Markov
+regime model (Hamilton, 1989); a GARCH(1,1) model (Bollerslev, 1986) with Student-t innovations
+(Bollerslev, 1987); basis and fixing models built on them; and LogVar2FJ
+([Stochastic Volatility](stochastic_volatility.md)).
+
+## References
+
+- Bachelier, L. (1900). Théorie de la spéculation. *Annales scientifiques de l'École normale
+  supérieure*, 17, 21-86. [doi:10.24033/asens.476](https://doi.org/10.24033/asens.476)
+- Black, F. (1976). The pricing of commodity contracts. *Journal of Financial Economics*, 3(1-2),
+  167-179. [doi:10.1016/0304-405X(76)90024-6](https://doi.org/10.1016/0304-405X%2876%2990024-6)
+- Black, F. and Scholes, M. (1973). The pricing of options and corporate liabilities. *Journal of
+  Political Economy*, 81(3), 637-654. [doi:10.1086/260062](https://doi.org/10.1086/260062)
+- Bollerslev, T. (1986). Generalized autoregressive conditional heteroskedasticity. *Journal of
+  Econometrics*, 31(3), 307-327. [doi:10.1016/0304-4076(86)90063-1](https://doi.org/10.1016/0304-4076%2886%2990063-1)
+- Bollerslev, T. (1987). A conditionally heteroskedastic time series model for speculative prices
+  and rates of return. *The Review of Economics and Statistics*, 69(3), first page 542 (the registry
+  gives no end page). [doi:10.2307/1925546](https://doi.org/10.2307/1925546)
+- Garman, M. B. and Kohlhagen, S. W. (1983). Foreign currency option values. *Journal of
+  International Money and Finance*, 2(3), 231-237.
+  [doi:10.1016/S0261-5606(83)80001-1](https://doi.org/10.1016/S0261-5606%2883%2980001-1)
+- Gatheral, J. and Jacquier, A. (2014). Arbitrage-free SVI volatility surfaces. *Quantitative
+  Finance*, 14(1), 59-71 (online 11 September 2013, the issue 2 January 2014).
+  [doi:10.1080/14697688.2013.819986](https://doi.org/10.1080/14697688.2013.819986)
+- Hagan, P. S. and West, G. (2006). Interpolation methods for curve construction. *Applied
+  Mathematical Finance*, 13(2), 89-129 (June 2006; the online record is dated 2007).
+  [doi:10.1080/13504860500396032](https://doi.org/10.1080/13504860500396032)
+- Hamilton, J. D. (1989). A new approach to the economic analysis of nonstationary time series and
+  the business cycle. *Econometrica*, 57(2), first page 357 (the registry gives no end page).
+  [doi:10.2307/1912559](https://doi.org/10.2307/1912559)
+- Lee, R. W. (2004). The moment formula for implied volatility at extreme strikes. *Mathematical
+  Finance*, 14(3), 469-480 (online June 2004, the issue July 2004).
+  [doi:10.1111/j.0960-1627.2004.00200.x](https://doi.org/10.1111/j.0960-1627.2004.00200.x)
+- Malz, A. M. (1997). Estimating the probability distribution of the future exchange rate from
+  option prices. *The Journal of Derivatives*, 5(2), 18-36.
+  [doi:10.3905/jod.1997.407988](https://doi.org/10.3905/jod.1997.407988)
+- Merton, R. C. (1973). Theory of rational option pricing. *The Bell Journal of Economics and
+  Management Science*, 4(1), first page 141 (the registry gives no end page).
+  [doi:10.2307/3003143](https://doi.org/10.2307/3003143)
+- Reiswich, D. and Wystup, U. (2010). A guide to FX options quoting conventions. *The Journal of
+  Derivatives*, 18(2), 58-68. [doi:10.3905/jod.2010.18.2.058](https://doi.org/10.3905/jod.2010.18.2.058)
+- Schwartz, E. S. (1997). The stochastic behavior of commodity prices: implications for valuation and
+  hedging. *The Journal of Finance*, 52(3), 923-973 (July 1997; Wiley's online copy is dated 2012).
+  [doi:10.1111/j.1540-6261.1997.tb02721.x](https://doi.org/10.1111/j.1540-6261.1997.tb02721.x)
+- Uhlenbeck, G. E. and Ornstein, L. S. (1930). On the theory of the Brownian motion. *Physical
+  Review*, 36(5), 823-841. [doi:10.1103/PhysRev.36.823](https://doi.org/10.1103/PhysRev.36.823)

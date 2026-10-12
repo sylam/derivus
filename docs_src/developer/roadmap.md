@@ -13,7 +13,8 @@ outer is chosen, [Calc Lifecycle](calc_lifecycle.md) for the engine.
 
 Grouped by where a validator meets them. Every row carries its measured size or says it is
 unmeasured — a limitation without a number is absolution, not documentation
-([Conventions](conventions.md#unification-siblings)). Dates are when the row was found.
+([Conventions](conventions.md#unification-siblings)). Dates are when the row was found. The letters
+S, M and L (small, medium, large) size the FIX, never the error.
 
 ### The xVA outer and the correlation
 
@@ -35,6 +36,27 @@ unmeasured — a limitation without a number is absolution, not documentation
   writer stops emitting a second basis (L). Found beside it, UNMEASURED: a calibrated market can
   carry the quanto number on its Hull-White factors with no row in the section at all, so the
   simulated FX ignores the rates the drift reads.
+- **The quasi-random draws ignore `Random_Seed`** (2026-10-11). One scrambled Sobol sequence, at
+  a fixed seed (1234) and offset, feeds the one-step-survival pricers' inner block (common to every
+  outer path, batch and worker by design), the Markov-regime, GARCH and basis-linked spot models,
+  the LogVar2FJ extra bucket-knot mixers and the hedging inner fork (unless `Inner_Draws: random`);
+  `Random_Seed` moves only the pseudo-random draws. A study across seeds therefore holds those draws
+  fixed and cannot see their error, and the inner block's error is common to the outer paths rather
+  than averaged by them. UNMEASURED.
+- **A Hull-White 2F step whose increment covariance is not positive definite reuses the previous
+  step's Cholesky factor** (2026-10-11), with nothing logged. UNMEASURED, and how often it fires is
+  not reported.
+
+### The calibration
+
+- **The default LogVar2FJ fit prices its vanillas on a lognormal stand-in for the variance clock**
+  (measured 2026-09-14). `Vanilla_Pricer: Quadrature`, the default, matches the clock to a lognormal
+  on two moments: on a five-expiry, fifteen-quote fixture ladder at the walk fit's parameters it read
+  within 0.085 vol points of a 32,768-path walk on the worst quote and within 0.098 of a
+  1,048,576-path one, while the walk itself moved 0.36 vol points between 8,192 and 32,768 paths
+  from its ratio estimator's bias, the bias the forward-start rows carry, which keep the walk at its
+  default `Paths` of 8,192.
+  `Vanilla_Pricer: Walk` is the alternative.
 
 ### The autocall, TARF and barrier pricers
 
@@ -81,8 +103,25 @@ unmeasured — a limitation without a number is absolution, not documentation
 - **The American option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option`, which an `EquityOptionDeal` carrying `Option_Style: American` reaches,
   never calls `calc_vol_adjustment`, so a composite or quanto American prices as the local asset
-  whatever the payoff currency says. The owner's ruling: leave it as it is and replace the
-  approximation with a different pricer rather than adjust this one.
+  whatever the payoff currency says. UNMEASURED, as is the approximation's error against a lattice.
+  The remedy is a different pricer, not an adjustment to this one.
+- **The closed-form barrier floors its vol at 5%** (2026-10-11). `pv_barrier_option`, which the FX
+  barrier and an equity barrier without `Barrier_Dates` reach, lifts every vol below 0.05 to 0.05
+  before it prices and before the monitoring shift. UNMEASURED on low-vol pairs.
+
+### The other pricers
+
+- **An American FX option prices as a European** (2026-10-11). `FXOptionDeal` and
+  `FXTARFOptionDeal` declare `Option_Style: American` and neither reads it, so the European pricer
+  runs whatever the field says and any early-exercise premium is lost. UNMEASURED; refusing it by
+  name is S.
+- **An Asian carries one flat rate to expiry, and the double Asian reads one vol** (2026-10-11). The
+  discrete Asian forwards every remaining sample at the one carry $\log(F(t,T)/S)/\tau$; the double
+  Asian reads one at-the-money vol at the deal's expiry for every sample of both strips. UNMEASURED
+  on a sloped carry curve or a term-structured surface.
+- **A cash-settled swaption is priced on the physical annuity** (2026-10-11), the cash annuity's
+  convexity not modelled; an amortising or forward-start swaption is priced on the vanilla tenor and
+  not refused. UNMEASURED.
 
 ### The engine
 
@@ -114,6 +153,17 @@ unmeasured — a limitation without a number is absolution, not documentation
   cash row stating no `Haircut_Posted`, which fails the set's compile on a `KeyError` today, read
   under the same ruling. A floating cashflow list's `Settlement_Date` and `Settlement_Amount` are
   refused by name where stated until the list reads them as the fixed list does in four places: M.
+  The haircut's effect on a collateralised exposure is UNMEASURED.
+- **Rating-dependent credit support is read at its first row** (2026-10-11). Every
+  `CreditSupportList` on a netting set - the thresholds, the minimum transfers, the independent
+  amount - is read at its first row's amount (`utils.CreditSupportList.value`) whatever the
+  counterparty's rating, by the engine and the spine's collateral call alike. Exact for a one-row
+  table; UNMEASURED otherwise.
+- **Declared fields nothing reads** (2026-10-11). `Commodity_Collateral` on a netting set,
+  `Net_Cashflows` on a structure, `Dividend_Timing` on an equity swap leg (`Continuous` prices as
+  `Terminal`), `Average_FX` on the floating energy deal and the energy option, `Risk_Premium` on the
+  GBM term-structure model and `Distribution_Type` on the PCA rate model (always lognormal) are
+  accepted and change nothing. Refusing or dropping each: S.
 - **A factor read on a day the scenario grid does not hold is interpolated between its
   neighbours** (2026-10-04). A fixing between two scenario dates reads the factor linearly across
   them, 5e-7 of an FX level on a monthly grid, and a simulated price index's month whose print is
@@ -149,7 +199,7 @@ unmeasured — a limitation without a number is absolution, not documentation
   `values_hash` hold the set document's hash and the two files', where every other run's hold the
   engine's; a market edit writes `Market Prices` into the book, so the first recalc after a tick
   parses the file again. M: the readers through a loaded context.
-- **A credit Monte Carlo writes into the config it runs on** (2026-10-06). `Context.run_cmc`
+- **A credit Monte Carlo writes into the config it runs on** (2026-10-06). `run_cmc`
   re-knots the counterparty's survival curve where `CDS_Tenors` is set - idempotent, to the bit
   across a moved base date and changed tenors - and writes a collateral valuation adjustment's flat
   `.FUNDING` and `.COLLATERAL` curves into the price factors, over a curve of that name a market
@@ -235,6 +285,20 @@ unmeasured — a limitation without a number is absolution, not documentation
   with both kinds, a forged approval of a ticket only the four-eyes tier would admit is caught only
   by copies agreeing with the hub. Recording the tier on the approval closes it: M. Signed history
   ends at the last checkpoint either way.
+- **Two reads compute outside the queue's admission** (2026-10-11). `GET /book/risk` (a whole-book
+  greeks valuation) and `GET /book/pnl?explain=` (three valuations) run on the request thread with no
+  admission, so under a capabilities document any caller drives them, seated or not;
+  `/book/bloomberg` and `/book/securities/verify` queue under the hub's own seat whoever asks. An
+  admission on each: S.
+- **A checkpoint key rotation is trusted on chain integrity alone** (2026-10-11). `verify_home`
+  takes any `checkpoint_verifying_key` declaration on an intact chain as the key from its LSN on,
+  without asking that the key then in force signed it, and the signing key lives in the hub's
+  `keys/`; tamper-evidence against the hub's own operator holds only against a genesis hash and key
+  obtained out of band, or an agreeing replica ([Spine](spine.md#trust-limits)). A design call.
+- **The replay tuple does not pin the build or the device** (2026-10-11). `engine_version` is the
+  hand-set version string; no commit, torch or CUDA version or device is recorded, and
+  `Deterministic_Kernels` defaults to `No`, so one replay tuple promises the same numbers bit for bit
+  only on one build, stack and device. UNMEASURED across devices beyond the host-curve row above.
 - **A settlement names no agreement, so the P&L shares what it moved by holdings** (2026-09-28). A
   payment the diary cannot determine falls to the positions of its instrument by what each held
   when it fell due, which is exact while every position's settlement is filed and spreads one filed
@@ -494,7 +558,8 @@ every risk-neutral calibration inherits.
   HOLES no document reaches; `--from <Consumer>` is the inverse, `--dirty` diffs symbols by AST and
   greedy-covers them by document. The static half is an AST call graph over `derivus/` with every
   registry read as data; the dynamic half is a document map, every job JSON under `tests/fixtures/`
-  and in the maintainers' artifacts store run once under a tracer, keyed to the engine commit
+  and in a maintainers' document store outside the repository (so the map cannot be rebuilt from a
+  clone) run once under a tracer, keyed to the engine commit
   (`STALE` otherwise; `--build-map --repo <clean checkout>`, about 16 minutes). What it cannot
   see: string-keyed dispatch outside the registries, callables passed as values, virtual dispatch
   out of an inherited body, a branch no data takes, a document over the 180 s cap,
@@ -508,16 +573,17 @@ every risk-neutral calibration inherits.
   and fails open loudly on `derivus/__init__`, `conftest` and a path the map has not seen. A
   respelling of a line most tests run still selects most of the suite: the curve read's blend
   reaches 83% of it. The full suite runs at campaign boundaries with the tree held still, 75
-  minutes instrumented; the record and service sets are bound by `fsync`, 15 minutes between
-  them, a home minted per test where one per module would do.
+  minutes under the execution tracer; its plain run time is under [Tidy-ups](#tidy-ups).
 - **The standing readings every landing runs**: sixteen banked documents of the autocall
   validation campaign under the lognormal and Hull-White laws, 5,471 floats compared bit for bit
   against their bank, and one lognormal target redemption forward compared to the bit
   (`-0x1.2b36cda3bf2d4p+5`). That document declares no estimator, so it pins the default; the
   crisp path it used to pin reads `-0x1.2c48f36318e38p+5`, one `'No'` away. The documents, their
-  banks and the two scripts live in the maintainers' artifacts store outside the repository;
-  moving them under `gates/` waits on a check that no banked document carries desk data.
-- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 38 gates over
+  banks and the two scripts are held outside the repository, so these readings cannot be rerun
+  from a clone; moving them under `gates/` waits on a check that no banked document carries desk
+  data.
+- **The LogVar2FJ module is `tests/test_logvar2fj_json.py`** (2026-09-10): 23 test functions, two
+  of them parametrised, over
   a synthetic world (`tests/fixtures/data/logvar2fj_world.json`, one index quoted in EUR on a USD
   book, a five-expiry skewed ladder, a GBM sibling) — the GBM limit at 1.3e-16 and through the CVA,
   the flat-surface residual at 1.4e-12 vol points, the calibration's contract (five ATM pillars
@@ -551,8 +617,8 @@ every risk-neutral calibration inherits.
   118 s, the structures' fitted strips at the declared 16,384 paths, and 34 service tests
   substituting a canned terminal by patching `session.BloombergSession`, which a declared
   canned-terminal entry the service reads under a name would replace (S). `test_notebooks` runs
-  the four validation notebooks headless, asserts that every cell ran and needs a world file this
-  box does not hold.
+  the four validation notebooks headless, asserts that every cell ran and needs a world file that
+  is not in the repository.
 - `HullWhite2FactorModelPrices` declares a `Weight` column its bootstrapper never reads.
 - `gates/impacted.py` fails open to the whole suite on any change to `derivus/__init__.py`, which
   carries the context's verbs: read line by line it would still select nine tests in ten.

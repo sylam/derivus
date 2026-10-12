@@ -10,14 +10,14 @@ the library and differentiating through its fixed point, so one backward pass yi
 q (leaves)  ->  calibration solve  ->  θ*  ->  factor buffers  ->  scenarios  ->  V
 ```
 
-Only the middle arrow is new; everything downstream of θ\* is the existing engine. All four
-increments are built, and the four calibrations put four different things in that arrow — the page
-reads in that order:
+Only the middle arrow is new; everything downstream of θ\* is the existing engine. All four are
+built, and the four calibrations put four different things in that arrow — the page reads in that
+order:
 
-| increment | family | what is in the arrow |
+| # | family | what is in the arrow |
 | --- | --- | --- |
 | 1 | `InterestRatePrices` | a damped Newton on a root, differentiated by the [IFT](#the-ift-contract) |
-| 2 | `HullWhite2FactorModelPrices` | least squares on a [stationarity point](#the-stationarity-contract); `Objective` picks the residual, `Analytic` the default since 2026-08-31 |
+| 2 | `HullWhite2FactorModelPrices` | least squares on a [stationarity point](#the-stationarity-contract); `Objective` picks the residual, `Analytic` the default |
 | 3 | `GBMAssetPriceTSModelPrices` | [no solve at all](#the-closed-form-map) — an explicit map |
 | 4 | `FXVolPrices` | [a bisection per node the tape refuses to enter](#the-delta-solve) |
 
@@ -25,6 +25,13 @@ So a vol tick arrives as ATM / RR / BF, becomes a log-moneyness surface on a pin
 into a GBM vol curve and reaches `V`, and one backward pass reports `dV/dq` at every coordinate on
 the way. `Monte_Carlo` remains fully supported as the engine's own estimator and as this page's
 oracle: every comparison here is taken against it.
+
+!!! note "How to read the numbers on this page"
+    Most tables here were measured during development and are NOT re-checked by a test: the tests
+    that held them were removed, and each section says so. Where a test still holds a property it
+    is named. The four-quote Hull-White block is `tests/fixtures/hw2f_four_quote_job.json`; the
+    25-quote "identified fixture" and the gated FX and GBM fixtures are not in the repository. The
+    families' methods are specified on the [Bootstrapping](../bootstrapping/general.md) pages.
 
 ## The residual is priced by the engine's own pricers {#the-residual}
 
@@ -52,21 +59,21 @@ currency's own solved curve and converts at a spot the residual reads as a **det
 ## The graph audit {#the-graph-audit}
 
 The factor-construction path severs autograd in four places. A severance here does not raise and does
-not change a value — it silently reports a zero gradient — so finding them is the point of increment
-1 rather than incidental to it.
+not change a value — it silently reports a zero gradient — so finding them is the point of the curve
+family's quote side rather than incidental to it.
 
 | Where | What severs | How the closure avoids it |
 | --- | --- | --- |
 | `Calculation._build_factor_state`, `Base_Revaluation.update_factors` | every leaf minted as `torch.tensor(factor.current_value(...))` out of a **numpy array** — the only way a curve becomes a tensor on the ordinary path | θ is written straight into `t_Static_Buffer`, where the pricers read a static curve; `current_value` is never called for a curve being solved |
 | `riskfactors.Factor1D.current_value` | numpy end to end; handed a tensor it still returns numpy | not on the closure's path. Still used for the **constants** — every factor the solve is not solving for — where a detached leaf is right |
-| `Factor1D.__init__` → `check_interpolation` | precomputes the Hermite `(g, c)` pair from the numpy rate column | the pricing path does not read it. `utils.Interpolation.build` re-derives the pair from the buffer **tensor**, and `all_tenors` carries only the kind and the tenor grid. The per-kind gate was culled with the closure suite, so this stands on the code alone |
+| `Factor1D.__init__` → `check_interpolation` | precomputes the Hermite `(g, c)` pair from the numpy rate column | the pricing path does not read it. `utils.Interpolation.build` re-derives the pair from the buffer **tensor**, and `all_tenors` carries only the kind and the tenor grid. No test checks this per interpolation kind; it stands on the code alone |
 | `utils.TensorSchedule.bind` | copies the schedule with `new_tensor` — notionals, accruals, margins **and the fixed rate**. Where the **quote** stopped being differentiable | closed by `TensorSchedule.carry`; see [the quote side](#the-quote-side). θ never passed through this seam either way |
 
 Two traps that are not severances and would each be silent:
 
 - **`t_Buffer` is a memo keyed by `(stoch, Factor)` and a time hash, not by tensor identity**, so a
   state reused across two θ answers the second call with the first's discount factors.
-  `Benchmark_State` is built fresh per evaluation. The gate went with the closure suite.
+  `Benchmark_State` is built fresh per evaluation. No test checks this.
 - **`utils.CurveTenor` caches its tenor grid from the first tensor that queries it.** `all_tenors` is
   rebuilt per closure instance, so a float64 solve cannot inherit a float32 grid.
 
@@ -115,7 +122,9 @@ the same derivative the IFT needs on the other side — *written once, different
 
 Damping is a backtracking line search on the residual's max-norm: full step first, halved until it
 decreases. The three knobs are **declared fields of the block being solved**, not module constants,
-each read with the declared default as its `.get` fallback (a gate holds the two together per family).
+each read off the block completed by its declarations (`block['N_Iter']`); a coupled set runs at the
+largest `N_Iter`, the smallest `Tol` and the largest `Damping_Halvings` of its members (Dennis and
+Schnabel, 1996, on the damped Newton method).
 
 | Field | Default | |
 | --- | --- | --- |
@@ -142,9 +151,11 @@ Jacobian is square in, so the quote-delta buckets a desk reads are the benchmark
 
 ## Curve contracts the solve relies on {#curve-contracts}
 
-**No knot at tenor zero.** A curve never carries a 0.0 knot: rates start at T+1, and a rate at tenor
-zero is redundant anyway since its discount factor is 1 by identity. `Factor1D.interpolate` divides
-by the tenor for the rate-times-time kinds, so a zero knot yields NaN — the contract asserting itself.
+**No knot at tenor zero.** The bootstrap never writes a 0.0 knot: rates start at T+1, and a rate at
+tenor zero is redundant anyway since its discount factor is 1 by identity. Whether an authored zero
+knot is harmful depends on the interpolation: `Factor1D.interpolate` divides by the tenor for the
+rate-times-time kinds (`LinearRT`, `HermiteRT`), so there it yields NaN; under `Linear` and `Hermite`
+it is read like any other knot.
 The knot rule complies where the quotes do, and says so where they do not: a benchmark whose last
 cashflow is on or before the base date refuses by name as its block is seeded, naming the quote, that
 date and the two remedies — hold it out with `Use`, or move the base date.
@@ -187,7 +198,8 @@ changes is the SET: on a multi-curve book it solves each [coupled set](quote_pro
 inside a currency as one system, the only solve whose Jacobian carries `dθ₂/dq₁` - the same root,
 the USD world's OIS curve bit for bit and its projection curve 2 ulp of zero rate away.
 
-**Backward is the implicit function theorem**, never an unrolled solver. At $F(\theta^*, q) = 0$,
+**Backward is the implicit function theorem** (Christianson, 1998; Henrard, 2014), never an
+unrolled solver. At $F(\theta^*, q) = 0$,
 $d\theta/dq = -(\partial F/\partial\theta)^{-1}\partial F/\partial q$, so an incoming cotangent
 $v = \partial L/\partial\theta^*$ contracts in two steps:
 
@@ -212,7 +224,7 @@ the iterate *before* it; that costs one iteration's work.
     [Quote Propagation](quote_propagation.md), built for this family only, and its unit is the
     **coupled set** rather than the block.
 
-## The stationarity contract — increment 2 {#the-stationarity-contract}
+## The stationarity contract {#the-stationarity-contract}
 
 `utils.LeastSquaresSolve` is the HW2F swaption calibration as one differentiable node: the
 contract above with one word changed, the fixed point being the **stationarity** of a least-squares
@@ -226,9 +238,8 @@ test, which used to draw from the numpy **global** RNG — θ\* moves 0.93 absol
 seeds on the four-quote fixture. This is therefore the first reproducible HW2F calibration and there
 is no earlier baseline to preserve.
 
-`HullWhite2FactorModelParameters.Objective` picks the residual. **`Analytic` is the declared default
-since 2026-08-31**, on the four readings in the [Model punchlist](roadmap.md#model-punchlist);
-`Monte_Carlo` is the estimator and this page's oracle, and an analytic solve ends by repricing θ\*
+`HullWhite2FactorModelParameters.Objective` picks the residual. **`Analytic` is the declared
+default** (Schrager and Pelsser, 2006); `Monte_Carlo` is the estimator and this page's oracle, and an analytic solve ends by repricing θ\*
 through it and logging what it makes of the answer. Everything from here to [the
 analytic section](#the-analytic-quote-side) is the Monte Carlo path, unchanged to the bit.
 
@@ -278,9 +289,9 @@ Two details in that line are load-bearing and neither is visible to a price gate
 
 Two severances stay **open on purpose**, because their upstream is not a quote of this calibration:
 `get_par_swap_rate` prices the strike and the pvbp in numpy off the zero curve, and `set_fixed_amount`
-writes that strike into the schedule's numpy half. Both are the calibrated curve — increment 1's
-quote. There were three until 2026-09-01, when a zero `Market_Volatility` stopped falling through to
-the surface's own ATM read and began refusing by name.
+writes that strike into the schedule's numpy half. Both are the calibrated curve, whose quotes are
+the curve family's. A zero `Market_Volatility` refuses by name rather than reading the surface's own
+ATM.
 
 !!! warning "A premium re-struck by `Volatility_Delta` declines the quote side — on either objective"
     That path recovers an implied vol with a `brentq` root find and re-strikes the premium off it, and
@@ -292,7 +303,8 @@ the surface's own ATM read and began refusing by name.
 ### Gauss–Newton, and the two terms it drops {#the-dropped-term}
 
 $r(\theta^*, q) \neq 0$ and never will be, so what is held fixed is the gradient of half the sum of
-squares, $g = J^\top r = 0$. Differentiating that gives a dropped term on **each** side:
+squares, $g = J^\top r = 0$. Differentiating that gives a dropped term on **each** side (Nocedal and
+Wright, 2006, ch. 10, on the Gauss–Newton approximation):
 
 $$\Big(J^\top J + \underbrace{\sum_i r_i \nabla^2_\theta r_i}_{\text{dropped}}\Big)\frac{d\theta}{dq}
 = -\Big(J^\top \frac{\partial r}{\partial q} + \underbrace{\sum_i r_i \frac{\partial^2 r_i}{\partial\theta\,\partial q}}_{\text{dropped}}\Big)$$
@@ -332,8 +344,8 @@ which goes round the splice rather than through it.
     tolerance is per block and the identified fixture declares its own.
 
     **On an over-determined block the Monte Carlo chain does not get there.** It closes most of the
-    orders between seed and stationarity — 2.9e11 down to **3.16e2** (8.6e3 before the 2026-09-02
-    seed+clock re-mark) — and stops, because a quartic is flat enough near its minimum that the
+    orders between seed and stationarity — 2.9e11 down to **3.16e2** (8.6e3 at an earlier seed and
+    day-count clock) — and stops, because a quartic is flat enough near its minimum that the
     relative-improvement test fires long before the gradient does. The analytic objective is the same
     chain over a residual that is not pre-squared and reaches **8.63e-7** on the same block, so this is
     a property of the OBJECTIVE'S SHAPE, measured from both sides. On an under-determined block it
@@ -347,15 +359,17 @@ $J$ has one row per benchmark and 23 columns — two mean reversions, a correlat
 volatility term structures. A block quoting four swaptions leaves a **19-dimensional null space**:
 combinations the quote set does not identify, which no care in the linear algebra can invent.
 
-The inverse is therefore a **pseudo-inverse** at the declared `Jacobian_Rcond`, and `dθ/dq` in a null
-direction is the **minimum-norm representative**. No ridge is added: a Tikhonov term returns a
+The inverse is therefore a **pseudo-inverse** (Penrose, 1955) at the declared `Jacobian_Rcond`, a
+truncated SVD (Hansen, 1987), and `dθ/dq` in a null direction is the **minimum-norm
+representative**. No ridge is added: a Tikhonov term returns a
 unique-looking number that is the derivative of a different problem.
 
 !!! warning "On an identified block the cutoff is a real decision, not a formality"
     `Jacobian_Rcond` is a relative cutoff on the singular values of the **column-scaled** Jacobian
-    `J/‖J_:,j‖` — the `x_scale='jac'` matrix the solve itself steps on — and defaults to **1e-5**
-    (since 2026-09-06; it was 1e-8 on the eigenvalues of the raw `JᵀJ`, which is a 1e-4 cutoff in σ
-    and means nothing where the column norms span orders). On σ of the scaled matrix 1e-8 keeps a
+    `J/‖J_:,j‖` — the matrix `x_scale='jac'` steps on, which is how the LogVar2FJ solve runs; the
+    swaption family's `least_squares` runs unscaled (`x_scale` 1) — and defaults to **1e-5** on this
+    family. An earlier cutoff of 1e-8 on the eigenvalues of the raw `JᵀJ` is a 1e-4 cutoff in σ and
+    means nothing where the column norms span orders. On σ of the scaled matrix 1e-8 keeps a
     direction 1.4e-6 of the largest whose `dθ/dq` amplifies seven hundred thousand fold. The
     four-quote block keeps 4 of 4 at any cutoff under 0.21. The identified block's scaled spectrum
     has one gap — 2.97e-4 of the largest against 1.43e-6, two hundred fold — and the default sits in
@@ -374,8 +388,8 @@ unique-looking number that is the derivative of a different problem.
 
 ### The re-solve reference, refuted three times {#the-manifold-finding}
 
-The reference this workstream was briefed to validate against — bump a quote, re-run the calibration,
-difference θ\* — is **refuted with evidence**. It is the central result of increment 2 and it is a
+The usual reference for a calibration's quote derivative — bump a quote, re-run the calibration,
+difference θ\* — is **refuted with evidence**. It is the central result of this section and it is a
 negative one.
 
 | refutation | reading |
@@ -390,9 +404,9 @@ quarter to seven tenths of the displacement lands inside the subspace the pseudo
 Either way they are exactly the directions along which a derivative is refused.
 
 Stated plainly: **bump-and-recalibrate P&L explain is ill-posed for this calibration.** The reference
-has no limit to converge to, whether or not the quote set identifies the model. All three refutations
-are pinned as gates so nobody later "fixes" the derivative against an oracle that is not one; they
-pass by *failing* to agree, and if one flips, the comparison has become available. There is a
+has no limit to converge to, whether or not the quote set identifies the model. The three
+refutations were held by tests that passed by *failing* to agree; those tests are gone, so the
+readings above were measured during development and are not re-checked. There is a
 [fourth](#the-re-solve-fourth-time), on the analytic objective.
 
 What *is* well posed is the direction the quotes **do** identify: step the parameters by
@@ -417,7 +431,7 @@ $$r_j(\theta, q_j) = w_j\Big(\sigma^{SP}_j(\theta) - \sigma^{mkt}_j(q_j)\Big),
 and every difference below follows from it.
 
 !!! note "The premium construction is convention-aware"
-    Since **2026-09-01** `create_market_swaps` reads the surface's declared `Distribution_Type`
+    `create_market_swaps` reads the surface's declared `Distribution_Type`
     through `Factor3D.get_subtype` and prices the market premium in that convention — Black at
     `K + shift` under `'Lognormal'` (the declared default, so every existing document is
     bit-identical), the general-form Bachelier off an absolute normal vol under `'Normal'` — with the
@@ -425,13 +439,13 @@ and every difference below follows from it.
     same numeric ladder, which is 1/F. Under `'Normal'` the inversion below returns the quoted σ_N as
     itself (0.0 to 2.2e-16) and `∂r/∂q` is exactly `−w` at every benchmark, independent of expiry,
     curve and θ; the lognormal diagonal runs −0.10235 … −0.08706, about a tenth, because a lognormal
-    vol is a fraction of the forward rather than a rate. (Until 2026-09-02 both carried a spurious
-    `√(T_365.25/T_curve)` = 0.99965771 — the premium's 365.25 clock against the inversion's ACT/365;
-    the curve's day count won.)
+    vol is a fraction of the forward rather than a rate. Both the premium and its inversion read
+    the curve's own day count, so no clock ratio enters.
 
 **One severance, one splice, one leaf.** The severance is the scipy market premium, so the repair is
 the twin `create_market_swaps` already built (`utils.black_european_option` or
-`utils.bachelier_european_option`), carried through the closed-form Bachelier inversion.
+`utils.bachelier_european_option`), carried through the closed-form Bachelier inversion (Bachelier,
+1900).
 `market_swap_class.market_normal_vol` is the whole of it. The splice is worth **exactly zero**
 forward: residual, model value, market normal vol, `‖J'r‖` and **θ\* itself** are bit-identical with
 the quote side on and off, taken through two whole optimizer chains by `np.array_equal` and hex
@@ -457,8 +471,8 @@ partial read off the tape is the tape agreeing with itself:
 | the θ-side dropped term | double backward at θ\* | $\|\sum_i r_i\nabla^2 r_i\|_F$ **5.397e-4** against $\|J^\top J\|_F$ **3.604** — a ratio of **1.50e-4** beside a $\|r\|$ of 1.48e-3 |
 
 The Monte Carlo path's θ-side term is 0.500064 of what it corrects at any residual level. This one is
-1.50e-4 and **shrinks with the fit** — measured shrinking: 8.75e-4 at the pre-re-mark θ\*, whose fit
-was three times worse. Two objectives, one contraction, two different reasons it is the exact
+1.50e-4 and **shrinks with the fit** — measured shrinking: 8.75e-4 at an earlier θ\* whose fit was
+three times worse. Two objectives, one contraction, two different reasons it is the exact
 leading-order derivative.
 
 **It runs at the declared `Stationarity_Tol`.** No fixture tolerance is written on this path and none
@@ -466,8 +480,8 @@ is allowed: the analytic chain reaches 8.63e-7 on the identified block against t
 **1e-3**, where the Monte Carlo path has to declare **1e5** to be differentiated at all.
 
 **The spectrum is this objective's own.** $J$ is 25 × 23 and `Jacobian_Rcond` keeps **16** of the 23
-directions at the re-set 1e-5 on the column-scaled Jacobian (15 on the old σ² cutoff, 13 at the
-pre-re-mark θ\*). Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
+directions at the default 1e-5 on the column-scaled Jacobian (15 on the earlier σ² cutoff, 13 at an
+earlier θ\*). Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
 variance integral, and the KKT set holds one coordinate of this θ\* — `Correlation` on its −0.95
 floor with the gradient pushing into it — while `Sigma_1[7]`, 2.6e-4 of its box width under the
 0.09 ceiling, stays free. Those are directions 25 flat quotes do not identify, and `dθ/dq` along
@@ -487,15 +501,16 @@ point, 0.905 to 1.013 at a five-hundredth), and the mandated sign flip negates e
 `__call__(x)`, `interior(x, g)` and `labels`, the Jacobian is one vmapped backward (bit-identical to
 the per-row loop on both objectives, 0.22 s against 1.21 s on the identified block), and the
 pseudo-inverse is taken on the column-scaled Jacobian, so the minimum-norm representative in the
-null space is the one in the metric the solver steps in. That is a convention, and the only
-defensible one — otherwise a quote's delta is allocated across unidentified directions by the units
+null space is the one in the metric the LogVar2FJ solver steps in (the swaption solver steps
+unscaled). That is a convention, and the only defensible one — otherwise a quote's delta is allocated across unidentified directions by the units
 the parameters happen to be written in — but it is still a convention, so the backward logs each
 quote's delta beside the share of it lying in the null space the cutoff discards: the Euclidean
 projection of `dθ/dq_j` onto the unscaled Jacobian's null space over `‖dθ/dq_j‖`, and the same for
 the value's cotangent. On the four-quote block that share is 0.99–1.00 on every quote, which is why
 the fourth benchmark's `dV/dq` read 0.3014 under the scaled metric where the unscaled one read 0.2667
 at the same θ\* — the metric enters the backward alone — every quote moving 0.60 to 1.21 of its
-scaled reading (`tests/fixtures/hw2f_four_quote_job.json` pins those numbers with this sentence); on
+scaled reading (`tests/test_hw2f_analytic.py` pins those numbers on
+`tests/fixtures/hw2f_four_quote_job.json`); on
 the identified block it is 0.70 typical, on a LogVar2FJ autocall fit 0.90.
 
 !!! warning "`.grad` after an analytic chain is 0.3–2.3% of the answer, which is worse than six orders out"
@@ -523,6 +538,9 @@ chain's stopping point. Same fixture, same chain, same seed.
 **It changes nothing.** Quote 12 (3Y × 3Y) of the flat 25-quote grid, cold-started both sides, against
 a one-pass `‖dθ/dq‖` of **36.70** in that column:
 
+The 13 directions kept below are the count at that measurement's θ\* and cutoff; the current
+default keeps 16.
+
 | h (vol points) | ‖θ(+h) − θ(−h)‖ | ÷ 2h | × 36.70 | cosine with it | in the kept 13 | MC path, same rung |
 | --- | --- | --- | --- | --- | --- | --- |
 | 0.5 | 0.03872 | 3.872 | 0.1055 | 0.0607 | 0.820 | 0.037, quotient 3.7 |
@@ -539,11 +557,11 @@ match the Monte Carlo ladder **to two digits**.
 
 **That settles which half of the diagnosis was load-bearing** — the flat directions; stationarity was
 never the obstacle. The classic oracle stays unavailable, `dθ/dq` is not gated against it, and the
-value-space direction check remains the reference. The table above is the record - four cold
-analytic solves of the 25-quote block in CPU float64, which is why the ladder is one column rather
-than the grid - and nothing re-runs it.
+value-space direction check remains the reference. The table above was measured during
+development — four cold analytic solves of the 25-quote block in CPU float64, which is why the ladder
+is one column rather than the grid — and no test re-runs it.
 
-## The closed-form map — increment 3 {#the-closed-form-map}
+## The closed-form map {#the-closed-form-map}
 
 `GBMAssetPriceTSModelParameters` turns the ATM column of a vol surface into the integrated vol curve a
 risk-neutral GBM reads, and **it does not fit anything** — so it needs no contract at all:
@@ -615,7 +633,7 @@ to say so.
 !!! warning "Provenance is evidence, not a name"
     Keying on the name is a **silent desync**: a hand-authored surface can sit under a name a quote
     block also uses, the pricers read the surface, and the integrated curve is built off numbers
-    nothing else agrees with — **20–26 vols against a 39–45 vol surface** on the gated fixture, both
+    nothing else agrees with — **20–26 vols against a 39–45 vol surface** on the fixture measured, both
     halves individually valid and neither raising. What is checked is the fingerprint
     `FXVolSurfaceParameters` leaves and [`pinned_grid`](market_prices.md#fxvolprices) reads back — the
     `Malz` subtype beside the `Grid_Tolerance` the grid was refined at. A surface the family *did*
@@ -629,11 +647,10 @@ to say so.
 !!! warning "OPEN DEFECT — a hand-authored `Malz` surface reads a wing"
     Moneyness 1 is the ATM coordinate of a **ratio** surface. A `Malz` surface's axis is $\log(F/K)$,
     whose ATM is at 0 and whose grid stops at ±0.5, so `searchsorted` lands on the last node and the
-    "ATM column" is a deep wing — **0.194 against a quoted 0.200** on the gated fixture, and a full vol
+    "ATM column" is a deep wing — **0.194 against a quoted 0.200** on a test surface, and a full vol
     point at three months on a USDZAR-shaped smile. This predates quote derivatives, is a defect of the
-    *read*, and is **in nobody's gate**; the preferred path above is what such a surface reaches in
-    practice, so it is named rather than moving a shipped forward for it. That the two sources are
-    different numbers is itself gated.
+    *read*, and **no test holds it**; the preferred path above is what such a surface reaches in
+    practice, so it is named rather than moving a shipped forward for it.
 
 ### The attachment, and the triangle {#the-gbm-attachment}
 
@@ -642,14 +659,14 @@ Nothing new. `Quote_Sensitivity` is the declared field, default `No`; `Config.bo
 [`factor_leaf`](#the-attachment). `quote_leaves` publishes **one vector leaf** per block — the curve
 family's shape, because the whole ATM column enters one map.
 
-`tests/test_gbm_ts_quotes.py` and `tests/test_vol_term_structure_strip.py` were culled in 104bd08, so
-these are a record rather than a running check. The forward was `np.array_equal` throughout — the
+The tests that held the numbers below were removed, so they were measured during development and
+are not re-checked by a test. The forward was `np.array_equal` throughout — the
 written curve on vs off on both quote-source paths, the shipped walk against the numpy loop it always
 was on 5 fixtures, a reference exposure run's CVA, profile and whole gradient frame — with the torch
 twin ≤ **1 ulp** away and the Simpson identity inverted independently to **1.2e-16**. What the
 derivative was pinned on:
 
-| gate | result |
+| check | result |
 | --- | --- |
 | `J` vs central FD of the **whole family** | **2.4e-4 / 2.4e-6 / 2.4e-8** at h = 1e-2 / 1e-3 / 1e-4 — $h^2$ |
 | three repairs running, on a 5-expiry hump | `J` finite, identity rows intact, FD **1.3e-8 / 1.3e-10** |
@@ -662,10 +679,11 @@ The FD rung is taken through the **whole family** — re-authored surface, re-re
 term, so what is left in them is the difference quotient's own rounding, which *grows* as $h$ shrinks
 (8.9e-16 to 1.1e-13); they are asserted exact-to-rounding rather than put on the ladder.
 
-## The delta solve — increment 4 {#the-delta-solve}
+## The delta solve {#the-delta-solve}
 
 `FXVolSurfaceParameters` turns a broker's smile into the log-moneyness surface the option pricers
-read. Increment 3 took the ATM row; this takes **all** of it, so `dV/d(RR)` and `dV/d(BF)` exist.
+read. The closed-form map takes the ATM row; this takes **all** of it, so `dV/d(RR)` and `dV/d(BF)`
+exist.
 
 ```
 q  ->  the strangle pair  ->  the Malz wing pair  ->  a bisection per PINNED x-node  ->  surface
@@ -721,7 +739,7 @@ for the same reason a permutation has no derivative.
 
 ### Four discrete choices, and the fourth is a jump {#the-four-choices}
 
-Increment 3 had one piecewise switch; this map makes four per node, every one a property of the
+The closed-form map has one piecewise switch; this map makes four per node, every one a property of the
 shipped conversion rather than of the twin:
 
 | switch | where | what it does to the surface |
@@ -753,7 +771,7 @@ and the census is unchanged: **24** straddles at h = 1e-3, **5** at 1e-4, **none
 
 ### The clamp is flat extrapolation, and its derivative is exact {#the-clamp}
 
-A third of the grid — **32 of 97 nodes** on the gated fixture, 20–43% per expiry — has no fixed point
+A third of the grid — **32 of 97 nodes** on the fixture measured, 20–43% per expiry — has no fixed point
 inside its wing's bracket. That is not a repair: beyond the widest quoted delta the smile is **flat**,
 so the vol at such a node IS the endpoint knot's. Its derivative is therefore that knot's own quote
 algebra and nothing else — `1` in the expiry's ATM quote, `1` in the pillar's butterfly, `±½` in its
@@ -771,9 +789,9 @@ entry-by-entry form and fails the set.
     one: where two adjacent pillars' wing vols coincide the segment between them is flat, so sliding
     `delta_atm` under the node changes nothing and the level follows the ATM quote exactly.
     `ATM + BF + RR/2` = 0.1396 at both the 0.35 and 0.25 delta of an ordinary mildly-inverted three-year
-    does it: **1 of that smile's 16 nodes**, and 5 of 90 on the two-expiry version. The gate saying a
-    bracketed row's ATM entry is never 1 was passing on fixture luck; it is now conditioned on the
-    segment not being flat, with a second gate reaching the excluded case.
+    does it: **1 of that smile's 16 nodes**, and 5 of 90 on the two-expiry version. A check that a
+    bracketed row's ATM entry is never 1 passes only on fixture luck; it has to be conditioned on the
+    segment not being flat.
 
 !!! danger "A flat smile divides zero by zero, and only in the backward"
     Quote the ATM row and nothing else — a legitimate config the value path handles without comment.
@@ -797,7 +815,7 @@ entry-by-entry form and fails the set.
 
 ### What the Jacobian has to look like {#the-jacobian-structure}
 
-The quote algebra is visible in `J` and the gates assert it as arithmetic:
+The quote algebra is visible in `J`, and was checked as arithmetic:
 
 - **Block diagonal in expiry, exactly** — each expiry's smile is built from its own rows onto its own
   nodes, so `max|J|` off the block is **0.0**.
@@ -813,17 +831,17 @@ The quote algebra is visible in `J` and the gates assert it as arithmetic:
   everywhere positive, and asserted *not* to be exactly one, because exactly one is what the
   frozen-`delta_atm` mutation produces.
 
-### The gates {#the-fx-vol-gates}
+### The measurements {#the-fx-vol-gates}
 
-`tests/test_fx_vol_quotes.py` and `tests/test_fx_vol_prices.py` were culled in 104bd08 and nothing
-under `tests/` exercises the Malz lookup as maths today, so these are a record rather than a running
-check. The forward was held by `np.array_equal` throughout — written surface on vs off and against
-c77740e's SHA-256, a reference FX option valuation's whole `Greeks_First` frame, the carried smile
+Nothing under `tests/` exercises the Malz lookup as mathematics today, so the numbers below were
+measured during development and are not re-checked by a test. The forward was held by
+`np.array_equal` throughout — written surface on vs off and against a SHA-256 of the surface before
+the change, a reference FX option valuation's whole `Greeks_First` frame, the carried smile
 against `smile`, the carried skew against `malz_skew` (wing deltas ≤ 1 ulp) — and the `market_patch`
 round trip held the grid and `J` `array_equal` across a re-bootstrap. What the derivative was pinned
 on:
 
-| gate | result |
+| check | result |
 | --- | --- |
 | **the bisection taped literally** | `J` **0.135** out, 6.5% Frobenius, 1.000137 against 0.865559 |
 | `J` vs central FD of the **whole family** | **9.8e-5 / 9.8e-7 / 9.8e-9** at h = 1e-3 / 1e-4 / 1e-5 — $h^2$ |
@@ -845,10 +863,10 @@ on:
 
 ### The retraction {#the-retraction}
 
-Increment 3's non-goals closed with **"No differentiable Malz solve"**, on the grounds that a bisection
-per node would put that solve on the tape. Retracted: the solve does not go on the tape. The root is
-found exactly as it always was, in numpy, and the derivative comes from **one Newton step at the
-answer** — two residual evaluations against 64 halvings, value path untouched. What increment 3 said
+An earlier non-goal read **"No differentiable Malz solve"**, on the grounds that a bisection per node
+would put that solve on the tape. Retracted: the solve does not go on the tape. The root is found
+exactly as it always was, in numpy, and the derivative comes from **one Newton step at the answer** —
+two residual evaluations against 64 halvings, value path untouched. What the closed-form map says
 about the **ATM row** stands: that number is the surface's ATM vol by construction,
 `GBMAssetPriceTSModelParameters` still takes it straight off the quote block, and nothing was put on
 the tape to recover it.
@@ -881,7 +899,7 @@ family drops its own keys before publishing: the **factor type it writes** and t
 it reads**, both already declared, scoped because `Config.bootstrap` runs one family at a time.
 
 Both an ordinary price factor and a calibrated model's parameters attach at that same seam, which is
-why it is a method and not four call sites. An `FXVol` surface is a *static* factor, so increment 4
+why it is a method and not four call sites. An `FXVol` surface is a *static* factor, so the FX family
 publishes its connected tensor under `Factor('FXVol', name)`; `Credit_Monte_Carlo._build_factor_state`
 mints one leaf per *named* parameter of an implied model, and `SwaptionCalibration.split` is the one
 place the flat 23-vector comes apart — used by the residual and the publish alike, so a factor leaf
@@ -889,11 +907,11 @@ cannot be handed the wrong slice. Only an equality against `Price Factors` can s
 because the splice is worth zero *whatever* is attached. `Gradient_Variables` governs a factor as
 `Factors` or `All` and an implied model as `Implied` or `All`.
 
-!!! warning "A `Tenor_Offset` declines the attachment — and there is a PARKED RULING in it"
+!!! warning "A `Tenor_Offset` declines the attachment — and there is an open question in it"
     A non-zero offset shifts every tenor before the leaf is minted, so the curve the calculation
     consumes is a **different** one and $d\theta_{\text{shifted}}/dq$ is not $d\theta/dq$.
 
-    **The parked ruling:** the decline is unconditional, and a `Factor2D` surface's `current_value()`
+    **The open question:** the decline is unconditional, and a `Factor2D` surface's `current_value()`
     *ignores* the offset — so under a non-zero `Tenor_Offset` an FX vol quote delta is dropped for a
     surface that did not move. Refusing is the conservative direction, so it stays as it is until the
     offset's own semantics per factor type are worth writing down.
@@ -917,7 +935,7 @@ are the coupled SET's `Points` (block-prefixed where the set has more than one m
 every member's key) while a swaption calibration publishes a **tuple of scalar leaves**, one per
 `Instrument_Definitions` row. The shapes are the quotes' own — a curve's quotes enter one residual as a
 vector, a swaption's quote carries its own Black preamble — so anything reading `dV/dq` iterates rather
-than assumes. There are still two: increments 3 and 4 both publish the vector shape. The FX descriptors
+than assumes. There are still two: the GBM and FX families both publish the vector shape. The FX descriptors
 name the pillar as well as the expiry (`ATM 1`, `RR 0.25 1`, `BF 0.1 1`), because a quote there is
 identified by three things.
 
@@ -942,7 +960,8 @@ per quote per iteration, so the solve is dispatch-bound, and three desk curves s
 host against 17 s on an RTX 3090.
 `BenchmarkInstruments.dtype` states it once and `construct_bootstrapper`'s own `dtype` — float32 by
 default — does not reach it: a solve converging to 1e-10 cannot be done in float32. Gate:
-`test_the_solve_is_float64_whatever_the_bootstrapper_was_built_with`.
+`test_the_bootstrap_recovers_the_curve_its_quotes_came_from` (`tests/test_interest_rate_prices.py`)
+bootstraps under the default dtype and requires a float64 curve recovered to 1e-10.
 
 θ\* crosses back into the simulation as one `.to()` inside `factor_leaf`. The cast is
 **differentiable**, so the cotangent is promoted back to float64 before the linear solve — a float32
@@ -969,7 +988,7 @@ therefore *inside* the backward:
   θ\* it converges as $h^2$ (1e-2, 1e-4, 1e-6). The derivative is right; float32 is what it is
   reported in.
 
-**The LogVar2FJ walk follows the Hull-White pattern** (2026-09-10). Every nonlinear piece that is
+**The LogVar2FJ walk follows the Hull-White pattern**. Every nonlinear piece that is
 a function of the grid and the parameters alone — the OU step weights and cumulated decays, the ξ
 curve and the Jensen term the level is derived with, the NIG budget `(δ_A, μ_A, γ)`, the bucket
 search — is computed in double through `utils.LogVar2FJ.wide`, a differentiable cast, and cast once into
@@ -987,8 +1006,8 @@ at the fast factor's κ = 6 is 3.0e36 at seven years against float32's 3.4e38, s
 past 7.4 years priced NaN at float32 — no grid here runs past five years, which is why nothing had hit
 it. The stable spellings are the given: `−expm1(−2κδ)/(2κ)` for the step weight and
 `−δ_A(2β+1)/(√(α²−(β+1)²)+γ)` for the forced drift, each at rounding in double where the old
-forms read 2.9e-10 and 6.5e-11 against a 60-digit reference. What float32 costs on a mark, at the
-reading of record (a LogVar2FJ xVA document, 512 outer × 2,048 pricing paths, three seeds,
+forms read 2.9e-10 and 6.5e-11 against a 60-digit reference. What float32 costs on a mark, measured
+during development (a LogVar2FJ xVA document, 512 outer × 2,048 pricing paths, three seeds,
 uncollateralised): float32 and float64 estimate the same expectation to within **0.13%**, which
 is 0.05 of the seed spread, the spreads themselves 2.6% and
 2.3% — so the −14% read at 32 × 256 was two samples of a nonlinear walk, not rounding; and the
@@ -997,12 +1016,11 @@ so the pattern moved nothing on a five-year book but the NaN past 7.4 years.
 
 ## The validation triangle {#the-validation-triangle}
 
-Three corners, deliberately independent. Of the six rows only **round trip vs θ_true** still runs
-(`tests/test_interest_rate_prices.py`, asserting < 1e-10); the CRN ladder, the self-delta matrix, the
-one-pass-vs-FD rung and the reference exposure run went with `tests/test_quote_jacobian.py` and
-`tests/test_crn_ladder.py` in 104bd08, so the rest is a record.
+Three corners, deliberately independent. Of the six rows only **round trip vs θ_true** is re-checked
+by a test (`tests/test_interest_rate_prices.py`, asserting < 1e-10); the other five were measured
+during development and the tests that held them are gone.
 
-| gate | result |
+| check | result |
 | --- | --- |
 | θ\* bit-identical, gradients on vs off | `np.array_equal`, max diff **0.0** |
 | round trip vs θ_true | **1.7e-15** |
@@ -1023,7 +1041,7 @@ and dividing by each instrument's own quote sensitivity makes it the identity. T
 *secant* on the fixed solved curve, because a benchmark's PV is affine in its quote, so no part of the
 check reuses the machinery it is checking.
 
-### The identified fixture — increment 2 {#the-identified-fixture}
+### The identified fixture {#the-identified-fixture}
 
 The swaption triangle needs a fixture the classic oracle is **legal on**, and the finding is that it
 does not exist for this calibration. The fixture is a 5 × 5 expiry × tenor grid — **25 benchmarks
@@ -1034,13 +1052,12 @@ in expiry and tenor is fittable only by pushing a front σ knot onto its 1e-5 lo
 solution is not interior and unconstrained stationarity cannot hold at all.
 
 Full column rank makes `θ*(q)` a function only if the solve **reaches** the minimum, and on the Monte
-Carlo objective it does not. The swaption suite that held these was culled in 104bd08
-(`test_swaption_calibration_solve.py`, `test_swaption_quote_attachment.py`,
-`test_swaption_quote_graph.py`, `test_swaption_quote_triangle.py`), so they are a record.
+Carlo objective it does not. The fixture and the tests that held these are not in the repository,
+so the numbers below were measured during development and are not re-checked.
 
-| gate | result |
+| check | result |
 | --- | --- |
-| singular spectrum of `J` (25 × 23) | rank **23**, σ from 5.65e4 down to 0.258, `σ_min/σ_max` 4.57e-6; the declared 1e-8 cutoff keeps **18** |
+| singular spectrum of `J` (25 × 23) | rank **23**, σ from 5.65e4 down to 0.258, `σ_min/σ_max` 4.57e-6; the earlier 1e-8 cutoff on `JᵀJ` keeps **18** |
 | stationarity of the accepted θ\* | `‖J'r‖` **8.6e3** at θ\*, 2.9e11 at the seed, `‖r‖` 46.1 — worst benchmark 4.3% out |
 | the two dropped Gauss–Newton terms | θ side **0.500064** of `J'J`; q side 0.4785 / 0.5115 / 0.5065 of `J'(∂r/∂q)`, cosine **1.000000** |
 | GN against both corrections applied | **1.0022** (cos 0.999940) in the top 4 directions; 1.0136 / 1.1098 / 1.8743 at top 6 / 8 / 12 |
@@ -1082,8 +1099,7 @@ itself. Without that row a scattering ladder would be evidence against everythin
   strictly requires — so far, none.
 - **No vol-surface parameterisation** — SABR and SSVI are out of scope; a Malz smile is the one delta
   parameterisation built, and a swaption quote here is the number on the `Instrument_Definitions` row
-  or a premium, never a smile parameter. (It was also the surface's ATM read until 2026-09-01; a zero
-  row refuses by name now.)
+  or a premium, never a smile parameter; a zero row refuses by name.
 - **No reporting format in the engine** — `dV/dq` lands on the quote leaves in `Config.quote_leaves`
   paired with each quote's descriptor, and no `Greeks_First`-style block is emitted: `make_factor_index`
   reads a tenor grid off `all_factors`, and a quote is not a factor. The service's consolidated risk
@@ -1097,7 +1113,26 @@ itself. Without that row a scattering ladder would be evidence against everythin
 - **No differentiable x-grid** — the log-moneyness nodes are refined against the quotes ONCE and
   pinned; the tape moves the vols on them. A grid following its quotes would make every tick a
   recompile, which is what [pinning](market_prices.md#fxvolprices) exists to prevent.
-- ~~**No differentiable Malz solve.**~~ **BUILT — see [increment 4](#the-delta-solve).** The premise
-  was that a bisection per node would have to go on the tape; it does not, and the IFT needs the answer
-  rather than the iteration. Kept struck rather than deleted, because it is the reasoning the increment
-  refuted.
+- ~~**No differentiable Malz solve.**~~ **BUILT — see [the delta solve](#the-delta-solve).** The
+  premise was that a bisection per node would have to go on the tape; it does not, and the IFT needs
+  the answer rather than the iteration.
+
+## References {#references}
+
+- Bruce Christianson, "Reverse accumulation and implicit functions", *Optimization Methods and
+  Software* 9(4), 307-322, 1998, DOI 10.1080/10556789808805697.
+- Marc Henrard, "Adjoint algorithmic differentiation: calibration and implicit function theorem",
+  *The Journal of Computational Finance* 17(4), 37-47, 2014, DOI 10.21314/jcf.2014.284.
+- J. E. Dennis, Robert B. Schnabel, *Numerical Methods for Unconstrained Optimization and Nonlinear
+  Equations*, SIAM, 1996, DOI 10.1137/1.9781611971200.
+- Jorge Nocedal, Stephen J. Wright, *Numerical Optimization*, 2nd ed., Springer, 2006,
+  DOI 10.1007/978-0-387-40065-5.
+- R. Penrose, "A generalized inverse for matrices", *Mathematical Proceedings of the Cambridge
+  Philosophical Society* 51(3), 406-413, 1955, DOI 10.1017/S0305004100030401.
+- Per Christian Hansen, "The truncated SVD as a method for regularization", *BIT* 27(4),
+  534-553, 1987, DOI 10.1007/BF01937276.
+- David F. Schrager, Antoon A. J. Pelsser, "Pricing Swaptions and Coupon Bond Options in Affine Term
+  Structure Models", *Mathematical Finance* 16(4), 673-694, 2006,
+  DOI 10.1111/j.1467-9965.2006.00289.x.
+- L. Bachelier, "Théorie de la spéculation", *Annales scientifiques de l'École normale supérieure*
+  17, 21-86, 1900, DOI 10.24033/asens.476.

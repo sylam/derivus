@@ -174,7 +174,8 @@ book; a linear payoff solves exactly in two pricings.
 Greeks ride the same requests: `calculation_overrides={'Greeks': 'First'}` returns the AAD delta
 vector, `{'Greeks': 'All'}` the full second-order block — `Greeks_Second` is the cross-gamma
 matrix a trading read of an options book needs, spot gamma on the diagonal and vanna against the
-bootstrapped surface's own nodes beside it. One backward pass either way, however many factors.
+bootstrapped surface's own nodes beside it. `First` is one backward pass however many factors;
+`All` adds one more backward pass through that gradient per factor node the book depends on.
 
 ## Where next
 

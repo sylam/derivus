@@ -1,5 +1,7 @@
 # Derivus JSON data format
-Derivus uses standard JSON as its source of input. The structure of a derivus JSON calculation is as follows:
+
+A Derivus job is one JSON document (RFC 8259; tagged values such as dates are described in
+[General Types](general_types.md)):
 
 ```json
 {
@@ -12,41 +14,27 @@ Derivus uses standard JSON as its source of input. The structure of a derivus JS
 }
 ```
 
-## Calculation
-This defines the parameters of the calculation. Parameters are dependent on the calculation type 
-and is documented [here](../api_usage/calculations.md). Note, however, the type of the calculation is provided as 
-an *Object* attribute.
+## Calculation {#calculation}
 
-e.g.
+What to run. `Object` names the calculation type, and every other key is one of that type's
+fields; each type's fields, defaults and menus are on its page under
+[Calculations](calculations.md), which also says how a block is completed and overridden. The
+methods behind them are described in [API & Usage](../api_usage/calculations.md).
+
 ```json
 {
   "Calc": {
     "Calculation": {
       "Object": "CreditMonteCarlo",
-      "Base_Date": {
-        ".Timestamp": "2022-12-01"
-      },
+      "Base_Date": {".Timestamp": "2022-12-01"},
       "Currency": "ZAR",
       "Time_Grid": {
         ".Grid": [
-          {
-            ".DateOffset": "0d"
-          },
-          {
-            ".DateOffset": "2d"
-          },
-          {
-            ".DateOffset": "1w",
-            ".Offset": "1w"
-          },
-          {
-            ".DateOffset": "3m",
-            ".Offset": "1m"
-          },
-          {
-            ".DateOffset": "2y",
-            ".Offset": "3m"
-          }
+          {".DateOffset": "0d"},
+          {".DateOffset": "2d"},
+          {".DateOffset": "1w", ".Offset": "1w"},
+          {".DateOffset": "3m", ".Offset": "1m"},
+          {".DateOffset": "2y", ".Offset": "3m"}
         ]
       },
       "Random_Seed": 1,
@@ -55,7 +43,6 @@ e.g.
       "Credit_Valuation_Adjustment": {
         "Calculate": "Yes",
         "Counterparty": "Sketchy Traders LTD",
-        "Bank": "Bank of River",
         "Deflate_Stochastically": "Yes",
         "Stochastic_Hazard_Rates": "No",
         "CDS_Tenors": [0.5, 1, 3, 5, 10],
@@ -65,31 +52,17 @@ e.g.
   }
 }
 ```
-Extra information (e.g. returning simulated cashflows, exposure profiles etc. is specified here).
 
 ## Deals
-This section has 2 attributes:
-### Reference
-The name of this collection of deals (used later when generating the output)
 
-e.g.
-```json
-{
-  "Calc": {
-    "Deals": {
-      "Reference": "WaterfallTrading"
-    }
-  }
-}
-```
-
-### Deals
-The deals themselves, as a tree:
+Two attributes: `Reference`, the name of this collection of deals (used in the output), and
+`Deals`, the deals themselves as a tree.
 
 ```json
 {
   "Calc": {
     "Deals": {
+      "Reference": "WaterfallTrading",
       "Deals": {
         "Children": [
           {
@@ -99,16 +72,14 @@ The deals themselves, as a tree:
                 "Reference": "12345678",
                 "Buy_Currency": "USD",
                 "Sell_Currency": "ZAR",
-                "Buy_Amount": -10000000,
-                "Sell_Amount": -182805000,
-                "Settlement_Date": {
-                  ".Timestamp": "2022-12-28"
-                },
+                "Buy_Amount": 10000000,
+                "Sell_Amount": 182805000,
+                "Settlement_Date": {".Timestamp": "2022-12-28"},
                 "Settlement_Currency": "ZAR",
                 "Discount_Rate": "ZAR-SWAP"
               }
             }
-          }           
+          }
         ]
       }
     }
@@ -116,30 +87,40 @@ The deals themselves, as a tree:
 }
 ```
 
-A *Deals* attribute is always followed by a single *Children*, defined to be an array. Further
-*Instrument* objects (of type *.Deal*) are then defined as children. Should the *Instrument* be a
-Container object, it may define its own *Children* array, so nested structures form a tree.
+`Deals` holds a single `Children` array of nodes, each an `Instrument` (a `.Deal`); a container
+deal (a netting set, a structure) carries its own `Children`, so nested structures form a tree.
+This forward is worth $(A\tilde F - BF)\,D$ in its settlement currency, $A$ the `Buy_Amount`, $B$
+the `Sell_Amount` and $\tilde F$, $F$ the forward prices of the two currencies: positive amounts
+buy USD and sell ZAR, and negating both reverses the trade. The fields of every deal type are under
+[Trade Data](trade_data.md).
 
 A deal carries its terms and nothing about where it is held. Where a desk keeps a record, the
 portfolio a trade sits in, the agreement it is dealt under and the seat that booked it are carried
 by the fill that books it - see [the Spine](../developer/spine.md#increment-8-the-paper-and-where-a-position-sits).
 
 ## MergeMarketData
-There are just 2 attributes here. 
 
-### MarketDataFile
-This is the json file that specifies all [system parameters](./system_parameters.md), [correlations](./correlations.md), 
-[price models](./price_models.md), [model configuration](./model_configuration.md) and [market prices](./market_prices.md)
-used for bootstrapping.  
+Where the market data comes from. Three attributes:
 
-This can become quite a large file if several hundred risk factors are used
-(as the number of correlations increase as the square of the number of factors). A usual practise is to have one 
-MarketData file for risk neutral calculations (like CVA or FVA) and another for real-world calculations (like PFE).
+| Attribute | What it does |
+|---|---|
+| `MarketDataFile` | a market-data JSON file (a `MarketData` object of sections, below), loaded once per `Context` and cached by its path |
+| `ExplicitMarketData` | sections merged over that file's - or over an empty configuration where no file is named |
+| `StressedMarketDataFile` | recorded, not loaded: a `StressedContext` reads it when asked to stress, replacing the `Price Models` entries and implied parameter factors of the factor types it is given, and restores them after |
 
-### ExplicitMarketData
-Since the data in the marketdata file is static, it cannot contain current market prices. This section acts as an
-override for any section already defined in the MarketDataFile specified above. Typically only the 
-[Price Factors](./price_factors_overview.md) section would be defined (to contain the latest market data).
+The sections a market-data file may carry; a file naming any other section is refused by name:
+
+| Section | Page |
+|---|---|
+| `System Parameters` | [System Parameters](system_parameters.md) |
+| `Model Configuration` | [Model Configuration](model_configuration.md) |
+| `Price Factors` | [Price Factors](price_factors_overview.md) |
+| `Price Factor Interpolation` | [Model Configuration](model_configuration.md#price-factor-interpolation) |
+| `Price Models` | [Price Models](price_models.md) |
+| `Correlations` | [Correlations](correlations.md) |
+| `Market Prices` | [Market Prices](market_prices.md) |
+| `Valuation Configuration` | [Model Configuration](model_configuration.md#valuation-configuration) |
+| `Bootstrapper Configuration` | [Bootstrapper Configuration](bootstrapper_configuration.md) |
 
 ```json
 {
@@ -148,107 +129,19 @@ override for any section already defined in the MarketDataFile specified above. 
       "MarketDataFile": "mymarketdatafile.json",
       "ExplicitMarketData": {
         "Price Factors": {
-          "InterestRate.ZAR-JIBAR-3M": {
-            "Day_Count": "ACT_365",
-            "Currency": "ZAR",
-            "Curve": {
-              ".Curve": {
-                "meta": [],
-                "data": [
-                  [
-                    0.2465753424657534,
-                    0.0713
-                  ],
-                  [
-                    25.0,
-                    0.0764
-                  ]
-                ]
-              }
-            },
-            "Sub_Type": null
-          },
           "InterestRate.ZAR-SWAP": {
             "Day_Count": "ACT_365",
             "Currency": "ZAR",
-            "Curve": {
-              ".Curve": {
-                "meta": [],
-                "data": [
-                  [
-                    0.0027397260273972603,
-                    0.069
-                  ],
-                  [
-                    10.0,
-                    0.079
-                  ]                  
-                ]
-              }
-            },
+            "Curve": {".Curve": {"meta": [], "data": [[0.0027397260273972603, 0.069], [10.0, 0.079]]}},
             "Sub_Type": null
-          },
-          "InterestRate.USD-SOFR": {
-            "Day_Count": "ACT_365",
-            "Currency": "USD",
-            "Curve": {
-              ".Curve": {
-                "meta": [],
-                "data": [
-                  [
-                    0.0027397260273972603,
-                    0.038
-                  ],
-                  [
-                    20.0,
-                    0.032
-                  ]
-                ]
-              }
-            },
-            "Sub_Type": null
-          },
-          "InterestRate.ZAR-SWAP.ZAR-USD-BASIS": {
-            "Day_Count": "ACT_365",
-            "Currency": "ZAR",
-            "Curve": {
-              ".Curve": {
-                "meta": [],
-                "data": [
-                  [
-                    0.0027397260273972603,
-                    0.0001897614337292436
-                  ],
-                  [
-                    30.024657534246575,
-                    -0.008421900202085705
-                  ]
-                ]
-              }
-            },
-            "Sub_Type": "BasisSpread"
           },
           "FxRate.ZAR": {
             "Domestic_Currency": "USD",
-            "Interest_Rate": "ZAR-SWAP.ZAR-USD-BASIS",
+            "Interest_Rate": "ZAR-SWAP",
             "Spot": 0.0566318758176227
           },
           "FXVol.USD.ZAR": {
-            "Surface": {
-              ".Curve": {
-                "meta": [
-                  2,
-                  "Flat"
-                ],
-                "data": [
-                  [
-                    1.0,
-                    1.0,
-                    0.28
-                  ]
-                ]
-              }
-            }
+            "Surface": {".Curve": {"meta": [2, "Flat"], "data": [[1.0, 1.0, 0.28]]}}
           }
         }
       }
@@ -257,35 +150,45 @@ override for any section already defined in the MarketDataFile specified above. 
 }
 ```
 
-Note that when it comes to exporting any calculation, it is assumed that if a MarketDataFile is specified, then only the 
-*Price Factors* section should be exported (as Price Models, Correlations etc. are assumed to remain unchanged). If a 
-MarketDataFile is not specified, then all sections of the current configuration are exported.
+The usual split keeps models, correlations and configuration in the file and the day's prices in
+`ExplicitMarketData`. How the merge behaves:
 
-The idea here is to explicitly save model parameters, correlations etc. directly to the MarketDataFile, leave it static, and 
-then define current market prices in the Price Factors section. Of course, for this to work, a MarketDataFile needs to have an 
-empty *Price Factors* section  
+| Rule | What the code does |
+|---|---|
+| Granularity | per entry: an `ExplicitMarketData` entry replaces the file's entry of the same key whole (a whole price factor, a whole model); `Correlations` merge per pair; `Model Configuration` and `Price Factor Interpolation` replace a type's default and its filter list |
+| Persistence | the merge writes into the cached configuration, so a later job in the same `Context` naming the same `MarketDataFile` starts from this one's overlay |
+| An unknown section in `ExplicitMarketData` | fails on load (a `KeyError` naming it) |
 
-This makes working with derivus JSON files easier as we can load up and cache static MarketDataFile once and only read the 
-trade, calculation and *Price Factor* data per JSON file.    
+`Context.save_json` writes the loaded job back as a self-contained document: every section of the
+loaded market data goes into `ExplicitMarketData`, `MarketDataFile` is left blank, and the calendar
+file is still named.
 
 ## CalendDataFile
 
-An XML calendar file may be loaded defining one more set of business days i.e.
+An XML file of business-day calendars, loaded once per `Context` and cached by its name:
 
 ```xml
 <Calendars>
-  <Calendar Location="Johannesburg" Weekends="Saturday and Sunday" Holidays="2016-01-01|New Year's Day,2016-03-21|Human Rights Day, ... ,2047-12-26|Day of Goodwill" />
-  <Calendar Location="Kabul" Weekends="Friday" Holidays="2016-02-15|Liberation Day, 2016-03-20|Noruz (New Year) 2, ... , 2047-10-30|Ashoora*" />
+  <Calendar Location="Johannesburg" Weekends="Saturday and Sunday" Holidays="2016-01-01|New Year's Day, 2016-03-21|Human Rights Day, 2047-12-26|Day of Goodwill" />
+  <Calendar Location="Kabul" Weekends="Friday" Holidays="2016-02-15|Liberation Day, 2016-03-20|Noruz (New Year) 2, 2047-10-30|Ashoora*" />
 </Calendars>
 ```
 
-The format is straightforward with the **Location**, **Weekends** rule and Public **Holidays** specified as above. 
-If this file was called *calendars.cal*, then this section would be defined thus
+| Attribute | Form |
+|---|---|
+| `Location` | the calendar's name, as deals and quote blocks refer to it |
+| `Weekends` | one of `Saturday and Sunday`, `Friday and Saturday`, `Saturday`, `Sunday`, `Friday` |
+| `Holidays` | `YYYY-MM-DD|Name` entries separated by a comma and a space (`, `); a comma without the space does not separate |
 
 ```json
 {
   "Calc": {
-    "CalendDataFile": "calendars.cal"  
+    "CalendDataFile": "calendars.cal"
   }
 }
 ```
+
+## References
+
+- T. Bray (ed.), *The JavaScript Object Notation (JSON) Data Interchange Format*, RFC 8259, Internet
+  Standard, December 2017. [doi:10.17487/RFC8259](https://doi.org/10.17487/RFC8259)

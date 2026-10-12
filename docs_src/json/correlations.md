@@ -1,53 +1,63 @@
-#  Correlations
+# Correlations
 
-Correlations are defined just once between 2 price factors (as the correlation matrix is symmetric). 
-The convention is to provide the name of the first correlation factor and then a list of all 
-subsequent correlations as a standard JSON object.
-
-However, the naming of these correlation values needs some consideration as its possible to have 2 or
-more difference Price Models for the same factor. Also, Each Price model could have several factors of
-randomness i.e. a Hull White 2 factor model has 2 sources of randomness whereas Geometric Brownian 
-Motion on an Equity just has 1.
-
-An example correlation specification is presented below i.e.
+The correlations between the Gaussian innovations of the simulated processes. Each pair is stated
+once, nested by its first name, since the matrix is symmetric:
 
 ```json
 {
   "Correlations": {
-      "HWInterestRate.ZAR-SWAP.F1": {
-        "HWInterestRate.USD-MASTER.F1": 0.2,
-        "LognormalDiffusionProcess.ZAR": 0.5
-      },
-      "HWInterestRate.USD-MASTER.F1": {
-        "LognormalDiffusionProcess.ZAR": -0.1
-      }
+    "HWInterestRate.ZAR-SWAP.F1": {
+      "HWInterestRate.USD-MASTER.F1": 0.2,
+      "LognormalDiffusionProcess.ZAR": 0.5
+    },
+    "HWInterestRate.USD-MASTER.F1": {
+      "LognormalDiffusionProcess.ZAR": -0.1
     }
+  }
 }
 ```
 
-The correlation between the one factor hull white model for ZAR-SWAP and the lognormal
-process for ZAR is 0.5 while the correlation between ZAR-SWAP and the one factor hull white 
-model for the USD-MASTER is 0.2. There is a correlation of -0.1 between the USD-MASTER and
-the GBM process called ZAR (here interpreted as an FxRate)
+Here the one-factor Hull-White innovation of `ZAR-SWAP` has correlation 0.2 with that of
+`USD-MASTER` and 0.5 with the lognormal process of `ZAR` (an `FxRate`), and `USD-MASTER` has -0.1
+with `ZAR`.
 
-# Correlation names
+## Correlation names
 
-Each factor model has its own correlation name. They are as follows:
+A row is named `<correlation name>.<factor name>`, followed by `.<sub-factor>` for a process with
+more than one innovation. The name is the process's (`correlation_name` in
+`derivus/stochasticprocess.py`), not the factor type's:
 
-| Factor Model      | Correlation Name     | Number of factors  | Sub Components  |
-| -----------------:|:--------------------:| ------------------:| ---------------:|
-| GBMAssetPriceModel  | LognormalDiffusionProcess | 1 | <NA> |
-| GBMAssetPriceTSModelImplied  | LognormalDiffusionProcess | 1 | <NA> |
-| GBMPriceIndexModel  | LognormalDiffusionProcess | 1 | <NA> |
-| HullWhite1FactorInterestRateModel  | HWInterestRate | 1 | F1 |
-| HullWhite2FactorImpliedInterestRateModel  | HWImpliedInterestRate | 2 | F1, F2 |
-| HWHazardRateModel | HullWhiteProcess | 1 | <NA> |
-| CSForwardPriceModel | ClewlowStricklandProcess | 1 | <NA> |
-| CSImpliedForwardPriceModel | ClewlowStricklandProcess | 1 | <NA> |
-| PCAInterestRateModel | InterestRateOUProcess | $N$ | PC1, PC2, ..., PC$N$ |
-| LogOUSpotModel | OULogSpotProcess | 1 | <NA> |
+| Price model | Correlation name | Rows per factor |
+|---|---|---|
+| `GBMAssetPriceModel` | `LognormalDiffusionProcess` | one, no suffix |
+| `GBMAssetPriceTSModelImplied` | `LognormalDiffusionProcess` | one, no suffix |
+| `GBMPriceIndexModel` | `LognormalDiffusionProcess` | one, no suffix |
+| `LogVar2FJImpliedSpotModel` | `LognormalDiffusionProcess` | four: no suffix (the return's Gaussian given the mixer), `S` (the fast log-variance shock), `L` (the slow log-variance shock), `G` (the mixer, through its normal quantile) |
+| `HullWhite1FactorInterestRateModel` | `HWInterestRate` | one, `F1` |
+| `HullWhite2FactorImpliedInterestRateModel` | `HWImpliedInterestRate` | two, `F1` and `F2` |
+| `PCAInterestRateModel` | `InterestRateOUProcess` | one per eigenvector the model's parameters carry, `PC1` to `PC`$N$ |
+| `HWHazardRateModel` | `HullWhiteProcess` | one, no suffix |
+| `CSForwardPriceModel` | `ClewlowStricklandProcess` | one, no suffix |
+| `CSImpliedForwardPriceModel` | `ClewlowStricklandProcess` | one, no suffix |
+| `LogOUSpotModel` | `OULogSpotProcess` | one, no suffix |
+| `MarkovHMMSpotModel` | `MarkovHMMSpotProcess` | one, no suffix |
+| `GARCHSpotModel` | `GARCHSpotProcess` | one, no suffix |
+| `QuadraticCarryCurveModel` | `QuadraticCarryCurveProcess` | two, `L` and `D` |
+| `ChainedBasisModel` | `ChainedBasisProcess` | one, no suffix |
+| `FixingBridgeModel` | `FixingBridgeProcess` | one, no suffix |
+| `BasisLinkedSpotModel` | `BasisLinkedSpotProcess` | one, no suffix |
 
-For `PCAInterestRateModel`, the number of factors $N$ matches the number of principal components
-configured (typically 3). Sub-components are named `PC1` through `PC`$N$ accordingly.
+So a LogVar2FJ equity `SPX` contributes `LognormalDiffusionProcess.SPX`,
+`LognormalDiffusionProcess.SPX.S`, `LognormalDiffusionProcess.SPX.L` and
+`LognormalDiffusionProcess.SPX.G`.
 
-These names may change in future.
+## How the matrix is assembled
+
+| Rule | What the code does |
+|---|---|
+| A pair the section does not state | reads 0.0 |
+| A stated name no simulated factor answers to | ignored; one INFO line lists such names |
+| Two rows with the same name | correlation 1.0. This happens when two factors of different types share a name under processes with the same correlation name (an `EquityPrice.ZAR` and an `FxRate.ZAR` both lognormal), so give such factors distinct names |
+| A number's meaning | the correlation of the two Gaussian innovations. For a process whose return is not a single Gaussian innovation (stochastic volatility, regime switching, a mixed residual), the realised correlation of returns differs from it |
+| A matrix that is not positive definite | repaired by `Correlations_Healing_Method` (see [System Parameters](system_parameters.md#correlation-healing)) before its Cholesky factor is taken |
+| Sensitivity | the matrix is not an AAD leaf: no run reports a derivative with respect to a correlation through the tape. A base valuation's quanto or compo correlation delta is a common-random-numbers bump (`Correlation_Bump`) |

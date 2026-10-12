@@ -24,19 +24,24 @@ There is deliberately no tracked `.mcp.json`: it would pin one machine's paths i
 
 **The server's instructions are the desk's orientation.** A host reads them once per session and
 shows them to the model before it calls anything, so they are `INSTRUCTIONS` in
-`derivus_mcp/server.py`: what the desk is, to start with `desk_status`, the shape of a working
-day, the wire forms a deal is written in, the FX strike axis, what a refusal means, that quoting is
-not booking and where the second seat comes in, that bootstrapping dials and ticker codes are
-configured once in the web UI, and — where this desk keeps a record — the five verbs that read it:
-what the book owes, whether a close is legal, where the file and the record disagree, the strip of
-what has been recorded, and the official closes - and the paper the book trades under, declared by
-the seat that keeps the legal documents, with a booking's quantity as the position change in units
-of the deal and its portfolio a path under the book, `book_positions` reading what stands,
-`book_cash` the money the settlements moved, `collateral_calls` what each agreement's CSA calls on
-a marked close, and `mark_book` and `book_pnl` the close's marks and
-what the book made between them - and that every booking is a ticket, a trade a second seat must
-sign booking PENDING, with `worklist` saying what waits on whom. The
-module docstring stays the maintainer's.
+`derivus_mcp/server.py`. They say:
+
+- what the desk is, and to start with `desk_status`;
+- the shape of a working day, the wire forms a deal is written in, and the FX strike axis;
+- what a refusal means, that quoting is not booking, and where the second seat comes in;
+- that bootstrapping dials and ticker codes are configured once in the web UI;
+- where this desk keeps a record, the five verbs that read it: what the book owes, whether a close
+  is legal, where the file and the record disagree, the strip of what has been recorded, and the
+  official closes;
+- the paper the book trades under, declared by the seat that keeps the legal documents: a booking's
+  quantity is the position change in units of the deal and its portfolio a path under the book;
+  `book_positions` reads what stands, `book_cash` the money the settlements moved,
+  `collateral_calls` what each agreement's CSA calls on a marked close, and `mark_book` and
+  `book_pnl` the close's marks and what the book made between them;
+- that every booking is a ticket, a trade a second seat must sign booking PENDING, with `worklist`
+  saying what waits on whom.
+
+The module docstring stays the maintainer's.
 
 ## The tools
 

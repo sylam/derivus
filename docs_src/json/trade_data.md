@@ -1,9 +1,9 @@
 # Trade Data
 
-This is a JSON object representing the portfolio of trades belonging to a single netting set. As an
-example, consider booking a **FXNonDeliverableForward** inside
+The book is a tree of deals under `Deals.Children`. A container deal (a netting set, a structure)
+holds its own `Children`. As an example, an **FXNonDeliverableForward** inside an uncollateralised
+netting set:
 
-an uncollateralized netting set. 
 ```json
 {
   "Deals": {
@@ -42,9 +42,17 @@ an uncollateralized netting set.
   }
 }
 ```
-The JSON is parsed into python dictionaries and lists. However, note that objects beginning with a
-period (e.g. .Deal, .Timestamp etc.) will convert the enclosed dictionary/list into the corresponding
-python object. When defining Deals, any number of key-value attributes may be specified as it's loaded
-directly as a python dictionary.
 
-A list of all supported deals (as well as the corresponding datatypes) is as follows:
+A key starting with a period (`.Deal`, `.Timestamp`, ...) converts the value it holds into the
+engine object of that name (see [General Types](general_types.md)). `Object` names the deal type,
+and each type's page below lists the fields it declares:
+
+| A field that is | When omitted |
+|---|---|
+| **Required** | `validate()` reports it, and the deal is not completed from the panel value the page shows |
+| any other (a convention) | it reads as its declared default |
+| not declared by the type | kept in the block and read by nothing; `validate()` does not report it, so a misspelt convention silently takes its default |
+
+An `Object` naming no deal type loads as that name alone and is reported by `validate()`; a run
+refuses it by name. `validate()` only reports: a message never stops a deal from pricing (see
+[Checking a job](../api_overview.md#checking-a-job-before-running-it)).

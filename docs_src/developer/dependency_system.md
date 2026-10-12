@@ -22,7 +22,7 @@ A declared field on an `ObservedBasis` block naming the next link of a chain tha
 
 Each member also declares **`Chained_Lag`**, the rows back at which its law references its link.
 
-- **Same-row** (lag 0, the default) enters the graph as a real edge, because positional depth cannot order it: `topological_sort` emits whole chains **within a pass in insertion order**, so a member pulled by the declaration (always inserted last) leapfrogs its depth. A book entering from the same-row side alone — the production shape, PM-session tradables only — generated the bridge before its source until the edge existed.
+- **Same-row** (lag 0, the default) enters the graph as a real edge, because positional depth cannot order it: `topological_sort` emits whole chains **within a pass in insertion order**, so a member pulled by the declaration (always inserted last) leapfrogs its depth. A book entering from the same-row side alone — one trading PM-session tradables only — generated the bridge before its source until the edge existed.
 - **Lagged** is the chain's day boundary: the member steps off the link's *previous* row, the acyclic bridge factorization carries the dependency, no edge needed.
 
 A closed chain must lag somewhere; all same-row is a same-instant loop and refuses in discovery, named, before the sort would refuse its cycle namelessly. `ChainedBasisModel` asserts its own link is same-row. Links must stay on one primary and differ from each other. Gated by `tests/test_chained_basis.py`: the cross-branch pair (`LBMA_AM.PM ↔ LBMA_AM.CME`) is the inclusion arm that cannot pass positionally, the same-row entry (`LBMA_AM.PM.CME`) the ordering arm, whose killing mutations are the lag-0 edge dropped and the lag declared on the wrong member.
@@ -38,7 +38,7 @@ A closed chain must lag somewhere; all same-row is a same-instant loop and refus
 
 ## The walk
 
-`walk_groups` recurses the deal tree **depth-first, children before parent**, skipping `Ignore=='True'` nodes and nodes that never became a `Deal` (an `Object` naming no class loads as `{}`; `Context.validate` reports it by position). Per instrument it runs `instrument.reset(holidays)` and `finalize_dates(...)` (filling `reval_dates` / `settlement_currencies`), then `get_price_factors`, which iterates `instrument.factor_fields` (`{field_name: [factor_type, …]}`); `iter_factors` pulls the field value(s) via `utils.get_fieldname` (handling nested-tuple keys), flattens, and yields `Factor(type, check_rate_name(v))`. Per factor: record its per-deal max date (`max(instrument.get_reval_dates())`) into `dependent_factor_tenors`, and add its rates unless already present or its type is conditional.
+`walk_groups` recurses the deal tree **depth-first, children before parent**, skipping `Ignore=='True'` nodes and nodes that never became a `Deal` (an `Object` naming no class loads as `{}`; `Context.validate` reports it by position). Per instrument it runs `instrument.reset(holidays)` and `finalize_dates(...)` (filling `reval_dates` / `settlement_currencies`), then `get_price_factors`, which iterates `instrument.factor_fields` (`{field_name: [factor_type, …]}`); `iter_factors` pulls the field value(s) via `utils.get_fieldname` (handling nested-tuple keys), flattens, and yields `Factor(type, check_rate_name(v))`. Per factor: record its per-deal max date (`max(instrument.get_reval_dates())`) into `dependent_factor_tenors`, and add its rates when it is not yet present; a conditional type is re-evaluated at every occurrence.
 
 `add_rates_for_factor` calls `get_rates`; on a `KeyError` (missing `Price Factors` block) it logs a warning and skips the factor. Nothing self-heals — the one auto-created default block was `DiscountRate`, a retired type.
 
@@ -55,7 +55,7 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 ## Ordering — `topological_sort`
 
-Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass Kahn variant that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
+Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort`): a repeated-pass variant of Kahn's (1962) algorithm that, **within a pass, emits nodes in dict-insertion order** and moves every node whose edges all point outside the still-unsorted set. Dependencies land first, dependents follow, cycles raise `RuntimeError`.
 
 `traverse_dependents` (`config.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
 
@@ -74,7 +74,7 @@ Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `t
 !!! danger "Invariant (WARNING) — insertion order into `dependent_factors` is load-bearing for reproducibility"
     `topological_sort` tie-breaks equal-depth factors by **insertion order**. That order flows through `find_models` (`setdefault`) → `stoch_factors` → `get_cholesky_decomp`'s `process_ofs` → the RNG-substream / correlation column each process reads from `t_random_numbers`. Permuting equal-depth factors — by changing **deal-walk order, `factor_fields` dict order, or `dependant_fields` list order** — moves realized results bit-for-bit. **Preserve all three, or treat any reordering as a results-changing event and say so in the commit.**
 
-    A permutation is statistically harmless (the cholesky rows permute consistently, so the joint distribution is identical) and the same JSON reproduces the same order, so user-facing reproducibility holds for free. What ordering stability buys is the developer oracle: bitwise "no reported number moved" verifies a refactor in minutes rather than by statistical comparison, which is why the replay contract keys on `engine_version`. The HMM regime path is a second, parallel surface: a separate Sobol `quasi_rng` stream whose batch counter is never reset by `reset()`.
+    A permutation is statistically harmless (the cholesky rows permute consistently, so the joint distribution is identical) and the same JSON reproduces the same order, so user-facing reproducibility holds for free. What ordering stability buys is the developer oracle: bitwise "no reported number moved" verifies a refactor in minutes rather than by statistical comparison, which is why the replay contract keys on `engine_version`. The quasi-random `quasi_rng` stream (the HMM regime path, GARCH, the linked basis and LogVar2FJ's extra mixers) is a second, parallel surface whose position `reset()` never rewinds; every stream is listed on [Calc Lifecycle](calc_lifecycle.md#rng-substream-ordering-the-reproducibility-surface).
 
 ## The process protocol {#the-process-protocol}
 
@@ -100,3 +100,8 @@ Registries, not functions. Each recipe is "which registry / attribute to touch."
 - **valuation option** — A field on the `Calculation` block, honored inside the relevant `Calculation` class. A new whole mode is a class dispatched by `run_job` / `construct_calculation`. Do **not** touch `Credit_Monte_Carlo`'s CVA/FVA block ([Change Scope](conventions.md#change-scope)) — the sole exception, and the bar for any other, is a term that provably cannot move a reported number.
 
 Before writing any of these, search `utils.py` and the package for an existing equivalent — see [Conventions — look before you write](conventions.md#look-before-you-write).
+
+## References {#references}
+
+- Kahn, A. B. (1962). Topological sorting of large networks. *Communications of the ACM*, 5(11),
+  558-562. [doi:10.1145/368996.369025](https://doi.org/10.1145/368996.369025)

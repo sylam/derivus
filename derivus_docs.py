@@ -89,6 +89,50 @@ class ConstructMarkdown(object):
         'JSON_Config': ('JSON Configuration', None, None),
     }
 
+    #: What a stated default MEANS differs by store, so every generated page opens with its own.
+    STORE_NOTES = {
+        'Instrument': (
+            'A **Required** field must be stated: `validate()` reports one that is missing, and the '
+            'deal is never completed from the panel value shown. Every other field is a convention: '
+            'omitted, it reads as its default. An undeclared key is kept in the block but read by '
+            'nothing, so a misspelt convention silently takes its default.'),
+        'MarketPrices': (
+            "These fields sit under a block's `instrument` object; table rows are objects keyed by "
+            'the column names. An omitted field reads as the same field of the family\'s '
+            '`Bootstrapper Configuration` entry where that entry states it, else as the default '
+            'shown - see [precedence](../bootstrapper_configuration.md#precedence).'),
+        'Bootstrapper Configuration': (
+            '`Prices` routes the entry to its `Market Prices` blocks; every other field is a '
+            "family-wide value a block's own `instrument` overrides - see "
+            '[precedence](../bootstrapper_configuration.md#precedence). The family\'s tables and '
+            'containers belong to its blocks and are listed on its Market Prices page.'),
+        'Calculation': (
+            'A field the `Calculation` block omits reads as its default. A container the block '
+            "states replaces that container's default whole and is not completed from the "
+            'declarations: an omitted sub-field reads as the fallback the code consuming it applies, '
+            'which is the default listed except where [Calculations](../calculations.md#containers) '
+            'says otherwise. That page also gives the keys a runner adds and how overrides merge.'),
+    }
+
+    #: The generated JSON pages, one nav sub-section per store, in nav order: the `schema.mapping`
+    #: path its `types` sit under, the build sub-folder, and the static page heading it as its
+    #: Overview (the section takes that page's place in the nav).
+    JSON_STORES = {
+        'Price Factors': (('Factor',), 'price_factors', 'Price Factors Overview'),
+        'Price Models': (('Process',), 'price_models', 'Price Models'),
+        'Market Prices': (('MarketPrices',), 'market_prices', 'Market Prices'),
+        'Bootstrapper Configuration': (('Configuration', 'Bootstrapper Configuration'),
+                                       'bootstrapper_configuration', 'Bootstrapper Configuration'),
+        'Trade Data': (('Instrument',), 'trade_data', 'Trade Data'),
+        'Calculations': (('Calculation',), 'calculations', 'Calculations'),
+    }
+
+    #: Where a class's `documentation` lands, by the module that declares it - so a generated JSON
+    #: page can link the methodology its type is priced or fitted by.
+    METHODOLOGY = {'MarketPrices': ('bootstrapping', '.bootstrappers'),
+                   'Bootstrapper Configuration': ('bootstrapping', '.bootstrappers'),
+                   'Calculation': ('api_usage', '.calculation')}
+
     def __init__(self, project_dir):
         self.project_dir = Path(project_dir).resolve()
         self.docs_src_dir = self.project_dir / 'docs_src'
@@ -125,45 +169,129 @@ class ConstructMarkdown(object):
         nav_path = str(relative_path).replace(os.sep, '/')
         return f"- '{title}': '{nav_path}'"
 
-    def _infer_data_type(self, meta):
-        """Infers data type string from field metadata."""
+    #: A table column's token, as `schema` emits it in a row's `obj`, in words.
+    COLUMN_TYPES = {'DatePicker': 'date', 'Float': 'number', 'Integer': 'integer', 'Text': 'string',
+                    'Period': 'period', 'Percent': 'number, in percent', 'Basis': 'number, in basis points'}
+
+    def _infer_data_type(self, meta, store=None):
+        """Infers data type string from field metadata. `store` says how a table's rows are written,
+        which differs between stores: an instrument row is an array in column order, a quote row
+        an object keyed by column name."""
         widget = meta.get('widget')
         obj = meta.get('obj')
-        if obj == 'Percent' or obj == 'Basis' or widget == 'Float' or widget == 'BoundedFloat': return "Number (Float)"
+        if obj == 'Percent': return "Number (Float, in percent; see `Percent` in [General Types](../general_types.md))"
+        if obj == 'Basis': return "Number (Float, in basis points; see `Basis` in [General Types](../general_types.md))"
+        if widget == 'Float' or widget == 'BoundedFloat': return "Number (Float)"
         if widget == 'Integer': return "Number (Integer)"
-        if widget == 'DatePicker': return "String (Date: YYYY-MM-DD)"
-        if widget == 'Dropdown': return f"String (Allowed: `{', '.join(meta.get('values',[]))}`)"
+        if widget == 'Checkbox': return "Boolean (JSON `true`/`false`)"
+        if widget == 'DatePicker': return "Date (`{\".Timestamp\": \"YYYY-MM-DD\"}`, see [General Types](../general_types.md))"
+        if widget == 'Dropdown': return f"String (Allowed: `{', '.join(str(v) for v in meta.get('values', []))}`)"
         if obj == 'Period': return "String (Period, e.g., '3M', '1Y6M')"
         if obj == 'Tuple': return "String (Dot-separated, e.g., 'USD.EUR')"
         # Link complex types
         if widget == 'Curve' or (widget == 'Table' and obj == 'DateValueList'): return "JSON Array (See `.Curve` type in [General Types](../general_types.md))"
-        if widget == 'Surface': return "JSON Object/Array (See `.Surface`/`.Space` type in [General Types](../general_types.md))"
+        if widget == 'Surface': return "JSON Object (a `.Curve` of surface points, see [General Types](../general_types.md))"
         if obj == 'DateList': return "JSON Array (See `.DateList` type in [General Types](../general_types.md))"
         if obj == 'DateEqualList': return "JSON Array (See `.DateEqualList` type in [General Types](../general_types.md))"
         if obj == 'CreditSupportList': return "JSON Array (See `.CreditSupportList` type in [General Types](../general_types.md))"
-        if widget == 'Table': return "JSON Array of Arrays (See description for column structure)"
+        if widget == 'Table' and meta.get('col_names'):
+            if store == 'Instrument': return "JSON Array of rows, each an array in column order (columns below)"
+            if store in ('MarketPrices', 'Bootstrapper Configuration'): return "JSON Array of rows, each an object keyed by column name (columns below)"
+            return "JSON Array of rows (columns below)"
+        if widget == 'Table': return "JSON Array of Arrays"
         if widget == 'Container': return "JSON Object (Nested Structure)"
         return "String" # Default
 
     def _format_default_value(self, value, meta):
-        """Formats default value nicely."""
-        obj = meta.get('obj')
+        """Formats a default as inline code: a structure on one line, so it stays inside its bullet."""
         widget = meta.get('widget')
         try:
-            if widget in ['Curve', 'Surface', 'Table'] and isinstance(value, str):
-                 # Attempt to parse JSON string defaults for complex types for pretty printing
-                 parsed = json.loads(value)
-                 return json.dumps(parsed, indent=2)
-            elif widget == 'DatePicker' and not value:
-                 return "`null` or empty string"
-            elif value is None:
+            if widget in ['Curve', 'Surface', 'Table'] and isinstance(value, str) and value != 'null':
+                 # a complex type's default is a JSON string - shown as the JSON it holds
+                 return f"`{json.dumps(json.loads(value))}`"
+            elif value is None or value == 'null':
                  return "`null`"
+            elif value == '':
+                 return 'blank (`""`)'
             elif isinstance(value, (dict, list)):
-                 return json.dumps(value, indent=2)
+                 return f"`{json.dumps(value)}`"
             else:
                  return f"`{value}`"
-        except: # Fallback for invalid JSON or other errors
+        except (TypeError, ValueError): # not JSON after all - shown as written
             return f"`{value}`"
+
+    def _columns(self, meta):
+        """A table's columns, `name (type)`, off the row `schema` emits; empty for a tagged table."""
+        names, tokens = meta.get('col_names') or [], meta.get('obj')
+        if not names:
+            return ''
+        tokens = tokens if isinstance(tokens, list) and len(tokens) == len(names) else [None] * len(names)
+        return ', '.join('`{}`{}'.format(name, ' ({})'.format(self.COLUMN_TYPES.get(token, token)) if token else '')
+                         for name, token in zip(names, tokens))
+
+    def _field_lines(self, field_name, meta, store):
+        """One top-level field as markdown: description, JSON type, what its default means, its
+        bounds, a table's columns and a container's fields - each nested field with the same."""
+        lines = [f"### `{field_name}`",
+                 f"- **Description:** {meta.get('description', field_name)}",
+                 f"- **JSON Type:** {self._infer_data_type(meta, store)}"]
+        lines.extend(self._value_lines(meta, '- '))
+        if self._columns(meta):
+            lines.append(f"- **Columns:** {self._columns(meta)}")
+        if meta.get('sub_fields'):
+            lines.append("- **Nested Fields:**")
+            lines.extend(self._nested_lines(meta['sub_fields'], store, '  '))
+        lines.append("")
+        return lines
+
+    def _value_lines(self, meta, bullet):
+        """Whether a field must be stated, and its default or the value a blank panel offers."""
+        lines = []
+        value = meta.get('value')
+        if meta.get('required'):
+            lines.append(f"{bullet}**Required:** yes")
+            if value not in ('', None, 'null'):
+                lines.append(f"{bullet}**Panel value:** {self._format_default_value(value, meta)} "
+                             "(shown on a blank panel, never applied to an omitted field)")
+        else:
+            lines.append(f"{bullet}**Default:** {self._format_default_value(value, meta)}")
+        if 'min' in meta or 'max' in meta:
+            lines.append(f"{bullet}**Bounds:** `{meta.get('min')}` to `{meta.get('max')}`")
+        return lines
+
+    def _nested_lines(self, sub_fields, store, indent):
+        """A container's own fields, one bullet each, recursing into a nested container."""
+        lines = []
+        for name, meta in sub_fields.items():
+            if not isinstance(meta, dict):
+                continue
+            facts = [self._infer_data_type(meta, store)]
+            facts.extend(line[len('- '):] for line in self._value_lines(meta, '- '))
+            if self._columns(meta):
+                facts.append(f"**Columns:** {self._columns(meta)}")
+            lines.append(f"{indent}- `{name}` - {meta.get('description', name).rstrip('.')}. "
+                         f"{'; '.join(facts)}.")
+            if meta.get('sub_fields'):
+                lines.extend(self._nested_lines(meta['sub_fields'], store, indent + '  '))
+        return lines
+
+    def _methodology_link(self, store, item_type):
+        """`[Methodology](...)` for the class a generated type is fitted or priced by, where that
+        class carries a `documentation` attribute; '' otherwise."""
+        if store not in self.METHODOLOGY:
+            return ''
+        section_dir, module_name = self.METHODOLOGY[store]
+        module = importlib.import_module(module_name, package=self.package_name)
+        for name, cls in inspect.getmembers(module, inspect.isclass):
+            declared = cls.__dict__.get(
+                'calc_type' if store == 'Calculation' else
+                'market_factor_type' if store == 'MarketPrices' else 'price_factor_type')
+            doc = cls.__dict__.get('documentation')
+            if declared == item_type and cls.__module__ == module.__name__ and doc:
+                # the anchor mkdocs gives the `## `Class`` heading the section page writes
+                return '[Methodology](../../{}/{}#{})'.format(
+                    section_dir, self._generate_filename(doc[0]), name.lower())
+        return ''
 
 
     def fetch_and_write_section(self, section_key, display_name, module_name, doc_attribute):
@@ -254,7 +382,7 @@ class ConstructMarkdown(object):
         static_order = ['Index', 'General Types', 'System Parameters',
                         'Model Configuration', 'Price Factors Overview', 'Price Models',
                         'Correlations', 'Market Prices', 'Bootstrapper Configuration',
-                        'Trade Data'] # Add index.md for the section landing page
+                        'Trade Data', 'Calculations'] # Add index.md for the section landing page
         for page_title in static_order:
             filename_base = page_title.lower().replace(' ', '_')
             static_filepath = section_src_dir / (filename_base + '.md')
@@ -271,21 +399,18 @@ class ConstructMarkdown(object):
                  except Exception as e:
                     logging.error(f"  Error writing JSON static file {build_filepath}: {e}")
 
-        # --- Generate dynamic pages based on the declarations ---
-        sections_to_process = {
-            'Price Factors': ('Factor', 'price_factors'),
-            'Price Models': ('Process', 'price_models'),
-            'Trade Data': ('Instrument', 'trade_data')
-            # Add MarketPrices if needed, structure is more complex
-        }
-
-        for section_title, (mapping_key, build_subdir) in sections_to_process.items():
+        # --- Generate dynamic pages based on the declarations, one sub-section per store ---
+        for section_title, (mapping_path, build_subdir, overview) in self.JSON_STORES.items():
             logging.info(f"    Generating JSON details for: {section_title}")
-            if mapping_key not in schema.mapping:
-                logging.warning(f"      Mapping key '{mapping_key}' not found in schema.mapping")
+            mapping_data = schema.mapping
+            for key in mapping_path:
+                mapping_data = mapping_data.get(key, {}) if isinstance(mapping_data, dict) else {}
+            if not mapping_data:
+                logging.warning(f"      {' / '.join(mapping_path)} not found in schema.mapping")
                 continue
+            # the store a type's descriptors are read as: the bootstrapper entries are their own
+            store = mapping_path[-1] if mapping_path[0] == 'Configuration' else mapping_path[0]
 
-            mapping_data = schema.mapping[mapping_key]
             details_build_dir = section_build_dir / build_subdir
             details_build_dir.mkdir(parents=True, exist_ok=True)
             section_nav = {}
@@ -297,33 +422,31 @@ class ConstructMarkdown(object):
                 content = [f"# {item_type}", f"JSON configuration for the `{item_type}` type.", ""]
 
                 # A store HOLDS its descriptors: an instrument type composes the sections that hold
-                # them, a factor or process type IS them
-                if mapping_key == 'Instrument':
+                # them, a bootstrapper entry carries its aliases beside them, and a factor, process,
+                # quote family or calculation type IS them
+                if store == 'Instrument':
                     actual_fields = {}
                     for group_name in field_identifiers:
                         actual_fields.update(mapping_data.get('sections', {}).get(group_name, {}))
+                elif store == 'Bootstrapper Configuration':
+                    actual_fields = field_identifiers.get('fields', {})
+                    aliases = field_identifiers.get('aliases', [])
+                    content.append('An entry of the `Bootstrapper Configuration` section, keyed '
+                                   f'`{item_type}`' + (' (an older book may key it '
+                                   f"`{'`, `'.join(aliases)}`)" if aliases else '') + '.')
+                    content.append('')
                 else:
                     actual_fields = field_identifiers
 
+                if store in self.STORE_NOTES:
+                    content.extend([self.STORE_NOTES[store], ''])
+                methodology = self._methodology_link(store, item_type)
+                if methodology:
+                    content.extend([methodology, ''])
+
                 # Document each field
                 for field_name in sorted(actual_fields):
-                    meta = actual_fields[field_name]
-                    desc = meta.get('description', field_name)
-                    dtype = self._infer_data_type(meta)
-                    default_val_str = self._format_default_value(meta.get('value'), meta)
-
-                    content.append(f"### `{field_name}`")
-                    content.append(f"- **Description:** {desc}")
-                    content.append(f"- **JSON Type:** {dtype}")
-                    content.append(f"- **Default:** {default_val_str}")
-                    # Handle nested containers if info is available
-                    if meta.get('widget') == 'Container' and 'sub_fields' in meta:
-                        content.append("- **Nested Fields:**")
-                        for sub_field_name, sub_meta in meta['sub_fields'].items():
-                            sub_desc = sub_meta.get('description', sub_field_name)
-                            content.append(f"  - `{sub_field_name}` ({sub_desc})")
-
-                    content.append("")
+                    content.extend(self._field_lines(field_name, actual_fields[field_name], store))
 
                 # Write file and add to nav
                 try:
@@ -334,8 +457,20 @@ class ConstructMarkdown(object):
                 except Exception as e:
                     logging.error(f"      Error writing detail doc file {build_filepath}: {e}")
 
-            # Add the generated sub-navigation to the main JSON navigation
-            if section_nav:
+            if not section_nav:
+                continue
+            # the static page heading this store becomes its Overview, closed by the list of the
+            # pages generated beside it, and the store takes that page's place in the nav
+            overview_path = json_nav_entries.get(overview)
+            if isinstance(overview_path, Path):
+                with open(overview_path, 'at', encoding='utf-8') as f:
+                    f.write('\n\n## Types\n\n' + '\n'.join(
+                        f"- [`{title}`]({build_subdir}/{path.name})" for title, path in section_nav.items()) + '\n')
+                section_nav = dict([('Overview', overview_path)] + list(section_nav.items()))
+                json_nav_entries = {(section_title if title == overview else title):
+                                    (section_nav if title == overview else entry)
+                                    for title, entry in json_nav_entries.items()}
+            else:
                 json_nav_entries[section_title] = section_nav
 
         return {display_name: json_nav_entries}
@@ -409,14 +544,17 @@ class ConstructMarkdown(object):
                 continue
             pages = generated_docs_nav[display_name]
             config_lines.append(f"{base_indent}- {display_name}:")
-            # Sort pages alphabetically within a section, except for JSON structure
-            page_items = sorted(pages.items()) if display_name != 'JSON Configuration' else pages.items()
+            # Sort pages alphabetically within a section, a `general.md` (a chapter's index) first,
+            # except for JSON structure, whose order is built deliberately - each store's Overview
+            # first, its types sorted after it
+            ordered = (list if display_name == 'JSON Configuration' else
+                       lambda items: sorted(items, key=lambda item: (item[0] != 'General', item[0])))
+            page_items = ordered(pages.items())
 
             for page_title, filepath_or_dict in page_items:
                 if isinstance(filepath_or_dict, dict):
                     config_lines.append(f"{sub_indent}- {page_title}:")
-                    # Sort sub-pages alphabetically
-                    for sub_page_title, sub_filepath_or_dict in sorted(filepath_or_dict.items()):
+                    for sub_page_title, sub_filepath_or_dict in ordered(filepath_or_dict.items()):
                         if isinstance(sub_filepath_or_dict, dict): # e.g., JSON -> Price Factors -> FactorType
                             config_lines.append(f"{sub_sub_indent}- {sub_page_title}:")
                             for sub_sub_title, sub_sub_filepath in sorted(sub_filepath_or_dict.items()):

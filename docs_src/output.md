@@ -1,6 +1,9 @@
 ## The output dictionary
 
-Every calculation method returns `(calc, out)`, and `out` is a dict with three top-level keys:
+Every calculation method returns `(calc, out)`. For a base valuation `out` is a dict with three
+top-level keys; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` run carries `Stats` and
+`Results` only; and a hedge run returns an attribute object instead (see
+[API Overview](api_overview.md#hedge-monte-carlo)):
 
 - **Netting** — the internal `DealStructure` tree, intended for developers walking the hierarchy.
 - **Stats** — timing and counter statistics (deals loaded/skipped, execution time, and — when a
@@ -18,8 +21,10 @@ calc, out = cx.Base_Valuation(overrides={})
 `Results` contains:
 
 - `mtm` — the mark-to-market of all instruments loaded, along with any tagged data
-- `Greeks_First` — analytic sensitivities of the portfolio by risk factor, when `Greeks` is on
-  (`Greeks_Second` appears when second-order sensitivities are requested)
+- `Greeks_First` — AAD sensitivities of the portfolio by risk factor, when `Greeks` is `First` or
+  `All`; `Greeks_Second`, the factor Hessian, under `All`
+- `Correlation_Bump` — under `Greeks: First` with a non-zero `Correlation_Bump`, each quanto or compo
+  correlation delta, by a common-random-numbers bump rather than AAD
 
 ## Credit Monte Carlo
 
@@ -29,20 +34,36 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 
 `Results` may contain, depending on the sub-calculations requested:
 
-- `mtm` — theoretical prices per scenario per time point
-- `exposure_profile` — percentiles of the mtm calculation (EE and PFE)
+- `mtm` — the portfolio mark per scenario per report date
+- `exposure_profile` — `EE`, `ENE` and one `PFE_<p>` per `Percentile` entry (defined in
+  [Calculations](json/calculations.md#exposure-profile))
 - `scenarios` — the simulated factor paths themselves (`Calc_Scenarios`), one table per factor;
   under `At_Percentile` each factor along the path nearest each `Percentile` of the profile at
   every report date, with that path's `mtm` beside them
 - `cashflows` — simulated cashflow ledgers per currency (`Generate_Cashflows`)
-- `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities
+- `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities; `grad_cva_hessian`
+  under `Hessian: Yes`, and `CS01` when `CDS_Tenors` are given (both need `Gradient: Yes`)
 - `fva` / `grad_fva` — the funding valuation adjustment and its sensitivities
-- `collva` and initial-margin tables, when the collateral / IM blocks request them
+- `collva`, `collva_t` / `grad_collva` — the collateral valuation adjustment, per report date, and
+  its sensitivities
+- `LCH_Margin` — the LCH-style initial margin, under `Initial_Margin`
 
 ## Hedge Monte Carlo
 
 `Results` carries the solver's outputs: the fitted value-function artifact, the greedy-policy
 verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) section).
+
+## SIMM
+
+`Results` contains:
+
+- `CRIF` — one row per sensitivity in ISDA's Common Risk Interchange Format: `TradeID`,
+  `Counterparty`, `PostRegulations`, `CollectRegulations`, `ProductClass`, `RiskType`, `Qualifier`,
+  `Bucket`, `Label1`, `Label2`, `Amount` (in the calculation `Currency`) and `AmountUSD`
+- `Trades` — one row per trade: its netting set, product class, value, moves, rows written and any
+  leg the engine skipped, in its own sentence
+
+`Stats['Parameters']` records the `version` the SIMM parameters file states.
 
 ## Over HTTP
 

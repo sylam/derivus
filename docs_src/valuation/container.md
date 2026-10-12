@@ -20,3 +20,8 @@ In the JSON `Deals` section, containers and instruments are interchangeable insi
 arrays — the difference is whether the entry has its own `Children` (a container) or not (a
 leaf instrument). Nesting can go arbitrarily deep, although in practice CSA → leaves is the
 common shape.
+
+## References
+
+- Gregory, J. *The xVA Challenge*. Wiley, 2015, ISBN 978-1-119-10941-9 (collateral and close-out). [doi:10.1002/9781119109440](https://doi.org/10.1002/9781119109440)
+- Andersen, L.; Pykhtin, M.; Sokol, A. Rethinking the margin period of risk. *The Journal of Credit Risk* 13(1), 2017. [doi:10.21314/jcr.2016.218](https://doi.org/10.21314/jcr.2016.218)
