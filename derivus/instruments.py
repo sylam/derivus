@@ -2617,7 +2617,6 @@ class SwapInterestDeal(Deal):
         # read where a coupon owns several resets, which its Compounding_Method folds: None
         # averages them at generate_float's 1/n and the others compound them
         field_index['AveragingMethod'] = 'Average_Rate'
-        field_index['InterestYieldVol'] = np.zeros(1, dtype=np.int32)
 
         return field_index
 
@@ -3245,8 +3244,7 @@ class CapDeal(Deal):
                 self.field.get('Reference'))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
-                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_cap,
-                Digital_Spread=self.options.get('Digital_Spread', 0.0))
+                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_cap)
 
         return field_index
 
@@ -3367,8 +3365,7 @@ class FloorDeal(Deal):
                 self.field.get('Reference'))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
-                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_floor,
-                Digital_Spread=self.options.get('Digital_Spread', 0.0))
+                AveragingMethod=self.field['Averaging_Method'], Model=pricing.pricer_floor)
 
         return field_index
 
@@ -6190,7 +6187,6 @@ class FXBarrierOption(Deal):
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'settlement_currency': 1.0,
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
 
         if field['Payoff_Currency'] != field['Currency']:
@@ -6316,7 +6312,6 @@ class FXPartialTimeBarrierOption(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Limit_Date': (self.field['Barrier_Limit_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'settlement_currency': 1.0,
             'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
 
         # discrete barrier monitoring requires adjusting the barrier by 0.58
@@ -7222,7 +7217,6 @@ class CreditNthToDefault(Deal):
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
-            'Accrue_Fee': self.field.get('Accrue_Fee', 'No') == 'Yes',
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Name': get_survival_factor(field['CDS_Index'], static_offsets, stochastic_offsets, all_tenors),
