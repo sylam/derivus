@@ -124,6 +124,32 @@ def test_a_chain_that_cannot_close_refuses_by_name(world, match):
         _discover(_world(entry, **world))
 
 
+def test_a_composed_fx_link_orders_its_chain_before_the_factor_that_reads_it():
+    """A commodity priced in a composed FX rate - `Currency: ZAR.ONSHORE`, the ZAR spot plus an
+    ObservedBasis tail - reaches that rate as a LINK, not as a deal's own factor. The head keeps the
+    curve its block names, the commodity follows the chain's last link, and the full two-part name,
+    being virtual, is no factor at all.
+
+    Killing mutation: the composed-link branch dropped - the head re-registers with no dependants
+    and the commodity's only edge is to the dropped full name, so it sorts BEFORE the FX rate and
+    the basis it converts through."""
+    world = _world('LBMA_AM.CME', chained=False)
+    factors = world['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors['CommodityPrice.LBMA_AM']['Currency'] = 'ZAR.ONSHORE'
+    factors['FxRate.ZAR'] = {'Domestic_Currency': 'USD', 'Interest_Rate': 'ZAR-JIBAR',
+                             'Spot': 0.055}
+    factors['InterestRate.ZAR-JIBAR'] = {
+        'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.07], [5.0, 0.075]]}}}
+    factors['ObservedBasis.ZAR.ONSHORE'] = {'Spot': 0.0001}
+    order = list(_discover(world))
+    curve, head = utils.Factor('InterestRate', ('ZAR-JIBAR',)), utils.Factor('FxRate', ('ZAR',))
+    tail = utils.Factor('ObservedBasis', ('ZAR', 'ONSHORE'))
+    commodity = utils.Factor('CommodityPrice', ('LBMA_AM',))
+    assert utils.Factor('FxRate', ('ZAR', 'ONSHORE')) not in order
+    assert order.index(curve) < order.index(head) < order.index(tail) < order.index(commodity)
+
+
 def test_the_same_row_entry_orders_its_link_first():
     """The production book enters from the same-row side only, so its link is pulled last and
     positional depth cannot order it - the sort emits whole chains within a pass in insertion

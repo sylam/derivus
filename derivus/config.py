@@ -1071,6 +1071,14 @@ class Config(object):
                                   dependant_fields[factor.type] if
                                   self.params['Price Factors'][factor_name].get(dep_field[0])]
                 for linked_factor in linked_factors:
+                    if linked_factor.type in dependant_fields and linked_factor.type in \
+                            nested_fields and len(linked_factor.name) > 1:
+                        # a composed link: the recursion registers its chain, the head with its own
+                        # dependants and no virtual full name, so the factor reads the last link
+                        rates_to_add.update(get_rates(linked_factor, instrument))
+                        rates_to_add[factor].append(
+                            utils.Factor(nested_fields[linked_factor.type], linked_factor.name))
+                        continue
                     # add it assuming no dependencies
                     rates_to_add.setdefault(linked_factor, [])
                     if linked_factor.type in dependant_fields:
